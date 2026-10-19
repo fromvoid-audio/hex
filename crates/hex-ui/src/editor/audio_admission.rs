@@ -369,3 +369,53 @@ mod tests {
         assert_eq!(status.last_audible(), None);
     }
 }
+
+#[cfg(test)]
+mod comparison_tests {
+    use super::*;
+    #[test]
+    fn comparison_correlation_keeps_pending_rejected_and_real_audio_revision() {
+        let old = ProjectRevision {
+            generation: 3,
+            revision: 7,
+        };
+        let next = ProjectRevision {
+            generation: 3,
+            revision: 8,
+        };
+        for rejected in [false, true] {
+            let mut state = AudioAdmissionStatus::default();
+            state.canonical_revision(old);
+            state.published(old, 91);
+            if rejected {
+                state.rejected(old, 91, "refused");
+            }
+            state.comparison_revision(old, next, false);
+            assert_eq!(state.current().unwrap().project, next);
+            assert_eq!(state.current().unwrap().audio_revision, Some(91));
+            assert_eq!(
+                state.current().unwrap().state,
+                if rejected {
+                    AdmissionState::Rejected("refused")
+                } else {
+                    AdmissionState::Pending
+                }
+            );
+            assert!(state.last_audible().is_none());
+        }
+        let mut state = AudioAdmissionStatus::default();
+        state.canonical_revision(old);
+        state.applied(old, 91);
+        state.comparison_revision(old, next, false);
+        assert_eq!(
+            state.current().unwrap().project,
+            old,
+            "no actual candidate/output association means no applied promotion"
+        );
+        state.comparison_revision(old, next, true);
+        state.comparison_revision(old, next, true);
+        assert_eq!(state.current().unwrap().project, next);
+        assert_eq!(state.last_audible().unwrap().project, next);
+        assert_eq!(state.current().unwrap().audio_revision, Some(91));
+    }
+}

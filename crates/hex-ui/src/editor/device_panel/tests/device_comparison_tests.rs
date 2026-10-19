@@ -999,3 +999,179 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
     let redone = send(Request::Redo);
     assert_eq!(redone.state.project, copied.state.project);
 }
+
+#[gpui::test]
+fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_new_ack(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::audio_admission::{AdmissionState, ProjectRevision};
+    use std::sync::atomic::Ordering::Acquire;
+    let directory = Directory::new();
+    let service = Service::new(48_000, 32, 0).unwrap();
+    receive_service_event(&service);
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "held".into(),
+        }))
+        .unwrap();
+    let mut initial = receive_service_event(&service);
+    let state = Arc::clone(&initial.state);
+    let track = state.project.tracks()[0].id();
+    let device = state.project.tracks()[0].instrument().unwrap().id();
+    let source = state.canonical_audio_source.as_ref().unwrap().clone();
+    let prepared = initial
+        .playback
+        .as_ref()
+        .unwrap()
+        .prepared_revision()
+        .unwrap()
+        .clone();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (mut output, mut backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(output) => break output,
+            Err("audio output is open or still shutting down")
+                if std::time::Instant::now() < deadline =>
+            {
+                std::thread::yield_now()
+            }
+            Err(error) => panic!("private control: {error}"),
+        }
+    };
+    let client = output.take_client().unwrap();
+    let audio_revision = output
+        .publication
+        .control()
+        .unwrap()
+        .publish(initial.playback.take().unwrap())
+        .unwrap();
+    let (_handle, editor) = directory.window(cx, service, state.clone(), track, None);
+    editor.update(cx, |view, _| {
+        view.audio = Some(crate::editor_backend::EditorAudio {
+            control: client,
+            sample_rate: 48_000,
+            label: "private".into(),
+            spectrum_error: None,
+            mode: hex_session::DocumentAudioMode::Resident,
+        });
+        view.audio_admission.canonical_revision(ProjectRevision {
+            generation: 0,
+            revision: state.revision,
+        });
+        view.audio_admission.published(
+            ProjectRevision {
+                generation: 0,
+                revision: state.revision,
+            },
+            audio_revision,
+        );
+        view.playback_candidates
+            .push_back(crate::editor::PlaybackCandidate {
+                audio_revision,
+                project_generation: 0,
+                state: state.clone(),
+                prepared_revision: Some(prepared.clone()),
+                seek_request_id: None,
+                device_preview_identity: None,
+                tuning_preview_identity: None,
+            });
+        view.service
+            .submit(Request::CompareDevice {
+                owner: hex_session::service::preset::Owner {
+                    project_generation: 0,
+                    revision: state.revision,
+                    device,
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                    type_id: state.project.device(device).unwrap().state().type_id(),
+                },
+                expected: DeviceVariant::A,
+                action: hex_project::DeviceComparisonAction::Switch,
+            })
+            .unwrap();
+        let event = receive_service_event(&view.service);
+        assert!(event.playback.is_none());
+        view.receive(event);
+        let next = view.state.as_ref().unwrap();
+        assert_eq!(next.revision, state.revision + 1);
+        assert!(Arc::ptr_eq(
+            next.canonical_audio_source.as_ref().unwrap(),
+            &source
+        ));
+        assert!(Arc::ptr_eq(
+            view.playback_candidates[0]
+                .prepared_revision
+                .as_ref()
+                .unwrap(),
+            &prepared
+        ));
+        assert_eq!(view.playback_candidates[0].audio_revision, audio_revision);
+        assert_eq!(view.playback_candidates[0].state.revision, next.revision);
+        assert_eq!(
+            view.audio_admission.current().unwrap().state,
+            AdmissionState::Pending
+        );
+        assert_eq!(
+            view.applied_project_revision(),
+            None,
+            "metadata proof cannot invent a callback ACK"
+        );
+    });
+    let mut block = [[0.0; 2]; 128];
+    backend.render(&mut block).unwrap();
+    assert_eq!(
+        backend.status().unwrap().applied_revision.load(Acquire),
+        audio_revision
+    );
+    editor.update(cx, |view, cx| {
+        view.tick(cx);
+        let current = view.state.as_ref().unwrap().clone();
+        assert_eq!(view.applied_project_revision(), Some(current.revision));
+        assert_eq!(
+            view.audio_admission.current().unwrap().state,
+            AdmissionState::Applied
+        );
+        let pending = view.worker_requests_pending;
+        view.service
+            .submit(Request::CompareDevice {
+                owner: hex_session::service::preset::Owner {
+                    project_generation: 0,
+                    revision: current.revision,
+                    device,
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                    type_id: current.project.device(device).unwrap().state().type_id(),
+                },
+                expected: DeviceVariant::B,
+                action: hex_project::DeviceComparisonAction::Switch,
+            })
+            .unwrap();
+        let event = receive_service_event(&view.service);
+        let next = event.state.clone();
+        view.receive(event);
+        assert_eq!(view.applied_project_revision(), Some(next.revision));
+        assert_eq!(
+            view.audio_admission.current().unwrap().state,
+            AdmissionState::Applied
+        );
+        assert_eq!(
+            view.audio_admission.current().unwrap().audio_revision,
+            Some(audio_revision)
+        );
+        assert!(view.pending_playback.is_none());
+        assert_eq!(view.worker_requests_pending, pending);
+        assert!(Arc::ptr_eq(
+            view.audible_playback
+                .as_ref()
+                .unwrap()
+                .prepared_revision
+                .as_ref()
+                .unwrap(),
+            &prepared
+        ));
+        // Repeated status reconstruction is idempotent, not a new publication.
+        view.tick(cx);
+        assert_eq!(view.applied_project_revision(), Some(next.revision));
+        view.audio = None;
+    });
+    backend.close();
+    drop(output);
+}

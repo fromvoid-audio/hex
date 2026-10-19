@@ -433,3 +433,6 @@ fn review_2845_public_reserved_edit_cannot_retarget_an_identical_slot_switch() {
     service.submit(Request::Redo).unwrap();
     assert_eq!(event(&service).state.project, switched.state.project);
 }
+
+#[path = "metadata_tests.rs"]
+mod metadata_tests;
