@@ -222,3 +222,17 @@ Original archive/file hashes and unrelated cumulative patch blocks are retained;
 the cumulative patch is regenerated against hash-verified original source and
 applied back to verify every changed/added byte. Linux synthetic checks do not
 claim macOS/Windows compilation or physical device acceptance.
+
+19 October Wayland v9 per-axis wheel direction: the existing pointer-frame
+fold retains raw content accumulation and source/Shift routing. Optional
+parameter tick metadata is normalized per original protocol axis before routing
+collapse, with frame-local constant-size bookkeeping. Conflicting/unknown axis
+direction reports fall back to the old sign for that axis only; other known axes
+remain independent. Every Frame drains metadata before any window delivery,
+including empty or unfocused frames. The event-wide inversion flag stays false;
+physical_delta, the physical tick getter and other platforms are unchanged.
+Continuous-only frames do not invent detents. Typed protocol-event unit tests
+exercise the production-used fold; they are not compositor/hardware validation.
+Original source hashes, license and unrelated cumulative patch blocks remain;
+only changed-source provenance hashes are updated and the patch is reapplied
+against verified originals to compare every patched/added byte.

@@ -373,8 +373,10 @@ pub struct ScrollWheelEvent {
 
     /// Physical wheel increments, when the platform knows them independently
     /// of content-line preferences. Fractional increments are retained. Uses
-    /// the same preference-direction convention as `delta`; content scrolling
-    /// must continue using `delta`, not this optional parameter-input metadata.
+    /// the same preference-direction convention as `delta`, except a backend
+    /// with per-axis direction reports may normalize these ticks to device
+    /// direction and leave `direction_inverted_from_device` false. Content
+    /// scrolling must use `delta`, not this optional parameter-input metadata.
     pub wheel_ticks: Option<Point<f32>>,
 
     /// The position of the mouse on the window.
