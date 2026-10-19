@@ -1,0 +1,17 @@
+[1/8] complete provider and 144 silence cases: running
+[1/8] complete provider and 144 silence cases: passed
+[2/8] strict changed provider tests: running
+[2/8] strict changed provider tests: passed
+[3/8] architecture: running
+[3/8] architecture: passed
+[4/8] UI style: running
+[4/8] UI style: passed
+[5/8] GPUI provenance: running
+[5/8] GPUI provenance: passed
+[6/8] dependency provenance: running
+[6/8] dependency provenance: passed
+[7/8] format: running
+[7/8] format: passed
+[8/8] diff: running
+[8/8] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/455-denormal-final-tone/summary.json

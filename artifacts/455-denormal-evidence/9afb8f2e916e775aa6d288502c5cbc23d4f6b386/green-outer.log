@@ -1,0 +1,5 @@
+[1/2] provider energy and original PCM laws: running
+[1/2] provider energy and original PCM laws: passed
+[2/2] strict provider: running
+[2/2] strict provider: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/455-denormal-green/summary.json

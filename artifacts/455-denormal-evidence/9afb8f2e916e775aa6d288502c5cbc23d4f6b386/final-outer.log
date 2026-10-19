@@ -1,0 +1,25 @@
+[1/12] provider original PCM analytic and silence laws: running
+[1/12] provider original PCM analytic and silence laws: passed
+[2/12] calibrated floor crossing zero allocations: running
+[2/12] calibrated floor crossing zero allocations: passed
+[3/12] actual Compressor UI Track Return banks and persistence: running
+[3/12] actual Compressor UI Track Return banks and persistence: passed
+[4/12] actual prepared callback no allocations: running
+[4/12] actual prepared callback no allocations: passed
+[5/12] strict provider: running
+[5/12] strict provider: passed
+[6/12] strict affected UI: running
+[6/12] strict affected UI: passed
+[7/12] architecture: running
+[7/12] architecture: passed
+[8/12] UI style: running
+[8/12] UI style: passed
+[9/12] GPUI provenance: running
+[9/12] GPUI provenance: passed
+[10/12] dependency provenance: running
+[10/12] dependency provenance: passed
+[11/12] format: running
+[11/12] format: passed
+[12/12] diff: running
+[12/12] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/455-denormal-final/summary.json

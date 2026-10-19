@@ -1,0 +1,20 @@
+{
+  "production_delta_exact_six_additive_lines_reverse_applies_byte_exact": true,
+  "all_original_provider_tests_and_docs_prefix_unchanged": true,
+  "full_targeted_edbef_production_blob_equals_final9afb": true,
+  "edbef_to_final_only_tests_docs": [
+    "crates/hex-devices/src/compressor/tests.rs",
+    "docs/compressor.md"
+  ],
+  "AGENTS.md": "e5b4332338d62a9ae9294002d2fb359a05f6acf0bdb3e4c309867ed075fd1e66",
+  "scripts/local-ci.py": "864bf57008c9f4d333db395e374557bb5cf52218eda4cf34ac087867120f7587",
+  "Cargo.toml": "54ed59421044312ac6949e2a30ae3a609dbac0554e662f4cc62cf917075ca862",
+  "Cargo.lock": "18f8428da3e4c344a332ad68fc7061294b952353027fd7171e0858d040282304",
+  "crates/hex-ui/src/editor/device_panel/compressor_panel.rs": "36b85e762d0fe276c1ec21bf972f626b8f25ae314ce3cf5b9990fae9c08a96a7",
+  "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs": "7cd8095234a56200b1d9ec9e81e2bcc8e8a1059de440e0cfa9f25d9da1e9b34e",
+  "crates/hex-ui/src/editor/device_panel/tests/device_comparison_tests.rs": "e1988a280d12598d34b05a91f7a3020e3d6a9b88fac0327959a77e74eca520a3",
+  "crates/hex-audio/src/prepared.rs": "b5bf1800c2d82d694ce48c02914722cc184d9a79fbecd2076b958bd549ed14da",
+  "crates/hex-engine/src/lib.rs": "fe9f308d7c3fb1c0e3ced842fc883b215b5f187a793bab2af135328ce9bbb19d",
+  "crates/hex-session/src/lib.rs": "aa48c8191248ccd4ad5aed165fb5e006c1a4400bd93f0629f8ef368e476651b4",
+  "crates/hex-storage/src/lib.rs": "026939e2ab27ed6344ae025b2b0abb364b96c3b5cb9e8a17a63f6efb68d23cdd"
+}

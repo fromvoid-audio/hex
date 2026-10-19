@@ -1,0 +1,210 @@
+{
+  "Cargo.lock": {
+    "sha256": "0c39cbcbfc25523c2fc18b946cb3a727d630770e4de2f51506c149e181993ff1",
+    "size": 885
+  },
+  "Cargo.toml": {
+    "sha256": "722719e40c5f97fd58aeaceb6967bbf5b2f1ce058b565547de9c509a74751523",
+    "size": 370
+  },
+  "HANDOFF.md": {
+    "sha256": "127c114271d80111293f3a513cb39b68cfb988ae31ff74d32b78bae3f89b086b",
+    "size": 5272
+  },
+  "final-outer.log": {
+    "sha256": "6b5ed611a79d01d9aa2ee284e9b236e5b0c536c8cdbe3d64d51bb742c7da393f",
+    "size": 1055
+  },
+  "final-tone-outer.log": {
+    "sha256": "a23cc0d2cf1b62a235b2743745e8b88e9bd8eb39e622bd4ab372b26e18e95a51",
+    "size": 610
+  },
+  "green-outer.log": {
+    "sha256": "4f121bfc7a8c75ef936dddadd40eddfc2b4d6f5ca983a3e0757f697356c5736b",
+    "size": 255
+  },
+  "orchestration/310-approved-guard-runner.py": {
+    "sha256": "ba6ab952481fde1bbea79d3168393b8ef8e0552d6fbc62ec710a3800ed1abd33",
+    "size": 71789
+  },
+  "orchestration/455-denormal-component.py": {
+    "sha256": "13ab57f2a8fe02d4055f4ec0093a9b1c51080350c75263befe2608c90eedca2a",
+    "size": 571
+  },
+  "orchestration/seal-455-denormal.py": {
+    "sha256": "acb4518df4d02ebec853429ec1f929e8e9aad0a24350b40d029dfe3312a83083",
+    "size": 6173
+  },
+  "probe.rs": {
+    "sha256": "1faf733f3b8b3c3e2e733b3fbba8cc233202bc45ababea803986780451a5eee7",
+    "size": 3171
+  },
+  "protected-proof.json": {
+    "sha256": "16ad9a3291a89965c44119703ff2375c63eeedf86ebb4dc5267450c56942ebca",
+    "size": 1503
+  },
+  "red-outer.log": {
+    "sha256": "9894881a25a066d673894915bed034e91c10dcc0ab701b2197f1bdd7e9120254",
+    "size": 186
+  },
+  "runs/final-tone/01-complete provider and 144 silence cases.log": {
+    "sha256": "fdc1def018bb19bec793be013d1e4f06f57529a6e915af7fb6e9256993013a3e",
+    "size": 20447
+  },
+  "runs/final-tone/02-strict changed provider tests.log": {
+    "sha256": "e1137fd9d372e2a9f1288ce4cb9b31a4484501b5d385933116e2968b7fab508f",
+    "size": 140
+  },
+  "runs/final-tone/03-architecture.log": {
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "size": 76
+  },
+  "runs/final-tone/04-UI style.log": {
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "size": 82
+  },
+  "runs/final-tone/05-GPUI provenance.log": {
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "size": 149
+  },
+  "runs/final-tone/06-dependency provenance.log": {
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382",
+    "size": 113
+  },
+  "runs/final-tone/07-format.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final-tone/08-diff.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final-tone/summary.json": {
+    "sha256": "76be25f3d6092971fbce32c10215b4fcab8d7c5dd3f2428b9184f9c2b1bddf6e",
+    "size": 15905
+  },
+  "runs/final/01-provider original PCM analytic and silence laws.log": {
+    "sha256": "4d3e012b21e1d5e444789aa59a77f1a947b380be8ac9e13d16e56189e487139f",
+    "size": 14905
+  },
+  "runs/final/02-calibrated floor crossing zero allocations.log": {
+    "sha256": "b8e4377198eed6541bd5f4df9ebdc1dd7ce7bcaaa4c8f31154a34c9b247f7f94",
+    "size": 6826
+  },
+  "runs/final/03-actual Compressor UI Track Return banks and persistence.log": {
+    "sha256": "b8241344ca49a6960036a0667349fa3e28d813abb371c3f0f3cf88c822031f1b",
+    "size": 3000
+  },
+  "runs/final/04-actual prepared callback no allocations.log": {
+    "sha256": "f4355fd59a2ff6d36d1f08e4967d85d289aceb841130a1452ce04cad7584aa63",
+    "size": 701
+  },
+  "runs/final/05-strict provider.log": {
+    "sha256": "299f16a2c523be18fef769975d2df00e0505521db047540feea3a74b94666887",
+    "size": 72
+  },
+  "runs/final/06-strict affected UI.log": {
+    "sha256": "8eb9974da48b8cce047e91956d9d445b40b06e3b2fbff270c60652bed492187a",
+    "size": 1093
+  },
+  "runs/final/07-architecture.log": {
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "size": 76
+  },
+  "runs/final/08-UI style.log": {
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "size": 82
+  },
+  "runs/final/09-GPUI provenance.log": {
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "size": 149
+  },
+  "runs/final/10-dependency provenance.log": {
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382",
+    "size": 113
+  },
+  "runs/final/11-format.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final/12-diff.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final/summary.json": {
+    "sha256": "cb5c6febee8622c0ab919ef582f4a68621062c66ea703c35616e629ffd4482bb",
+    "size": 19143
+  },
+  "runs/green/01-provider energy and original PCM laws.log": {
+    "sha256": "91e92bef3eaf17ac50b38230fb0f116d4c6ff6014df0cf43474b89d95662186e",
+    "size": 14974
+  },
+  "runs/green/02-strict provider.log": {
+    "sha256": "9df64f616bbe1503b69316cd7475466e4bc75515526623a70ee99907cc16f915",
+    "size": 140
+  },
+  "runs/green/summary.json": {
+    "sha256": "05134767e8c35087a14cd5623371ea976dd4a08a73467e23199ca45b95ae7f1c",
+    "size": 13787
+  },
+  "runs/red/01-actual provider silence energy RED.log": {
+    "sha256": "bea4ba3d7b296f726e0a2c3055506d94fa5844bad76e3d31f6a802eacf0d00d5",
+    "size": 19153
+  },
+  "runs/red/summary.json": {
+    "sha256": "d992c6ed9c689e1ed295380542189a02ac147dd517370fb541d9797c462bae60",
+    "size": 13343
+  },
+  "runs/red/target-handoff-clean.log": {
+    "sha256": "f692b8887130a3923cd195db10fc6c439b65c72f95771f7a830f4865ec5e521a",
+    "size": 301
+  },
+  "source-history.txt": {
+    "sha256": "e0e850f2f5890cbef997efc817f67422338633fc19a85a9bd4f010785cd6b47b",
+    "size": 874
+  },
+  "source-identities.json": {
+    "sha256": "948d4244aace86e3a8550a5f6585cc141375d434296e8793a8334092ee017e5b",
+    "size": 1686
+  },
+  "source.patch": {
+    "sha256": "e903d91334798235e358f44221ee7fd4c617c39b7955e1d1373786af1f54cdaf",
+    "size": 12384
+  },
+  "source/after/crates/hex-devices/src/compressor.rs": {
+    "sha256": "b05d5e83d374544b794db91f91c8074373df0c11ebe23395f5f2739c00434bda",
+    "size": 21729
+  },
+  "source/after/crates/hex-devices/src/compressor/tests.rs": {
+    "sha256": "06a3747e40be70bc040c80499f080bfbc2dc934f7f155b96b3921871ec966bd1",
+    "size": 50695
+  },
+  "source/after/docs/compressor.md": {
+    "sha256": "5644b9fef1c4aa068b0aa6048bbbd257f2887007bf2bbe6c1e20bda730e9dc86",
+    "size": 12688
+  },
+  "source/before/crates/hex-devices/src/compressor.rs": {
+    "sha256": "effb9e916a1fb5ec1e8d2e48a277649b4aead1b474b008942a65b7754d329456",
+    "size": 21450
+  },
+  "source/before/crates/hex-devices/src/compressor/tests.rs": {
+    "sha256": "d2e4dd7b637bf032f94281e2c5fe44dd32f137548462def9c96ad4b3a242ab67",
+    "size": 41748
+  },
+  "source/before/docs/compressor.md": {
+    "sha256": "f6e71d4996bbd9b98b9ab0ea535cfd298a7e157cdab23aa2b609879abdcddf51",
+    "size": 11524
+  },
+  "source/full-targeted-tested/crates/hex-devices/src/compressor.rs": {
+    "sha256": "b05d5e83d374544b794db91f91c8074373df0c11ebe23395f5f2739c00434bda",
+    "size": 21729
+  },
+  "source/full-targeted-tested/crates/hex-devices/src/compressor/tests.rs": {
+    "sha256": "5f02ef84815835a39d4ae0b02a18ad8074a41799cd0e2f0fcff01756ee17cac2",
+    "size": 50350
+  },
+  "source/full-targeted-tested/docs/compressor.md": {
+    "sha256": "b58d1fc3a96a0aa48a65b465b25a5ed28429d11de89e2f019932baab689b2405",
+    "size": 12685
+  }
+}

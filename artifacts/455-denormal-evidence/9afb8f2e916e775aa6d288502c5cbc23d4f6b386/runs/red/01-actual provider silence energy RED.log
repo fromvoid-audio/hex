@@ -1,0 +1,119 @@
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex/crates/hex-lattice-contract)
+   Compiling hex-tuning v0.1.0 (/workspace/hex/crates/hex-tuning)
+   Compiling hex-dsp v0.1.0 (/workspace/hex/crates/hex-dsp)
+   Compiling hex-lattice v0.1.0 (/workspace/hex/crates/hex-lattice)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+    Finished `release` profile [optimized] target(s) in 17.44s
+     Running unittests src/lib.rs (target/release/deps/hex_devices-967035ea4f03375f)
+
+running 1 test
+RMS_SILENCE rate=8000 impulse=false path=0 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=false path=1 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=false path=2 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=false path=3 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=false path=4 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=false path=5 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=false path=6 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=false path=7 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=true path=0 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=true path=1 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=true path=2 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=true path=3 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=true path=4 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=true path=5 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=true path=6 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=8000 impulse=true path=7 energy=[2e-322, 2e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=false path=0 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=false path=1 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=false path=2 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=false path=3 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=false path=4 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=false path=5 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=false path=6 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=false path=7 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=true path=0 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=true path=1 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=true path=2 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=true path=3 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=true path=4 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=true path=5 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=true path=6 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=22050 impulse=true path=7 energy=[5.43e-322, 5.43e-322] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=false path=0 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=false path=1 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=false path=2 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=false path=3 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=false path=4 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=false path=5 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=false path=6 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=false path=7 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=true path=0 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=true path=1 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=true path=2 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=true path=3 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=true path=4 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=true path=5 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=true path=6 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=44100 impulse=true path=7 energy=[1.087e-321, 1.087e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=false path=0 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=false path=1 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=false path=2 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=false path=3 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=false path=4 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=false path=5 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=false path=6 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=false path=7 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=true path=0 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=true path=1 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=true path=2 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=true path=3 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=true path=4 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=true path=5 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=true path=6 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=48000 impulse=true path=7 energy=[1.186e-321, 1.186e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=false path=0 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=false path=1 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=false path=2 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=false path=3 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=false path=4 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=false path=5 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=false path=6 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=false path=7 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=true path=0 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=true path=1 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=true path=2 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=true path=3 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=true path=4 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=true path=5 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=true path=6 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=96000 impulse=true path=7 energy=[2.37e-321, 2.37e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=false path=0 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=false path=1 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=false path=2 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=false path=3 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=false path=4 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=false path=5 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=false path=6 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=false path=7 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=true path=0 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=true path=1 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=true path=2 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=true path=3 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=true path=4 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=true path=5 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=true path=6 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+RMS_SILENCE rate=192000 impulse=true path=7 energy=[4.743e-321, 4.743e-321] subnormal=[true, true] persistent_nonzero=true
+
+thread 'compressor::tests::rms_digital_silence_retires_warm_energy_in_all_runtime_paths' (256219) panicked at crates/hex-devices/src/compressor/tests.rs:1124:5:
+96/96 real runtime paths retain nonzero energy after eight seconds of digital silence: [(8000, false, 0, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, false, 1, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, false, 2, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, false, 3, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, false, 4, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, false, 5, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, false, 6, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, false, 7, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, true, 0, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, true, 1, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, true, 2, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, true, 3, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, true, 4, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, true, 5, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, true, 6, [2e-322, 2e-322], [2e-322, 2e-322]), (8000, true, 7, [2e-322, 2e-322], [2e-322, 2e-322]), (22050, false, 0, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, false, 1, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, false, 2, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, false, 3, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, false, 4, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, false, 5, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, false, 6, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, false, 7, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, true, 0, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, true, 1, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, true, 2, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, true, 3, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, true, 4, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, true, 5, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, true, 6, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (22050, true, 7, [5.43e-322, 5.43e-322], [5.43e-322, 5.43e-322]), (44100, false, 0, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, false, 1, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, false, 2, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, false, 3, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, false, 4, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, false, 5, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, false, 6, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, false, 7, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, true, 0, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, true, 1, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, true, 2, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, true, 3, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, true, 4, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, true, 5, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, true, 6, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (44100, true, 7, [1.087e-321, 1.087e-321], [1.087e-321, 1.087e-321]), (48000, false, 0, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, false, 1, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, false, 2, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, false, 3, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, false, 4, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, false, 5, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, false, 6, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, false, 7, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, true, 0, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, true, 1, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, true, 2, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, true, 3, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, true, 4, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, true, 5, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, true, 6, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (48000, true, 7, [1.186e-321, 1.186e-321], [1.186e-321, 1.186e-321]), (96000, false, 0, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, false, 1, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, false, 2, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, false, 3, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, false, 4, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, false, 5, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, false, 6, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, false, 7, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, true, 0, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, true, 1, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, true, 2, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, true, 3, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, true, 4, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, true, 5, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, true, 6, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (96000, true, 7, [2.37e-321, 2.37e-321], [2.37e-321, 2.37e-321]), (192000, false, 0, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, false, 1, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, false, 2, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, false, 3, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, false, 4, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, false, 5, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, false, 6, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, false, 7, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, true, 0, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, true, 1, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, true, 2, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, true, 3, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, true, 4, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, true, 5, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, true, 6, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321]), (192000, true, 7, [4.743e-321, 4.743e-321], [4.743e-321, 4.743e-321])]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test compressor::tests::rms_digital_silence_retires_warm_energy_in_all_runtime_paths ... FAILED
+
+failures:
+
+failures:
+    compressor::tests::rms_digital_silence_retires_warm_energy_in_all_runtime_paths
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 348 filtered out; finished in 2.00s
+
+error: test failed, to rerun pass `-p hex-devices --lib`

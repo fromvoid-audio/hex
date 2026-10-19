@@ -1,0 +1,23 @@
+commit 9afb8f2e916e775aa6d288502c5cbc23d4f6b386
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 15:42:06 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 15:42:06 2026 +0000
+
+    test(devices): include periodic stereo tone in silence matrix
+
+commit edbef1d829084181905c5f14a0abe0e37f88b676
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 15:38:59 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 15:38:59 2026 +0000
+
+    fix(devices): retire inaudible compressor RMS energy tails
+
+commit 21beff11789d4fbad620808959d0f332f7dd293a
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 15:36:43 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 15:36:43 2026 +0000
+
+    test(devices): reproduce persistent compressor energy denormals

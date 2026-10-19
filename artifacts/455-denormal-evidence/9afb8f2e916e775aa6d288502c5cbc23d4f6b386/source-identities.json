@@ -1,0 +1,44 @@
+{
+  "crates/hex-devices/src/compressor.rs": {
+    "before": {
+      "git_blob": "2a55763d933829c887655fe7881e6a53e825b6f7",
+      "sha256": "effb9e916a1fb5ec1e8d2e48a277649b4aead1b474b008942a65b7754d329456"
+    },
+    "after": {
+      "git_blob": "eead76feed0132cf6ad4e769c0b79bcd33561470",
+      "sha256": "b05d5e83d374544b794db91f91c8074373df0c11ebe23395f5f2739c00434bda"
+    },
+    "full-targeted-tested": {
+      "git_blob": "eead76feed0132cf6ad4e769c0b79bcd33561470",
+      "sha256": "b05d5e83d374544b794db91f91c8074373df0c11ebe23395f5f2739c00434bda"
+    }
+  },
+  "crates/hex-devices/src/compressor/tests.rs": {
+    "before": {
+      "git_blob": "37f93de904340da5bea8aec7af93d25e76e2631f",
+      "sha256": "d2e4dd7b637bf032f94281e2c5fe44dd32f137548462def9c96ad4b3a242ab67"
+    },
+    "after": {
+      "git_blob": "fedf717bee92a01377242522e3dc44ef478fe586",
+      "sha256": "06a3747e40be70bc040c80499f080bfbc2dc934f7f155b96b3921871ec966bd1"
+    },
+    "full-targeted-tested": {
+      "git_blob": "1d5dbfe14ae72473fc330187e897b04e68e1be24",
+      "sha256": "5f02ef84815835a39d4ae0b02a18ad8074a41799cd0e2f0fcff01756ee17cac2"
+    }
+  },
+  "docs/compressor.md": {
+    "before": {
+      "git_blob": "c44da91e3a7f7b7e49e816faf05bb9294d15e9e4",
+      "sha256": "f6e71d4996bbd9b98b9ab0ea535cfd298a7e157cdab23aa2b609879abdcddf51"
+    },
+    "after": {
+      "git_blob": "d4329340203edc66be4d18ebe7afe3ba8acf9585",
+      "sha256": "5644b9fef1c4aa068b0aa6048bbbd257f2887007bf2bbe6c1e20bda730e9dc86"
+    },
+    "full-targeted-tested": {
+      "git_blob": "45712bb381762c8e97664206f1a9377b41b84328",
+      "sha256": "b58d1fc3a96a0aa48a65b465b25a5ed28429d11de89e2f019932baab689b2405"
+    }
+  }
+}
