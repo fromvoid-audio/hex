@@ -1,3 +1,33 @@
+## project File actions after focus loss — pulse2815 / PR421
+
+Actual rendered dispatch reproduced New/Open being lost without editor focus,
+then one Open waiting for a second invocation. Active-window fallbacks retain
+focused precedence. The selected Open now continues through Save / Don't Save /
+Cancel and successful canonical save once; cancellation/failure/stale results
+preserve the current document/history/media. Sixteen bounded rendered cases and
+two legacy selected-path assertions cover this workflow; native picker/physical
+acceptance and merger-owned full integration checks remain separate.
+See docs/project-file-actions.md. No app actions or backend changes.
+
+## selected-device removal focus repair — pulse2796 / PR402
+
+Returned review reproduced a blurred window after real card Backspace and worker
+reconciliation. Accepted removal now focuses a persistent neutral chain container;
+real Cmd-Z/Shift-Cmd-Z and Space remain routed, while held Backspace cannot target
+a restored card. Track and empty Return-chain fixtures use actual keyboard Undo.
+Nested numeric/browser/EQ focus and refusal coverage remain in the nine bounded
+rendered fixtures. Native physical input and final integrated CI remain separate.
+
+## selected-device Backspace — pulse2796 / PR402, 18 october2026
+
+Added exact focused-card removal through existing canonical commands and gesture
+barriers. Nine bounded rendered Service regressions pass for Track instrument/
+effect and Return removal, Undo/Redo, valid/invalid text drafts, numeric/browser/
+EQ focus, pending/stale/no selection and held repeat with a selected clip.
+No model, audio, DSP, shared widget or constructor changes. Final integrated
+full local CI/review belongs to the dedicated merger; native input acceptance
+and app delivery remain separate. Original focus-failure logs are preserved.
+
 ## header volume automation indication — returned pulse2715 / PR331
 
 Restored explicit `auto` readout for authored gain envelopes and recorded touch
@@ -5249,3 +5279,66 @@ source handoff is separate from final integration/full CI/merge and delivery.
   cover all source-row/glyph positions, separator scene paint/text non-paint, long
   labels, open settings and repeated capture/expansion. Sole merger owns final full
   candidate checks/merge; native physical interaction and delivery remain open.
+
+- 19 October2026 — Pulse2847 / PR449: fixed Preserve groups now retain their
+  native-relative first pass, selected inverse-map anchors and physical/FIR
+  exclusions, with explicit compression omission and zero-duration-group tests.
+  The requested exact-pruning oracle passes480 complete-Match bit comparisons.
+  A new27.5Hz sub-bass RED demonstrated insufficient phase search width; version11
+  uses bounded coarse screening/full finalist rescoring across the wider range,
+  preserving existing work/scratch caps and invalidating older prepared PCM.
+  Focused43 Beats cases, Engine3, Export1 and strict all-target Warp Clippy pass;
+  all54 authorised acoustic recording renders actually complete. Original REDs,
+  work-limit failures and before/intermediate WAVs remain distinct. Sole merger
+  owns final integration/full local CI; native/listening and practical musical
+  acceptance remain open. Sampler395 stays with Source5; no shared compiler work
+  was imported into this standalone Beats change.
+
+- 19 October 2026 — Pulse2831 / PR435 integration: add independent rendered-pitch
+  coverage for the registered Sine, FM4 and current-mode Vector generators in
+  Arrangement, Console, live input, tuning handoffs, seek/loop, WAV export and
+  nonzero-range bounce. The owner adds only two integration test files and the
+  owning audit document; no production tuning, registry, MTS or resource change.
+  Original focused 14-step qualification records 33 positive cases; an earlier
+  zero-match allocation invocation remains negative evidence, with the corrected
+  feature-enabled three positive callback cases kept separate. Root verified
+  exact cd3376b6 native component tests: ten Engine plus one Export, no ignores.
+  Merger verified all 118 original payload hashes and preserved the three source
+  files byte for byte while integrating qualified main. New exact prospective
+  FULL21 and final review remain pending; physical MIDI, installed MTS-client,
+  listening and full Sampler395 acceptance remain open. The historical ignored
+  keyboard profile is excluded explicitly from focused non-profile commands,
+  never counted as passing. This entry records integration evidence only.
+
+- 19 October 2026 — Pulse2818 / PR424 returned startup writer repair: retain
+  both owner commits ee9ac4c8 and67b84e10. Actual named Save during held initial
+  preference load followed by view drop lost the queued folder; the existing
+  owned writer now starts immediately, retaining independent off-UI preference
+  validation and the non-writable refusal. Two actual reds and the condition-only
+  green remain preserved; owner expanded54positive cases and strict checks pass.
+  Merger verified all47new payloads and both owner file identities, then ordinarily
+  integrated qualified main without conflicts or feature edits. New exact FULL21
+  and final review remain pending; previous1f085full21 and4737native51 are scoped
+  history, not this repair's qualification. Actual OS chooser, physical save/open
+  and installation acceptance remain open.
+
+### 2026-10-19 — PR436 active spectrum fill integration
+
+- Composed ownerfa67814c active-fill repair with qualified main35ea; shared EQ/global painter keeps the total257-input cap while budgeting alpha only across valid non-floor fills.
+- Verified all71 original and26 repair evidence payloads. Original actualpaint alpha RED and final68widget component results remain scope-bound; coordinator changednative2 positive is separate from repository qualification and physical pixels.
+- Resolved shared painter composition using existing406 axes::plot_bounds exactly once, preserving grids, node hits, analyzer lifecycle and current GPUI support. No extra7px inset or unqualified407 gesture import.
+- Exact prospective full21/fresh review are pending; no merge, framebuffer/listening, installation or user acceptance claim.
+
+### 2026-10-19 — PR447 coherent six-return and ancillary-error integration
+
+- Composed full owner1561 plus both12d ancillary-error commits with qualified mainbd54, preserving successful Open continuation, recovery/trim counters, recent-directory persistence, current EQ lifecycle and shared spectrum painter. Git merged disjoint hunks without feature edits.
+- Verified62 six-return and16 ancillary-error evidence payloads; actual recovery checkpoint error RED and final24 functional components remain source-bound, as do coordinator14 native functional positives. Original651 full21 green-but-review-blocked receipt remains historical.
+- Ordered valid metadata proof may reconcile authoring while preserving ancillary recovery error; actual publication ACK/output/runtime ownership and refusal/generation checks remain. Retained canonical source Project must count in future395 custody.
+- Current32 comparison/tuning/asset manifest is qualified independently of unmerged456 placement; future composition must retain both required capabilities. No whole395/456/409/420/407/399/419 import.
+- Required new exact prospective full21 and fresh independent review pending; no physical provider listening, native Verified constructor, installed/user acceptance or merge claim.
+
+### 2026-10-19 — PR453 combined generic A/B acceptance base
+
+- Prepared exact dry/wet owner1ce92988 with qualified generic A/B main447e042 for the already-declared owner supplement. Ordinary merge has no conflicts; no provider/parameter/persistence feature fix or source-test implementation by merger.
+- Original53payloads/six-source hashes already verified; provider/TrackReturn/codec/allocation positives remain originalsource-only. Actual distinct mix values through generic Switch/Copy/current project+preset SaveOpen still require owner execution on this combined source.
+- This base is unqualified: no full21/fresh final review/merge/native/install claim and no canonical453 overwrite. Preserve current32 comparison/tuning/assets and globalhosttrims. No unready455/395 or bank fork.

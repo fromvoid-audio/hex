@@ -274,6 +274,7 @@ fn prepared_return_project_with_bus(
             gain: return_gain,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,
                 state: {
@@ -348,6 +349,7 @@ fn eq8_return_project(gain_db: f32, q: f32, kind: u32) -> Project {
         gain: 1.0,
         muted: false,
         devices: vec![DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state,

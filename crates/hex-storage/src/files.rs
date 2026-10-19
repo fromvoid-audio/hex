@@ -255,6 +255,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
             state: NativeDeviceState::new(DeviceTypeId::from_static("hex.saturator"), 1, payload)
@@ -306,6 +307,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
             state: NativeDeviceState::new(DeviceTypeId::from_static("hex.compressor"), 2, payload)
@@ -361,6 +363,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
             state: NativeDeviceState::new(DeviceTypeId::from_static("hex.gate"), 1, payload)
@@ -415,6 +418,7 @@ mod tests {
             .find(|candidate| candidate.id == track.value())
             .expect("new track");
         track_snapshot.devices.push(DeviceSnapshot {
+            comparison: None,
             id: device_id,
             bypassed: false,
             state: NativeDeviceState::new(DeviceTypeId::from_static("hex.auto-pan"), 1, payload)

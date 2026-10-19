@@ -82,6 +82,7 @@ fn session_window(
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),

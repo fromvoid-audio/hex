@@ -11,6 +11,7 @@ fn publish_snapshot(view: &mut EditorView, project: Arc<hex_project::Project>, r
     let old = view.state.as_ref().expect("current state");
     view.state = Some(Arc::new(ViewState {
         canonical_audio_source: None,
+        comparison_audio: None,
         project,
         waveforms: old.waveforms.clone(),
         audio_clip_waveforms: old.audio_clip_waveforms.clone(),
