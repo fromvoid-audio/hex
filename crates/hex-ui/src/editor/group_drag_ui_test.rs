@@ -1716,7 +1716,12 @@ fn console_single_audio_arrangement_payload_still_copies_once_with_one_history_s
     editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
     pump(&editor, &mut visual);
     editor.read_with(&visual, |view, _| {
-        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before)
+        // Undo restores every authored field but deliberately keeps committed
+        // identity high-water, exactly like the existing group-copy oracle.
+        let mut expected = before.clone();
+        assert!(after.next_id > before.next_id);
+        expected.next_id = after.next_id;
+        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), expected)
     });
     editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
     pump(&editor, &mut visual);
