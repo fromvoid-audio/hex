@@ -1,0 +1,26 @@
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized] target(s) in 36.03s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-95826c92d869b1cf)
+
+running 1 test
+preset-focus-trace typed-invalid: numeric_focused=true root_focused=false editing=true text="--" value=1.2345000505447388 dialog=false requests=0 revision=4 error=None
+preset-focus-trace refused-save: numeric_focused=false root_focused=false editing=true text="--" value=1.2345000505447388 dialog=false requests=0 revision=4 error=Some(DisplayError { message: "finish the device value edit: numeric text is not a valid value for this range", batch_member: None })
+preset-focus-trace after-escape: numeric_focused=false root_focused=false editing=true text="--" value=1.2345000505447388 dialog=false requests=0 revision=4 error=Some(DisplayError { message: "finish the device value edit: numeric text is not a valid value for this range", batch_member: None })
+preset-focus-trace after-numeric-reclick: numeric_focused=true root_focused=false editing=true text="--" value=1.2345000505447388 dialog=false requests=0 revision=4 error=Some(DisplayError { message: "finish the device value edit: numeric text is not a valid value for this range", batch_member: None })
+
+thread 'editor::device_panel::tests::device_preset_ui_tests::device_preset_operator_header_saves_complete_native_state' (370070) panicked at crates/hex-ui/src/editor/device_panel/tests/device_preset_ui_tests.rs:268:9:
+assertion `left == right` failed
+  left: "--"
+ right: "1.23"
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::device_preset_ui_tests::device_preset_operator_header_saves_complete_native_state ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::device_preset_ui_tests::device_preset_operator_header_saves_complete_native_state
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1082 filtered out; finished in 2.51s
+
+error: test failed, to rerun pass `-p hex-ui --lib`
