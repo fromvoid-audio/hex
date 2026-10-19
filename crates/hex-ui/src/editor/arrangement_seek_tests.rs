@@ -306,6 +306,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         project_generation: 7,
         project_revision: 3,
         prepared_revision: Arc::clone(&prepared),
+        device_preview_identity: None,
     };
     let mut pending = PendingSeek::from_intent(1, &intent, fence);
     let service = Service::new(48_000, 8, 1 << 20).expect("session service");
@@ -428,6 +429,7 @@ fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal
         project_generation: 4,
         project_revision: 7,
         prepared_revision: prepared,
+        device_preview_identity: None,
     };
     let mut pending = PendingSeek::from_intent(11, &intent, fence);
     pending.stage = SeekStage::Published { audio_revision };

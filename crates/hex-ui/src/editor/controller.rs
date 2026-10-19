@@ -681,6 +681,13 @@ impl EditorView {
                 {
                     seek.stage = super::arrangement_seek::SeekStage::Published { audio_revision };
                 }
+                if self
+                    .prepared_seek
+                    .as_ref()
+                    .is_some_and(|seek| seek.cancelled)
+                {
+                    self.invalidate_prepared_seek();
+                }
                 self.status =
                     format!("audio revision {audio_revision} submitted · waiting for playback");
             }
@@ -698,6 +705,13 @@ impl EditorView {
                     tuning_preview_identity: pending.tuning_preview_identity,
                 });
                 self.error = Some(rejected.reason.to_lowercase().into());
+                if self
+                    .prepared_seek
+                    .as_ref()
+                    .is_some_and(|seek| seek.cancelled)
+                {
+                    self.invalidate_prepared_seek();
+                }
             }
         }
         true
