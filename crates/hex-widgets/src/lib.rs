@@ -18,6 +18,7 @@ mod numeric;
 mod numeric_control;
 mod numeric_text;
 mod response_graph;
+mod spectrum_painter;
 mod spectrum_plot;
 mod style;
 mod text_case;

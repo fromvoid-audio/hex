@@ -736,8 +736,21 @@ impl EditorView {
         for _ in 0..UI_EVENT_BUDGET {
             match self.service.try_event() {
                 Ok(event) => {
+                    let open_save = event.save_complete.then_some((
+                        event.error.is_none() && !event.state.unsaved,
+                        event.state.revision,
+                    ));
+                    let saved_project_path = (event.save_complete && event.error.is_none())
+                        .then(|| event.state.document_path.clone())
+                        .flatten();
                     if let Some(path) = self.receive(event) {
-                        self.record_opened_project(path, cx);
+                        self.record_opened_project(path.clone(), cx);
+                        self.record_project_directory(path, cx);
+                    } else if let Some(path) = saved_project_path {
+                        self.record_project_directory(path, cx);
+                    }
+                    if let Some((success, revision)) = open_save {
+                        self.complete_open_save(success, revision);
                     }
                     visible_change = true;
                 }
@@ -792,6 +805,7 @@ impl EditorView {
                         }
                         if matches!(request, Request::SaveNew(_) | Request::SaveCurrent) {
                             self.saving_project = false;
+                            self.cancel_open_after_save();
                         }
                         visible_change |= replace_error(&mut self.error, "project worker stopped");
                         if request.is_project_open() {
@@ -1499,6 +1513,7 @@ impl EditorView {
         }
         let retired_trim = self.trim_request_complete(&event);
         if event.project_replaced {
+            self.cancel_open_after_save();
             self.invalidate_prepared_seek();
             if let Some(audio) = self.audio.as_mut() {
                 audio.control.close();
@@ -2266,6 +2281,20 @@ impl EditorView {
     }
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+        let open_save = self.project_open.permits_save()
+            && matches!(&request, Request::SaveCurrent | Request::SaveNew(_));
+        // An already-started recovery must finish while a picker/confirmation
+        // pauses user edits. Only the currently owned recovery token qualifies.
+        let recovery_restore = matches!(&request, Request::RestorePlayback { generation }
+            if self.pending_recovery_generation == Some(*generation)
+                && self.recovery.generation() == Some(*generation));
+        if (self.project_open.busy() || self.pending_open_path.is_some())
+            && !open_save
+            && !recovery_restore
+        {
+            self.error = Some("finish the current open action before editing".into());
+            return false;
+        }
         if self.gain_recorder.blocks_edits() {
             self.error =
                 Some("finish or cancel gain recording before another project action".into());
@@ -2402,7 +2431,9 @@ impl EditorView {
             });
             return false;
         }
-        if !request.is_project_open() {
+        // An owned recovery continuation is not a new user intent: a selected
+        // picker path may still be awaiting the next render's Open reconciliation.
+        if !request.is_project_open() && !recovery_restore {
             self.pending_open_path = None;
         }
         if matches!(

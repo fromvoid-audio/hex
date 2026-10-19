@@ -453,14 +453,12 @@ pub enum Request {
 
 impl Request {
     /// Control requests that must observe the completed parameter gesture.
+    /// Project replacement keeps previews intact until candidate publication;
+    /// only the successful `project_replaced` path retires their ownership.
     pub fn finalizes_parameter_gesture(&self) -> bool {
         matches!(
             self,
-            Request::Open(_)
-                | Request::OpenWith { .. }
-                | Request::OpenWithAudioMode { .. }
-                | Request::NewWithAudioMode { .. }
-                | Request::Undo
+            Request::Undo
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
