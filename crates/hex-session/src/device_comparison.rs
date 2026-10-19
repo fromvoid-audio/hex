@@ -127,3 +127,100 @@ pub(crate) fn metadata_pair(
     }
     Ok(false)
 }
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+    use hex_project::{Command, DeviceComparisonAction as Action, DeviceVariant as Slot, Editor};
+    #[test]
+    fn comparison_metadata_classification_refuses_audio_changes_arbitrary_bank_edits_and_malformed_payloads()
+     {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        editor
+            .execute(Command::AddMidiTrack { name: "one".into() })
+            .unwrap();
+        let track = editor.project().tracks()[0].id();
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: hex_engine::default_native_device_state_for_class(
+                    NativeDeviceClass::Effect,
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let source = editor.project().clone();
+        let device = source.tracks()[0].devices()[0].id();
+        editor
+            .execute(Command::CompareDevice {
+                device,
+                expected: Slot::A,
+                action: Action::Switch,
+            })
+            .unwrap();
+        let compared = editor.project().clone();
+        assert!(metadata_pair(&source, &compared).unwrap());
+        assert!(
+            metadata_pair(&compared, &source).unwrap(),
+            "exact history inverse"
+        );
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        assert!(!metadata_pair(&compared, editor.project()).unwrap());
+        let mut trim = Editor::new(compared.clone(), 16).unwrap();
+        let state = compared
+            .device(device)
+            .unwrap()
+            .state()
+            .clone()
+            .with_input_gain_db(-3.0)
+            .unwrap();
+        trim.execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        assert!(
+            !metadata_pair(&compared, trim.project()).unwrap(),
+            "global host trim is audible"
+        );
+        let mut arbitrary = Editor::new(source.clone(), 16).unwrap();
+        let active = source.device(device).unwrap().state().clone();
+        let inactive = active.clone().with_output_gain_db(-3.0).unwrap();
+        // A real provider payload variation, while host trims stay global.
+        let inactive = hex_engine::patch_native_device_parameter_for_class(
+            NativeDeviceClass::Effect,
+            &inactive,
+            hex_lattice_contract::ParameterId::from_static(1),
+            hex_lattice_contract::ParameterValue::Float(0.25),
+        )
+        .unwrap()
+        .with_host_metadata_from(&active)
+        .unwrap();
+        arbitrary
+            .execute(Command::ReplaceDeviceComparison {
+                device,
+                state: active.clone(),
+                comparison: Some(DeviceComparison::new(Slot::A, inactive)),
+            })
+            .unwrap();
+        assert!(
+            !metadata_pair(&source, arbitrary.project()).unwrap(),
+            "an arbitrary inactive-state edit is not a typed comparison edge"
+        );
+        let malformed =
+            NativeDeviceState::new(active.type_id(), active.state_version(), vec![255]).unwrap();
+        let mut broken = Editor::new(source.clone(), 16).unwrap();
+        broken
+            .execute(Command::ReplaceDeviceComparison {
+                device,
+                state: active,
+                comparison: Some(DeviceComparison::new(Slot::A, malformed)),
+            })
+            .unwrap();
+        assert!(metadata_pair(&source, broken.project()).is_err());
+    }
+}
