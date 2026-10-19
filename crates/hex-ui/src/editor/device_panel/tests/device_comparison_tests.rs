@@ -1212,10 +1212,12 @@ fn device_comparison_metadata_pending_callback_then_applied_authoring_is_not_a_n
             },
             next.revision,
         );
-        assert!(
-            view.pending_session_ticket.is_some(),
-            "current equivalent audio must allow actual Session launch"
-        );
+        assert!(view.pending_audio_commands.iter().any(|pending| matches!(pending.action,
+            hex_engine::playback::PlaybackAction::LaunchAndPlay(hex_engine::SessionPlaybackCommand::LaunchScene { scene: target, .. }) if target == scene)),
+            "launch must queue exactly its actual scene: error={:?}", view.error);
+        view.tick(cx); // The normal pump assigns the real command ticket.
+        assert!(view.pending_session_ticket.is_some(),
+            "current equivalent audio must submit actual Session launch: error={:?}", view.error);
         assert_eq!(view.worker_requests_pending, pending);
         view.stop();
         assert!(
