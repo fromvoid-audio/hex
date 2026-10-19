@@ -627,6 +627,13 @@ fn adaptive_operation_work_profile() {
                 }
                 let ns = start.elapsed().as_nanos();
                 let work = GRID_RESOLUTION_WORK.with(std::cell::Cell::get);
+                // One natural-demand pass per operation, even when nearest/
+                // directional lookup falls back to the painted identities.
+                assert!(
+                    work[3] <= count.min(MAX_GRID_LINES as u64) as usize,
+                    "{operation}: {work:?}"
+                );
+                assert!(work[2] <= 2, "{operation}: {work:?}");
                 println!(
                     "GRID_WORK count={count} density={density:?} operation={operation} step={} base={} shares={} demand={} ns={ns}",
                     work[0], work[1], work[2], work[3]

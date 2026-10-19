@@ -168,3 +168,27 @@ per-line recalculations were stopped and preserved as a test-efficiency correcti
 not a product failure. Timing is build/workload-specific and establishes no native
 or optimized UI deadline. Source checks and required prospective-tree CI remain
 separate, as do actual user menu/grid acceptance and delivery.
+
+### Per-operation quota resolution
+
+Each paint, nearest snap, directional nudge, or density-band operation resolves
+its visible natural demands and fair-share quotas once. A private fixed-size
+256-entry `u16` scratch holds demands, then quotas; the residual pass keeps the
+same earliest-unsatisfied ordering. Snap/nudge paint-list fallback borrows that
+same resolution. Nothing persists across operations, edits, pan, zoom or density
+changes. The existing 256-line cap, phase-independent span count, edge-marker
+reservation, dyadic coarsening and outside-neighbor/dense-map fallback stay intact.
+
+The repeated fair-share path applies only when visible sections fit the available
+budget (at most 256), not at 1,024 sections. Counted literal-production optimized
+cloud probes at 256 sections reduced natural-demand evaluations from 688,512 to 256
+for paint, and 1,377,024 to 256 for a directional nudge including its painted fallback.
+At 1,024 sections both versions use zero natural-demand evaluations. These are
+metadata helper measurements, not native frame deadlines or physical acceptance.
+The fixed quota scratch adds no heap allocation; existing paint lists still do.
+
+Verification includes exact old/new production-output differentials through real
+Project tempo/meter maps, zero/overflow viewports, narrow/wide widths, phases,
+short/long sections and all densities; bounded-work assertions; and real GPUI
+context-menu choice/cancel/keyboard/edit routing. Final prospective-tree checks
+and optimized native interaction acceptance remain separate.
