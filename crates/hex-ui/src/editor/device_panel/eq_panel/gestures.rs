@@ -157,12 +157,12 @@ fn option_q(initial: f32, displacement: f32) -> f32 {
 
 #[derive(Clone, Copy)]
 pub(super) struct SlopeScroll {
-    key: GestureKey,
-    stream: u64,
-    node: NodeId,
-    parameter: ParameterId,
-    value: u32,
-    last_steps: i32,
+    pub(super) key: GestureKey,
+    pub(super) stream: u64,
+    pub(super) node: NodeId,
+    pub(super) parameter: ParameterId,
+    pub(super) value: u32,
+    pub(super) last_steps: i32,
 }
 
 pub(super) fn scroll_nodes(
@@ -194,6 +194,28 @@ pub(super) fn scroll_event(
     generation: u64,
     event: hex_widgets::ResponseGraphScrollEvent,
 ) {
+    if generation != view.project_generation || event.gesture_id == 0 {
+        return;
+    }
+    if event.phase == hex_widgets::ResponseGraphScrollPhase::Begin
+        && !current(view, device)
+            .and_then(|s| EqState::decode(&s).ok())
+            .is_some_and(|state| scroll_nodes(view, device, &state, cx).contains(&event.node_id))
+    {
+        return;
+    }
+    if !scroll_queue::intercept(view, device, event) {
+        scroll_event_core(view, device, generation, event);
+    }
+    cx.notify();
+}
+
+pub(super) fn scroll_event_core(
+    view: &mut EditorView,
+    device: DeviceId,
+    generation: u64,
+    event: hex_widgets::ResponseGraphScrollEvent,
+) {
     use hex_widgets::ResponseGraphScrollPhase as Phase;
     if generation != view.project_generation || event.gesture_id == 0 {
         return;
@@ -212,7 +234,7 @@ pub(super) fn scroll_event(
             return;
         };
         let Ok(node) = state.node(id) else { return };
-        if !scroll_nodes(view, device, &state, cx).contains(&event.node_id)
+        if !matches!(node.kind, eq::NodeKind::LowCut | eq::NodeKind::HighCut)
             || !view
                 .device_panel
                 .eq_panels
@@ -252,7 +274,6 @@ pub(super) fn scroll_event(
             panel.slope_scroll = Some(scroll);
             panel.selected = Some(id);
         }
-        cx.notify();
         return;
     }
     let Some(mut scroll) = view
@@ -281,7 +302,6 @@ pub(super) fn scroll_event(
         if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
             panel.slope_scroll = None;
         }
-        cx.notify();
         return;
     }
     if !current(view, device)
@@ -312,6 +332,9 @@ pub(super) fn scroll_event(
     if let Err(error) = result {
         view.device_panel.message = Some(error.into());
     } else {
+        if event.phase == Phase::Commit {
+            scroll_queue::retiring(view, device, scroll);
+        }
         view.device_panel.pending_values.insert(
             ParameterKey {
                 device,
@@ -320,8 +343,6 @@ pub(super) fn scroll_event(
             value,
         );
     }
-
-    cx.notify();
 }
 
 #[cfg(test)]
