@@ -219,7 +219,20 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
     visual.simulate_click(oscillator.center(), Modifiers::default());
     visual.run_until_parked();
     let ratio = hex_lattice_contract::ParameterId::from_static(1);
+    let trace = |stage: &str, visual: &mut VisualTestContext| {
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, cx| {
+                let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&ParameterKey { device, parameter: ratio }] else { panic!("ratio control") };
+                let control = entity.read(cx);
+                println!("preset-focus-trace {stage}: numeric_focused={} root_focused={} editing={} text={:?} value={} dialog={} requests={} revision={} error={:?}",
+                    gpui::Focusable::focus_handle(control, cx).is_focused(window), view.focus.is_focused(window),
+                    control.is_editing(), control.display_text(), control.value(), view.preset_dialog_open,
+                    view.worker_requests_pending, view.state.as_ref().unwrap().revision, view.error);
+            });
+        });
+    };
     enter_typed_value(&mut visual, device, ratio, "--");
+    trace("typed-invalid", &mut visual);
     visual.simulate_click(save.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -232,8 +245,10 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
         assert_eq!(view.worker_requests_pending, 0);
     });
     assert!(!path.exists());
+    trace("refused-save", &mut visual);
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
+    trace("after-escape", &mut visual);
     let field = visual
         .debug_bounds(Box::leak(
             format!("device-{}-parameter-1-value", device.value()).into_boxed_str(),
@@ -241,6 +256,7 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
         .unwrap();
     visual.simulate_click(field.center(), Modifiers::default());
     visual.run_until_parked();
+    trace("after-numeric-reclick", &mut visual);
     editor.read_with(cx, |view, cx| {
         let ParameterControl::Float { entity, .. } = &view.device_panel.controls[&ParameterKey {
             device,
