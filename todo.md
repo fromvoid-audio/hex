@@ -5913,3 +5913,20 @@ User rejected device-local automation editing. Remove its button, graph mode and
   one-UndoRedo assertions are byte-identical; no production runtime behavior,
   owner framework, Service join, global fixture sweep or native operation.
   Prior f3d56-case/required-negative evidence stays independently source-bound.
+
+## replacement loop paint custody — pulse2883 / PR485, 19 october2026
+
+A real pointer/Service/completed-scene regression reproduced the old bar flashing
+between release and canonical installation. One private pending loop now retains
+its validated range until its own real FIFO completion installs canonical state;
+earlier ACKs do not retire it, deferred requests stamp only on actual submission,
+and queue refusal rolls back. Held Escape/button/focus cancellation stays separate.
+The existing blur hook clears state synchronously and defers only notification to
+the end of the effect cycle, outside GPUI's Focus paint phase; no frame delay,
+forced refresh, synthetic event or vendor change. Fourteen owning tests passed
+with zero ignored, including old rail controls, actual playback, Undo/Redo and
+save/open; default and feature all-targets strict checks passed. Raw failures and
+source-bound evidence are recorded in Pulse2883. PR329's separate whole-move,
+Shift and marker source needs later precise composition; no wholesale import or
+claim of combined qualification. Native framebuffer/listening and final merger
+qualification remain open; this is source evidence, not installed acceptance.

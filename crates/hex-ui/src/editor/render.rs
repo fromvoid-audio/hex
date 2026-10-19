@@ -713,12 +713,14 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
-                if view.cancel_project_spectrum_resize(cx)
+                if view.cancel_loop_rail_gesture()
+                    | view.cancel_project_spectrum_resize(cx)
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
                 {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();
+                    cx.notify();
                     return;
                 }
                 if view.cancel_active_browser_audio_drag() {
