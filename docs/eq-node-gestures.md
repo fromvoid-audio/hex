@@ -135,7 +135,9 @@ begins through the same generic gesture client only after its predecessor's real
 matching successful Commit ACK and canonical installation. Generation, owner,
 variant, exact provider-patched state and revision must match. Stale deliveries,
 failed/cancelled/context-changed streams and later graph blur cannot replay edits
-against another context. A full FIFO visibly refuses a whole new stream without
+against another context. Cancellation clears intent while retaining the graph's
+monotonic stream watermark, so a delayed old Begin cannot restore revoked work.
+A full FIFO visibly refuses a whole new stream without
 replacing an earlier one; Escape on that refused stream cancels queued intent
 while preserving already-submitted commits. No generic client, worker, Session,
 Engine or audio callback owner is added or reset early.

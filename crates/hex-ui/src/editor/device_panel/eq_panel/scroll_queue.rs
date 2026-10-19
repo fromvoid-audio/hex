@@ -34,7 +34,8 @@ struct Stream {
 pub(super) fn cancel_queued(view: &mut EditorView, device: DeviceId) {
     if let Some(panel) = view.device_panel.eq_panels.get_mut(&device) {
         panel.scroll_queue.streams.clear();
-        panel.scroll_queue.latest_input = None;
+        // The graph's stream counter survives cancellation. Keep its watermark
+        // so delayed old Begin/Cancel deliveries cannot restore revoked intent.
     }
 }
 
