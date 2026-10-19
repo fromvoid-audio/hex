@@ -1965,3 +1965,27 @@ callback publication/replacement/retirement workload under realistic control
 contention on pinned macOS, recording throughput and latency tails rather than
 inventing a fairness/deadline bound. That whole-Service workload remains open
 until its qualified consumer and complete union exist. Root owns all dispatch.
+
+### Native Root and page-signal paired birth
+
+The native Root and its two page-return signals now use the same existing
+constructor-paired metadata owner as Life, starting at their actual first
+allocation. There is no raw Arc adoption. Page returns still require the exact
+same signal allocation and token; Root equality remains an allocation
+correlation only. Existing callback paths do not clone these Root handles.
+
+The supported-layout check precedes Root/slot/signal construction. Existing
+metadata quotes now include the actual Root header and both signal headers,
+with the changed inline handles included in the concrete Root body once.
+Constructor allocation probes reconcile those bodies/headers and actual slot
+capacity. The factory still has no complete aggregate admission ceiling; this
+change does not claim a before-birth whole-host budget. The exact/minus-one
+publication test covers metadata only and keeps its equal retained/peak limit.
+
+Borrowed inspection proves that omitted physical Root or signal aliases refuse,
+that observing the same field twice deduplicates, and that distinct equal-sized
+owners remain separate. This outer-body inspection still refuses whole-root
+completion: all payload descendants, current/failed/retiring states, actual
+native/family/source union and the same-parent construction facade remain
+mandatory. The new scalar strong-count diagnostic is used by the existing
+callback clone oracle; counts never upgrade provenance or grant admission.

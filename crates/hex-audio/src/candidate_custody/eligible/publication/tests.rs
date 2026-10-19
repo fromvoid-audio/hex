@@ -31,7 +31,9 @@ fn reservation_for(owner: &mut AudioCandidateOwner) -> AudioCandidatePublication
 }
 fn root(reservation: AudioCandidatePublicationReservation) -> CandidateRoot {
     let root = CandidateRoot::new(2).unwrap();
-    let bytes = std::mem::size_of::<Inner>() + 2 * std::mem::size_of::<Slot>();
+    let bytes = root_allocation_bytes().unwrap()
+        + pages::signal_data_bytes().unwrap()
+        + 2 * std::mem::size_of::<Slot>();
     root.0
         .eligible
         .configure_publications(root.root_id(), reservation, bytes)
@@ -424,7 +426,9 @@ fn changed_inline_custody_body_is_priced_once_in_existing_publication_metadata_l
     // Same actual caller expression as configure_publications: Inner embeds
     // eligible and all five wrappers. Their bodies must NOT be added again.
     let body = std::mem::size_of::<Inner>();
-    let base = body + capacity * std::mem::size_of::<Slot>();
+    let base = root_allocation_bytes().unwrap()
+        + pages::signal_data_bytes().unwrap()
+        + capacity * std::mem::size_of::<Slot>();
     let (bank, work) = Bank::prepare(reservation(), base).unwrap();
     let required = base + bank.metadata_bytes;
     drop((bank, work));

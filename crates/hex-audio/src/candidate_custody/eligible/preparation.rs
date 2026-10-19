@@ -255,7 +255,7 @@ impl Custody {
         let loan = owner.loan_pages_on_control();
         // Pending has no pair, capsule or owning metadata after seal.
         drop(pending);
-        let signal = Arc::clone(&lock(&self.bank).domains[token.slot].signal);
+        let signal = lock(&self.bank).domains[token.slot].signal.clone();
         let envelope = loan.map(|loan| DomainEnvelope::new(token, loan, signal));
         let mut bank = lock(&self.bank);
         let closing = bank.closing;

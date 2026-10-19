@@ -782,6 +782,7 @@ impl Custody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     fn root() -> CandidateRoot {
         root_with_rows(4096, 4096)
     }

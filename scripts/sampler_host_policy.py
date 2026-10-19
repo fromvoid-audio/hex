@@ -8,6 +8,9 @@ import re
 
 
 EXACT = {
+    'crates/hex-audio/src/candidate_custody.rs',
+    'crates/hex-audio/src/candidate_custody/eligible/pages.rs',
+    'crates/hex-audio/src/candidate_custody/eligible/native_birth_tests.rs',
     'crates/hex-audio/src/candidate_custody/eligible/publication/tests.rs',
     'crates/hex-audio/src/candidate_custody/eligible/publication.rs',
     'crates/hex-session/src/service/worker_roots.rs',

@@ -2,6 +2,8 @@
 //! tokens are associations with retained pairs, never page/readiness authority.
 use super::*;
 use hex_stream::{ConstructorStreamDomain, PagePoolReport};
+#[cfg(test)]
+mod native_birth_tests;
 pub(super) mod pages;
 mod preparation;
 pub use preparation::{
@@ -53,7 +55,7 @@ struct DomainSlot {
     data: usize,
     peak: usize,
     resources: Option<hex_stream::StreamDomainConstructorSummary>,
-    signal: Arc<pages::DomainSignal>,
+    signal: hex_engine::SharedMetadata<pages::DomainSignal>,
     loan_outstanding: bool,
     returned_pages: Option<DomainEnvelope>,
 }
@@ -73,7 +75,7 @@ impl DomainSlot {
             data: 0,
             peak: 0,
             resources: None,
-            signal: Arc::new(pages::DomainSignal::new()),
+            signal: hex_engine::SharedMetadata::new_on_control(pages::DomainSignal::new()),
             loan_outstanding: false,
             returned_pages: None,
         }
@@ -338,7 +340,7 @@ impl Custody {
         } else {
             0
         };
-        let signal = Arc::clone(&lock(&self.bank).domains[token.slot].signal);
+        let signal = lock(&self.bank).domains[token.slot].signal.clone();
         let envelope = loan.map(|loan| DomainEnvelope::new(token, loan, signal));
         let mut guard = lock(&self.bank);
         // Configuration is immutable and only this sole Control registers. The

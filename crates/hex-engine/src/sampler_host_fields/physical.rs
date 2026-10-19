@@ -169,6 +169,12 @@ pub struct SharedMetadataRef<'a> {
     value: &'a dyn SharedMetadataLayout,
 }
 impl<'a> SharedMetadataRef<'a> {
+    /// A borrowed diagnostic count, never an origin, closure or admission proof.
+    /// The actual physical field must still be observed by mandatory traversal.
+    pub fn strong_handles_on_control(self) -> usize {
+        self.value.allocation().counts().0
+    }
+
     /// Requested physical bytes for the existing fresh sized paired constructor.
     /// This quotes neither payload children nor a source/retirement admission.
     /// Unsupported pinned layouts refuse before the caller creates the owner.

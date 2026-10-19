@@ -7,10 +7,7 @@ use hex_engine::{
 use std::{
     any::Any,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
 mod custody_mutex;
 #[cfg(test)]
@@ -148,7 +145,7 @@ struct Inner {
     returns: CustodyMutex<Option<AbandonedReturns>>,
 }
 #[derive(Clone)]
-pub(crate) struct CandidateRoot(Arc<Inner>);
+pub(crate) struct CandidateRoot(hex_engine::SharedMetadata<Inner>);
 pub(crate) struct QueuedCandidate {
     pub(crate) stamp: Stamp,
     pub(crate) owner: AudioCandidateOwner,
@@ -219,11 +216,17 @@ impl QueuedCandidate {
         }
     }
 }
+fn root_allocation_bytes() -> Option<usize> {
+    hex_engine::sampler_host_fields::SharedMetadataRef::constructor_bytes::<Inner>().ok()
+}
 fn lock<T>(value: &CustodyMutex<T>) -> CustodyMutexGuard<'_, T> {
     value.lock_recover_on_control()
 }
 impl CandidateRoot {
     pub(crate) fn new(capacity: usize) -> Result<Self, &'static str> {
+        // Supported constructor layout before any slot, signal or Root birth.
+        root_allocation_bytes().ok_or("constructor Root layout is unsupported")?;
+        eligible::pages::signal_data_bytes().ok_or("constructor signal layout is unsupported")?;
         let root = NEXT_ROOT
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| "candidate root identity exhausted")?;
@@ -232,7 +235,7 @@ impl CandidateRoot {
             .try_reserve_exact(capacity)
             .map_err(|_| "could not reserve candidate custody")?;
         slots.resize_with(capacity, Slot::vacant);
-        let root = Self(Arc::new(Inner {
+        let root = Self(hex_engine::SharedMetadata::new_on_control(Inner {
             root,
             eligible: eligible::Custody::default(),
             bank: CustodyMutex::new(Bank {
@@ -354,7 +357,7 @@ impl CandidateRoot {
             .slots
             .capacity()
             .checked_mul(std::mem::size_of::<Slot>())
-            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(root_allocation_bytes()?))
             .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?))
             .ok_or("constructor Root metadata overflow")?;
         self.0
@@ -397,7 +400,7 @@ impl CandidateRoot {
             .slots
             .capacity()
             .checked_mul(std::mem::size_of::<Slot>())
-            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(root_allocation_bytes()?))
             .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?))
             .and_then(|n| n.checked_add(queue_bytes))
             .ok_or("constructor Root metadata overflow")?;
@@ -969,7 +972,7 @@ impl CandidateRoot {
     }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_strong_count(&self) -> usize {
-        Arc::strong_count(&self.0)
+        hex_engine::sampler_host_fields::SharedMetadataRef::of(&self.0).strong_handles_on_control()
     }
     #[cfg(test)]
     pub(crate) fn test_eligible_complete(&self) -> bool {
@@ -985,7 +988,7 @@ impl CandidateRoot {
             && self.0.eligible.complete()
     }
     pub(crate) fn same_root(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        self.0.shares_owner_with(&other.0)
     }
     /// Producer serialization with retirement announcement. The send executes
     /// synchronously under this short lock; no cleanup can queue after Retire.
@@ -1077,7 +1080,7 @@ impl CandidateRoot {
             .slots
             .capacity()
             .checked_mul(std::mem::size_of::<Slot>())
-            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(root_allocation_bytes()?))
             .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?));
         for slot in &bank.slots {
             for catalog in slot.catalog.iter() {
@@ -1124,7 +1127,7 @@ mod tests {
             .ok()
             .unwrap();
         root.ingest(queued.reject_before_install()).ok().unwrap();
-        let drops = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let drops = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let counter = drops.clone();
         {
             // Secure the actual returned constructor owners in the same
