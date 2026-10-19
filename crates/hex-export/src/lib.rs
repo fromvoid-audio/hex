@@ -18,9 +18,12 @@ const MAX_TEMP_ATTEMPTS: usize = 16;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 mod bounce;
+mod buffered_file;
 mod controlled;
 pub use bounce::render_bounce_new;
 mod publication;
+mod staged_file;
+pub use staged_file::StagedWavFile;
 mod stems;
 pub use controlled::render_prepared_with_policy;
 pub use controlled::{ExportControl, ExportProgress, ExportSignal, render_prepared_controlled};
@@ -285,12 +288,30 @@ fn publish_encoded<R: BlockRenderer>(
     encoding: WavEncoding,
     prepare_renderer: impl FnOnce() -> Result<R, ExportError>,
 ) -> Result<ExportReport, ExportError> {
-    if sample_rate == 0 {
-        return Err(ExportError::Invalid("sample rate is zero"));
-    }
     start
         .checked_add(frames)
         .ok_or(ExportError::Invalid("frame range overflows"))?;
+    let mut staged =
+        StagedWavFile::begin_encoded(path, sample_rate, frames, publication, encoding)?;
+    let mut renderer = prepare_renderer()?;
+    staged.render(&mut renderer)?;
+    renderer.before_publication()?;
+    // Preserve the existing renderer's retirement boundary: no mutable runtime
+    // remains live across the filesystem publication step.
+    drop(renderer);
+    staged.publish_on_control()
+}
+
+fn validate_export(
+    path: &Path,
+    sample_rate: u32,
+    frames: u64,
+    publication: &Publication,
+    encoding: WavEncoding,
+) -> Result<(u32, u32), ExportError> {
+    if sample_rate == 0 {
+        return Err(ExportError::Invalid("sample rate is zero"));
+    }
     let data_bytes = frames
         .checked_mul(u64::from(encoding.frame_bytes()))
         .and_then(|bytes| u32::try_from(bytes).ok())
@@ -327,28 +348,22 @@ fn publish_encoded<R: BlockRenderer>(
             }
         }
     }
-    let (file, temporary_path) = create_temporary(path)?;
-    let write_result = prepare_renderer().and_then(|mut renderer| {
-        write_wav(
-            file,
-            sample_rate,
-            frames,
-            data_bytes,
-            byte_rate,
-            &mut renderer,
-            encoding,
-        )?;
-        renderer.before_publication()
-    });
-    if let Err(error) = write_result {
-        let _ = fs::remove_file(&temporary_path);
-        return Err(error);
-    }
+    Ok((data_bytes, byte_rate))
+}
 
+fn publish_staged(
+    path: &Path,
+    temporary_path: &Path,
+    sample_rate: u32,
+    frames: u64,
+    data_bytes: u32,
+    publication: &Publication,
+    before_exchange: impl FnOnce(),
+) -> Result<ExportReport, ExportError> {
     match publication {
         Publication::CreateNew => {
-            if let Err(source) = fs::hard_link(&temporary_path, path) {
-                let _ = fs::remove_file(&temporary_path);
+            if let Err(source) = fs::hard_link(temporary_path, path) {
+                let _ = fs::remove_file(temporary_path);
                 return Err(ExportError::Io {
                     operation: "publish the wav without replacing the destination",
                     source,
@@ -356,9 +371,11 @@ fn publish_encoded<R: BlockRenderer>(
             }
         }
         Publication::Replace(consent) => {
-            if let Err(error) = publication::replace_staged(&temporary_path, path, consent, || {}) {
+            if let Err(error) =
+                publication::replace_staged(temporary_path, path, consent, before_exchange)
+            {
                 if !matches!(error, ExportError::PublicationConflict { .. }) {
-                    let _ = fs::remove_file(&temporary_path);
+                    let _ = fs::remove_file(temporary_path);
                 }
                 return Err(error);
             }
@@ -368,7 +385,7 @@ fn publish_encoded<R: BlockRenderer>(
     // After a confirmed successful exchange this removes the displaced old
     // export. It is not retained as a routine backup. On a race, the earlier
     // error preserves unexpected displaced data instead of deleting it.
-    let cleanup_error = fs::remove_file(&temporary_path).err();
+    let cleanup_error = fs::remove_file(temporary_path).err();
     #[cfg(unix)]
     let sync_error = sync_parent_directory(path).err();
     #[cfg(not(unix))]
@@ -378,7 +395,7 @@ fn publish_encoded<R: BlockRenderer>(
         return Err(ExportError::PublishedButNotDurable {
             path: path.to_path_buf(),
             recovery_path: matches!(publication, Publication::Replace(_))
-                .then(|| temporary_path.clone()),
+                .then(|| temporary_path.to_path_buf()),
             operation: "remove the temporary file",
             source,
         });
@@ -438,51 +455,19 @@ fn create_temporary(destination: &Path) -> Result<(File, PathBuf), ExportError> 
 }
 
 fn write_wav(
-    file: File,
-    sample_rate: u32,
+    writer: &mut buffered_file::BufferedWavFile,
     frames: u64,
-    data_bytes: u32,
-    byte_rate: u32,
     renderer: &mut impl BlockRenderer,
-    encoding: WavEncoding,
 ) -> Result<(), ExportError> {
-    let mut writer = BufWriter::new(file);
-    write_header_encoded(&mut writer, sample_rate, data_bytes, byte_rate, encoding)?;
-
     let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];
     let mut remaining = frames;
     while remaining > 0 {
         let count = remaining.min(FRAMES_PER_BLOCK as u64) as usize;
         renderer.render_block(&mut block[..count])?;
-        for frame in &block[..count] {
-            for sample in frame {
-                if !sample.is_finite() {
-                    return Err(ExportError::Invalid("render produced a non-finite sample"));
-                }
-                match encoding {
-                    WavEncoding::Pcm16 => {
-                        let pcm = (sample.clamp(-1.0, 1.0) * 32767.0).round() as i16;
-                        write_all(&mut writer, &pcm.to_le_bytes(), "write PCM samples")?;
-                    }
-                    WavEncoding::Float32 => {
-                        write_all(&mut writer, &sample.to_le_bytes(), "write float samples")?
-                    }
-                }
-            }
-        }
+        writer.append(writer.written(), &block[..count])?;
         remaining -= count as u64;
     }
-    writer.flush().map_err(|source| ExportError::Io {
-        operation: "flush the temporary wav",
-        source,
-    })?;
-    writer
-        .get_ref()
-        .sync_all()
-        .map_err(|source| ExportError::Io {
-            operation: "synchronize the temporary wav",
-            source,
-        })
+    writer.finish()
 }
 
 fn write_all(
@@ -842,5 +827,34 @@ mod tests {
         publication::rename_exclusive(&stage, &target).unwrap();
         assert!(!stage.exists());
         assert_eq!(fs::read(target.join("complete.wav")).unwrap(), b"complete");
+    }
+    #[test]
+    fn existing_renderer_retires_before_file_publication() {
+        struct RetireBeforePublication(PathBuf, Arc<std::sync::atomic::AtomicBool>);
+        impl BlockRenderer for RetireBeforePublication {
+            fn render_block(&mut self, frames: &mut [Frame]) -> Result<(), ExportError> {
+                frames.fill([0.25, -0.25]);
+                Ok(())
+            }
+        }
+        impl Drop for RetireBeforePublication {
+            fn drop(&mut self) {
+                assert!(
+                    !self.0.exists(),
+                    "renderer must retire before output publication"
+                );
+                self.1.store(true, Ordering::SeqCst);
+            }
+        }
+        let dir = TestDir::new();
+        let path = dir.0.join("retirement.wav");
+        let retired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let report = publish_new(&path, 48_000, 0, 3, || {
+            Ok(RetireBeforePublication(path.clone(), retired.clone()))
+        })
+        .unwrap();
+        assert!(retired.load(Ordering::SeqCst));
+        assert_eq!(report.frames, 3);
+        assert_eq!(fs::metadata(path).unwrap().len(), 56);
     }
 }

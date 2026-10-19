@@ -267,9 +267,13 @@ impl ControlWork {
             self.phase = Phase::Failed;
             return Err(reason);
         }
-        self.phase = Phase::Disposed;
+        // Final metadata destruction is still irreversible cleanup. An unwind
+        // remains pending/nonretryable until the enclosing custodian latches
+        // its first payload; completion is recorded only after both drops.
+        self.phase = Phase::DropPending;
         drop(self.anchors[0].take());
         drop(self.proof.take());
+        self.phase = Phase::Disposed;
         Ok(())
     }
 }

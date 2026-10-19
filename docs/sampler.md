@@ -1685,3 +1685,42 @@ The actual Service/file consumer, separate seek post-preroll admission, complete
 captured Audio+MIDI/CapturedMix/Stems coverage, full current/old-source/history/UI
 union, native publication/ACK/reaper and physical musical acceptance remain open.
 This private purpose does not turn a constructor summary into publication proof.
+
+### Explicit File consumer for control-work output
+
+The existing production WAV export path now uses the same concrete staged File
+API intended for productive control work. `StagedWavFile` owns File, paths,
+publication policy and progress; it owns no renderer, Playback or family lock.
+A host copies a completed block under its short custodian loan, releases that
+loan, writes the copy through this API, and separately acknowledges the original
+block. Written-but-not-acknowledged correlation must remain in that host's job;
+this File API does not acknowledge or authorize an audio runtime.
+
+The implicit per-export `BufWriter` is replaced on this path by an explicit
+2048-byte maximum encoding buffer. Existing PCM16 rounding/clipping, Float32
+encoding, nonfinite refusal, header/range validation, flush/sync, atomic
+create-new/confirmed replacement and durability errors are preserved. Offset and
+count guards reject duplicate/wrong blocks; a failed File write cannot retry.
+The production renderer is explicitly retired before filesystem publication,
+matching the original boundary. A focused regression caught an intermediate
+uncommitted refactor extending that lifetime; its negative source/log is retained.
+
+Unpublished cancellation cleans only its own created scratch path. Publication
+is latched before destructive work; subsequent failure or panic cannot repeat an
+exchange. After publication begins, dropping the record cannot remove a possible
+displaced user file. Tests exercise actual File errors and overwrite races,
+including preserved paths after an injected publication panic.
+
+The current qualified Engine ControlWork/Service connection remains pending;
+legacy production export calls use this File API but are not thereby qualified
+compiled roots. Persistent writer bodies, actual destination/temporary/consent
+path allocations and metadata must join the future Service union and before-birth
+quote. If runtime, queued and copied PCM blocks coexist, all three are charged
+in addition to encoding storage. This change introduces no aggregate-cost permit,
+new synchronization primitive or runtime custodian. Stems' separate batch-staging
+path and complete qualified CapturedMix/offline behavior remain explicit work.
+
+Final Main cleanup keeps `DropPending` through anchor/proof metadata destruction
+and records `Disposed` only after both return. The outer preparation catch retains
+first panic/nonretry behavior; this corrects source ordering without claiming a
+newly reproduced final-metadata destructor panic.
