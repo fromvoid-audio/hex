@@ -1,0 +1,16 @@
+{
+  "production_patch_exactly_declared_existing_finish_helper": true,
+  "source_base_tree_equals_frozen463": true,
+  "old_cancellation_tests_replaced_only_for_new_user_requirement": "captured othertrack/genericoutside now require validcommit; raw original beforeblobs retained",
+  "AGENTS.md": "e5b4332338d62a9ae9294002d2fb359a05f6acf0bdb3e4c309867ed075fd1e66",
+  "scripts/local-ci.py": "864bf57008c9f4d333db395e374557bb5cf52218eda4cf34ac087867120f7587",
+  "Cargo.toml": "54ed59421044312ac6949e2a30ae3a609dbac0554e662f4cc62cf917075ca862",
+  "Cargo.lock": "18f8428da3e4c344a332ad68fc7061294b952353027fd7171e0858d040282304",
+  "crates/hex-ui/src/editor/render.rs": "fef05bb5d328876770736b11d43882e77c36e623efa36d470389a891561f0d49",
+  "crates/hex-ui/src/editor/drag_autoscroll.rs": "8b4335e9283079b074634ae8d1dff78035da53cf8d52dc6695d500463401d8db",
+  "crates/hex-ui/src/editor/controller.rs": "ab3ec4660fd1948117a04e89dfd68be62bff18bfec7b9d58a78026e5fcd051ae",
+  "crates/hex-ui/src/editor/resize_terminal_tests.rs": "c74fede38a33fb455f41a4abc9b685267adf6c7323e95746aa1e51564b966ed6",
+  "crates/hex-project/src/lib.rs": "652469c58b271ded5be4a80a44bbeb2cd950ee6d64733fd5a6596c93db74c10c",
+  "crates/hex-session/src/lib.rs": "aa48c8191248ccd4ad5aed165fb5e006c1a4400bd93f0629f8ef368e476651b4",
+  "crates/hex-engine/src/lib.rs": "fe9f308d7c3fb1c0e3ced842fc883b215b5f187a793bab2af135328ce9bbb19d"
+}

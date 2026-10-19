@@ -1,0 +1,210 @@
+{
+  "HANDOFF.md": {
+    "sha256": "7b4afd66cc7f67171b91e3cbd0cedbc764bc5738f9191e9cb6638aeadfde5939",
+    "size": 5374
+  },
+  "controls-outer.log": {
+    "sha256": "04cbfaa751441307cda08080d709889f41260803a887869dcc829ce56fe6c2fa",
+    "size": 309
+  },
+  "final-outer.log": {
+    "sha256": "0ba8b26afbb460c903f24be214af40890f04bd71f3d3d25633b577838e1063ae",
+    "size": 878
+  },
+  "green-outer.log": {
+    "sha256": "d238183a4f268253f30ca79d9634b8346e90fd89b1041e8ff851da01dddf77c8",
+    "size": 209
+  },
+  "orchestration/310-approved-guard-runner.py": {
+    "sha256": "ba6ab952481fde1bbea79d3168393b8ef8e0552d6fbc62ec710a3800ed1abd33",
+    "size": 71789
+  },
+  "orchestration/469-component.py": {
+    "sha256": "c8c3e152d3fc99185f426a1df965d6452eb88f59f4efba1216d3f270b4c53f8b",
+    "size": 578
+  },
+  "orchestration/469-expand.py": {
+    "sha256": "4e0dd8c3ce1b3ce7d08a5df5fc068ef679b7f1edf283aa86896c0df218779b21",
+    "size": 5102
+  },
+  "orchestration/469-pan-chain.py": {
+    "sha256": "955d1de6c87f5b39910efd45234d69151a1fbbe8fba41fe2e2465d3648f249a0",
+    "size": 2165
+  },
+  "orchestration/469-release-fix.patch": {
+    "sha256": "27897634efcc91cf28b710c55cc3d9774c68d0f21766de4df1e2d0928cd87b4c",
+    "size": 2830
+  },
+  "orchestration/469-tests.py": {
+    "sha256": "ce06b2bbcad878c0f5887b1dae2beccbaae4ab0600c2ce708db55c4a8d2fc3ec",
+    "size": 3107
+  },
+  "orchestration/seal-469.py": {
+    "sha256": "2b69af191a713c089c9ccbaa4019abf109d4fb1f287f882c1a4d638afbe2c95d",
+    "size": 5456
+  },
+  "outside-corrected-red-outer.log": {
+    "sha256": "4bf182cbcfba2532ceee81c41e073e9bade1c25481bcfe0f7b13d96802e09ced",
+    "size": 235
+  },
+  "protected-proof.json": {
+    "sha256": "fa39e2b78815f38ce3d94d5cb8b2b5568fa5140a9041ff0ec2747e23bd97ca31",
+    "size": 1392
+  },
+  "red-outer.log": {
+    "sha256": "accf57ef3799df7fd4d732edaf657355aa16196a13e400bc36f3afc07f91b155",
+    "size": 229
+  },
+  "red-v2-outer.log": {
+    "sha256": "6675a7ba3b39b23830f400332142242581f26313befa66da04ea4d28d3b708cc",
+    "size": 232
+  },
+  "runs/controls/01-actual captured receiver matrix.log": {
+    "sha256": "b15eeed2344686cb6ae0690e30574bb706d8e467ca0d34cca8adaf5bb68ff63e",
+    "size": 9537
+  },
+  "runs/controls/02-edge pan stop then captured outside release.log": {
+    "sha256": "751609d3613f199ad047f9c01386e7e7355d7a0b9d73555d6999f80f0a1ba07e",
+    "size": 2058
+  },
+  "runs/controls/summary.json": {
+    "sha256": "b1b196c8edc19a39a0947a5bf75ada144a1efe15a514f6e057f813e786e192ec",
+    "size": 13969
+  },
+  "runs/final/01-all resize release controls.log": {
+    "sha256": "aadacaaabdffd79305b04f8dc5a992d209b10cb816a05e671897e553b5223cc0",
+    "size": 14845
+  },
+  "runs/final/02-all resize pan controls.log": {
+    "sha256": "02c42633fff3a8d548dfefff671fdb2053a0fde81a7194cfeca574e2407c48d0",
+    "size": 10215
+  },
+  "runs/final/03-terminal FIFO controls.log": {
+    "sha256": "157a5ff3e3c5e85aaa421374f7a34e386cffaaa53670b03a649bdf399a7050a6",
+    "size": 2252
+  },
+  "runs/final/04-trim pure controls.log": {
+    "sha256": "232228c4aecd6476162b15880053ec44ccf6793a10262db9ae4947a5beace067",
+    "size": 1054
+  },
+  "runs/final/05-strict default UI.log": {
+    "sha256": "93d220bb3237127085056159684d492d8810fb6e5905b04f208b7edf5a200a7d",
+    "size": 360
+  },
+  "runs/final/06-strict feature UI.log": {
+    "sha256": "3b1a93a120e3e0e7ea5f7d1cd4d20d6351cc4f541e527a5facc33f534ac785b4",
+    "size": 360
+  },
+  "runs/final/07-architecture.log": {
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b",
+    "size": 76
+  },
+  "runs/final/08-UI style.log": {
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80",
+    "size": 82
+  },
+  "runs/final/09-GPUI provenance.log": {
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a",
+    "size": 149
+  },
+  "runs/final/10-dependency provenance.log": {
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382",
+    "size": 113
+  },
+  "runs/final/11-format.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final/12-diff.log": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "size": 0
+  },
+  "runs/final/summary.json": {
+    "sha256": "83d7c3cc9250ba2adaebaf27b51b7bb7767a48ef79ecc76444f1bcca82f00ae8",
+    "size": 18727
+  },
+  "runs/green/01-same captured outside release regressions.log": {
+    "sha256": "8f5d07a7065b290738f41135e17e40c211fd461f4303000e13799b0e6ed4b44d",
+    "size": 1877
+  },
+  "runs/green/summary.json": {
+    "sha256": "bb0bdec0e892336cd8b59a902d6477d19b124304b2779d396138606164f29dac",
+    "size": 12939
+  },
+  "runs/outside-corrected-red/01-changed extent generic outside actual baseline.log": {
+    "sha256": "c3e8159ad328a63a6b4d8dd50b9038e363f318c4d3efa465cf7fc67be3d9f16d",
+    "size": 1963
+  },
+  "runs/outside-corrected-red/summary.json": {
+    "sha256": "82a23c2864d8ca60440c33864e59ed56d4c906099cf1573dea2663ac0d6aef67",
+    "size": 13098
+  },
+  "runs/red-v2/01-actual captured outside release semantic regressions.log": {
+    "sha256": "c973472bcaf1b62ef9cc395dc97917909028a22de82e7497b5ee28f101b7e84a",
+    "size": 3465
+  },
+  "runs/red-v2/summary.json": {
+    "sha256": "10a25423d5e2635eb78908362ab69e43bebdc08ca9db7917523cf6056e4cfe8d",
+    "size": 13038
+  },
+  "runs/red/01-actual captured outside release semantic regressions.log": {
+    "sha256": "4c6a6eaf0dd70928f51010ba20471dccf77b84ca7032799c6973207202ebda47",
+    "size": 2660
+  },
+  "runs/red/summary.json": {
+    "sha256": "b6146f02fb42c854892bbc36b72f8c944878a52910e1927be21dadf17daccc2c",
+    "size": 13030
+  },
+  "source-history.txt": {
+    "sha256": "fa889a74d46d4455e4867c88a0393ceb7e565af4b663924d8f14fc6ae9d1c61b",
+    "size": 884
+  },
+  "source-identities.json": {
+    "sha256": "9fa676b8bb973a547bd9537d99f168fbb07b2aae75d827c33883e8f13e6188d3",
+    "size": 1892
+  },
+  "source.patch": {
+    "sha256": "6fa6751f50ff531202767107178ed39064ee65640b5cd2e734df684a27ea557f",
+    "size": 22541
+  },
+  "source/after/crates/hex-ui/src/editor/resize_pan_tests.rs": {
+    "sha256": "6f1ced1196d8cb9420362b5e2c50d9bd496c319a47dbe4f377deca2768b3c5fb",
+    "size": 59127
+  },
+  "source/after/crates/hex-ui/src/editor/resize_release_tests.rs": {
+    "sha256": "014eaf8457558fc0f4ff9a7f2076668c974caefd26e6e4f530203f4d3dadc1df",
+    "size": 57247
+  },
+  "source/after/crates/hex-ui/src/editor/trim.rs": {
+    "sha256": "d9022c7736f9999b4526ff5d1a9da7b37b850bb638c1c34b7c34fe85d6947938",
+    "size": 68128
+  },
+  "source/after/docs/resize-edge-pan.md": {
+    "sha256": "c0e7bf508d852b21c8d0181fc438ef168c546a3580a8e87b5e03fbe8243ab135",
+    "size": 9908
+  },
+  "source/after/todo.md": {
+    "sha256": "0b064e4c8bc1c46453a826e681b87588fac619efead41fa6274376849c896b85",
+    "size": 402614
+  },
+  "source/before/crates/hex-ui/src/editor/resize_pan_tests.rs": {
+    "sha256": "2fe2caf7cefebde12e55399f7121c1d6b7a831f111dfdc1fad02b42f65899e40",
+    "size": 58056
+  },
+  "source/before/crates/hex-ui/src/editor/resize_release_tests.rs": {
+    "sha256": "a78f3c1d063c0cf3b5314919774ebe25ec015ba7f89b468a35c0ad1f7acb21e7",
+    "size": 51601
+  },
+  "source/before/crates/hex-ui/src/editor/trim.rs": {
+    "sha256": "76b3ab92483f3197fc4151952e6b0a6d860ce7139f400dd2f072e6002dd284fc",
+    "size": 68753
+  },
+  "source/before/docs/resize-edge-pan.md": {
+    "sha256": "e930529a4de8016d92d44eaec1959d2b17d7e29db78eae8691627eeefb7d9af7",
+    "size": 8273
+  },
+  "source/before/todo.md": {
+    "sha256": "22f0297bab9aa59989436dd6ef25adb2278e9fc6e664bee45fc7561eb5a94556",
+    "size": 401451
+  }
+}

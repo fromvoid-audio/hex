@@ -1,0 +1,58 @@
+diff --git a/crates/hex-ui/src/editor/trim.rs b/crates/hex-ui/src/editor/trim.rs
+index 8de04955..acf979cd 100644
+--- a/crates/hex-ui/src/editor/trim.rs
++++ b/crates/hex-ui/src/editor/trim.rs
+@@ -1303,14 +1303,13 @@ impl EditorView {
+         cx.notify();
+     }
+ 
+-    /// Resolve the actual Arrangement target, or the explicit browser hitbox
+-    /// exception. Other outside releases retain ordinary cancellation semantics.
+-    /// Foreign coordinates never become timeline coordinates; canonical drop
+-    /// validation and the existing single pending-trim owner remain authoritative.
++    /// Finalize the captured source, regardless of the release's hovered panel.
++    /// Foreign horizontal coordinates retain the last valid timeline point;
++    /// canonical validation and the existing pending-trim owner stay authoritative.
+     pub(super) fn finish_trim_pointer_release(
+         &mut self,
+         event: &gpui::MouseUpEvent,
+-        browser_release: bool,
++        _browser_release: bool,
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) -> bool {
+@@ -1328,16 +1327,6 @@ impl EditorView {
+             self.cancel_trim_gesture(cx);
+             return true;
+         }
+-        // `browser_release` is supplied only by the browser's own hovered
+-        // capture listener. Never infer that exception from a foreign x value.
+-        let target_track = if browser_release && self.browser.open {
+-            None
+-        } else if let Some((track, _)) = self.hovered_drag_target(x, f32::from(event.position.y)) {
+-            Some(track)
+-        } else {
+-            // Let existing mouse-up/out cancellation retire this outside drag.
+-            return false;
+-        };
+         if let Some(drag) = self.active_trim_drag.clone() {
+             drag.snap_modifier.set(event.modifiers.platform);
+             drag.stretch_modifier.set(event.modifiers.shift);
+@@ -1351,7 +1340,7 @@ impl EditorView {
+                 drag.last_pointer_x.set(Some(pointer));
+                 self.update_trim_preview(&drag, pointer, cx);
+                 if drag.preview.borrow().is_some() {
+-                    self.drop_trim(&drag, target_track.unwrap_or(drag.source_track), window, cx);
++                    self.drop_trim(&drag, drag.source_track, window, cx);
+                 }
+             }
+         } else if let Some(drag) = self.active_midi_trim_drag.clone() {
+@@ -1366,7 +1355,7 @@ impl EditorView {
+                 drag.last_pointer_x.set(Some(pointer));
+                 self.update_midi_trim_preview(&drag, pointer, cx);
+                 if drag.preview.borrow().is_some() {
+-                    self.drop_midi_trim(&drag, target_track.unwrap_or(drag.source_track), cx);
++                    self.drop_midi_trim(&drag, drag.source_track, cx);
+                 }
+             }
+         }

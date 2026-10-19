@@ -1,0 +1,485 @@
+diff --git a/crates/hex-ui/src/editor/resize_pan_tests.rs b/crates/hex-ui/src/editor/resize_pan_tests.rs
+index 28b60b11..914f57e1 100644
+--- a/crates/hex-ui/src/editor/resize_pan_tests.rs
++++ b/crates/hex-ui/src/editor/resize_pan_tests.rs
+@@ -1182,25 +1182,26 @@ fn audio_event_outside_release_only_owns_focus_during_its_actual_gesture(cx: &mu
+ 
+ #[gpui::test]
+ fn resize_edge_pan_stops_after_original_audio_handle_leaves_view(cx: &mut TestAppContext) {
+-    check_edge_pan_after_original_handle_leaves_view(cx, false, false, false);
++    check_edge_pan_after_original_handle_leaves_view(cx, false, false, false, false);
+ }
+ #[gpui::test]
+ fn resize_edge_pan_stops_after_original_midi_handle_leaves_view(cx: &mut TestAppContext) {
+-    check_edge_pan_after_original_handle_leaves_view(cx, true, false, false);
++    check_edge_pan_after_original_handle_leaves_view(cx, true, false, false, false);
+ }
+ #[gpui::test]
+ fn resize_edge_pan_stops_after_original_shift_handle_leaves_view(cx: &mut TestAppContext) {
+-    check_edge_pan_after_original_handle_leaves_view(cx, false, true, false);
++    check_edge_pan_after_original_handle_leaves_view(cx, false, true, false, false);
+ }
+ #[gpui::test]
+ fn resize_edge_pan_stops_after_original_warp_handle_leaves_view(cx: &mut TestAppContext) {
+-    check_edge_pan_after_original_handle_leaves_view(cx, false, false, true);
++    check_edge_pan_after_original_handle_leaves_view(cx, false, false, true, false);
+ }
+ fn check_edge_pan_after_original_handle_leaves_view(
+     cx: &mut TestAppContext,
+     midi: bool,
+     stretch: bool,
+     enabled_warp: bool,
++    outside_release: bool,
+ ) {
+     for left in [false, true] {
+         let viewport = Viewport {
+@@ -1380,7 +1381,18 @@ fn check_edge_pan_after_original_handle_leaves_view(
+                     .and_then(|drag| *drag.preview.borrow()),
+             )
+         });
+-        visual.simulate_mouse_up(center, MouseButton::Left, modifiers);
++        let release = if outside_release {
++            let ruler = visual
++                .debug_bounds("arrangement-loop-rail-row")
++                .expect("actual ruler receiver");
++            let release = point(center.x, ruler.center().y);
++            visual.simulate_mouse_move(release, MouseButton::Left, modifiers);
++            visual.run_until_parked();
++            release
++        } else {
++            center
++        };
++        visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
+         pump(&editor, &mut visual);
+         let after = editor.read_with(&visual, |v, _| {
+             assert!(v.active_trim_drag.is_none() && v.active_midi_trim_drag.is_none());
+@@ -1415,3 +1427,16 @@ fn check_edge_pan_after_original_handle_leaves_view(
+         });
+     }
+ }
++
++#[gpui::test]
++fn resize_edge_pan_interior_stop_then_outside_audio_release_commits(cx: &mut TestAppContext) {
++    check_edge_pan_after_original_handle_leaves_view(cx, false, false, false, true);
++}
++#[gpui::test]
++fn resize_edge_pan_interior_stop_then_outside_midi_release_commits(cx: &mut TestAppContext) {
++    check_edge_pan_after_original_handle_leaves_view(cx, true, false, false, true);
++}
++#[gpui::test]
++fn resize_edge_pan_interior_stop_then_outside_shift_release_commits(cx: &mut TestAppContext) {
++    check_edge_pan_after_original_handle_leaves_view(cx, false, true, false, true);
++}
+diff --git a/crates/hex-ui/src/editor/resize_release_tests.rs b/crates/hex-ui/src/editor/resize_release_tests.rs
+index f6184865..0225b5c0 100644
+--- a/crates/hex-ui/src/editor/resize_release_tests.rs
++++ b/crates/hex-ui/src/editor/resize_release_tests.rs
+@@ -874,6 +874,20 @@ fn review_midi_clip(editor: &Entity<EditorView>, visual: &mut VisualTestContext)
+ }
+ 
+ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool) {
++    for edge in [TrimEdge::Left, TrimEdge::Right] {
++        captured_release_case(cx, midi, edge, false, false, if outside { 1 } else { 0 });
++    }
++}
++
++fn captured_release_case(
++    cx: &mut TestAppContext,
++    midi: bool,
++    edge: TrimEdge,
++    stretch: bool,
++    enabled_warp: bool,
++    destination: u8,
++) {
++    let outside = destination != 0;
+     let (_files, handle, editor, audio) = fixture(cx);
+     let mut visual = VisualTestContext::from_window(handle, cx);
+     visual.update(|window, _| window.activate_window());
+@@ -882,35 +896,75 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
+     } else {
+         audio
+     };
++    if enabled_warp {
++        let settings = editor.read_with(&visual, |v, _| {
++            let p = &v.state.as_ref().unwrap().project;
++            hex_project::default_audio_warp(
++                p.clip(clip).unwrap(),
++                p.tempo_map(),
++                hex_project::WarpMode::Beats {
++                    preserve: hex_project::BeatsPreserve::Transients,
++                    tail: hex_project::BeatsTail::Forward,
++                    decay: 100,
++                },
++            )
++            .unwrap()
++        });
++        editor.update(&mut visual, |v, _| {
++            assert!(v.enqueue(Request::Edit(Command::SetAudioClipWarp {
++                clip,
++                settings: Some(settings)
++            })))
++        });
++        pump(&editor, &mut visual);
++    }
+     editor.update(&mut visual, |v, _| {
+         assert!(v.enqueue(Request::Edit(Command::AddTrack {
+             name: "other release target".into()
+         })))
+     });
+     pump(&editor, &mut visual);
+-    let (before, other) = editor.read_with(&visual, |v, _| {
++    let (before, other, other_before) = editor.read_with(&visual, |v, _| {
+         let p = &v.state.as_ref().unwrap().project;
+-        (p.snapshot(), p.tracks().last().unwrap().id())
++        (
++            p.snapshot(),
++            p.tracks().last().unwrap().id(),
++            p.tracks().last().unwrap().clone(),
++        )
+     });
+     editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);
+     let prefix = if midi { "midi-clip" } else { "clip" };
+     let down = visual
+         .debug_bounds(Box::leak(
+-            format!("{prefix}-trim-right-{}", clip.value()).into_boxed_str(),
++            format!(
++                "{prefix}-trim-{}-{}",
++                if edge == TrimEdge::Left {
++                    "left"
++                } else {
++                    "right"
++                },
++                clip.value()
++            )
++            .into_boxed_str(),
+         ))
+         .unwrap()
+         .center();
+-    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
++    let modifiers = Modifiers {
++        shift: stretch,
++        ..Modifiers::default()
++    };
++    let direction = if edge == TrimEdge::Left { 1.0 } else { -1.0 };
++    visual.simulate_mouse_down(down, MouseButton::Left, modifiers);
+     visual.simulate_mouse_move(
+-        point(down.x - px(12.0), down.y),
++        point(down.x + px(12.0 * direction), down.y),
+         MouseButton::Left,
+-        Modifiers::default(),
++        modifiers,
+     );
+     visual.run_until_parked();
+     visual.simulate_mouse_move(
+-        point(down.x - px(40.0), down.y),
++        point(down.x + px(40.0 * direction), down.y),
+         MouseButton::Left,
+-        Modifiers::default(),
++        modifiers,
+     );
+     visual.run_until_parked();
+     editor.read_with(&visual, |v, _| {
+@@ -935,7 +989,23 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
+             format!("arrangement-lane-{}", other.value()).into_boxed_str(),
+         ))
+         .unwrap();
+-    let release = if outside {
++    let release = if destination >= 2 {
++        let selector = match destination {
++            2 => Box::leak(format!("arrangement-track-header-{}", other.value()).into_boxed_str()),
++            3 => "arrangement-loop-rail-row",
++            4 => "editor-status-bar",
++            5 => "browser-audition-waveform",
++            _ => unreachable!("private fixture destination"),
++        };
++        let bounds = visual
++            .debug_bounds(selector)
++            .expect("actual rendered receiver");
++        if matches!(destination, 3 | 4) {
++            point(down.x + px(40.0 * direction), bounds.center().y)
++        } else {
++            bounds.center()
++        }
++    } else if outside {
+         let source = editor.read_with(&visual, |v, _| {
+             if midi {
+                 v.active_midi_trim_drag.as_ref().unwrap().source_track
+@@ -943,7 +1013,7 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
+                 v.active_trim_drag.as_ref().unwrap().source_track
+             }
+         });
+-        let source_lane = visual
++        let _source_lane = visual
+             .debug_bounds(Box::leak(
+                 format!("arrangement-lane-{}", source.value()).into_boxed_str(),
+             ))
+@@ -952,7 +1022,7 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
+             assert_eq!(v.arrangement_bounds_epoch, v.drag_layout_generation);
+             v.arrangement_bounds.unwrap()
+         });
+-        let position = point(source_lane.center().x, px(body.top) - px(20.0));
++        let position = point(down.x + px(40.0 * direction), px(body.top) - px(20.0));
+         let browser = visual.debug_bounds("resize-browser-hit-region").unwrap();
+         let bounds = gpui::Bounds::new(
+             point(px(body.left), px(body.top)),
+@@ -962,28 +1032,58 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
+         assert!(!bounds.contains(&position));
+         position
+     } else {
+-        point(down.x - px(40.0), lane.center().y)
++        point(down.x + px(40.0 * direction), lane.center().y)
+     };
+     editor.read_with(&visual, |v, _| {
+         let target = v
+             .hovered_drag_target(f32::from(release.x), f32::from(release.y))
+             .map(|(track, _)| track);
+-        assert_eq!(target, if outside { None } else { Some(other) });
++        if destination <= 1 {
++            assert_eq!(target, if outside { None } else { Some(other) });
++        }
+     });
+     eprintln!(
+         "resize review release midi={midi} outside={outside} point={release:?} browser={:?}",
+         visual.debug_bounds("resize-browser-hit-region")
+     );
+-    visual.simulate_mouse_move(release, MouseButton::Left, Modifiers::default());
+-    visual.simulate_mouse_up(release, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(release, MouseButton::Left, modifiers);
++    visual.run_until_parked();
++    let (desired_audio, desired_midi, selection) = editor.read_with(&visual, |v, _| {
++        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
++        (
++            v.active_trim_drag.as_ref().and_then(|d| {
++                d.preview
++                    .borrow()
++                    .as_ref()
++                    .map(|p| (p.clip.clone(), p.command_frame_for_test()))
++            }),
++            v.active_midi_trim_drag
++                .as_ref()
++                .and_then(|d| *d.preview.borrow()),
++            (v.selected_track, v.selected_clip),
++        )
++    });
++    assert!(desired_audio.is_some() || desired_midi.is_some());
++    visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
+     pump(&editor, &mut visual);
+     editor.read_with(&visual, |v, _| {
+-        assert_eq!(
+-            v.state.as_ref().unwrap().project.snapshot(),
+-            before,
+-            "actual other-track release must cancel; midi={midi}"
+-        );
+-        assert!(v.last_enqueued_edit.is_none());
++        assert!(v.error.is_none(), "real worker error: {:?}", v.error);
++        assert_eq!((v.selected_track, v.selected_clip), selection);
++        let p = &v.state.as_ref().unwrap().project;
++        if let Some((expected, command_frame)) = &desired_audio {
++            assert_eq!(p.clip(clip), Some(expected), "captured audio release midi={midi} outside={outside}");
++            assert!(if stretch {
++                matches!(v.last_enqueued_edit, Some(Command::StretchAudioClipEdge { clip: id, edge: actual, frame }) if id == clip && actual == edge && frame == *command_frame)
++            } else {
++                matches!(v.last_enqueued_edit, Some(Command::TrimClipEdge { clip: id, edge: actual, frame }) if id == clip && actual == edge && frame == *command_frame)
++            });
++        }
++        if let Some(expected) = desired_midi {
++            let actual = p.midi_clip(clip).unwrap();
++            assert_eq!((actual.start(), actual.length(), actual.source_start()), (expected.start(), expected.length(), expected.source_start()), "captured MIDI release outside={outside}");
++            assert!(matches!(v.last_enqueued_edit, Some(Command::TrimMidiClipEdge { clip: id, .. }) if id == clip));
++        }
++        assert_eq!(p.track(other), Some(&other_before));
+         assert!(
+             v.active_trim_drag.is_none()
+                 && v.active_midi_trim_drag.is_none()
+@@ -993,14 +1093,25 @@ fn review_other_track_release(cx: &mut TestAppContext, midi: bool, outside: bool
+         assert!(v.pending_requests.is_empty());
+     });
+     assert!(!visual.update(|_, cx| cx.has_active_drag()));
++    let committed = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
++    visual.simulate_keystrokes("cmd-z");
++    pump(&editor, &mut visual);
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
++    });
++    visual.simulate_keystrokes("cmd-shift-z");
++    pump(&editor, &mut visual);
++    editor.read_with(&visual, |v, _| {
++        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), committed)
++    });
+ }
+ 
+ #[gpui::test]
+-fn browser_release_review_other_audio_track_cancels_without_edit(cx: &mut TestAppContext) {
++fn captured_release_over_other_audio_track_commits_without_retargeting(cx: &mut TestAppContext) {
+     review_other_track_release(cx, false, false);
+ }
+ #[gpui::test]
+-fn browser_release_review_other_midi_track_cancels_without_edit(cx: &mut TestAppContext) {
++fn captured_release_over_other_midi_track_commits_without_retargeting(cx: &mut TestAppContext) {
+     review_other_track_release(cx, true, false);
+ }
+ #[gpui::test]
+@@ -1067,7 +1178,7 @@ fn browser_release_review_midi_edge_admits_existing_detail_or_browser_focus(
+ }
+ 
+ #[gpui::test]
+-fn browser_release_review_generic_outside_still_cancels_audio_and_midi(cx: &mut TestAppContext) {
++fn captured_release_over_generic_outside_commits_audio_and_midi(cx: &mut TestAppContext) {
+     for midi in [false, true] {
+         review_other_track_release(cx, midi, true);
+     }
+@@ -1308,3 +1419,36 @@ fn audit_fast_mouseup(cx: &mut TestAppContext, stretch: bool, midi: bool, enable
+         });
+     }
+ }
++
++#[gpui::test]
++fn captured_release_audio_over_header_ruler_status_and_browser(cx: &mut TestAppContext) {
++    for edge in [TrimEdge::Left, TrimEdge::Right] {
++        for destination in 2..=5 {
++            captured_release_case(cx, false, edge, false, false, destination);
++        }
++    }
++}
++#[gpui::test]
++fn captured_release_midi_over_header_ruler_status_and_browser(cx: &mut TestAppContext) {
++    for edge in [TrimEdge::Left, TrimEdge::Right] {
++        for destination in 2..=5 {
++            captured_release_case(cx, true, edge, false, false, destination);
++        }
++    }
++}
++#[gpui::test]
++fn captured_release_shift_over_other_track_and_foreign_panels(cx: &mut TestAppContext) {
++    for edge in [TrimEdge::Left, TrimEdge::Right] {
++        for destination in 0..=5 {
++            captured_release_case(cx, false, edge, true, false, destination);
++        }
++    }
++}
++#[gpui::test]
++fn captured_release_enabled_warp_over_other_track_and_foreign_panels(cx: &mut TestAppContext) {
++    for edge in [TrimEdge::Left, TrimEdge::Right] {
++        for destination in 0..=5 {
++            captured_release_case(cx, false, edge, false, true, destination);
++        }
++    }
++}
+diff --git a/crates/hex-ui/src/editor/trim.rs b/crates/hex-ui/src/editor/trim.rs
+index 8de04955..acf979cd 100644
+--- a/crates/hex-ui/src/editor/trim.rs
++++ b/crates/hex-ui/src/editor/trim.rs
+@@ -1303,14 +1303,13 @@ impl EditorView {
+         cx.notify();
+     }
+ 
+-    /// Resolve the actual Arrangement target, or the explicit browser hitbox
+-    /// exception. Other outside releases retain ordinary cancellation semantics.
+-    /// Foreign coordinates never become timeline coordinates; canonical drop
+-    /// validation and the existing single pending-trim owner remain authoritative.
++    /// Finalize the captured source, regardless of the release's hovered panel.
++    /// Foreign horizontal coordinates retain the last valid timeline point;
++    /// canonical validation and the existing pending-trim owner stay authoritative.
+     pub(super) fn finish_trim_pointer_release(
+         &mut self,
+         event: &gpui::MouseUpEvent,
+-        browser_release: bool,
++        _browser_release: bool,
+         window: &mut Window,
+         cx: &mut Context<Self>,
+     ) -> bool {
+@@ -1328,16 +1327,6 @@ impl EditorView {
+             self.cancel_trim_gesture(cx);
+             return true;
+         }
+-        // `browser_release` is supplied only by the browser's own hovered
+-        // capture listener. Never infer that exception from a foreign x value.
+-        let target_track = if browser_release && self.browser.open {
+-            None
+-        } else if let Some((track, _)) = self.hovered_drag_target(x, f32::from(event.position.y)) {
+-            Some(track)
+-        } else {
+-            // Let existing mouse-up/out cancellation retire this outside drag.
+-            return false;
+-        };
+         if let Some(drag) = self.active_trim_drag.clone() {
+             drag.snap_modifier.set(event.modifiers.platform);
+             drag.stretch_modifier.set(event.modifiers.shift);
+@@ -1351,7 +1340,7 @@ impl EditorView {
+                 drag.last_pointer_x.set(Some(pointer));
+                 self.update_trim_preview(&drag, pointer, cx);
+                 if drag.preview.borrow().is_some() {
+-                    self.drop_trim(&drag, target_track.unwrap_or(drag.source_track), window, cx);
++                    self.drop_trim(&drag, drag.source_track, window, cx);
+                 }
+             }
+         } else if let Some(drag) = self.active_midi_trim_drag.clone() {
+@@ -1366,7 +1355,7 @@ impl EditorView {
+                 drag.last_pointer_x.set(Some(pointer));
+                 self.update_midi_trim_preview(&drag, pointer, cx);
+                 if drag.preview.borrow().is_some() {
+-                    self.drop_midi_trim(&drag, target_track.unwrap_or(drag.source_track), cx);
++                    self.drop_midi_trim(&drag, drag.source_track, cx);
+                 }
+             }
+         }
+diff --git a/docs/resize-edge-pan.md b/docs/resize-edge-pan.md
+index e36f315f..47af9cc7 100644
+--- a/docs/resize-edge-pan.md
++++ b/docs/resize-edge-pan.md
+@@ -125,3 +125,29 @@ Shift stretch and enabled Warp cover both edges, exact displayed-to-worker
+ extent and one Undo/Redo. Existing Escape/stale/release/pending-horizon cases
+ remain separate controls. Track-height resizing is not a timeline-pan gesture.
+ These headless results do not claim native physical input acceptance.
++
++
++## Captured release outside the source track (Pulse2867 / PR469)
++
++A captured Arrangement trim has one source clip and track. Moving vertically into
++another track, a header, ruler, blank region, browser or another panel does not
++retarget or cancel that owner when the same window delivers its left-button
++release. The existing root release path now finalizes against the captured source
++track. Horizontal positions within its timeline use the same final-pointer and
++modifier resolver; foreign horizontal positions retain the existing valid
++timeline point. Model/source/Warp admission, pending FIFO custody and canonical
++worker completion remain authoritative. There is no new release/timer owner.
++
++Real GPUI input and Service completion checks cover both edges for audio, MIDI,
++Shift stretching and enabled Warp, exact displayed/committed geometry, untouched
++other tracks, and one full-snapshot Undo/Redo. Controlled pan tests also unmount
++the original handle, stop on interior entry, and release over the actual ruler.
++The former other-track/outside cancellation tests are intentionally updated for
++this new user requirement. Escape, stale generation, lost focus and actual worker
++refusal retain their separate cancellation/retirement controls.
++
++Preserved diagnostics distinguish two actual other-track failures and the
++corrected changed-extent generic-outside failure from an earlier no-op fixture
++assertion and an initial test-only private-field compile error. Physical OS
++outside-window delivery, optimized waveform appearance and native capture remain
++Root-owned acceptance; cloud input does not establish platform-wide capture.
+diff --git a/todo.md b/todo.md
+index ae0e41bf..fb09421c 100644
+--- a/todo.md
++++ b/todo.md
+@@ -5772,3 +5772,21 @@ User rejected device-local automation editing. Remove its button, graph mode and
+ - Sole merger owns prospective full validation/review/merge. Root-only optimized
+   physical edge-pan/release/keyboard-modifier/waveform acceptance remains open.
+   This is separate from Pulse2867's new outside-source-track release requirement.
++
++
++### 2026-10-19 — Pulse2867 / PR469 captured resize release
++
++- Actual same-window release over another track rejected the captured audio/MIDI
++  resize; generic outside release fell through to cancellation. The corrected
++  outside fixture retains a changed preview; its real baseline failure is kept
++  separately from an earlier no-op assertion and a private-field compile error.
++- Existing root finish now uses the captured source track rather than hovered
++  receiver eligibility. Keep the existing final-coordinate/modifier resolver,
++  model/Warp/source admission, focus/stale/cancel checks and pending FIFO/ACK owner.
++- Both-edge audio/MIDI/Shift/enabled-Warp receiver and pan-stop/outside-release
++  controls use actual GPUI input, Service commits, non-retargeting, full snapshots
++  and Undo/Redo. Exact frozen source/check counts and negative artifacts are in
++  Pulse; sole merger owns prospective qualification/review/merge.
++- This source is stacked explicitly on frozen PR463 pointer-delivery work.
++  Physical outside-window capture and optimized waveform/input acceptance remain
++  Root-owned; no native app action or global reliability claim is implied.

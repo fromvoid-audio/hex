@@ -1,0 +1,38 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+error[E0616]: field `start` of struct `MidiClipTrim` is private
+    --> crates/hex-ui/src/editor/resize_release_tests.rs:1005:92
+     |
+1005 | ...   assert_eq!((actual.start(), actual.length(), actual.source_start()), (expected.start, expected.length, expected.source_start...
+     |                                                                                      ^^^^^ private field
+     |
+help: a method `start` also exists, call it with parentheses
+     |
+1005 |             assert_eq!((actual.start(), actual.length(), actual.source_start()), (expected.start(), expected.length, expected.source_start), "captured MIDI release outside={outside}");
+     |                                                                                                 ++
+
+error[E0616]: field `length` of struct `MidiClipTrim` is private
+    --> crates/hex-ui/src/editor/resize_release_tests.rs:1005:108
+     |
+1005 | ...   assert_eq!((actual.start(), actual.length(), actual.source_start()), (expected.start, expected.length, expected.source_start...
+     |                                                                                                      ^^^^^^ private field
+     |
+help: a method `length` also exists, call it with parentheses
+     |
+1005 |             assert_eq!((actual.start(), actual.length(), actual.source_start()), (expected.start, expected.length(), expected.source_start), "captured MIDI release outside={outside}");
+     |                                                                                                                  ++
+
+error[E0616]: field `source_start` of struct `MidiClipTrim` is private
+    --> crates/hex-ui/src/editor/resize_release_tests.rs:1005:125
+     |
+1005 | ...rt()), (expected.start, expected.length, expected.source_start), "captured MIDI release outside={outside}");
+     |                                                      ^^^^^^^^^^^^ private field
+     |
+help: a method `source_start` also exists, call it with parentheses
+     |
+1005 |             assert_eq!((actual.start(), actual.length(), actual.source_start()), (expected.start, expected.length, expected.source_start()), "captured MIDI release outside={outside}");
+     |                                                                                                                                         ++
+
+For more information about this error, try `rustc --explain E0616`.
+error: could not compile `hex-ui` (lib test) due to 3 previous errors

@@ -1,0 +1,23 @@
+commit 5733384ccb2bc26df8fdd09b642312fdbc85ea96
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 16:14:04 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 16:14:04 2026 +0000
+
+    fix(ui): finalize captured clip resize outside its source track
+
+commit 2b2299f392b951250d7ab5c68f24c4519dc6c1a3
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 16:11:23 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 16:11:23 2026 +0000
+
+    test(ui): preserve changed extent in outside release fixtures
+
+commit fdee3bcbb1c73d750a7fd6f13f53b3e20786e5e0
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 16:09:16 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 16:09:16 2026 +0000
+
+    test(ui): reproduce captured resize cancellation outside source lane

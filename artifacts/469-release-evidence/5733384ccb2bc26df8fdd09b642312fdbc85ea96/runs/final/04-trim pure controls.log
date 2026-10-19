@@ -1,0 +1,16 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 42.06s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 6 tests
+test editor::trim::tests::pointer_mapping_preserves_handle_offset_and_clamps_before_frame_zero ... ok
+test editor::trim::tests::resize_hit_width_stays_inside_clip_and_move_body_remains_available_at_small_sizes ... ok
+test editor::trim::tests::trim_admission_waits_for_open_close_and_canonical_work ... ok
+test editor::trim::tests::edge_frame_uses_inclusive_left_and_exclusive_right_bounds ... ok
+test editor::trim::tests::identical_audio_and_midi_trim_candidates_do_not_request_redraws ... ok
+test editor::trim::tests::trim_payload_rejects_stale_generation_revision_viewport_owner_and_asset ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 1059 filtered out; finished in 0.00s
+

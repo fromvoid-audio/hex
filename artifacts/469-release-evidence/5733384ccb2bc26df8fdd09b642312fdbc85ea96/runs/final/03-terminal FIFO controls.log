@@ -1,0 +1,29 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.10s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 9 tests
+restart offline earlier completion: counted=2 resize_ordinal=Some(2) owner_retained=true
+terminal deferred matching/real three-event receive batch: no hidden pan resurrection
+test editor::trim::resize_terminal_tests::terminal_deferred_owner_survives_full_ui_queue_and_failure_retirement_is_idempotent ... ok
+test editor::trim::resize_terminal_tests::terminal_deferred_match_normalizes_before_later_growth_in_one_receive_batch ... ok
+terminal FIFO real kind=0: earlier retained, own terminal normalized
+test editor::trim::resize_terminal_tests::restart_offline_completion_cannot_retire_a_later_resize_ordinal ... ok
+terminal explicit navigation=0 preserved None
+terminal FIFO real kind=1: earlier retained, own terminal normalized
+test editor::trim::resize_terminal_tests::restart_offline_pending_work_blocks_actual_resize_capture_until_completion ... ok
+terminal explicit navigation=1 preserved Some(Viewport { start: 0, length: 192000 })
+terminal FIFO real kind=2: earlier retained, own terminal normalized
+test editor::trim::resize_terminal_tests::terminal_local_retirement_does_not_clobber_a_new_actual_pointer_capture ... ok
+terminal preserves actual display extent gain=false horizon=576000
+terminal explicit navigation=2 preserved Some(Viewport { start: 96000, length: 192000 })
+terminal preserves actual display extent gain=true horizon=384000
+test editor::trim::resize_terminal_tests::terminal_project_replacement_and_generation_cannot_normalize_another_document ... ok
+test editor::trim::resize_terminal_tests::terminal_uses_current_loop_and_open_gain_lane_display_extent ... ok
+test editor::trim::resize_terminal_tests::terminal_fifo_counts_real_ordinary_device_and_tuning_completions ... ok
+test editor::trim::resize_terminal_tests::terminal_preserves_explicit_fit_zoom_and_pan ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 1056 filtered out; finished in 3.03s
+

@@ -1,0 +1,27 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.51s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 3 tests
+resize review release midi=false outside=true point=Point { x: 1114px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=false point=Point { x: 1072px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+
+thread 'editor::trim::resize_release_tests::captured_release_over_generic_outside_commits_audio_and_midi' (261795) panicked at crates/hex-ui/src/editor/resize_release_tests.rs:1001:13:
+assertion failed: matches!(v.last_enqueued_edit, Some(Command::TrimClipEdge { clip: id, .. }) if
+    id == clip)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::trim::resize_release_tests::captured_release_over_generic_outside_commits_audio_and_midi ... FAILED
+resize review release midi=true outside=false point=Point { x: 835.5px, y: 344px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::captured_release_over_other_audio_track_commits_without_retargeting ... ok
+test editor::trim::resize_release_tests::captured_release_over_other_midi_track_commits_without_retargeting ... ok
+
+failures:
+
+failures:
+    editor::trim::resize_release_tests::captured_release_over_generic_outside_commits_audio_and_midi
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 1055 filtered out; finished in 1.04s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

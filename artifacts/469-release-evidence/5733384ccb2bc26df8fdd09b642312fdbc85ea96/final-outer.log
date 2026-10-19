@@ -1,0 +1,25 @@
+[1/12] all resize release controls: running
+[1/12] all resize release controls: passed
+[2/12] all resize pan controls: running
+[2/12] all resize pan controls: passed
+[3/12] terminal FIFO controls: running
+[3/12] terminal FIFO controls: passed
+[4/12] trim pure controls: running
+[4/12] trim pure controls: passed
+[5/12] strict default UI: running
+[5/12] strict default UI: passed
+[6/12] strict feature UI: running
+[6/12] strict feature UI: passed
+[7/12] architecture: running
+[7/12] architecture: passed
+[8/12] UI style: running
+[8/12] UI style: passed
+[9/12] GPUI provenance: running
+[9/12] GPUI provenance: passed
+[10/12] dependency provenance: running
+[10/12] dependency provenance: passed
+[11/12] format: running
+[11/12] format: passed
+[12/12] diff: running
+[12/12] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/469-outside-release-final/summary.json

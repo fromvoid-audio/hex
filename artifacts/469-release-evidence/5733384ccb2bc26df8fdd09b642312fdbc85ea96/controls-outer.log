@@ -1,0 +1,5 @@
+[1/2] actual captured receiver matrix: running
+[1/2] actual captured receiver matrix: passed
+[2/2] edge pan stop then captured outside release: running
+[2/2] edge pan stop then captured outside release: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/469-outside-release-controls/summary.json

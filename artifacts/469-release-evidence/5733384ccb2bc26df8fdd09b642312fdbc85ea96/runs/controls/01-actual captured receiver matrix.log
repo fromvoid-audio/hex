@@ -1,0 +1,65 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.95s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 7 tests
+resize review release midi=false outside=true point=Point { x: 1832px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 841px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=true outside=true point=Point { x: 1832px, y: 344px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=false point=Point { x: 841px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 841px, y: 225px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1072px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=true outside=true point=Point { x: 604.5px, y: 225px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 841px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 841px, y: 1069px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=true outside=true point=Point { x: 604.5px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=true outside=true point=Point { x: 604.5px, y: 1069px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1832px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 328px, y: 1046px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=true outside=true point=Point { x: 835.5px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::captured_release_over_generic_outside_commits_audio_and_midi ... ok
+resize review release midi=true outside=true point=Point { x: 328px, y: 1046px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1832px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=false point=Point { x: 841px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 841px, y: 225px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=true outside=true point=Point { x: 1832px, y: 344px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1072px, y: 225px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=false point=Point { x: 1072px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::captured_release_over_other_audio_track_commits_without_retargeting ... ok
+resize review release midi=false outside=true point=Point { x: 841px, y: 1069px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1072px, y: 1069px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=true outside=false point=Point { x: 604.5px, y: 344px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=true outside=true point=Point { x: 835.5px, y: 225px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 328px, y: 1046px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 328px, y: 1046px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=true outside=false point=Point { x: 835.5px, y: 344px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::captured_release_audio_over_header_ruler_status_and_browser ... ok
+resize review release midi=true outside=true point=Point { x: 835.5px, y: 1069px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::captured_release_over_other_midi_track_commits_without_retargeting ... ok
+resize review release midi=false outside=false point=Point { x: 841px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=false point=Point { x: 1072px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=true outside=true point=Point { x: 328px, y: 1046px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::captured_release_midi_over_header_ruler_status_and_browser ... ok
+resize review release midi=false outside=true point=Point { x: 841px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1072px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1832px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1832px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1072px, y: 225px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 841px, y: 225px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1072px, y: 1069px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 841px, y: 1069px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 328px, y: 1046px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::captured_release_enabled_warp_over_other_track_and_foreign_panels ... ok
+resize review release midi=false outside=true point=Point { x: 328px, y: 1046px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=false point=Point { x: 1072px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1072px, y: 214px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1832px, y: 300px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1072px, y: 225px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 1072px, y: 1069px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+resize review release midi=false outside=true point=Point { x: 328px, y: 1046px } browser=Some(Bounds { origin: Point { x: 0px, y: 168px }, size: Size { 484px × 890px } })
+test editor::trim::resize_release_tests::captured_release_shift_over_other_track_and_foreign_panels ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 1058 filtered out; finished in 30.44s
+

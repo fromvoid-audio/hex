@@ -1,0 +1,19 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 43.17s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 3 tests
+REAL_RESIZE_INTERIOR midi=true left=false original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 192000, length: 24000 }->Viewport { start: 192000, length: 24000 }
+REAL_RESIZE_INTERIOR midi=false left=false original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 192000, length: 24000 }->Viewport { start: 192000, length: 24000 }
+REAL_RESIZE_INTERIOR midi=false left=false original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 192000, length: 24000 }->Viewport { start: 192000, length: 24000 }
+REAL_RESIZE_INTERIOR midi=true left=true original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 72000, length: 24000 }->Viewport { start: 72000, length: 24000 }
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_interior_stop_then_outside_midi_release_commits ... ok
+REAL_RESIZE_INTERIOR midi=false left=true original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 72000, length: 24000 }->Viewport { start: 72000, length: 24000 }
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_interior_stop_then_outside_audio_release_commits ... ok
+REAL_RESIZE_INTERIOR midi=false left=true original_handle_absent=true actual_pointer=1113.5 recorded=Some(1113.5) viewport=Viewport { start: 72000, length: 24000 }->Viewport { start: 72000, length: 24000 }
+test editor::drag_autoscroll::resize_pan_tests::resize_edge_pan_interior_stop_then_outside_shift_release_commits ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 1062 filtered out; finished in 8.06s
+
