@@ -43,7 +43,7 @@ pub(crate) fn preview(
         TrimEdge::Right if fade.fade_out() > 0 => frame.max(out_top + 1),
         _ => frame,
     };
-    let frame = if let Some(edit) = clip.audio_edit() {
+    let frame = if let Some(edit) = clip.audio_edit().filter(|edit| edit.placement.is_none()) {
         let (_, full, start, _) = edit.projected_domain(tempo)?;
         let origin = i128::from(clip.start) - i128::from(start);
         let first = origin.max(0) as u64;

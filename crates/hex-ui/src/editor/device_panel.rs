@@ -142,6 +142,7 @@ pub(super) struct DevicePanelState {
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
     saturator_previews: HashMap<DeviceId, saturator_panel::PreviewCache>,
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
+    auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
     pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectra>,
@@ -162,6 +163,13 @@ pub(super) enum DevicePanelOwner {
 }
 
 impl DevicePanelState {
+    pub(super) fn add_menu_is_open(&self, state: Option<&ViewState>) -> bool {
+        self.add_menu_open
+            && self
+                .owner
+                .is_some_and(|owner| state.is_some_and(|state| owner_exists(state, owner)))
+    }
+
     /// A menu selecting another card restores that card only when a card owned
     /// focus. Nested numeric/text/graph and browser focus remain untouched.
     pub(super) fn comparison_return_focus(
@@ -451,6 +459,7 @@ pub(super) fn view(
         view.device_panel.eq8_responses.clear();
         view.device_panel.saturator_previews.clear();
         view.device_panel.compressor_previews.clear();
+        view.device_panel.auto_pan_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         if let Some(audio) = view.audio.as_mut() {
@@ -557,6 +566,7 @@ pub(super) fn view(
         view.device_panel.eq8_responses.clear();
         view.device_panel.saturator_previews.clear();
         view.device_panel.compressor_previews.clear();
+        view.device_panel.auto_pan_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         view.device_panel.chain_window = Default::default();
@@ -1094,6 +1104,9 @@ fn retire_transfer_previews(
     });
     panel.compressor_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
+    });
+    panel.auto_pan_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.auto-pan"))
     });
 }
 

@@ -410,10 +410,11 @@ mod tests {
         };
         let mut snapshot = editor.project().snapshot();
         let device_id = snapshot.next_id;
-        let mut payload = Vec::with_capacity(12);
+        let mut payload = Vec::with_capacity(16);
         for value in [0.75_f32, 3.5, 270.0] {
             payload.extend_from_slice(&value.to_le_bytes());
         }
+        payload.extend_from_slice(&3_u32.to_le_bytes());
         let track_snapshot = snapshot
             .tracks
             .iter_mut()
@@ -423,7 +424,7 @@ mod tests {
             comparison: None,
             id: device_id,
             bypassed: false,
-            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.auto-pan"), 1, payload)
+            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.auto-pan"), 2, payload)
                 .expect("bounded opaque native state"),
         });
         snapshot.next_id = device_id + 1;
@@ -439,7 +440,8 @@ mod tests {
             .and_then(|candidate| candidate.devices().first())
             .expect("saved Auto Pan");
         assert_eq!(device.state().type_id().as_str(), Ok("hex.auto-pan"));
-        assert_eq!(device.state().state_version(), 1);
+        assert_eq!(device.state().state_version(), 2);
+        assert_eq!(&device.state().payload()[12..16], &3_u32.to_le_bytes());
         assert_eq!(
             device.state().payload(),
             project.tracks()[0].devices()[0].state().payload()
