@@ -1,0 +1,10 @@
+{
+  "head": "6fc5f1515e860878547547186a4eea10caa1dc63",
+  "tree": "2dcfff1fcdc3f2ff91b81f577bccaabf857333b4",
+  "parent": "fd80e7dd28b31a2f34a9382f1a86e4800b7e85ed",
+  "payloads": 26,
+  "archive_bytes": 57058,
+  "archive_sha256": "c73b6289093a0c66f6c06aab373ea776cdd12a6024baa75e48965ebe011fe1f1",
+  "manifest_sha256": "782143279d2ece63924dd83897419f2d5e9c2bd2c174fb90b2aa9aa72ee1a989",
+  "checks_sha256": "8268bd028f46de6a971d0ece6c1cd00e1c5a087ad070a134764b367eba7b6fdf"
+}

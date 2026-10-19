@@ -1,0 +1,132 @@
+[
+  {
+    "path": "HANDOFF.md",
+    "bytes": 4273,
+    "sha256": "ef10246bdb6638d9f1119ce229a32ef383ba36f3f73e8c44830d8d07c3d2f042"
+  },
+  {
+    "path": "NATIVE-REQUEST.md",
+    "bytes": 1765,
+    "sha256": "8d02531907ad446818f4d4236317c3b7a758f23dd70d2ef9dd61eb5c1bc1c168"
+  },
+  {
+    "path": "adapter.patch",
+    "bytes": 16980,
+    "sha256": "974ec8a04d0f70644e9a012d5d041161b5d4e183b255e2f205375e9c7220a61d"
+  },
+  {
+    "path": "affected-default-five.log",
+    "bytes": 1203,
+    "sha256": "46f49dad84d2877348c7fc7e41317ab247f4b6b96f13b958c4a00a35be0fb944"
+  },
+  {
+    "path": "after-fixture-initial.log",
+    "bytes": 1850,
+    "sha256": "b6437c7ae719ab6dd2c2663b69a4ceba97f0661bf93850b2c3e6f9ec0d504d97"
+  },
+  {
+    "path": "architecture.log",
+    "bytes": 76,
+    "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+  },
+  {
+    "path": "before-identities.json",
+    "bytes": 346,
+    "sha256": "d1d1456a48e49dcf8060e1941f90a66b0df74c973bcbda98aa8af4b556e021fc"
+  },
+  {
+    "path": "before-owner-root-red.log",
+    "bytes": 3172,
+    "sha256": "db5d8d2d03fac1df53c48faef1415a56f1f4ffa8f61b0cf46cd82b1c6337c218"
+  },
+  {
+    "path": "before-test-only.patch",
+    "bytes": 966,
+    "sha256": "db21b335fd70f150e6e5c90475107fd71307d49c067635a0f0d2dfa202221460"
+  },
+  {
+    "path": "candidate-checks.json",
+    "bytes": 4192,
+    "sha256": "8268bd028f46de6a971d0ece6c1cd00e1c5a087ad070a134764b367eba7b6fdf"
+  },
+  {
+    "path": "dependency-patches.log",
+    "bytes": 113,
+    "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+  },
+  {
+    "path": "device-layout.log",
+    "bytes": 84,
+    "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+  },
+  {
+    "path": "final-ui-nine.log",
+    "bytes": 2783,
+    "sha256": "ddbdf72fb729345a3d35384ed6095ae5dac2366f59fea9dbf9831ab74e000297"
+  },
+  {
+    "path": "format.log",
+    "bytes": 0,
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  },
+  {
+    "path": "gpui-patch.log",
+    "bytes": 149,
+    "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+  },
+  {
+    "path": "source/after/crates/hex-ui/src/editor/group_drag_ui_test.rs",
+    "bytes": 41282,
+    "sha256": "a0ce0cf88ba74520cb7c91a078d18d10b808a02d41cdd8c9b6c51a90a4dea365"
+  },
+  {
+    "path": "source/after/crates/hex-ui/src/editor/mod.rs",
+    "bytes": 58422,
+    "sha256": "0ceeb998c16f61712a1c24ff513d938d5cc3c2a8f9faf026b8aa5c606d33f9a0"
+  },
+  {
+    "path": "source/after/crates/hex-ui/src/editor/test_environment.rs",
+    "bytes": 7002,
+    "sha256": "75238b136cc4fbb4ed651e6a3ea70577766a69c674018a5c57500db00e8491b2"
+  },
+  {
+    "path": "source/before/crates/hex-ui/src/editor/group_drag_ui_test.rs",
+    "bytes": 33039,
+    "sha256": "5ba872d892dd36f0ce2d613ed6073a17526f9c5732b6170edd178747416c11d6"
+  },
+  {
+    "path": "source/before/crates/hex-ui/src/editor/mod.rs",
+    "bytes": 57370,
+    "sha256": "700d32fc0d6b4dbcd73feaf76f53c6ac80edb8080e42d8161b505b3f35242699"
+  },
+  {
+    "path": "source/before/crates/hex-ui/src/editor/test_environment.rs",
+    "bytes": 6084,
+    "sha256": "f61e70ae5e0d4f41b9f5cc0c64d6408ce85591e99442deb01d56d491e6f8e558"
+  },
+  {
+    "path": "source-ledger.json",
+    "bytes": 997,
+    "sha256": "dcccff4c67b6ba5682ac8d47ac24af72977f0ef5e7f2ce85da71e4c45f5899b6"
+  },
+  {
+    "path": "strict-ui.log",
+    "bytes": 2264,
+    "sha256": "2449f6e4c0a1452101840c4961217cc1f2d4f2f071725e287d1c50cd1e073a44"
+  },
+  {
+    "path": "ui-style.log",
+    "bytes": 82,
+    "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+  },
+  {
+    "path": "unchanged-ui-six.json",
+    "bytes": 1158,
+    "sha256": "f8f9fabe67a2de0c8460741c7563711fabe14489ec95a5128a51c89a5779d8f0"
+  },
+  {
+    "path": "verify-candidate.py",
+    "bytes": 2261,
+    "sha256": "8c9d435aacc7beb2d6f26dd9d2d7ceb47549e01043b083f4196810fbc8326084"
+  }
+]

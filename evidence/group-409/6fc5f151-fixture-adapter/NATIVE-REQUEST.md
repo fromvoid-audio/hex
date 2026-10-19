@@ -1,0 +1,8 @@
+# Root-only optional finite new-source native request
+Source6fc5f1515e860878547547186a4eea10caa1dc63, tree2dcfff1fcdc3f2ff91b81f577bccaabf857333b4, directfd80prospectivebase. Privatecfgtestonly adapter with actual414source. No selfdispatch/app/backend/permissions/userdata.
+```
+cargo test -p hex-ui --features ui-test-support --locked --lib -- group_fixture_ group_outside_lane_clears_all_previews_and_restores_originals group_vertical_autoscroll_invalidates_all_previews_before_repaint group_capture_checks_source_allocation_and_selection_epoch group_capture_profiles_actual_redraw_separately_from_projection group_capture_reenters_valid_lane_and_commits_only_current_projection group_escape_and_actual_gpui_capture_loss_never_commit_any_member --nocapture
+```
+REQUIRE exact9PASS0failed0ignored: originalUI6 +newcustody3. Groupfixture sameactualArc/wav/empty samples/four privateconfigpaths beforestartup; real catalogjob pause/release/ownerretirement and two expected caughtunwinds. Required markers `group_fixture_catalog_custody unwind=false/true actual_save=true same_root=true cleaned=true` and `group_fixture_pre_ack_retention actual_refusal=true weak_expired=true disk_retained=true`; rootpathretentiondiagnostic is intentional. Classify terminalCargo/teststatus, NOT grep panic asfailure. No unsupportedskip. Counting/timing diagnostics are not physical/native deadline proofs.
+
+No unchangedProject7/privacy3 repeat. Affecteddefault5 ran cloud on owner source because None-selection changed; root may request separately only if actual review warrants it. ExistingfullCI/review/combinedtree remainssolemergerresponsibility. No nativequalification claimed from cloud9/5. No root cleanup outside explicitly-owned testcase whose only real request is complete.
