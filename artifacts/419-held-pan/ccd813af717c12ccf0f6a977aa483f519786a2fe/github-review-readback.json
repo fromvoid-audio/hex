@@ -1,0 +1,390 @@
+{
+  "review": {
+    "review_threads": [
+      {
+        "id": "PRRT_kwDOVB_C-s6tttE5",
+        "is_resolved": true,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/workspace_view.rs",
+        "line": 48,
+        "diff_side": "RIGHT",
+        "start_line": 44,
+        "start_diff_side": "RIGHT",
+        "original_line": 45,
+        "original_start_line": 41,
+        "resolved_by": {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+          "id": null
+        },
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAMzpJA",
+            "database_id": 4308396324,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Refuse Tab while resizing a track**\n\nWhen the user presses Tab while holding a track-width or track-height resize handle, `begin_track_resize` has focused `self.focus` and set `track_layout.drag`, but this guard does not test `track_resize_active()`. The event therefore switches modes, and the next render calls `reconcile_track_resize`, which restores the previous size because a resize is invalid outside Arrangement. This both discards the in-progress resize and changes workspaces; reject Tab while that drag is active.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/d035b55f678c2bf782f6a9754f1b9867337673d6/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-18T19:24:56Z",
+            "updated_at": "2026-10-18T19:24:56Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQe7TQ",
+            "database_id": 4312251213,
+            "body": "Addressed by the existing track_resize_active() refusal. On exact current09b46aef, the full required UI suite actually passed workspace_review_tab_preserves_active_track_resize (real held handle, no queued edit, release then Tab succeeds). UI result965PASS0FAIL3existingignored. Fresh independent pan and loading findings remain open; this reply does not claim merge clearance.",
+            "created_at": "2026-10-19T09:30:16Z",
+            "updated_at": "2026-10-19T09:30:16Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      },
+      {
+        "id": "PRRT_kwDOVB_C-s6tttE6",
+        "is_resolved": true,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/workspace_view.rs",
+        "line": 23,
+        "diff_side": "RIGHT",
+        "start_line": 23,
+        "start_diff_side": null,
+        "original_line": 23,
+        "original_start_line": null,
+        "resolved_by": {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+          "id": null
+        },
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAMzpKA",
+            "database_id": 4308396328,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Restore workspace focus after toolbar switches**\n\nWhen an Arrangement track header owns focus and the user clicks the Console toolbar button, `set_mode` removes that header from the rendered tree but the button callback never focuses `self.focus`. Subsequent key events fall back to the root while both eligibility checks here are false (`self.focus` is not focused and `track_header_focused` rejects Session mode), so Tab cannot return to Arrange. Route toolbar switches through the same focus handoff as `workspace_tab`.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/d035b55f678c2bf782f6a9754f1b9867337673d6/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-18T19:24:56Z",
+            "updated_at": "2026-10-18T19:24:56Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQe9mw",
+            "database_id": 4312251803,
+            "body": "The reported toolbar-focus defect was disproved by actual header click\u2192Console toolbar\u2192Tab interaction. The earlier failing assertion captured selection before the header click, which legitimately changes selection. The corrected fixture captures after that click, retains actual focus checks/full project/revision/no-request assertions, and requires Tab to return. Exact09b46aef full UI suite passed workspace_review_toolbar_console_returns_tab_to_workspace; no unnecessary production toolbar focus policy was added. Other fresh findings remain open.",
+            "created_at": "2026-10-19T09:30:20Z",
+            "updated_at": "2026-10-19T09:30:20Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      },
+      {
+        "id": "PRRT_kwDOVB_C-s6tttE7",
+        "is_resolved": true,
+        "is_outdated": false,
+        "path": "docs/workspace-views.md",
+        "line": 45,
+        "diff_side": "RIGHT",
+        "start_line": 41,
+        "start_diff_side": "RIGHT",
+        "original_line": 44,
+        "original_start_line": 40,
+        "resolved_by": {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+          "id": null
+        },
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAMzpKw",
+            "database_id": 4308396331,
+            "body": "**<sub><sub>![P1 Badge](https://img.shields.io/badge/P1-orange?style=flat)</sub></sub>  Record this validation in todo.md**\n\nThis change documents the baseline failure, final source behavior, and remaining native/full-CI uncertainty here, but leaves `todo.md` untouched. The repository requires final changes to update `todo.md` with actual results and remaining uncertainty; add the corresponding dated implementation/evidence entry so repository tracking does not omit this completed work.\n\nAGENTS.md reference: [AGENTS.md:L393-L397](https://github.com/PORTALSURFER/hex/blob/d035b55f678c2bf782f6a9754f1b9867337673d6/AGENTS.md#L393-L397)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-18T19:24:56Z",
+            "updated_at": "2026-10-18T19:24:56Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQe--w",
+            "database_id": 4312252155,
+            "body": "The current exact09b46aef includes dated todo.md entries for the workspace repairs and coherent419+458 composition, alongside preserved actual negative evidence and explicit required-CI/native uncertainty. No tracking omission remains; final terminal result will be recorded separately. This does not represent merge/physical acceptance.",
+            "created_at": "2026-10-19T09:30:22Z",
+            "updated_at": "2026-10-19T09:30:22Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      },
+      {
+        "id": "PRRT_kwDOVB_C-s6twUs6",
+        "is_resolved": true,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/workspace_view.rs",
+        "line": 44,
+        "diff_side": "RIGHT",
+        "start_line": 41,
+        "start_diff_side": "RIGHT",
+        "original_line": 42,
+        "original_start_line": 41,
+        "resolved_by": {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+          "id": null
+        },
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAN3dGw",
+            "database_id": 4309507355,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Block Tab while a clip-paint gesture is active**\n\nWhen the user holds the second click of a double-click-and-drag clip-paint gesture and presses Tab before releasing, `begin_clip_paint` has focused the workspace, but this guard does not check `clip_paint_gesture`. The handler therefore switches to Console while the Arrangement pointer owner is active, discarding the in-progress paint and potentially retaining stale gesture state until another pointer event cancels it; refuse the switch just as for the other active drags.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/7b5f85e22d86e5ed6975bb84b64d475ab07a6237/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-19T00:52:39Z",
+            "updated_at": "2026-10-19T00:52:39Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQfACQ",
+            "database_id": 4312252425,
+            "body": "Addressed by the clip_paint_gesture guard and actual held double-click paint regression. Exact09b46aef full UI suite passed workspace_review_tab_preserves_held_clip_paint_until_release_or_escape, including both release and Escape retirement. UI965PASS0FAIL3existingignored; current independent pan/loading returns remain unresolved.",
+            "created_at": "2026-10-19T09:30:24Z",
+            "updated_at": "2026-10-19T09:30:24Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      },
+      {
+        "id": "PRRT_kwDOVB_C-s6tw9qA",
+        "is_resolved": true,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/workspace_view.rs",
+        "line": 49,
+        "diff_side": "RIGHT",
+        "start_line": 49,
+        "start_diff_side": null,
+        "original_line": 48,
+        "original_start_line": null,
+        "resolved_by": {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+          "id": null
+        },
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAOH7fA",
+            "database_id": 4309777276,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Block Tab while a ruler scrub is active**\n\nWhen the user holds a left-button ruler scrub and presses Tab, `begin_scrub` has focused the workspace, but this guard does not check the scrub gesture. The bubbling handler therefore enters Console, and the next `tick_scrub` cancels the remaining targets because the mode is no longer Arrangement, aborting the in-progress drag before its release can finish it; refuse Tab until the scrub ends, as for the other Arrangement pointer owners.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/2df2762341d338f68cee84c15d076647cb44d2bf/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-19T02:07:43Z",
+            "updated_at": "2026-10-19T02:07:43Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQfBPw",
+            "database_id": 4312252735,
+            "body": "Addressed by read-only scrub_active() guard, preserving existing seek/Open/controller lifecycle. Exact09b46aef full UI suite passed workspace_review_tab_preserves_held_ruler_until_release_or_cancel, which exercises real ruler capture, held target, release/refusal or Escape retirement, then Tab. UI965PASS0FAIL3existingignored. This closes this source-specific return only, not fresh pan/loading findings or native acceptance.",
+            "created_at": "2026-10-19T09:30:27Z",
+            "updated_at": "2026-10-19T09:30:27Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      },
+      {
+        "id": "PRRT_kwDOVB_C-s6t2v86",
+        "is_resolved": false,
+        "is_outdated": false,
+        "path": "crates/hex-ui/src/editor/workspace_view.rs",
+        "line": 43,
+        "diff_side": "RIGHT",
+        "start_line": 42,
+        "start_diff_side": "RIGHT",
+        "original_line": 43,
+        "original_start_line": 42,
+        "resolved_by": null,
+        "comments": [
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQarjA",
+            "database_id": 4312181644,
+            "body": "**<sub><sub>![P2 Badge](https://img.shields.io/badge/P2-yellow?style=flat)</sub></sub>  Block Tab while an arrangement pan is active**\n\nWhile the editor retains focus, holding the middle button over the timeline sets `arrangement_pan`, but this refusal list never checks it. Pressing Tab therefore reaches `set_mode`, whose mode-change path calls `cancel_arrangement_pan()`, switching to Console and discarding the in-progress pan before mouse release; guard this pointer owner like the other active gestures.\n\nAGENTS.md reference: [AGENTS.md:L295-L299](https://github.com/PORTALSURFER/hex/blob/09b46aefc5b4702cd671167afd82594ce286d316/AGENTS.md#L295-L299)\n\nUseful? React with \ud83d\udc4d\u00a0/ \ud83d\udc4e.\n\n<!-- codex-code-review-finding:v1 -->",
+            "created_at": "2026-10-19T09:22:05Z",
+            "updated_at": "2026-10-19T09:22:05Z",
+            "author": {
+              "login": "chatgpt-codex-connector",
+              "name": "chatgpt-codex-connector",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/in/1144995?v=4",
+              "id": null
+            },
+            "viewer_did_author": false
+          },
+          {
+            "id": "PRRC_kwDOVB_C-s8AAAABAQeEyg",
+            "database_id": 4312237258,
+            "body": "Recorded against exact09b46aef in shared Pulse2813/2856 notes28052/28053. This is a source-backed return pending the continuing implementation owner's actual pointer/loading-state reproduction or disproof; I am not resolving it from the existing focused tests. The already-running frozen full21 continues unchanged, and its terminal receipt will remain distinct from review clearance. Both canonical PR identities and prior negative evidence are preserved.",
+            "created_at": "2026-10-19T09:28:45Z",
+            "updated_at": "2026-10-19T09:28:45Z",
+            "author": {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?u=7f8000c67b07bbef6061525d67b090b3185e0ae1&v=4",
+              "id": null
+            },
+            "viewer_did_author": true
+          }
+        ]
+      }
+    ]
+  },
+  "issue": {
+    "issue": {
+      "url": "https://github.com/PORTALSURFER/hex/pull/419",
+      "title": "Name Arrange and Console views and switch workspaces with Tab",
+      "issue_number": 419,
+      "body": "Arrange/Console workspace names and plain Tab switching with focused-control and gesture guards.\n\nCoherent exact prospective source on BOTH canonical PRs: `09b46aefc5b4702cd671167afd82594ce286d316`, tree `4358682e8b798dc0adc31729e85246fb38f51f47`. Existing histories419 `2df27623` and458 `20f85436` retained through ordinary integration of owner419 `1d38161a`, dependent458 `1c682bd2`, qualifiedmain420 `f9201561`.\n\nRequired exact local FULL21 **PASSED**, 875.523s, clean unchanged/start=end/stale=false/exit0. UI **965 passed,0failed,3existingignored**,269.79s, including all9workspace and both header geometry cases; allocationprobes/allstrict/desktop passed. Summary SHA256 `2ea6533152093c7f77bb54cc49a10f671d5522b1fe24d0f37735b69f33538914`.\n\n**Fresh review blocked, not merged:** active middle-button pan+Tab ownership (4194312181644 /4584312186994), and458 state=None loading toolbar output-status width (4312186982). Sole implementation owner will reproduce/disprove on frozen source; no unchanged full-CI retry. Older resize/paint/scrub/todo returns addressed and resolved from actual current evidence; original toolbar-focus hypothesis disproved with corrected post-header selection capture, preserving focus behavior. All prior negative receipts retained.\n\nImmutable evidence only: `evidence/hex419-458-09b46aef-review-blocked-20261019` @ `e381a7aaacab6eeb0810f6826d51d6f28f059569`, `hex419-458-09b46aef-review-blocked-evidence.tar.gz`,524888B,SHA256 `58d0972a29f60c9f10ffbfeec36ec859bf6353076ce3ad5820f901cc9ab5ef07`;103safe members/102verified payloads. Never build or merge evidence refs.\n\nBoth canonical PRs retain independent authenticated merge/readiness requirements. No actualmerge/ReadyForReview/native physical input/IME/pixel/installed acceptance claim; installed2eef unchanged.",
+      "state": "open",
+      "user": {
+        "login": "pulse-iocore-portalsurfer[bot]",
+        "name": "pulse-iocore-portalsurfer[bot]",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 340736319
+      },
+      "assignees": [
+        {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 41680373
+        }
+      ],
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": 3,
+      "created_at": "2026-10-18T16:21:53Z",
+      "updated_at": "2026-10-19T09:34:11Z",
+      "closed_at": null,
+      "display_url": "https://github.com/PORTALSURFER/hex/pull/419",
+      "display_title": "Name Arrange and Console views and switch workspaces with Tab"
+    },
+    "url": "https://github.com/PORTALSURFER/hex/pull/419",
+    "title": "Name Arrange and Console views and switch workspaces with Tab",
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/419",
+    "display_title": "Name Arrange and Console views and switch workspaces with Tab"
+  },
+  "pr": {
+    "url": "https://github.com/PORTALSURFER/hex/pull/419",
+    "number": 419,
+    "state": "open",
+    "merged": false,
+    "mergeable": true,
+    "draft": false,
+    "body": "Arrange/Console workspace names and plain Tab switching with focused-control and gesture guards.\n\nCoherent exact prospective source on BOTH canonical PRs: `09b46aefc5b4702cd671167afd82594ce286d316`, tree `4358682e8b798dc0adc31729e85246fb38f51f47`. Existing histories419 `2df27623` and458 `20f85436` retained through ordinary integration of owner419 `1d38161a`, dependent458 `1c682bd2`, qualifiedmain420 `f9201561`.\n\nRequired exact local FULL21 **PASSED**, 875.523s, clean unchanged/start=end/stale=false/exit0. UI **965 passed,0failed,3existingignored**,269.79s, including all9workspace and both header geometry cases; allocationprobes/allstrict/desktop passed. Summary SHA256 `2ea6533152093c7f77bb54cc49a10f671d5522b1fe24d0f37735b69f33538914`.\n\n**Fresh review blocked, not merged:** active middle-button pan+Tab ownership (4194312181644 /4584312186994), and458 state=None loading toolbar output-status width (4312186982). Sole implementation owner will reproduce/disprove on frozen source; no unchanged full-CI retry. Older resize/paint/scrub/todo returns addressed and resolved from actual current evidence; original toolbar-focus hypothesis disproved with corrected post-header selection capture, preserving focus behavior. All prior negative receipts retained.\n\nImmutable evidence only: `evidence/hex419-458-09b46aef-review-blocked-20261019` @ `e381a7aaacab6eeb0810f6826d51d6f28f059569`, `hex419-458-09b46aef-review-blocked-evidence.tar.gz`,524888B,SHA256 `58d0972a29f60c9f10ffbfeec36ec859bf6353076ce3ad5820f901cc9ab5ef07`;103safe members/102verified payloads. Never build or merge evidence refs.\n\nBoth canonical PRs retain independent authenticated merge/readiness requirements. No actualmerge/ReadyForReview/native physical input/IME/pixel/installed acceptance claim; installed2eef unchanged.",
+    "title": "Name Arrange and Console views and switch workspaces with Tab",
+    "base": "main",
+    "base_sha": "f9201561eb409bea2a111d7337b7e7a73e4832b1",
+    "head": "pulse/task-2813-g1-74bcd839a22f",
+    "head_sha": "09b46aefc5b4702cd671167afd82594ce286d316",
+    "head_repo_id": 1411367674,
+    "head_repo_full_name": "PORTALSURFER/hex",
+    "merge_commit_sha": "26d738132535da633edbfcc73e1453696cff3278",
+    "user": {
+      "login": "pulse-iocore-portalsurfer[bot]",
+      "name": "pulse-iocore-portalsurfer[bot]",
+      "email": null,
+      "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+      "id": 340736319
+    },
+    "requested_reviewers": [
+      {
+        "login": "PORTALSURFER",
+        "name": "PORTALSURFER",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 41680373
+      }
+    ],
+    "requested_team_reviewers": null,
+    "diff": null,
+    "comments": null,
+    "created_at": "2026-10-18T16:21:53Z",
+    "updated_at": "2026-10-19T09:34:11Z",
+    "closed_at": null,
+    "merged_at": null,
+    "commits": 14,
+    "changed_files": 10,
+    "additions": 911,
+    "deletions": 10,
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/419",
+    "display_title": "Name Arrange and Console views and switch workspaces with Tab"
+  }
+}

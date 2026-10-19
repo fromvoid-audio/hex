@@ -1,0 +1,17 @@
+{
+  "source": "ccd813af717c12ccf0f6a977aa483f519786a2fe",
+  "tree": "9bacc669e259b6703cddb1d9b7a1442a88af7b08",
+  "parent": "4ed1ee31c9af90d030e584ffcd8f2a4c980f1361",
+  "patch_base": "09b46aefc5b4702cd671167afd82594ce286d316",
+  "source_content_sha256": "e7ee8c6394090e239e45649d6bc102bf9cf16ac3d145c7e8e62f4bb956c1ddd2",
+  "summary_sha256": "90564b7d1f5f1ff7dea5d3502d395a0d1c8fcea29900de696199cd4ef5a99789",
+  "duration_seconds": 168.979,
+  "steps": 11,
+  "cases": {
+    "01-all-workspace-tab.log": 10,
+    "02-operator-tab.log": 2,
+    "03-middle-pan-controls.log": 1
+  },
+  "unique_cases": 13,
+  "ignored": 0
+}

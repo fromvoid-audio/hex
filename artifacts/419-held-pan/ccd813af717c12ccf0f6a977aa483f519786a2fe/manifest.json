@@ -1,0 +1,135 @@
+{
+  "kind": "source-owner-component-handoff-not-full-ci-never-build-merge-evidence",
+  "source": "ccd813af717c12ccf0f6a977aa483f519786a2fe",
+  "tree": "9bacc669e259b6703cddb1d9b7a1442a88af7b08",
+  "payloads": {
+    "HANDOFF.md": {
+      "bytes": 4181,
+      "sha256": "c494443dacf3e19af5e9b6f72195b37ae679a0ab2082700eb38db8c7e38cd3e8"
+    },
+    "baseline.stdout": {
+      "bytes": 185,
+      "sha256": "9a1cc204d59c0e0b8f483a688610905bdb547f24b72beaf17a60f42c321b0e55"
+    },
+    "component-runner.py": {
+      "bytes": 520,
+      "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7"
+    },
+    "file-hashes.json": {
+      "bytes": 577,
+      "sha256": "53f5d43faf1a00b3272ad436ddc7e6e5fac9721a4b6101137433eac7f8715080"
+    },
+    "final-corrected.stdout": {
+      "bytes": 756,
+      "sha256": "8a794fff81a13a626234dbd1ba2457ef71a4eb8bfb31e48ed246dac14354423d"
+    },
+    "final.stdout": {
+      "bytes": 180,
+      "sha256": "909bf9d6380428b69a4ef66c130ce2b3e2efe71184a98f2183b74f0e2eba80cb"
+    },
+    "fixture-wrong-selector.rs": {
+      "bytes": 25895,
+      "sha256": "ba527384f94b5d5b4b7e19fa53fbf7222603f64cc8e91babdcda2cb121e9f513"
+    },
+    "github-review-readback.json": {
+      "bytes": 24411,
+      "sha256": "cb58fc08d5f99c0db14be581148eb3637c017cf8dbbe55d31a0e36dbbe2a0315"
+    },
+    "original-repro.patch": {
+      "bytes": 5085,
+      "sha256": "b3c8b1d3974d3edb34ae07fe7fb28720253a23558243eb3548cc9869bbd3086a"
+    },
+    "original.stdout": {
+      "bytes": 185,
+      "sha256": "aac8b9dd2ddcdd7ffecb4c4eaf4a223bec1311ed0b6cd8f5d4a80b0b7a382ef4"
+    },
+    "owner.patch": {
+      "bytes": 6027,
+      "sha256": "e638c518410f9f264ac723d75a71572d8c5bde5734fce43c134f70eacfca9003"
+    },
+    "qualification.json": {
+      "bytes": 616,
+      "sha256": "c17f39ff2afcba0dac0233ef8432074acb0d2f6672668f218190ec089ac81d6d"
+    },
+    "runs/workspace419-pan-baseline/01-actual-held-pan-tab.log": {
+      "bytes": 1137,
+      "sha256": "ae0800fdfc97adaf41ba4033a8d375450ba55cfc9256c2155a3f69035aadef1b"
+    },
+    "runs/workspace419-pan-baseline/summary.json": {
+      "bytes": 10011,
+      "sha256": "1598093b7fdd13ee1a66076afc7d3b3f4a2e75e4be73bd99a73a098e66feeef2"
+    },
+    "runs/workspace419-pan-final/01-all-workspace-tab.log": {
+      "bytes": 2209,
+      "sha256": "3e5e0464b9b7fc0f527de1125f23bc006991c381d7ec204580163b04fb84bac0"
+    },
+    "runs/workspace419-pan-final/summary.json": {
+      "bytes": 14013,
+      "sha256": "4e6c9f7699ea9ed1e2aa390a152d869544bde21ae2dd4e28f45071d84a296a6c"
+    },
+    "runs/workspace419-pan-final-corrected/01-all-workspace-tab.log": {
+      "bytes": 1563,
+      "sha256": "b9edf09f56912a9926f5ec00142a328bb58fccff3615be93dfc5ed4226701841"
+    },
+    "runs/workspace419-pan-final-corrected/02-operator-tab.log": {
+      "bytes": 726,
+      "sha256": "28066ea3ef0a8669e2087c84771795e11bab8d017a361b22224fcb1ce76783ea"
+    },
+    "runs/workspace419-pan-final-corrected/03-middle-pan-controls.log": {
+      "bytes": 545,
+      "sha256": "69ae51fdb8c24743ea38f0a0cda6d7ca4e77daf4077be0e646ede113b2fa0996"
+    },
+    "runs/workspace419-pan-final-corrected/04-ui-feature-strict.log": {
+      "bytes": 760,
+      "sha256": "e9e176cd5ad48c61fa701f125ee01f1c9a4066a41146b638d0a63006dc500104"
+    },
+    "runs/workspace419-pan-final-corrected/05-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/workspace419-pan-final-corrected/06-gpui-patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/workspace419-pan-final-corrected/07-dependency-patches.log": {
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    "runs/workspace419-pan-final-corrected/08-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/workspace419-pan-final-corrected/09-device-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/workspace419-pan-final-corrected/10-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/workspace419-pan-final-corrected/11-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/workspace419-pan-final-corrected/summary.json": {
+      "bytes": 14938,
+      "sha256": "90564b7d1f5f1ff7dea5d3502d395a0d1c8fcea29900de696199cd4ef5a99789"
+    },
+    "runs/workspace419-pan-original/01-actual-held-pan-tab.log": {
+      "bytes": 1473,
+      "sha256": "3c77d21b2b1fef62e1a7e64043efe523b43cb3216e67d05f5bc43a26c587aa95"
+    },
+    "runs/workspace419-pan-original/summary.json": {
+      "bytes": 10011,
+      "sha256": "85396c73c82b4eb29045137784ae647f3784e91918626c114de453ce46b232ae"
+    },
+    "source/crates/hex-ui/src/editor/workspace_view.rs": {
+      "bytes": 2625,
+      "sha256": "284ca59266b80fb8f59e06438c26da6b956ac0f86e8d6584717c0b3b848d9f7e"
+    },
+    "source/crates/hex-ui/src/editor/workspace_view_ui_test.rs": {
+      "bytes": 26243,
+      "sha256": "cb9d422058337dbcd5357c84281a6c08dbf0a1bc530ae6363db00f3dd8718eb3"
+    }
+  }
+}

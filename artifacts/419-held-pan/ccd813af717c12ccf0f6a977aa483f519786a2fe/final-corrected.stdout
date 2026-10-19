@@ -1,0 +1,23 @@
+[1/11] all-workspace-tab: running
+[1/11] all-workspace-tab: passed
+[2/11] operator-tab: running
+[2/11] operator-tab: passed
+[3/11] middle-pan-controls: running
+[3/11] middle-pan-controls: passed
+[4/11] ui-feature-strict: running
+[4/11] ui-feature-strict: passed
+[5/11] architecture: running
+[5/11] architecture: passed
+[6/11] gpui-patch: running
+[6/11] gpui-patch: passed
+[7/11] dependency-patches: running
+[7/11] dependency-patches: passed
+[8/11] ui-style: running
+[8/11] ui-style: passed
+[9/11] device-layout: running
+[9/11] device-layout: passed
+[10/11] fmt: running
+[10/11] fmt: passed
+[11/11] diff: running
+[11/11] diff: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/header-width-return-workspace419-pan-final-corrected/summary.json

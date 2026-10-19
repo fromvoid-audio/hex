@@ -1,0 +1,12 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 37.05s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 2 tests
+test editor::device_panel::tests::operator_tab_tests::operator_tab_cycles_rendered_controls_in_both_directions_without_project_edits ... ok
+test editor::device_panel::tests::operator_tab_tests::operator_tab_cycle_with_saved_places_excludes_unrelated_cached_media ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 967 filtered out; finished in 13.32s
+
