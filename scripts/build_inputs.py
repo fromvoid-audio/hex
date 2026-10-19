@@ -69,6 +69,10 @@ def fingerprint(root: Path, env: dict, metadata: dict, tools: dict, *, paths=Non
                  "scripts/local-ci.py", "scripts/build_inputs.py", "scripts/ci_plan.py"):
         observe(root / name)
     config_dirs = {p / ".cargo" for p in root.resolve().parents} | {root / ".cargo"}
+    # Build observers run with a member crate as cwd. Include every observed
+    # ancestor, even when its configuration paths are currently absent.
+    for directory in workspace_roots:
+        config_dirs.update(p / ".cargo" for p in (directory, *directory.parents))
     cargo_home = env.get("CARGO_HOME") or str(Path(env.get("HOME", "~")) / ".cargo")
     config_dirs.add(Path(cargo_home))
     for directory in sorted(config_dirs):

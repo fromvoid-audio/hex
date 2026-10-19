@@ -314,6 +314,27 @@ class CacheIdentityTests(unittest.TestCase):
             env["RUSTFLAGS"] = "--cfg changed"
             self.assertNotEqual(old, key())
 
+    def test_member_and_intermediate_absent_configs_change_guarded_witness(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            member = root / "crates/hex-stream"
+            member.mkdir(parents=True)
+            (member / "Cargo.toml").write_text("manifest")
+            metadata = {"workspace_members": ["stream"], "target_directory": str(root / "target"),
+                        "packages": [dict(id="stream", name="hex-stream", source=None, dependencies=[],
+                                          manifest_path=str(member / "Cargo.toml"))]}
+            def key():
+                return inputs.fingerprint(root, {"CARGO_HOME": str(root / "cargo-home")}, metadata, {})
+            for parent in (member, member.parent, root):
+                for name in ("config", "config.toml"):
+                    path = parent / ".cargo" / name
+                    path.parent.mkdir(exist_ok=True)
+                    before = key()
+                    path.write_text('[source.crates-io]\nreplace-with="unsupported"\n')
+                    self.assertNotEqual(before, key(), str(path))
+                    path.unlink()
+                    self.assertEqual(before, key())
+
 
 if __name__ == "__main__":
     unittest.main()
