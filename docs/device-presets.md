@@ -114,3 +114,25 @@ queued after failed finalization; repaired retirement submits no preset I/O.
 Focused storage/service/rendered-widget results and final exact-source full CI
 are recorded with PR187. Historical Mac evidence applies to its earlier candidate;
 final-source native dialog, input and listening acceptance remain open.
+
+### Comparison-only authoring and audio correlation
+
+Copy and an identical-state Switch still change canonical comparison history
+when the authored pair changes. The Session worker classifies that exact typed
+transition (and its exact Undo/Redo inverse) inside the existing prepared Editor
+transaction. Only when the complete active provider state, asset bindings, host
+metadata and every other playback field remain equal does it retain the same
+prepared revision and canonical audio-source snapshot. An audible Switch uses
+ordinary graph preparation and admission.
+
+`canonical_audio_source` describes the actual preparation source, whose captured
+Project and context can precede the current authoring revision. A private worker
+binding correlates comparison-only authoring revisions to that exact retained
+source; it does not grant constructor custody or pretend that an audio ACK
+occurred. Save/status reconstruction retains this binding. Pending audio stays
+pending until its real terminal result, and refused audio stays refused. UI
+correlation also requires the actual current output/candidate association before
+an applied authoring revision can advance. Later audio edits establish a new
+source and leave late old ACKs historical. Existing keyboard input can continue
+without replacing its lease; stale device-slot reservations still refuse.
+Every comparison enqueue invalidates arrangement seek through the existing path.
