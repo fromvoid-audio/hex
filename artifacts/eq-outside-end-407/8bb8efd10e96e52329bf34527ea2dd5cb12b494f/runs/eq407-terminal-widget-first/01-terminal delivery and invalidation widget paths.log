@@ -1,0 +1,52 @@
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+error[E0369]: binary operation `==` cannot be applied to type `Vec<gpui::TouchPhase>`
+   --> crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs:222:13
+    |
+222 |             assert_eq!(*f.outside.borrow(), vec![TouchPhase::Ended]);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             Vec<gpui::TouchPhase>
+    |             Vec<gpui::TouchPhase>
+    |
+note: `gpui::TouchPhase` does not implement `PartialEq`
+   --> third_party/gpui/src/interactive.rs:81:1
+    |
+ 81 | pub enum TouchPhase {
+    | ^^^^^^^^^^^^^^^^^^^ `gpui::TouchPhase` is defined in another crate
+    = note: this error originates in the macro `assert_eq` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0369]: binary operation `==` cannot be applied to type `Vec<gpui::TouchPhase>`
+   --> crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs:223:13
+    |
+223 |             assert_eq!(*f.parent.borrow(), vec![TouchPhase::Ended]);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |             |
+    |             Vec<gpui::TouchPhase>
+    |             Vec<gpui::TouchPhase>
+    |
+note: `gpui::TouchPhase` does not implement `PartialEq`
+   --> third_party/gpui/src/interactive.rs:81:1
+    |
+ 81 | pub enum TouchPhase {
+    | ^^^^^^^^^^^^^^^^^^^ `gpui::TouchPhase` is defined in another crate
+    = note: this error originates in the macro `assert_eq` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+error[E0369]: binary operation `==` cannot be applied to type `Vec<gpui::TouchPhase>`
+   --> crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs:286:9
+    |
+286 |         assert_eq!(*f.outside.borrow(), vec![TouchPhase::Ended]);
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |         |
+    |         Vec<gpui::TouchPhase>
+    |         Vec<gpui::TouchPhase>
+    |
+note: `gpui::TouchPhase` does not implement `PartialEq`
+   --> third_party/gpui/src/interactive.rs:81:1
+    |
+ 81 | pub enum TouchPhase {
+    | ^^^^^^^^^^^^^^^^^^^ `gpui::TouchPhase` is defined in another crate
+    = note: this error originates in the macro `assert_eq` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+For more information about this error, try `rustc --explain E0369`.
+error: could not compile `hex-widgets` (lib test) due to 3 previous errors

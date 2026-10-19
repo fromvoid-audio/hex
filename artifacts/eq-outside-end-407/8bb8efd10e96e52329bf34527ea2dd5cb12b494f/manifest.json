@@ -1,0 +1,115 @@
+{
+  "kind": "negative-first-attempt-ordering-not-ready-never-build-merge",
+  "source": "8bb8efd10e96e52329bf34527ea2dd5cb12b494f",
+  "tree": "d986e8d5f9c6abbd5ecf18f230c696966fa74609",
+  "payloads": {
+    "ORDERING-RETURN.md": {
+      "bytes": 2808,
+      "sha256": "19312680d6480de116f8949ced20f587ff13fd56cbe8b2f136d21dbdbc49cbe5"
+    },
+    "blur-all-controls.stdout": {
+      "bytes": 282,
+      "sha256": "2154b56bcdcf00cc266ea4534fc7807103139088e0d8d4e4c63fb83045cd65d4"
+    },
+    "blur-confirmed.stdout": {
+      "bytes": 265,
+      "sha256": "fa1377274b6ab652c6aa34ab1d04e8de66cca3895673dd942b2d948e10536cc7"
+    },
+    "component-runner.py": {
+      "bytes": 520,
+      "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7"
+    },
+    "file-hashes.json": {
+      "bytes": 676,
+      "sha256": "71dc25b7a4a5e869d8bea9743a8153f5c4812ff37bddbd4842a8cd253f0c8377"
+    },
+    "green.stdout": {
+      "bytes": 233,
+      "sha256": "df3bb6e9a6c2a5ede5562688ec8d46b287991e9d1a722ff19856c9ea636ea54c"
+    },
+    "owner-first-attempt.patch": {
+      "bytes": 14302,
+      "sha256": "7afe0feb8e693423143b1a7cac1417492a887c2c1423f75dc6a56be8752859fa"
+    },
+    "runs/eq407-outside-end-green/01-unchanged actual outside terminal regression.log": {
+      "bytes": 1011,
+      "sha256": "85fecb1fb66d74699ccc8227a463078a250e2412764714132ac99afd827eefc4"
+    },
+    "runs/eq407-outside-end-green/summary.json": {
+      "bytes": 10204,
+      "sha256": "43d3c526df7de4a923c0575ba7f7247c09e113ccb5024f2fb4047db171c7f0a6"
+    },
+    "runs/eq407-terminal-blur-all-controls/01-all synchronous invalidations and failing blur before correction.log": {
+      "bytes": 1346,
+      "sha256": "d5b525d881eadd8583b5fb59ac144081dcb1d96f0a178ce02daaaef62362bb0b"
+    },
+    "runs/eq407-terminal-blur-all-controls/summary.json": {
+      "bytes": 10524,
+      "sha256": "6bbc1741b5c9f7618942244c18780f754617a5e60bd80fde75f28100080436a1"
+    },
+    "runs/eq407-terminal-blur-confirmed/01-deferred invalidation controls before actual blur failure.log": {
+      "bytes": 982,
+      "sha256": "29fc7e28709b406b3a24af1db7934d457b9738191daf2d4aedb2626b5e8f097d"
+    },
+    "runs/eq407-terminal-blur-confirmed/summary.json": {
+      "bytes": 10494,
+      "sha256": "e2e78b5baeb55cc793e378ff5e30cc16b15f645b59961c2dd2cf6dac50a99ee9"
+    },
+    "runs/eq407-terminal-widget-first/01-terminal delivery and invalidation widget paths.log": {
+      "bytes": 2527,
+      "sha256": "7423e8c1a67dfdd4a956f0baf922ac2ee2721dbd1c178f73b9bfa29ae99bde67"
+    },
+    "runs/eq407-terminal-widget-first/summary.json": {
+      "bytes": 10419,
+      "sha256": "1b9f9564b73ec21299fdf84968ef3aa17d80aaeb527ba0e2276e0ddd81dfbf6a"
+    },
+    "runs/eq407-terminal-widget-second/01-terminal delivery and invalidation widget paths.log": {
+      "bytes": 2098,
+      "sha256": "2d062b57d4c8363264ffa7b99410389d77e18c83060f529da2a2bab8317deb73"
+    },
+    "runs/eq407-terminal-widget-second/summary.json": {
+      "bytes": 10421,
+      "sha256": "3acb8466674c547980f496a83d23403e4386e851980738a5eadb5b06ff759863"
+    },
+    "runs/eq407-terminal-widget-third/01-terminal delivery and invalidation widget paths.log": {
+      "bytes": 1298,
+      "sha256": "9624e24fc269b50f45e67eef4d4a2e0a244dccd23e1ba22387427130a94e0b74"
+    },
+    "runs/eq407-terminal-widget-third/summary.json": {
+      "bytes": 10418,
+      "sha256": "f02268c4e58ebe8a28d64637f92a48fd311668746ff2940a9d17892c847ae735"
+    },
+    "source/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs": {
+      "bytes": 49102,
+      "sha256": "a9ad25a84d7269a0348aaf3679cbf9ac971c80b6d9f6c39968d72f82ddd48ad6"
+    },
+    "source/crates/hex-widgets/src/response_graph/scroll.rs": {
+      "bytes": 11033,
+      "sha256": "78e19c3852dafed444f022574e49ca8d8ed86cd2d0dbea72ab9e902600a41f95"
+    },
+    "source/crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs": {
+      "bytes": 11412,
+      "sha256": "7bc7d90b389119bf75c8d329acd1153dd7ececcae045378ae5b11f456cf9a9bb"
+    },
+    "source/crates/hex-widgets/src/response_graph.rs": {
+      "bytes": 45333,
+      "sha256": "c6dac01a103874a61755989d0a8123261dadc2ac3d3933b4b73c6db7b00ac213"
+    },
+    "widget-first.stdout": {
+      "bytes": 243,
+      "sha256": "a5863b1846b30bee84ccd144691c902bdce4d956abb7fb798c05ccd9b76a545d"
+    },
+    "widget-second.stdout": {
+      "bytes": 244,
+      "sha256": "42285ad09a336e98b990147240fb7cd4755c838a774a0eef68fa66bcf0142b2b"
+    },
+    "widget-third-fixture.rs": {
+      "bytes": 11171,
+      "sha256": "06d626c41b506fc75d11f9bc4bf2bf8de6d055341b045a4874beb58195b3348f"
+    },
+    "widget-third.stdout": {
+      "bytes": 243,
+      "sha256": "2d1dabea642163ed9b4a362508e64969271aaeeec5f6724da9e6b52b68d88ce3"
+    }
+  }
+}

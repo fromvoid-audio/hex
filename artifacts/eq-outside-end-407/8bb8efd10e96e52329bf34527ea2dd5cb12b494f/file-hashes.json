@@ -1,0 +1,18 @@
+{
+  "crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs": {
+    "sha256": "a9ad25a84d7269a0348aaf3679cbf9ac971c80b6d9f6c39968d72f82ddd48ad6",
+    "bytes": 49102
+  },
+  "crates/hex-widgets/src/response_graph.rs": {
+    "sha256": "c6dac01a103874a61755989d0a8123261dadc2ac3d3933b4b73c6db7b00ac213",
+    "bytes": 45333
+  },
+  "crates/hex-widgets/src/response_graph/scroll.rs": {
+    "sha256": "78e19c3852dafed444f022574e49ca8d8ed86cd2d0dbea72ab9e902600a41f95",
+    "bytes": 11033
+  },
+  "crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs": {
+    "sha256": "7bc7d90b389119bf75c8d329acd1153dd7ececcae045378ae5b11f456cf9a9bb",
+    "bytes": 11412
+  }
+}
