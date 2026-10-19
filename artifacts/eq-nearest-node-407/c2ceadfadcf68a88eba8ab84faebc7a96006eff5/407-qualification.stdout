@@ -1,0 +1,21 @@
+[1/10] architecture: running
+[1/10] architecture: passed
+[2/10] gpui-patch: running
+[2/10] gpui-patch: passed
+[3/10] ui-style: running
+[3/10] ui-style: passed
+[4/10] device-layout: running
+[4/10] device-layout: passed
+[5/10] format: running
+[5/10] format: passed
+[6/10] diff: running
+[6/10] diff: passed
+[7/10] eq-ui: running
+[7/10] eq-ui: passed
+[8/10] widgets: running
+[8/10] widgets: passed
+[9/10] widgets-clippy: running
+[9/10] widgets-clippy: passed
+[10/10] ui-clippy: running
+[10/10] ui-clippy: passed
+COMPONENT_ONLY_SUMMARY /workspace/hex/artifacts/local-ci/eq-nearest-node-407-qualification/summary.json

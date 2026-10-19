@@ -1,0 +1,9 @@
+{
+  "base": "9389c10b569a1abcd9c620b8e13298e1c242d8bb",
+  "head": "c2ceadfadcf68a88eba8ab84faebc7a96006eff5",
+  "tree": "caa53743d929b4eba3edc64966be0da51edbbcc3",
+  "files": [
+    "crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs",
+    "crates/hex-widgets/src/response_graph/scroll.rs"
+  ]
+}

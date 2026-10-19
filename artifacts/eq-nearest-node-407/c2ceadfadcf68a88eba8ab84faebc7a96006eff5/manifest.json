@@ -1,0 +1,393 @@
+{
+  "schema": 1,
+  "ticket": 2801,
+  "canonical_pr": "https://github.com/PORTALSURFER/hex/pull/407",
+  "source": {
+    "base": "9389c10b569a1abcd9c620b8e13298e1c242d8bb",
+    "head": "c2ceadfadcf68a88eba8ab84faebc7a96006eff5",
+    "tree": "caa53743d929b4eba3edc64966be0da51edbbcc3",
+    "files": [
+      "crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs",
+      "crates/hex-widgets/src/response_graph/scroll.rs"
+    ]
+  },
+  "file_hashes": {
+    "crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs": {
+      "before_blob": "a575ebcc7d844dde37569d2eec2de67c866aa175",
+      "before_sha256": "1660e8bd2078686af72ab554c2208c8725378c3b042c7ef8b09f9ec953931380",
+      "after_blob": "8f8585cfce7ccf6b870cf316f604f6fb4711b7c1",
+      "after_sha256": "e2a8e65d7b483642baba5cb18b88045368fee738b89de070d0b2118f4cb97302"
+    },
+    "crates/hex-widgets/src/response_graph/scroll.rs": {
+      "before_blob": "3c2e31f4b474ed125d41b8d54d9f404512bbc4c8",
+      "before_sha256": "97cbdc116b88f54a5688d5873cb6c71ebdff25b55b6adf2f211d51f80803e456",
+      "after_blob": "16a20486454c5ad497745965ce90b4d471503670",
+      "after_sha256": "c52d95fc277246adfbd184b31acc6420ab5968852662b304f7de08dffa928c91"
+    }
+  },
+  "runs": {
+    "original-red": {
+      "status": "failed",
+      "stale": false,
+      "duration_seconds": 52.24,
+      "start_tree": {
+        "commit": "9389c10b569a1abcd9c620b8e13298e1c242d8bb",
+        "content_sha256": "1dc03616ca2dc02ece215a4c7575ef80726537b452abde61904d4cb803704803",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "eq_review_nearest_unsupported_node_blocks_nearby_cut_and_bubbles",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:52:35Z",
+          "error": null,
+          "exit_code": 101,
+          "log": "artifacts/local-ci/eq-nearest-node-407-original-red/01-actual-overlap.log",
+          "started_at": "2026-10-19T00:51:43Z",
+          "status": "failed",
+          "step_id": "actual-overlap"
+        }
+      ]
+    },
+    "targeted-green": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 32.946,
+      "start_tree": {
+        "commit": "9389c10b569a1abcd9c620b8e13298e1c242d8bb",
+        "content_sha256": "3764fbe7401445c048bce0764595188b5051d9a1fc8b21bb6e5a9e0688706a13",
+        "dirty": true,
+        "dirty_files": [
+          " M crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs",
+          " M crates/hex-widgets/src/response_graph/scroll.rs"
+        ]
+      },
+      "steps": [
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "eq_review_nearest_unsupported_node_blocks_nearby_cut_and_bubbles",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:53:38Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-nearest-node-407-targeted-green/01-actual-overlap.log",
+          "started_at": "2026-10-19T00:53:06Z",
+          "status": "passed",
+          "step_id": "actual-overlap"
+        }
+      ]
+    },
+    "qualification": {
+      "status": "passed",
+      "stale": false,
+      "duration_seconds": 113.784,
+      "start_tree": {
+        "commit": "c2ceadfadcf68a88eba8ab84faebc7a96006eff5",
+        "content_sha256": "3764fbe7401445c048bce0764595188b5051d9a1fc8b21bb6e5a9e0688706a13",
+        "dirty": false,
+        "dirty_files": []
+      },
+      "steps": [
+        {
+          "argv": [
+            "python3",
+            "scripts/check-architecture.py"
+          ],
+          "ended_at": "2026-10-19T00:53:56Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-nearest-node-407-qualification/01-architecture.log",
+          "started_at": "2026-10-19T00:53:56Z",
+          "status": "passed",
+          "step_id": "architecture"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-gpui-patch.py"
+          ],
+          "ended_at": "2026-10-19T00:53:56Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-nearest-node-407-qualification/02-gpui-patch.log",
+          "started_at": "2026-10-19T00:53:56Z",
+          "status": "passed",
+          "step_id": "gpui-patch"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-ui-style.py"
+          ],
+          "ended_at": "2026-10-19T00:53:56Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-nearest-node-407-qualification/03-ui-style.log",
+          "started_at": "2026-10-19T00:53:56Z",
+          "status": "passed",
+          "step_id": "ui-style"
+        },
+        {
+          "argv": [
+            "python3",
+            "scripts/check-device-layout.py"
+          ],
+          "ended_at": "2026-10-19T00:53:56Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-nearest-node-407-qualification/04-device-layout.log",
+          "started_at": "2026-10-19T00:53:56Z",
+          "status": "passed",
+          "step_id": "device-layout"
+        },
+        {
+          "argv": [
+            "cargo",
+            "fmt",
+            "--all",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T00:54:02Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-nearest-node-407-qualification/05-format.log",
+          "started_at": "2026-10-19T00:53:56Z",
+          "status": "passed",
+          "step_id": "format"
+        },
+        {
+          "argv": [
+            "git",
+            "diff",
+            "--check"
+          ],
+          "ended_at": "2026-10-19T00:54:02Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-nearest-node-407-qualification/06-diff.log",
+          "started_at": "2026-10-19T00:54:02Z",
+          "status": "passed",
+          "step_id": "diff"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-ui",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--lib",
+            "eq_ui_tests",
+            "--",
+            "--nocapture"
+          ],
+          "ended_at": "2026-10-19T00:54:46Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-nearest-node-407-qualification/07-eq-ui.log",
+          "started_at": "2026-10-19T00:54:02Z",
+          "status": "passed",
+          "step_id": "eq-ui"
+        },
+        {
+          "argv": [
+            "cargo",
+            "test",
+            "-p",
+            "hex-widgets",
+            "--locked"
+          ],
+          "ended_at": "2026-10-19T00:55:12Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-nearest-node-407-qualification/08-widgets.log",
+          "started_at": "2026-10-19T00:54:46Z",
+          "status": "passed",
+          "step_id": "widgets"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-widgets",
+            "--all-targets",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T00:55:22Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-nearest-node-407-qualification/09-widgets-clippy.log",
+          "started_at": "2026-10-19T00:55:12Z",
+          "status": "passed",
+          "step_id": "widgets-clippy"
+        },
+        {
+          "argv": [
+            "cargo",
+            "clippy",
+            "-p",
+            "hex-ui",
+            "--all-targets",
+            "--features",
+            "ui-test-support",
+            "--locked",
+            "--",
+            "-D",
+            "warnings"
+          ],
+          "ended_at": "2026-10-19T00:55:49Z",
+          "error": null,
+          "exit_code": 0,
+          "log": "artifacts/local-ci/eq-nearest-node-407-qualification/10-ui-clippy.log",
+          "started_at": "2026-10-19T00:55:22Z",
+          "status": "passed",
+          "step_id": "ui-clippy"
+        }
+      ]
+    }
+  },
+  "payloads": {
+    "407-component.py": {
+      "bytes": 548,
+      "sha256": "3cd0662d1cec6046ab19230ae6d66669d9ba1b4749a2e94005da1a0b091188f3"
+    },
+    "407-evidence.py": {
+      "bytes": 8209,
+      "sha256": "f1b03822ed5d0e7b693cadc34fa0db0c9ef1e881de41a5994080b4e19c7e5549"
+    },
+    "407-nearest-test.rs": {
+      "bytes": 3693,
+      "sha256": "dd43988dde44eb62662d3666ae5017b122a228a64ba8668d329f8deccd8da549"
+    },
+    "407-original-red-fixture.rs": {
+      "bytes": 35687,
+      "sha256": "b23f6cc0fdbe8a6231a31bed6384c6be44337a3d8f92096788c698adc23dc2af"
+    },
+    "407-original-red.stdout": {
+      "bytes": 162,
+      "sha256": "44bb4f2ccd59c3d38dda19bb5cd1437c742754682092c6fb91674b424371e179"
+    },
+    "407-qualification-steps.json": {
+      "bytes": 788,
+      "sha256": "8e87dc6dabb6f4272eed8d6356d261b4f60ee0c688a803355d0470988b3b83f8"
+    },
+    "407-qualification.stdout": {
+      "bytes": 612,
+      "sha256": "64cb5ac09cb87e92f086315871b286560b4a3120dfabb882efdd040eb8398f9e"
+    },
+    "407-source.json": {
+      "bytes": 313,
+      "sha256": "4ccae04664e7bb72079155bdc68673a9af74b295e39ee4e6934e5b5a1016deb3"
+    },
+    "407-targeted-green.stdout": {
+      "bytes": 164,
+      "sha256": "97cb30671c9e894c8ad7cdaeb1380045d69c5722db551007e00ee37ff356cda7"
+    },
+    "HANDOFF.md": {
+      "bytes": 3721,
+      "sha256": "b7dce8bca195acdddd1efab934715eef7b7101394c2e5353efeaa37e1827f704"
+    },
+    "before-after-hashes.json": {
+      "bytes": 746,
+      "sha256": "73edfcf8dfcd8b477c39008c5f566d35c724a8f1bd1a3d73ab260eab2ff375ba"
+    },
+    "owner.patch": {
+      "bytes": 7197,
+      "sha256": "88735f85a987a99890f9be816e8029173d69e3157c75ef6cfe183ef801bb2c4a"
+    },
+    "red-reconstruction-proof.json": {
+      "bytes": 206,
+      "sha256": "d19b479536ef4c9fddb111c36359b76fac72bd823bd26ffdd490dbf0761d6d12"
+    },
+    "runs/original-red/01-actual-overlap.log": {
+      "bytes": 2751,
+      "sha256": "090d12fa9e27e99ee3f14c1f203da29bc6622f52f3065d4fb8e8e6c99cf8e1cd"
+    },
+    "runs/original-red/summary.json": {
+      "bytes": 10073,
+      "sha256": "8fc4bd7271753b683e9e5c3e587e4731a9ae293a63e128428236955645437d26"
+    },
+    "runs/qualification/01-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/qualification/02-gpui-patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/qualification/03-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/qualification/04-device-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/qualification/05-format.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/06-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/qualification/07-eq-ui.log": {
+      "bytes": 10051,
+      "sha256": "139b64a755cd70bcb2dfa46139d80154b9d2a14ba3c134d8be8a648f1d0ae306"
+    },
+    "runs/qualification/08-widgets.log": {
+      "bytes": 6152,
+      "sha256": "0b9e79033151af571097581f7cce0531dea81ac6c91e7d45e738425244978bc2"
+    },
+    "runs/qualification/09-widgets-clippy.log": {
+      "bytes": 199,
+      "sha256": "a07a20ec9c64ddd131d45d47fb0846a6ab367556e1950a008c046ad3204e717f"
+    },
+    "runs/qualification/10-ui-clippy.log": {
+      "bytes": 1025,
+      "sha256": "bce75214fc344107e34535940cb38b82f31d123e814c75942ca6ed44d3f32c2e"
+    },
+    "runs/qualification/summary.json": {
+      "bytes": 13956,
+      "sha256": "d66624fd7b92420148f87ab5725286bf9c882f4f9920b9e943aef64171847d69"
+    },
+    "runs/targeted-green/01-actual-overlap.log": {
+      "bytes": 925,
+      "sha256": "a13ec83d9a3a38dbd5a97778b165f2c498b0ca174e6b743dd5625b3e3fbd5864"
+    },
+    "runs/targeted-green/summary.json": {
+      "bytes": 10316,
+      "sha256": "8ad6b999a7f84d12be0ae6389c836fef442229ab2bb4c6699eb0bdedfb0e85a9"
+    }
+  }
+}

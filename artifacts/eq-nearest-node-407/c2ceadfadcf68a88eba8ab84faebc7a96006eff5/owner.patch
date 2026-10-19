@@ -1,0 +1,159 @@
+diff --git a/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs b/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs
+index a575ebcc..8f8585cf 100644
+--- a/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs
+@@ -835,3 +835,131 @@ fn eq_review_physical_end_then_momentum_never_restarts_slope_history(cx: &mut Te
+         settled(view) && read(view, device) == before
+     });
+ }
++
++#[gpui::test]
++fn eq_review_nearest_unsupported_node_blocks_nearby_cut_and_bubbles(cx: &mut TestAppContext) {
++    let mut completed = 0;
++    for kind in [
++        hex_engine::eq::NodeKind::Bell,
++        hex_engine::eq::NodeKind::Notch,
++    ] {
++        let cx = &mut cx.new_app();
++        let (handle, editor, _root, device) = node_window(cx, 0.02);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        let bell = plot(&mut visual, device, 0.5, 0.5);
++        visual.simulate_click(bell, Modifiers::default());
++        pump_until(&editor, cx, |view| {
++            settled(view) && read(view, device).nodes.len() == 2
++        });
++        visual.simulate_resize(size(px(880.0), px(650.0)));
++        visual.run_until_parked();
++        let left = plot(&mut visual, device, 0.02, 0.5);
++        let middle = plot(&mut visual, device, 0.5, 0.5);
++        let width = f32::from(middle.x - left.x) / 0.48;
++        let frequency = 20.0 * 1000.0_f32.powf(0.02 + 4.0 / width);
++        let cut_q = editor.read_with(cx, |view, _| read(view, device).nodes[0].q);
++        let id = editor.read_with(cx, |view, _| read(view, device).nodes[1].id);
++        for (parameter, value) in [
++            (
++                hex_engine::eq::NodeParameter::Kind,
++                ParameterValue::Choice(kind as u32),
++            ),
++            (
++                hex_engine::eq::NodeParameter::Frequency,
++                ParameterValue::Float(frequency),
++            ),
++            (
++                hex_engine::eq::NodeParameter::Q,
++                ParameterValue::Float(cut_q),
++            ),
++        ] {
++            editor.update(cx, |view, _| {
++                assert!(view.enqueue(Request::SetDeviceParameter {
++                    device,
++                    parameter: id.parameter(parameter).unwrap(),
++                    value,
++                }))
++            });
++            pump_until(&editor, cx, settled);
++        }
++        visual.run_until_parked();
++        let before = editor.read_with(cx, |view, _| read(view, device));
++        let cut_y = (before.nodes[0].q / 0.1).ln() / (18.0_f32 / 0.1).ln();
++        // Align both real node heights: notch Q uses the cut axis; Bell gain
++        // defaults to zero, matching the node created at the plot midpoint.
++        let x = (frequency / 20.0).ln() / 1000.0_f32.ln();
++        let y = if kind == hex_engine::eq::NodeKind::Bell {
++            0.5
++        } else {
++            cut_y
++        };
++        let position = plot(&mut visual, device, x, y);
++        let cut_position = plot(&mut visual, device, 0.02, cut_y);
++        let delta = position - cut_position;
++        let distance = (f32::from(delta.x).powi(2) + f32::from(delta.y).powi(2)).sqrt();
++        assert!(
++            distance > 0.0 && distance < 8.0,
++            "actual nodes must overlap hit radii: {distance}"
++        );
++        wheel(
++            &mut visual,
++            position,
++            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++            gpui::TouchPhase::Started,
++            false,
++        );
++        end_wheel(&mut visual, position);
++        pump_until(&editor, cx, settled);
++        assert_eq!(
++            editor.read_with(cx, |view, _| read(view, device)),
++            before,
++            "nearest unsupported {kind:?} must not edit the obscured cut"
++        );
++        assert!(editor.read_with(cx, |view, _| view.device_gesture.snapshot().is_none()));
++        editor.update(cx, |view, cx| {
++            let scroll = &view.device_panel.chain_window.scroll;
++            assert!(scroll.max_offset().width > px(48.0));
++            scroll.set_offset(point(-scroll.max_offset().width / 2.0, px(0.0)));
++            cx.notify();
++        });
++        visual.run_until_parked();
++        let position = plot(&mut visual, device, x, y);
++        let offset = editor.read_with(cx, |view, _| view.device_panel.chain_window.scroll.offset());
++        wheel(
++            &mut visual,
++            position,
++            gpui::ScrollDelta::Pixels(point(px(-12.0), px(24.0))),
++            gpui::TouchPhase::Moved,
++            false,
++        );
++        assert_ne!(
++            editor.read_with(cx, |view, _| view.device_panel.chain_window.scroll.offset()),
++            offset,
++            "unsupported nearest must bubble diagonal wheel to actual outer chain"
++        );
++        assert_eq!(editor.read_with(cx, |view, _| read(view, device)), before);
++        // Reverse nearest ownership within the same overlap. An eligible cut
++        // must still work even though an unsupported node is within its radius.
++        let position = plot(&mut visual, device, 0.02, cut_y);
++        wheel(
++            &mut visual,
++            position,
++            gpui::ScrollDelta::Lines(point(0.0, 1.0)),
++            gpui::TouchPhase::Started,
++            false,
++        );
++        end_wheel(&mut visual, position);
++        pump_until(&editor, cx, |view| {
++            settled(view) && read(view, device).nodes[0].slope == 1
++        });
++        let mut expected = before.clone();
++        expected.nodes[0].slope = 1;
++        assert_eq!(editor.read_with(cx, |view, _| read(view, device)), expected);
++        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++        pump_until(&editor, cx, |view| {
++            settled(view) && read(view, device) == before
++        });
++        completed += 1;
++    }
++    assert_eq!(completed, 2, "both Bell and Notch overlap cases executed");
++}
+diff --git a/crates/hex-widgets/src/response_graph/scroll.rs b/crates/hex-widgets/src/response_graph/scroll.rs
+index 3c2e31f4..16a20486 100644
+--- a/crates/hex-widgets/src/response_graph/scroll.rs
++++ b/crates/hex-widgets/src/response_graph/scroll.rs
+@@ -137,7 +137,6 @@ impl ResponseGraph {
+             .model
+             .nodes
+             .iter()
+-            .filter(|node| self.scroll.eligible.contains(&node.id))
+             .filter_map(|node| {
+                 let dx = (node.position[0] - position[0]) * width;
+                 let dy = (node.position[1] - position[1]) * height;
+@@ -147,6 +146,10 @@ impl ResponseGraph {
+             .min_by(|a, b| a.0.total_cmp(&b.0))
+             .map(|(_, id)| id);
+         let Some(node_id) = node else { return };
++        if !self.scroll.eligible.contains(&node_id) {
++            // Match pointer hit ownership before opting into parameter input.
++            return;
++        }
+         // This is a parameter wheel, not content scrolling. Undo the platform's
+         // preference inversion exactly once so physical up means increasing.
+         let units = f32::from(event.physical_delta().pixel_delta(px(24.0)).y) / 24.0;

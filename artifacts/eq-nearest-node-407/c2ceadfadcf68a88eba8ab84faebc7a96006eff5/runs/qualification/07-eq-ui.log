@@ -1,0 +1,82 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 30.09s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-ecb796af498906df)
+
+running 34 tests
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::eq_backspace_refuses_pending_work_and_keeps_numeric_editing_local ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::eq_creation_escape_and_changed_source_cancel_without_reserving_identity ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::eq_blank_press_drags_edge_cuts_and_bell_as_one_history_edit ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::eq_backspace_removes_only_the_focused_band_and_preserves_history ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_analyzer_status_closed_public_client_is_visible_without_changing_intent ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::eq_creation_outside_release_clamps_and_allocator_or_project_change_cancels ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_axis_labels_are_logarithmic_nonoverlapping_and_keep_the_plot_hit_map ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::eq_layout_contains_full_controls_without_overlap_at_supported_widths ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_analyzer_status_off_selection_clears_only_analyzer_waiting ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_default_spectrum_intent_and_explicit_toggle_do_not_edit_or_fake_audio ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_graph_dominates_body_without_permanent_control_rails ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::eq_rendered_creation_drag_automation_point_edit_and_history ... ok
+test editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_shared_inline_width_preserves_default_and_rejects_invalid_geometry ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED viewport stress 1314x426: below production 960x600 minimum; cropped rail geometry is disjoint, input/visual acceptance not established
+test editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_production_rail_screenshot_sizes_keep_controls_disjoint_and_slope_popup_operable ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_long_numbers_channel_names_and_cut_slopes_fit_and_edit_through_real_controls ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_two_device_selection_focus_off_and_removed_targets_use_one_real_control_channel ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::legacy_eq_upgrade_is_one_undoable_state_and_identity_transaction ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::graph_layout_tests::eq_real_selectors_keep_popup_anchor_keyboard_cancel_and_canonical_history ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_consumed_cut_wheel_cannot_scroll_the_outer_chain ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_cut_wheel_clamps_and_reverses_immediately_with_single_natural_direction_mapping ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_cut_wheel_escape_restores_and_mouse_wheel_quiet_commits_without_end_event ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_cut_wheel_fractional_coalescing_preserves_other_fields_and_one_history_entry ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_cut_wheel_preserves_modified_input_and_active_numeric_text_focus ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_old_scroll_stream_cannot_finish_or_rebind_a_new_same_node_gesture ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_option_bell_drag_changes_only_q_and_has_one_canonical_undo_redo ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_option_drag_refused_begin_preserves_the_other_canonical_gesture_key ... ok
+EQ relative-Q boundary variant: gain=-24
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_option_bell_drag_escape_and_blur_restore_without_hover_or_click_edits ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_horizontal_cut_wheel_bubbles_while_fractional_vertical_still_coalesces ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_option_q_reaches_real_bounds_with_captured_outside_plot_drag ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_physical_end_then_momentum_never_restarts_slope_history ... ok
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+EQ relative-Q boundary variant: gain=24
+UNSUPPORTED real-font metrics on headless GPUI text system: bundled ioskeley mono was not registered; geometry assertions still run
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_two_cut_nodes_scroll_their_stable_parameters_and_preserve_other_nodes ... ok
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_wheel_over_bell_blank_or_modified_input_never_invents_a_shape_or_edit ... ok
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_nearest_unsupported_node_blocks_nearby_cut_and_bubbles ... ok
+test editor::device_panel::tests::eq_ui_tests::node_gesture_tests::eq_review_option_q_moves_both_ways_at_both_gain_boundaries ... ok
+
+test result: ok. 34 passed; 0 failed; 0 ignored; 0 measured; 727 filtered out; finished in 13.88s
+
