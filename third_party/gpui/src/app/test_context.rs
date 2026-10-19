@@ -154,6 +154,24 @@ impl TestAppContext {
         }
     }
 
+    /// Opt into real macOS font registration and shaping for a disposable test.
+    /// Call before opening any window. This retains the deterministic test
+    /// platform and never creates an OS window or changes system font settings.
+    /// Default test contexts continue to use the no-op text system.
+    #[cfg(all(target_os = "macos", feature = "font-kit"))]
+    pub fn use_native_text_system(&mut self) -> Result<()> {
+        let mut app = self.app.borrow_mut();
+        if !app.windows.is_empty() {
+            bail!("native test text system must be selected before opening windows");
+        }
+        let text_system = Arc::new(TextSystem::new(Arc::new(
+            crate::platform::MacTextSystem::new(),
+        )));
+        app.text_system = Arc::clone(&text_system);
+        self.text_system = text_system;
+        Ok(())
+    }
+
     /// Create a single TestAppContext, for non-multi-client tests
     pub fn single() -> Self {
         let dispatcher = TestDispatcher::new(StdRng::seed_from_u64(0));
@@ -315,6 +333,16 @@ impl TestAppContext {
         select_path: impl FnOnce(&std::path::Path) -> Option<std::path::PathBuf>,
     ) {
         self.test_platform.simulate_new_path_selection(select_path);
+    }
+
+    /// Whether the test platform has an outstanding Open picker request.
+    pub fn did_prompt_for_paths(&self) -> bool {
+        self.test_platform.did_prompt_for_paths()
+    }
+
+    /// Complete the test platform Open picker; this does not show a native picker.
+    pub fn simulate_paths_selection(&self, paths: Option<Vec<std::path::PathBuf>>) {
+        self.test_platform.simulate_paths_selection(paths);
     }
 
     /// Simulates clicking a button in an platform-level alert dialog.

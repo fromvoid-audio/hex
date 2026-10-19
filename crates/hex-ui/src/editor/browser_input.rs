@@ -84,18 +84,6 @@ impl BrowserSearch {
         self.select_all(&BrowserSelectAll, window, cx);
     }
 
-    // Results share this input's FocusHandle. Their explicit mouse entry into
-    // text mode selects all too, while retaining the current down-point for drag.
-    pub(super) fn select_all_on_mouse_entry(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let selection = self.mouse_selection;
-        self.focus_and_select_all(window, cx);
-        self.mouse_selection = selection;
-    }
-
     pub(super) fn clear(&mut self, cx: &mut Context<Self>) {
         self.mouse_selection = None;
         self.content.clear();
@@ -315,9 +303,8 @@ impl BrowserSearch {
             origin: event.position,
             dragging: false,
         });
-        if self.clip_name {
-            cx.stop_propagation();
-        }
+        // The field owns this click; its browser parent owns non-text clicks.
+        cx.stop_propagation();
     }
 
     fn mouse_move(
@@ -781,7 +768,9 @@ impl Element for BrowserSearchElement {
             ElementInputHandler::new(bounds, self.input.clone()),
             cx,
         );
-        if let Some(selection) = state.selection.take() {
+        if focus.is_focused(window)
+            && let Some(selection) = state.selection.take()
+        {
             window.paint_quad(selection);
         }
         if let Some(line) = state.line.take() {
