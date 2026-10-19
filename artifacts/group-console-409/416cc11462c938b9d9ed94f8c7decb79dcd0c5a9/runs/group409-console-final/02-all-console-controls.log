@@ -1,0 +1,22 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 41.04s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 11 tests
+test editor::browser::console_drop_ui_test::console_actual_verified_worker_drop_uses_typed_session_clip_and_file_source ... ok
+test editor::browser::console_drop_ui_test::console_browser_between_and_bottom_are_actual_atomic_scene_targets ... ok
+actual Stop-cell copy submitted=false, canonical=Some(Stop), worker/UI error=Some(DisplayError { message: "clip copy requires an existing empty console cell on its source track", batch_member: None })
+test editor::browser::console_drop_ui_test::console_arrangement_midi_stop_cell_refuses_before_worker_and_preserves_stop ... ok
+test editor::browser::console_drop_ui_test::console_browser_drop_real_empty_cell_retires_ghost_and_imports_audio ... ok
+test editor::browser::console_drop_ui_test::console_arrangement_midi_empty_cell_copies_real_source_once_and_protects_occupied_cells ... ok
+test editor::browser::console_drop_ui_test::console_browser_cancel_outside_refusal_and_stale_scan_retire_only_owned_payload ... ok
+test editor::browser::console_drop_ui_test::console_browser_window_deactivation_cancels_ghost_without_late_import ... ok
+test editor::browser::console_drop_ui_test::console_occupied_failure_then_replace_preserves_old_and_one_undo ... ok
+test editor::browser::console_drop_ui_test::console_release_hit_not_last_move_or_selection_owns_the_drop ... ok
+test editor::browser::console_drop_ui_test::console_scene_context_actual_row_empty_list_focus_and_history ... ok
+test editor::browser::console_drop_ui_test::console_browser_view_project_and_deleted_target_changes_reject_late_drop ... ok
+
+test result: ok. 11 passed; 0 failed; 0 ignored; 0 measured; 969 filtered out; finished in 4.72s
+

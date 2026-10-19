@@ -1,0 +1,86 @@
+{
+  "issue": {
+    "issue": {
+      "url": "https://github.com/PORTALSURFER/hex/pull/409",
+      "title": "Move selected Arrangement clips as one atomic group",
+      "issue_number": 409,
+      "body": "Dragging any selected Arrangement clip moves the complete Audio/MIDI selection using one anchor, shared zero bound and one canonical prepared transaction/Undo. Selected originals survive overlapping copies while unselected destinations still overwrite. Invalid lanes, insertion, vertical autoscroll, stale source/selection or cancellation hide all previews and refuse partial release.\n\nPointer updates now reuse an opaque drag-owned capture bound to the actual immutable Project allocation by Weak identity. Metadata and musical placement shells are captured once; updates project original coordinates into retained storage without whole-project scans or metadata allocation. Group waveform rendering resolves originals by checked captured indices. All existing generation/revision/selection/pending/release checks remain, and retirement clears capture inside the shared GPUI payload. Cached clips never become commit authority.\n\nFrozen source72bebf44f5c050cc19d106ddd6bcb3b5be27c386/treeed69c739b4cfa2c1b642013997de43f5fd46c347; canonical22bc and minimal repairdcd1 history preserved. Review returns copy-overlap, stale previews, per-pointer/per-member scans and todo evidence addressed. Five actual original REDs are archived separately from corrected source. No Engine/Session/schema changes.\n\nValidation:109 runtime PASS (96Project,10group GPUI,3legacy single-drag GPUI),3privacy compile-fails PASS, strict all-target Project/UI Clippy, formatting and five guards PASS. Source-bound counting harness measures zero metadata/backing allocation/free after capture for frame and musical previews through16384 clips. Actual GPUI redraw is measured separately; debug/instrumented timings are not native deadline or whole-paint O(selected) claims.\n\nImmutable evidence-only commit512ed15c on evidence/source4-sampler-cloud-20261018, folder evidence/group-409/72bebf44-capture. Archive288867B SHA2560f028a3f58faf2f11ecbe76396255a1d261df6beb00361fb4dd6b4e05f4c9196;78payloads/manifest10b5700fb6f09b6c854363f63295bf655400ac0ba3864779bcf72e1ab9a93754. Includes exact source patches/files, original failures, final logs and finite coordinator-only native request13new/changed runtime+3privacy. Never build/merge evidence refs.\n\nSource-ready handoff to sole merger for required exact prospective-tree CI/review/integration. Compose Source1 Console420 additive Browser destination/deferred cleanup with these capture-retirement calls. No final fullCI/native/physical acceptance or merge claimed. Pulse remains In Progress until actually merged. No app/backend/native/user-data operations.\n\nPulse2803\n<!-- pulse-operation:41a71732c080b39582da6a474f077dcb -->",
+      "state": "open",
+      "user": {
+        "login": "pulse-iocore-portalsurfer[bot]",
+        "name": "pulse-iocore-portalsurfer[bot]",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 340736319
+      },
+      "assignees": [
+        {
+          "login": "PORTALSURFER",
+          "name": "PORTALSURFER",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 41680373
+        }
+      ],
+      "labels": null,
+      "milestone": null,
+      "state_reason": null,
+      "comments": 2,
+      "created_at": "2026-10-18T15:31:54Z",
+      "updated_at": "2026-10-19T09:11:20Z",
+      "closed_at": null,
+      "display_url": "https://github.com/PORTALSURFER/hex/pull/409",
+      "display_title": "Move selected Arrangement clips as one atomic group"
+    },
+    "url": "https://github.com/PORTALSURFER/hex/pull/409",
+    "title": "Move selected Arrangement clips as one atomic group",
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/409",
+    "display_title": "Move selected Arrangement clips as one atomic group"
+  },
+  "pr": {
+    "url": "https://github.com/PORTALSURFER/hex/pull/409",
+    "number": 409,
+    "state": "open",
+    "merged": false,
+    "mergeable": true,
+    "draft": false,
+    "body": "Dragging any selected Arrangement clip moves the complete Audio/MIDI selection using one anchor, shared zero bound and one canonical prepared transaction/Undo. Selected originals survive overlapping copies while unselected destinations still overwrite. Invalid lanes, insertion, vertical autoscroll, stale source/selection or cancellation hide all previews and refuse partial release.\n\nPointer updates now reuse an opaque drag-owned capture bound to the actual immutable Project allocation by Weak identity. Metadata and musical placement shells are captured once; updates project original coordinates into retained storage without whole-project scans or metadata allocation. Group waveform rendering resolves originals by checked captured indices. All existing generation/revision/selection/pending/release checks remain, and retirement clears capture inside the shared GPUI payload. Cached clips never become commit authority.\n\nFrozen source72bebf44f5c050cc19d106ddd6bcb3b5be27c386/treeed69c739b4cfa2c1b642013997de43f5fd46c347; canonical22bc and minimal repairdcd1 history preserved. Review returns copy-overlap, stale previews, per-pointer/per-member scans and todo evidence addressed. Five actual original REDs are archived separately from corrected source. No Engine/Session/schema changes.\n\nValidation:109 runtime PASS (96Project,10group GPUI,3legacy single-drag GPUI),3privacy compile-fails PASS, strict all-target Project/UI Clippy, formatting and five guards PASS. Source-bound counting harness measures zero metadata/backing allocation/free after capture for frame and musical previews through16384 clips. Actual GPUI redraw is measured separately; debug/instrumented timings are not native deadline or whole-paint O(selected) claims.\n\nImmutable evidence-only commit512ed15c on evidence/source4-sampler-cloud-20261018, folder evidence/group-409/72bebf44-capture. Archive288867B SHA2560f028a3f58faf2f11ecbe76396255a1d261df6beb00361fb4dd6b4e05f4c9196;78payloads/manifest10b5700fb6f09b6c854363f63295bf655400ac0ba3864779bcf72e1ab9a93754. Includes exact source patches/files, original failures, final logs and finite coordinator-only native request13new/changed runtime+3privacy. Never build/merge evidence refs.\n\nSource-ready handoff to sole merger for required exact prospective-tree CI/review/integration. Compose Source1 Console420 additive Browser destination/deferred cleanup with these capture-retirement calls. No final fullCI/native/physical acceptance or merge claimed. Pulse remains In Progress until actually merged. No app/backend/native/user-data operations.\n\nPulse2803\n<!-- pulse-operation:41a71732c080b39582da6a474f077dcb -->",
+    "title": "Move selected Arrangement clips as one atomic group",
+    "base": "main",
+    "base_sha": "f9201561eb409bea2a111d7337b7e7a73e4832b1",
+    "head": "pulse/task-2803-g1-41a71732c080",
+    "head_sha": "144d22a7134c59e5a2351b8b55180dd013f70fa0",
+    "head_repo_id": 1411367674,
+    "head_repo_full_name": "PORTALSURFER/hex",
+    "merge_commit_sha": "69b85ef43cdbaf8576e7645be4302a4a83ac60e5",
+    "user": {
+      "login": "pulse-iocore-portalsurfer[bot]",
+      "name": "pulse-iocore-portalsurfer[bot]",
+      "email": null,
+      "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+      "id": 340736319
+    },
+    "requested_reviewers": [
+      {
+        "login": "PORTALSURFER",
+        "name": "PORTALSURFER",
+        "email": null,
+        "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+        "id": 41680373
+      }
+    ],
+    "requested_team_reviewers": null,
+    "diff": null,
+    "comments": null,
+    "created_at": "2026-10-18T15:31:54Z",
+    "updated_at": "2026-10-19T09:11:20Z",
+    "closed_at": null,
+    "merged_at": null,
+    "commits": 22,
+    "changed_files": 20,
+    "additions": 4873,
+    "deletions": 130,
+    "display_url": "https://github.com/PORTALSURFER/hex/pull/409",
+    "display_title": "Move selected Arrangement clips as one atomic group"
+  }
+}

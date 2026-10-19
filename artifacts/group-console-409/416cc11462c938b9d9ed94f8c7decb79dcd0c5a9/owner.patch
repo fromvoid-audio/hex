@@ -1,0 +1,281 @@
+diff --git a/crates/hex-ui/src/editor/console_drop.rs b/crates/hex-ui/src/editor/console_drop.rs
+index ae09123e..1e635ee9 100644
+--- a/crates/hex-ui/src/editor/console_drop.rs
++++ b/crates/hex-ui/src/editor/console_drop.rs
+@@ -138,6 +138,15 @@ impl EditorView {
+         let current = self.mode == EditorMode::Session
+             && self.drag_start_is_current(drag)
+             && !self.edit_pending();
++        // This receiver owns one Console clip, not a mapping of a selection.
++        // Release the shared group borrow before retiring its exact UI payload.
++        let multiple = drag.group.borrow().ids.len() > 1;
++        if multiple {
++            self.clear_clip_drag(drag.project_generation, drag.clip);
++            self.error = Some("selected clips require an arrangement target".into());
++            cx.notify();
++            return;
++        }
+         let command = if current
+             && let ConsoleDestination::Cell { track, scene } = target
+             && track == drag.source_track
+diff --git a/crates/hex-ui/src/editor/group_drag_ui_test.rs b/crates/hex-ui/src/editor/group_drag_ui_test.rs
+index 7d744cde..5ef0150c 100644
+--- a/crates/hex-ui/src/editor/group_drag_ui_test.rs
++++ b/crates/hex-ui/src/editor/group_drag_ui_test.rs
+@@ -1476,3 +1476,256 @@ fn integration_group_console_refuses_partial_primary_copy(cx: &mut TestAppContex
+         assert_eq!(view.worker_requests_pending, 0);
+     });
+ }
++
++#[gpui::test]
++fn console_midi_primary_group_cell_insertion_and_stale_release_are_atomic(cx: &mut TestAppContext) {
++    for (insert, stale) in [(false, false), (true, false), (false, true)] {
++        let cx = &mut cx.new_app();
++        let (_files, handle, editor, clips) = fixture(cx);
++        let mut visual = VisualTestContext::from_window(handle, cx);
++        visual.update(|window, _| window.activate_window());
++        editor.update(&mut visual, |view, _| {
++            assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
++                name: "group midi".into(),
++            })));
++        });
++        pump(&editor, &mut visual);
++        let track = editor.read_with(&visual, |v, _| {
++            v.state
++                .as_ref()
++                .unwrap()
++                .project
++                .tracks()
++                .last()
++                .unwrap()
++                .id()
++        });
++        editor.update(&mut visual, |view, _| {
++            assert!(view.enqueue(Request::Edit(Command::PlaceMidiClip {
++                track,
++                start: hex_project::BeatTime::from_quarters(6).unwrap(),
++                length: hex_project::BeatTime::ONE,
++            })));
++        });
++        pump(&editor, &mut visual);
++        let midi = editor.read_with(&visual, |v, _| {
++            v.state
++                .as_ref()
++                .unwrap()
++                .project
++                .track(track)
++                .unwrap()
++                .midi_clips()[0]
++                .id()
++        });
++        editor.update(&mut visual, |view, _| {
++            assert!(view.enqueue(Request::Edit(Command::AddMidiNote {
++                clip: midi,
++                start: hex_project::BeatTime::ZERO,
++                duration: hex_project::BeatTime::ONE,
++                pitch: 69,
++                channel: 0,
++                velocity: 100,
++            })));
++        });
++        pump(&editor, &mut visual);
++        editor.update(&mut visual, |view, _| {
++            assert!(view.enqueue(Request::Edit(Command::AddScene {
++                name: "midi group target".into(),
++            })));
++        });
++        pump(&editor, &mut visual);
++        let scene = editor.read_with(&visual, |v, _| {
++            v.state.as_ref().unwrap().project.scenes()[0].id()
++        });
++        // The actual dragged/primary member is MIDI; its Audio neighbour must
++        // neither be flattened into it nor silently left behind by this receiver.
++        let selected = vec![clips[1], midi];
++        begin_group(&mut visual, &selected);
++        let retained = editor.read_with(&visual, |view, _| {
++            let drag = view.active_clip_drag.as_ref().unwrap();
++            assert_eq!(drag.clip, midi);
++            assert_eq!(drag.group.borrow().ids, selected);
++            assert!(drag.group.borrow().capture.is_some());
++            assert!(view.drag_start_is_current(drag));
++            drag.clone()
++        });
++        if stale {
++            // A genuine worker revision, not a fabricated stale Project/Event.
++            editor.update(&mut visual, |view, _| {
++                assert!(view.enqueue(Request::Edit(Command::Gain { track, gain: 0.75 })));
++            });
++            pump(&editor, &mut visual);
++        }
++        let (before, revision, history, selection, primary) =
++            editor.read_with(&visual, |view, _| {
++                let state = view.state.as_ref().unwrap();
++                (
++                    state.project.snapshot(),
++                    state.revision,
++                    (state.can_undo, state.can_redo),
++                    view.selected_clip_ids(),
++                    view.selected_clip,
++                )
++            });
++        editor.update(&mut visual, |view, cx| {
++            view.last_enqueued_edit = None;
++            view.set_mode(super::super::EditorMode::Session);
++            cx.notify();
++        });
++        visual.run_until_parked();
++        let selector = if insert {
++            format!("console-insert-before-{}-{}", track.value(), scene.value())
++        } else {
++            format!("console-cell-{}-{}", track.value(), scene.value())
++        };
++        let target = visual
++            .debug_bounds(Box::leak(selector.into_boxed_str()))
++            .unwrap()
++            .center();
++        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
++        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |view, _| {
++            let state = view.state.as_ref().unwrap();
++            assert!(
++                view.last_enqueued_edit.is_none(),
++                "insert={insert} stale={stale}"
++            );
++            assert_eq!(state.project.snapshot(), before);
++            assert_eq!(state.revision, revision);
++            assert_eq!((state.can_undo, state.can_redo), history);
++            assert_eq!(view.selected_clip_ids(), selection);
++            assert_eq!(view.selected_clip, primary);
++            assert!(state.project.session_cell(track, scene).is_none());
++            assert!(view.active_clip_drag.is_none());
++            assert_eq!(view.worker_requests_pending, 0);
++            assert!(view.pending_requests.is_empty());
++            assert!(
++                view.error
++                    .as_deref()
++                    .is_some_and(|s| s.contains("arrangement target"))
++            );
++        });
++        assert!(retained.group.borrow().capture.is_none());
++        assert!(retained.preview.get().is_none());
++        assert!(retained.destination.get().is_none());
++        assert!(!retained.lane_hovered.get());
++        assert!(retained.insertion_line_y.get().is_none());
++        assert!(!visual.update(|_, app| app.has_active_drag()));
++        // Refusal did not insert even a no-op history entry: the next actual
++        // Undo is the prior authored scene (or independent Gain in stale case).
++        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |view, _| {
++            let project = &view.state.as_ref().unwrap().project;
++            if stale {
++                assert_eq!(project.track(track).unwrap().gain(), 1.0);
++                assert_eq!(project.scenes().len(), 1);
++            } else {
++                assert!(project.scenes().is_empty());
++            }
++        });
++        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
++        pump(&editor, &mut visual);
++        editor.read_with(&visual, |view, _| {
++            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), before);
++        });
++    }
++}
++
++#[gpui::test]
++fn console_single_audio_arrangement_payload_still_copies_once_with_one_history_step(
++    cx: &mut TestAppContext,
++) {
++    let (_files, handle, editor, clips) = fixture(cx);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.update(|window, _| window.activate_window());
++    editor.update(&mut visual, |view, _| {
++        assert!(view.enqueue(Request::Edit(Command::AddScene {
++            name: "single target".into(),
++        })));
++    });
++    pump(&editor, &mut visual);
++    let (track, scene, asset, before) = editor.read_with(&visual, |view, _| {
++        let project = &view.state.as_ref().unwrap().project;
++        let source = &project.tracks()[0].clips()[1];
++        assert_eq!(source.id(), clips[1]);
++        (
++            project.tracks()[0].id(),
++            project.scenes()[0].id(),
++            source.asset(),
++            project.snapshot(),
++        )
++    });
++    click(&mut visual, clips[1], false);
++    let down = visual
++        .debug_bounds(Box::leak(
++            format!("clip-drag-surface-{}", clips[1].value()).into_boxed_str(),
++        ))
++        .unwrap()
++        .center();
++    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_move(
++        point(down.x + px(12.0), down.y),
++        MouseButton::Left,
++        Modifiers::default(),
++    );
++    editor.update(&mut visual, |view, cx| {
++        assert_eq!(
++            view.active_clip_drag.as_ref().unwrap().group.borrow().ids,
++            vec![clips[1]]
++        );
++        view.last_enqueued_edit = None;
++        view.set_mode(super::super::EditorMode::Session);
++        cx.notify();
++    });
++    visual.run_until_parked();
++    let target = visual
++        .debug_bounds(Box::leak(
++            format!("console-cell-{}-{}", track.value(), scene.value()).into_boxed_str(),
++        ))
++        .unwrap()
++        .center();
++    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
++    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
++    pump(&editor, &mut visual);
++    let after = editor.read_with(&visual, |view, _| {
++        assert!(matches!(view.last_enqueued_edit,
++            Some(Command::CopyArrangementAudioClipToSession { source, scene: target })
++                if source == clips[1] && target == scene));
++        let project = &view.state.as_ref().unwrap().project;
++        let Some(hex_project::SessionCellContent::Audio(copied)) =
++            project.session_cell(track, scene)
++        else {
++            panic!("actual single Audio copy must reach canonical Console state");
++        };
++        assert_eq!(copied.asset(), asset);
++        assert_eq!(copied.source_start(), 24_000);
++        assert_eq!(copied.source_end(), 48_000);
++        assert_eq!(project.tracks()[0].clips().len(), 3);
++        // Existing Created::SessionClip completion selects its Console cell.
++        assert_eq!(view.selected_cell, Some((track, scene)));
++        assert!(view.selected_clip_ids().is_empty());
++        assert!(view.active_clip_drag.is_none());
++        assert_eq!(view.worker_requests_pending, 0);
++        assert!(view.pending_requests.is_empty());
++        project.snapshot()
++    });
++    assert!(!visual.update(|_, app| app.has_active_drag()));
++    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
++    pump(&editor, &mut visual);
++    editor.read_with(&visual, |view, _| {
++        // Undo restores every authored field but deliberately keeps committed
++        // identity high-water, exactly like the existing group-copy oracle.
++        let mut expected = before.clone();
++        assert!(after.next_id > before.next_id);
++        expected.next_id = after.next_id;
++        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), expected)
++    });
++    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
++    pump(&editor, &mut visual);
++    editor.read_with(&visual, |view, _| {
++        assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
++    });
++}

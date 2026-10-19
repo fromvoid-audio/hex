@@ -1,0 +1,32 @@
+   Compiling hex-project v0.1.0 (/workspace/hex/crates/hex-project)
+   Compiling hex-devices v0.1.0 (/workspace/hex/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex/crates/hex-warp)
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling gpui v0.2.2 (/workspace/hex/third_party/gpui)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-engine v0.1.0 (/workspace/hex/crates/hex-engine)
+   Compiling hex-storage v0.1.0 (/workspace/hex/crates/hex-storage)
+   Compiling hex-media v0.1.0 (/workspace/hex/crates/hex-media)
+   Compiling hex-export v0.1.0 (/workspace/hex/crates/hex-export)
+   Compiling hex-session v0.1.0 (/workspace/hex/crates/hex-session)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+   Compiling hex-widgets v0.1.0 (/workspace/hex/crates/hex-widgets)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 58.89s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+actual selected=3 submitted=Some(CopyArrangementAudioClipToSession { source: ClipId(6), scene: SceneId(8) }) cell=Some(Audio(SessionAudioClip { flavor: Muted, id: ClipId(9), name: "clip", asset: AssetId(3), source_start: 24000, source_end: 48000, gain: ClipGain(0) })) error=None
+
+thread 'editor::drag::group_drag_ui_test::integration_group_console_refuses_partial_primary_copy' (177373) panicked at crates/hex-ui/src/editor/group_drag_ui_test.rs:1470:9:
+unsupported group Console drop must not enqueue a primary-only copy
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::drag::group_drag_ui_test::integration_group_console_refuses_partial_primary_copy ... FAILED
+
+failures:
+
+failures:
+    editor::drag::group_drag_ui_test::integration_group_console_refuses_partial_primary_copy
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 978 filtered out; finished in 1.32s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

@@ -1,0 +1,35 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 39.46s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 25 tests
+test editor::clip_drag_ui_test::audio_clip_drop_uses_option_state_at_release_even_without_modifier_event ... ok
+test editor::clip_drag_ui_test::command_modifier_bypasses_adaptive_snap_while_drag_is_held_and_on_release ... ok
+test editor::clip_drag_ui_test::command_modifier_temporarily_bypasses_beat_anchored_midi_drag_snap ... ok
+test editor::clip_drag_ui_test::arrangement_scroll_rebuilds_drag_lane_eligibility_from_painted_rows ... ok
+test editor::clip_drag_ui_test::held_clip_drag_scrolls_preview_without_editing_and_rejects_stale_project ... ok
+test editor::clip_drag_ui_test::dropping_clip_on_pinned_main_cancels_instead_of_appending_track ... ok
+test editor::clip_drag_ui_test::option_drag_copies_audio_clip_into_an_appended_track ... ok
+test editor::clip_drag_ui_test::option_drag_copies_audio_clip_and_modifier_changes_apply_without_pointer_motion ... ok
+test editor::clip_drag_ui_test::option_drag_copies_midi_clip_into_a_track_between_rows ... ok
+test editor::clip_drag_ui_test::rendered_audio_clip_drop_below_last_track_inserts_without_workspace_jump ... ok
+test editor::clip_drag_ui_test::rendered_audio_clip_drag_starts_previews_and_commits_a_move ... ok
+test editor::clip_drag_ui_test::rendered_audio_clip_drop_between_tracks_inserts_and_preserves_pointer_grab ... ok
+test editor::clip_drag_ui_test::rendered_audio_trim_release_outside_cancels_without_edit ... ok
+test editor::clip_drag_ui_test::rendered_audio_trim_updates_the_clip_waveform_geometry_and_commits_release_snap ... ok
+test editor::clip_drag_ui_test::rendered_clip_drop_excludes_moved_source_but_highlights_copied_source ... ok
+test editor::clip_drag_ui_test::rendered_clip_drop_highlights_only_occupied_audio_and_midi_spans ... ok
+test editor::clip_drag_ui_test::rendered_midi_clip_drop_below_last_track_inserts_without_workspace_jump ... ok
+test editor::clip_drag_ui_test::rendered_midi_clip_drop_between_tracks_inserts_and_preserves_beat_anchor ... ok
+test editor::clip_drag_ui_test::rendered_midi_left_trim_keeps_source_note_timeline_position ... ok
+test editor::clip_drag_ui_test::rendered_midi_drag_moves_between_rows_and_remains_pickable ... ok
+test editor::clip_drag_ui_test::rendered_midi_trim_previews_note_geometry_and_commits_release_snap ... ok
+test editor::clip_drag_ui_test::vertical_drag_scroll_invalidates_old_rows_before_fast_release ... ok
+test editor::clip_drag_ui_test::vertical_drag_scroll_retargets_stationary_clip_before_release ... ok
+test editor::clip_drag_ui_test::shift_edge_stretch_previews_live_and_stationary_modifier_changes_dispatch_one_edit ... ok
+test editor::clip_drag_ui_test::shift_edge_stretch_escape_and_focus_loss_cancel_without_release_edit ... ok
+
+test result: ok. 25 passed; 0 failed; 0 ignored; 0 measured; 955 filtered out; finished in 4.70s
+

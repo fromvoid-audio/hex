@@ -1,0 +1,175 @@
+{
+  "kind": "source-owner-component-handoff-not-full-ci-never-build-merge-evidence",
+  "source": "416cc11462c938b9d9ed94f8c7decb79dcd0c5a9",
+  "tree": "8642b6f3980b7c445ea5f717797c781dd7704d41",
+  "payloads": {
+    "HANDOFF.md": {
+      "bytes": 6756,
+      "sha256": "c673118c836af3eb46ae4880bbe9878d38fd4d895e11c6278f714a067f99aaf5"
+    },
+    "component-runner.py": {
+      "bytes": 520,
+      "sha256": "6a303c8ef818af7d94785d6e901505de4c2b2f7892e972eba03a6ec44609acf7"
+    },
+    "file-hashes.json": {
+      "bytes": 571,
+      "sha256": "ffa1ac14356dd15b0038f429273919454e6a585ec90bd6d17994dc5cb6bc5984"
+    },
+    "final-audio-corrected.stdout": {
+      "bytes": 194,
+      "sha256": "a95d7c375f2eaf6791ec16217c4ff0624f0017b0f2effd24c2a1ecd0c2be62dc"
+    },
+    "final-audio.stdout": {
+      "bytes": 184,
+      "sha256": "f2b6b3f9fd496037f4c60589db29a418d51acd6ae1f54f4d670b774a5d9140f6"
+    },
+    "final-high-water.stdout": {
+      "bytes": 377,
+      "sha256": "b1ee2716a363ed8d860222559db2f002cabcc5e2e36549695a3aa9fc84635e68"
+    },
+    "final.stdout": {
+      "bytes": 833,
+      "sha256": "54a6d5f6787c23fecdabec0c56af8fc1f80e058d185ef218b82983487b79e44e"
+    },
+    "first-fix.stdout": {
+      "bytes": 253,
+      "sha256": "21acefcbf421d668b96452592a011f84fddf59fe273d58d565edb3e569a19fa2"
+    },
+    "github-readback.json": {
+      "bytes": 8196,
+      "sha256": "b1c18e8ee1131e0d36e1afcf2ff5996a813bdbaae9d49c86e0866addb028feb9"
+    },
+    "original.stdout": {
+      "bytes": 187,
+      "sha256": "ee68aaac8e6b48d302ac06b8ff532d7d9a74f9a6407c37fe32e27957d2c66039"
+    },
+    "owner.patch": {
+      "bytes": 12329,
+      "sha256": "95aa17028cd35c9f14992aa30f4fd80730806a44d14c6300df94909bfa4c2fec"
+    },
+    "qualification.json": {
+      "bytes": 971,
+      "sha256": "2a4b87724fe5d319bf77ec277906252f6321b29af8e25f1ae92902de56e3d563"
+    },
+    "runs/group409-console-final/01-all-drag-controls.log": {
+      "bytes": 5483,
+      "sha256": "16d4cf182d76daff1088c97183c19046b186b474d92be334817940cbce816928"
+    },
+    "runs/group409-console-final/02-all-console-controls.log": {
+      "bytes": 2006,
+      "sha256": "0c73c3811433f559730472118d810860bf99d2bbc3f4af6f4f16d8c591ad7107"
+    },
+    "runs/group409-console-final/03-single-clip-controls.log": {
+      "bytes": 3126,
+      "sha256": "beeeb9c972950159a9214e35e6e72da4b8b442f3869d94255b2f772774afc7a8"
+    },
+    "runs/group409-console-final/04-ui-default-strict.log": {
+      "bytes": 1017,
+      "sha256": "f72c636ab498ce4ef761a5ec799c0806819d6b480604668a3cd03229845f3b28"
+    },
+    "runs/group409-console-final/05-ui-feature-strict.log": {
+      "bytes": 621,
+      "sha256": "517c8159642ae71def0895da75421d793fc8a92c635e17966f72bf0a14820919"
+    },
+    "runs/group409-console-final/06-architecture.log": {
+      "bytes": 76,
+      "sha256": "12f85a28cc1e7df4ab0fec9e0c564df99fda16e0cb6006cd55e657f4d96eaa2b"
+    },
+    "runs/group409-console-final/07-gpui-patch.log": {
+      "bytes": 149,
+      "sha256": "838a311c136fb8944c9a7916ff23efefe4da3757e2f428303c90270fb267416a"
+    },
+    "runs/group409-console-final/08-dependency-patches.log": {
+      "bytes": 113,
+      "sha256": "ff5b6f5dbfa93dfa15aa49d64590e4a2ec38e0fda95e203305dcc4cf2fb6f382"
+    },
+    "runs/group409-console-final/09-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/group409-console-final/10-device-layout.log": {
+      "bytes": 84,
+      "sha256": "7725d3137ac3b7d4b2606aac5416192d28ae51649088ebd2c92191ca62506fa9"
+    },
+    "runs/group409-console-final/11-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/group409-console-final/12-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/group409-console-final/summary.json": {
+      "bytes": 15372,
+      "sha256": "9a18a4b908e1818e1ca4d8f6de984a5f6279252470d59eb50538310066d2eed6"
+    },
+    "runs/group409-console-final-audio/01-all-drag-controls.log": {
+      "bytes": 6075,
+      "sha256": "f81927512b3411243cce7be4b38cf9a01d456abcd7d475a384085fe90500d5b0"
+    },
+    "runs/group409-console-final-audio/summary.json": {
+      "bytes": 11309,
+      "sha256": "f0b6b78abb80781928272bbb44ff8c6abdf453c42af7804c240b15562bc43ff7"
+    },
+    "runs/group409-console-final-audio-corrected/01-all-drag-controls.log": {
+      "bytes": 12259,
+      "sha256": "59e8c9ef8b83b9a02104533f2d2356e324748fa3bd4003d8ac5060fc80e26b2a"
+    },
+    "runs/group409-console-final-audio-corrected/summary.json": {
+      "bytes": 11339,
+      "sha256": "5ddc7ba6c465414a65cc993fbb7373dcf5e2162e9cc67c841e0f24f6e7374c48"
+    },
+    "runs/group409-console-final-high-water/01-all-drag-controls.log": {
+      "bytes": 5609,
+      "sha256": "49aa2dca6cf006a7479327b0ecd41e2cd56fa16d62ad3ce200f403cc0b6142cb"
+    },
+    "runs/group409-console-final-high-water/02-ui-feature-strict.log": {
+      "bytes": 360,
+      "sha256": "bd734497e6750e2db948178a812c7df16e13786a8299dbb1adab5f1296cdec4f"
+    },
+    "runs/group409-console-final-high-water/03-ui-style.log": {
+      "bytes": 82,
+      "sha256": "6f37133f9961f8cf3bdabd73999043f014269e4dd5ed83683fa3d445271dac80"
+    },
+    "runs/group409-console-final-high-water/04-fmt.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/group409-console-final-high-water/05-diff.log": {
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "runs/group409-console-final-high-water/summary.json": {
+      "bytes": 11670,
+      "sha256": "a22843b20b46046d1c3f94a2389d527a4b27111e93015f259f9092a0bf221107"
+    },
+    "runs/group409-console-first-fix/01-original-three-audio.log": {
+      "bytes": 703,
+      "sha256": "601d21b30dd7dc0376208384c7780cd72b11ac434aed49a1c1a7ff97fdd84fae"
+    },
+    "runs/group409-console-first-fix/02-midi-group-atomic.log": {
+      "bytes": 571,
+      "sha256": "99b39944c8d99f1e492b2b3effc6250228937878e7d24e5aa77d3d00cea92323"
+    },
+    "runs/group409-console-first-fix/summary.json": {
+      "bytes": 10942,
+      "sha256": "cb634d7c9e40aa69250fc178fd3f940fce609d619a7f9088fbf298ae4622fe08"
+    },
+    "runs/group409-console-original/01-actual-group-console.log": {
+      "bytes": 1988,
+      "sha256": "52a747cc9e64f9c15791572f685cb818bf9835588277d14a38327734ccf6f945"
+    },
+    "runs/group409-console-original/summary.json": {
+      "bytes": 9722,
+      "sha256": "38860cb23eec18df12b17dcfc9c68fbdb149d7a7a86b20fe3cfb72e465b24ebd"
+    },
+    "source/crates/hex-ui/src/editor/console_drop.rs": {
+      "bytes": 8205,
+      "sha256": "294dd5456b8461ea4994a57cc33117c40b64f9fa22b29aabddca4810a396f422"
+    },
+    "source/crates/hex-ui/src/editor/group_drag_ui_test.rs": {
+      "bytes": 68337,
+      "sha256": "bc27ca56742411e01cbe09b51adc4fc2ae5bb68f981433a79170fbac1df5f906"
+    }
+  }
+}
