@@ -532,3 +532,15 @@ The canonical project toolbar begins with the shared numeric BPM input, replacin
 its tempo plus/minus controls. Range, precision, focus/lifecycle behavior and the
 finite native checklist are recorded in [project tempo input](project-tempo-input.md).
 Native physical acceptance remains open until user verification.
+
+### live editable casing — pulse2810 / PR416
+
+Names use the same lowercase presentation while typing, pasting, composing,
+committed and reopened. Stored names, original paths, identifiers, clipboard text
+and parser inputs retain their exact case; this does not rewrite user content.
+The shared widget presentation token is injected by Hex's theme. Caret, selection,
+composition underline, horizontal scrolling and pointer geometry translate between
+original UTF-8 offsets and shaped lowercase expansions; native input ranges remain
+in original UTF-16 units. File-path error fragments retain the separate source-data
+display contract from Pulse2649. Native optimized pointer/IME/clipboard acceptance
+remains coordinator-owned and is not established by headless scene tests.
