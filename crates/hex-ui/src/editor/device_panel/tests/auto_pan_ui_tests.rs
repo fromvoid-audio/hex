@@ -484,3 +484,48 @@ fn auto_pan_preview_uses_effective_pending_choice_without_processing_in_paint(
         view.worker_requests_pending = 0;
     });
 }
+
+#[gpui::test]
+fn auto_pan_unchanged_render_reuses_provider_preview(cx: &mut TestAppContext) {
+    let (service, _, track, bus, device, _) = actor_return_utility_fixture();
+    let original = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.auto-pan"),
+    )
+    .unwrap();
+    service
+        .submit(Request::Edit(Command::ReplaceDeviceState {
+            device,
+            state: original,
+        }))
+        .unwrap();
+    let state = receive_service_event(&service).state;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    editor.update(cx, |view, cx| {
+        view.focused_return = Some(bus);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual
+            .debug_bounds(Box::leak(
+                format!("auto-pan-waveform-{}", device.value()).into_boxed_str()
+            ))
+            .is_some()
+    );
+    auto_pan_panel::take_preview_evaluations();
+    let started = std::time::Instant::now();
+    for _ in 0..8 {
+        editor.update(cx, |_, cx| cx.notify());
+        visual.run_until_parked();
+    }
+    let evaluations = auto_pan_panel::take_preview_evaluations();
+    eprintln!(
+        "actual unchanged AutoPan render: 8 notified redraws, {evaluations} provider evaluations, elapsed {:?}",
+        started.elapsed()
+    );
+    assert_eq!(
+        evaluations, 0,
+        "unchanged redraws must reuse the sampled preview"
+    );
+}

@@ -16,6 +16,16 @@ const PARAMETERS: [(ParameterId, &str); 3] = [
     (ParameterId::from_static(3), "phase"),
 ];
 
+#[cfg(all(test, feature = "ui-test-support"))]
+thread_local! {
+    static PREVIEW_EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+pub(super) fn take_preview_evaluations() -> usize {
+    PREVIEW_EVALUATIONS.with(|count| count.replace(0))
+}
+
 pub(super) fn preview(
     view: &mut EditorView,
     device: DeviceId,
@@ -48,6 +58,8 @@ pub(super) fn preview(
             .map_err(|e| e.to_string())?;
         }
     }
+    #[cfg(all(test, feature = "ui-test-support"))]
+    PREVIEW_EVALUATIONS.with(|count| count.set(count.get() + 1));
     hex_engine::native_auto_pan_waveform_preview(&state).map_err(|e| e.to_string())
 }
 
