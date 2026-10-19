@@ -1,0 +1,24 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.05s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 1 test
+actual unchanged AutoPan render: 8 notified redraws, 8 provider evaluations, elapsed 315.431769ms
+
+thread 'editor::device_panel::tests::auto_pan_ui_tests::auto_pan_unchanged_render_reuses_provider_preview' (218780) panicked at crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs:527:5:
+assertion `left == right` failed: unchanged redraws must reuse the sampled preview
+  left: 8
+ right: 0
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test editor::device_panel::tests::auto_pan_ui_tests::auto_pan_unchanged_render_reuses_provider_preview ... FAILED
+
+failures:
+
+failures:
+    editor::device_panel::tests::auto_pan_ui_tests::auto_pan_unchanged_render_reuses_provider_preview
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1017 filtered out; finished in 0.79s
+
+error: test failed, to rerun pass `-p hex-ui --lib`

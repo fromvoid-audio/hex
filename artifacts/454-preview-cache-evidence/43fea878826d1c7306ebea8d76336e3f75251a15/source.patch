@@ -1,0 +1,684 @@
+diff --git a/crates/hex-ui/src/editor/device_panel.rs b/crates/hex-ui/src/editor/device_panel.rs
+index cb7a0181..dd4a796f 100644
+--- a/crates/hex-ui/src/editor/device_panel.rs
++++ b/crates/hex-ui/src/editor/device_panel.rs
+@@ -142,6 +142,7 @@ pub(super) struct DevicePanelState {
+     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
+     saturator_previews: HashMap<DeviceId, saturator_panel::PreviewCache>,
+     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
++    auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
+     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
+     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
+     pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectra>,
+@@ -451,6 +452,7 @@ pub(super) fn view(
+         view.device_panel.eq8_responses.clear();
+         view.device_panel.saturator_previews.clear();
+         view.device_panel.compressor_previews.clear();
++        view.device_panel.auto_pan_previews.clear();
+         view.device_panel.eq8_graph_gestures.clear();
+         view.device_panel.spectrum_result = None;
+         if let Some(audio) = view.audio.as_mut() {
+@@ -557,6 +559,7 @@ pub(super) fn view(
+         view.device_panel.eq8_responses.clear();
+         view.device_panel.saturator_previews.clear();
+         view.device_panel.compressor_previews.clear();
++        view.device_panel.auto_pan_previews.clear();
+         view.device_panel.eq8_graph_gestures.clear();
+         view.device_panel.spectrum_result = None;
+         view.device_panel.chain_window = Default::default();
+@@ -1095,6 +1098,9 @@ fn retire_transfer_previews(
+     panel.compressor_previews.retain(|device, _| {
+         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
+     });
++    panel.auto_pan_previews.retain(|device, _| {
++        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.auto-pan"))
++    });
+ }
+ 
+ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::DeviceTypeId) -> f32 {
+diff --git a/crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs b/crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs
+index bc722ccc..67649729 100644
+--- a/crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs
++++ b/crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs
+@@ -16,21 +16,49 @@ const PARAMETERS: [(ParameterId, &str); 3] = [
+     (ParameterId::from_static(3), "phase"),
+ ];
+ 
++#[cfg(all(test, feature = "ui-test-support"))]
++thread_local! {
++    static PREVIEW_EVALUATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
++#[cfg(all(test, feature = "ui-test-support"))]
++pub(super) fn take_preview_evaluations() -> usize {
++    PREVIEW_EVALUATIONS.with(|count| count.replace(0))
++}
++
++pub(super) struct PreviewCache {
++    generation: u64,
++    variant: hex_project::DeviceVariant,
++    state: hex_lattice_contract::NativeDeviceState,
++    values: [hex_lattice_contract::ParameterValue; 4],
++    curve: Result<AutoPanWaveformPreview, String>,
++}
++
++#[cfg(all(test, feature = "ui-test-support"))]
++pub(super) fn cached_preview(
++    view: &EditorView,
++    device: DeviceId,
++) -> Option<&Result<AutoPanWaveformPreview, String>> {
++    Some(&view.device_panel.auto_pan_previews.get(&device)?.curve)
++}
++
+ pub(super) fn preview(
+     view: &mut EditorView,
+     device: DeviceId,
+     device_view: &NativeDeviceView,
+ ) -> Result<AutoPanWaveformPreview, String> {
+-    let mut state = view
+-        .state
+-        .as_ref()
+-        .and_then(|s| s.project.device(device))
+-        .ok_or("missing auto pan")?
+-        .state()
+-        .clone();
+-    for parameter in &device_view.parameters {
+-        let id = parameter.descriptor.id;
+-        let value = effective_parameter_value(
++    use hex_lattice_contract::ParameterValue;
++    let mut values = [ParameterValue::Float(0.0); 4];
++    let mut canonical_values = values;
++    for (index, value) in values.iter_mut().enumerate() {
++        let id = ParameterId::from_static(index as u32 + 1);
++        let parameter = device_view
++            .parameters
++            .iter()
++            .find(|p| p.descriptor.id == id)
++            .ok_or("missing auto pan parameter")?;
++        canonical_values[index] = parameter.value;
++        *value = effective_parameter_value(
+             view,
+             ParameterKey {
+                 device,
+@@ -38,17 +66,57 @@ pub(super) fn preview(
+             },
+             parameter.value,
+         );
+-        if value != parameter.value {
+-            state = hex_engine::patch_native_device_parameter_for_class(
+-                NativeDeviceClass::Effect,
+-                &state,
+-                id,
+-                value,
+-            )
+-            .map_err(|e| e.to_string())?;
+-        }
+     }
+-    hex_engine::native_auto_pan_waveform_preview(&state).map_err(|e| e.to_string())
++    let Some(entry) = view.state.as_ref().and_then(|s| s.project.device(device)) else {
++        view.device_panel.auto_pan_previews.remove(&device);
++        return Err("missing auto pan".to_owned());
++    };
++    let state = entry.state();
++    let variant = entry.active_variant();
++    let same_value = |a: ParameterValue, b: ParameterValue| match (a, b) {
++        (ParameterValue::Float(a), ParameterValue::Float(b)) => a.to_bits() == b.to_bits(),
++        _ => a == b,
++    };
++    if let Some(cached) = view.device_panel.auto_pan_previews.get(&device)
++        && cached.generation == view.project_generation
++        && cached.variant == variant
++        && cached.state == *state
++        && cached
++            .values
++            .into_iter()
++            .zip(values)
++            .all(|(a, b)| same_value(a, b))
++    {
++        return cached.curve.clone();
++    }
++    let curve = (|| {
++        let mut draft = state.clone();
++        for (index, value) in values.into_iter().enumerate() {
++            if !same_value(value, canonical_values[index]) {
++                draft = hex_engine::patch_native_device_parameter_for_class(
++                    NativeDeviceClass::Effect,
++                    &draft,
++                    ParameterId::from_static(index as u32 + 1),
++                    value,
++                )
++                .map_err(|e| e.to_string())?;
++            }
++        }
++        #[cfg(all(test, feature = "ui-test-support"))]
++        PREVIEW_EVALUATIONS.with(|count| count.set(count.get() + 1));
++        hex_engine::native_auto_pan_waveform_preview(&draft).map_err(|e| e.to_string())
++    })();
++    view.device_panel.auto_pan_previews.insert(
++        device,
++        PreviewCache {
++            generation: view.project_generation,
++            variant,
++            state: state.clone(),
++            values,
++            curve: curve.clone(),
++        },
++    );
++    curve
+ }
+ 
+ pub(super) fn render_body(
+diff --git a/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs b/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs
+index 41d795af..3d37dc27 100644
+--- a/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs
+@@ -484,3 +484,219 @@ fn auto_pan_preview_uses_effective_pending_choice_without_processing_in_paint(
+         view.worker_requests_pending = 0;
+     });
+ }
++
++#[gpui::test]
++fn auto_pan_unchanged_render_reuses_provider_preview(cx: &mut TestAppContext) {
++    let (service, _, track, bus, device, _) = actor_return_utility_fixture();
++    let original = hex_engine::default_native_device_state(
++        hex_lattice_contract::DeviceTypeId::from_static("hex.auto-pan"),
++    )
++    .unwrap();
++    service
++        .submit(Request::Edit(Command::ReplaceDeviceState {
++            device,
++            state: original,
++        }))
++        .unwrap();
++    let state = receive_service_event(&service).state;
++    let (handle, editor) = actor_editor_window(cx, service, state, track);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    editor.update(cx, |view, cx| {
++        view.focused_return = Some(bus);
++        cx.notify();
++    });
++    visual.run_until_parked();
++    assert!(
++        visual
++            .debug_bounds(Box::leak(
++                format!("auto-pan-waveform-{}", device.value()).into_boxed_str()
++            ))
++            .is_some()
++    );
++    auto_pan_panel::take_preview_evaluations();
++    let started = std::time::Instant::now();
++    for _ in 0..8 {
++        editor.update(cx, |_, cx| cx.notify());
++        visual.run_until_parked();
++    }
++    let evaluations = auto_pan_panel::take_preview_evaluations();
++    eprintln!(
++        "actual unchanged AutoPan render: 8 notified redraws, {evaluations} provider evaluations, elapsed {:?}",
++        started.elapsed()
++    );
++    assert_eq!(
++        evaluations, 0,
++        "unchanged redraws must reuse the sampled preview"
++    );
++}
++
++#[gpui::test]
++fn auto_pan_cache_pending_retirement_error_and_device_lifecycle(cx: &mut TestAppContext) {
++    let (service, _, track, bus, device, _) = actor_return_utility_fixture();
++    let original = hex_engine::default_native_device_state(
++        hex_lattice_contract::DeviceTypeId::from_static("hex.auto-pan"),
++    )
++    .unwrap();
++    service
++        .submit(Request::Edit(Command::ReplaceDeviceState {
++            device,
++            state: original.clone(),
++        }))
++        .unwrap();
++    let state = receive_service_event(&service).state;
++    let (handle, editor) = actor_editor_window(cx, service, state, track);
++    let visual = VisualTestContext::from_window(handle, cx);
++    editor.update(cx, |view, cx| {
++        view.focused_return = Some(bus);
++        cx.notify();
++    });
++    visual.run_until_parked();
++    editor.update(cx, |view, _| {
++        let metadata = hex_engine::native_device_view(&original).unwrap();
++        view.device_panel.auto_pan_previews.remove(&device);
++        auto_pan_panel::take_preview_evaluations();
++        let expected = hex_engine::native_auto_pan_waveform_preview(&original).unwrap();
++        assert_eq!(
++            auto_pan_panel::preview(view, device, &metadata).unwrap(),
++            expected
++        );
++        assert_eq!(auto_pan_panel::take_preview_evaluations(), 1);
++        assert_eq!(
++            auto_pan_panel::preview(view, device, &metadata).unwrap(),
++            expected
++        );
++        assert_eq!(auto_pan_panel::take_preview_evaluations(), 0);
++        // Exercise the private effective-value boundary without pretending these
++        // injected drafts are actual worker responses. Real UI/ACK coverage is
++        // provided separately by both Track/Return A/B Service cases.
++        view.worker_requests_pending = 1;
++        for (index, value) in [
++            ParameterValue::Float(0.25),
++            ParameterValue::Float(3.0),
++            ParameterValue::Float(90.0),
++            ParameterValue::Choice(4),
++        ]
++        .into_iter()
++        .enumerate()
++        {
++            view.device_panel.pending_values.clear();
++            let id = hex_lattice_contract::ParameterId::from_static(index as u32 + 1);
++            view.device_panel.pending_values.insert(
++                ParameterKey {
++                    device,
++                    parameter: id,
++                },
++                value,
++            );
++            let patched = hex_engine::patch_native_device_parameter(&original, id, value).unwrap();
++            let expected = hex_engine::native_auto_pan_waveform_preview(&patched).unwrap();
++            auto_pan_panel::take_preview_evaluations();
++            assert_eq!(
++                auto_pan_panel::preview(view, device, &metadata).unwrap(),
++                expected
++            );
++            assert_eq!(auto_pan_panel::take_preview_evaluations(), 1);
++            assert_eq!(
++                auto_pan_panel::preview(view, device, &metadata).unwrap(),
++                expected
++            );
++            assert_eq!(auto_pan_panel::take_preview_evaluations(), 0);
++        }
++        // Idle retirement must reveal canonical Sine, not the last pending square.
++        view.worker_requests_pending = 0;
++        assert_eq!(
++            auto_pan_panel::preview(view, device, &metadata).unwrap(),
++            expected
++        );
++        assert!(view.device_panel.pending_values.is_empty());
++        assert_eq!(auto_pan_panel::take_preview_evaluations(), 1);
++        assert_eq!(
++            view.state
++                .as_ref()
++                .unwrap()
++                .project
++                .device(device)
++                .unwrap()
++                .state(),
++            &original
++        );
++        view.worker_requests_pending = 1;
++        for (id, value) in [
++            (4, ParameterValue::Choice(99)),
++            (1, ParameterValue::Float(f32::NAN)),
++        ] {
++            view.device_panel.pending_values.clear();
++            view.device_panel.pending_values.insert(
++                ParameterKey {
++                    device,
++                    parameter: hex_lattice_contract::ParameterId::from_static(id),
++                },
++                value,
++            );
++            let error = auto_pan_panel::preview(view, device, &metadata).unwrap_err();
++            assert_eq!(
++                auto_pan_panel::cached_preview(view, device)
++                    .unwrap()
++                    .as_ref()
++                    .unwrap_err(),
++                &error
++            );
++            assert_eq!(
++                auto_pan_panel::preview(view, device, &metadata).unwrap_err(),
++                error
++            );
++        }
++        view.worker_requests_pending = 0;
++        view.device_panel.pending_values.clear();
++        assert_eq!(
++            auto_pan_panel::preview(view, device, &metadata).unwrap(),
++            expected
++        );
++    });
++    let utility = hex_engine::default_native_device_state(
++        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
++    )
++    .unwrap();
++    editor.update(cx, |view, _| {
++        assert!(view.enqueue(Request::Edit(Command::ReplaceDeviceState {
++            device,
++            state: utility
++        })))
++    });
++    pump_until(&editor, cx, |view| {
++        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
++    });
++    visual.run_until_parked();
++    editor.read_with(cx, |view, _| {
++        assert!(!view.device_panel.auto_pan_previews.contains_key(&device))
++    });
++    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++    pump_until(&editor, cx, |view| {
++        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
++    });
++    visual.run_until_parked();
++    editor.read_with(cx, |view, _| {
++        assert_eq!(
++            auto_pan_panel::cached_preview(view, device)
++                .unwrap()
++                .as_ref()
++                .unwrap(),
++            &hex_engine::native_auto_pan_waveform_preview(&original).unwrap()
++        )
++    });
++    editor.update(cx, |view, _| {
++        assert!(view.enqueue(Request::Edit(Command::RemoveDevice(device))))
++    });
++    pump_until(&editor, cx, |view| {
++        view.worker_requests_pending == 0 && view.pending_requests.is_empty()
++    });
++    visual.run_until_parked();
++    editor.read_with(cx, |view, _| {
++        assert!(!view.device_panel.auto_pan_previews.contains_key(&device))
++    });
++    editor.update(cx, |view, _| {
++        let metadata = hex_engine::native_device_view(&original).unwrap();
++        assert!(auto_pan_panel::preview(view, device, &metadata).is_err());
++        assert!(!view.device_panel.auto_pan_previews.contains_key(&device));
++    });
++}
+diff --git a/crates/hex-ui/src/editor/device_panel/tests/device_comparison_tests.rs b/crates/hex-ui/src/editor/device_panel/tests/device_comparison_tests.rs
+index 48c5c93f..d4e22057 100644
+--- a/crates/hex-ui/src/editor/device_panel/tests/device_comparison_tests.rs
++++ b/crates/hex-ui/src/editor/device_panel/tests/device_comparison_tests.rs
+@@ -1667,3 +1667,252 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
+     backend.close();
+     drop(output);
+ }
++
++fn auto_pan_shape(state: &hex_lattice_contract::NativeDeviceState) -> u32 {
++    let view = hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, state).unwrap();
++    match view
++        .parameters
++        .iter()
++        .find(|p| p.descriptor.id.value() == 4)
++        .unwrap()
++        .value
++    {
++        ParameterValue::Choice(value) => value,
++        _ => panic!("auto pan shape choice"),
++    }
++}
++
++fn auto_pan_pair(
++    visual: &mut VisualTestContext,
++    editor: &Entity<EditorView>,
++    cx: &TestAppContext,
++    device: DeviceId,
++    active: DeviceVariant,
++    current: u32,
++    inactive: u32,
++) {
++    visual.run_until_parked();
++    editor.read_with(cx, |view, _| {
++        assert!(view.error.is_none(), "{:?}", view.error);
++        let entry = view.state.as_ref().unwrap().project.device(device).unwrap();
++        assert_eq!(entry.active_variant(), active);
++        assert_eq!(auto_pan_shape(entry.state()), current);
++        let other = entry.comparison().unwrap().inactive();
++        assert_eq!(auto_pan_shape(other), inactive);
++        assert_eq!(
++            auto_pan_panel::cached_preview(view, device)
++                .unwrap()
++                .as_ref()
++                .unwrap(),
++            &hex_engine::native_auto_pan_waveform_preview(entry.state()).unwrap(),
++            "actual rendered cached preview follows the selected canonical bank"
++        );
++        for state in [entry.state(), other] {
++            assert_eq!(state.input_gain_millidb(), -1234);
++            assert_eq!(state.output_gain_millidb(), 4321);
++        }
++    });
++}
++
++fn choose_auto_pan_shape(
++    visual: &mut VisualTestContext,
++    editor: &Entity<EditorView>,
++    cx: &mut TestAppContext,
++    device: DeviceId,
++    value: u32,
++) {
++    let chooser = visual
++        .debug_bounds(Box::leak(
++            format!("device-{}-parameter-4", device.value()).into_boxed_str(),
++        ))
++        .expect("actual waveform selector");
++    visual.simulate_click(chooser.center(), Modifiers::default());
++    visual.run_until_parked();
++    let option = visual
++        .debug_bounds(Box::leak(
++            format!("device-{}-parameter-4-option-{value}", device.value()).into_boxed_str(),
++        ))
++        .expect("actual waveform option");
++    visual.simulate_click(option.center(), Modifiers::default());
++    pump_until(editor, cx, settled);
++    visual.run_until_parked();
++}
++
++fn auto_pan_banks_roundtrip(cx: &mut TestAppContext, on_return: bool) {
++    let directory = Directory::new();
++    let (service, state, track, bus, device) = catalog_fixture(
++        NativeDeviceClass::Effect,
++        hex_lattice_contract::DeviceTypeId::from_static("hex.auto-pan"),
++        on_return,
++    );
++    // Global host trims belong to the device, not either provider payload bank.
++    let trimmed = state
++        .project
++        .device(device)
++        .unwrap()
++        .state()
++        .clone()
++        .with_input_gain_millidb(-1234)
++        .unwrap()
++        .with_output_gain_millidb(4321)
++        .unwrap();
++    service
++        .submit(Request::Edit(Command::ReplaceDeviceState {
++            device,
++            state: trimmed,
++        }))
++        .unwrap();
++    let state = receive_service_event(&service).state;
++    let (handle, editor) = directory.window(cx, service, state, track, bus);
++    let mut visual = VisualTestContext::from_window(handle, cx);
++    visual.simulate_resize(size(px(1600.0), px(800.0)));
++    visual.run_until_parked();
++    choose_auto_pan_shape(&mut visual, &editor, cx, device, 1);
++    title(&mut visual, device);
++    menu(&mut visual, device);
++    labels(&editor, cx, &["switch to b", "copy a to b"]);
++    visual.simulate_keystrokes("enter");
++    pump_until(&editor, cx, settled);
++    visual.run_until_parked();
++    auto_pan_pair(&mut visual, &editor, cx, device, DeviceVariant::B, 1, 1);
++    choose_auto_pan_shape(&mut visual, &editor, cx, device, 4);
++    auto_pan_pair(&mut visual, &editor, cx, device, DeviceVariant::B, 4, 1);
++
++    // Persist the *distinct* pair before copies erase the discriminator.
++    let saved = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
++    let project_path = directory.0.join("distinct-banks.hex");
++    editor.update(cx, |view, _| {
++        assert!(view.enqueue(Request::SaveNew(project_path.clone())))
++    });
++    pump_until(&editor, cx, settled);
++    let reopened = Service::new(48_000, 8, 8_000_000).unwrap();
++    receive_service_event(&reopened);
++    reopened
++        .submit(Request::Open(project_path.clone()))
++        .unwrap();
++    let loaded = receive_service_event(&reopened);
++    assert!(loaded.error.is_none(), "{:?}", loaded.error);
++    assert_eq!(loaded.state.project, saved);
++    // Reopen through THIS actual controller too: identical IDs/payloads in a
++    // new generation must retire the old panel cache and draw the real bank.
++    let generation = editor.read_with(cx, |view, _| view.project_generation);
++    editor.update(cx, |view, _| {
++        assert!(view.enqueue(Request::Open(project_path.clone())))
++    });
++    pump_until(&editor, cx, settled);
++    editor.update(cx, |view, cx| {
++        assert!(view.project_generation > generation);
++        view.selected_track = Some(track);
++        view.focused_return = bus;
++        view.clip_view_open = true;
++        view.device_panel_active = true;
++        cx.notify();
++    });
++    auto_pan_pair(&mut visual, &editor, cx, device, DeviceVariant::B, 4, 1);
++    let preset_path = directory.0.join("distinct-banks.hex-device-preset.json");
++    let owner = |view: &EditorView| hex_session::service::preset::Owner {
++        project_generation: view.project_generation,
++        revision: view.state.as_ref().unwrap().revision,
++        device,
++        class: NativeDeviceClass::Effect,
++        type_id: view
++            .state
++            .as_ref()
++            .unwrap()
++            .project
++            .device(device)
++            .unwrap()
++            .state()
++            .type_id(),
++    };
++    editor.update(cx, |view, _| {
++        let owner = owner(view);
++        assert!(view.enqueue(Request::SaveDevicePreset {
++            owner,
++            path: preset_path.clone()
++        }));
++    });
++    pump_until(&editor, cx, settled);
++    editor.read_with(cx, |view, _| {
++        assert!(view.error.is_none(), "{:?}", view.error)
++    });
++    let preset_bytes = std::fs::read(&preset_path).unwrap();
++    choose_auto_pan_shape(&mut visual, &editor, cx, device, 2);
++    auto_pan_pair(&mut visual, &editor, cx, device, DeviceVariant::B, 2, 1);
++    let before_load = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
++    editor.update(cx, |view, _| {
++        let owner = owner(view);
++        assert!(view.enqueue(Request::LoadDevicePreset {
++            owner,
++            path: preset_path.clone()
++        }));
++    });
++    pump_until(&editor, cx, settled);
++    auto_pan_pair(&mut visual, &editor, cx, device, DeviceVariant::B, 4, 1);
++    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++    pump_until(&editor, cx, settled);
++    editor.read_with(cx, |view, _| {
++        assert_eq!(view.state.as_ref().unwrap().project, before_load)
++    });
++    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
++    pump_until(&editor, cx, settled);
++    auto_pan_pair(&mut visual, &editor, cx, device, DeviceVariant::B, 4, 1);
++    assert_eq!(std::fs::read(&preset_path).unwrap(), preset_bytes);
++    visual.run_until_parked();
++
++    // Both directional menu copies retain the active slot and are exactly one edit.
++    for (active, current, inactive, next) in [
++        (DeviceVariant::B, 4, 1, DeviceVariant::A),
++        (DeviceVariant::A, 1, 4, DeviceVariant::B),
++    ] {
++        title(&mut visual, device);
++        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
++        menu(&mut visual, device);
++        labels(
++            &editor,
++            cx,
++            if active == DeviceVariant::A {
++                &["switch to b", "copy a to b"]
++            } else {
++                &["switch to a", "copy b to a"]
++            },
++        );
++        visual.simulate_keystrokes("down enter");
++        pump_until(&editor, cx, settled);
++        auto_pan_pair(&mut visual, &editor, cx, device, active, current, current);
++        let copied = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
++        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++        pump_until(&editor, cx, settled);
++        editor.read_with(cx, |view, _| {
++            assert_eq!(view.state.as_ref().unwrap().project, before)
++        });
++        auto_pan_pair(&mut visual, &editor, cx, device, active, current, inactive);
++        editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
++        pump_until(&editor, cx, settled);
++        editor.read_with(cx, |view, _| {
++            assert_eq!(view.state.as_ref().unwrap().project, copied)
++        });
++        auto_pan_pair(&mut visual, &editor, cx, device, active, current, current);
++        editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
++        pump_until(&editor, cx, settled);
++        visual.run_until_parked();
++        title(&mut visual, device);
++        visual.simulate_keystrokes("p");
++        pump_until(&editor, cx, settled);
++        visual.run_until_parked();
++        auto_pan_pair(&mut visual, &editor, cx, device, next, inactive, current);
++    }
++    eprintln!(
++        "auto pan generic A/B: return={on_return}; actual ID4 shapes1/4, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved"
++    );
++}
++
++#[gpui::test]
++fn auto_pan_generic_ab_track_shapes_banks_copy_and_persistence(cx: &mut TestAppContext) {
++    auto_pan_banks_roundtrip(cx, false);
++}
++
++#[gpui::test]
++fn auto_pan_generic_ab_return_shapes_banks_copy_and_persistence(cx: &mut TestAppContext) {
++    auto_pan_banks_roundtrip(cx, true);
++}
+diff --git a/docs/auto-pan.md b/docs/auto-pan.md
+index 63236c72..90706c0f 100644
+--- a/docs/auto-pan.md
++++ b/docs/auto-pan.md
+@@ -117,3 +117,28 @@ Undo/Redo, pending preview and disposable current-format save/open. Generic A/B
+ payload ownership is retained; actual combined A/B acceptance awaits its generic
+ integration. Native appearance, listening and Live comparison remain open under
+ the coordinator's single Mac lane; this does not complete Auto Pan or W12.
++
++## retained static preview and combined a/b acceptance
++
++The compact panel retains its provider-sampled preview in the existing device
++panel state. Its key is the stable device ID, project generation, active A/B
++variant, full canonical provider state and all four effective pending parameters.
++Unchanged redraws reuse the curve without cloning/patching provider state or
++resampling the 129 points per channel. Equal invalid float drafts compare by bits,
++so an error result can be retained without displaying an older successful curve.
++The existing project/owner transitions clear previews; removal or type replacement
++retires entries. Pending-value retirement reveals the canonical curve immediately.
++This is a private panel cache, not a second device model or an audio callback path.
++
++A rendered regression measured eight provider evaluations for eight unchanged
++notified redraws before caching and zero afterward. These are actual helper-call
++counts in headless GPUI, not native frame-budget or listening measurements. Both
++Track and Return tests now use the merged generic A/B UI and Service APIs with
++shape ID4: triangle in A, square in B, both directional copies without switching
++the active bank, exact one-edit Undo/Redo, and current-format project/preset
++save/open preserving distinct banks and global host trims. Reopening through the
++same controller retires the old generation and renders the correct bank. Private
++cache-boundary tests cover each effective parameter, pending retirement, errors,
++type replacement and removal; actual UI cases cover canonical worker completion.
++The original Sine PCM/phase/5ms transition and runtime-allocation evidence remains
++separate. Native appearance, input, listening and full Auto Pan parity remain open.

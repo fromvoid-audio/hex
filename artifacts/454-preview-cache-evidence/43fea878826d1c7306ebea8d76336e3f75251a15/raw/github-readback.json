@@ -1,0 +1,110 @@
+[
+  {
+    "status": "fulfilled",
+    "value": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Action completed."
+        }
+      ],
+      "structuredContent": {
+        "url": "https://github.com/PORTALSURFER/hex/pull/454",
+        "number": 454,
+        "state": "open",
+        "merged": false,
+        "mergeable": true,
+        "draft": false,
+        "body": "Auto Pan now offers sine (the unchanged default), triangle, saw up, saw down and symmetric square through the existing provider Choice binding. The 144px panel retains all three dials and adds a waveform selector with provider-owned static left/right gain previews. Shape edits preserve phase and crossfade over the existing 5ms transition interval.\n\nCurrent provider codec is version 2, 16 bytes; unsupported alpha version 1 is explicitly refused. The original Sine PCM fingerprints match at six rates. Square/saw periodic edges are intentional; this change makes no band-limited or Live sound-parity claim.\n\nValidation: 15 provider tests, three rendered Track/Return UI tests, catalog, current-format save/open, registry conformance and a calibrated runtime allocation probe covering 30 rate/shape cases passed. Strict all-target Clippy for hex-devices, hex-engine, hex-ui (ui-test-support) and hex-storage, architecture/GPUI/style/layout guards, format and diff checks passed. Original red tests and intermediate diagnostics are preserved.\n\nFrozen source: `66ffeab16beac1faf384b821fcb2099e1c36d38f`, tree `b32038487d96e9cc0e037661dcb97b5d2d185876`, parent `ca6b764d4896c84c960dd1c68fe0409c2cc4e31d`. Eight files, 832 insertions/38 deletions. Outside provider/panel/tests/docs, only the explicitly approved three-line Engine preview export and two current-format test fixtures changed.\n\nImmutable evidence (orphan branch, NEVER MERGE): [manifest](https://github.com/PORTALSURFER/hex/blob/56011dd6f4a740a11e95420ecc44ae89ce367a35/artifacts/auto-pan-waveforms/66ffeab16beac1faf384b821fcb2099e1c36d38f/manifest.json), SHA256 `28637d3552a707abd009e23148c1734cebdd3dd36ad9593d00800480866fdbeb`. It includes all raw failures/passes, source patch, before/after hashes, allocation fixture and finite native checklist.\n\nSole merger owns prospective full required local CI, final review and merge. Combined generic A/B, optimized native appearance/listening and Live comparison remain open; no installed behavior or full Auto Pan/W12 completion is claimed. Pulse #2852 remains In Progress until authenticated merge; parent #2683/PR299 remains separate.\n\n<!-- pulse-operation:d3a2f9d266fbbe4ed3600a7b3d478bf9 -->",
+        "title": "Add Auto Pan waveform selection and static stereo preview",
+        "base": "main",
+        "base_sha": "1a8f1aded882a259014a23d19db95b39f89080aa",
+        "head": "pulse/task-2852-g1-d3a2f9d266fb",
+        "head_sha": "66ffeab16beac1faf384b821fcb2099e1c36d38f",
+        "head_repo_id": 1411367674,
+        "head_repo_full_name": "PORTALSURFER/hex",
+        "merge_commit_sha": "bba73ea72dbebbde76a2a1292a70f32d29e8a3fd",
+        "user": {
+          "login": "pulse-iocore-portalsurfer[bot]",
+          "name": "pulse-iocore-portalsurfer[bot]",
+          "email": null,
+          "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+          "id": 340736319
+        },
+        "requested_reviewers": [
+          {
+            "login": "PORTALSURFER",
+            "name": "PORTALSURFER",
+            "email": null,
+            "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+            "id": 41680373
+          }
+        ],
+        "requested_team_reviewers": null,
+        "diff": null,
+        "comments": null,
+        "created_at": "2026-10-18T22:50:36Z",
+        "updated_at": "2026-10-18T23:13:22Z",
+        "closed_at": null,
+        "merged_at": null,
+        "commits": 2,
+        "changed_files": 8,
+        "additions": 832,
+        "deletions": 38,
+        "display_url": "https://github.com/PORTALSURFER/hex/pull/454",
+        "display_title": "Add Auto Pan waveform selection and static stereo preview"
+      },
+      "isError": false
+    }
+  },
+  {
+    "status": "fulfilled",
+    "value": {
+      "content": [
+        {
+          "type": "text",
+          "text": "Action completed."
+        }
+      ],
+      "structuredContent": {
+        "issue": {
+          "url": "https://github.com/PORTALSURFER/hex/pull/454",
+          "title": "Add Auto Pan waveform selection and static stereo preview",
+          "issue_number": 454,
+          "body": "Auto Pan now offers sine (the unchanged default), triangle, saw up, saw down and symmetric square through the existing provider Choice binding. The 144px panel retains all three dials and adds a waveform selector with provider-owned static left/right gain previews. Shape edits preserve phase and crossfade over the existing 5ms transition interval.\n\nCurrent provider codec is version 2, 16 bytes; unsupported alpha version 1 is explicitly refused. The original Sine PCM fingerprints match at six rates. Square/saw periodic edges are intentional; this change makes no band-limited or Live sound-parity claim.\n\nValidation: 15 provider tests, three rendered Track/Return UI tests, catalog, current-format save/open, registry conformance and a calibrated runtime allocation probe covering 30 rate/shape cases passed. Strict all-target Clippy for hex-devices, hex-engine, hex-ui (ui-test-support) and hex-storage, architecture/GPUI/style/layout guards, format and diff checks passed. Original red tests and intermediate diagnostics are preserved.\n\nFrozen source: `66ffeab16beac1faf384b821fcb2099e1c36d38f`, tree `b32038487d96e9cc0e037661dcb97b5d2d185876`, parent `ca6b764d4896c84c960dd1c68fe0409c2cc4e31d`. Eight files, 832 insertions/38 deletions. Outside provider/panel/tests/docs, only the explicitly approved three-line Engine preview export and two current-format test fixtures changed.\n\nImmutable evidence (orphan branch, NEVER MERGE): [manifest](https://github.com/PORTALSURFER/hex/blob/56011dd6f4a740a11e95420ecc44ae89ce367a35/artifacts/auto-pan-waveforms/66ffeab16beac1faf384b821fcb2099e1c36d38f/manifest.json), SHA256 `28637d3552a707abd009e23148c1734cebdd3dd36ad9593d00800480866fdbeb`. It includes all raw failures/passes, source patch, before/after hashes, allocation fixture and finite native checklist.\n\nSole merger owns prospective full required local CI, final review and merge. Combined generic A/B, optimized native appearance/listening and Live comparison remain open; no installed behavior or full Auto Pan/W12 completion is claimed. Pulse #2852 remains In Progress until authenticated merge; parent #2683/PR299 remains separate.\n\n<!-- pulse-operation:d3a2f9d266fbbe4ed3600a7b3d478bf9 -->",
+          "state": "open",
+          "user": {
+            "login": "pulse-iocore-portalsurfer[bot]",
+            "name": "pulse-iocore-portalsurfer[bot]",
+            "email": null,
+            "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+            "id": 340736319
+          },
+          "assignees": [
+            {
+              "login": "PORTALSURFER",
+              "name": "PORTALSURFER",
+              "email": null,
+              "avatar_url": "https://avatars.githubusercontent.com/u/41680373?v=4",
+              "id": 41680373
+            }
+          ],
+          "labels": null,
+          "milestone": null,
+          "state_reason": null,
+          "comments": 1,
+          "created_at": "2026-10-18T22:50:36Z",
+          "updated_at": "2026-10-18T23:13:22Z",
+          "closed_at": null,
+          "display_url": "https://github.com/PORTALSURFER/hex/pull/454",
+          "display_title": "Add Auto Pan waveform selection and static stereo preview"
+        },
+        "url": "https://github.com/PORTALSURFER/hex/pull/454",
+        "title": "Add Auto Pan waveform selection and static stereo preview",
+        "display_url": "https://github.com/PORTALSURFER/hex/pull/454",
+        "display_title": "Add Auto Pan waveform selection and static stereo preview"
+      },
+      "isError": false
+    }
+  }
+]

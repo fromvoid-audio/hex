@@ -1,0 +1,19 @@
+   Compiling hex-stream v0.1.0 (/workspace/hex/crates/hex-stream)
+   Compiling hex-ui v0.1.0 (/workspace/hex/crates/hex-ui)
+   Compiling hex-audio v0.1.0 (/workspace/hex/crates/hex-audio)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 46.16s
+     Running unittests src/lib.rs (target/debug/deps/hex_ui-279df080fb98afd5)
+
+running 6 tests
+test editor::device_panel::tests::auto_pan_ui_tests::auto_pan_preview_uses_effective_pending_choice_without_processing_in_paint ... ok
+actual unchanged AutoPan render: 8 notified redraws, 0 provider evaluations, elapsed 333.805976ms
+test editor::device_panel::tests::auto_pan_ui_tests::auto_pan_unchanged_render_reuses_provider_preview ... ok
+test editor::device_panel::tests::auto_pan_ui_tests::auto_pan_waveform_menu_track_return_cancel_commit_preview_history_and_reopen ... ok
+test editor::device_panel::tests::auto_pan_ui_tests::auto_pan_compact_controls_fit_track_and_return_and_share_edit_lifecycle ... ok
+auto_pan generic A/B: return=true; actual ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::auto_pan_generic_ab_return_shapes_banks_copy_and_persistence ... ok
+auto_pan generic A/B: return=false; actual ID7 25/75, both copy directions, project/preset reopen, load+copy one Undo/Redo, global trims preserved
+test editor::device_panel::tests::device_comparison_tests::auto_pan_generic_ab_track_shapes_banks_copy_and_persistence ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 1014 filtered out; finished in 3.86s
+

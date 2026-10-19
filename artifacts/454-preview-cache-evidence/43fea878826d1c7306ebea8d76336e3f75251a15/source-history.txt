@@ -1,0 +1,15 @@
+commit 43fea878826d1c7306ebea8d76336e3f75251a15
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 12:43:52 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 12:43:52 2026 +0000
+
+    fix(auto-pan): retain static previews and verify generic A/B bank lifecycle
+
+commit 82edbcd9c4e714c87e82b61d00873bec9077149d
+Author:     PORTALSURFER <wsvasek@gmail.com>
+AuthorDate: Mon Oct 19 12:40:07 2026 +0000
+Commit:     PORTALSURFER <wsvasek@gmail.com>
+CommitDate: Mon Oct 19 12:40:07 2026 +0000
+
+    test(auto-pan): expose repeated provider preview work on unchanged redraw

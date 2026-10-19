@@ -1,0 +1,78 @@
+#[gpui::test]
+fn auto_pan_cache_pending_retirement_error_and_device_lifecycle(cx: &mut TestAppContext) {
+    let (service, _, track, bus, device, _) = actor_return_utility_fixture();
+    let original = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.auto-pan"),
+    ).unwrap();
+    service.submit(Request::Edit(Command::ReplaceDeviceState { device, state: original.clone() })).unwrap();
+    let state = receive_service_event(&service).state;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    let visual = VisualTestContext::from_window(handle, cx);
+    editor.update(cx, |view, cx| { view.focused_return = Some(bus); cx.notify(); });
+    visual.run_until_parked();
+    editor.update(cx, |view, _| {
+        let metadata = hex_engine::native_device_view(&original).unwrap();
+        view.device_panel.auto_pan_previews.remove(&device);
+        auto_pan_panel::take_preview_evaluations();
+        let expected = hex_engine::native_auto_pan_waveform_preview(&original).unwrap();
+        assert_eq!(auto_pan_panel::preview(view, device, &metadata).unwrap(), expected);
+        assert_eq!(auto_pan_panel::take_preview_evaluations(), 1);
+        assert_eq!(auto_pan_panel::preview(view, device, &metadata).unwrap(), expected);
+        assert_eq!(auto_pan_panel::take_preview_evaluations(), 0);
+        // Exercise the private effective-value boundary without pretending these
+        // injected drafts are actual worker responses. Real UI/ACK coverage is
+        // provided separately by both Track/Return A/B Service cases.
+        view.worker_requests_pending = 1;
+        for (index, value) in [ParameterValue::Float(0.25), ParameterValue::Float(3.0),
+                              ParameterValue::Float(90.0), ParameterValue::Choice(4)].into_iter().enumerate() {
+            view.device_panel.pending_values.clear();
+            let id = hex_lattice_contract::ParameterId::from_static(index as u32 + 1);
+            view.device_panel.pending_values.insert(ParameterKey { device, parameter: id }, value);
+            let patched = hex_engine::patch_native_device_parameter(&original, id, value).unwrap();
+            let expected = hex_engine::native_auto_pan_waveform_preview(&patched).unwrap();
+            auto_pan_panel::take_preview_evaluations();
+            assert_eq!(auto_pan_panel::preview(view, device, &metadata).unwrap(), expected);
+            assert_eq!(auto_pan_panel::take_preview_evaluations(), 1);
+            assert_eq!(auto_pan_panel::preview(view, device, &metadata).unwrap(), expected);
+            assert_eq!(auto_pan_panel::take_preview_evaluations(), 0);
+        }
+        // Idle retirement must reveal canonical Sine, not the last pending square.
+        view.worker_requests_pending = 0;
+        assert_eq!(auto_pan_panel::preview(view, device, &metadata).unwrap(), expected);
+        assert!(view.device_panel.pending_values.is_empty());
+        assert_eq!(auto_pan_panel::take_preview_evaluations(), 1);
+        assert_eq!(view.state.as_ref().unwrap().project.device(device).unwrap().state(), &original);
+        view.worker_requests_pending = 1;
+        for (id, value) in [(4, ParameterValue::Choice(99)), (1, ParameterValue::Float(f32::NAN))] {
+            view.device_panel.pending_values.clear();
+            view.device_panel.pending_values.insert(ParameterKey { device, parameter: hex_lattice_contract::ParameterId::from_static(id) }, value);
+            let error = auto_pan_panel::preview(view, device, &metadata).unwrap_err();
+            assert_eq!(auto_pan_panel::cached_preview(view, device).unwrap().as_ref().unwrap_err(), &error);
+            assert_eq!(auto_pan_panel::preview(view, device, &metadata).unwrap_err(), error);
+        }
+        view.worker_requests_pending = 0;
+        view.device_panel.pending_values.clear();
+        assert_eq!(auto_pan_panel::preview(view, device, &metadata).unwrap(), expected);
+    });
+    let utility = hex_engine::default_native_device_state(
+        hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+    ).unwrap();
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Edit(Command::ReplaceDeviceState { device, state: utility }))));
+    pump_until(&editor, cx, |view| view.worker_requests_pending == 0 && view.pending_requests.is_empty());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(!view.device_panel.auto_pan_previews.contains_key(&device)));
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| view.worker_requests_pending == 0 && view.pending_requests.is_empty());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert_eq!(auto_pan_panel::cached_preview(view, device).unwrap().as_ref().unwrap(),
+        &hex_engine::native_auto_pan_waveform_preview(&original).unwrap()));
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Edit(Command::RemoveDevice(device)))));
+    pump_until(&editor, cx, |view| view.worker_requests_pending == 0 && view.pending_requests.is_empty());
+    visual.run_until_parked();
+    editor.read_with(cx, |view, _| assert!(!view.device_panel.auto_pan_previews.contains_key(&device)));
+    editor.update(cx, |view, _| {
+        let metadata = hex_engine::native_device_view(&original).unwrap();
+        assert!(auto_pan_panel::preview(view, device, &metadata).is_err());
+        assert!(!view.device_panel.auto_pan_previews.contains_key(&device));
+    });
+}
