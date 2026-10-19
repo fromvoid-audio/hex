@@ -1,0 +1,1122 @@
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs
+index fd448cba..0d2108af 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs
+@@ -468,11 +468,11 @@ impl ArrangementRootAssembly {
+         self.fault(frontier + 2)?;
+         Ok(())
+     }
+-    pub(super) fn restore(
+-        &mut self,
+-        tracks: &mut tracks::TrackAssembly,
+-        returns: &mut returns::ReturnAssembly,
+-        shared: &mut crate::session_shared_preparation::SessionSharedConstruction,
++    pub(super) fn preflight_restore(
++        &self,
++        tracks: &tracks::TrackAssembly,
++        returns: &returns::ReturnAssembly,
++        shared: &crate::session_shared_preparation::SessionSharedConstruction,
+     ) -> Result<(), AudioStorageError> {
+         let view = self.view_at(None)?;
+         tracks.preflight_root_restore(view.tracks)?;
+@@ -491,6 +491,15 @@ impl ArrangementRootAssembly {
+             }
+             ContextLifecycle::RetirementPending => return Err(AudioStorageError::UnknownStorage),
+         }
++        Ok(())
++    }
++    pub(super) fn restore(
++        &mut self,
++        tracks: &mut tracks::TrackAssembly,
++        returns: &mut returns::ReturnAssembly,
++        shared: &mut crate::session_shared_preparation::SessionSharedConstruction,
++    ) -> Result<(), AudioStorageError> {
++        self.preflight_restore(tracks, returns, shared)?;
+         // Validate the whole restoration batch before unpacking any final owner.
+         if let Some(Project {
+             project_track_ids: _,
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs
+index a8ba8a65..2e30a67f 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs
+@@ -83,9 +83,18 @@ impl<'a> Inputs<'a> {
+         ) {
+             return Err(AudioStorageError::UnknownStorage);
+         }
+-        ledger.borrow_custody_on_control(self.preparation, AudioStorageRole::Current)?;
+-        ledger.root(self.rows, AudioStorageRole::FailedConstruction)?;
+-        self.rows.visit_audio_storage(ledger, None, None)?;
++        // Closed-operation composition uses the actual typed visitor directly.
++        // The public wrapper's outer mutate() invalidates its ledger until it
++        // finishes, so nonempty nested visitors cannot reenter that wrapper.
++        // ANY failure here aborts and discards this scoped ledger; no partial
++        // ledger can escape or be resumed. Public wrapper behavior is unchanged.
++        ledger.root(self.preparation, AudioStorageRole::Current)?;
++        self.preparation
++            .visit_audio_storage(ledger, AudioStorageRole::Current)?;
++        if !std::ptr::eq(self.rows, &self.preparation.arrangement_clips) {
++            ledger.root(self.rows, AudioStorageRole::FailedConstruction)?;
++            self.rows.visit_audio_storage(ledger, None, None)?;
++        }
+         ledger.root(self.editor, AudioStorageRole::Caller)?;
+         ledger.borrow_editor_history_buffers_on_control(self.editor)?;
+         ledger.borrow_editor_exclusive_buffers_on_control(self.editor)?;
+@@ -112,20 +121,17 @@ impl<'a> Inputs<'a> {
+         // Charge the actual enclosing preparation body, its cache/pending
+         // backing and cancellation; do not confuse PCM-only visitation with it.
+         inventory.visit_original_only_body_on_control(ledger)?;
++        if std::ptr::eq(self.rows, &self.preparation.arrangement_clips) {
++            ledger.require_original_inputs_bound(self.original)?;
++        }
+         ledger.original_ledger_storage(self.original)
+     }
+ }
+ impl ArrangementClips {
++    #[cfg(test)]
+     #[expect(
+         clippy::too_many_arguments,
+-        reason = "one private operation binds actual input custodies, never a scalar permit"
+-    )]
+-    #[cfg_attr(
+-        not(test),
+-        expect(
+-            dead_code,
+-            reason = "private aggregate compiler awaits Service/publication integration"
+-        )
++        reason = "historical independent component oracle"
+     )]
+     pub(crate) fn compile_original_sampler_on_control(
+         &mut self,
+@@ -137,78 +143,29 @@ impl ArrangementClips {
+         transforms: &AudioTransformPreparation,
+         reservation: AudioStorageLedgerReservation,
+     ) -> Result<(), AudioStorageError> {
+-        if transforms.cancellation_requested_on_control() {
+-            return Err(AudioStorageError::SourceMismatch);
+-        }
+-        let resources = DeviceResourcePreparation {
+-            bank,
+-            max_scope_metadata_bytes: 65_536,
+-        };
+-        let construction = self.sampler_construction(editor.project(), resources)?;
+-        let ledger_bytes = AudioRootStorageLedger::requested_metadata_bytes(reservation)?;
+-        let arithmetic_inline = size_of::<AudioRootStorageLedger<'_>>();
+-        // The original ledger's physical body/backings are DATA via Inputs;
+-        // its still-required live growth is a SEPARATE peak allowance.
+-        let original_growth = original.original_live_growth_allowance()?;
+-        let inputs = Inputs {
++        let construction = Inputs {
+             rows: self,
+             preparation,
+             editor,
+             resources: bank,
+             previous,
+             original,
++        }
++        .inspect(transforms, reservation)?;
++        self.construct_original_sampler(editor, bank, previous, transforms, construction)
++    }
++    fn construct_original_sampler(
++        &mut self,
++        editor: &hex_project::Editor,
++        bank: &DeviceResourceBank,
++        previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
++        transforms: &AudioTransformPreparation,
++        construction: Construction,
++    ) -> Result<(), AudioStorageError> {
++        let resources = DeviceResourcePreparation {
++            bank,
++            max_scope_metadata_bytes: 65_536,
+         };
+-        transforms.with_pcm_inventory_on_control(|inventory| {
+-            let cache = inventory.original_only_storage_cost()?;
+-            let retained_extra = add(
+-                add(construction.retained, ledger_bytes)?,
+-                add(arithmetic_inline, cache.transaction_new_backing_bytes)?,
+-            )?;
+-            let peak_extra = add(
+-                add(construction.peak, ledger_bytes)?,
+-                add(
+-                    add(arithmetic_inline, cache.transaction_new_backing_bytes)?,
+-                    original_growth,
+-                )?,
+-            )?;
+-            let retained_data = reservation
+-                .max_retained_bytes
+-                .checked_sub(retained_extra)
+-                .ok_or(AudioStorageError::ReservationExceeded)?;
+-            let peak_data = reservation
+-                .max_construction_peak_bytes
+-                .checked_sub(peak_extra)
+-                .ok_or(AudioStorageError::ReservationExceeded)?;
+-            AudioRootStorageLedger::arithmetic_cost_for_limits(
+-                reservation,
+-                retained_data,
+-                peak_data,
+-                |ledger| inputs.visit(inventory, ledger),
+-            )?;
+-            // Allocate only AFTER both bound checks. This normal pass MUST NOT
+-            // be omitted even when cheap arithmetic fitted without replay.
+-            let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
+-            inputs.visit(inventory, &mut ledger)?;
+-            ledger.validate_selected_shared_handles_on_control()?;
+-            let actual = ledger.summary()?;
+-            if ledger.metadata_capacity_bytes() != Some(ledger_bytes)
+-                || add(actual.data_bytes, retained_extra)? > reservation.max_retained_bytes
+-                || add(
+-                    add(
+-                        actual.data_bytes,
+-                        actual
+-                            .construction_peak_bytes
+-                            .checked_sub(actual.retained_bytes)
+-                            .ok_or(AudioStorageError::Overflow)?,
+-                    )?,
+-                    peak_extra,
+-                )? > reservation.max_construction_peak_bytes
+-            {
+-                return Err(AudioStorageError::ReservationExceeded);
+-            }
+-            // Scoped ledger and borrowed records die WITHIN the three guards.
+-            Ok(())
+-        })?;
+         // No arbitrary caller callback, exported quote or field mutation
+         // intervenes before this same operation uses its persistent fields.
+         if transforms.cancellation_requested_on_control() {
+@@ -279,5 +236,157 @@ impl ArrangementClips {
+     }
+ }
+ 
++impl Inputs<'_> {
++    fn inspect(
++        &self,
++        transforms: &AudioTransformPreparation,
++        reservation: AudioStorageLedgerReservation,
++    ) -> Result<Construction, AudioStorageError> {
++        if transforms.cancellation_requested_on_control() {
++            return Err(AudioStorageError::SourceMismatch);
++        }
++        let editor = self.editor;
++        let original = self.original;
++        let resources = DeviceResourcePreparation {
++            bank: self.resources,
++            max_scope_metadata_bytes: 65_536,
++        };
++        let construction = self
++            .rows
++            .sampler_construction(editor.project(), resources)?;
++        let ledger_bytes = AudioRootStorageLedger::requested_metadata_bytes(reservation)?;
++        let arithmetic_inline = size_of::<AudioRootStorageLedger<'_>>();
++        // The original ledger's physical body/backings are DATA via Inputs;
++        // its still-required live growth is a SEPARATE peak allowance.
++        let original_growth = original.original_live_growth_allowance()?;
++        transforms.with_pcm_inventory_on_control(|inventory| {
++            let cache = inventory.original_only_storage_cost()?;
++            let retained_extra = add(
++                add(construction.retained, ledger_bytes)?,
++                add(arithmetic_inline, cache.transaction_new_backing_bytes)?,
++            )?;
++            let peak_extra = add(
++                add(construction.peak, ledger_bytes)?,
++                add(
++                    add(arithmetic_inline, cache.transaction_new_backing_bytes)?,
++                    original_growth,
++                )?,
++            )?;
++            let retained_data = reservation
++                .max_retained_bytes
++                .checked_sub(retained_extra)
++                .ok_or(AudioStorageError::ReservationExceeded)?;
++            let peak_data = reservation
++                .max_construction_peak_bytes
++                .checked_sub(peak_extra)
++                .ok_or(AudioStorageError::ReservationExceeded)?;
++            AudioRootStorageLedger::arithmetic_cost_for_limits(
++                reservation,
++                retained_data,
++                peak_data,
++                |ledger| self.visit(inventory, ledger),
++            )?;
++            // Allocate only AFTER both bound checks. This normal pass MUST NOT
++            // be omitted even when cheap arithmetic fitted without replay.
++            let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
++            self.visit(inventory, &mut ledger)?;
++            ledger.validate_selected_shared_handles_on_control()?;
++            let actual = ledger.summary()?;
++            if ledger.metadata_capacity_bytes() != Some(ledger_bytes)
++                || add(actual.data_bytes, retained_extra)? > reservation.max_retained_bytes
++                || add(
++                    add(
++                        actual.data_bytes,
++                        actual
++                            .construction_peak_bytes
++                            .checked_sub(actual.retained_bytes)
++                            .ok_or(AudioStorageError::Overflow)?,
++                    )?,
++                    peak_extra,
++                )? > reservation.max_construction_peak_bytes
++            {
++                return Err(AudioStorageError::ReservationExceeded);
++            }
++            // Scoped ledger and borrowed records die WITHIN the three guards.
++            Ok(())
++        })?;
++        Ok(construction)
++    }
++}
++impl crate::AudioPreparationCustody {
++    /// Construction-local only. Every new owner is installed directly into
++    /// this SAME parent; immutable whole-parent inventory ends before mutation.
++    #[cfg_attr(not(test), expect(dead_code, reason = "awaits Service integration"))]
++    pub(crate) fn compile_original_sampler_on_control(
++        &mut self,
++        editor: &hex_project::Editor,
++        bank: &DeviceResourceBank,
++        previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
++        original: &AudioRootStorageLedger<'_>,
++        transforms: &AudioTransformPreparation,
++        reservation: AudioStorageLedgerReservation,
++    ) -> Result<(), AudioStorageError> {
++        self.inspect_sampler_destination()?;
++        let construction = Inputs {
++            rows: &self.arrangement_clips,
++            preparation: self,
++            editor,
++            resources: bank,
++            previous,
++            original,
++        }
++        .inspect(transforms, reservation)?;
++        // No exported approval or callback intervenes. Safe disjoint borrowing
++        // retains the parent and all of its source/cleanup destinations in place.
++        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++            self.arrangement_clips.construct_original_sampler(
++                editor,
++                bank,
++                previous,
++                transforms,
++                construction,
++            )
++        })) {
++            Ok(result) => result,
++            Err(payload) => {
++                // The constructor unwound with owners still in THIS parent.
++                // Retire once through its existing ordered cleanup. The first
++                // payload stays owned locally during cleanup, then is installed
++                // before any secondary cleanup payload can be dropped.
++                self.phase = AudioPreparationPhase::Cleaning;
++                self.cleanup_on_control();
++                self.phase = AudioPreparationPhase::FailedIncomplete;
++                let secondary = self.first_panic.replace(payload);
++                drop(secondary);
++                Err(AudioStorageError::UnknownStorage)
++            }
++        }
++    }
++    fn inspect_sampler_destination(&self) -> Result<(), AudioStorageError> {
++        if !matches!(
++            self.phase,
++            AudioPreparationPhase::Vacant
++                | AudioPreparationPhase::ArrangementSources
++                | AudioPreparationPhase::ArrangementAndSessionSources
++        ) || self.first_panic.is_some()
++            || self.original_resources_drop_pending
++            || self
++                .slots
++                .iter()
++                .any(|slot| slot.disposal == Disposal::Pending)
++        {
++            return Err(AudioStorageError::UnknownStorage);
++        }
++        // Actual restoration destinations and pending owners are validated by
++        // the mandatory whole-parent visitor, not by Vacant or scalar summary.
++        self.arrangement_clips.root.preflight_restore(
++            &self.arrangement_clips.tracks,
++            &self.arrangement_clips.returns,
++            &self.shared,
++        )?;
++        Ok(())
++    }
++}
++
+ #[cfg(test)]
+ pub(super) mod tests;
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs
+index 4017a9a0..54a9fa6f 100644
+--- a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs
+@@ -769,3 +769,5 @@ pub(in crate::audio_preparation::arrangement_clips) fn compiled_root_owned_rows(
+     // persistent compiler destinations and their real resource leases remain.
+     rows
+ }
++
++mod parent_bound;
+diff --git a/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs
+new file mode 100644
+index 00000000..0fe3276f
+--- /dev/null
++++ b/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs
+@@ -0,0 +1,661 @@
++use super::*;
++
++fn original<'a>(
++    bank: &'a DeviceResourceBank,
++    signal: &'a crate::RetainedControlCancellationSignal,
++    worker: &'a crate::RetainedControlCancellation,
++) -> AudioRootStorageLedger<'a> {
++    let mut ledger = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
++    ledger
++        .borrow_device_resource_bank_on_control(bank, AudioStorageRole::Caller)
++        .unwrap();
++    signal.visit_storage_on_control(&mut ledger).unwrap();
++    worker.visit_storage_on_control(&mut ledger).unwrap();
++    ledger.growth(4096).unwrap();
++    ledger
++}
++
++#[test]
++fn parent_bound_nonempty_success_owns_context_and_children_from_birth_through_cleanup() {
++    let Fixture {
++        bank,
++        mut editor,
++        previous,
++        mut preparation,
++        signal,
++        worker,
++        job,
++        transforms,
++    } = Fixture::new();
++    editor
++        .execute(Command::AddReturnTrack {
++            name: "parent bus".into(),
++        })
++        .unwrap();
++    // Exercise nonempty Return DSP/control ownership and actual send metadata,
++    // rather than only an empty Return chain's outer allocation.
++    use hex_lattice_contract::NativeDeviceMetadata;
++    let return_track = editor.project().return_tracks()[0].id();
++    editor
++        .execute(Command::InsertReturnDevice {
++            return_track,
++            before: None,
++            state: hex_devices::utility::UTILITY_DEFINITION
++                .default_state()
++                .unwrap(),
++        })
++        .unwrap();
++    editor
++        .execute(Command::SetReturnSend {
++            track: editor.project().tracks()[0].id(),
++            return_track,
++            gain: 0.375,
++        })
++        .unwrap();
++    // Force NEW loaded context/factory construction; no previous owner reuse.
++    drop(previous);
++    let original = original(&bank, &signal, &worker);
++    let before = original.summary().unwrap();
++    let parent_address = &preparation as *const _;
++    let destination = &preparation.arrangement_clips as *const _;
++    preparation
++        .compile_original_sampler_on_control(&editor, &bank, None, &original, &transforms, limits())
++        .unwrap();
++    assert_eq!(&preparation as *const _, parent_address);
++    assert_eq!(&preparation.arrangement_clips as *const _, destination);
++    let project = preparation.arrangement_clips.root.project().unwrap();
++    assert_eq!(project.tracks.len(), 1);
++    assert_eq!(project.return_buses.len(), 1);
++    assert_eq!(project.return_buses[0].device_chain.len(), 1);
++    assert_eq!(
++        project.return_buses[0].device_chain[0].device_type,
++        hex_devices::utility::UTILITY_TYPE_ID
++    );
++    assert_eq!(project.tracks[0].sends.len(), 1);
++    assert_eq!(project.shared_contexts.owners().count(), 1);
++    assert_eq!(
++        project.tracks[0].instrument.as_ref().unwrap().spans.len(),
++        1
++    );
++    let ids = crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get());
++    crate::owned_shared::reset_clone_count();
++    let check = allocation_counter::measure(|| preparation.inspect_sampler_destination().unwrap());
++    assert_eq!(check.count_total, 0);
++    assert_eq!(check.count_current, 0);
++    assert_eq!(crate::owned_shared::clone_count(), 0);
++    assert_eq!(
++        crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get()),
++        ids
++    );
++    // The nonempty actual parent is also visited in place, not rebuilt into a
++    // synthetic cleanup parent. Closure includes all borrowed input aliases.
++    let inputs = Inputs {
++        rows: &preparation.arrangement_clips,
++        preparation: &preparation,
++        editor: &editor,
++        resources: &bank,
++        previous: None,
++        original: &original,
++    };
++    transforms
++        .with_pcm_inventory_on_control(|inventory| {
++            let mut ledger = AudioRootStorageLedger::try_new_on_control(limits())?;
++            inputs.visit(inventory, &mut ledger)?;
++            ledger.validate_selected_shared_handles_on_control()?;
++            assert!(ledger.summary()?.require_complete().is_err());
++            Ok(())
++        })
++        .unwrap();
++    let order = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
++    let child = order.clone();
++    preparation.arrangement_clips.tracks.probe = Some(crate::audio_preparation::DropProbe(Some(
++        Box::new(move || {
++            assert_eq!(child.fetch_add(1, std::sync::atomic::Ordering::SeqCst), 0);
++        }),
++    )));
++    let context = order.clone();
++    preparation.arrangement_clips.root.context_probe = Some(crate::audio_preparation::DropProbe(
++        Some(Box::new(move || {
++            assert_eq!(context.fetch_add(1, std::sync::atomic::Ordering::SeqCst), 1);
++        })),
++    ));
++    preparation.cleanup_on_control();
++    assert_eq!(preparation.phase(), AudioPreparationPhase::Recoverable);
++    assert_eq!(order.load(std::sync::atomic::Ordering::SeqCst), 2);
++    preparation.cleanup_on_control();
++    assert_eq!(order.load(std::sync::atomic::Ordering::SeqCst), 2);
++    assert!(preparation.arrangement_clips.root_context().is_none());
++    assert_eq!(original.summary().unwrap(), before);
++    assert!(job.inspect_payload::<u8, _>(|value| *value == 0).unwrap());
++}
++
++#[test]
++fn parent_bound_original_unrelated_parent_or_data_cannot_supply_cleanup_binding() {
++    for unrelated in [false, true] {
++        let Fixture {
++            bank,
++            editor,
++            previous,
++            mut preparation,
++            signal,
++            worker,
++            job: _job,
++            transforms,
++        } = Fixture::new();
++        let other = crate::AudioPreparationCustody::try_new_on_control().unwrap();
++        let data = vec![9_u8; 32];
++        let mut original = original(&bank, &signal, &worker);
++        if unrelated {
++            original
++                .borrow_custody_on_control(&other, AudioStorageRole::Current)
++                .unwrap();
++        } else {
++            original
++                .borrow_metadata_vec_backing_on_control(&data)
++                .unwrap();
++        }
++        let before = original.summary().unwrap();
++        crate::owned_shared::reset_birth_count();
++        crate::owned_shared::reset_clone_count();
++        assert_eq!(
++            preparation.compile_original_sampler_on_control(
++                &editor,
++                &bank,
++                Some(&previous),
++                &original,
++                &transforms,
++                limits()
++            ),
++            Err(AudioStorageError::SourceMismatch)
++        );
++        assert_eq!(crate::owned_shared::birth_count(), 0);
++        assert_eq!(crate::owned_shared::clone_count(), 0);
++        assert!(!preparation.arrangement_clips.has_next());
++        assert_eq!(original.summary().unwrap(), before);
++    }
++}
++
++#[test]
++fn parent_bound_inspection_is_allocation_id_clone_and_cleanup_free() {
++    let Fixture {
++        bank,
++        editor,
++        previous,
++        preparation,
++        signal,
++        worker,
++        job: _job,
++        transforms,
++    } = Fixture::new();
++    let original = original(&bank, &signal, &worker);
++    let ids = crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get());
++    crate::owned_shared::reset_birth_count();
++    crate::owned_shared::reset_clone_count();
++    let inputs = Inputs {
++        rows: &preparation.arrangement_clips,
++        preparation: &preparation,
++        editor: &editor,
++        resources: &bank,
++        previous: Some(&previous),
++        original: &original,
++    };
++    let measured = allocation_counter::measure(|| {
++        preparation.inspect_sampler_destination().unwrap();
++        transforms
++            .with_pcm_inventory_on_control(|inventory| {
++                // Allocation-free arithmetic traversal, mandatory normal pass is
++                // separately exercised by actual compiler construction tests.
++                AudioRootStorageLedger::arithmetic_cost_for_limits(
++                    limits(),
++                    usize::MAX,
++                    usize::MAX,
++                    |ledger| inputs.visit(inventory, ledger),
++                )
++                .map(|_| ())
++            })
++            .unwrap();
++    });
++    assert_eq!(measured.count_total, 0);
++    assert_eq!(measured.count_current, 0);
++    assert_eq!(measured.bytes_total, 0);
++    assert_eq!(crate::owned_shared::birth_count(), 0);
++    assert_eq!(crate::owned_shared::clone_count(), 0);
++    assert_eq!(
++        crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get()),
++        ids
++    );
++    assert!(original.summary().unwrap().require_complete().is_err());
++    assert!(
++        crate::AudioRootStorageSummary::default()
++            .require_complete()
++            .is_err()
++    );
++}
++
++fn bound_limits(
++    preparation: &crate::AudioPreparationCustody,
++    editor: &hex_project::Editor,
++    bank: &DeviceResourceBank,
++    previous: &OwnedShared<SharedAnalyticContextTable>,
++    original: &AudioRootStorageLedger<'_>,
++    transforms: &AudioTransformPreparation,
++) -> (usize, usize) {
++    let construction = preparation
++        .arrangement_clips
++        .sampler_construction(
++            editor.project(),
++            DeviceResourcePreparation {
++                bank,
++                max_scope_metadata_bytes: 65_536,
++            },
++        )
++        .unwrap();
++    let inputs = Inputs {
++        rows: &preparation.arrangement_clips,
++        preparation,
++        editor,
++        resources: bank,
++        previous: Some(previous),
++        original,
++    };
++    transforms
++        .with_pcm_inventory_on_control(|inventory| {
++            let mut ledger = AudioRootStorageLedger::try_new_on_control(limits())?;
++            inputs.visit(inventory, &mut ledger)?;
++            ledger.validate_selected_shared_handles_on_control()?;
++            let actual = ledger.summary()?;
++            let metadata =
++                ledger.metadata_capacity_bytes().unwrap() + size_of::<AudioRootStorageLedger<'_>>();
++            let cache = inventory.original_only_storage_cost()?;
++            let growth = original.original_live_growth_allowance()?;
++            Ok((
++                actual.data_bytes
++                    + metadata
++                    + construction.retained
++                    + cache.transaction_new_backing_bytes,
++                actual.data_bytes
++                    + metadata
++                    + construction.peak
++                    + cache.transaction_new_backing_bytes
++                    + growth
++                    + actual.construction_peak_bytes
++                    - actual.retained_bytes,
++            ))
++        })
++        .unwrap()
++}
++
++#[test]
++fn parent_bound_exact_minus_one_and_row_shortage_precede_new_owners() {
++    for mode in ["exact", "retained-minus1", "peak-minus1", "rows"] {
++        let Fixture {
++            bank,
++            editor,
++            previous,
++            mut preparation,
++            signal,
++            worker,
++            job: _job,
++            transforms,
++        } = Fixture::new();
++        let original = original(&bank, &signal, &worker);
++        let before = original.summary().unwrap();
++        let (retained, peak) = bound_limits(
++            &preparation,
++            &editor,
++            &bank,
++            &previous,
++            &original,
++            &transforms,
++        );
++        let mut reservation = AudioStorageLedgerReservation {
++            max_retained_bytes: retained,
++            max_construction_peak_bytes: peak,
++            ..limits()
++        };
++        match mode {
++            "retained-minus1" => reservation.max_retained_bytes -= 1,
++            "peak-minus1" => reservation.max_construction_peak_bytes -= 1,
++            "rows" => reservation.root_rows = 1,
++            _ => {}
++        }
++        let ids = crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get());
++        crate::owned_shared::reset_birth_count();
++        crate::owned_shared::reset_clone_count();
++        let mut result = Ok(());
++        let measured = allocation_counter::measure(|| {
++            result = preparation.compile_original_sampler_on_control(
++                &editor,
++                &bank,
++                Some(&previous),
++                &original,
++                &transforms,
++                reservation,
++            );
++        });
++        eprintln!(
++            "same parent {mode}: retained={retained} peak={peak} result={result:?} alloc={measured:?}"
++        );
++        if mode == "exact" {
++            result.unwrap();
++            assert!(preparation.arrangement_clips.root.project().is_some());
++            preparation.cleanup_on_control();
++            assert_eq!(preparation.phase(), AudioPreparationPhase::Recoverable);
++        } else {
++            if mode == "rows" {
++                assert_eq!(result, Err(AudioStorageError::Capacity));
++            } else {
++                assert_eq!(result, Err(AudioStorageError::ReservationExceeded));
++                assert_eq!(measured.count_total, 0);
++                assert_eq!(measured.bytes_total, 0);
++            }
++            assert_eq!(crate::owned_shared::birth_count(), 0);
++            assert_eq!(crate::owned_shared::clone_count(), 0);
++            assert_eq!(
++                crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get()),
++                ids
++            );
++            assert!(!preparation.arrangement_clips.has_next());
++        }
++        assert_eq!(original.summary().unwrap(), before);
++    }
++}
++
++#[test]
++fn parent_bound_cancel_and_track_error_retain_real_partial_owners_for_cleanup() {
++    for mode in ["cancel", "track-error"] {
++        let Fixture {
++            bank,
++            editor,
++            previous,
++            mut preparation,
++            signal,
++            worker,
++            job: _job,
++            transforms,
++        } = Fixture::new();
++        if mode == "cancel" {
++            transforms.cancel_after_polls_for_test(2);
++        } else {
++            preparation.arrangement_clips.tracks.fail_after = Some(0);
++        }
++        // Force NEW loaded context/factory construction; no previous owner reuse.
++        drop(previous);
++        let original = original(&bank, &signal, &worker);
++        let before = original.summary().unwrap();
++        assert!(
++            preparation
++                .compile_original_sampler_on_control(
++                    &editor,
++                    &bank,
++                    None,
++                    &original,
++                    &transforms,
++                    limits()
++                )
++                .is_err()
++        );
++        assert_eq!(preparation.phase(), AudioPreparationPhase::Vacant);
++        assert!(preparation.arrangement_clips.has_next());
++        assert!(preparation.arrangement_clips.root_context().is_some());
++        preparation.inspect_sampler_destination().unwrap();
++        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
++        let count = calls.clone();
++        preparation.arrangement_clips.root.context_probe = Some(
++            crate::audio_preparation::DropProbe(Some(Box::new(move || {
++                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++            }))),
++        );
++        preparation.cleanup_on_control();
++        assert_eq!(preparation.phase(), AudioPreparationPhase::Recoverable);
++        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
++        preparation.cleanup_on_control();
++        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
++        assert_eq!(original.summary().unwrap(), before);
++    }
++}
++
++#[test]
++fn parent_bound_constructor_panic_preserves_first_payload_and_cleanup_never_retries_pending() {
++    for retirement_panic in [false, true] {
++        let Fixture {
++            bank,
++            editor,
++            previous,
++            mut preparation,
++            signal,
++            worker,
++            job: _job,
++            transforms,
++        } = Fixture::new();
++        preparation.arrangement_clips.tracks.panic_after = Some(0);
++        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
++        let count = calls.clone();
++        preparation.arrangement_clips.root.context_probe = Some(
++            crate::audio_preparation::DropProbe(Some(Box::new(move || {
++                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
++                assert!(!retirement_panic, "secondary context retirement panic");
++            }))),
++        );
++        // Force NEW loaded context/factory construction; no previous owner reuse.
++        drop(previous);
++        let original = original(&bank, &signal, &worker);
++        let before = original.summary().unwrap();
++        assert_eq!(
++            preparation.compile_original_sampler_on_control(
++                &editor,
++                &bank,
++                None,
++                &original,
++                &transforms,
++                limits()
++            ),
++            Err(AudioStorageError::UnknownStorage)
++        );
++        assert_eq!(preparation.phase(), AudioPreparationPhase::FailedIncomplete);
++        assert!(transforms.failed_incomplete_on_control());
++        let payload = preparation.first_panic.as_ref().unwrap();
++        assert!(
++            payload
++                .downcast_ref::<String>()
++                .unwrap()
++                .contains("paired compiler Track move panic")
++        );
++        let identity = payload.as_ref() as *const dyn std::any::Any as *const ();
++        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
++        assert!(preparation.inspect_sampler_destination().is_err());
++        preparation.cleanup_on_control();
++        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
++        assert_eq!(
++            preparation.first_panic.as_ref().unwrap().as_ref() as *const dyn std::any::Any
++                as *const (),
++            identity
++        );
++        assert!(preparation.arrangement_clips.root_context().is_none());
++        if retirement_panic {
++            assert!(preparation.arrangement_clips.has_next());
++            assert!(
++                preparation
++                    .arrangement_clips
++                    .capacity_at(false, None, None)
++                    .is_err()
++            );
++            assert!(preparation.arrangement_clips.clear_disposed().is_err());
++        }
++        assert_eq!(original.summary().unwrap(), before);
++    }
++}
++
++#[test]
++fn parent_bound_failed_pending_invalid_and_omitted_alias_refuse_without_cleanup() {
++    for mode in [
++        "failed",
++        "first-panic",
++        "pending",
++        "invalid-original",
++        "omitted-alias",
++        "cancelled",
++    ] {
++        let Fixture {
++            bank,
++            editor,
++            previous,
++            mut preparation,
++            signal,
++            worker,
++            job,
++            transforms,
++        } = Fixture::new();
++        let omitted = (mode == "omitted-alias").then(|| previous.clone_on_control());
++        match mode {
++            "failed" => preparation.phase = AudioPreparationPhase::FailedIncomplete,
++            "first-panic" => preparation.first_panic = Some(Box::new("original first panic")),
++            "pending" => preparation.arrangement_clips.metadata_disposal = Disposal::Pending,
++            "cancelled" => signal.cancel(job.route()),
++            _ => {}
++        }
++        let mut original = original(&bank, &signal, &worker);
++        if mode == "invalid-original" {
++            // Intentionally malformed ORIGINAL input: no closure or summary
++            // is taken from this failed ledger; the operation must refuse it.
++            assert!(
++                original
++                    .borrow_device_resource_bank_on_control(&bank, AudioStorageRole::Caller)
++                    .is_err()
++            );
++        }
++        crate::owned_shared::reset_birth_count();
++        crate::owned_shared::reset_clone_count();
++        let mut result = Ok(());
++        let measured = allocation_counter::measure(|| {
++            result = preparation.compile_original_sampler_on_control(
++                &editor,
++                &bank,
++                Some(&previous),
++                &original,
++                &transforms,
++                limits(),
++            );
++        });
++        assert!(result.is_err(), "{mode}");
++        assert_eq!(crate::owned_shared::birth_count(), 0, "{mode}");
++        assert_eq!(crate::owned_shared::clone_count(), 0, "{mode}");
++        assert!(preparation.arrangement_clips.root_context().is_none());
++        if mode != "omitted-alias" {
++            assert_eq!(measured.count_total, 0, "{mode}");
++        }
++        if mode == "first-panic" {
++            assert_eq!(
++                preparation
++                    .first_panic
++                    .as_ref()
++                    .unwrap()
++                    .downcast_ref::<&str>(),
++                Some(&"original first panic")
++            );
++        }
++        drop(omitted);
++    }
++}
++
++#[test]
++fn parent_bound_opaque_context_refuses_before_any_move_or_cleanup() {
++    let Fixture {
++        mut preparation, ..
++    } = Fixture::new();
++    let crate::shared_analytic::cleanup_tests::OpaqueFixture {
++        table,
++        owner,
++        drops,
++    } = crate::shared_analytic::cleanup_tests::opaque_fixture();
++    preparation
++        .arrangement_clips
++        .root
++        .begin_compiler_context()
++        .unwrap();
++    *preparation.arrangement_clips.root.compiler_destinations().1 = Some(table);
++    let actual = preparation
++        .arrangement_clips
++        .root_context()
++        .unwrap()
++        .as_ref() as *const _;
++    let ids = crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get());
++    crate::owned_shared::reset_clone_count();
++    let measured = allocation_counter::measure(|| {
++        assert_eq!(
++            preparation.inspect_sampler_destination(),
++            Err(AudioStorageError::UnknownStorage)
++        );
++    });
++    assert_eq!(measured.count_total, 0);
++    assert_eq!(crate::owned_shared::clone_count(), 0);
++    assert_eq!(
++        crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get()),
++        ids
++    );
++    assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 0);
++    assert_eq!(
++        preparation
++            .arrangement_clips
++            .root_context()
++            .unwrap()
++            .as_ref() as *const _,
++        actual
++    );
++    preparation.cleanup_on_control();
++    assert_eq!(preparation.phase(), AudioPreparationPhase::FailedIncomplete);
++    assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 0);
++    assert_eq!(
++        preparation
++            .arrangement_clips
++            .root_context()
++            .unwrap()
++            .as_ref() as *const _,
++        actual
++    );
++    // Fixture-only terminal release outside every observed control scope.
++    drop(preparation);
++    assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 0);
++    drop(owner);
++    assert_eq!(drops.load(std::sync::atomic::Ordering::SeqCst), 1);
++}
++
++#[test]
++fn parent_bound_arithmetic_original_has_no_normal_authority_or_side_effects() {
++    let f = Fixture::new();
++    crate::owned_shared::reset_birth_count();
++    crate::owned_shared::reset_clone_count();
++    let ids = crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get());
++    let measured = allocation_counter::measure(|| {
++        AudioRootStorageLedger::arithmetic_cost_for_limits(
++            limits(),
++            usize::MAX,
++            usize::MAX,
++            |original| {
++                let inputs = Inputs {
++                    rows: &f.preparation.arrangement_clips,
++                    preparation: &f.preparation,
++                    editor: &f.editor,
++                    resources: &f.bank,
++                    previous: Some(&f.previous),
++                    original,
++                };
++                assert!(matches!(
++                    inputs.inspect(&f.transforms, limits()),
++                    Err(AudioStorageError::UnknownStorage)
++                ));
++                Ok(())
++            },
++        )
++        .unwrap();
++    });
++    assert_eq!(measured.count_total, 0);
++    assert_eq!(measured.count_current, 0);
++    assert_eq!(crate::owned_shared::birth_count(), 0);
++    assert_eq!(crate::owned_shared::clone_count(), 0);
++    assert_eq!(
++        crate::audio_only_inputs::ISSUED_HANDLES.with(|count| count.get()),
++        ids
++    );
++    assert!(!f.preparation.arrangement_clips.has_next());
++}
+diff --git a/crates/hex-engine/src/audio_storage/arithmetic.rs b/crates/hex-engine/src/audio_storage/arithmetic.rs
+index 51672b83..dcd087f3 100644
+--- a/crates/hex-engine/src/audio_storage/arithmetic.rs
++++ b/crates/hex-engine/src/audio_storage/arithmetic.rs
+@@ -260,6 +260,46 @@ impl<'a> AudioRootStorageLedger<'a> {
+ mod tests;
+ 
+ impl<'a> AudioRootStorageLedger<'a> {
++    /// All imported roots and physical DATA must already be explained by the
++    /// mandatory input walk. This is a normal-ledger check, never scalar proof.
++    pub(crate) fn require_original_inputs_bound(
++        &self,
++        original: &AudioRootStorageLedger<'_>,
++    ) -> Result<(), AudioStorageError> {
++        if self.arithmetic.is_some() {
++            return Ok(()); // mandatory normal pass below will check every row
++        }
++        self.summary()?
++            .require_known_storage()
++            .map_err(|_| AudioStorageError::UnknownStorage)?;
++        original
++            .summary()?
++            .require_known_storage()
++            .map_err(|_| AudioStorageError::UnknownStorage)?;
++        if original
++            .roots
++            .iter()
++            .any(|old| !self.roots.iter().any(|actual| actual.owner.same(old.owner)))
++            || original.data.iter().any(|old| {
++                !self.data.iter().any(|actual| {
++                    actual.owner.same(old.owner)
++                        && actual.location == old.location
++                        && actual.declaration == old.declaration
++                })
++            })
++            || original.handles.iter().any(|old| {
++                // An actual original borrowed handle may be another external
++                // alias (for example the cancellation signal/worker). Its
++                // physical BODY must already belong to a mandatory input.
++                // Import then normal closure accounts for that real field;
++                // this grants no cleanup authority over external inputs.
++                !self.data.iter().any(|actual| actual.owner.same(old.owner))
++            })
++        {
++            return Err(AudioStorageError::SourceMismatch);
++        }
++        Ok(())
++    }
+     /// Revisit the actual opaque original inventory, including its still-live
+     /// body and three backings. This never substitutes for the mandatory
+     /// compiler input visitors. Old and freshly observed physical fields are
+diff --git a/docs/sampler.md b/docs/sampler.md
+index 46e7ca16..b63802f5 100644
+--- a/docs/sampler.md
++++ b/docs/sampler.md
+@@ -1371,3 +1371,47 @@ minus-one limits still refuse before allocation or paired owner activity. These
+ are actual source-bound control-side tests. They do not close every compiler
+ constructor/unwind frontier, Service incarnation, complete selected summaries,
+ publication/registration, the functional Sampler panel or native musical use.
++
++The next construction-local integration enters through the actual existing
++`AudioPreparationCustody`. Immutable inventory covers that whole parent and its
++embedded Arrangement destinations before any mutation; after the guarded scoped
++ledger is dropped, the same exclusive borrow constructs directly into those
++fields. Standalone Arrangement-plus-unrelated-parent compilation remains only a
++historical test component. No rows are taken out of a parent or installed into a
++new test parent after compilation. The private lifecycle checker validates actual
++restoration destinations, context route/destructor restrictions, pending source
++and metadata disposal and first-panic state. It performs no allocation, clone,
++identity issue or cleanup. Vacant is not evidence of an empty owner tree.
++
++The normal import check requires original roots and DATA to be explained by the
++mandatory actual inputs. Actual borrowed external cancellation aliases may join
++only physical bodies already in those inputs; their real original fields join
++normal handle closure. This supplies construction-scope liveness, not cleanup
++rights over external inputs or later Service retention. Unknown or invalid
++original inventory still refuses. Public scalar summaries remain fail-closed;
++`require_complete` is deliberately unconditional and is not a production failure
++of this private operation.
++
++The nonempty-parent regression exposed nested `mutate()` refusal in the public
++custody wrapper when its children invoke their own visitors. This private closed
++operation composes its actual typed root and child visitor directly. Failure
++aborts and discards the scoped ledger; public wrapper behavior is unchanged.
++A freshly constructed loaded Sampler context (without previous-factory reuse),
++Track and Return remain in that same parent through actual normal inventory,
++restoration and ordered cleanup. Cancellation and ordinary selector failure
++leave actual partial owners discoverable there. A caught constructor panic runs
++existing ordered cleanup once, preserves the original boxed payload even if
++retirement also panics, and leaves FailedIncomplete. Pending retirement cannot
++be retried or interpreted as vacancy.
++
++The same-parent reused-context fixture has a conservative 710,874 retained /
++782,420 peak-byte boundary with the pinned test layout. Either ceiling minus one
++refuses with zero allocations, owner births, clones or handle issues. Row
++shortage refuses before owner construction after allocating only normal inspection
++backing. These bounds differ from the older standalone-row fixture because the
++embedded Arrangement inline body is already charged in the actual parent.
++Normal ledger backing remains charged and mandatory; its existing observation
++mechanism is distinct from the allocation-free lifecycle checker/bootstrap.
++This is construction-local source evidence, not an all-constructor destructor
++proof, a complete public retirement receipt, retained Service/worker incarnation
++integration, native full-live-union admission, registration or usable Sampler UI.

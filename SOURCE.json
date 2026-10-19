@@ -1,0 +1,38 @@
+{
+  "source": "4eaba00e675d26de41f38a161051ebacd308c48f",
+  "tree": "206d1121a769f420d7badea7a5ab1055add9a238",
+  "base": "f20804ccc24283ade79dcff2e5bb8a11b04568ac",
+  "files": [
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+      "before": "015b3f656d1f65d7232bb37570a04674645459477c7b31c8cc22e25cacee2f0d",
+      "after": "bbbfd366ca145e6e9b4271de62c5328a74df80a20e005bb4f5207ce0d84dbec2"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
+      "before": "9a80c0c09515b16e7bdd604700904d9f63b5238d6df83d2499284c396801f01e",
+      "after": "7f5c884d06bf654711dfbaedfdd81844feea71ade1475516d22daba1d97dcd97"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs",
+      "before": "be01da78df29aa54cbfd6b61e2548d6cdf573d17e0c241bfececfd72bf849ddd",
+      "after": "06d9bb7cd358413228f202c6e800b0a3e287b72964ee6e8bb2a7282aeaf76c7c"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs",
+      "before": null,
+      "after": "6bc572a437d1bd1398f4bc25960f50a963262a6aadefedf0cba357aa7a66b143"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/arithmetic.rs",
+      "before": "d13d1340c6a76a6fb1c9dbb8166083c47cb49695cf779db3187040103537c2e4",
+      "after": "78efb5a797b642b6e33e48b24eede3fa0cf5b260194ae83812d87c418a9afd64"
+    },
+    {
+      "path": "docs/sampler.md",
+      "before": "2b56eff25b9f01baf38de58fccb6a1bbbf9ee078d70b2788b29cbd460a2f61a2",
+      "after": "018202102c84be5523183ddb7f61d62356133fded5863877e4f7da879b88b6db"
+    }
+  ],
+  "modes": "100644 blob 0d2108af1a2cb1b81bb91253fd0301e7d7688ea1\tcrates/hex-engine/src/audio_preparation/arrangement_clips/root.rs\n100644 blob 2e30a67ff30da5d1387b4d0a09bfc24bb996abff\tcrates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs\n100644 blob 54a9fa6f6da995922817277f725bc7da56f1ff5c\tcrates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs\n100644 blob 0fe3276f29b7200e09f3de29bca7b388ff5b184c\tcrates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs\n100644 blob dcd087f363303656cfdb5fd39181b40a9f0adfc6\tcrates/hex-engine/src/audio_storage/arithmetic.rs\n100644 blob b63802f5bc6bb99957b0b9de30e2e5213792fb0d\tdocs/sampler.md\n"
+}
