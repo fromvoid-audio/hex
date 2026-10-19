@@ -156,7 +156,7 @@ impl EditorView {
     }
 
     fn start_project_directory_save(&mut self, cx: &mut Context<Self>) {
-        if self.project_directory.loading || !self.project_directory.writable {
+        if !self.project_directory.writable {
             return;
         }
         let writes = Arc::clone(&self.project_directory.writes);
