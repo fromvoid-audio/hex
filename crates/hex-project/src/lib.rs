@@ -6,20 +6,28 @@ mod audio_edit;
 mod clip_fade_trim;
 mod clip_name;
 pub use audio_edit::{
-    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatsPreserve,
-    BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, ProjectedAudioFade,
-    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings, audio_projection_beat,
-    audio_projection_frame, default_audio_warp, preview_audio_clip_stretch,
+    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, AudioViewMode,
+    AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
+    AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
+    MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
+    WarpSettings, audio_projection_beat, audio_projection_frame, default_audio_warp,
+    preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
 };
 mod appearance;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
 mod clip_clipboard;
 mod clip_copy;
+mod clip_group;
+mod clip_group_preview;
 pub use clip_clipboard::ClipClipboard;
+pub use clip_group::{ClipGroupContent, ClipGroupPosition, ClipGroupPreview};
+pub use clip_group_preview::ClipGroupMovePreview;
 mod clip_fragment;
 mod conversion;
 mod device;
+mod device_comparison;
+pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};
 mod device_assets;
 pub use device::{
     DEFAULT_INSTRUMENT_TYPE_ID, Device, MAX_DEVICES, MAX_DEVICES_PER_TRACK,
@@ -568,6 +576,7 @@ impl Project {
         for track in &mut self.tracks {
             if track.instrument.is_none() {
                 track.instrument = Some(Device {
+                    comparison: None,
                     id: DeviceId(id),
                     state: state.clone(),
                     bypassed: false,

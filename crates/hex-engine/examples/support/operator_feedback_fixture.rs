@@ -71,6 +71,7 @@ pub fn project_with_operators(
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                comparison: None,
                 id: instrument_id,
                 bypassed: false,
                 state: state.clone(),

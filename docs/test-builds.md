@@ -7,6 +7,19 @@ plugin-release. Unoptimized debug executables are only appropriate for a
 specific stated debugging need. Do not create uniquely named review apps for
 future testing or delete historical review bundles.
 
+An explicitly requested development delivery may use `--dev-profile` with a
+resolved scoped merge report. Its receipt says `scoped-dev-ci`, not `full-ci`;
+the plan is recomputed against current source/dependencies. Beta/stable/native
+qualification keeps the full-audit requirement. Edit/quick/custom-component
+reports never qualify. This adds no staging/publishing command or automation.
+Schema-2 executed counts and guarded compiler/configuration/dependency identity
+are required. Delivery compares that identity under the same target lock before
+pending/cleanup/build and again before consumption/publication. A prose-only
+report without a runtime witness does not qualify an app as tested; use an
+explicit original runtime continuation or ordinary source-only development
+launch instead. Source-only launch still records that tests were not run.
+See [development-workflow.md](development-workflow.md).
+
 ## launch modes
 
 `./launch` is the standard update-and-start path. It requires a clean local `main`,
@@ -25,10 +38,102 @@ release ownership safeguards. Its receipt records `source-only` verification,
 evidence, never a passing test report. Cargo can reuse valid dependencies normally.
 
 `./launch --test` adds full exact-source local CI before the same build and start
-workflow. Save and quit hex before either mode. The launcher refuses to
-replace the installed app while it is running and also refuses when a raw
-`hex-desktop` executable is running, before CI or Cargo build work; it never kills
-a process. The `--test` spelling survives source-update re-exec.
+workflow. Without the explicit restart option below, save and quit hex before
+either mode. Ordinary launch refuses to replace a running installed app or a raw
+`hex-desktop` process before CI or Cargo build work, and never terminates one.
+The `--test` spelling survives source-update re-exec.
+
+`./launch --force-restart` opts in to quitting the verified stable development
+app before the normal update/build/start workflow. **Unsaved work may be lost.**
+It requests a native normal quit, waits up to ten seconds, then requests native
+forced termination of that same process if needed and waits up to five seconds.
+Before the first native request, the launcher compiles the exact Swift helper
+once into an exclusively owned private0700 temporary workspace. Cold compilation
+has a separate120-second budget; every native operation keeps its unchanged
+fifteen-second timeout and reuses that same binary. Original source, private copy
+and executable identities/hashes are rechecked; source/binary replacement, missing
+toolchain, compiler failure or timeout refuses without a fallback or app launch.
+Compiler/helper children created by this invocation are stopped on timeout or
+interrupt. The private helper/cache files are removed after control finishes;
+source/binary provenance and phase diagnostics remain with the restart report.
+If owned-child exit cannot be confirmed after bounded stopping, the private
+workspace is retained and further control/cleanup/retry refuses instead of
+claiming successful child retirement or opening an app.
+There is no persistent shared executable cache or silent warm-up. It never targets
+an app by name or PID alone: bundle URL, executable, development identifier and
+launch time are rechecked before every request, with the installed signature and
+sealed inventory verified as well. Multiple processes, a replacement identity,
+unverifiable app or busy activation/build lock refuse without retargeting.
+The supported persistent `HEX_DEV_APP_PATH` setting is used by this opt-in path
+with the same validation as the default target. `Hex.app` casing is accepted only
+when the actual filesystem proves the configured bundle and native executable
+have the captured device/inode identities. Separate case-sensitive bundles never
+match just because their names differ only in case. Observed native path strings,
+PID, launch time and identifier remain part of the exact process identity; all
+nine private protocol fields travel together. Symlinks and changed bundle or
+executable inodes refuse, including replacement while the helper compiles.
+Linux tests cover owned filesystem objects and a labeled case-insensitive lookup
+model; actual Swift compilation, AppKit casing and running-process behavior still
+require source-specific macOS qualification.
+Ctrl-C stops further escalation, recovery and launch. A cancelled normal quit
+can still be followed by force under this explicit option; omit the option to
+retain the ordinary save-and-quit guard.
+
+Matching well-formed pending release ownership can be recovered only for this
+checkout/common repository, actual target inode, compatible package inventory
+and known ancestor source. The exact inspected owner bytes are rechecked under
+the existing release mutation lock. Existing installer recovery handles only its
+fixed owned paths and regular Finder metadata; unknown files, symlinks, legacy
+journals and foreign ownership refuse and remain preserved. No arbitrary operator
+adoption, project/settings/media cleanup, old-bundle collection or artifact reuse
+is added. The fresh candidate is rebuilt and verified; build or install failure
+preserves recoverable state and never opens an app. Inspect the actual diagnostic
+before retrying, including when no app is running.
+
+The option remains test-free unless combined with `--test`; both flags survive
+source update. It cannot be combined with installed-only `--open`. This is future
+operator invocation, not permission for unattended force-quit during verification.
+
+`./launch --recover-release-target` is a separate explicit option for a recreated
+Cargo target, or retrying an exact owned pending handoff, whose retained release
+owner belongs to this exact checkout and common repository. Save and quit **both** the configured app and any raw
+`hex-desktop` first. This option never requests quit or force termination and is
+incompatible with `--force-restart` and `--open`. It still updates clean main,
+rebuilds, installs and opens normally; tests remain opt-in with `--test`.
+
+Read-only inspection under the existing activation/target locks binds the old
+owner bytes by SHA256 and the observed replacement directory device/inode. The
+old source must be a clean known ancestor of the fetched source, and retained
+package name/version/spec ownership must match the current locked workspace
+(new members are permitted). Missing, foreign, malformed or symlinked targets
+refuse. The same current target identity is accepted only for an exact owned
+**pending** record; an unchanged **ready** record still refuses this recovery
+option. Failed cleanup/build/consumption leaves pending ownership, so another
+explicit inspection and guarded fresh build can retry without marker edits. Historical ready-artifact metadata is not reuse or qualification:
+the old executable need not remain in a recreated target and is never adopted as
+a new build. The owner marker stays untouched during inspection.
+
+A missing configured app output parent is created only after plain-path validation,
+and rechecked before its activation lock is opened; symlink or non-directory
+parents refuse. With `--recover-release-target --test`, ordinary full local CI
+uses a fresh invocation-owned target under ignored `artifacts/launch`, retaining
+its normal verification provenance and disk/lock rules. This grants no adoption
+of a stale development owner. Packaging still uses the originally inspected
+release target/environment and its independent owner CAS. Failed verification
+leaves that original dev/release ownership untouched; the isolated target/logs
+remain available for diagnosis.
+
+At the guarded mutation boundary, under the same target-wide lock, packaging
+rechecks configured-app/raw-desktop inactivity, source, exact owner hash,
+replacement directory and package ownership. Races or a busy cooperative lock
+refuse before marker changes or cleanup. Success uses the ordinary pending
+handoff, selective workspace **release-only** clean, fresh optimized build,
+artifact verification and ready publication. It does not rewrite a marker to
+pretend a stale artifact is ready. Original automatic `--force-restart` recovery
+still requires the original target identity; it cannot silently adopt a replaced
+target. Uncooperative raw Cargo/external file writers do not honor these advisory
+locks: exclusive ownership remains an operator requirement, not a global
+filesystem/process-atomicity guarantee.
 
 `./launch --open` verifies and opens the installed optimized app without Git, CI,
 Cargo or replacement. It can activate an already running installed app. Missing or
