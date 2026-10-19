@@ -185,7 +185,7 @@ fn branch23_requires_both_gains_and_refuses_invalid_duplicate_and_future_fields(
     doc["tracks"][0]["devices"][0]["unknown"] = true.into();
     assert!(decode(&bytes(&doc)).is_err());
     let mut doc = base;
-    doc["version"] = 31.into();
+    doc["version"] = 32.into();
     assert!(decode(&bytes(&doc)).is_err());
     // Output-only22 must never silently accept input gains by widening its DTO.
     let mut doc = value(FOUNDATION[3]);
