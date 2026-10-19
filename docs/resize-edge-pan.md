@@ -125,3 +125,29 @@ Shift stretch and enabled Warp cover both edges, exact displayed-to-worker
 extent and one Undo/Redo. Existing Escape/stale/release/pending-horizon cases
 remain separate controls. Track-height resizing is not a timeline-pan gesture.
 These headless results do not claim native physical input acceptance.
+
+
+## Captured release outside the source track (Pulse2867 / PR469)
+
+A captured Arrangement trim has one source clip and track. Moving vertically into
+another track, a header, ruler, blank region, browser or another panel does not
+retarget or cancel that owner when the same window delivers its left-button
+release. The existing root release path now finalizes against the captured source
+track. Horizontal positions within its timeline use the same final-pointer and
+modifier resolver; foreign horizontal positions retain the existing valid
+timeline point. Model/source/Warp admission, pending FIFO custody and canonical
+worker completion remain authoritative. There is no new release/timer owner.
+
+Real GPUI input and Service completion checks cover both edges for audio, MIDI,
+Shift stretching and enabled Warp, exact displayed/committed geometry, untouched
+other tracks, and one full-snapshot Undo/Redo. Controlled pan tests also unmount
+the original handle, stop on interior entry, and release over the actual ruler.
+The former other-track/outside cancellation tests are intentionally updated for
+this new user requirement. Escape, stale generation, lost focus and actual worker
+refusal retain their separate cancellation/retirement controls.
+
+Preserved diagnostics distinguish two actual other-track failures and the
+corrected changed-extent generic-outside failure from an earlier no-op fixture
+assertion and an initial test-only private-field compile error. Physical OS
+outside-window delivery, optimized waveform appearance and native capture remain
+Root-owned acceptance; cloud input does not establish platform-wide capture.

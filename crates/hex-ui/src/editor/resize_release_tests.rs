@@ -1048,28 +1048,34 @@ fn captured_release_case(
     );
     visual.simulate_mouse_move(release, MouseButton::Left, modifiers);
     visual.run_until_parked();
-    let (desired_audio, desired_midi) = editor.read_with(&visual, |v, _| {
+    let (desired_audio, desired_midi, selection) = editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
         (
-            v.active_trim_drag
-                .as_ref()
-                .and_then(|d| d.preview.borrow().as_ref().map(|p| p.clip.clone())),
+            v.active_trim_drag.as_ref().and_then(|d| {
+                d.preview
+                    .borrow()
+                    .as_ref()
+                    .map(|p| (p.clip.clone(), p.command_frame_for_test()))
+            }),
             v.active_midi_trim_drag
                 .as_ref()
                 .and_then(|d| *d.preview.borrow()),
+            (v.selected_track, v.selected_clip),
         )
     });
     assert!(desired_audio.is_some() || desired_midi.is_some());
     visual.simulate_mouse_up(release, MouseButton::Left, modifiers);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "real worker error: {:?}", v.error);
+        assert_eq!((v.selected_track, v.selected_clip), selection);
         let p = &v.state.as_ref().unwrap().project;
-        if let Some(expected) = &desired_audio {
+        if let Some((expected, command_frame)) = &desired_audio {
             assert_eq!(p.clip(clip), Some(expected), "captured audio release midi={midi} outside={outside}");
             assert!(if stretch {
-                matches!(v.last_enqueued_edit, Some(Command::StretchAudioClipEdge { clip: id, edge: actual, .. }) if id == clip && actual == edge)
+                matches!(v.last_enqueued_edit, Some(Command::StretchAudioClipEdge { clip: id, edge: actual, frame }) if id == clip && actual == edge && frame == *command_frame)
             } else {
-                matches!(v.last_enqueued_edit, Some(Command::TrimClipEdge { clip: id, edge: actual, .. }) if id == clip && actual == edge)
+                matches!(v.last_enqueued_edit, Some(Command::TrimClipEdge { clip: id, edge: actual, frame }) if id == clip && actual == edge && frame == *command_frame)
             });
         }
         if let Some(expected) = desired_midi {

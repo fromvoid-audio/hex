@@ -5772,3 +5772,21 @@ User rejected device-local automation editing. Remove its button, graph mode and
 - Sole merger owns prospective full validation/review/merge. Root-only optimized
   physical edge-pan/release/keyboard-modifier/waveform acceptance remains open.
   This is separate from Pulse2867's new outside-source-track release requirement.
+
+
+### 2026-10-19 — Pulse2867 / PR469 captured resize release
+
+- Actual same-window release over another track rejected the captured audio/MIDI
+  resize; generic outside release fell through to cancellation. The corrected
+  outside fixture retains a changed preview; its real baseline failure is kept
+  separately from an earlier no-op assertion and a private-field compile error.
+- Existing root finish now uses the captured source track rather than hovered
+  receiver eligibility. Keep the existing final-coordinate/modifier resolver,
+  model/Warp/source admission, focus/stale/cancel checks and pending FIFO/ACK owner.
+- Both-edge audio/MIDI/Shift/enabled-Warp receiver and pan-stop/outside-release
+  controls use actual GPUI input, Service commits, non-retargeting, full snapshots
+  and Undo/Redo. Exact frozen source/check counts and negative artifacts are in
+  Pulse; sole merger owns prospective qualification/review/merge.
+- This source is stacked explicitly on frozen PR463 pointer-delivery work.
+  Physical outside-window capture and optimized waveform/input acceptance remain
+  Root-owned; no native app action or global reliability claim is implied.
