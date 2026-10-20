@@ -5112,3 +5112,6 @@ fn browser_arrows_up_down_enter_results_and_command_f_keeps_text_input(cx: &mut 
         assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
     });
 }
+
+#[path = "browser_divider_paint_ui_test.rs"]
+mod divider_paint;

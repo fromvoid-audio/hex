@@ -261,3 +261,20 @@ preparation/audition requests. Existing browser source menus, heading/minimum sn
 selection, drag/import, audition and history contracts remain separate and intact.
 This is layout/toggle behavior only; persistent tag editing remains Pulse2667.
 Optimized native pointer/GPU/tooltip acceptance remains root-owned and open.
+
+## Thin divider paint with unchanged capture — Pulse2707 / PR323
+
+Both browser resize gutters retain their existing4px width, layout allocation,
+resize cursor and capture callbacks. Their backgrounds are transparent. A separate
+1px themed line paints at each gutter's leading edge, adjoining the existing1px
+panel border without adding layout width. Hover from anywhere in the gutter colors
+only that line; PR324's active-drag color and cancellation remain on the same line.
+The remaining transparent gutter is fully usable for grabbing and dragging.
+
+Actual GPUI scene checks reproduce the original full4px filled quad and verify a
+1px line with no broad gutter fill. Real input starts drags on the painted line
+and the opposite transparent edge, checks horizontal resize cursor routing and
+actual resizing, and keeps paint thin through hover/active/release at normal/23px
+picker widths with the editor closed/open. All original PR324 gesture/color cases
+are retained, targeting the line's paint instead of the now-transparent container.
+Physical native pixels/hover/cursor acceptance remains root-owned and open.
