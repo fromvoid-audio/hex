@@ -87,6 +87,63 @@ pub struct SnapshotGainSpanRead<'a> {
 }
 
 impl<'a> SnapshotRead<'a> {
+    /// Prospective audio geometry from this exact snapshot's clip, asset and tempo.
+    pub fn with_audio_clip_preview<R>(
+        self,
+        id: ClipId,
+        operation: hex_project::AudioClipPreviewOperation,
+        frame: u64,
+        inspect: impl for<'read> FnOnce(hex_project::AudioClipPreviewRead<'read>) -> R,
+    ) -> Result<Option<R>, hex_project::Invalid> {
+        let project = &self.snapshot.project;
+        let Some(clip) = project.clip(id) else {
+            return Ok(None);
+        };
+        let asset = project
+            .asset(clip.asset())
+            .ok_or(hex_project::Invalid("audio clip references missing media"))?;
+        clip.with_audio_preview(
+            operation,
+            frame,
+            asset.playback_frames(),
+            project.tempo_map(),
+            inspect,
+        )
+        .map(Some)
+    }
+
+    /// Current/default root metadata only; no owning edit or domain is captured.
+    pub fn with_audio_event_root<R>(
+        self,
+        id: ClipId,
+        inspect: impl for<'read> FnOnce(hex_project::AudioClipRootRead<'read>) -> R,
+    ) -> Result<Option<R>, hex_project::Invalid> {
+        let project = &self.snapshot.project;
+        let Some(clip) = project.clip(id) else {
+            return Ok(None);
+        };
+        project
+            .asset(clip.asset())
+            .ok_or(hex_project::Invalid("audio clip references missing media"))?;
+        Ok(Some(
+            clip.with_audio_event_root(project.tempo_map(), inspect),
+        ))
+    }
+
+    pub fn default_audio_warp_markers(
+        self,
+        id: ClipId,
+    ) -> Result<Option<[hex_project::WarpMarker; 2]>, hex_project::Invalid> {
+        let project = &self.snapshot.project;
+        let Some(clip) = project.clip(id) else {
+            return Ok(None);
+        };
+        project
+            .asset(clip.asset())
+            .ok_or(hex_project::Invalid("audio clip references missing media"))?;
+        hex_project::default_audio_warp_markers(clip, project.tempo_map()).map(Some)
+    }
+
     pub fn midi_clip_frame_bounds(self, id: ClipId) -> Option<(u64, u64)> {
         self.midi_clip_preview(id)
             .map(|preview| preview.frame_bounds())
@@ -286,10 +343,16 @@ impl<'a> SnapshotTrackRead<'a> {
     pub fn ordered_device_chain(self) -> impl Iterator<Item = SnapshotTrackDeviceRead<'a>> + 'a {
         self.track.ordered_device_chain().map(|node| match node {
             hex_project::TrackDeviceRef::Instrument(device) => {
-                SnapshotTrackDeviceRead::Instrument(SnapshotDeviceRead { device })
+                SnapshotTrackDeviceRead::Instrument(SnapshotDeviceRead {
+                    device,
+                    class: hex_engine::NativeDeviceClass::Instrument,
+                })
             }
             hex_project::TrackDeviceRef::Effect(device) => {
-                SnapshotTrackDeviceRead::Effect(SnapshotDeviceRead { device })
+                SnapshotTrackDeviceRead::Effect(SnapshotDeviceRead {
+                    device,
+                    class: hex_engine::NativeDeviceClass::Effect,
+                })
             }
         })
     }
@@ -637,6 +700,140 @@ impl<'a> SnapshotGainSpanRead<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn audio_preview_and_event_facades_use_the_exact_retained_clip_asset_and_tempo() {
+        use crate::snapshot_exports::{SessionExportFamily, SnapshotExportReservation};
+        use hex_project::{
+            AudioClipPreviewOperation, AudioDomainClock, Command, Created, TrimEdge,
+        };
+        let mut session = crate::Session::new(48_000, 8, 1024).unwrap();
+        let Created::Imported { clip, .. } = session
+            .editor
+            .execute(Command::ImportAudioTrack {
+                name: "audio".into(),
+                path: "/test/metadata-only.wav".into(),
+                sample_rate: 48_000,
+                frames: 96_000,
+            })
+            .unwrap()
+        else {
+            panic!("expected imported audio");
+        };
+        let capture = |session: &crate::Session, revision| {
+            Some(crate::service::view_state_owned(
+                session,
+                hex_engine::SharedMidiArrangementPreview::new_on_control(
+                    hex_engine::MidiArrangementPreview::empty_on_control(),
+                ),
+                revision,
+                1,
+                false,
+                None,
+            ))
+        };
+        let (family, producer) =
+            SessionExportFamily::try_new_on_control(SnapshotExportReservation {
+                snapshot_records: 2,
+                read_records: 4,
+                max_bookkeeping_bytes: 16_384,
+            })
+            .unwrap();
+        let old = family
+            .insert_event_read_on_control(&producer, &mut capture(&session, 7))
+            .unwrap();
+        session
+            .editor
+            .execute(Command::TrimClipEdge {
+                clip,
+                edge: TrimEdge::Left,
+                frame: 24_000,
+            })
+            .unwrap();
+        session
+            .editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+            .unwrap();
+        let Created::Clip(tail) = session
+            .editor
+            .execute(Command::SplitClip {
+                clip,
+                frame: 48_000,
+            })
+            .unwrap()
+        else {
+            panic!("expected split tail");
+        };
+        let current = family
+            .insert_event_read_on_control(&producer, &mut capture(&session, 8))
+            .unwrap();
+        for (read, clock, view_end, pitch, count, next_id, preview_length, source_start) in [
+            (&old, 96_000, 96_000, 0, 1, 2, 36_000, 0),
+            (&current, 72_000, 24_000, 137, 2, 3, 12_000, 24_000),
+        ] {
+            family
+                .read_with(read, |snapshot| {
+                    let (facts, actual_count, actual_next, last_end) = snapshot
+                        .with_audio_event_root(clip, |root| {
+                            let events = root.editable_events().unwrap();
+                            (
+                                root.facts(),
+                                events.len(),
+                                events.next_id(),
+                                events.iter().last().unwrap().end,
+                            )
+                        })
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(facts.domain.clock, AudioDomainClock::Frames(clock));
+                    assert_eq!(
+                        (facts.view_start, facts.view_end, facts.domain.pitch_cents),
+                        (0, view_end, pitch)
+                    );
+                    assert_eq!(
+                        (actual_count, actual_next, last_end),
+                        (count, next_id, clock)
+                    );
+                    let preview = snapshot
+                        .with_audio_clip_preview(
+                            clip,
+                            AudioClipPreviewOperation::Trim(TrimEdge::Right),
+                            36_000,
+                            |read| read.facts(),
+                        )
+                        .unwrap()
+                        .unwrap();
+                    assert_eq!(preview.duration, preview_length);
+                    let markers = snapshot.default_audio_warp_markers(clip).unwrap().unwrap();
+                    assert_eq!(
+                        (markers[0].source_frame, markers[1].source_frame),
+                        (source_start, 96_000)
+                    );
+                    assert!(matches!(
+                        snapshot.with_audio_event_root(clip, |root| root.root_frame_at(clock + 1)),
+                        Ok(Some(Err(_)))
+                    ));
+                })
+                .unwrap();
+        }
+        family
+            .read_with(&old, |snapshot| {
+                assert_eq!(snapshot.with_audio_event_root(tail, |_| ()).unwrap(), None);
+                assert_eq!(snapshot.default_audio_warp_markers(tail).unwrap(), None);
+                assert_eq!(
+                    snapshot
+                        .with_audio_clip_preview(
+                            tail,
+                            AudioClipPreviewOperation::Trim(TrimEdge::Right),
+                            1,
+                            |_| ()
+                        )
+                        .unwrap(),
+                    None
+                );
+            })
+            .unwrap();
+    }
 
     #[test]
     fn prepared_midi_and_gain_facts_stay_with_the_retained_snapshot_after_tempo_edit() {

@@ -269,3 +269,64 @@ fn borrowed_eq_response_matches_prepared_coefficients_with_effective_pending_edi
         }
     }
 }
+
+#[test]
+fn borrowed_current_main_compressor_preserves_mix_and_detector() {
+    let initial =
+        crate::default_native_device_state(hex_devices::compressor::COMPRESSOR_TYPE_ID).unwrap();
+    let state = crate::patch_native_device_parameter(
+        &initial,
+        ParameterId::new(8).unwrap(),
+        ParameterValue::Choice(1),
+    )
+    .unwrap();
+    assert_eq!(
+        NativeDeviceRead::on_control(NativeDeviceClass::Effect, &state)
+            .unwrap()
+            .parameter(ParameterId::new(8).unwrap())
+            .unwrap()
+            .value,
+        ParameterValue::Choice(1)
+    );
+    let overrides = [(1, -24.0), (2, 4.0), (5, 6.0), (6, 3.0), (7, 0.25)]
+        .map(|(id, value)| (ParameterId::new(id).unwrap(), ParameterValue::Float(value)));
+    let mut expected_state = state.clone();
+    for (id, value) in overrides {
+        expected_state = crate::patch_native_device_parameter(&expected_state, id, value).unwrap();
+    }
+    assert_eq!(
+        NativeDeviceRead::on_control(NativeDeviceClass::Effect, &expected_state)
+            .unwrap()
+            .parameter(ParameterId::new(7).unwrap())
+            .unwrap()
+            .value,
+        ParameterValue::Float(0.25)
+    );
+    let expected = crate::native_compressor_transfer_curve(&expected_state).unwrap();
+    let read = NativeDeviceRead::on_control(NativeDeviceClass::Effect, &state).unwrap();
+    assert_ne!(
+        read.compressor_transfer_curve(&overrides[..4]).unwrap(),
+        expected
+    );
+    let measured = allocation_counter::measure(|| {
+        assert_eq!(
+            read.compressor_transfer_curve(&overrides).unwrap(),
+            expected
+        );
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    let mut duplicate = overrides;
+    duplicate[4] = overrides[0];
+    assert!(read.compressor_transfer_curve(&duplicate).is_err());
+    let mut foreign = overrides;
+    foreign[4].0 = ParameterId::new(99).unwrap();
+    assert!(read.compressor_transfer_curve(&foreign).is_err());
+}
