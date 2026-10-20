@@ -4,8 +4,10 @@ use hex_lattice_contract::{
     DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor, ParameterValue,
 };
 mod borrowed;
+mod eq_structural;
 mod sampler_parameters;
 pub use borrowed::NativeDeviceRead;
+pub use eq_structural::{EqStructuralEdit, EqStructuralReplacement, eq_structural_on_control};
 pub use sampler_parameters::sampler_parameters_on_control;
 
 /// Reserved host parameter. Device codecs never own this identifier.

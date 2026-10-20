@@ -132,6 +132,7 @@ pub use gain_envelope::{
     MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS, SharedGainAutomationPreview,
     visit_shared_gain_preview_storage_on_control,
 };
+pub use native_device_view::{EqStructuralEdit, EqStructuralReplacement, eq_structural_on_control};
 mod return_feed_plan;
 mod signal_graph;
 mod stream_demand;
