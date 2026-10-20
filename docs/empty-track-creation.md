@@ -71,3 +71,15 @@ device; empty MIDI remains silent until explicitly instrumented; Undo/Redo and
 save/reopen retain contents. Existing authored devices and independently assigned
 track colors remain unchanged. Physical/optimized delivery and listening remain
 separate from cloud source checks. No native app actions are authorized here.
+
+Current-main integration also exposed private A/B, keyboard, routing, export,
+preparation and allocation fixtures that relied on the former hidden instrument.
+Their intended instrument is now explicitly authored at the inspected creation
+site, retaining one-command history and every existing workload/assertion. Tests
+whose imported-audio fixture later exercises instrument latency or stored host
+trims author that instrument locally; the common audio import fixtures remain
+empty. A separate verified-source contract now checks empty effect/instrument
+chains for both resident and streaming imports rather than seeding an instrument
+to preserve an obsolete import expectation. Failed compiler/control receipts and
+subsequent affected controls remain source-bound in Pulse2802; partial component
+positives do not replace the final required candidate plan or native acceptance.

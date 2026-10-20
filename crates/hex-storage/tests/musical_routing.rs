@@ -83,6 +83,11 @@ fn fixture(transformed: bool) -> Project {
 fn schema25_combines_roots_session_gain_routes_lanes_provenance_and_host_trims() {
     let mut e = Editor::new(fixture(true), 32).unwrap();
     let source = e.project().tracks()[0].id();
+    e.execute(Command::InsertInstrument {
+        track: source,
+        state: hex_project::default_instrument_state().unwrap(),
+    })
+    .unwrap();
     let Created::Track(target) = e
         .execute(Command::InsertTrackWithDevice {
             name: "target".into(),

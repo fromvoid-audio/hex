@@ -6023,3 +6023,10 @@ Targeted evidence in Pulse; sole merger fullCI/merge, root native acceptance.
 - Original model/Service PCM/storage/Engine and new fixture receipts are source
   component evidence; current required checks and actual merge are recorded in
   Pulse2802. Physical input, delivery and listening acceptance remain separate.
+
+408 integration: preserve actual implicit-instrument fixture failures, explicitly
+create only their intended private devices, and retain all history/PCM/allocation
+oracles. Keep common imports and new-track behavior empty. Browser Enter uses the
+selected registered instrument; clip-only transfer does not copy device chains.
+Source-bound component results and the final exact-candidate qualification are
+recorded separately in Pulse2802; native input/listening/delivery remain open.
