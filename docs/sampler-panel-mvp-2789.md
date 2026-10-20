@@ -105,6 +105,13 @@ it. Corrected full-source partial diagnostics still fail with 441 errors and no
 primary helper error. Native paired-source preflight and actual backend
 completion routes remain prerequisites for the real controller port.
 
+Spectrum/audition target and focus reads are now nominal and checked before
+cleanup. Exact trim content/prospective warp helpers have been composed from
+upstream `7bdcaccf` with matching before-blobs; UI trim consumption is next.
+The combined partial library diagnostic fails with 401 errors elsewhere and
+no primary new Spectrum/target-check error. It establishes neither a clean
+build nor registered UI behavior, full CI or native readiness.
+
 The production device-composition source guard passes with the real instrument
 dispatch. Earlier staged leaf tests (UI2, Engine2, Session30) remain evidence for
 that earlier immutable component only. The earlier feature-only mount and its

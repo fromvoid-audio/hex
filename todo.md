@@ -6376,3 +6376,12 @@ or full required rerun while those current findings remain unresolved.
   by the original guard; no production guard was weakened.
   Source checks remain separate from merger qualification, installed native
   interaction and user acceptance.
+
+## 20 october 2026 — sampler retained-read integration continuation
+
+- Spectrum/audition membership, focus and reconciliation use nominal reads with
+  cleanup after successful preflight; refused reads preserve intent.
+- Composed exact upstream trim content and prospective warp helpers (`7bdcaccf`);
+  the UI trim consumer is still pending. Combined scoped library diagnostic
+  fails with 401 errors. Registered pressure/focus checks, complete startup,
+  full local CI and optimized test delivery remain open; no app operation.

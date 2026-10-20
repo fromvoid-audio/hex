@@ -17,6 +17,9 @@ mod response;
 mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
 pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
+pub(in crate::editor) use spectrum::{
+    focused_effect_identity_is_current, reconcile_checked as reconcile_spectrum_checked,
+};
 
 // Outer five percent of the inset logarithmic plot; existing node hits win.
 const CUT_CREATION_EDGE: f32 = 0.05;

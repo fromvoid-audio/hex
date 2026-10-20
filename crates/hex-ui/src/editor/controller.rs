@@ -1405,68 +1405,67 @@ impl EditorView {
         self.observe_audio_frame(frame, visible_change, Instant::now())
     }
 
+    // Spectrum and audition use the exact same focused effect-chain law.
+    // The completed nominal read must precede destructive target retirement.
+    fn processor_target_is_visible_and_current_checked(
+        &self,
+        generation: u64,
+        identity: hex_engine::PostNodeIdentity,
+    ) -> Result<bool, hex_session::snapshot_exports::SnapshotTransportError> {
+        let state = self
+            .state
+            .as_ref()
+            .ok_or(hex_session::snapshot_exports::SnapshotTransportError::Stale)?;
+        state.read_with(|snapshot| {
+            self.clip_view_open
+                && self.device_panel_active
+                && self.project_generation == generation
+                && matches!(identity.device_type.as_str(), Ok("hex.eq8" | "hex.eq"))
+                && super::device_panel::focused_effect_identity_is_current(
+                    self,
+                    snapshot.model(),
+                    identity,
+                )
+        })
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
     fn spectrum_target_is_visible_and_current(
         &self,
         target: hex_audio::spectrum_target::SpectrumTarget,
     ) -> bool {
-        if !self.clip_view_open
-            || !self.device_panel_active
-            || self.project_generation != target.project_generation
-            || !matches!(
-                target.identity.device_type.as_str(),
-                Ok("hex.eq8" | "hex.eq")
-            )
-        {
-            return false;
-        }
-        let Some(state) = self.state.as_ref() else {
-            return false;
-        };
-        let focused_owner = super::device_panel::selected_owner(self, state);
-        match (focused_owner, target.identity.owner) {
-            (
-                Some(super::device_panel::DevicePanelOwner::Main),
-                hex_engine::ProcessorChainOwner::Main,
-            ) => state.project.main_devices().iter().any(|device| {
-                device.id().value() == target.identity.device_id
-                    && device.state().type_id() == target.identity.device_type
-            }),
-            (
-                Some(super::device_panel::DevicePanelOwner::Track(track_id)),
-                hex_engine::ProcessorChainOwner::Track(owner_id),
-            ) if track_id.value() == owner_id => {
-                state.project.track(track_id).is_some_and(|track| {
-                    track.devices().iter().any(|device| {
-                        device.id().value() == target.identity.device_id
-                            && device.state().type_id() == target.identity.device_type
-                    })
-                })
-            }
-            (
-                Some(super::device_panel::DevicePanelOwner::Return(return_id)),
-                hex_engine::ProcessorChainOwner::Return(owner_id),
-            ) if return_id.value() == owner_id => state
-                .project
-                .return_tracks()
-                .iter()
-                .find(|track| track.id() == return_id)
-                .is_some_and(|track| {
-                    track.devices().iter().any(|device| {
-                        device.id().value() == target.identity.device_id
-                            && device.state().type_id() == target.identity.device_type
-                    })
-                }),
-            _ => false,
-        }
+        matches!(
+            self.processor_target_is_visible_and_current_checked(
+                target.project_generation,
+                target.identity,
+            ),
+            Ok(true)
+        )
     }
 
     fn retire_stale_spectrum_target(&mut self) -> bool {
-        let eq_changed = super::device_panel::reconcile_eq_spectrum(self);
         let target = self
             .audio
             .as_ref()
             .and_then(|audio| audio.control.spectrum_desired());
-        if target.is_some_and(|target| !self.spectrum_target_is_visible_and_current(target)) {
+        let current = if let Some(target) = target {
+            match self.processor_target_is_visible_and_current_checked(
+                target.project_generation,
+                target.identity,
+            ) {
+                Ok(current) => current,
+                Err(_) => return false,
+            }
+        } else {
+            true
+        };
+        // Neither this cleanup nor the target cancellation may run after any
+        // refused preflight. Reconciliation itself prepares all facts first.
+        let eq_changed = match super::device_panel::reconcile_eq_spectrum_checked(self) {
+            Ok(changed) => changed,
+            Err(_) => return false,
+        };
+        if !current {
             if let Some(audio) = self.audio.as_mut() {
                 let _ = audio.control.spectrum_clear();
             }
@@ -1479,59 +1478,18 @@ impl EditorView {
         eq_changed
     }
 
+    #[cfg(all(test, feature = "ui-test-support"))]
     fn processor_audition_target_is_visible_and_current(
         &self,
         target: hex_audio::processor_audition::ProcessorAuditionTarget,
     ) -> bool {
-        if !self.clip_view_open
-            || !self.device_panel_active
-            || self.project_generation != target.project_generation
-            || !matches!(
-                target.identity.device_type.as_str(),
-                Ok("hex.eq8" | "hex.eq")
-            )
-        {
-            return false;
-        }
-        let Some(state) = self.state.as_ref() else {
-            return false;
-        };
-        let focused_owner = super::device_panel::selected_owner(self, state);
-        match (focused_owner, target.identity.owner) {
-            (
-                Some(super::device_panel::DevicePanelOwner::Main),
-                hex_engine::ProcessorChainOwner::Main,
-            ) => state.project.main_devices().iter().any(|device| {
-                device.id().value() == target.identity.device_id
-                    && device.state().type_id() == target.identity.device_type
-            }),
-            (
-                Some(super::device_panel::DevicePanelOwner::Track(track_id)),
-                hex_engine::ProcessorChainOwner::Track(owner_id),
-            ) if track_id.value() == owner_id => {
-                state.project.track(track_id).is_some_and(|track| {
-                    track.devices().iter().any(|device| {
-                        device.id().value() == target.identity.device_id
-                            && device.state().type_id() == target.identity.device_type
-                    })
-                })
-            }
-            (
-                Some(super::device_panel::DevicePanelOwner::Return(return_id)),
-                hex_engine::ProcessorChainOwner::Return(owner_id),
-            ) if return_id.value() == owner_id => state
-                .project
-                .return_tracks()
-                .iter()
-                .find(|track| track.id() == return_id)
-                .is_some_and(|track| {
-                    track.devices().iter().any(|device| {
-                        device.id().value() == target.identity.device_id
-                            && device.state().type_id() == target.identity.device_type
-                    })
-                }),
-            _ => false,
-        }
+        matches!(
+            self.processor_target_is_visible_and_current_checked(
+                target.project_generation,
+                target.identity,
+            ),
+            Ok(true)
+        )
     }
 
     fn retire_stale_processor_audition_target(&mut self) -> bool {
@@ -1539,9 +1497,17 @@ impl EditorView {
             .audio
             .as_ref()
             .and_then(|audio| audio.control.audition_desired());
-        if target
-            .is_some_and(|target| !self.processor_audition_target_is_visible_and_current(target))
-        {
+        let Some(target) = target else {
+            return false;
+        };
+        let current = match self.processor_target_is_visible_and_current_checked(
+            target.project_generation,
+            target.identity,
+        ) {
+            Ok(current) => current,
+            Err(_) => return false,
+        };
+        if !current {
             if let Some(audio) = self.audio.as_mut() {
                 let _ = audio.control.audition_cancel();
             }

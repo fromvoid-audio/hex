@@ -94,14 +94,14 @@ pub(in crate::editor) fn select_main(
 
 pub(in crate::editor) fn selected_owner(
     view: &EditorView,
-    state: &ViewState,
+    project: SnapshotProjectRead<'_>,
 ) -> Option<DevicePanelOwner> {
     view.focused_return
-        .filter(|id| state.project.return_tracks().iter().any(|r| r.id() == *id))
+        .filter(|id| project.returns().any(|r| r.id() == *id))
         .map(DevicePanelOwner::Return)
         .or_else(|| {
             view.selected_track
-                .filter(|id| state.project.track(*id).is_some())
+                .filter(|id| project.track(*id).is_some())
                 .map(DevicePanelOwner::Track)
         })
         .or_else(|| {
