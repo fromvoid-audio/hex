@@ -1,0 +1,45 @@
+{
+  "source": "68c717ce608b4c63f3f5991542ad715e41f0f4e2",
+  "tree": "bfac50e53875d61d0c0d59485e20d1234defd324",
+  "direct_parent": "4fda283dac2a6a60150dcd6454165bf4bcafd8dc",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/arrangement_seek.rs",
+      "before_sha256": "2bb7d792d421a80eb17699f9815aacb4f56ba74e263cb425cb08b04f19dfba25",
+      "after_sha256": "ade7b3eaa3a8d10d80ca54c144edf70605ec1501efb3cabd70953341c7cd9b5a",
+      "before_blob": "64d82e39a3d7ab5d51f458a37d8e3b9d4b8aef04",
+      "after_blob": "4c312325fd849b477b75575a7206d31f4e8c710f"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/controller.rs",
+      "before_sha256": "c7d7f8ac8e493e53cbcb2be6c2d125fc08ce4e0f96208572bf9b8b2ab675239a",
+      "after_sha256": "0d705adb113f4aef7b92815a3069db7db60e1a9a4c692e916a265f7536d0e343",
+      "before_blob": "127aa18e7e089a1763fb292c394d356f157d5fe8",
+      "after_blob": "260b7b436792df08abe5d591e25575e67cdbc31c"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/eq_held_pointer_tests.rs",
+      "before_sha256": "8c82b5d7681417e09947b78a326a9e932e6d2ec88173ae948c0e108e31acfd2f",
+      "after_sha256": "7e02e330df5d29e792b511075fdec0ab2046b9f0365c059c7b808828ab98cfae",
+      "before_blob": "9b9a5d4144aa79f78bf1ece20eff9b443c2b3efb",
+      "after_blob": "03342a4604ee1acc650052770996b5e36dc3ab2c"
+    },
+    {
+      "path": "docs/prepared-seek-cancellation.md",
+      "before_sha256": "4b0e427ce410f264a7720f76b16d962dcefa95bec6b8d5d2f8b2471d5bb3bbc4",
+      "after_sha256": "3aa0b5278e769fda73dace69a019e127874ece3ce7f79446b39cc9815aba7353",
+      "before_blob": "2aa78dc842f1cf51dd7ae3b500f4372ec56248c4",
+      "after_blob": "5b79d84e99e42b8f0dc4b3b4509c2488d3e7dcb1"
+    },
+    {
+      "path": "todo.md",
+      "before_sha256": "5d214c8e291a4b33bfda22cfbd24a452ad06af0112924368df1677603bcae9f6",
+      "after_sha256": "29f2bf095298a3229ea030ebdc87f5da61987309675eea7b553f57ff01a4208d",
+      "before_blob": "98d2414d8410e2bcff05b50deaa3063d9673f16f",
+      "after_blob": "49635a891521e287325794fb0c10c363615e527c"
+    }
+  ],
+  "original_held_pointer_bytes_preserved": true,
+  "original_lines": 693,
+  "new_cases": 2
+}
