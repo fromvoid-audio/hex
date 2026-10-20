@@ -28,6 +28,12 @@ ci = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = ci
 SPEC.loader.exec_module(ci)
 
+CHANGELOG_SPEC = importlib.util.spec_from_file_location("hex_changelog", ROOT / "scripts/changelog.py")
+if CHANGELOG_SPEC is None or CHANGELOG_SPEC.loader is None:
+    raise RuntimeError("changelog validator unavailable")
+changelog = importlib.util.module_from_spec(CHANGELOG_SPEC)
+CHANGELOG_SPEC.loader.exec_module(changelog)
+
 
 class DeliveryError(Exception):
     """Fail closed without changing projects, preferences or unrelated apps."""
@@ -46,14 +52,26 @@ def sha(path: Path) -> str:
 
 
 @contextmanager
-def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False):
+def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = False,
+                       expected_owner_sha256: str | None = None,
+                       expected_recreated_target_identity: dict[str, int] | None = None,
+                       recovery_inactive_check=None, verification_check=None):
     """Build/identify only; shared by delivery and nonactivating review staging.
 
     The target lock spans compilation, source validation and the caller's copy.
     This helper never installs, activates or launches an application.
     """
-    with runner.guarded_release(adopt=adopt) as ownership:
-        argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
+    recovery = {"adopt": adopt}
+    argv = ["cargo", "build", "--release", "-p", package, "--locked", "--message-format=json"]
+    recovery["requested_build_argv"] = argv
+    if verification_check is not None:
+        recovery["verification_check"] = verification_check
+    if expected_owner_sha256 is not None:
+        recovery["expected_owner_sha256"] = expected_owner_sha256
+    if expected_recreated_target_identity is not None:
+        recovery.update(expected_recreated_target_identity=expected_recreated_target_identity,
+                        recovery_inactive_check=recovery_inactive_check)
+    with runner.guarded_release(**recovery) as ownership:
         log_path = runner.output_dir / "optimized-build.log"
         with log_path.open("w") as log, \
                 ci.terminal_progress("building optimized hex"):
@@ -71,6 +89,9 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
         if len(binaries) != 1:
             raise DeliveryError("no unique optimized artifact from Cargo")
         ownership["artifact"] = runner.identify_release_artifact(binaries[0], argv)
+        runner.validate_release_inputs(ownership)
+        if verification_check is not None:
+            verification_check()
         if (not runner._capture_repository_state("release_artifact_tree")
                 or runner.summary["release_artifact_tree"] != runner.summary["start_tree"]):
             raise DeliveryError("source changed during optimized compilation")
@@ -119,6 +140,16 @@ def assert_inactive(app: Path) -> None:
         if len(fields) == 2 and str(Path(fields[1]).absolute()).casefold().startswith(prefix):
             raise DeliveryError(f"hex is running (pid {fields[0]}); save, quit and retry. "
                                 "no application was force-quit; disk replacement cannot reload a process")
+
+
+def assert_recovery_inactive(app: Path) -> None:
+    """Never quit; recheck both configured app and raw desktops before mutation."""
+    assert_inactive(app)
+    for line in run(["ps", "-ww", "-axo", "pid=,comm="]).splitlines():
+        fields = line.strip().split(None, 1)
+        if len(fields) == 2 and Path(fields[1].rstrip("/")).name.casefold() == "hex-desktop":
+            raise DeliveryError(f"raw hex-desktop is running (pid {fields[0]}); save, quit and retry; "
+                                "no process was terminated")
 
 
 def inventory(app: Path, *, signed_payload: bool = False, include_receipt: bool = False) -> dict[str, str]:
@@ -356,14 +387,55 @@ def activate(app: Path, stage: Path) -> None:
     remove_install_workspace(workspace)
 
 
-def validate_ci(report: Path, runner, candidate: str) -> dict:
+def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool = False) -> dict:
     evidence = json.loads(report.read_text())
+    if not isinstance(evidence, dict):
+        raise DeliveryError("CI certificate must be an object")
+    if type(evidence.get("schema_version")) is not int or evidence["schema_version"] != 2:
+        raise DeliveryError("CI certificate requires schema 2 with executed test counts")
+    if (not isinstance(evidence.get("steps"), list)
+            or any(not isinstance(step, dict) for step in evidence["steps"])
+            or any(not isinstance(evidence.get(key), dict) for key in ("start_tree", "end_tree"))
+            or "target_cache" in evidence and not isinstance(evidence["target_cache"], dict)):
+        raise DeliveryError("CI certificate has malformed steps/source/input records")
+    for step in evidence["steps"]:
+        counts = step.get("test_results", {})
+        if (not isinstance(counts, dict) or any(not isinstance(counts.get(key, []), list)
+                or any(type(n) is not int or n < 0 for n in counts.get(key, []))
+                for key in ("rust_passed_by_binary", "python_executions", "python_skipped"))):
+            raise DeliveryError("CI certificate has malformed executed test counts")
     if not runner._capture_repository_state("start_tree"):
         raise DeliveryError("cannot identify current source")
     current = runner.summary["start_tree"]
+    plan = evidence.get("plan")
     expected_steps = [(step.step_id, list(step.argv)) for step in ci.FULL_STEPS]
+    allowed_mode = evidence.get("mode") == "full"
+    if plan is not None:
+        if not isinstance(plan, dict):
+            raise DeliveryError("invalid scoped verification plan")
+        if not allow_dev_profile and (plan.get("scope") != "full" or plan.get("reuse")):
+            raise DeliveryError("beta/stable/native qualified delivery requires the full audit, not scoped dev checks")
+        if (plan.get("profile") not in {"merge", "full", "release"}
+                or not plan.get("qualifies_merge") or plan.get("source") != candidate):
+            raise DeliveryError("invalid scoped verification plan")
+        metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], runner.root))
+        resolved = ci.ci_plan.resolve(runner.root, profile=plan["profile"], base=plan["base"], source=candidate,
+                                      metadata=metadata, allow_same_tree_merge=True)
+        if plan.get("reuse"):
+            resolved = ci.reusable_plan(runner.root, resolved, Path(plan["reuse"]["report"]))
+        if resolved != plan:
+            raise DeliveryError("recorded scope differs from the current source/dependency plan")
+        expected_steps = [(step.step_id, list(step.argv)) for step in ci.planned_steps(plan)]
+        allowed_mode = evidence.get("mode") == plan["profile"]
+    if evidence.get("schema_version") == 2:
+        required = ci.planned_steps(plan or {"scope": "full"})
+        for step, recorded in zip(required, evidence.get("steps", [])):
+            counts = recorded.get("test_results", {})
+            if step.requires_tests and (sum(counts.get("rust_passed_by_binary", []))
+                    + sum(counts.get("python_executions", [])) - sum(counts.get("python_skipped", []))) <= 0:
+                raise DeliveryError("requested test configuration has no executed positive cases")
     actual_steps = [(step.get("step_id"), step.get("argv")) for step in evidence.get("steps", [])]
-    if (evidence.get("mode") != "full" or evidence.get("status") != "passed"
+    if (not allowed_mode or evidence.get("status") != "passed"
             or evidence.get("stale") is not False or evidence.get("exit_code") != 0
             or actual_steps != expected_steps
             or any(step.get("status") != "passed" for step in evidence["steps"])
@@ -379,6 +451,15 @@ def validate_ci(report: Path, runner, candidate: str) -> dict:
                 ["git", "rev-parse", f"{candidate}^{{tree}}"], runner.root):
             raise DeliveryError("merged source differs from locally verified candidate")
         run(["git", "merge-base", "--is-ancestor", candidate, head], runner.root)
+    if runner.target_lock is not None:
+        # The release driver calls this under the SAME target lock before
+        # pending/cleanup/build, again before consumption, and before publish.
+        try:
+            expected = evidence.get("target_cache", {}).get("dependency_inputs")
+            if not isinstance(expected, dict) or runner._dependency_context() != expected:
+                raise DeliveryError("CI toolchain/configuration inputs differ from the guarded delivery")
+        except (OSError, ValueError, RuntimeError, ci.TargetCacheError) as error:
+            raise DeliveryError(f"cannot revalidate CI toolchain/configuration inputs: {error}") from error
     return evidence
 
 
@@ -392,6 +473,21 @@ def validate_source(runner, candidate: str, expected: dict | None = None) -> dic
             or (expected is not None and current != expected)):
         raise DeliveryError("build-only source is dirty, changed or differs from the exact candidate")
     return dict(current)
+
+
+def changelog_payload(root: Path) -> tuple[bytes | None, dict]:
+    """Return validated exact committed bytes for sealing; never generate during build."""
+    try:
+        dataset = changelog.validate_current(root, if_present=True)
+    except (ValueError, OSError, KeyError, TypeError) as error:
+        raise DeliveryError(f"invalid changelog; previous app preserved: {error}") from error
+    path = root / changelog.DATASET
+    if not path.exists():
+        return None, {"status": "unavailable", "coverage": []}
+    raw = path.read_bytes()
+    return raw, {"status": "available" if dataset['batches'] else "unavailable",
+                 "sha256": hashlib.sha256(raw).hexdigest(),
+                 "coverage": [batch['input']['source'] for batch in dataset['batches']]}
 
 
 def build(args) -> dict:
@@ -417,13 +513,19 @@ def build(args) -> dict:
         runner = ci.LocalCiRunner(ROOT, adopt_target=False)
         build_only = getattr(args, "build_only", False)
         source_evidence = validate_source(runner, args.candidate) if build_only else None
+        release_ownership = None
 
         def revalidate() -> None:
             if build_only:
                 validate_source(runner, args.candidate, expected=source_evidence)
             else:
-                validate_ci(args.ci_report, runner, args.candidate)
+                validate_ci(args.ci_report, runner, args.candidate,
+                            **({"allow_dev_profile": True} if getattr(args, "dev_profile", False) else {}))
+            if release_ownership is not None:
+                runner.validate_release_inputs(release_ownership)
 
+        revalidate()
+        changelog_bytes, changelog_identity = changelog_payload(ROOT)
         revalidate()
         included = json.loads(args.included.read_text())
         if not isinstance(included, list) or not included:
@@ -440,7 +542,23 @@ def build(args) -> dict:
         runner.output_dir.mkdir(parents=True)
         if not runner._resolve_cargo_identity() or not runner._check_disk_headroom():
             raise DeliveryError(str(runner.summary))
-        with optimized_artifact(runner, adopt=getattr(args, "adopt_release_target", False)) as (binary, release_ownership):
+        replacement = None
+        device = getattr(args, "expected_recreated_target_device", None)
+        inode = getattr(args, "expected_recreated_target_inode", None)
+        if device is not None or inode is not None:
+            if (type(device) is not int or device < 0 or type(inode) is not int or inode <= 0
+                    or not getattr(args, "adopt_release_target", False)
+                    or not getattr(args, "expected_release_owner_sha256", None)):
+                raise DeliveryError("explicit recreated target requires both identity integers and owner CAS")
+            replacement = {"device": device, "inode": inode}
+        recovery = {}
+        if replacement is not None:
+            recovery = {"expected_recreated_target_identity": replacement,
+                        "recovery_inactive_check": lambda: assert_recovery_inactive(app)}
+        with optimized_artifact(runner, adopt=getattr(args, "adopt_release_target", False),
+                                expected_owner_sha256=getattr(args, "expected_release_owner_sha256", None),
+                                verification_check=revalidate,
+                                **recovery) as (binary, release_ownership):
             metadata = json.loads(run(["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"]))
             version = next(package["version"] for package in metadata["packages"] if package["name"] == "hex-desktop")
             argv = release_ownership["build_argv"]
@@ -464,6 +582,8 @@ def build(args) -> dict:
             with (contents / "Info.plist").open("wb") as output:
                 plistlib.dump(info, output)
             (contents / "Resources/USER-TEST.md").write_text(checklist)
+            if changelog_bytes is not None:
+                (contents / "Resources/changelog.json").write_bytes(changelog_bytes)
             if build_only:
                 write_json(contents / "Resources/source-verification.json", {
                     "mode": "source-only", "tests": "not_run", "source": source_evidence,
@@ -479,9 +599,9 @@ def build(args) -> dict:
                             "lock_path", "action", "cleanup_status", "artifact")},
                        "ci_report": None if build_only else str(args.ci_report.resolve()),
                        "ci_report_sha256": None if build_only else sha(args.ci_report),
-                       "verification": {"mode": "source-only" if build_only else "full-ci",
+                       "verification": {"mode": "source-only" if build_only else "scoped-dev-ci" if getattr(args, "dev_profile", False) else "full-ci",
                                         "tests": "not_run" if build_only else "passed"},
-                       "included": included, "app_path": str(app), "created_at": ci.utc_now(),
+                       "included": included, "changelog": changelog_identity, "app_path": str(app), "created_at": ci.utc_now(),
                        "activation": "installed on disk; launch or relaunch required; not launched by delivery",
                        "signature": "Developer ID sealed local test bundle; not notarized",
                        "signing": signing,
@@ -504,6 +624,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     verification = parser.add_mutually_exclusive_group(required=True)
     verification.add_argument("--ci-report", type=Path, help="full exact-source local CI report")
+    parser.add_argument("--dev-profile", action="store_true",
+                        help="explicit development delivery only; allow a resolved scoped merge report, never beta/stable full qualification")
     verification.add_argument("--build-only", action="store_true",
                               help="verify clean exact source and build without running or requiring tests")
     parser.add_argument("--candidate", required=True, help="full exact candidate commit")
@@ -511,7 +633,22 @@ def main() -> int:
     parser.add_argument("--checklist", type=Path, required=True)
     parser.add_argument("--adopt-release-target", action="store_true",
                         help="explicitly recover unknown/pending release ownership; selectively clean workspace release artifacts")
+    parser.add_argument("--expected-release-owner-sha256",
+                        help="require this exact previously inspected owner under the release mutation lock")
+    parser.add_argument("--expected-recreated-target-device", type=int,
+                        help="explicit recovery: require this inspected replacement target device")
+    parser.add_argument("--expected-recreated-target-inode", type=int,
+                        help="explicit recovery: require this inspected replacement target inode")
     args = parser.parse_args()
+    if args.dev_profile and args.build_only:
+        parser.error("--dev-profile requires --ci-report, not --build-only")
+    if args.expected_recreated_target_device is not None or args.expected_recreated_target_inode is not None:
+        if (args.expected_recreated_target_device is None or args.expected_recreated_target_device < 0
+                or args.expected_recreated_target_inode is None or args.expected_recreated_target_inode <= 0
+                or not args.expected_release_owner_sha256 or not args.adopt_release_target):
+            parser.error("recreated-target recovery requires device/inode, owner SHA256 and explicit adoption")
+    if args.expected_release_owner_sha256 and not args.adopt_release_target:
+        parser.error("--expected-release-owner-sha256 requires --adopt-release-target")
     def interrupted(_signum, _frame):
         raise KeyboardInterrupt
     signal.signal(signal.SIGTERM, interrupted)
@@ -522,7 +659,7 @@ def main() -> int:
     except (DeliveryError, ci.TargetCacheError, ci.InterruptedRun, OSError, ValueError,
             KeyError, TypeError, StopIteration, subprocess.CalledProcessError, KeyboardInterrupt) as error:
         print(f"test installation incomplete: {error}; temporary publication files preserved for retry. "
-              "save and quit hex before retrying; no process was terminated", file=sys.stderr)
+              "inspect the reported process/ownership refusal before retrying; no process was terminated", file=sys.stderr)
         return 1
 
 

@@ -279,7 +279,13 @@ mod tests {
         let mut tracks = Vec::new();
         for name in ["source", "destination"] {
             let Created::Track(track) = editor
-                .execute(Command::AddTrack { name: name.into() })
+                .execute(Command::InsertTrackWithDevice {
+                    name: name.into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state()
+                        .expect("fixture instrument state"),
+                })
                 .unwrap()
             else {
                 panic!("track")

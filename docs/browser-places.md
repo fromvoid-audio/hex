@@ -205,3 +205,152 @@ handlers run in their local browser scope; painting/workers never restore focus.
 Close returns focus to the editor. This is separate from the unresolved native
 field-click focus-loss report2794 and the future double-click refinement2817.
 Optimized native pointer/IME/keyboard acceptance remains coordinator-owned.
+
+## Built-in source menus and reversible sidebar removal — Pulse2844 / PR446
+
+Home and Music use the existing row-anchored bundled icon grid and Default Icon
+reset. Their saved identities are `home` and `music`, independent of the resolved
+native Home path. Unknown icon IDs survive saves and show the default folder
+with a bounded diagnostic. Custom Place assignments remain keyed by original
+native paths; paths, casing and same-name identities are unchanged.
+
+Remove on Home, Music, Samples or a custom Place hides that sidebar entry only.
+The source paths remain in Places and the indexed catalog roots, and no files,
+project media or history entries are deleted. Removing the active source stops
+its preview and selects visible All. Existing source settings expose checkboxes
+to restore every hidden Place and Samples; All remains reachable with Command-F.
+Visibility and built-in icon overrides use the existing bounded browser document
+and background latest-snapshot save lane. Malformed settings remain untouched.
+Other section icon cycling and the broader collections work in2672 remain separate.
+
+All is the first Library row in both expanded and compact modes, retaining stable
+internal section IDs. The existing accepted Command-F handler is reused unchanged:
+it reveals All, preserves/selects the query, finalizes valid edits and respects
+invalid numeric drafts and IME handling. It adds no recursive indexing.
+
+Source tests exercise actual built-in right-click/grid/reset, compact glyph
+centers, actual Remove/restore controls, preference reopen and preserved WAV bytes,
+catalog roots/entries and request queues. Native optimized appearance, user menu
+navigation and actual app close/reopen remain root-owned acceptance gaps.
+## compact picker headings and resize capture — pulse2841 / PR444
+
+At the exact 23 px picker minimum, the section headings show small themed line
+marks centered on the existing icon column. Their original single-line text boxes
+remain reserved but do not paint; separators overlay those boxes. Collections,
+Library, Places and open-settings rows therefore keep every source icon's existing
+x/y position and row height. Expanded headings return in the same slots, and full
+heading names remain available through hover tooltips. Item names keep progressive
+single-line clipping; selectable Place icons and native path identities are unchanged.
+
+Pointer resizing captures the minimum within one existing 4 px divider width.
+Once captured, the same drag stays locked until it exceeds two divider widths
+above minimum, preventing chatter near the threshold. A new drag starting at
+minimum also uses this release band. Outside the band, ordinary pointer widths
+remain continuous (subject to GPUI's existing device-pixel paint rounding). Mouse
+release retains the captured minimum. The settings gear still expands deliberately
+when opening settings, and closing already-open compact settings does not widen it.
+This state is transient editor layout; no new persisted format or global width
+quantization is introduced. Native physical drag/hover and accessibility inspection
+remain coordinator-owned acceptance, separate from headless scene/input tests.
+
+## repeated text double-click selection — pulse2817 / PR423
+
+First query focus click and Command-F still select all. In focused editable text,
+a double-click on a full selection collapses to the clicked caret; the next
+selects all again. Partial/collapsed selections double-click to select all. The
+local gesture remembers selection before the first click, so its ordinary caret
+placement cannot erase the toggle's starting state. Native 1/2 and rapid 3/4 click
+pairs share that policy; no timer/global mouse hook is added. Single clicks,
+Shift selection, held drag and release keep their usual semantics. Keyboard,
+text/IME replacement and focus entry invalidate stale gesture snapshots; worker
+completion/paint does not. Selection alone changes no query, preview or project.
+
+Shared name fields preserve original Unicode/raw paths and the presentation-only
+lowercase mapping; clipboard/IME ranges remain source UTF-16. Already edited
+numeric text uses the same toggle without reformatting its draft or emitting a
+value edit. Knob reset and nonediting numeric adjustment remain separate gestures.
+Rendered tests exercise actual down/up click counts, partial/drag/release,
+filesystem worker/tick/resize updates, Unicode composition and empty text. Native
+physical mouse/IME/accessibility acceptance remains coordinator-owned and open.
+
+## selected-track sample input — pulse2821 / PR427
+
+Enter on a selected sample in browser navigation inserts into the selected regular
+Arrangement TrackId at the current edit/playback cursor. It refuses visibly when
+no valid track is selected, the Arrangement is busy, or Session is active; it never
+falls back to a hovered, default or new track. Enter while editing the query,
+including IME composition, does not insert a sample. Explicit drag/drop remains
+independent, and result double-click still does not import.
+
+The compact grid icon in the browser toolbar toggles quantized sample input. It
+starts off for each editor and survives browser close/reopen and source changes.
+When enabled, input snaps to the **nearest** active Arrangement grid line using
+the same tempo, meter and adaptive zoom resolver as Arrangement snapping. A disabled
+grid or stale/unavailable timeline geometry causes a visible refusal. With input
+quantization off, the original frame position is retained.
+
+Invocation captures the native sample path, selected TrackId, resolved frame,
+document generation and revision before worker preparation. Selection/cursor/grid
+changes cannot retarget that request. The existing bounded audio batch controller
+handles cancellation, stale contexts, errors and one canonical overwrite/history
+commit; decode and graph preparation stay off the UI/audio callback. Same-track
+source fragments remain intact outside the inserted interval, and one Undo restores
+the preceding clip content (ID allocation remains monotonic). This Enter route
+reuses the canonical overwrite entrypoint; global no-overlap coverage across other
+entrypoints remains issue2822/PR428. Optimized native input/audio acceptance remains
+separate from headless input and real-worker checks.
+### invalidated text double-click pairs
+
+A text/keyboard/IME update, Shift selection or drag invalidates the saved first
+click. If the platform subsequently sends an even click count, the shared policy
+returns no toggle and the field uses its normal caret/selection path. It never
+substitutes current selection for the discarded snapshot. Fresh rapid1/2 and3/4
+pairs still toggle from their own pre-gesture state. No text/query/value event,
+formatter, numeric knob reset or geometry policy changes.
+
+New bounded actual-caller regressions cover keyboard, text, IME, Shift and drag
+invalidation followed by click2, then a fresh3/4 pair. The shared pure policy
+covers both prior/current full-selection states. Original browser/name/numeric
+and physical input evidence remains source-bound; native click-count/IME and
+clipboard acceptance is separate from headless source checks.
+
+The new PR423 toggle fixture now precreates one existing test Environment and
+its samples/WAV before Service/browser startup, then injects that same Arc into
+the editor. Actual browser/home/root, all four preference paths and the catalog
+path correlate with that owner. A real catalog-save gate proves the same root
+survives view/caller retirement, saves successfully, then cleans up without
+recreation. No import or new PendingSetup is needed for this browser-only fixture;
+no production input policy changes. Original query/IME/double-pair/value-event
+assertions remain byte-identical. Older fixtures are not converted by this fix.
+
+### keyboard row-action eligibility
+
+Left/Right operate only on a highlighted browser result. Clicking a source/Place
+or pressing Escape retains navigation focus but clears the highlight; subsequent
+Right cannot audition an implicit first sample or expand an implicit folder, and
+Left cannot collapse one. Up/Down still enter and navigate results through the
+existing selection path. A highlighted sample's Right audition and highlighted
+folder Left/Right remain available, as do explicit row clicks and manual preview.
+The browser key context and search/Command-F text ownership are unchanged.
+
+Pulse2858/PR460 promotes the verified five failures from both main2683942b and
+original423 into normal rendered regressions. They use actual routed keys,
+private filesystem workers and canonical Service Init; refused row actions leave
+canonical metadata/history and project requests unchanged. Selected-row controls
+and Up/Down-to-Right plus Command-F typing remain positive cases. This is source
+coverage, not physical keyboard/audio-output or native delivery acceptance.
+
+Quantized sample input refuses every disabled Arrangement grid, including a
+remembered fine, medium or coarse density. Disabling input quantization keeps
+the exact invocation frame even when the Arrangement grid is disabled. Active
+density presets continue to use the same nearest-grid resolver. Integration
+controls exercise actual Enter, no queued import/history mutation on refusal,
+real worker commits and Undo, retaining the original six caller cases.
+
+Picking a previously hidden known Home, Music or custom folder restores its
+visibility through the existing source-settings setter before selecting it.
+If loading or read-only preferences refuse restoration, the picker leaves the
+current visible source selected. Cancel/error remains a no-op on source visibility;
+Samples keeps its existing picker-selection convention. Paths, icons, media and
+catalog roots remain intact. Actual injected picker-result tests cover restore,
+preferences reopen and refusals; native panel behavior remains separate.

@@ -254,9 +254,7 @@ impl EditorView {
                 // configured grid; Off uses the ordinary modifier's adaptive grid.
                 let grid = if snap_modifier {
                     match drag.snap_grid {
-                        super::musical_time::SnapGrid::Off => {
-                            super::musical_time::SnapGrid::Adaptive
-                        }
+                        grid if grid.is_off() => grid.toggled(),
                         grid => grid,
                     }
                 } else {

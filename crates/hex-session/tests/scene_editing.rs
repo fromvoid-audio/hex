@@ -108,8 +108,11 @@ fn worker_duplicates_reorders_saves_and_reopens_session_scenes() {
 
     let track = match edit(
         &service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     )
     .created
