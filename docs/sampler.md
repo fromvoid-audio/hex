@@ -9,12 +9,42 @@ native interaction/listening acceptance is claimed.
 
 ## current source boundary
 
-`hex-devices::sampler` accepts borrowed, validated finite stereo PCM at its
-original rate. Construction happens on control; no decoding, paths, asset IDs,
-project edits, queues, shared-owner clones or resource destruction occur in the
-kernel. `Sample` validation scans PCM once. Preparing another voice does not
-scan or copy the sample. The caller must keep PCM and slice-marker storage alive
-for all borrowed configurations/voices; Rust enforces these lifetimes.
+`hex-devices::sampler` separates scalar source-coordinate preparation from
+borrowed original-rate Mono/Stereo PCM queries. The original `Sample`/`Voice`
+stereo API delegates to that same law. `SampleShape` describes bounded DSP facts;
+it never establishes physical storage, provenance or a source lease.
+
+`PreparedSamplerPlan::bind_source_on_control` checks the actual borrowed view's
+shape/rate and finite PCM once. Its prepared voices carry only copyable scalar
+coefficients, slot and full content/derivation identity; slice marker storage may
+be released after voice preparation. Rendering borrows the retained host
+configuration and refuses missing/replaced identities, rates or layouts with
+silence. There is no per-note PCM scan/copy, owning source handle, forged static
+borrow or second cache. The host must still prove complete admission/custody and
+retain the exact source configuration for current, carried and outgoing voices.
+This adapter boundary does not register the device or open resource processing.
+
+The original stereo adapter retains its control-validated immutable `Sample`
+contract. Its shared interpolation specialization avoids checking those same
+finite samples again per frame; raw borrowed-PCM queries still check the queried
+endpoints and emit silence for nonfinite values. Both paths use the same source
+coordinate, envelope and interpolation implementation.
+
+Pulse2923 / PR509 compares the existing optimized `profile_sampler` fixture on
+macOS arm64, Apple M5 Pro:48kHz,128-frame blocks,100 warmup blocks and2,000 timed
+blocks per row, using `Instant` with allocation and voice preparation outside
+timing. Source before extraction is91a4883a (same kernel as main0e425030).
+The first generalized query was slower; that result is retained separately.
+
+| Voices | Before p50 µs | Final p50 µs |
+| --- | ---: | ---: |
+| 1 | 1.417 | 0.792 |
+| 16 | 16.875 | 12.375 |
+| 32 | 41.667 | 26.708 |
+
+All three output checksums match. Raw p95/p99/max values and the exact final
+source are retained with the PR. These single-run timings include uncontrolled
+machine load; they establish no native callback deadline or matched Live result.
 
 The kernel implements these original laws, pending reference measurement:
 

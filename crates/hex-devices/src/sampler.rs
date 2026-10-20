@@ -4,8 +4,14 @@
 //! The control owner validates PCM once and retains it for every borrowed voice.
 //! Rendering is deterministic, allocation-free and independent of block size.
 //! See `docs/sampler.md` for host asset and reference acceptance still required.
+mod binding;
 mod envelope;
+mod plan;
+mod voice;
+pub use binding::{BorrowedSamplerVoice, BoundSamplerPlan};
 pub use envelope::Envelope;
+pub use plan::{PreparedSamplerPlan, SampleChannels, SampleShape};
+pub use voice::{Voice, VoiceCoefficients};
 
 use crate::Invalid;
 use hex_lattice::StereoFrame;
@@ -128,146 +134,38 @@ impl Settings<'_> {
     }
 }
 
-/// Prepared immutable configuration. PCM and slice markers are borrowed from
-/// control-owned storage; no file, project ID, queue or runtime owner lives here.
+/// Original validated stereo adapter over the nonowning source-coordinate plan.
+/// No source owner or native storage/admission authority is created here.
 #[derive(Clone, Copy, Debug)]
 pub struct PreparedSampler<'a> {
     sample: Sample<'a>,
-    settings: Settings<'a>,
-    output_rate: u32,
-    envelope: envelope::PreparedEnvelope,
+    plan: PreparedSamplerPlan<'a>,
 }
-
 impl<'a> PreparedSampler<'a> {
     pub fn new(
         sample: Sample<'a>,
         output_rate: u32,
         settings: Settings<'a>,
     ) -> Result<Self, Invalid> {
-        if !(8_000..=192_000).contains(&output_rate)
-            || !settings.region.valid(sample.frames.len())
-            || settings.root_note > 127
-            || !finite_range(settings.transpose_semitones, -48.0, 48.0)
-            || !finite_range(settings.detune_cents, -100.0, 100.0)
-            || !finite_range(settings.gain, 0.0, 4.0)
-            || !finite_range(settings.pan, -1.0, 1.0)
-            || !finite_range(settings.velocity_amount, 0.0, 1.0)
-        {
-            return Err(Invalid("sampler settings are outside their finite domain"));
-        }
-        match settings.mode {
-            Mode::Classic {
-                loop_region: Some(region),
-            } if !settings.region.contains(region) => {
-                return Err(Invalid(
-                    "sample loop must be nonempty and inside the region",
-                ));
-            }
-            Mode::Slice {
-                starts, base_note, ..
-            } => {
-                if starts.is_empty()
-                    || starts.len() > MAX_SLICES
-                    || base_note > 127
-                    || starts.len() > 128 - usize::from(base_note)
-                    || starts.first() != Some(&settings.region.start)
-                    || starts.last().is_none_or(|end| *end >= settings.region.end)
-                    || starts.windows(2).any(|pair| pair[0] >= pair[1])
-                {
-                    return Err(Invalid(
-                        "sample slices need ordered in-region midi-mapped markers",
-                    ));
-                }
-            }
-            _ => {}
-        }
+        let shape = SampleShape::new(
+            sample.frames.len(),
+            sample.sample_rate,
+            SampleChannels::Stereo,
+        )?;
         Ok(Self {
             sample,
-            output_rate,
-            envelope: settings.envelope.prepare(output_rate)?,
-            settings,
+            plan: PreparedSamplerPlan::new(shape, output_rate, settings)?,
         })
     }
-
-    /// Control-side voice preparation. None denotes velocity zero or an
-    /// unmapped slice key. Invalid MIDI bytes are refused, never truncated.
-    /// The host remains responsible for polyphony, note identity and stealing.
     pub fn prepare_voice(self, note: u8, velocity: u8) -> Result<Option<Voice<'a>>, Invalid> {
-        if note > 127 || velocity > 127 {
-            return Err(Invalid("sample note and velocity must be seven-bit midi"));
-        }
-        if velocity == 0 {
-            return Ok(None);
-        }
-        let settings = self.settings;
-        let (region, loop_region, gate, transpose) = match settings.mode {
-            Mode::Classic { loop_region } => (
-                settings.region,
-                loop_region,
-                GateMode::Gate,
-                f64::from(note) - f64::from(settings.root_note),
-            ),
-            Mode::OneShot { gate } => (
-                settings.region,
-                None,
-                gate,
-                f64::from(note) - f64::from(settings.root_note),
-            ),
-            Mode::Slice {
-                starts,
-                base_note,
-                gate,
-            } => {
-                let Some(index) = note.checked_sub(base_note).map(usize::from) else {
-                    return Ok(None);
-                };
-                let Some(&start) = starts.get(index) else {
-                    return Ok(None);
-                };
-                let end = starts
-                    .get(index + 1)
-                    .copied()
-                    .unwrap_or(settings.region.end);
-                (Region { start, end }, None, gate, 0.0)
-            }
-        };
-        let semitones = transpose + settings.transpose_semitones + settings.detune_cents / 100.0;
-        let step = (f64::from(self.sample.sample_rate) / f64::from(self.output_rate)
-            * 2_f64.powf(semitones / 12.0)
-            * ONE as f64)
-            .round();
-        // The validated pitch/rate domains fit comfortably in Q32.32. Keep
-        // this check explicit before float-to-integer conversion.
-        if !step.is_finite() || !(1.0..=(u64::MAX / 2) as f64).contains(&step) {
-            return Err(Invalid("sample playback rate exceeds fixed-point range"));
-        }
-        let velocity_gain =
-            1.0 - settings.velocity_amount + settings.velocity_amount * f64::from(velocity) / 127.0;
-        let gain = settings.gain * velocity_gain;
-        let channel_gain = [
-            gain * (1.0 - settings.pan.max(0.0)),
-            gain * (1.0 + settings.pan.min(0.0)),
-        ];
-        let loop_offsets = loop_region.map(|loop_region| {
-            if settings.reverse {
-                (region.end - loop_region.end, region.end - loop_region.start)
-            } else {
-                (
-                    loop_region.start - region.start,
-                    loop_region.end - region.start,
-                )
-            }
-        });
-        Ok(Some(Voice {
-            frames: self.sample.frames,
-            region,
-            loop_offsets,
-            reverse: settings.reverse,
-            step: step as u64,
-            channel_gain,
-            gate,
-            envelope: self.envelope,
-        }))
+        self.plan
+            .prepare_voice_coefficients(note, velocity)
+            .map(|voice| {
+                voice.map(|coefficients| Voice {
+                    frames: self.sample.frames,
+                    coefficients,
+                })
+            })
     }
 }
 
@@ -275,132 +173,9 @@ fn finite_range(value: f64, min: f64, max: f64) -> bool {
     value.is_finite() && (min..=max).contains(&value)
 }
 
-/// Copyable borrowed voice. Gate duration and age use output frames. Releasing
-/// a gated voice freezes its ADS level at note-off and ramps to zero; source
-/// playback (and a Classic loop) continues during release. Age queries may be
-/// made in any order, enabling seek/block-independent original render fixtures.
-#[derive(Clone, Copy, Debug)]
-pub struct Voice<'a> {
-    frames: &'a [StereoFrame],
-    region: Region,
-    loop_offsets: Option<(usize, usize)>,
-    reverse: bool,
-    step: u64,
-    channel_gain: [f64; 2],
-    gate: GateMode,
-    envelope: envelope::PreparedEnvelope,
-}
-
-impl Voice<'_> {
-    /// Zero fixed buffering/lookahead; source resampling and envelope timing
-    /// do not introduce a block of host latency.
-    pub const fn algorithmic_latency_frames(&self) -> u32 {
-        0
-    }
-
-    pub const fn release_frames(&self) -> u64 {
-        match self.gate {
-            GateMode::Gate => self.envelope.release_frames(),
-            GateMode::Trigger => 0,
-        }
-    }
-
-    /// Length in output frames for a nonlooping source, excluding envelope
-    /// truncation. A loop is unbounded until its gate/release ends. Trigger
-    /// voices must be retained to this natural end even after MIDI note-off.
-    pub fn natural_frames(&self) -> Option<u64> {
-        if self.loop_offsets.is_some() {
-            return None;
-        }
-        let length = (self.region.end - self.region.start) as u128 * ONE;
-        u64::try_from(length.div_ceil(u128::from(self.step))).ok()
-    }
-
-    /// Exclusive onset-relative lifetime bound for this voice and gate duration.
-    /// Trigger ignores note-off; gated playback ends at the earlier of source
-    /// exhaustion and envelope release. Loops require a representable gate plus
-    /// release. This is not a silence detector or authority to retain resources;
-    /// the host must separately check onset addition, cancellation and leases.
-    pub fn end_age_frames(&self, gate_frames: u64) -> Result<u64, Invalid> {
-        let natural = self.natural_frames();
-        if self.gate == GateMode::Trigger {
-            return natural.ok_or(Invalid("trigger sample needs a finite natural end"));
-        }
-        match (natural, gate_frames.checked_add(self.release_frames())) {
-            (Some(source), Some(release)) => Ok(source.min(release)),
-            (Some(source), None) => Ok(source),
-            (None, Some(release)) => Ok(release),
-            (None, None) => Err(Invalid("sample gate and release end age overflow")),
-        }
-    }
-
-    pub fn sample(&self, age_frames: u64, gate_frames: u64) -> StereoFrame {
-        let envelope = match self.gate {
-            GateMode::Gate => self.envelope.sample(age_frames, gate_frames),
-            GateMode::Trigger => self.envelope.held(age_frames),
-        };
-        if envelope == 0.0 {
-            return [0.0; 2];
-        }
-        // u64 * u64 fits u128 exactly, even at u64::MAX age. Integer modulo
-        // preserves loop phase where conversion of age to f64 would lose it.
-        let mut position = u128::from(age_frames) * u128::from(self.step);
-        if let Some((start, end)) = self.loop_offsets {
-            let end = end as u128 * ONE;
-            let start = start as u128 * ONE;
-            if position >= end {
-                position = start + (position - end) % (end - start);
-            }
-        } else if position >= (self.region.end - self.region.start) as u128 * ONE {
-            return [0.0; 2];
-        }
-        let index = (position >> FRACTION_BITS) as usize;
-        let mut next = index + 1;
-        if let Some((start, end)) = self.loop_offsets {
-            if next == end {
-                next = start;
-            }
-        }
-        next = next.min(self.region.end - self.region.start - 1);
-        let source_index = |index| {
-            if self.reverse {
-                self.region.end - 1 - index
-            } else {
-                self.region.start + index
-            }
-        };
-        let (Some(a), Some(b)) = (
-            self.frames.get(source_index(index)),
-            self.frames.get(source_index(next)),
-        ) else {
-            return [0.0; 2];
-        };
-        let fraction = (position % ONE) as f64 / ONE as f64;
-        // Interpolate/gain in f64 so finite f32 endpoints do not overflow the
-        // subtraction. Saturation at the representation boundary avoids NaN/Inf
-        // from otherwise valid finite PCM and the bounded gain domain.
-        std::array::from_fn(|channel| {
-            let value = (f64::from(a[channel]) * (1.0 - fraction)
-                + f64::from(b[channel]) * fraction)
-                * self.channel_gain[channel]
-                * envelope;
-            value.clamp(-f64::from(f32::MAX), f64::from(f32::MAX)) as f32
-        })
-    }
-
-    /// Fill caller-owned output. Overflowed ages are defined silence; they do
-    /// not wrap to frame zero. No cursor, heap, ownership or block-size state.
-    pub fn render(&self, start_age: u64, gate_frames: u64, output: &mut [StereoFrame]) {
-        for (offset, frame) in output.iter_mut().enumerate() {
-            *frame = u64::try_from(offset)
-                .ok()
-                .and_then(|offset| start_age.checked_add(offset))
-                .map_or([0.0; 2], |age| self.sample(age, gate_frames));
-        }
-    }
-}
-
 #[cfg(test)]
 mod lifetime_tests;
+#[cfg(test)]
+mod plan_tests;
 #[cfg(test)]
 mod tests;
