@@ -1,0 +1,91 @@
+   Compiling hex-session v0.1.0 (/Users/portalsurfer/.codex/worktrees/hex-general-local/hex/crates/hex-session)
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 4.04s
+     Running unittests src/lib.rs (target/debug/deps/hex_session-5694b752a80ab8f2)
+
+running 5 tests
+test snapshot_exports::model_read::ui_consumers::tests::tempo_and_meter_queries_keep_exact_project_conversions ... ok
+test snapshot_exports::model_read::ui_consumers::tests::retained_fade_and_audio_edit_facts_keep_the_authored_domain ... ok
+test snapshot_exports::model_read::ui_consumers::tests::session_membership_and_midi_facts_are_borrowed_and_distinct ... ok
+test snapshot_exports::model_read::tests::retained_model_queries_follow_exact_snapshot_until_last_read_ack ... ok
+test snapshot_exports::model_read::tests::sampler_control_scalars_follow_retained_read_after_current_state_replacement ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 205 filtered out; finished in 0.01s
+
+     Running tests/gain_lane.rs (target/debug/deps/gain_lane-766af155869d28b8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/gain_recording.rs (target/debug/deps/gain_recording-520124f33af4ff8f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 3 filtered out; finished in 0.00s
+
+     Running tests/host_gain.rs (target/debug/deps/host_gain-ac1febb7919a252c)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/midi_admission.rs (target/debug/deps/midi_admission-41c41479d817ffa9)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 7 filtered out; finished in 0.00s
+
+     Running tests/midi_workflow.rs (target/debug/deps/midi_workflow-3969e139a2802678)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/operator_presets.rs (target/debug/deps/operator_presets-94c07def60ad022a)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/operator_seek.rs (target/debug/deps/operator_seek-dc8844ff0c37aa8f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s
+
+     Running tests/project_recovery.rs (target/debug/deps/project_recovery-c11a8997d23667c8)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 4 filtered out; finished in 0.00s
+
+     Running tests/returns.rs (target/debug/deps/returns-e14e3c4137fdbca1)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 6 filtered out; finished in 0.00s
+
+     Running tests/scene_editing.rs (target/debug/deps/scene_editing-c094902ed32916ba)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
+     Running tests/service.rs (target/debug/deps/service-1db1161b91ff8a93)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 23 filtered out; finished in 0.00s
+
+     Running tests/session.rs (target/debug/deps/session-1bce6ca7b0cca62f)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 13 filtered out; finished in 0.00s
+
+     Running tests/session_workflow.rs (target/debug/deps/session_workflow-84bb831c3207766b)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s
+
