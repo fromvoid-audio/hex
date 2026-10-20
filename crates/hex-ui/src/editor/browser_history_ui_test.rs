@@ -815,7 +815,14 @@ fn review_history_waits_for_the_used_catalog_not_an_unrelated_scan(cx: &mut Test
         }
         editor.update(visual, |view, _| view.browser.auto_audition = false);
         click(visual, "browser-entry-0");
-        let selected = editor.read_with(visual, |view, cx| view.browser_selected_item(cx).unwrap());
+        let selected = editor.read_with(visual, |view, cx| {
+            let Some(crate::editor::browser::BrowserItemKey::File(path)) =
+                view.browser_selected_item(cx)
+            else {
+                panic!("expected actual file-provider selection")
+            };
+            path
+        });
         click(visual, "browser-section-devices");
         editor.update(visual, |view, cx| {
             view.move_browser_history(false, cx);
