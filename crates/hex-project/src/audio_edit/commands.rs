@@ -1,39 +1,9 @@
 //! Transactional edits of the canonical retained audio domain.
 use super::*;
 pub(crate) fn project_clip(clip: &mut Clip, tempo: &TempoMap) -> Result<(), Invalid> {
-    let Some(edit) = &clip.edit else {
-        return Ok(());
-    };
-    if edit.placement.is_some() {
-        let (start, end) = AudioViewProjection::from_clip(clip, tempo)?.outer_frame_bounds();
-        clip.start = start;
-        clip.duration = end - start;
-    } else if let Some(start) = edit.musical_start {
-        let end = start
-            .raw()
-            .checked_add(edit.view_end - edit.view_start)
-            .ok_or(Invalid("musical audio end overflow"))?;
-        clip.start = tempo.beat_to_frame(start)?;
-        clip.duration = tempo
-            .beat_to_frame(BeatTime::from_raw(end))?
-            .checked_sub(clip.start)
-            .filter(|length| *length > 0)
-            .ok_or(Invalid("musical audio placement has no frames"))?;
-    } else {
-        clip.duration = edit.view_end - edit.view_start;
-    }
-    clip.start
-        .checked_add(clip.duration)
-        .ok_or(Invalid("audio placement end overflow"))?;
-    clip.fade = ClipFade::neutral(clip.duration)?;
-    let (_, full, start, end) = edit.projected_domain(tempo)?;
-    if full > MAX_AUDIO_DOMAIN_FRAMES || start >= end {
-        return Err(Invalid(
-            "full audio domain exceeds its 16777216 frame limit or has an empty crop",
-        ));
-    }
-    Ok(())
+    crate::audio_preview::project_clip(clip, tempo)
 }
+
 pub(crate) fn move_clip(clip: &mut Clip, start: u64, tempo: &TempoMap) -> Result<(), Invalid> {
     if let Some(edit) = clip.edit.as_mut()
         && edit.musical_start.is_some()
@@ -49,45 +19,13 @@ pub(crate) fn trim_view(
     frame: u64,
     tempo: &TempoMap,
 ) -> Result<Clip, Invalid> {
-    let edit = clip
-        .edit
-        .as_ref()
-        .ok_or(Invalid("audio crop has no domain"))?;
-    if edit.placement.is_some() {
-        return view::trim_placement(clip, edge, frame, tempo);
-    }
-    let (_, _, start_offset, _) = edit.projected_domain(tempo)?;
-    let origin_frame = i128::from(clip.start) - i128::from(start_offset);
-    let coordinate = match edit.domain.clock {
-        AudioDomainClock::Frames(_) => u64::try_from(i128::from(frame) - origin_frame)
-            .map_err(|_| Invalid("trim precedes retained audio domain"))?,
-        AudioDomainClock::Beats(_) => {
-            u64::try_from(i128::from(tempo.frame_to_beat(frame)?.raw()) - edit.projection_origin()?)
-                .map_err(|_| Invalid("trim precedes retained audio domain"))?
-        }
-    };
-    if coordinate > edit.domain.clock.length() {
-        return Err(Invalid(
-            "trim exceeds retained audio domain; edit source region or length to create a new root",
-        ));
-    }
-    let mut result = clip.clone();
-    let view = result
-        .audio_edit_mut()
-        .ok_or(Invalid("audio crop has no domain"))?;
-    match edge {
-        TrimEdge::Left if coordinate < view.view_end => {
-            view.view_start = coordinate;
-            if view.musical_start.is_some() {
-                view.musical_start = Some(tempo.frame_to_beat(frame)?);
-            }
-            result.start = frame;
-        }
-        TrimEdge::Right if coordinate > view.view_start => view.view_end = coordinate,
-        _ => return Err(Invalid("audio crop must retain a positive interval")),
-    }
-    project_clip(&mut result, tempo)?;
-    Ok(result)
+    crate::audio_preview::materialize(
+        clip,
+        crate::AudioClipPreviewOperation::Trim(edge),
+        frame,
+        0,
+        tempo,
+    )
 }
 
 pub fn default_audio_warp(
@@ -95,34 +33,7 @@ pub fn default_audio_warp(
     tempo: &TempoMap,
     mode: WarpMode,
 ) -> Result<WarpSettings, Invalid> {
-    let mut edit = clip
-        .audio_edit()
-        .cloned()
-        .unwrap_or_else(|| AudioClipEdit::capture(clip));
-    edit.anchor(clip.start, tempo)?;
-    let origin = edit.projection_origin()?;
-    let frame = audio_projection_frame(tempo, origin)?;
-    let end = audio_projection_beat(tempo, frame + i128::from(edit.domain.source_length))?;
-    let length = u64::try_from(end - origin)
-        .map_err(|_| Invalid("warp source beat length overflow"))?
-        .max(1);
-    Ok(WarpSettings {
-        mode,
-        markers: vec![
-            WarpMarker {
-                source_frame: edit.domain.source_offset,
-                beat: BeatTime::ZERO,
-            },
-            WarpMarker {
-                source_frame: edit
-                    .domain
-                    .source_offset
-                    .checked_add(edit.domain.source_length)
-                    .ok_or(Invalid("warp source end overflow"))?,
-                beat: BeatTime::from_raw(length),
-            },
-        ],
-    })
+    crate::audio_preview::default_audio_warp(clip, tempo, mode)
 }
 
 pub(crate) fn apply(

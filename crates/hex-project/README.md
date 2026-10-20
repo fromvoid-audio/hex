@@ -40,6 +40,28 @@ preserve the clip's duration/source-length difference and shift source bounds
 with the timeline; loop left trims move phase while right trims only change
 duration. Actual trims reanchor fades, while boundary no-ops preserve them.
 
+`Clip::with_audio_preview` lends an opaque evaluator through a higher-ranked
+callback. Trim, lower-fade-handle resize and stretch share their canonical
+calculations with owning command materialization. Only Copy facts, placement
+occurrences, projected fade samples and accepted-waveform positions are exposed;
+no project, clip, domain, marker/event list or tempo owner is created by evaluation.
+Construction performs each operation's existing checks once; column sampling does
+not repeat full metadata validation. Repeat waveform ranges must split at the
+returned occurrence boundaries, and exhausted Once views retain their silent tail.
+`default_audio_warp_markers` returns the original default source-region mapping
+as a Copy two-endpoint array from borrowed clip/tempo inputs. The owning
+`default_audio_warp` builds its marker vector from that same query outside reads.
+Timing conversion keeps its frame-domain event-edit refusal, and placement phase
+and current tempo still determine the signed projection origin.
+Raw unwrapped source positions use `u128` so a legal timeline plus loop phase
+cannot overflow `u64`. Full validation of at most 1024 audio events uses a fixed
+`[(u64, usize); 1024]` scratch array: 16 KiB on 64-bit hosts, no heap allocation or
+hard-budget increase. The temporary-fragment edit validator retains its existing
+separate capacity and allocation behavior. Owning command materialization remains
+control-side work and may allocate; this interface does not admit DSP or callback
+work. Feature-gated headless allocation coverage lives in
+`hex-audio/tests/audio_preview_allocation.rs`, using its existing dev-only counter.
+
 Finite Arrangement time rectangles use `TimeRange` and opaque `RangeClipboard`
 metadata. Capture preserves audio source/fades and materializes selected MIDI
 playback in frames; paste/delete/move are validated candidate edits with one-step

@@ -3,6 +3,11 @@
 mod audio_events;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
+mod audio_preview;
+pub use audio_preview::{
+    AudioClipPreview, AudioClipPreviewOperation, AudioClipPreviewRead,
+    AudioPreviewWaveformPosition, default_audio_warp_markers,
+};
 mod clip_fade_trim;
 mod clip_name;
 pub use audio_edit::{

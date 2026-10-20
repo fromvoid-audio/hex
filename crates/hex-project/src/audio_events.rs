@@ -82,18 +82,51 @@ impl AudioEvents {
         if self.events.len() > MAX_AUDIO_EVENTS || self.next_id == 0 {
             return Err(Invalid("audio event limit or identity is invalid"));
         }
-        self.validate_geometry(length)
+        self.validate_transformed(length, Ok)
+    }
+    /// Full-domain validation uses bounded stack scratch, including virtual
+    /// affine events. Temporary edit fragments retain their separate validator.
+    /// 1024 (u64, usize) entries occupy 16 KiB on supported 64-bit hosts.
+    pub(crate) fn validate_transformed(
+        &self,
+        length: u64,
+        transform: impl Fn(AudioEvent) -> Result<AudioEvent, Invalid>,
+    ) -> Result<(), Invalid> {
+        if self.events.len() > MAX_AUDIO_EVENTS || self.next_id == 0 {
+            return Err(Invalid("audio event limit or identity is invalid"));
+        }
+        let mut ids = [(0_u64, 0_usize); MAX_AUDIO_EVENTS];
+        for (index, event) in self.events.iter().enumerate() {
+            ids[index] = (event.id, index);
+        }
+        let ids = &mut ids[..self.events.len()];
+        ids.sort_unstable();
+        let duplicate = ids
+            .windows(2)
+            .filter(|pair| pair[0].0 == pair[1].0)
+            .map(|pair| pair[1].1)
+            .min();
+        self.validate_geometry_with(length, transform, |index, _| Some(index) != duplicate)
     }
     fn validate_geometry(&self, length: u64) -> Result<(), Invalid> {
         if self.next_id == 0 {
             return Err(Invalid("audio event identity is invalid"));
         }
         let mut ids = std::collections::BTreeSet::new();
+        self.validate_geometry_with(length, Ok, |_, id| ids.insert(id))
+    }
+    fn validate_geometry_with(
+        &self,
+        length: u64,
+        transform: impl Fn(AudioEvent) -> Result<AudioEvent, Invalid>,
+        mut unique: impl FnMut(usize, u64) -> bool,
+    ) -> Result<(), Invalid> {
         let mut previous_end = 0;
-        for event in &self.events {
+        for (index, event) in self.events.iter().enumerate() {
+            let event = transform(*event)?;
             if event.id == 0
                 || event.id >= self.next_id
-                || !ids.insert(event.id)
+                || !unique(index, event.id)
                 || event.start < previous_end
                 || event.start >= event.end
                 || event.end > length
