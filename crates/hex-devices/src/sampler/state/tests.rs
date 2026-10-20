@@ -335,41 +335,60 @@ fn authored_pitch_gain_region_and_absolute_tuning_reach_actual_pair() {
         2,
     )
     .unwrap();
+    let neutral = prepare_runtime_on_control(
+        &state,
+        &DevicePreparationContext {
+            sample_rate: 8_000,
+            tuning: &TuningTable::default(),
+            resources: &resources,
+        },
+        2,
+    )
+    .unwrap();
     drop(state);
     drop(authored);
-    let mut pair = NativeInstrumentRuntimePair::new(
-        &prepared,
-        NativeInstrumentRuntimeLimits {
-            max_pair_bytes: 2 * 1024 * 1024,
-            max_events_per_block: 2,
-            max_active_occurrences: 1,
-            max_tail_frames: 8_000,
-        },
-    )
-    .unwrap();
-    let mut output = [[0.0; 2]; 6];
-    pair.begin_block();
-    pair.process_block(
-        &[
-            NativeInstrumentEvent::NoteOn {
-                frame_offset: 0,
-                occurrence_id: 1,
-                pitch: 60,
-                velocity: 127,
+    // Independent literal oracles separate transpose from project tuning.
+    for (prepared, expected) in [
+        (
+            neutral,
+            [[1.5; 2], [3.5; 2], [0.0; 2], [0.0; 2], [0.0; 2], [0.0; 2]],
+        ),
+        (
+            prepared,
+            [[1.5; 2], [2.5; 2], [3.5; 2], [4.5; 2], [0.0; 2], [0.0; 2]],
+        ),
+    ] {
+        let mut pair = NativeInstrumentRuntimePair::new(
+            &prepared,
+            NativeInstrumentRuntimeLimits {
+                max_pair_bytes: 2 * 1024 * 1024,
+                max_events_per_block: 2,
+                max_active_occurrences: 1,
+                max_tail_frames: 8_000,
             },
-            NativeInstrumentEvent::NoteOff {
-                frame_offset: 0,
-                occurrence_id: 1,
-            },
-        ],
-        &mut output,
-        &resources,
-    )
-    .unwrap();
-    pair.commit_block();
-    assert_eq!(
-        output,
-        [[1.5; 2], [2.5; 2], [3.5; 2], [4.5; 2], [0.0; 2], [0.0; 2]]
-    );
-    assert!(pair.committed_is_quiescent());
+        )
+        .unwrap();
+        let mut output = [[0.0; 2]; 6];
+        pair.begin_block();
+        pair.process_block(
+            &[
+                NativeInstrumentEvent::NoteOn {
+                    frame_offset: 0,
+                    occurrence_id: 1,
+                    pitch: 60,
+                    velocity: 127,
+                },
+                NativeInstrumentEvent::NoteOff {
+                    frame_offset: 0,
+                    occurrence_id: 1,
+                },
+            ],
+            &mut output,
+            &resources,
+        )
+        .unwrap();
+        pair.commit_block();
+        assert_eq!(output, expected);
+        assert!(pair.committed_is_quiescent());
+    }
 }
