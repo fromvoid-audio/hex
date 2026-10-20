@@ -6211,3 +6211,46 @@ floating content and mixed move/copy groups. Original missing-note, opacity and
 modifier-fixture failures remain separate. Source checks/handoff in progress;
 sole-merger exact qualification, actual merge and optimized physical acceptance
 remain pending. No app delivery or native user approval is claimed.
+
+## held EQ preview publication races — pulse2881 / PR483, 20 october2026
+
+Three actual worker/callback interleavings reproduced lost Space intent during
+resident publication retirement, an overtaken intermediate preview, and stale
+UI audible metadata after callback-won cancellation. The repair preserves the
+existing single seek/retirement owner and latest scalar intent, validates ordered
+same-owner preview identities, and separates invalidation intent from actual
+applied/rejected metadata reconciliation for Published seeks. See
+[prepared seek cancellation](docs/prepared-seek-cancellation.md). Exact targeted,
+strict/default-feature, cancellation and allocation receipts are recorded in
+Pulse; these are source component checks, not final prospective qualification,
+physical flicker/audio acceptance or delivery. All original68c/f855 failure and
+component histories remain separate. Main484 metering return is queued next.
+
+## 19 october 2026 — pulse2881 / pr483 held eq playback
+
+- Actual Service/publication/callback diagnostic reproduced Space refusing a
+  dragged EQ node even after its exact preview key/sequence was applied; stationary
+  hold and keyboard routing alone passed. Preserve the original negative and
+  setup-only diagnostics separately.
+- Private seeks retain existing device-preview identity, prepared Arc and exact
+  preview view metadata through publication/observation. New sequences wait for
+  the matching preview, terminal/source changes retire old candidates, and Pause
+  does not commit or release the held edit. Canonical seeks reject preview sources;
+  no Session/Engine/audio public API or callback policy changes.
+- Actual pointer/worker/callback tests cover preparation/published races for new
+  sequences, cancel, commit, project/device replacement and Pause, alongside
+  ordinary canonical play and parameter Undo/Redo. Exact final receipts stay
+  source-bound in Pulse. Native flicker and the original node-versus-keyboard-note
+  interpretation remain open; source success is not physical/user acceptance.
+
+
+### 2026-10-20 — pulse2881 / pr483 busy seek retirement return
+
+- Reproduced the real resident-publication Busy → newer held-preview replacement
+  gap: the exact CandidateReady runtime did not reach seek-worker retirement.
+- Retire that owner before replacing pending playback; retain only same-live-key
+  play intent. Existing publication tokens/cancellation and bounded fallback stay.
+- Added exact real-Service handback and real-runtime fallback/admission controls;
+  retain original EQ/seek/A-B/text tests and negative receipts. Source component
+  evidence is separate from sole-merger prospective qualification and native
+  framebuffer/physical audio acceptance.
