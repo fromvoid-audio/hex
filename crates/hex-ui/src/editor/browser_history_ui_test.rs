@@ -777,25 +777,32 @@ fn review_history_restores_realized_top_even_when_the_anchor_is_already_visible(
         cx.notify();
     });
     visual.run_until_parked();
-    let anchor = editor.read_with(visual, |view, cx| {
+    let offset = editor.read_with(visual, |view, _| {
         let scroll = view.browser.scroll.0.borrow();
         assert!(scroll.deferred_scroll_to_item.is_none());
-        let top = scroll.base_handle.logical_scroll_top().0;
-        assert_eq!(top, 10);
-        view.browser_visible_entries(cx)[top].path.clone()
+        let offset = scroll.base_handle.offset();
+        assert!(offset.y < px(0.0), "strict setup must actually scroll");
+        offset
     });
+    let before = visual.debug_bounds("browser-entry-10").unwrap();
     click(visual, "browser-section-devices");
     click(visual, "browser-history-back");
-    editor.read_with(visual, |view, cx| {
+    editor.read_with(visual, |view, _| {
         let scroll = view.browser.scroll.0.borrow();
         assert!(
             scroll.deferred_scroll_to_item.is_none(),
             "inspect painted layout, not deferred intention"
         );
-        let top = scroll.base_handle.logical_scroll_top().0;
-        assert_eq!(view.browser_visible_entries(cx)[top].path, anchor);
-        assert_eq!(top, 10);
+        assert_eq!(
+            scroll.base_handle.offset(),
+            offset,
+            "restore actual painted scroll position"
+        );
     });
+    assert_eq!(
+        visual.debug_bounds("browser-entry-10").unwrap().top(),
+        before.top()
+    );
     assert!(
         visual.debug_bounds("browser-entry-10").is_some(),
         "actual anchor row must be painted"
