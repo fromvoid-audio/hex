@@ -1,0 +1,133 @@
+{
+  "source_commit": "7eea1c23106d567ab9bfd345297ff0ed0f20e60b",
+  "source_tree": "f8abafd9d0ac3057c29a2c6fd9f91e42d87cc8d0",
+  "source_ref": "codex/sampler-panel-mvp-2789",
+  "checks": {
+    "rustfmt": 0,
+    "rust_files": 48,
+    "ui_style": 0,
+    "diff": 0
+  },
+  "diagnostics": [
+    {
+      "command": [
+        "cargo",
+        "check",
+        "-p",
+        "hex-ui",
+        "--locked",
+        "--lib"
+      ],
+      "exit_code": 101,
+      "duration_seconds": 6.050750970840454,
+      "head": "ee14b363fafb3d8e25f451601907b0a64ee935f6",
+      "partial_migration": true
+    },
+    {
+      "head": "4a8bd150bf64bcee968625f606806f966ef6074b",
+      "patch_sha256": "96820b5dab62289202c51ba2de7fee7df70253bc391bcfcda1d520355a0b46ce",
+      "command": "cargo check -p hex-ui --locked --lib",
+      "env": {
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started": "2026-10-20T13:19:40.988436+00:00",
+      "exit_code": 101,
+      "error_headings": 458,
+      "direct_ui_errors": 457,
+      "finished": "2026-10-20T13:19:56.412586+00:00"
+    },
+    {
+      "head": "44c6f1877e1ce2026bce3d92e065598dc67384a6",
+      "patch_sha256": "fc24c9148cadb63c651534577bd89c60b50c8798380056ad1cd636c516078898",
+      "command": "cargo check -p hex-ui --locked --lib",
+      "env": {
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started": "2026-10-20T13:07:14.067542+00:00",
+      "exit_code": 101,
+      "error_headings": 493,
+      "direct_ui_errors": 492,
+      "finished": "2026-10-20T13:07:25.321628+00:00"
+    },
+    {
+      "command": [
+        "cargo",
+        "check",
+        "-p",
+        "hex-ui",
+        "--locked",
+        "--lib"
+      ],
+      "exit_code": 101,
+      "duration_seconds": 6.202297210693359,
+      "head": "8118b0bc5219f17281c80d11dec0809890822fb0",
+      "partial_migration": true,
+      "source_diff_sha256": "cd5b33e7ca6203f6f7bc363041d1d3e8d064da0af92cfcd20a90c6c49e067e41",
+      "dirty_paths": [
+        " M crates/hex-ui/src/editor/arrangement_audio_panel.rs",
+        " M crates/hex-ui/src/editor/clip_name.rs",
+        " M crates/hex-ui/src/editor/close.rs",
+        " M crates/hex-ui/src/editor/drag_autoscroll.rs",
+        " M crates/hex-ui/src/editor/edit_cursor.rs",
+        " M crates/hex-ui/src/editor/fades.rs",
+        " M crates/hex-ui/src/editor/loop_region.rs",
+        " M crates/hex-ui/src/editor/midi.rs",
+        " M crates/hex-ui/src/editor/midi_canvas.rs",
+        " M crates/hex-ui/src/editor/midi_scene.rs",
+        " M crates/hex-ui/src/editor/midi_source_controls.rs",
+        " M crates/hex-ui/src/editor/mixer.rs",
+        " M crates/hex-ui/src/editor/mod.rs",
+        " M crates/hex-ui/src/editor/musical_audio_controls/sample_bpm.rs",
+        " M crates/hex-ui/src/editor/musical_time.rs",
+        " M crates/hex-ui/src/editor/render.rs",
+        " M crates/hex-ui/src/editor/save.rs",
+        " M crates/hex-ui/src/editor/session_grid.rs",
+        " M crates/hex-ui/src/editor/session_navigation.rs",
+        " M crates/hex-ui/src/editor/time_gesture.rs",
+        " M crates/hex-ui/src/editor/track_layout.rs",
+        " M crates/hex-ui/src/editor/track_name.rs",
+        " M crates/hex-ui/src/editor/tracks.rs",
+        " M crates/hex-ui/src/editor/transport.rs",
+        "?? docs/sampler-ui-capability-migration-2789.md"
+      ]
+    },
+    {
+      "head": "8118b0bc5219f17281c80d11dec0809890822fb0",
+      "patch_sha256": "e4e426d83c75409f238d154a4aaefbdf0164dbfcbd0d3af38c2878893514ea5d",
+      "command": "cargo check -p hex-ui --locked --lib",
+      "env": {
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started": "2026-10-20T12:51:03.082239+00:00",
+      "exit_code": 101,
+      "error_headings": 685,
+      "direct_ui_errors": 684,
+      "finished": "2026-10-20T12:51:21.533547+00:00"
+    },
+    {
+      "head": "8118b0bc5219f17281c80d11dec0809890822fb0",
+      "patch_sha256": "ca5064d9a2b090953b7ef60d037cd68c743f79c9f5da7d2e68b953edbb38eb57",
+      "command": "cargo check -p hex-ui --locked --lib",
+      "env": {
+        "CARGO_INCREMENTAL": "0",
+        "CARGO_PROFILE_DEV_DEBUG": "0",
+        "CARGO_PROFILE_TEST_DEBUG": "0"
+      },
+      "started": "2026-10-20T12:59:18.400353+00:00",
+      "exit_code": 101,
+      "failure": "E0106 in concurrently edited Session ui_consumers.rs samples iterator anonymous lifetime; compilation did not evaluate UI",
+      "source_frozen": false,
+      "qualification": false
+    }
+  ],
+  "limitations": "incomplete UI-only source checkpoint, not canonical PR395; no source tests/full CI/native/merge qualification",
+  "latest_diagnostic_precedes_later_ports": true,
+  "uncommitted_query_dependency": "ProjectRead::has_assets only; primary owns child",
+  "ui_patch_sha256": "e6c53285d198a9047de1d3370a2bce3759500a19e21a43f84bd9eebb08572639"
+}

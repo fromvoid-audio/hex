@@ -1,0 +1,7 @@
+{
+  "source_commit": "7eea1c23106d567ab9bfd345297ff0ed0f20e60b",
+  "source_tree": "f8abafd9d0ac3057c29a2c6fd9f91e42d87cc8d0",
+  "archive_sha256": "62ab8e8c4272036054b7f34e878f1a4b14e868fb198711eb4713b00995154d47",
+  "archive_bytes": 482724,
+  "qualification": "incomplete source-only WIP; exact latest partial check failed457; later ports uncompiled; no merge/native/full-CI qualification"
+}
