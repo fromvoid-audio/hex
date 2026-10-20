@@ -6504,3 +6504,13 @@ and actual sampler PCM, retaining a separate project-rate derivative as a negati
 discriminator. Native mono storage is not a prerequisite for this truthful path.
 Host current/outgoing/checkpoint/export union and deferred retirement remain open;
 no native admission, app loading or optimized delivery is established here.
+
+## loaded sampler state to actual runtime — pulse2961 / PR545
+
+A strict current NativeDeviceState codec now carries loaded musical settings and
+one exact source-slot binding. Its production control preparer validates the
+actual resource and supplies the existing scalar sampler runtime. Codec refusal,
+authored settings/absolute-tuning PCM and real WAV -> state -> sampler tests cover
+the boundary. Generic registry/native publication and browser admission stay
+closed. Prepared-project/export ownership and worker final destruction remain
+the next functional integration; this is not a playable-app completion claim.
