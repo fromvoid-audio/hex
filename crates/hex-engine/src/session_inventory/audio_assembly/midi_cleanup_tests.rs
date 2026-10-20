@@ -67,8 +67,11 @@ fn verify_retirement(routed: bool, fresh_maps: bool) {
             .state()
             .clone();
         let Created::Track(destination) = editor
-            .execute(Command::AddMidiTrack {
+            .execute(Command::InsertTrackWithDevice {
                 name: "destination".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         else {

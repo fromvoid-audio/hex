@@ -1555,7 +1555,12 @@ mod tests {
 
     fn add_track(editor: &mut Editor, name: &str) -> TrackId {
         match editor
-            .execute(Command::AddMidiTrack { name: name.into() })
+            .execute(Command::InsertTrackWithDevice {
+                name: name.into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
+            })
             .expect("add instrument track")
         {
             Created::Track(id) => id,

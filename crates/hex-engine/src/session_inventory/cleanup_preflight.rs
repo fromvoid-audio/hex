@@ -40,8 +40,11 @@ mod tests {
         use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
         let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
         let hex_project::Created::Track(track) = editor
-            .execute(hex_project::Command::AddMidiTrack {
+            .execute(hex_project::Command::InsertTrackWithDevice {
                 name: "retained factory".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         else {

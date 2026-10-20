@@ -202,8 +202,8 @@ fn cancel_restores_latest_canonical_without_discarding_intervening_edit() {
     // overlay. Build the latest canonical oracle, rather than that overlay.
     let prepared = hex_engine::PreparedRevision::prepare(
         &expected,
-        &Default::default(),
-        Arc::new(hex_engine::SineTable::new()),
+        &std::collections::BTreeMap::<hex_project::AssetId, hex_engine::Audio>::new(),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )
     .unwrap();
@@ -640,7 +640,12 @@ fn verified_streaming_refuses_track_gain_begin_without_preview_or_history_change
     assert_eq!(refused.state.unsaved, before.state.unsaved);
     assert_eq!(refused.state.can_undo, before.state.can_undo);
     assert_eq!(refused.state.can_redo, before.state.can_redo);
-    assert!(Arc::ptr_eq(&refused.state.project, &before.state.project));
+    assert!(
+        refused
+            .state
+            .project
+            .shares_owner_with(&before.state.project)
+    );
     for request_value in [
         GestureRequest::Change {
             key,

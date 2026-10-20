@@ -129,8 +129,11 @@ fn actual_asset_history_candidate_and_duplicate_visits_charge_capacity_and_paths
 fn project() -> (Project, ClipId) {
     let mut project = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
     let Created::Track(track) = project
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "model source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -395,8 +398,11 @@ fn actual_session_routed_and_cached_prepared_fields_are_all_required_then_retire
     let track = project.tracks()[0].id();
     let Created::Track(destination) = edit(
         &mut project,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "routed destination".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     ) else {
         panic!("destination")

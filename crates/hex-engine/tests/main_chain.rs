@@ -1,6 +1,6 @@
 //! Main histories follow the same actual publication path as other native chains.
 use hex_devices::utility::{UTILITY_DEFINITION, parameter};
-use hex_engine::{Audio, PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
+use hex_engine::{Audio, PreparedRevision, SessionPlayback, SessionPlaybackCommand};
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::Arc};
@@ -73,7 +73,13 @@ fn fixture(compensated: bool) -> (Editor, BTreeMap<hex_project::AssetId, Audio>)
 }
 fn revision(edit: &Editor, media: &BTreeMap<hex_project::AssetId, Audio>) -> Arc<PreparedRevision> {
     Arc::new(
-        PreparedRevision::prepare(edit.project(), media, Arc::new(SineTable::new()), None).unwrap(),
+        PreparedRevision::prepare(
+            edit.project(),
+            media,
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .unwrap(),
     )
 }
 #[test]
@@ -157,7 +163,13 @@ fn main_effects_count_against_the_combined_native_runtime_budget() {
     }
     assert_eq!(hex_lattice::MAX_STATEFUL_PROCESSORS, 256);
     assert!(
-        PreparedRevision::prepare(edit.project(), &media, Arc::new(SineTable::new()), None).is_ok(),
+        PreparedRevision::prepare(
+            edit.project(),
+            &media,
+            hex_engine::SharedSineTable::new_on_control(),
+            None
+        )
+        .is_ok(),
         "exact256effect boundary must remain admitted"
     );
     let Created::Track(track) = edit
@@ -191,14 +203,25 @@ fn main_effects_count_against_the_combined_native_runtime_budget() {
     edit.execute(Command::InsertInstrument { track, state })
         .unwrap();
     assert!(
-        PreparedRevision::prepare(edit.project(), &media, Arc::new(SineTable::new()), None)
-            .is_err(),
+        PreparedRevision::prepare(
+            edit.project(),
+            &media,
+            hex_engine::SharedSineTable::new_on_control(),
+            None
+        )
+        .is_err(),
         "Main64 +Track192 +mutable1 must refuse257 before publication"
     );
     let last = edit.project().main_devices().last().unwrap().id();
     edit.execute(Command::RemoveDevice(last)).unwrap();
     assert!(
-        PreparedRevision::prepare(edit.project(), &media, Arc::new(SineTable::new()), None).is_ok(),
+        PreparedRevision::prepare(
+            edit.project(),
+            &media,
+            hex_engine::SharedSineTable::new_on_control(),
+            None
+        )
+        .is_ok(),
         "Main63 +Track192 +mutable1 must remain admitted at256"
     );
 }

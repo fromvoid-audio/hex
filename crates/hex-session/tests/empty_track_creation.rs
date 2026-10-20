@@ -179,7 +179,7 @@ fn worker_midi_clip_transfer_retains_source_devices_and_empty_destination_with_o
                 velocity: 100,
             },
         );
-        let baseline = std::sync::Arc::clone(&notes.state.project);
+        let baseline = notes.state.project.clone();
         assert!(
             render(&mut notes)
                 .iter()
@@ -207,7 +207,7 @@ fn worker_midi_clip_transfer_retains_source_devices_and_empty_destination_with_o
         let Some(Created::Track(destination)) = transferred.created else {
             panic!("destination")
         };
-        let project = std::sync::Arc::clone(&transferred.state.project);
+        let project = transferred.state.project.clone();
         let target = project.track(destination).unwrap();
         assert!(target.instrument().is_none());
         assert!(target.devices().is_empty());
