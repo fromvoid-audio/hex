@@ -1,11 +1,14 @@
 //! Sparse, bounded parametric EQ with stable authored node identities.
 //! Editing and the codec run on control; the runtime owns bounded, control-allocated DSP histories.
 use super::*;
+mod response;
 mod runtime;
 mod state;
+pub use response::frequency_response_with_overrides;
 pub use runtime::EQ_RUNTIME_BYTES;
 pub use state::{
-    AutomationLane, AutomationPoint, EqState, EqStateRead, Node, NodeId, NodeKind, NodeParameter,
+    AutomationLane, AutomationPoint, EqAutomationLaneRead, EqState, EqStateRead, Node, NodeId,
+    NodeKind, NodeParameter,
 };
 
 pub const EQ_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.eq");

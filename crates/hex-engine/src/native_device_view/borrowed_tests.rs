@@ -177,3 +177,95 @@ fn borrowed_pending_curves_share_actual_patch_law_without_allocating() {
         );
     }
 }
+
+#[test]
+fn borrowed_eq_response_matches_prepared_coefficients_with_effective_pending_edits() {
+    use hex_devices::eq::{EqState, NodeId, NodeParameter};
+    use hex_devices::eq8::parameter as legacy;
+    let eq8 = crate::default_native_device_state(hex_devices::eq8::EQ8_TYPE_ID).unwrap();
+    // Imported shelves retain the historical S law until an actual shape/Q edit.
+    let shelf = crate::patch_native_device_parameter(
+        &eq8,
+        legacy::enabled(3, 0),
+        ParameterValue::Bool(true),
+    )
+    .unwrap();
+    let shelf =
+        crate::patch_native_device_parameter(&shelf, legacy::kind(3, 0), ParameterValue::Choice(1))
+            .unwrap();
+    let flexible = EqState::upgrade_legacy(&shelf, 1)
+        .unwrap()
+        .encode()
+        .unwrap();
+    let first_mid = NodeId::new(25).unwrap();
+    let cases = [
+        (
+            shelf,
+            [
+                (legacy::MODE, ParameterValue::Choice(2)),
+                (legacy::gain(3, 0), ParameterValue::Float(9.0)),
+                (legacy::frequency(3, 0), ParameterValue::Float(500.0)),
+                (legacy::OUTPUT_GAIN, ParameterValue::Float(0.75)),
+            ],
+        ),
+        (
+            flexible,
+            [
+                (hex_devices::eq::MODE, ParameterValue::Choice(2)),
+                (
+                    first_mid.parameter(NodeParameter::Gain).unwrap(),
+                    ParameterValue::Float(9.0),
+                ),
+                (
+                    first_mid.parameter(NodeParameter::Frequency).unwrap(),
+                    ParameterValue::Float(500.0),
+                ),
+                (hex_devices::eq::OUTPUT_GAIN, ParameterValue::Float(0.75)),
+            ],
+        ),
+    ];
+    for (state, overrides) in cases {
+        let mut effective = state.clone();
+        for (id, value) in overrides {
+            effective = crate::patch_native_device_parameter(&effective, id, value).unwrap();
+        }
+        for rate in [8_000, 44_100, 96_000] {
+            let frequencies = [20.0, 500.0, 1000.0, rate as f32 * 0.45];
+            let original = native_effect_frequency_response(&state, rate, &frequencies)
+                .unwrap()
+                .unwrap();
+            let expected = native_effect_frequency_response(&effective, rate, &frequencies)
+                .unwrap()
+                .unwrap();
+            let measured = allocation_counter::measure(|| {
+                let read = NativeDeviceRead::on_control(NativeDeviceClass::Effect, &state).unwrap();
+                for (pending, expected) in [(&[][..], &original), (&overrides[..], &expected)] {
+                    let response = read.eq_response(rate, pending).unwrap();
+                    for (frequency, expected) in frequencies.into_iter().zip(expected) {
+                        assert_eq!(response.at_hz(frequency).unwrap(), *expected);
+                    }
+                    for invalid in [0.0, -1.0, f32::NAN, rate as f32 * 0.5] {
+                        assert!(response.at_hz(invalid).is_none());
+                    }
+                }
+                assert!(read.eq_response(0, &[]).is_err());
+                assert!(read.eq_response(rate, &[overrides[0]; 2]).is_err());
+                assert!(
+                    read.eq_response(
+                        rate,
+                        &[(ParameterId::from_static(999), ParameterValue::Float(1.0))]
+                    )
+                    .is_err()
+                );
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.count_current,
+                    measured.bytes_total
+                ),
+                (0, 0, 0)
+            );
+        }
+    }
+}

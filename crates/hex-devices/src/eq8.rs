@@ -16,6 +16,8 @@ use std::sync::Arc;
 
 #[path = "eq/mod.rs"]
 pub mod flexible;
+mod response;
+pub use response::{EqFrequencyResponse, frequency_response_with_overrides};
 
 pub const EQ8_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.eq8");
 pub const BAND_COUNT: usize = 8;
@@ -251,37 +253,7 @@ impl NativeDeviceMetadata for Eq8Definition {
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut settings = decode(state)?;
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(value)?;
-        if id == parameter::MODE {
-            settings.mode = match value {
-                ParameterValue::Choice(0) => ChannelMode::Stereo,
-                ParameterValue::Choice(1) => ChannelMode::LeftRight,
-                ParameterValue::Choice(2) => ChannelMode::MidSide,
-                _ => return Err(DeviceContractError::InvalidParameterValue),
-            };
-            return encode(settings);
-        }
-        if id == parameter::OUTPUT_GAIN {
-            let ParameterValue::Float(gain) = value else {
-                return Err(DeviceContractError::InvalidParameterValue);
-            };
-            settings.output_gain = gain;
-            return encode(settings);
-        }
-        let (bank, field) = decode_parameter_id(id)?;
-        let band = &mut settings.banks[bank][field / 5];
-        match (field % 5, value) {
-            (0, ParameterValue::Bool(v)) => band.enabled = v,
-            (1, ParameterValue::Choice(v)) => band.kind = v as u8,
-            (2, ParameterValue::Float(v)) => band.frequency_hz = v,
-            (3, ParameterValue::Float(v)) => band.gain_db = v,
-            (4, ParameterValue::Float(v)) => band.q = v,
-            _ => return Err(DeviceContractError::InvalidParameterValue),
-        }
+        patch_settings(&mut settings, id, value)?;
         encode(settings)
     }
 
@@ -318,6 +290,45 @@ fn decode_parameter_id(id: ParameterId) -> Result<(usize, usize), DeviceContract
     }
     let zero = value - 1;
     Ok(((zero / 40) as usize, (zero % 40) as usize))
+}
+
+fn patch_settings(
+    settings: &mut Settings,
+    id: ParameterId,
+    value: ParameterValue,
+) -> Result<(), DeviceContractError> {
+    let descriptor = DESCRIPTORS
+        .iter()
+        .find(|descriptor| descriptor.id == id)
+        .ok_or(DeviceContractError::UnknownParameter)?;
+    descriptor.validate(value)?;
+    if id == parameter::MODE {
+        settings.mode = match value {
+            ParameterValue::Choice(0) => ChannelMode::Stereo,
+            ParameterValue::Choice(1) => ChannelMode::LeftRight,
+            ParameterValue::Choice(2) => ChannelMode::MidSide,
+            _ => return Err(DeviceContractError::InvalidParameterValue),
+        };
+        return Ok(());
+    }
+    if id == parameter::OUTPUT_GAIN {
+        let ParameterValue::Float(gain) = value else {
+            return Err(DeviceContractError::InvalidParameterValue);
+        };
+        settings.output_gain = gain;
+        return Ok(());
+    }
+    let (bank, field) = decode_parameter_id(id)?;
+    let band = &mut settings.banks[bank][field / 5];
+    match (field % 5, value) {
+        (0, ParameterValue::Bool(v)) => band.enabled = v,
+        (1, ParameterValue::Choice(v)) => band.kind = v as u8,
+        (2, ParameterValue::Float(v)) => band.frequency_hz = v,
+        (3, ParameterValue::Float(v)) => band.gain_db = v,
+        (4, ParameterValue::Float(v)) => band.q = v,
+        _ => return Err(DeviceContractError::InvalidParameterValue),
+    }
+    Ok(())
 }
 
 impl NativeDeviceDefinition for Eq8Definition {

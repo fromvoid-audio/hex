@@ -379,7 +379,7 @@ fn filter(mut input: f64, stages: &BandStages, history: &mut [[f64; 2]; 4]) -> f
     }
     input
 }
-fn bank(mode: u8, channel: usize) -> u8 {
+pub(super) fn bank(mode: u8, channel: usize) -> u8 {
     match mode {
         1 => 1 + channel as u8,
         2 => 3 + channel as u8,
@@ -538,7 +538,7 @@ impl NativeProcessorAudition for EqRuntime {
 /// Infallible after finite/range control validation. Every new shelf uses the
 /// ordinary Q alpha law. Imported S shelves are preflighted and cannot automate
 /// gain/Q/shape before explicitly converting to the new law.
-fn design(node: Node, sample_rate: u32) -> BandStages {
+pub(super) fn design(node: Node, sample_rate: u32) -> BandStages {
     let frequency = f64::from(node.frequency_hz).min(f64::from(sample_rate) * 0.49);
     let omega = std::f64::consts::TAU * frequency / f64::from(sample_rate);
     let (sine, cosine) = omega.sin_cos();
