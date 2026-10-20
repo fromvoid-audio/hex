@@ -1,0 +1,101 @@
+[
+  {
+    "run_id": "20261020T075844Z-950dc87a",
+    "exit_code": 1,
+    "duration_seconds": 0.288,
+    "source": {
+      "commit": "d81cdd38ef140f94343fbbea2daf7c8f8acd2f0a",
+      "content_sha256": "ed307be084eb9acf25399a88c334dcb5486e42821f02c5117903bd7c6b2a9598",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-engine/tests/main_chain.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "632caa6fa5539946be612abc7a314f379a37e40a88cf56e040006e3b00493f18",
+    "counts": [],
+    "stale": false,
+    "verification_status": "failed"
+  },
+  {
+    "run_id": "20261020T075859Z-a6a5b52b",
+    "exit_code": 1,
+    "duration_seconds": 10.84,
+    "source": {
+      "commit": "d81cdd38ef140f94343fbbea2daf7c8f8acd2f0a",
+      "content_sha256": "ed307be084eb9acf25399a88c334dcb5486e42821f02c5117903bd7c6b2a9598",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-engine/tests/main_chain.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "7e4042167409887dc25a5c501c24529c63d92e1cb6f828cf969011929a3b714b",
+    "counts": [
+      {
+        "log": "01-main-renderer-metering-baseline.log",
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0
+      }
+    ],
+    "stale": false,
+    "verification_status": "failed"
+  },
+  {
+    "run_id": "20261020T080040Z-eb59366c",
+    "exit_code": 0,
+    "duration_seconds": 46.824,
+    "source": {
+      "commit": "ff8ef47e4c0db4b8ab46714808fe891e298b2e79",
+      "content_sha256": "d73c1d3c92e69c53f993652eaf07756d99586b636c979e5dc9e1748022513160",
+      "dirty": false,
+      "dirty_files": [],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "1da7ead1532470a5d65a9a19d63f9f53cc04b5ee51b499c45e2b58310b1f9e8e",
+    "counts": [
+      {
+        "log": "07-actual-main-renderer-and-lifecycle.log",
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "08-track-return-metering-PCM-control.log",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "09-retained-latency-controls.log",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "10-main-return-callback-allocation.log",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "10-main-return-callback-allocation.log",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "11-allocation-calibration.log",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "stale": false,
+    "verification_status": "partial"
+  }
+]
