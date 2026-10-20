@@ -1,0 +1,21 @@
+{
+  "tested_source": "190d15f046740f56699fde2bdeea8b4b97d2b1df",
+  "current_source": "4cd9c161191893a6895f8b2fd650c002481af37f",
+  "archive": "artifacts/2789-combined/190d15f0/combined-ui-diagnostic-evidence.tar.gz",
+  "bytes": 60988,
+  "sha256": "62cc72699db263385abc298993d64485c6b06f5bbfb02ac64326ead340d80471",
+  "safe_members": 10,
+  "payloads": 9,
+  "scope": "FAILED partial combined UI diagnostic, NOT full/merge/native qualification",
+  "run": {
+    "session": 99141,
+    "pid_pgid": 2945598,
+    "runner_exit": 1,
+    "seconds": 26.376,
+    "actual_errors": 512,
+    "group_empty": true,
+    "same_lock_reacquired": true,
+    "start_end_content": "391e5dc811277c01d611715142b88594b7f3f4bf1302f7bd920b75b94b2aa622"
+  },
+  "current_followup": "one canonical-equivalent nominal MIDI duration accessor fixed; owning fmt/diff only, no fresh compilation"
+}
