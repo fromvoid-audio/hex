@@ -106,15 +106,24 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
     )
 }
 
-fn midi_trim_note_shapes(
+pub(super) fn midi_trim_note_shapes(
     project: &hex_project::Project,
     clip: &MidiClip,
     trim: MidiClipTrim,
     visible_start: u64,
     visible_end: u64,
 ) -> Vec<(f32, f32, u8)> {
+    let shifted = |value: BeatTime| {
+        value
+            .raw()
+            .checked_add(trim.source_prefix().raw())
+            .map(BeatTime::from_raw)
+    };
+    let Some(source_length) = shifted(clip.source_length()) else {
+        return Vec::new();
+    };
     let playback = MidiSourcePlayback::new(
-        clip.source_length(),
+        source_length,
         trim.source_start(),
         clip.looping()
             .then_some((clip.loop_start(), clip.loop_end())),
@@ -129,7 +138,7 @@ fn midi_trim_note_shapes(
         .take(hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP)
         .filter_map(|note| {
             playback
-                .note_occurrences(note.start(), note.duration())
+                .note_occurrences(shifted(note.start())?, note.duration())
                 .ok()
                 .map(|plan| (note.pitch(), plan))
         })

@@ -5988,6 +5988,49 @@ prospective full CI/integration; native physical mouse/IME acceptance stays open
   Exact source component checks precede sole-merger full21/fresh review/merge;
   no native/app/physical output or user acceptance is inferred.
 
+### 2026-10-19 — PR329 loop-bar gestures and musical marker
+
+- Continue original c525/2713 history after one main2683 composition; preserve
+  earlier c71e three executed negatives and separate literal compile failure.
+- Command-click anywhere on the bar (including endpoints) toggles on/off;
+  ordinary body move preserves full length,
+  Shift uses nearest full-length steps relative to the captured original start.
+  Existing edge resize/empty-rail painting and Command-L/toolbar remain intact.
+- Mark two/four and unambiguous fractional binary musical lengths through exact
+  canonical forward-rounded endpoint intervals, not pixels; ambiguous subframe
+  intervals carry no marker. Include tempo seams, zoom and resize controls.
+- Real routed Escape/stationary-modifier negatives required narrow existing root
+  callbacks into private rail state; no new gesture owner/framework/vendor code.
+  Old rail fixture now initializes its actual Service project instead of only
+  overriding the displayed state. Twelve beats plus the existing two-second
+  Service horizon preserve its exact384000-frame viewport assertions.
+- Qualification covers original five rail cases, eight real-Service loop-bar
+  cases and four pure math cases, with save/open, Undo/Redo, both directions,
+  live modifiers/focus/cancel/Open invalidation. Native physical/listening and
+  merger's prospective full21/review/actual merge remain separate and open.
+
+18 October2026 — Pulse2707/PR323: original scene painted all4px of each resize
+capture gutter. Paint a separate1px themed leading line while retaining all4px
+of capture/geometry/cursor. Actual line+transparent-edge drags and normal/compact,
+editor open/closed paint checks; preserve PR324 gesture color/cancellation.
+Targeted evidence in Pulse; sole merger fullCI/merge, root native acceptance.
+
+
+## 408 empty-track source continuation
+
+- Compose original c206 empty ordinary-track insertion with current non-gray
+  color selection and the 345a one-Environment keyboard fixture return.
+- Original model/Service PCM/storage/Engine and new fixture receipts are source
+  component evidence; current required checks and actual merge are recorded in
+  Pulse2802. Physical input, delivery and listening acceptance remain separate.
+
+408 integration: preserve actual implicit-instrument fixture failures, explicitly
+create only their intended private devices, and retain all history/PCM/allocation
+oracles. Keep common imports and new-track behavior empty. Browser Enter uses the
+selected registered instrument; clip-only transfer does not copy device chains.
+Source-bound component results and the final exact-candidate qualification are
+recorded separately in Pulse2802; native input/listening/delivery remain open.
+
 ## reference track-header mixer component — Pulse2835 / PR439, 19 october2026
 
 Additive shared filled numeric fields replace the rejected separate resident

@@ -13,7 +13,6 @@ use gpui::{
 use hex_audio::sample_preview::Phase;
 use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_directory};
 use hex_preferences::BrowserPlaces;
-use hex_project::Command;
 use hex_session::service::AudioPreview;
 use hex_session::service::Request;
 use std::{
@@ -1397,13 +1396,30 @@ impl EditorView {
 
     pub(super) fn browser_activate(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.browser.section == BrowserSection::Instruments {
-            let count = self
-                .state
-                .as_ref()
-                .map_or(0, |state| state.project.tracks().len());
-            self.enqueue(Request::Edit(Command::AddMidiTrack {
-                name: format!("track {}", count + 1),
-            }));
+            let Some(BrowserItemKey::Device(hex_engine::NativeDeviceClass::Instrument, type_id)) =
+                self.browser_selected_item(cx)
+            else {
+                self.error =
+                    Some("select an available browser instrument before pressing enter".into());
+                cx.notify();
+                return;
+            };
+            // Selection is metadata only; native defaults are constructed by Service.
+            let registered = hex_engine::native_device_catalog_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+            )
+            .is_ok_and(|entries| entries.iter().any(|entry| entry.type_id == type_id));
+            let Some(state) = self.state.as_ref().filter(|_| registered) else {
+                self.error = Some("selected browser instrument is unavailable".into());
+                cx.notify();
+                return;
+            };
+            self.enqueue(Request::InsertBrowserInstrumentTrack {
+                project_generation: self.project_generation,
+                revision: state.revision,
+                class: hex_engine::NativeDeviceClass::Instrument,
+                type_id,
+            });
             cx.notify();
             return;
         }
@@ -1951,12 +1967,13 @@ impl EditorView {
             .w(px(4.0))
             .flex_shrink_0()
             .cursor_col_resize()
-            .bg(rgb(theme::color(if self.browser.resizing {
-                theme::PaletteRole::Secondary
-            } else {
-                theme::PaletteRole::Border
-            })))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))));
+            .relative()
+            .group("browser-resize-handle")
+            .child(layout::resize_divider_line(
+                "browser-resize-handle",
+                "browser-resize-line",
+                self.browser.resizing,
+            ));
         resize = resize.child(
             canvas(
                 |_, _, _| (),

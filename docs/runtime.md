@@ -444,16 +444,52 @@ contracts. This is Hex behavior, with no measured Live loop-parity claim.
 
 ### Native Arrangement loop rail
 
-The compact rail below the ruler is a GPUI view over this same canonical loop
-region. A drag paints a local preview and dispatches one `SetLoopRegion` on
-release; newly painted ranges start disabled. Command bypasses the active
-adaptive snap grid for both anchor and endpoint. Resizing either visible edge
-preserves the region's enabled flag. Clicking a disabled range enables it, while
-L and the toolbar continue to toggle playback looping. The tooltip documents
-these gestures and Command's free-placement modifier. Pointer capture remains
-owned by the rail through release outside its bounds. Generation, project
-revision or canonical loop-region changes discard the preview. No per-move
-project edits or audio-thread state are introduced.
+The compact rail below the ruler is a GPUI view over the canonical frame-based
+loop region. Drag empty rail to preview a new disabled range, then dispatch one
+`SetLoopRegion` on release. Command bypasses the normal snap grid for free
+placement; visible edge resizing preserves the enabled flag.
+
+Command-click anywhere on the bar, including its endpoint hit regions, to toggle
+looping in either direction. A plain body click makes no edit; a body drag moves
+the complete range without changing its frame length or enabled flag. Until horizontal travel exceeds the existing 3px
+threshold, held body previews retain the original range, including off-grid ranges
+and modifier refreshes; vertical travel still disqualifies a Command click. Narrow
+bars reserve their central third for moving: inside the visible bar each endpoint
+has at most one third of its width (up to 6px), while outside capture retains the
+full 6px. Hover and capture use the same resolver. Shift overrides the normal
+grid with steps of the captured full loop length, rounded to the nearest whole step relative to its
+original start (half-step ties go away from the origin). Both directions retain
+that origin; if another complete step would exceed the timeline, the last legal
+step remains. Live modifier changes and final MouseUp use the same projection.
+L and the toolbar still toggle looping; Command-L still sets the selected clip.
+
+A small circle at the bar's actual start indicates a power-of-two musical beat
+duration. It uses the canonical tempo map's forward-rounded Q32.32 endpoint
+intervals, not pixel width or a floating epsilon. Two/four beats and unambiguous
+fractional binary lengths such as half/quarter beats qualify; three beats does
+not. If multiple binary durations fit a very short rounded interval, no marker
+is claimed. Tempo changes, edge resizing and zoom/pan update this presentation;
+when the real start is clipped off-screen, no false start marker is painted.
+
+The rail owns capture through release outside its bounds. Escape, focus loss,
+invalid modifiers, project generation/revision or
+canonical loop changes discard the preview. Root focus-path callbacks forward
+modifier changes and Escape to the same private rail state. Preview is local;
+only release/toggle submits canonical commands, with existing Undo/Redo and
+current-format project persistence. There is no new transport/audio owner or
+per-move model edit.
+
+Source verification for Pulse2713/PR329 uses actual GPUI pointer/key routing and
+real Service preparation/publication, plus independent tempo-rounding and
+relative-step bounds. Native physical keyboard/drag, transport listening and
+optimized delivery acceptance remain separate. A finite native checklist is:
+repeat Command clicks on the body and both endpoints on/off; move both
+enabled/disabled ranges normally, including 12/8/1px bars at two zooms; hold an
+off-grid bar with only vertical travel and inspect stable preview;
+Shift-step one-bar and other lengths both ways at two zooms; release with a newer
+pointer/modifier; resize both edges and paint empty rail; inspect two/four/three
+and fractional markers; Escape/focus cancellation and outside release; then
+Undo/Redo and reopen the saved project. Root alone schedules that native work.
 
 A released replacement remains the rail's displayed range while its real worker
 request is pending. The existing request FIFO stamps it only after submission;

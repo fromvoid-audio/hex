@@ -14,8 +14,11 @@ struct Fixture {
 fn fixture() -> Fixture {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "controller".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {

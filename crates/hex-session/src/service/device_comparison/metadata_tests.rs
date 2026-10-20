@@ -80,8 +80,11 @@ fn comparison_metadata_both_modes_save_status_history_keep_exact_preparation_sou
         );
         let initial = run(
             &service,
-            Request::Edit(Command::AddMidiTrack {
+            Request::Edit(Command::InsertTrackWithDevice {
                 name: "notes".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             }),
         );
         let device = initial
@@ -217,8 +220,11 @@ fn comparison_metadata_event_backpressure_keeps_native_source_and_order_without_
     event(&service);
     let initial = run(
         &service,
-        Request::Edit(Command::AddMidiTrack {
+        Request::Edit(Command::InsertTrackWithDevice {
             name: "held".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }),
     );
     let device = initial.state.project.tracks()[0].instrument().unwrap().id();
