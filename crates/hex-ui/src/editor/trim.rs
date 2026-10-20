@@ -1608,9 +1608,7 @@ mod tests {
     use hex_session::service::ViewState;
     use std::{
         cell::{Cell, RefCell},
-        collections::BTreeMap,
         rc::Rc,
-        sync::Arc,
     };
 
     #[test]
@@ -1743,10 +1741,10 @@ mod tests {
         let stale_revision = ViewState {
             canonical_audio_source: None,
             comparison_audio: None,
-            project: Arc::clone(&state.project),
-            waveforms: BTreeMap::new(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
-            midi_preview: Arc::clone(&state.midi_preview),
+            project: state.project.clone(),
+            waveforms: Default::default(),
+            audio_clip_waveforms: Default::default(),
+            midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
             timeline_frames: state.timeline_frames,
             can_undo: false,
@@ -1803,11 +1801,13 @@ mod tests {
         let removed = ViewState {
             canonical_audio_source: None,
             comparison_audio: None,
-            project: Arc::new(editor.project().clone()),
-            waveforms: BTreeMap::new(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
-            midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            project: hex_session::SharedProject::new_on_control(editor.project().clone()),
+            waveforms: Default::default(),
+            audio_clip_waveforms: Default::default(),
+            midi_preview: hex_engine::empty_midi_preview_on_control(),
+            gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                hex_engine::GainAutomationPreview::default(),
+            )),
             timeline_frames: 500,
             can_undo: false,
             can_redo: false,
@@ -1851,11 +1851,13 @@ mod tests {
         let moved = ViewState {
             canonical_audio_source: None,
             comparison_audio: None,
-            project: Arc::new(moved_editor.project().clone()),
-            waveforms: BTreeMap::new(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
-            midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            project: hex_session::SharedProject::new_on_control(moved_editor.project().clone()),
+            waveforms: Default::default(),
+            audio_clip_waveforms: Default::default(),
+            midi_preview: hex_engine::empty_midi_preview_on_control(),
+            gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                hex_engine::GainAutomationPreview::default(),
+            )),
             timeline_frames: 500,
             can_undo: false,
             can_redo: false,
@@ -1902,11 +1904,13 @@ mod tests {
         let state = ViewState {
             canonical_audio_source: None,
             comparison_audio: None,
-            project: Arc::new(editor.project().clone()),
-            waveforms: BTreeMap::new(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
-            midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            project: hex_session::SharedProject::new_on_control(editor.project().clone()),
+            waveforms: Default::default(),
+            audio_clip_waveforms: Default::default(),
+            midi_preview: hex_engine::empty_midi_preview_on_control(),
+            gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                hex_engine::GainAutomationPreview::default(),
+            )),
             timeline_frames: 500,
             can_undo: false,
             can_redo: false,
