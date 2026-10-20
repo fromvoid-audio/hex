@@ -45,6 +45,8 @@ mod operator_panel;
 mod parameter_rows;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
+#[cfg(feature = "ui-test-support")]
+mod sampler_panel;
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
@@ -2462,3 +2464,7 @@ mod return_view;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "device_panel/sampler_ui_tests.rs"]
+mod sampler_ui_tests;

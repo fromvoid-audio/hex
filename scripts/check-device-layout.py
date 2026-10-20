@@ -188,10 +188,10 @@ def analyze(root: Path, *, gallery: bool = True) -> list[str]:
             errors.append(f"{path}::render_body: use the shared production composition seam")
         # Every effect consumer must be reachable through both owner dispatches.
         module = path.stem
-        if module == "operator_panel":
+        if module in {"operator_panel", "sampler_panel"}:
             owner = UI / "editor/device_panel.rs"
             body = functions(read(owner)).get("render_instrument", [])
-            errors.extend(require_calls(body, ("operator_panel::render_body",), f"{owner}::render_instrument"))
+            errors.extend(require_calls(body, (f"{module}::render_body",), f"{owner}::render_instrument"))
         else:
             for owner in [UI / "editor/device_panel.rs", PANEL / "return_view.rs"]:
                 fn = "render_effect" if owner.name == "device_panel.rs" else "render_return_effect"
