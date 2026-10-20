@@ -87,6 +87,7 @@ fn fixture(
         }
     }
     let project = Project::from_snapshot(Snapshot {
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
