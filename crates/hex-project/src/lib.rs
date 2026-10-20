@@ -2,6 +2,11 @@
 //! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
 mod audio_events;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
+mod audio_event_read;
+pub use audio_event_read::{
+    AudioClipDomainFacts, AudioClipRootFacts, AudioClipRootRead, AudioFadeProjectionFacts,
+    EditableAudioEventsRead,
+};
 mod audio_edit;
 mod audio_preview;
 pub use audio_preview::{

@@ -134,18 +134,19 @@ impl EditPlan {
         }
     }
     pub fn capture(clip: &Clip) -> Self {
+        let facts = crate::AudioClipRootFacts::capture(clip);
         Self {
-            clock: AudioDomainClock::Frames(clip.duration),
-            view_start: 0,
-            view_end: clip.duration,
-            musical_start: None,
-            placement: None,
-            fade: clip.fade,
-            fade_start: 0,
+            clock: facts.domain.clock,
+            view_start: facts.view_start,
+            view_end: facts.view_end,
+            musical_start: facts.musical_start,
+            placement: facts.placement,
+            fade: facts.domain.fade,
+            fade_start: facts.domain.fade_start,
             projection: ProjectionPlan::None,
             retime: None,
             warp: WarpPlan::Retained,
-            warp_enabled: false,
+            warp_enabled: facts.domain.warp_enabled,
         }
     }
     pub fn projection_origin(self) -> Result<i128, Invalid> {
@@ -177,6 +178,22 @@ impl EditPlan {
                     positive(view_start)?,
                     positive(view_end)?,
                 ))
+            }
+        }
+    }
+    pub fn root_frame_at(self, position: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
+        if position > self.clock.length() {
+            return Err(Invalid("audio event position exceeds its root"));
+        }
+        match self.clock {
+            AudioDomainClock::Frames(_) => Ok(position),
+            AudioDomainClock::Beats(_) => {
+                let origin = self.projection_origin()?;
+                u64::try_from(
+                    audio_projection_frame(tempo, origin + i128::from(position))?
+                        - audio_projection_frame(tempo, origin)?,
+                )
+                .map_err(|_| Invalid("audio event frame projection overflow"))
             }
         }
     }

@@ -306,60 +306,37 @@ impl AudioClipEdit {
         })
     }
     pub(crate) fn capture(clip: &Clip) -> Self {
+        let facts = crate::AudioClipRootFacts::capture(clip);
+        let domain = facts.domain;
         Self {
             domain: Arc::new(AudioClipDomain {
                 events: None,
-                source_offset: clip.source_offset,
-                source_length: clip.source_length,
-                source_phase: clip.source_phase,
-                looping: clip.looping,
-                clock: AudioDomainClock::Frames(clip.duration),
-                pitch_cents: 0,
-                sample_bpm: None,
+                source_offset: domain.source_offset,
+                source_length: domain.source_length,
+                source_phase: domain.source_phase,
+                looping: domain.looping,
+                clock: domain.clock,
+                pitch_cents: domain.pitch_cents,
+                sample_bpm: domain.sample_bpm,
                 warp: None,
-                warp_enabled: false,
+                warp_enabled: domain.warp_enabled,
                 source_gain: Vec::new(),
-                fade: clip.fade,
-                fade_start: 0,
+                fade: domain.fade,
+                fade_start: domain.fade_start,
                 fade_projection: None,
             }),
-            view_start: 0,
-            view_end: clip.duration,
-            musical_start: None,
-            placement: None,
+            view_start: facts.view_start,
+            view_end: facts.view_end,
+            musical_start: facts.musical_start,
+            placement: facts.placement,
         }
     }
+
     pub fn root_frame_at(&self, position: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
-        if position > self.domain.clock.length() {
-            return Err(Invalid("audio event position exceeds its root"));
-        }
-        match self.domain.clock {
-            AudioDomainClock::Frames(_) => Ok(position),
-            AudioDomainClock::Beats(_) => {
-                let origin = self.projection_origin()?;
-                u64::try_from(
-                    audio_projection_frame(tempo, origin + i128::from(position))?
-                        - audio_projection_frame(tempo, origin)?,
-                )
-                .map_err(|_| Invalid("audio event frame projection overflow"))
-            }
-        }
+        crate::audio_preview::root_frame_at(self, position, tempo)
     }
     pub fn root_position_at(&self, frame: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
-        let position = match self.domain.clock {
-            AudioDomainClock::Frames(_) => frame,
-            AudioDomainClock::Beats(_) => {
-                let origin = self.projection_origin()?;
-                u64::try_from(
-                    audio_projection_beat(
-                        tempo,
-                        audio_projection_frame(tempo, origin)? + i128::from(frame),
-                    )? - origin,
-                )
-                .map_err(|_| Invalid("audio event clock projection overflow"))?
-            }
-        };
-        Ok(position.min(self.domain.clock.length()))
+        crate::audio_preview::root_position_at(self, frame, tempo)
     }
     pub fn projection_origin(&self) -> Result<i128, Invalid> {
         crate::audio_preview::projection_origin(self)

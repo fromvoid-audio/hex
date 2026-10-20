@@ -66,6 +66,66 @@ pub enum AudioEventEdit {
         events: Vec<AudioEvent>,
     },
 }
+/// One canonical interior split, shared with the borrowed editable view.
+#[derive(Clone, Copy)]
+pub(crate) struct EventSplit {
+    pub left: AudioEvent,
+    pub right: AudioEvent,
+    pub next_id: u64,
+}
+pub(crate) fn split_event(
+    event: AudioEvent,
+    at: u64,
+    next_id: u64,
+) -> Result<Option<EventSplit>, Invalid> {
+    if event.start >= at || at >= event.end {
+        return Ok(None);
+    }
+    let following = next_id
+        .checked_add(1)
+        .ok_or(Invalid("audio event identity exhausted"))?;
+    Ok(Some(EventSplit {
+        left: AudioEvent { end: at, ..event },
+        right: AudioEvent {
+            id: next_id,
+            start: at,
+            source_start: event.source_start + (at - event.start),
+            ..event
+        },
+        next_id: following,
+    }))
+}
+pub(crate) fn validate_event_geometry(
+    next_id: u64,
+    length: u64,
+    events: impl IntoIterator<Item = Result<AudioEvent, Invalid>>,
+    mut unique: impl FnMut(usize, u64) -> bool,
+) -> Result<(), Invalid> {
+    if next_id == 0 {
+        return Err(Invalid("audio event identity is invalid"));
+    }
+    let mut previous_end = 0;
+    for (index, event) in events.into_iter().enumerate() {
+        let event = event?;
+        if event.id == 0
+            || event.id >= next_id
+            || !unique(index, event.id)
+            || event.start < previous_end
+            || event.start >= event.end
+            || event.end > length
+            || event
+                .source_start
+                .checked_add(event.length())
+                .is_none_or(|end| end > length)
+        {
+            return Err(Invalid(
+                "audio events must have unique identities and bounded nonoverlapping intervals",
+            ));
+        }
+        previous_end = event.end;
+    }
+    Ok(())
+}
 impl AudioEvents {
     pub fn identity(length: u64) -> Self {
         Self {
@@ -119,30 +179,16 @@ impl AudioEvents {
         &self,
         length: u64,
         transform: impl Fn(AudioEvent) -> Result<AudioEvent, Invalid>,
-        mut unique: impl FnMut(usize, u64) -> bool,
+        unique: impl FnMut(usize, u64) -> bool,
     ) -> Result<(), Invalid> {
-        let mut previous_end = 0;
-        for (index, event) in self.events.iter().enumerate() {
-            let event = transform(*event)?;
-            if event.id == 0
-                || event.id >= self.next_id
-                || !unique(index, event.id)
-                || event.start < previous_end
-                || event.start >= event.end
-                || event.end > length
-                || event
-                    .source_start
-                    .checked_add(event.length())
-                    .is_none_or(|end| end > length)
-            {
-                return Err(Invalid(
-                    "audio events must have unique identities and bounded nonoverlapping intervals",
-                ));
-            }
-            previous_end = event.end;
-        }
-        Ok(())
+        validate_event_geometry(
+            self.next_id,
+            length,
+            self.events.iter().copied().map(transform),
+            unique,
+        )
     }
+
     fn id(&mut self) -> Result<u64, Invalid> {
         let id = self.next_id;
         self.next_id = id
@@ -192,14 +238,11 @@ impl AudioEvents {
             AudioEventEdit::Split { at } => {
                 if let Some(index) = next.events.iter().position(|e| e.start < at && at < e.end) {
                     let event = next.events[index];
-                    let right = AudioEvent {
-                        id: next.id()?,
-                        start: at,
-                        source_start: event.source_start + (at - event.start),
-                        ..event
-                    };
-                    next.events[index].end = at;
-                    next.events.insert(index + 1, right);
+                    if let Some(split) = split_event(event, at, next.next_id)? {
+                        next.next_id = split.next_id;
+                        next.events[index] = split.left;
+                        next.events.insert(index + 1, split.right);
+                    }
                 }
             }
             AudioEventEdit::SplitRange { start, end } => {

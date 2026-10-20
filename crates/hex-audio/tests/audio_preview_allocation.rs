@@ -187,3 +187,80 @@ fn default_warp_copy_endpoints_have_zero_total_and_net_allocations() {
         );
     }
 }
+
+#[test]
+fn borrowed_event_root_and_virtual_crop_stream_have_zero_total_and_net_allocations() {
+    for case in 0..5 {
+        let (initial, id) = fixture(case != 0, case == 3, false);
+        let mut snapshot = initial.snapshot();
+        if case >= 2 {
+            let clip = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+            let edit = clip.edit.as_mut().unwrap();
+            if case == 3 {
+                edit.view_start = 1;
+                edit.view_end = 20 * Q - 1;
+            } else {
+                edit.view_start = 2 * Q;
+                edit.view_end = 18 * Q;
+            }
+            let start = edit.musical_start.unwrap();
+            let end = BeatTime::from_raw(start.raw() + edit.view_end - edit.view_start);
+            clip.duration = initial.tempo_map().beat_to_frame(end).unwrap() - clip.start;
+            clip.fade = hex_project::ClipFade::neutral(clip.duration).unwrap();
+            if case == 4 {
+                Arc::make_mut(&mut edit.domain).events = Some(Arc::new(AudioEvents {
+                    next_id: 42,
+                    events: vec![],
+                }));
+            }
+        }
+        let project = Project::from_snapshot(snapshot).unwrap();
+        let clip = project.clip(id).unwrap();
+        let tempo = project.tempo_map();
+        let expected = clip.editable_audio_events().unwrap();
+        let mut result = Ok((0, 0));
+        let measured = measure(|| {
+            result = clip.with_audio_event_root(
+                tempo,
+                |read| -> Result<(u64, usize), hex_project::Invalid> {
+                    black_box(read.facts());
+                    for marker in read.warp_markers() {
+                        black_box(marker);
+                    }
+                    for point in read.source_gain_points() {
+                        black_box(point);
+                    }
+                    for point in read.fade_projection_tempo_points() {
+                        black_box(point);
+                    }
+                    let events = read.editable_events()?;
+                    for event in events.iter() {
+                        black_box(event);
+                        black_box(read.root_frame_at(event.start)?);
+                        black_box(read.root_frame_at(event.end)?);
+                    }
+                    Ok((events.next_id(), events.len()))
+                },
+            );
+        });
+        assert_eq!(result, Ok((expected.next_id, expected.events.len())));
+        if case == 3 {
+            assert_eq!(expected.events.len(), 1026);
+        }
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "case={case} {measured:?}"
+        );
+        eprintln!(
+            "audio_event_root case={case} count={} next_id={} allocations={measured:?}",
+            expected.events.len(),
+            expected.next_id
+        );
+    }
+}

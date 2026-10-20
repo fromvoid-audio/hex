@@ -371,3 +371,38 @@ pub fn default_audio_warp_markers(
     )?;
     plan::default_warp_markers(edit, plan.source(clip), tempo)
 }
+
+pub(crate) fn root_frame_at(
+    edit: &AudioClipEdit,
+    position: u64,
+    tempo: &TempoMap,
+) -> Result<u64, Invalid> {
+    EditPlan::original(edit).root_frame_at(position, tempo)
+}
+pub(crate) fn root_position_at(
+    edit: &AudioClipEdit,
+    frame: u64,
+    tempo: &TempoMap,
+) -> Result<u64, Invalid> {
+    EditPlan::original(edit).root_position_at(frame, tempo)
+}
+pub(crate) fn event_root_frame_at(
+    clip: &Clip,
+    position: u64,
+    tempo: &TempoMap,
+) -> Result<u64, Invalid> {
+    clip.audio_edit()
+        .map(EditPlan::original)
+        .unwrap_or_else(|| EditPlan::capture(clip))
+        .root_frame_at(position, tempo)
+}
+pub(crate) fn event_root_position_at(
+    clip: &Clip,
+    frame: u64,
+    tempo: &TempoMap,
+) -> Result<u64, Invalid> {
+    clip.audio_edit()
+        .map(EditPlan::original)
+        .unwrap_or_else(|| EditPlan::capture(clip))
+        .root_position_at(frame, tempo)
+}
