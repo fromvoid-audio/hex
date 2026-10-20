@@ -1,0 +1,39 @@
+{
+  "source": "294bcb15dad1aa7737590c9c603050fd88fe2bb2",
+  "tree": "bc4a5761af412ccd3909239f103cb229f603f2a7",
+  "parent": "f163734ff1853444301e85007cbada54e75280a4",
+  "qualification": "INCOMPLETE/UNQUALIFIED; no cleanUI/test/strict/merge/full/native/delivery result",
+  "diagnostic": {
+    "command": "cargo check -p hex-ui --locked --lib",
+    "exit": 101,
+    "actual_errors": 441,
+    "unchanged_source_sha256": "c4fec424c78052d877519ba226ed8811620bd5f04fd827b39efff4fcea36f374",
+    "log_sha256": "dc24847b38b6ef954cd0c43c234fcae8a5bd2624464b490f6a8a7cc256f46113"
+  },
+  "checks": [
+    "scopedrustfmtPASS",
+    "gitdiffcheckPASS",
+    "actualcheck-device-layout.pyPASS"
+  ],
+  "remaining": [
+    "typed enqueue capacity classification/retry; bool refusal retains candidate and stops",
+    "real registered UI release/pressure and pure nonce test unexecuted",
+    "other legacy UI consumers/shared Trim+group facades",
+    "Native paired head comparison/startup/backend/meters/EQ ACK",
+    "exact frozen fullqualification and optimizeddelivery"
+  ],
+  "archive": {
+    "bytes": 19563,
+    "sha256": "c5ebe4867d91365424b1cfc9db33f814e2b419ecd9da17f81ec22b08b64e6e55"
+  },
+  "files": {
+    "artifacts/sampler-ui-migration/modern-loop-rail.log": {
+      "bytes": 180422,
+      "sha256": "dc24847b38b6ef954cd0c43c234fcae8a5bd2624464b490f6a8a7cc256f46113"
+    },
+    "artifacts/sampler-ui-migration/modern-loop-rail.json": {
+      "bytes": 1400,
+      "sha256": "3cbe5716d79c8cf709dc759776dd198a2697784d0b5214f939171d14de98bc24"
+    }
+  }
+}
