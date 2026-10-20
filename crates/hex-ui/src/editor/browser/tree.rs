@@ -56,7 +56,7 @@ pub(super) struct Tree {
     nodes: HashMap<PathBuf, Node>,
     expanded: HashSet<PathBuf>,
     queue: VecDeque<PathBuf>,
-    in_flight: bool,
+    in_flight: Option<Request>,
     #[cfg(test)]
     test_scan_gate: Option<Arc<crate::editor::test_environment::CatalogSaveGate>>,
     epoch: u64,
@@ -71,7 +71,9 @@ pub(super) struct Tree {
 
 impl Tree {
     #[cfg(all(test, feature = "ui-test-support"))]
-    pub(super) fn test_gate_next_scan(&mut self) -> Arc<crate::editor::test_environment::CatalogSaveGate> {
+    pub(super) fn test_gate_next_scan(
+        &mut self,
+    ) -> Arc<crate::editor::test_environment::CatalogSaveGate> {
         assert!(self.test_scan_gate.is_none());
         let gate = Arc::new(crate::editor::test_environment::CatalogSaveGate::default());
         self.test_scan_gate = Some(gate.clone());
@@ -79,10 +81,45 @@ impl Tree {
     }
 
     #[cfg(all(test, feature = "ui-test-support"))]
-    pub(super) fn test_worker_busy(&self) -> bool { self.in_flight }
+    pub(super) fn test_worker_busy(&self) -> bool {
+        self.in_flight.is_some()
+    }
 
     pub(super) fn history_loading(&self) -> bool {
-        self.in_flight || !self.queue.is_empty() || self.dirty.get()
+        self.in_flight
+            .as_ref()
+            .is_some_and(|request| self.request_current(request))
+            || !self.queue.is_empty()
+            || self.dirty.get()
+    }
+
+    fn request_current(&self, request: &Request) -> bool {
+        request.epoch == self.epoch
+            && self.expanded.contains(&request.path)
+            && self
+                .nodes
+                .get(&request.path)
+                .is_some_and(|node| node.queued && node.serial == request.serial)
+    }
+
+    pub(super) fn history_loading_for(&self, entries: &[LibraryEntry]) -> bool {
+        if !self.history_loading() {
+            return false;
+        }
+        // Cached rows may augment indexed results too. Only expanded directories
+        // actually present in this projection can change its saved row identities.
+        let relevant = |path: &Path| {
+            self.expanded.contains(path)
+                && entries
+                    .iter()
+                    .any(|entry| entry.kind == EntryKind::Directory && entry.path == path)
+        };
+        self.dirty.get()
+            || self.queue.iter().any(|path| relevant(path))
+            || self
+                .in_flight
+                .as_ref()
+                .is_some_and(|request| self.request_current(request) && relevant(&request.path))
     }
 
     pub(super) fn source_changed(&mut self) {
@@ -162,22 +199,23 @@ impl Tree {
     }
 
     fn next(&mut self) -> Option<Request> {
-        if self.in_flight {
+        if self.in_flight.is_some() {
             return None;
         }
         while let Some(path) = self.queue.pop_front() {
             if self.expanded.contains(&path) {
-                self.in_flight = true;
                 #[cfg(test)]
                 {
                     self.requests_started += 1;
                 }
                 let serial = self.nodes.get(&path).map_or(0, |node| node.serial);
-                return Some(Request {
+                let request = Request {
                     epoch: self.epoch,
                     serial,
                     path,
-                });
+                };
+                self.in_flight = Some(request.clone());
+                return Some(request);
             }
             if let Some(node) = self.nodes.get_mut(&path) {
                 node.queued = false;
@@ -225,7 +263,7 @@ impl Tree {
     }
 
     fn complete(&mut self, request: Request, result: Result<DirectoryListing, ScanError>) {
-        self.in_flight = false;
+        self.in_flight = None;
         self.dirty.set(true);
         if request.epoch != self.epoch
             || !self.expanded.contains(&request.path)
@@ -458,7 +496,9 @@ impl EditorView {
                     #[cfg(test)]
                     let _test_environment = test_environment;
                     #[cfg(test)]
-                    if let Some(gate) = test_gate { gate.wait().await; }
+                    if let Some(gate) = test_gate {
+                        gate.wait().await;
+                    }
                     scan_directory(path)
                 })
                 .await;

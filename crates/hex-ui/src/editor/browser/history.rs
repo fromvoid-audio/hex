@@ -308,14 +308,18 @@ impl EditorView {
         let query = &self.browser.search.read(cx).content;
         let indexed = samples::ResultsMode::for_query(query) == samples::ResultsMode::Indexed;
         let (listing, tree, catalog) = match self.browser.section {
-            BrowserSection::Samples => (false, !indexed, indexed),
-            BrowserSection::All => (indexed, !indexed, indexed),
-            BrowserSection::Place(_) => (true, !indexed, indexed),
+            BrowserSection::Samples => (false, true, indexed),
+            BrowserSection::All => (indexed, true, indexed),
+            BrowserSection::Place(_) => (true, true, indexed),
             BrowserSection::Projects => (true, true, false),
             BrowserSection::Instruments | BrowserSection::Collection(_) => (false, false, false),
         };
         if (listing && self.browser.loading)
-            || (tree && self.browser.tree.history_loading())
+            || (tree
+                && self
+                    .browser
+                    .tree
+                    .history_loading_for(&self.browser_visible_entries(cx)))
             || (catalog && self.browser.samples.history_loading())
         {
             return;

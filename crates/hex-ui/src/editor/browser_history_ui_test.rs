@@ -971,7 +971,11 @@ fn review_readiness_obsolete_tree_worker_does_not_hold_saved_root(cx: &mut TestA
     editor.update(visual, |view, _| view.browser.auto_audition = false);
     click(visual, "browser-entry-0");
     let saved = editor.read_with(visual, |view, cx| {
-        let Some(crate::editor::browser::BrowserItemKey::File(path)) = view.browser_selected_item(cx) else { panic!("saved Samples root") };
+        let Some(crate::editor::browser::BrowserItemKey::File(path)) =
+            view.browser_selected_item(cx)
+        else {
+            panic!("saved Samples root")
+        };
         path
     });
     let top = visual.debug_bounds("browser-entry-0").unwrap().top();
@@ -1009,11 +1013,20 @@ fn review_readiness_indexed_expansion_waits_then_restores_native_top(cx: &mut Te
         let (handle, editor, directory) = fixture(cx);
         let folder = directory.0.join("samples/loop-folder");
         std::fs::create_dir_all(&folder).unwrap();
-        for index in 0..45 { std::fs::write(folder.join(format!("{index:03}-loop.hex")), b"").unwrap(); }
+        for index in 0..45 {
+            std::fs::write(folder.join(format!("{index:03}-loop.hex")), b"").unwrap();
+        }
         let visual = &mut VisualTestContext::from_window(handle, cx);
         visual.run_until_parked();
         editor.update(visual, |view, _| view.browser.auto_audition = false);
-        click(visual, if place { "browser-place-0" } else { "browser-section-all" });
+        click(
+            visual,
+            if place {
+                "browser-place-0"
+            } else {
+                "browser-section-all"
+            },
+        );
         click(visual, "browser-search");
         visual.simulate_input("loop");
         visual.run_until_parked();
@@ -1021,10 +1034,15 @@ fn review_readiness_indexed_expansion_waits_then_restores_native_top(cx: &mut Te
         let anchor = folder.join("020-loop.hex");
         let index = editor.update(visual, |view, cx| {
             let entries = view.browser_visible_entries(cx);
-            let index = entries.iter().position(|entry| entry.path == anchor).unwrap();
+            let index = entries
+                .iter()
+                .position(|entry| entry.path == anchor)
+                .unwrap();
             view.browser.selected_index = index;
             view.browser.results_focused = true;
-            view.browser.scroll.scroll_to_item_strict(index, gpui::ScrollStrategy::Top);
+            view.browser
+                .scroll
+                .scroll_to_item_strict(index, gpui::ScrollStrategy::Top);
             cx.notify();
             index
         });
@@ -1033,8 +1051,11 @@ fn review_readiness_indexed_expansion_waits_then_restores_native_top(cx: &mut Te
         let painted_top = visual.debug_bounds(row).unwrap().top();
         click(visual, "browser-section-devices");
         // Both insertion and removal change this current indexed augmentation.
-        if place { std::fs::remove_file(folder.join("000-loop.hex")).unwrap(); }
-        else { std::fs::write(folder.join("000-before-loop.hex"), b"").unwrap(); }
+        if place {
+            std::fs::remove_file(folder.join("000-loop.hex")).unwrap();
+        } else {
+            std::fs::write(folder.join("000-before-loop.hex"), b"").unwrap();
+        }
         let gate = editor.update(visual, |view, cx| {
             view.move_browser_history(false, cx);
             let gate = view.browser.tree.test_gate_next_scan();
@@ -1058,9 +1079,16 @@ fn review_readiness_indexed_expansion_waits_then_restores_native_top(cx: &mut Te
             let entries = view.browser_visible_entries(cx);
             entries.iter().position(|entry| entry.path == anchor).unwrap()
         });
-        assert_ne!(index, restored, "actual current scan must shift the anchor index");
+        assert_ne!(
+            index, restored,
+            "actual current scan must shift the anchor index"
+        );
         let row = Box::leak(format!("browser-entry-{restored}").into_boxed_str());
-        assert_eq!(visual.debug_bounds(row).unwrap().top(), painted_top, "strict painted top survives changed rows; place={place}");
+        assert_eq!(
+            visual.debug_bounds(row).unwrap().top(),
+            painted_top,
+            "strict painted top survives changed rows; place={place}"
+        );
         visual.run_until_parked();
     }
 }
