@@ -28,7 +28,8 @@ pub(super) struct WaveformGeometryCache {
 
 struct WaveformGeometryEntry {
     key: WaveformGeometryKey,
-    source: Arc<CachedWaveform>,
+    source: Option<Arc<CachedWaveform>>,
+    version: Option<WaveformVersion>,
     geometry: Arc<WaveformGeometry>,
     columns: usize,
 }
@@ -66,6 +67,7 @@ enum WaveformMappingKey {
         source_length: u64,
         source_phase: u64,
         looping: bool,
+        transformed: bool,
         timeline_origin: u64,
         gain: i32,
     },
@@ -107,10 +109,13 @@ impl WaveformGeometryCache {
         key: WaveformGeometryKey,
         source: &Arc<CachedWaveform>,
     ) -> Option<Arc<WaveformGeometry>> {
-        let index = self
-            .entries
-            .iter()
-            .position(|entry| entry.key == key && Arc::ptr_eq(&entry.source, source))?;
+        let index = self.entries.iter().position(|entry| {
+            entry.key == key
+                && entry
+                    .source
+                    .as_ref()
+                    .is_some_and(|held| Arc::ptr_eq(held, source))
+        })?;
         let entry = self.entries.remove(index)?;
         let geometry = Arc::clone(&entry.geometry);
         self.entries.push_back(entry);
@@ -151,7 +156,8 @@ impl WaveformGeometryCache {
         self.columns = self.columns.saturating_add(columns);
         self.entries.push_back(WaveformGeometryEntry {
             key,
-            source,
+            source: Some(source),
+            version: None,
             geometry,
             columns,
         });
@@ -199,26 +205,28 @@ impl WaveformGeometryCache {
     pub(super) fn rendered_waveforms(&self) -> Vec<RenderedWaveformSample> {
         self.entries
             .iter()
-            .map(|entry| RenderedWaveformSample {
-                source: Arc::clone(&entry.source),
-                prepared: match entry.key.mapping {
-                    WaveformMappingKey::Prepared {
-                        timeline_origin,
-                        root_offset,
-                        ..
-                    } => Some((timeline_origin, root_offset)),
-                    _ => None,
-                },
-                spans: std::array::from_fn(|channel| {
-                    let (low, high) = entry.geometry.channels[channel]
-                        .outline
-                        .iter()
-                        .map(|point| f32::from(point.y))
-                        .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), y| {
-                            (low.min(y), high.max(y))
-                        });
-                    high - low
-                }),
+            .filter_map(|entry| {
+                Some(RenderedWaveformSample {
+                    source: Arc::clone(entry.source.as_ref()?),
+                    prepared: match entry.key.mapping {
+                        WaveformMappingKey::Prepared {
+                            timeline_origin,
+                            root_offset,
+                            ..
+                        } => Some((timeline_origin, root_offset)),
+                        _ => None,
+                    },
+                    spans: std::array::from_fn(|channel| {
+                        let (low, high) = entry.geometry.channels[channel]
+                            .outline
+                            .iter()
+                            .map(|point| f32::from(point.y))
+                            .fold((f32::INFINITY, f32::NEG_INFINITY), |(low, high), y| {
+                                (low.min(y), high.max(y))
+                            });
+                        high - low
+                    }),
+                })
             })
             .collect()
     }
@@ -226,6 +234,77 @@ impl WaveformGeometryCache {
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn entry_count(&self) -> usize {
         self.entries.len()
+    }
+}
+
+/// The ordinary source sampler needs scalar placement only. A canvas/cache
+/// must never retain the clip's optional authored audio domain.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct ClipMapping {
+    id: hex_project::ClipId,
+    start: u64,
+    duration: u64,
+    source_offset: u64,
+    source_length: u64,
+    source_phase: u64,
+    looping: bool,
+    gain: hex_project::ClipGain,
+    pub(super) transformed: bool,
+}
+impl From<&Clip> for ClipMapping {
+    fn from(clip: &Clip) -> Self {
+        Self {
+            id: clip.id(),
+            start: clip.start(),
+            duration: clip.duration(),
+            source_offset: clip.source_offset(),
+            source_length: clip.source_length(),
+            source_phase: clip.source_phase(),
+            looping: clip.looping(),
+            gain: clip.gain(),
+            transformed: clip.audio_edit().is_some(),
+        }
+    }
+}
+impl From<hex_session::snapshot_exports::SnapshotClipRead<'_>> for ClipMapping {
+    fn from(clip: hex_session::snapshot_exports::SnapshotClipRead<'_>) -> Self {
+        Self {
+            id: clip.id(),
+            start: clip.start(),
+            duration: clip.duration(),
+            source_offset: clip.source_offset(),
+            source_length: clip.source_length(),
+            source_phase: clip.source_phase(),
+            looping: clip.looping(),
+            gain: clip.gain(),
+            transformed: clip.audio_edit().is_some(),
+        }
+    }
+}
+impl ClipMapping {
+    pub(super) fn id(self) -> hex_project::ClipId {
+        self.id
+    }
+    pub(super) fn start(self) -> u64 {
+        self.start
+    }
+    pub(super) fn duration(self) -> u64 {
+        self.duration
+    }
+    pub(super) fn source_offset(self) -> u64 {
+        self.source_offset
+    }
+    pub(super) fn source_length(self) -> u64 {
+        self.source_length
+    }
+    pub(super) fn source_phase(self) -> u64 {
+        self.source_phase
+    }
+    pub(super) fn looping(self) -> bool {
+        self.looping
+    }
+    pub(super) fn gain(self) -> hex_project::ClipGain {
+        self.gain
     }
 }
 
@@ -242,7 +321,7 @@ pub(super) enum WaveformMapping {
         gain: hex_project::ClipGain,
     },
     Clip {
-        clip: Clip,
+        clip: ClipMapping,
         timeline_origin: u64,
     },
     Source {
@@ -281,6 +360,76 @@ pub(super) struct WaveformGeometryRequest<'a> {
     pub(super) scale: f32,
     pub(super) columns: usize,
     pub(super) grid: Option<WaveformGrid>,
+}
+
+/// Exact metadata cache correlation, never a source lease or read authority.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) struct WaveformVersion {
+    pub(super) generation: u64,
+    pub(super) identity: hex_engine::SharedMetadataCacheIdentity,
+    pub(super) frames: usize,
+    pub(super) prepared: Option<(u64, u64)>,
+}
+pub(super) fn versioned_waveform_geometry(
+    cache: &std::cell::RefCell<WaveformGeometryCache>,
+    version: WaveformVersion,
+    request: &WaveformGeometryRequest<'_>,
+) -> Option<Arc<WaveformGeometry>> {
+    let mut key = waveform_geometry_key(
+        request.mapping,
+        request.visible_start,
+        request.visible_end,
+        request.bounds,
+        request.scale,
+    );
+    key.grid = request.grid.map(WaveformGrid::key);
+    let mut cache = cache.try_borrow_mut().ok()?;
+    let index = cache
+        .entries
+        .iter()
+        .position(|entry| entry.key == key && entry.version == Some(version))?;
+    let entry = cache.entries.remove(index)?;
+    let result = Arc::clone(&entry.geometry);
+    cache.entries.push_back(entry);
+    Some(result)
+}
+pub(super) fn retain_versioned_waveform_geometry(
+    cache: &std::cell::RefCell<WaveformGeometryCache>,
+    version: WaveformVersion,
+    request: &WaveformGeometryRequest<'_>,
+    geometry: Arc<WaveformGeometry>,
+) {
+    let Ok(mut cache) = cache.try_borrow_mut() else {
+        return;
+    };
+    let columns = geometry.columns;
+    if columns == 0 || columns > MAX_CACHED_WAVEFORM_COLUMNS {
+        return;
+    }
+    while cache.entries.len() >= MAX_CACHED_WAVEFORM_ENTRIES
+        || cache.columns.saturating_add(columns) > MAX_CACHED_WAVEFORM_COLUMNS
+    {
+        let Some(entry) = cache.entries.pop_front() else {
+            break;
+        };
+        cache.columns = cache.columns.saturating_sub(entry.columns);
+    }
+    let mut key = waveform_geometry_key(
+        request.mapping,
+        request.visible_start,
+        request.visible_end,
+        request.bounds,
+        request.scale,
+    );
+    key.grid = request.grid.map(WaveformGrid::key);
+    cache.columns = cache.columns.saturating_add(columns);
+    cache.entries.push_back(WaveformGeometryEntry {
+        key,
+        source: None,
+        version: Some(version),
+        geometry,
+        columns,
+    });
 }
 
 pub(super) fn cached_waveform_geometry(
@@ -360,6 +509,7 @@ fn waveform_geometry_key(
             source_length: clip.source_length(),
             source_phase: clip.source_phase(),
             looping: clip.looping(),
+            transformed: clip.transformed,
             timeline_origin: *timeline_origin,
         },
         WaveformMapping::Source { timeline_origin } => WaveformMappingKey::Source {
@@ -379,15 +529,19 @@ fn waveform_geometry_key(
     }
 }
 
-pub(super) fn prepare_waveform_geometry(
-    waveform: &CachedWaveform,
-    mapping: &WaveformMapping,
+#[derive(Clone, Copy)]
+pub(super) struct WaveformColumns {
+    pub(super) grid: WaveformGrid,
+    pub(super) first: usize,
+    pub(super) last: usize,
+}
+pub(super) fn waveform_columns(
     visible_start: u64,
     visible_end: u64,
     bounds: Bounds<Pixels>,
     columns: usize,
     grid: Option<WaveformGrid>,
-) -> Option<WaveformGeometry> {
+) -> Option<WaveformColumns> {
     let width = f32::from(bounds.size.width);
     let height = f32::from(bounds.size.height);
     let grid = grid.unwrap_or(WaveformGrid {
@@ -419,7 +573,22 @@ pub(super) fn prepare_waveform_geometry(
         .min(grid.columns as u128) as usize;
     let first = first.saturating_sub(1).min(grid.columns);
     let last = last.saturating_add(1).min(grid.columns);
+    Some(WaveformColumns { grid, first, last })
+}
+
+pub(super) fn prepare_waveform_geometry(
+    waveform: &CachedWaveform,
+    mapping: &WaveformMapping,
+    visible_start: u64,
+    visible_end: u64,
+    bounds: Bounds<Pixels>,
+    columns: usize,
+    grid: Option<WaveformGrid>,
+) -> Option<WaveformGeometry> {
+    let WaveformColumns { grid, first, last } =
+        waveform_columns(visible_start, visible_end, bounds, columns, grid)?;
     let columns = last.saturating_sub(first);
+    let frames = grid.end.checked_sub(grid.start)?;
     let gain = match mapping {
         WaveformMapping::Stretch(projection) => projection.gain().linear(),
         WaveformMapping::Clip { clip, .. } => clip.gain().linear(),
@@ -488,6 +657,17 @@ pub(super) fn prepare_waveform_geometry(
         stereo_peaks.push(peaks);
     }
 
+    geometry_from_peaks(bounds, grid, first, &stereo_peaks)
+}
+
+pub(super) fn geometry_from_peaks(
+    bounds: Bounds<Pixels>,
+    grid: WaveformGrid,
+    first: usize,
+    stereo_peaks: &[[CachedPeak; 2]],
+) -> Option<WaveformGeometry> {
+    let height = f32::from(bounds.size.height);
+    let columns = stereo_peaks.len();
     let mut channels = Vec::with_capacity(2);
     for channel in 0..2 {
         let band_top = height * channel as f32 * 0.5;
@@ -791,7 +971,7 @@ mod tests {
                 prepare_waveform_geometry(
                     &source,
                     &WaveformMapping::Clip {
-                        clip: clip.clone(),
+                        clip: ClipMapping::from(clip),
                         timeline_origin: start,
                     },
                     start,

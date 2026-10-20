@@ -142,7 +142,9 @@ mod native {
     fn window(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<EditorView>, TrackId) {
         cx.update(super::super::super::bind_editor_keys);
         let (project, track, _) = project();
-        let preview = Arc::new(hex_engine::GainAutomationPreview::prepare(&project).unwrap());
+        let preview = hex_engine::SharedGainAutomationPreview::new_on_control(
+            hex_engine::GainAutomationPreview::prepare(&project).unwrap(),
+        );
         let (handle, entity) =
             super::super::super::clip_drag_ui_test::editor_window(cx, project, Arc::default());
         entity.update(cx, |view, cx| {
@@ -527,14 +529,16 @@ mod native {
                     point: point(100 * BeatTime::ONE.raw(), 0.5),
                 })
                 .unwrap();
-            let project = Arc::new(project.project().clone());
+            let project = hex_session::SharedProject::new_on_control(project.project().clone());
             let preview = hex_engine::GainAutomationPreview::prepare(&project).unwrap();
             let content_extent = old.timeline_frames;
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
                 comparison_audio: None,
                 project: project.clone(),
-                gain_preview: Ok(Arc::new(preview)),
+                gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                    preview,
+                )),
                 waveforms: old.waveforms.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
@@ -596,8 +600,12 @@ mod native {
                     source_sequence: 1,
                 }],
             }];
-            let project = Arc::new(Project::from_snapshot(snapshot).unwrap());
-            let preview = Arc::new(hex_engine::GainAutomationPreview::prepare(&project).unwrap());
+            let project = hex_session::SharedProject::new_on_control(
+                Project::from_snapshot(snapshot).unwrap(),
+            );
+            let preview = hex_engine::SharedGainAutomationPreview::new_on_control(
+                hex_engine::GainAutomationPreview::prepare(&project).unwrap(),
+            );
             let content_extent = old.timeline_frames;
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,

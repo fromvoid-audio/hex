@@ -1,5 +1,12 @@
 //! Grid-stepped, atomic editing for MIDI source and Arrangement regions.
+#[cfg(test)]
 use hex_project::{MidiSource, Project};
+
+#[derive(Clone, Copy)]
+pub(super) enum SourcePlacement {
+    Arrangement,
+    Session,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum SourceField {
@@ -47,6 +54,7 @@ pub(super) struct SourceValues {
 }
 
 impl SourceValues {
+    #[cfg(test)]
     pub(super) fn from_source(
         source: &MidiSource,
         arrangement_start: u64,
@@ -64,13 +72,29 @@ impl SourceValues {
     }
 }
 
-pub(super) fn edit_command(
+#[cfg(test)]
+fn edit_command(
     project: &Project,
     clip: hex_project::ClipId,
     values: SourceValues,
 ) -> Option<hex_project::Command> {
-    if project.midi_clip(clip).is_some() {
-        Some(hex_project::Command::SetMidiClipSource {
+    let placement = if project.midi_clip(clip).is_some() {
+        SourcePlacement::Arrangement
+    } else if project.session_midi_clip(clip).is_some() {
+        SourcePlacement::Session
+    } else {
+        return None;
+    };
+    Some(edit_command_for_placement(placement, clip, values))
+}
+
+pub(super) fn edit_command_for_placement(
+    placement: SourcePlacement,
+    clip: hex_project::ClipId,
+    values: SourceValues,
+) -> hex_project::Command {
+    match placement {
+        SourcePlacement::Arrangement => hex_project::Command::SetMidiClipSource {
             clip,
             source_length: hex_project::BeatTime::from_raw(values.source_length),
             source_start: hex_project::BeatTime::from_raw(values.source_start),
@@ -78,18 +102,15 @@ pub(super) fn edit_command(
             loop_end: hex_project::BeatTime::from_raw(values.loop_end),
             looping: values.looping,
             length: hex_project::BeatTime::from_raw(values.arrangement_length),
-        })
-    } else if project.session_midi_clip(clip).is_some() {
-        Some(hex_project::Command::SetSessionMidiClipSource {
+        },
+        SourcePlacement::Session => hex_project::Command::SetSessionMidiClipSource {
             clip,
             source_length: hex_project::BeatTime::from_raw(values.source_length),
             source_start: hex_project::BeatTime::from_raw(values.source_start),
             loop_start: hex_project::BeatTime::from_raw(values.loop_start),
             loop_end: hex_project::BeatTime::from_raw(values.loop_end),
             looping: values.looping,
-        })
-    } else {
-        None
+        },
     }
 }
 

@@ -5240,6 +5240,27 @@ all cache budgets. Actual disclosure/query/refresh/clear input has a red/green
 regression. Source patch is isolated against29; its historical full20 pass is
 preserved and does not qualify the new patch. Merger owns future prospective full
 CI/integration/merge; no native/app operations were performed.
+### 17 october 2026 — pulse2783: original resource scope checkpoint
+
+DraftPR389 adds control-verified normalized original-stereo source facts and
+nonowning per-device slot scopes over actual native input storage. Exact
+source/bank/custodian tokens remain distinct from content digests. Explicit
+metadata/work/cancellation budgets refuse transactionally; no owner is cloned.
+Three real constructor tests passed (supported-controls completed), including
+independent SHA256 PCM oracle, reused slot and foreign-bank/scope refusal,
+exact metadata/work limits and unchanged bank accounting. Strict engine
+all-target Clippy passed. Full host root retention, unique coexistence accounting,
+mono ownership, host wiring and retirement remain OPEN; no referenced processing
+or usable sampler is admitted. PR296 is merged historical kernel evidence; full
+sampler2679 remains open and first. No native execution or compatibility work.
+
+The existing three-class callback allocation oracle now also uses actual sealed
+native input storage and the configuration-scoped catalog borrow. Both original
+sources are stereo; analytic/effect/mutable preflight/process/commit observe
+exact sums [1536,-1024] and zero total/net allocations/frees. Control verifies
+unchanged bank totals/handle obligations afterward. Two resource probe tests and
+strict all-target audio allocation-feature Clippy pass. This remains a borrow
+boundary proof, not actual graph/root publication or final-owner retirement.
 
 After integrating merged373/main in389, the3bank tests and2callback probes
 pass unchanged. Joint engine+audio all-target Clippy with allocation-probe
@@ -6376,3 +6397,51 @@ or full required rerun while those current findings remain unresolved.
   by the original guard; no production guard was weakened.
   Source checks remain separate from merger qualification, installed native
   interaction and user acceptance.
+### 17 october 2026 — pulse2783: retained shared/mutable resource host slice
+
+PR389 now retains actual source storage through existing OwnedShared roots and
+configuration-specific leases. The real ledger deduplicates PCM and charges each
+handle/scope; exact-budget, cancellation and omitted-owner refusals preserve the
+bank. Actual shared carried-note sampling keeps the old scope under target slot
+reuse, with control final-root destruction. Mutable hosts retain/forward their
+lease through preflight/process, history checks, rollback, checkpoint scope
+cloning and moved tails. Equal-content foreign roots do not authorize reuse.
+Decoded exclusive buffers move through a fresh native constructor without PCM
+copy; shared/weak/cancel/work refusals leave the input intact.
+
+Real negative shared/mutable host oracles fail with the old empty-resource path;
+positive cases pass. Broader checks caught a missing lease header in the readonly
+harmonic layout proposal; actual header charging repairs it without cap changes.
+Engine534 tests pass (7 existing ignores), two actual-root callback probes pass
+with zero total/net allocations/frees, and joint strict all-target Clippy passes.
+No full389 qualification, registry asset admission, usable sampler or full goal3
+completion is claimed. Mono ingress and complete current/candidate/outgoing/
+checkpoint/history/pending accounting, source-plan loading and remaining host
+wiring/retirement acceptance remain in progress under the same canonical PR.
+
+
+### 17 october 2026 — pulse2783: native mono custody and typed clip commit
+
+PR389 extends existing native source/bank custody with actual mono PCM; no
+alternate cache/owner system or source-limit raise. OriginalResourceLayout must
+match actual mono/stereo storage. Layout-separated PCM identity has an independent
+mono SHA256 oracle. Bounded aliases deduplicate the real mono allocation, retain
+every handle and refuse saturation. Numeric failures return the original Vec.
+Actual retained mono/stereo callback probes preserve exact PCM and total/net-zero
+allocation/free evidence. A private clip-source restriction preserves the existing
+resident-stereo/streamed infallible commit; resource-only mono Arrangement and
+Session bindings refuse before aliases/transfer. The broad engine suite and joint
+strict Clippy pass; no native publication/sampler registration is newly admitted.
+The original Session refusal fixture had an old caller alias; rebuilding a valid
+mono bank fixed that test setup. Media source-plan loading, complete all-role
+union and remaining host wiring/retirement still continue in canonical389.
+
+- 2026-10-18 — Pulse2789/PR395 partial private arithmetic ledger checkpoint:
+  allocation-free unpruned traversal, observation-ID routing and bounded borrowed
+  DATA replay; actual bank/history/context guard-release and original-ledger
+  accounting oracles. Storage-focused tests67 positive, strict Engine Clippy
+  passed; known architecture guard refuses the proposed Engine dev-only pinned
+  allocator counter. Separate policy proposal remains unapplied. Closed
+  aggregate pre-selector construction/custody and usable Sampler remain open;
+  no full CI/native/registration claim. Original negatives and910 graph evidence
+  retained; no Compressor/Beats/model/native writes.

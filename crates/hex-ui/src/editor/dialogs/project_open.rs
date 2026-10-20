@@ -2,6 +2,7 @@
 use super::super::EditorView;
 use gpui::{AppContext, Context, PromptButton, PromptLevel, Window};
 use hex_session::DocumentAudioMode;
+use hex_session::snapshot_exports::SnapshotTransportError;
 use std::path::PathBuf;
 
 #[derive(Clone)]
@@ -21,14 +22,22 @@ enum Phase {
         generation: u64,
         serial: u64,
     },
+    Checking(Intent),
     Confirming(Intent),
+    SaveRequested(Intent),
     Saving(Intent),
+    Saved {
+        intent: Intent,
+        succeeded: bool,
+        revision: u64,
+    },
 }
 
 #[derive(Default)]
 pub(in crate::editor) struct State {
     phase: Phase,
     serial: u64,
+    retry_scheduled: bool,
 }
 
 impl State {
@@ -45,6 +54,23 @@ impl State {
 }
 
 impl EditorView {
+    fn retry_project_open_read(&mut self, cx: &mut Context<Self>) {
+        if self.project_open.retry_scheduled {
+            return;
+        }
+        self.project_open.retry_scheduled = true;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(5))
+                .await;
+            let _ = this.update(cx, |view, cx| {
+                view.project_open.retry_scheduled = false;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
     fn next_open_serial(&mut self) -> Option<u64> {
         let serial = self.project_open.next();
         if serial.is_none() {
@@ -98,6 +124,30 @@ impl EditorView {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
+        if let Phase::SaveRequested(intent) = &self.project_open.phase {
+            self.request_open_save(intent.clone(), cx);
+            return;
+        }
+        if let Phase::Saved {
+            succeeded,
+            revision,
+            ..
+        } = &self.project_open.phase
+        {
+            let (succeeded, revision) = (*succeeded, *revision);
+            self.complete_open_save(succeeded, revision);
+            if matches!(self.project_open.phase, Phase::Saved { .. }) {
+                self.retry_project_open_read(cx);
+            }
+            return;
+        }
+        if let Phase::Checking(intent) = &self.project_open.phase {
+            let intent = intent.clone();
+            cx.defer_in(window, move |view, window, cx| {
+                view.confirm_selected_open(intent, window, cx)
+            });
+            return;
+        }
         if self.project_open.busy()
             || self.pending_open_path.is_none()
             || self.worker_requests_pending != 0
@@ -110,8 +160,17 @@ impl EditorView {
         {
             return;
         }
-        let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
-            return;
+        let revision = match self.dialog_snapshot(|snapshot| snapshot.revision()) {
+            Ok(Some(revision)) => revision,
+            Ok(None) => return,
+            Err(SnapshotTransportError::Busy) => {
+                self.retry_project_open_read(cx);
+                return;
+            }
+            Err(_) => {
+                self.error = Some("project read is unavailable".into());
+                return;
+            }
         };
         let Some(path) = self.pending_open_path.take() else {
             return;
@@ -130,7 +189,7 @@ impl EditorView {
             revision,
             serial,
         };
-        self.project_open.phase = Phase::Confirming(intent.clone());
+        self.project_open.phase = Phase::Checking(intent.clone());
         cx.defer_in(window, move |view, window, cx| {
             view.confirm_selected_open(intent, window, cx)
         });
@@ -139,7 +198,8 @@ impl EditorView {
     fn current_open_intent(&self, intent: &Intent) -> bool {
         self.project_generation == intent.generation
             && matches!(&self.project_open.phase,
-            Phase::Confirming(active) | Phase::Saving(active) if active.serial == intent.serial)
+            Phase::Checking(active) | Phase::Confirming(active) | Phase::SaveRequested(active) | Phase::Saving(active)
+                | Phase::Saved { intent: active, .. } if active.serial == intent.serial)
     }
 
     fn confirm_selected_open(
@@ -148,27 +208,40 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.current_open_intent(&intent) {
+        if !self.current_open_intent(&intent)
+            || !matches!(&self.project_open.phase, Phase::Checking(active) if active.serial == intent.serial)
+        {
             return;
         }
-        if self
-            .state
-            .as_ref()
-            .is_none_or(|state| state.revision != intent.revision)
+        let state = match self.dialog_snapshot(|snapshot| (snapshot.revision(), snapshot.unsaved()))
         {
+            Ok(state) => state,
+            Err(SnapshotTransportError::Busy) => {
+                self.retry_project_open_read(cx);
+                return;
+            }
+            Err(_) => {
+                self.cancel_open_after_save();
+                self.error = Some("project read is unavailable".into());
+                cx.notify();
+                return;
+            }
+        };
+        if state.is_none_or(|(revision, _)| revision != intent.revision) {
             self.cancel_open_after_save();
             self.error = Some("project changed · open cancelled".into());
             cx.notify();
             return;
         }
-        let dirty = self.state.as_ref().is_some_and(|state| state.unsaved)
-            || self.tuning.client.snapshot().is_some();
+        let dirty =
+            state.is_some_and(|(_, unsaved)| unsaved) || self.tuning.client.snapshot().is_some();
         if !dirty {
             self.project_open.phase = Phase::Idle;
             self.begin_open(intent.path, intent.mode);
             cx.notify();
             return;
         }
+        self.project_open.phase = Phase::Confirming(intent.clone());
         let answer = window.prompt(
             PromptLevel::Warning,
             "save changes before opening another project?",
@@ -179,43 +252,65 @@ impl EditorView {
         let handle = window.window_handle();
         cx.spawn(async move |this, cx| {
             let answer = answer.await.ok();
-            let _ = cx.update_window(handle, |_, window, cx| {
-                let _ = this.update(cx, |view, cx| {
-                    if !view.current_open_intent(&intent) {
-                        return;
-                    }
-                    if window.focused(cx).is_none() {
-                        view.focus.focus(window);
-                    }
-                    if view
-                        .state
-                        .as_ref()
-                        .is_none_or(|state| state.revision != intent.revision)
-                    {
-                        view.cancel_open_after_save();
-                        view.error = Some("project changed · open cancelled".into());
-                    } else {
-                        match answer {
-                            Some(0) => {
-                                view.project_open.phase = Phase::Saving(intent);
-                                view.save_project(cx);
-                                if !view.saving_project && !view.save_dialog_open {
-                                    view.cancel_open_after_save();
+            let mut pending = Some(intent);
+            loop {
+                let retry = cx
+                    .update_window(handle, |_, window, cx| {
+                        this.update(cx, |view, cx| {
+                            let Some(intent) = pending.as_ref() else {
+                                return false;
+                            };
+                            if !view.current_open_intent(intent) {
+                                return false;
+                            }
+                            let revision =
+                                match view.dialog_snapshot(|snapshot| snapshot.revision()) {
+                                    Ok(revision) => revision,
+                                    Err(SnapshotTransportError::Busy) => return true,
+                                    Err(_) => {
+                                        view.cancel_open_after_save();
+                                        view.error = Some("project read is unavailable".into());
+                                        cx.notify();
+                                        return false;
+                                    }
+                                };
+                            if window.focused(cx).is_none() {
+                                view.focus.focus(window);
+                            }
+                            let Some(intent) = pending.take() else {
+                                return false;
+                            };
+                            if revision != Some(intent.revision) {
+                                view.cancel_open_after_save();
+                                view.error = Some("project changed · open cancelled".into());
+                            } else {
+                                match answer {
+                                    Some(0) => {
+                                        view.request_open_save(intent, cx);
+                                    }
+                                    Some(1) => {
+                                        view.project_open.phase = Phase::Idle;
+                                        view.begin_open(intent.path, intent.mode);
+                                    }
+                                    _ => {
+                                        view.cancel_open_after_save();
+                                        view.status = "open cancelled".into();
+                                    }
                                 }
                             }
-                            Some(1) => {
-                                view.project_open.phase = Phase::Idle;
-                                view.begin_open(intent.path, intent.mode);
-                            }
-                            _ => {
-                                view.cancel_open_after_save();
-                                view.status = "open cancelled".into();
-                            }
-                        }
-                    }
-                    cx.notify();
-                });
-            });
+                            cx.notify();
+                            false
+                        })
+                        .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                if !retry {
+                    break;
+                }
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(5))
+                    .await;
+            }
         })
         .detach();
     }
@@ -226,16 +321,49 @@ impl EditorView {
         self.pending_open_mode = None;
     }
 
+    fn request_open_save(&mut self, intent: Intent, cx: &mut Context<Self>) {
+        self.project_open.phase = Phase::Saving(intent.clone());
+        match self.save_project_checked(cx) {
+            Ok(true) => {}
+            Ok(false) => self.cancel_open_after_save(),
+            Err(SnapshotTransportError::Busy) => {
+                self.project_open.phase = Phase::SaveRequested(intent);
+                self.retry_project_open_read(cx);
+            }
+            Err(_) => {
+                self.cancel_open_after_save();
+                self.error = Some("project read is unavailable".into());
+            }
+        }
+    }
+
     pub(in crate::editor) fn complete_open_save(&mut self, succeeded: bool, revision: u64) {
-        let Phase::Saving(intent) = &self.project_open.phase else {
-            return;
+        let intent = match &self.project_open.phase {
+            Phase::Saving(intent) | Phase::Saved { intent, .. } => intent.clone(),
+            _ => return,
         };
-        let current = succeeded
-            && self.project_generation == intent.generation
-            && self.state.as_ref().is_some_and(|state| {
-                !state.unsaved && state.revision == revision && state.document_path.is_some()
-            });
-        let intent = intent.clone();
+        let current = match self.dialog_snapshot(|snapshot| {
+            !snapshot.unsaved()
+                && snapshot.revision() == revision
+                && snapshot.document_path().is_some()
+        }) {
+            Ok(current) => {
+                succeeded && self.project_generation == intent.generation && current == Some(true)
+            }
+            Err(SnapshotTransportError::Busy) => {
+                self.project_open.phase = Phase::Saved {
+                    intent,
+                    succeeded,
+                    revision,
+                };
+                return;
+            }
+            Err(_) => {
+                self.cancel_open_after_save();
+                self.error = Some("project read is unavailable".into());
+                return;
+            }
+        };
         self.cancel_open_after_save();
         if current {
             self.begin_open(intent.path, intent.mode);

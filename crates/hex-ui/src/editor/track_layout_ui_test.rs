@@ -228,10 +228,10 @@ fn resize_capture_cancels_on_escape_lost_button_window_change_and_stale_revision
                     view.state = Some(Arc::new(hex_session::service::ViewState {
                         canonical_audio_source: state.canonical_audio_source.clone(),
                         comparison_audio: None,
-                        project: Arc::clone(&state.project),
+                        project: state.project.clone(),
                         waveforms: state.waveforms.clone(),
                         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
-                        midi_preview: Arc::clone(&state.midi_preview),
+                        midi_preview: state.midi_preview.clone(),
                         gain_preview: state.gain_preview.clone(),
                         timeline_frames: state.timeline_frames,
                         can_undo: state.can_undo,

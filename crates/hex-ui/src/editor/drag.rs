@@ -917,49 +917,41 @@ impl super::EditorView {
         self.active_native_device_drag = Some(drag.clone());
     }
 
-    pub(super) fn native_device_drag_is_current(&self, drag: &NativeDeviceDrag) -> bool {
-        if self.opening_project || self.close_prompt_open {
-            return false;
+    /// Read refusal must leave the captured drag and destination intact. Drop
+    /// admission calls this checked form before changing cursor or gesture state.
+    pub(super) fn native_device_drag_current(
+        &self,
+        drag: &NativeDeviceDrag,
+    ) -> Result<bool, hex_session::snapshot_exports::SnapshotTransportError> {
+        if self.opening_project
+            || self.close_prompt_open
+            || self.project_generation != drag.project_generation
+        {
+            return Ok(false);
         }
         let Some(state) = self.state.as_ref() else {
-            return false;
+            return Ok(false);
         };
-        if self.project_generation != drag.project_generation || state.revision != drag.revision {
-            return false;
-        }
-        match drag.source {
-            NativeDeviceDragSource::Browser { .. } => true,
-            NativeDeviceDragSource::Existing {
-                device,
-                class,
-                type_id,
-            } => {
-                state.project.tracks().iter().any(|track| {
-                    track.ordered_device_chain().any(|node| {
-                        let (candidate, candidate_class) = match node {
-                            hex_project::TrackDeviceRef::Instrument(device) => {
-                                (device, hex_engine::NativeDeviceClass::Instrument)
-                            }
-                            hex_project::TrackDeviceRef::Effect(device) => {
-                                (device, hex_engine::NativeDeviceClass::Effect)
-                            }
-                        };
-                        candidate.id() == device
-                            && candidate_class == class
-                            && candidate.state().type_id() == type_id
-                    })
-                }) || (class == hex_engine::NativeDeviceClass::Effect
-                    && state.project.main_devices().iter().any(|candidate| {
-                        candidate.id() == device && candidate.state().type_id() == type_id
-                    }))
-                    || state.project.return_tracks().iter().any(|track| {
-                        class == hex_engine::NativeDeviceClass::Effect
-                            && track.devices().iter().any(|candidate| {
-                                candidate.id() == device && candidate.state().type_id() == type_id
-                            })
-                    })
+        state.read_with(|snapshot| {
+            if snapshot.revision() != drag.revision {
+                return false;
             }
-        }
+            match drag.source {
+                NativeDeviceDragSource::Browser { .. } => true,
+                NativeDeviceDragSource::Existing {
+                    device,
+                    class,
+                    type_id,
+                } => snapshot.model().device(device).is_some_and(|candidate| {
+                    candidate.class() == class && candidate.type_id() == type_id
+                }),
+            }
+        })
+    }
+
+    /// Display-only preview refusal does not retire or mutate the captured drag.
+    pub(super) fn native_device_drag_is_current(&self, drag: &NativeDeviceDrag) -> bool {
+        self.native_device_drag_current(drag).unwrap_or(false)
     }
 
     pub(super) fn clear_native_device_drag(&mut self, drag: &NativeDeviceDrag) {

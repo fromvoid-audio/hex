@@ -1,5 +1,5 @@
 //! Compact Arrangement loop-range rail with a control-side preview gesture.
-use super::{EditorMode, EditorView, ViewState, musical_time::GridLine, viewport::Viewport};
+use super::{EditorMode, EditorView, musical_time::GridLine, viewport::Viewport};
 use crate::theme;
 use gpui::{
     Bounds, Context, CursorStyle, Div, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -312,11 +312,12 @@ impl EditorView {
     }
 
     fn loop_rail_hover(&self, x: f32, viewport: Viewport, bounds: Bounds<gpui::Pixels>) -> Hover {
-        let Some(region) = self
-            .state
-            .as_ref()
-            .and_then(|state| state.project.loop_region())
-        else {
+        let Some(region) = self.state.as_ref().and_then(|state| {
+            state
+                .read_with(|snapshot| snapshot.model().loop_region())
+                .ok()
+                .flatten()
+        }) else {
             return Hover::Paint;
         };
         match region_edit_mode(region, viewport, bounds, x) {
@@ -329,22 +330,33 @@ impl EditorView {
 
 pub(super) fn view(
     view: &EditorView,
-    state: &ViewState,
+    revision: u64,
+    current_region: Option<LoopRegion>,
     viewport: Viewport,
     grid: &[GridLine],
     cx: &mut Context<EditorView>,
 ) -> Div {
-    let current_region = state.project.loop_region();
     let gesture = view.loop_rail_gesture.filter(|gesture| {
         gesture.generation == view.project_generation
-            && gesture.revision == state.revision
-            && gesture.loop_region == state.project.loop_region()
+            && gesture.revision == revision
+            && gesture.loop_region == current_region
             && view.mode == EditorMode::Arrangement
     });
     let shown_region = gesture
         .and_then(|gesture| gesture.preview)
         .or_else(|| view.pending_loop_region())
         .or(current_region);
+    let binary = shown_region.is_some_and(|region| {
+        view.state.as_ref().is_some_and(|state| {
+            state
+                .read_with(|snapshot| {
+                    binary_duration_by(region, |frame| {
+                        snapshot.model().tempo().beat_lower_bound_for_frame(frame)
+                    })
+                })
+                .unwrap_or(false)
+        })
+    });
     let entity = cx.entity();
     let rail = div()
         .h(px(RAIL_HEIGHT))
@@ -371,7 +383,7 @@ pub(super) fn view(
                 .child(loop_grid_layer(grid, viewport))
                 .children(
                     shown_region
-                        .and_then(|region| loop_region_bar(region, viewport, &state.project)),
+                        .and_then(|region| loop_region_bar(region, viewport, binary)),
                 )
                 .child(
                     canvas(
@@ -600,11 +612,7 @@ fn loop_grid_layer(lines: &[GridLine], viewport: Viewport) -> Div {
     div().absolute().inset_0().children(lines)
 }
 
-fn loop_region_bar(
-    region: LoopRegion,
-    viewport: Viewport,
-    project: &hex_project::Project,
-) -> Option<Div> {
+fn loop_region_bar(region: LoopRegion, viewport: Viewport, binary: bool) -> Option<Div> {
     let viewport_end = viewport.end()?;
     if viewport.length == 0 {
         return None;
@@ -630,18 +638,16 @@ fn loop_region_bar(
                 theme::PaletteRole::Muted
             })))
             .opacity(if region.enabled() { 0.94 } else { 0.62 })
-            .children(
-                (region.start() >= viewport.start && binary_duration(project, region)).then(|| {
-                    div()
-                        .debug_selector(|| "loop-binary-length-marker".into())
-                        .absolute()
-                        .left_0()
-                        .top(px(2.0))
-                        .size(px(5.0))
-                        .rounded_full()
-                        .bg(rgb(theme::color(theme::PaletteRole::Background)))
-                }),
-            ),
+            .children((region.start() >= viewport.start && binary).then(|| {
+                div()
+                    .debug_selector(|| "loop-binary-length-marker".into())
+                    .absolute()
+                    .left_0()
+                    .top(px(2.0))
+                    .size(px(5.0))
+                    .rounded_full()
+                    .bg(rgb(theme::color(theme::PaletteRole::Background)))
+            })),
     )
 }
 
@@ -665,11 +671,19 @@ fn stepped_start(region: LoopRegion, delta: i128) -> Option<u64> {
 /// Frame endpoints retain quantized musical intervals, not authored beat IDs.
 /// Accept exactly one binary Q32.32 duration whose canonical forward rounding can
 /// place its two beat endpoints at these stored frames (no pixel/epsilon test).
+#[cfg(test)]
 fn binary_duration(project: &hex_project::Project, region: LoopRegion) -> bool {
-    let map = project.tempo_map();
+    binary_duration_by(region, |frame| {
+        project.tempo_map().beat_lower_bound_for_frame(frame)
+    })
+}
+fn binary_duration_by(
+    region: LoopRegion,
+    lower_bound: impl Fn(u64) -> Result<u128, hex_project::Invalid>,
+) -> bool {
     let interval = |frame: u64| -> Option<(u128, u128)> {
-        let first = map.beat_lower_bound_for_frame(frame).ok()?;
-        let after = map.beat_lower_bound_for_frame(frame.checked_add(1)?).ok()?;
+        let first = lower_bound(frame).ok()?;
+        let after = lower_bound(frame.checked_add(1)?).ok()?;
         (first < after && first < hex_project::TempoMap::BEAT_RANGE_SENTINEL)
             .then_some((first, after.checked_sub(1)?))
     };

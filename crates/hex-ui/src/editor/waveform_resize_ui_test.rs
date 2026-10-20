@@ -6,7 +6,7 @@ use hex_session::{
     CachedPeak, CachedWaveform,
     service::{AudioClipWaveform, ViewState},
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 #[gpui::test]
 fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppContext) {
@@ -24,7 +24,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
             canonical.project().tempo_map(),
         )
         .unwrap();
-    let peaks = Arc::new(
+    let peaks = hex_session::SharedWaveform::new_on_control(
         CachedWaveform::from_peaks(
             96_000,
             vec![
@@ -38,7 +38,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
         .unwrap(),
     );
     let prepared = AudioClipWaveform {
-        waveform: Arc::clone(&peaks),
+        waveform: peaks.clone(),
         offset: 0,
         length: 96_000,
     };
@@ -77,7 +77,7 @@ fn trim_preview_requires_matching_accepted_processing_root(_cx: &mut TestAppCont
         .is_none()
     );
     let short_root = AudioClipWaveform {
-        waveform: Arc::new(
+        waveform: hex_session::SharedWaveform::new_on_control(
             CachedWaveform::from_peaks(
                 95_999,
                 vec![
@@ -195,7 +195,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                 // Distinct bipolar and sparse stereo sample summaries, with silence
                 // between impulses. These are accepted cache fixtures, not generated
                 // preview peaks; the renderer must keep reading the same Arc.
-                let peaks = Arc::new(
+                let peaks = hex_session::SharedWaveform::new_on_control(
                     CachedWaveform::from_peaks(
                         frames as usize,
                         (0..127)
@@ -222,7 +222,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                     )
                     .unwrap(),
                 );
-                let prepared_peaks = Arc::new(
+                let prepared_peaks = hex_session::SharedWaveform::new_on_control(
                     CachedWaveform::from_peaks(
                         frames as usize,
                         (0..127)
@@ -248,17 +248,20 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                 } else {
                     &prepared_peaks
                 };
-                let mut prepared = BTreeMap::new();
+                let mut prepared = hex_project::SortedEntries::new();
                 if let Some(edit) = original.clip(clip).unwrap().audio_edit() {
                     let (_, _, offset, _) = edit.projected_domain(original.tempo_map()).unwrap();
-                    prepared.insert(
-                        clip,
-                        AudioClipWaveform {
-                            waveform: Arc::clone(&prepared_peaks),
-                            offset,
-                            length: original.clip(clip).unwrap().duration(),
-                        },
-                    );
+                    prepared
+                        .try_insert_on_control(
+                            clip,
+                            AudioClipWaveform {
+                                waveform: prepared_peaks.clone(),
+                                offset,
+                                length: original.clip(clip).unwrap().duration(),
+                            },
+                            hex_project::MAX_CLIPS,
+                        )
+                        .unwrap();
                 }
                 let (handle, editor) = editor_window(cx, original.clone(), Arc::default());
                 editor.update(cx, |view, cx| {
@@ -266,10 +269,14 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                     view.state = Some(Arc::new(ViewState {
                         canonical_audio_source: None,
                         comparison_audio: None,
-                        project: Arc::clone(&old.project),
-                        waveforms: BTreeMap::from([(asset, Arc::clone(&peaks))]),
+                        project: old.project.clone(),
+                        waveforms: hex_project::SortedEntries::try_from_unsorted_on_control(
+                            vec![(asset, peaks.clone())],
+                            hex_project::MAX_ASSETS,
+                        )
+                        .unwrap(),
                         audio_clip_waveforms: prepared,
-                        midi_preview: Arc::clone(&old.midi_preview),
+                        midi_preview: old.midi_preview.clone(),
                         gain_preview: old.gain_preview.clone(),
                         timeline_frames: old.timeline_frames,
                         can_undo: old.can_undo,
@@ -328,7 +335,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                             let (_, _, offset, _) = edit.projected_domain(original.tempo_map()).unwrap();
                             (preview.start(), offset)
                         });
-                        let root_matches = Arc::ptr_eq(&rendered[0].source, expected_source);
+                        let root_matches = Some(rendered[0].source) == expected_source.cache_identity();
                         if !rendered[0].spans.iter().all(|span| *span > 1.0)
                             || !root_matches || rendered[0].prepared != expected_mapping
                         {
@@ -363,7 +370,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         rendered[0].spans.iter().all(|span| *span > 1.0),
                         "waveform must remain visible after the drag ends"
                     );
-                    assert!(Arc::ptr_eq(&rendered[0].source, expected_source));
+                    assert!(Some(rendered[0].source) == expected_source.cache_identity());
                 });
             }
         }

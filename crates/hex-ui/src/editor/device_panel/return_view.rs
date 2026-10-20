@@ -5,13 +5,11 @@ pub(super) fn render(
     view: &mut EditorView,
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
-    state: &ViewState,
+    facts: &read_facts::OwnerFacts,
     owner: EffectBusOwner,
 ) -> Stateful<Div> {
-    let Some(devices) = owner.devices(&state.project).map(<[_]>::to_vec) else {
-        return empty_panel("effect target is no longer available");
-    };
-    let alive: HashSet<_> = devices.iter().map(hex_project::Device::id).collect();
+    let devices = &facts.devices;
+    let alive: HashSet<_> = devices.iter().map(|device| device.id).collect();
     view.device_panel.selected_device = view
         .device_panel
         .selected_device
@@ -23,31 +21,20 @@ pub(super) fn render(
         .filter(|(key, control)| {
             devices
                 .iter()
-                .find(|device| device.id() == key.device)
+                .find(|device| device.id == key.device)
                 .is_none_or(|device| {
                     !parameter_control_matches_identity(
                         control,
                         DeviceControlIdentity {
                             class: NativeDeviceClass::Effect,
-                            type_id: device.state().type_id(),
+                            type_id: device.type_id,
                         },
                     )
                 })
         })
         .map(|(key, _)| *key)
         .collect();
-    let changed_types: HashSet<_> = view
-        .device_panel
-        .views
-        .iter()
-        .filter_map(|(id, (_, cached, _))| {
-            devices
-                .iter()
-                .find(|device| device.id() == *id)
-                .filter(|device| device.state().type_id() != cached.type_id())
-                .map(|_| *id)
-        })
-        .collect();
+    let changed_types: HashSet<_> = stale_keys.iter().map(|key| key.device).collect();
     let active_target = view
         .device_gesture
         .snapshot()
@@ -78,24 +65,20 @@ pub(super) fn render(
     view.device_panel
         .controls
         .retain(|key, _| alive.contains(&key.device));
-    view.device_panel.views.retain(|id, _| alive.contains(id));
-    for device in &devices {
-        cache_device_metadata(&mut view.device_panel, device, NativeDeviceClass::Effect);
-    }
-    parameter_rows::reconcile(view, cx);
+    parameter_rows::reconcile(view, cx, devices);
     view.device_panel
         .meter_states
         .retain(|id, _| alive.contains(id));
     retire_transfer_previews(&mut view.device_panel, |id| {
         devices
             .iter()
-            .find(|device| device.id() == id)
-            .map(|device| device.state().type_id())
+            .find(|device| device.id == id)
+            .map(|device| device.type_id)
     });
     let alive_eq8: HashSet<_> = devices
         .iter()
-        .filter(|device| device.state().type_id().as_str() == Ok("hex.eq8"))
-        .map(hex_project::Device::id)
+        .filter(|device| device.type_id.as_str() == Ok("hex.eq8"))
+        .map(|device| device.id)
         .collect();
     retire_removed_eq8_graphs(view, cx, &alive_eq8);
     view.device_panel
@@ -114,8 +97,8 @@ pub(super) fn render(
         && let Some(target) = audio.control.spectrum_desired()
         && target.identity.owner == owner.processor()
         && !devices.iter().any(|device| {
-            device.id().value() == target.identity.device_id
-                && device.state().type_id() == target.identity.device_type
+            device.id.value() == target.identity.device_id
+                && device.type_id == target.identity.device_type
                 && matches!(
                     target.identity.device_type.as_str(),
                     Ok("hex.eq8" | "hex.eq")
@@ -129,8 +112,8 @@ pub(super) fn render(
         && let Some(target) = audio.control.audition_desired()
         && target.identity.owner == owner.processor()
         && !devices.iter().any(|device| {
-            device.id().value() == target.identity.device_id
-                && device.state().type_id() == target.identity.device_type
+            device.id.value() == target.identity.device_id
+                && device.type_id == target.identity.device_type
                 && matches!(
                     target.identity.device_type.as_str(),
                     Ok("hex.eq8" | "hex.eq")
@@ -196,7 +179,10 @@ pub(super) fn render(
         .device_panel
         .message
         .clone()
-        .unwrap_or_else(|| owner.title(&state.project).unwrap_or_default());
+        .unwrap_or_else(|| match owner {
+            EffectBusOwner::Main => facts.title.clone(),
+            EffectBusOwner::Return(_) => format!("{} · return effects", facts.title),
+        });
     let track_name_view = title_label(title, view.device_panel.message.is_some());
     let header = div()
         .id("device-panel-header")
@@ -211,7 +197,7 @@ pub(super) fn render(
         .bg(rgb(theme::color(theme::PaletteRole::Surface)))
         .child(track_name_view)
         .child(add_button);
-    let chain = super::return_drag::render_chain(view, window, cx, owner, &devices);
+    let chain = super::return_drag::render_chain(view, window, cx, owner, facts);
     let chain = navigation::rail(view, chain);
     root = root.child(header).child(chain);
     if catalog.is_err() || add_open {
@@ -225,22 +211,13 @@ pub(super) fn render_return_effect(
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
     owner: EffectBusOwner,
-    device: &hex_project::Device,
+    device: &read_facts::DeviceFacts,
+    revision: u64,
+    sample_rate: u32,
 ) -> Stateful<Div> {
-    let id = device.id();
+    let id = device.id;
     let selected = view.device_panel.selected_device == Some(id);
-    let device_view = view
-        .device_panel
-        .views
-        .remove(&id)
-        .filter(|(class, cached, _)| {
-            *class == NativeDeviceClass::Effect && cached == device.state()
-        })
-        .map(|(_, _, result)| result)
-        .unwrap_or_else(|| {
-            hex_engine::native_device_view_for_class(NativeDeviceClass::Effect, device.state())
-                .map_err(|error| error.to_string().to_lowercase())
-        });
+    let device_view = &device.controls;
     let leading = bypass_action(device, NativeDeviceClass::Effect, selected, cx);
     let mut actions = div().flex().items_center().gap(px(2.0));
     if device_view.is_ok() {
@@ -253,7 +230,7 @@ pub(super) fn render_return_effect(
             ))
             .child(super::super::device_comparison::actions(
                 view,
-                device,
+                device.id,
                 NativeDeviceClass::Effect,
                 selected,
                 cx,
@@ -281,18 +258,14 @@ pub(super) fn render_return_effect(
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 super::utility_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.compressor") {
-                super::compressor_panel::render_body(view, cx, id, device.state(), device_view)
+                super::compressor_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
-                super::saturator_panel::render_body(view, cx, id, device.state(), device_view)
+                super::saturator_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 super::gate_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {
                 super::auto_pan_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.eq") {
-                let sample_rate = view
-                    .state
-                    .as_ref()
-                    .map_or(48000, |state| state.project.sample_rate());
                 super::eq_panel::render_body(
                     view,
                     cx,
@@ -310,9 +283,7 @@ pub(super) fn render_return_effect(
                     owner.processor(),
                     device.state(),
                     device_view,
-                    view.state
-                        .as_ref()
-                        .map_or(48_000, |state| state.project.sample_rate()),
+                    sample_rate,
                 )
             } else {
                 parameter_rows::body(
@@ -332,6 +303,7 @@ pub(super) fn render_return_effect(
                     view,
                     cx,
                     device,
+                    revision,
                     NativeDeviceClass::Effect,
                     theme::text(device_view.name.clone()),
                 ),
@@ -343,13 +315,7 @@ pub(super) fn render_return_effect(
             .into_any_element()
         }
         Err(error) => {
-            let title = theme::text(
-                device
-                    .state()
-                    .type_id()
-                    .as_str()
-                    .unwrap_or("unknown device"),
-            );
+            let title = theme::text(device.type_id.as_str().unwrap_or("unknown device"));
             let body = crate::device_composition::unsupported_body(theme::text(format!(
                 "unsupported device state · {error}"
             )))
@@ -358,7 +324,7 @@ pub(super) fn render_return_effect(
             ))
             .debug_selector(move || format!("device-body-{}", id.value()));
             device_frame(
-                device_drag_title(view, cx, device, NativeDeviceClass::Effect, title),
+                device_drag_title(view, cx, device, revision, NativeDeviceClass::Effect, title),
                 theme::device_frame_style(selected),
                 leading,
                 actions,
@@ -367,15 +333,7 @@ pub(super) fn render_return_effect(
             .into_any_element()
         }
     };
-    view.device_panel.views.insert(
-        id,
-        (
-            NativeDeviceClass::Effect,
-            device.state().clone(),
-            device_view,
-        ),
-    );
-    let frame_width = match device.state().type_id().as_str() {
+    let frame_width = match device.type_id.as_str() {
         Ok("hex.utility") => UTILITY_FRAME_WIDTH,
         Ok("hex.eq8" | "hex.eq") => super::eq8_panel::FRAME_WIDTH,
         Ok("hex.saturator") => super::saturator_panel::FRAME_WIDTH,

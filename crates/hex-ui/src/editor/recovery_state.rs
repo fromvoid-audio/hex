@@ -181,7 +181,7 @@ mod tests {
                 .expect("old seek");
         }
         old_callback.begin_block();
-        assert_eq!(old_control.status.consumed_command.load(Acquire), 3);
+        assert_eq!(old_control.status().consumed_command.load(Acquire), 3);
 
         let (mut control, mut callback) = channel(48_000).expect("replacement control");
         let mut state = RecoveryState::default();
@@ -195,7 +195,7 @@ mod tests {
             .expect("graph publication");
         assert!(!state.complete(false, 3, 96, false));
         callback.begin_block();
-        let current = control.status.applied_revision.load(Relaxed) == revision;
+        let current = control.status().applied_revision.load(Relaxed) == revision;
         let position = state
             .seek_needed(current)
             .expect("seek after graph applied");
@@ -206,8 +206,8 @@ mod tests {
         state.seeking(ticket);
         assert!(!state.complete(
             current,
-            control.status.consumed_command.load(Acquire),
-            control.status.position.load(Relaxed),
+            control.status().consumed_command.load(Acquire),
+            control.status().position.load(Relaxed),
             false
         ));
         callback.begin_block();
@@ -216,11 +216,11 @@ mod tests {
         assert_eq!(output, [[0.0; 2]; 4]);
         assert!(state.complete(
             current,
-            control.status.consumed_command.load(Acquire),
-            control.status.position.load(Relaxed),
-            control.status.playing.load(Relaxed)
+            control.status().consumed_command.load(Acquire),
+            control.status().position.load(Relaxed),
+            control.status().playing.load(Relaxed)
         ));
-        assert_eq!(control.status.position.load(Relaxed), 96);
-        assert!(!control.status.playing.load(Relaxed));
+        assert_eq!(control.status().position.load(Relaxed), 96);
+        assert!(!control.status().playing.load(Relaxed));
     }
 }

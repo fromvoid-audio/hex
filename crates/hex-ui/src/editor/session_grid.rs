@@ -1,4 +1,5 @@
 //! Compact, ID-backed Session grid and guarded playback requests.
+use super::session_navigation::{CellContent, SessionProject};
 use super::session_route_view::cell_route_markers;
 use super::{EditorMode, EditorView, PendingPlaybackAction};
 use crate::theme;
@@ -7,7 +8,8 @@ use hex_audio::prepared::{
     SessionRouteEntry, SessionRouteOwner, SessionRouteSnapshot, SessionRouteTarget,
 };
 use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
-use hex_project::{BeatTime, ClipId, Command, Project, SceneId, SessionCellContent, TrackId};
+use hex_project::{BeatTime, ClipId, Command, SceneId, TrackId};
+use hex_session::snapshot_exports::ui_consumers::SnapshotSessionCellContentRead;
 use hex_session::{import_batch::ConsoleDestination, service::Request};
 
 const TRACK_COLUMN_WIDTH: f32 = 148.0;
@@ -49,6 +51,33 @@ enum CellExpectation {
     Audio(ClipId),
 }
 
+struct ClipDisplay {
+    id: ClipId,
+    name: String,
+    flavor: hex_project::ClipFlavor,
+}
+
+enum CellDisplay {
+    Empty,
+    Stop,
+    Midi(ClipDisplay),
+    Audio(ClipDisplay),
+}
+
+struct SceneRowFacts {
+    next_scene: Option<SceneId>,
+    id: SceneId,
+    name: String,
+    cells: Vec<(TrackId, hex_project::ElementColor, CellDisplay)>,
+}
+
+#[derive(Clone, Copy)]
+struct SessionSelectionFacts {
+    copy_source: Option<ClipId>,
+    track_index: Option<usize>,
+    scene_index: Option<usize>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DeleteTarget {
     MidiNotes,
@@ -58,7 +87,7 @@ pub(super) enum DeleteTarget {
 }
 
 pub(super) fn resolve_delete_target(
-    project: Option<&Project>,
+    project: Option<&(impl SessionProject + ?Sized)>,
     mode: EditorMode,
     piano_focused: bool,
     note_selection_nonempty: bool,
@@ -72,19 +101,19 @@ pub(super) fn resolve_delete_target(
     if mode == EditorMode::Session {
         let project = project?;
         if let Some((track, scene)) = selected_cell {
-            if project.track(track).is_none()
-                || !project.scenes().iter().any(|item| item.id() == scene)
+            if !project.track_ids().any(|id| id == track)
+                || !project.scene_ids().any(|id| id == scene)
             {
                 return None;
             }
             return matches!(
-                project.session_cell(track, scene),
-                Some(SessionCellContent::Midi(_) | SessionCellContent::Stop)
+                project.cell(track, scene),
+                CellContent::Midi(_) | CellContent::Stop
             )
             .then_some(DeleteTarget::SessionCell { track, scene });
         }
         return selected_scene
-            .filter(|scene| project.scenes().iter().any(|item| item.id() == *scene))
+            .filter(|scene| project.scene_ids().any(|id| id == *scene))
             .map(DeleteTarget::SessionScene);
     }
     selected_clip.map(DeleteTarget::ArrangementClip)
@@ -147,7 +176,7 @@ fn next_quantization(quantization: LaunchQuantization) -> LaunchQuantization {
 }
 
 pub(super) fn action_is_current(
-    project: Option<&Project>,
+    project: Option<&(impl SessionProject + ?Sized)>,
     command: SessionPlaybackCommand,
     expected_generation: u64,
     current_generation: u64,
@@ -160,20 +189,22 @@ pub(super) fn action_is_current(
 }
 
 pub(super) fn action_matches_project(
-    project: Option<&Project>,
+    project: Option<&(impl SessionProject + ?Sized)>,
     command: SessionPlaybackCommand,
 ) -> bool {
     let Some(project) = project else {
         return false;
     };
     match command {
-        SessionPlaybackCommand::LaunchClip { clip, .. } => project.session_cells().iter().any(
-            |cell| matches!(cell.content(), SessionCellContent::Midi(item) if item.id() == clip),
-        ),
+        SessionPlaybackCommand::LaunchClip { clip, .. } => project
+            .cells()
+            .any(|(_, content)| matches!(content, CellContent::Midi(item) if item == clip)),
         SessionPlaybackCommand::LaunchScene { scene, .. } => {
-            project.scenes().iter().any(|item| item.id() == scene)
+            project.scene_ids().any(|id| id == scene)
         }
-        SessionPlaybackCommand::StopTrack { track, .. } => project.track(track).is_some(),
+        SessionPlaybackCommand::StopTrack { track, .. } => {
+            project.track_ids().any(|id| id == track)
+        }
         SessionPlaybackCommand::StopAllClips { .. }
         | SessionPlaybackCommand::BackToArrangement { .. }
         | SessionPlaybackCommand::Play
@@ -194,48 +225,64 @@ impl EditorView {
         if self.opening_project || self.close_prompt_open {
             return;
         }
-        let selection = self.state.as_ref().and_then(|state| {
-            super::session_navigation::resolve_navigation(
-                &state.project,
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Ok(selection) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let selection = super::session_navigation::resolve_navigation(
+                &project,
                 self.selected_cell,
                 self.selected_scene,
                 direction,
-            )
-        });
+            )?;
+            let content = match selection {
+                super::session_navigation::Selection::Cell { track, scene } => {
+                    match project.session_cell(track, scene) {
+                        SnapshotSessionCellContentRead::Midi(clip) => Some(Some(clip.id())),
+                        SnapshotSessionCellContentRead::Audio(_) => Some(None),
+                        SnapshotSessionCellContentRead::Stop
+                        | SnapshotSessionCellContentRead::Empty => None,
+                    }
+                }
+                super::session_navigation::Selection::Scene(_) => None,
+            };
+            Some((selection, content))
+        }) else {
+            return;
+        };
         match selection {
-            Some(super::session_navigation::Selection::Scene(scene)) => {
+            Some((super::session_navigation::Selection::Scene(scene), _)) => {
+                let Ok(Some(facts)) = self.prepare_session_selection(None, Some(scene)) else {
+                    return;
+                };
                 if self.focus_empty_details(window, cx) {
                     self.advance_selection_intent();
-                    self.select_session_scene(scene);
+                    self.apply_session_scene(scene, facts);
                 }
             }
-            Some(super::session_navigation::Selection::Cell { track, scene }) => {
-                let content = self
-                    .state
-                    .as_ref()
-                    .and_then(|state| state.project.session_cell(track, scene))
-                    .and_then(|content| match content {
-                        SessionCellContent::Midi(clip) => Some(Some(clip.id())),
-                        SessionCellContent::Audio(_) => Some(None),
-                        SessionCellContent::Stop => None,
-                    });
+            Some((super::session_navigation::Selection::Cell { track, scene }, content)) => {
+                let Ok(Some(facts)) = self.prepare_session_selection(Some(track), Some(scene))
+                else {
+                    return;
+                };
                 match content {
                     Some(Some(clip)) => {
                         if self.focus_clip_details(window, cx) {
                             self.advance_selection_intent();
-                            self.select_session_midi(track, scene, clip);
+                            self.apply_session_midi(track, scene, clip, facts);
                         }
                     }
                     Some(None) => {
                         if self.focus_clip_details(window, cx) {
                             self.advance_selection_intent();
-                            self.select_session_cell(track, scene);
+                            self.apply_session_cell(track, scene, facts);
                         }
                     }
                     None => {
                         self.focus_track_details(window);
                         self.advance_selection_intent();
-                        self.select_session_cell(track, scene);
+                        self.apply_session_cell(track, scene, facts);
                     }
                 }
             }
@@ -247,12 +294,14 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let revision = state.revision;
-        let Some(target) = super::session_navigation::resolve_enter_target(
-            &state.project,
-            self.selected_cell,
-            self.selected_scene,
-        ) else {
+        let Ok(Some((revision, target))) = state.read_with(|snapshot| {
+            super::session_navigation::resolve_enter_target(
+                &snapshot.model(),
+                self.selected_cell,
+                self.selected_scene,
+            )
+            .map(|target| (snapshot.revision(), target))
+        }) else {
             return;
         };
         match target {
@@ -276,9 +325,11 @@ impl EditorView {
 
     pub(super) fn duplicate_selected_scene(&mut self) {
         let Some((scene, revision, generation)) = self.selected_scene.and_then(|scene| {
-            self.state
-                .as_ref()
-                .map(|state| (scene, state.revision, self.project_generation))
+            self.state.as_ref().and_then(|state| {
+                state
+                    .read_with(|snapshot| (scene, snapshot.revision(), self.project_generation))
+                    .ok()
+            })
         }) else {
             return;
         };
@@ -287,9 +338,11 @@ impl EditorView {
 
     pub(super) fn move_selected_scene(&mut self, direction: super::session_navigation::Direction) {
         let Some((scene, revision, generation)) = self.selected_scene.and_then(|scene| {
-            self.state
-                .as_ref()
-                .map(|state| (scene, state.revision, self.project_generation))
+            self.state.as_ref().and_then(|state| {
+                state
+                    .read_with(|snapshot| (scene, snapshot.revision(), self.project_generation))
+                    .ok()
+            })
         }) else {
             return;
         };
@@ -327,7 +380,16 @@ impl EditorView {
         generation: u64,
     ) {
         let Some(target) = self.state.as_ref().and_then(|state| {
-            super::session_navigation::resolve_scene_move(&state.project, scene, direction)
+            state
+                .read_with(|snapshot| {
+                    super::session_navigation::resolve_scene_move(
+                        &snapshot.model(),
+                        scene,
+                        direction,
+                    )
+                })
+                .ok()
+                .flatten()
         }) else {
             return;
         };
@@ -345,8 +407,11 @@ impl EditorView {
             && self.selected_scene == Some(scene)
             && self.project_generation == generation
             && self.state.as_ref().is_some_and(|state| {
-                state.revision == revision
-                    && state.project.scenes().iter().any(|item| item.id() == scene)
+                state
+                    .read_with(|snapshot| {
+                        snapshot.revision() == revision && snapshot.model().scene(scene).is_some()
+                    })
+                    .unwrap_or(false)
             })
             && !self.edit_pending()
             && self.recovery.generation().is_none()
@@ -361,17 +426,53 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return div().flex_1().min_h_0();
         };
-        let revision = state.revision;
         let generation = self.project_generation;
-        let tracks = state.project.tracks();
-        let scenes = state.project.scenes();
-        let audible = self.audible_playback.as_ref().map(|candidate| {
-            (
-                candidate.audio_revision,
-                candidate.state.revision,
-                candidate.project_generation,
-            )
-        });
+        let audible = match self
+            .audible_playback
+            .as_ref()
+            .map(|candidate| {
+                candidate.state.read_with(|snapshot| {
+                    (
+                        candidate.audio_revision,
+                        snapshot.revision(),
+                        candidate.project_generation,
+                    )
+                })
+            })
+            .transpose()
+        {
+            Ok(audible) => audible,
+            Err(_) => return div().flex_1().min_h_0(),
+        };
+        let visible_columns = ((f32::from(window.bounds().size.width)
+            - self.browser_content_width(window)
+            - SCENE_HEADER_WIDTH)
+            / TRACK_COLUMN_WIDTH)
+            .floor()
+            .max(1.0) as usize;
+        let Ok((revision, track_count, scene_count, columns, headers)) =
+            state.read_with(|snapshot| {
+                let project = snapshot.model();
+                let track_count = project.tracks().len();
+                let columns =
+                    visible_track_range(track_count, self.session_track_start, visible_columns);
+                let headers = project
+                    .tracks()
+                    .skip(columns.start)
+                    .take(columns.end.saturating_sub(columns.start))
+                    .map(|track| (track.id(), track.name().to_owned(), track.color()))
+                    .collect::<Vec<_>>();
+                (
+                    snapshot.revision(),
+                    track_count,
+                    project.scenes().len(),
+                    columns,
+                    headers,
+                )
+            })
+        else {
+            return div().flex_1().min_h_0();
+        };
         let route_snapshot = self.audio.as_ref().and_then(|audio| {
             self.session_routes.matching_snapshot(
                 audio.control.output_identity()?,
@@ -383,18 +484,22 @@ impl EditorView {
         let transport_playing = self
             .audio_status()
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire));
-        let routes_ready = route_snapshot.is_some_and(|snapshot| {
-            self.session_routes
-                .routes_available(snapshot, &state.project, revision, generation)
-        });
-        let visible_columns = ((f32::from(window.bounds().size.width)
-            - self.browser_content_width(window)
-            - SCENE_HEADER_WIDTH)
-            / TRACK_COLUMN_WIDTH)
-            .floor()
-            .max(1.0) as usize;
+        let routes_ready = if let Some(routes) = route_snapshot {
+            match state.read_with(|snapshot| {
+                self.session_routes.routes_available(
+                    routes,
+                    &snapshot.model(),
+                    revision,
+                    generation,
+                )
+            }) {
+                Ok(ready) => ready,
+                Err(_) => return div().flex_1().min_h_0(),
+            }
+        } else {
+            false
+        };
         self.session_visible_columns = visible_columns;
-        let columns = visible_track_range(tracks.len(), self.session_track_start, visible_columns);
         let column_start = columns.start;
         let column_end = columns.end;
         let row_context = SessionRowContext {
@@ -413,71 +518,62 @@ impl EditorView {
             .flex()
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .children(
-                tracks
-                    .get(column_start..column_end)
-                    .unwrap_or_default()
-                    .iter()
-                    .map(|track| {
-                        let track_id = track.id();
+            .children(headers.into_iter().map(|(track_id, name, color)| {
+                div()
+                    .id(("session-track", track_id.value()))
+                    .debug_selector(move || format!("session-track-{}", track_id.value()))
+                    .relative()
+                    .child(
                         div()
-                            .id(("session-track", track.id().value()))
-                            .debug_selector(move || format!("session-track-{}", track_id.value()))
-                            .relative()
-                            .child(
-                                div()
-                                    .absolute()
-                                    .left_0()
-                                    .right_0()
-                                    .top_0()
-                                    .h(px(2.0))
-                                    .bg(rgb(theme::element_colors(track.color()).accent)),
-                            )
-                            .on_mouse_down(
-                                gpui::MouseButton::Right,
-                                cx.listener(
-                                    move |view, event: &gpui::MouseDownEvent, window, cx| {
-                                        cx.stop_propagation();
-                                        view.open_track_color_context_menu(
-                                            event.position,
-                                            track_id,
-                                            window,
-                                            cx,
-                                        );
-                                    },
-                                ),
-                            )
-                            .w(px(TRACK_COLUMN_WIDTH))
-                            .flex_shrink_0()
-                            .px_2()
-                            .flex()
-                            .items_center()
-                            .border_l_1()
-                            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-                            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-                            .text_xs()
-                            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                            .child(
-                                div()
-                                    .min_w_0()
-                                    .flex_1()
-                                    .truncate()
-                                    .child(theme::text(track.name().to_lowercase())),
-                            )
-                            .children(self.route_marker_for_track(
-                                track.id().value(),
-                                route_snapshot,
-                                routes_ready,
-                                transport_playing,
-                            ))
-                    }),
-            )
+                            .absolute()
+                            .left_0()
+                            .right_0()
+                            .top_0()
+                            .h(px(2.0))
+                            .bg(rgb(theme::element_colors(color).accent)),
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            view.open_track_color_context_menu(
+                                event.position,
+                                track_id,
+                                window,
+                                cx,
+                            );
+                        }),
+                    )
+                    .w(px(TRACK_COLUMN_WIDTH))
+                    .flex_shrink_0()
+                    .px_2()
+                    .flex()
+                    .items_center()
+                    .border_l_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+                    .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+                    .child(
+                        div()
+                            .min_w_0()
+                            .flex_1()
+                            .truncate()
+                            .child(theme::text(name.to_lowercase())),
+                    )
+                    .children(self.route_marker_for_track(
+                        track_id.value(),
+                        route_snapshot,
+                        routes_ready,
+                        transport_playing,
+                    ))
+            }))
             .child(div().flex_1().min_w_0())
             .child(session_scenes_header());
 
         let scene_rows = uniform_list(
             "session-scene-rows",
-            scenes.len().saturating_add(1),
+            scene_count.saturating_add(1),
             cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                 let mut rows = Vec::with_capacity(range.end.saturating_sub(range.start));
                 for index in range {
@@ -502,7 +598,7 @@ impl EditorView {
             .min_h_0()
             .flex()
             .flex_col()
-            .child(self.session_toolbar(cx, visible_columns, tracks.len(), route_feedback))
+            .child(self.session_toolbar(cx, visible_columns, track_count, route_feedback))
             .child(div().flex_shrink_0().flex().overflow_hidden().child(header));
         grid.child(
             div()
@@ -521,7 +617,36 @@ impl EditorView {
         track_count: usize,
         route_feedback: Option<&'static str>,
     ) -> Div {
-        let revision = self.state.as_ref().map(|state| state.revision);
+        let Some(state) = self.state.as_ref() else {
+            return div();
+        };
+        let Ok((revision, next_scene_number, can_move_up, can_move_down, is_empty_destination)) =
+            state.read_with(|snapshot| {
+                let project = snapshot.model();
+                let can_move = |direction| {
+                    self.selected_scene.is_some_and(|scene| {
+                        super::session_navigation::resolve_scene_move(&project, scene, direction)
+                            .is_some()
+                    })
+                };
+                let empty = self.selected_cell.is_some_and(|(track, scene)| {
+                    project.track(track).is_some()
+                        && matches!(
+                            project.session_cell(track, scene),
+                            SnapshotSessionCellContentRead::Empty
+                        )
+                });
+                (
+                    Some(snapshot.revision()),
+                    project.scenes().len() + 1,
+                    can_move(super::session_navigation::Direction::Up),
+                    can_move(super::session_navigation::Direction::Down),
+                    empty,
+                )
+            })
+        else {
+            return div();
+        };
         let generation = self.project_generation;
         let selected_scene = self.selected_scene;
         let selected_track = self
@@ -566,12 +691,7 @@ impl EditorView {
                         .is_some_and(|revision| view.session_callback_current(revision, generation))
                     {
                         view.enqueue(Request::Edit(Command::AddScene {
-                            name: format!(
-                                "scene {}",
-                                view.state
-                                    .as_ref()
-                                    .map_or(1, |state| state.project.scenes().len() + 1)
-                            ),
+                            name: format!("scene {}", next_scene_number),
                         }));
                     }
                     cx.notify();
@@ -658,22 +778,6 @@ impl EditorView {
         if self.selected_cell.is_none()
             && let (Some(scene), Some(revision)) = (selected_scene, revision)
         {
-            let can_move_up = self.state.as_ref().is_some_and(|state| {
-                super::session_navigation::resolve_scene_move(
-                    &state.project,
-                    scene,
-                    super::session_navigation::Direction::Up,
-                )
-                .is_some()
-            });
-            let can_move_down = self.state.as_ref().is_some_and(|state| {
-                super::session_navigation::resolve_scene_move(
-                    &state.project,
-                    scene,
-                    super::session_navigation::Direction::Down,
-                )
-                .is_some()
-            });
             row = row
                 .child(self.session_icon(
                     "⧉",
@@ -810,10 +914,6 @@ impl EditorView {
         }
 
         if let Some((track, scene)) = self.selected_cell {
-            let is_empty_destination = self.state.as_ref().is_some_and(|state| {
-                state.project.track(track).is_some()
-                    && state.project.session_cell(track, scene).is_none()
-            });
             if is_empty_destination {
                 row = row.child(self.session_icon(
                     "↓",
@@ -913,15 +1013,55 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return div().id(("session-scene-row-empty", index));
         };
-        let Some(scene) = state.project.scenes().get(index) else {
+        let facts = state.read_with(|snapshot| {
+            if snapshot.revision() != revision {
+                return Err(());
+            }
+            let project = snapshot.model();
+            let Some(scene) = project.scenes().nth(index) else {
+                return Ok(None);
+            };
+            let cells = project
+                .tracks()
+                .skip(column_start)
+                .take(column_end.saturating_sub(column_start))
+                .map(|track| {
+                    let content = match project.session_cell(track.id(), scene.id()) {
+                        SnapshotSessionCellContentRead::Empty => CellDisplay::Empty,
+                        SnapshotSessionCellContentRead::Stop => CellDisplay::Stop,
+                        SnapshotSessionCellContentRead::Midi(clip) => {
+                            CellDisplay::Midi(ClipDisplay {
+                                id: clip.id(),
+                                name: clip.name().to_owned(),
+                                flavor: clip.flavor(),
+                            })
+                        }
+                        SnapshotSessionCellContentRead::Audio(clip) => {
+                            CellDisplay::Audio(ClipDisplay {
+                                id: clip.id(),
+                                name: clip.name().to_owned(),
+                                flavor: clip.flavor(),
+                            })
+                        }
+                    };
+                    (track.id(), track.color(), content)
+                })
+                .collect();
+            Ok(Some(SceneRowFacts {
+                next_scene: project.scenes().nth(index + 1).map(|scene| scene.id()),
+                id: scene.id(),
+                name: scene.name().to_owned(),
+                cells,
+            }))
+        });
+        let Ok(Ok(facts)) = facts else {
+            return div().id(("session-scene-row-empty", index));
+        };
+        let Some(facts) = facts else {
             return self.console_append_row(column_start, column_end, cx);
         };
-        let scene_id = scene.id();
-        let next_scene = state
-            .project
-            .scenes()
-            .get(index + 1)
-            .map(|scene| scene.id());
+        let scene_id = facts.id;
+        let next_scene = facts.next_scene;
         let selected = self.selected_scene == Some(scene_id);
         let mut row = div()
             .id(("session-scene-row", scene_id.value()))
@@ -931,14 +1071,7 @@ impl EditorView {
             .flex()
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
-        for track in state
-            .project
-            .tracks()
-            .get(column_start..column_end)
-            .unwrap_or_default()
-        {
-            let track_id = track.id();
-            let content = state.project.session_cell(track_id, scene_id);
+        for (track_id, color, content) in facts.cells {
             let route = self.route_entry_for_track(track_id.value(), route_snapshot, routes_ready);
             let selected_cell = self.selected_cell == Some((track_id, scene_id));
             let mut cell = div()
@@ -965,23 +1098,19 @@ impl EditorView {
                 }))
                 .text_xs();
             match content {
-                Some(SessionCellContent::Midi(clip)) => {
-                    let clip_id = clip.id();
-                    let title = clip.name().to_lowercase();
+                CellDisplay::Midi(clip) => {
+                    let clip_id = clip.id;
+                    let title = clip.name.to_lowercase();
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .bg(rgb(theme::clip_fill(
-                            track.color(),
-                            clip.flavor(),
-                            selected_cell,
-                        )))
-                        .text_color(rgb(match clip.flavor() {
+                        .bg(rgb(theme::clip_fill(color, clip.flavor, selected_cell)))
+                        .text_color(rgb(match clip.flavor {
                             hex_project::ClipFlavor::Muted => {
-                                theme::element_colors(track.color()).muted_text
+                                theme::element_colors(color).muted_text
                             }
                             hex_project::ClipFlavor::Accent => {
-                                theme::element_colors(track.color()).accent_text
+                                theme::element_colors(color).accent_text
                             }
                         }))
                         .on_mouse_down(
@@ -1011,6 +1140,11 @@ impl EditorView {
                                     .into(),
                                 ),
                                 cx.listener(move |view, _, window, cx| {
+                                    let Ok(Some(facts)) = view
+                                        .prepare_session_selection(Some(track_id), Some(scene_id))
+                                    else {
+                                        return;
+                                    };
                                     if view.session_callback_current(revision, generation)
                                         && view.cell_still_contains(
                                             track_id,
@@ -1021,7 +1155,7 @@ impl EditorView {
                                     {
                                         view.focus.focus(window);
                                         view.advance_selection_intent();
-                                        view.select_session_cell(track_id, scene_id);
+                                        view.apply_session_cell(track_id, scene_id, facts);
                                         view.selected_track = Some(track_id);
                                         view.selected_clip = Some(clip_id);
                                         view.launch_clip(
@@ -1044,6 +1178,11 @@ impl EditorView {
                             )
                         }))
                         .on_click(cx.listener(move |view, _, window, cx| {
+                            let Ok(Some(facts)) =
+                                view.prepare_session_selection(Some(track_id), Some(scene_id))
+                            else {
+                                return;
+                            };
                             if view.session_callback_current(revision, generation)
                                 && view.cell_still_contains(
                                     track_id,
@@ -1054,27 +1193,23 @@ impl EditorView {
                             {
                                 view.focus.focus(window);
                                 view.advance_selection_intent();
-                                view.select_session_midi(track_id, scene_id, clip_id);
+                                view.apply_session_midi(track_id, scene_id, clip_id, facts);
                             }
                             cx.notify();
                         }));
                 }
-                Some(SessionCellContent::Audio(clip)) => {
-                    let clip_id = clip.id();
+                CellDisplay::Audio(clip) => {
+                    let clip_id = clip.id;
                     let route_markers =
                         cell_route_markers(route, clip_id.value(), transport_playing);
                     cell = cell
-                        .bg(rgb(theme::clip_fill(
-                            track.color(),
-                            clip.flavor(),
-                            selected_cell,
-                        )))
-                        .text_color(rgb(match clip.flavor() {
+                        .bg(rgb(theme::clip_fill(color, clip.flavor, selected_cell)))
+                        .text_color(rgb(match clip.flavor {
                             hex_project::ClipFlavor::Muted => {
-                                theme::element_colors(track.color()).muted_text
+                                theme::element_colors(color).muted_text
                             }
                             hex_project::ClipFlavor::Accent => {
-                                theme::element_colors(track.color()).accent_text
+                                theme::element_colors(color).accent_text
                             }
                         }))
                         .on_mouse_down(
@@ -1090,7 +1225,7 @@ impl EditorView {
                                 );
                             }),
                         )
-                        .child(self.clip_name_label(clip_id, clip.name()))
+                        .child(self.clip_name_label(clip_id, &clip.name))
                         .child(
                             self.session_icon(
                                 "▶",
@@ -1104,6 +1239,11 @@ impl EditorView {
                                     .into(),
                                 ),
                                 cx.listener(move |view, _, window, cx| {
+                                    let Ok(Some(facts)) = view
+                                        .prepare_session_selection(Some(track_id), Some(scene_id))
+                                    else {
+                                        return;
+                                    };
                                     if view.session_callback_current(revision, generation)
                                         && view.cell_still_contains(
                                             track_id,
@@ -1114,7 +1254,7 @@ impl EditorView {
                                     {
                                         view.focus.focus(window);
                                         view.advance_selection_intent();
-                                        view.select_session_cell(track_id, scene_id);
+                                        view.apply_session_cell(track_id, scene_id, facts);
                                         view.launch_clip(
                                             track_id,
                                             clip_id,
@@ -1135,6 +1275,11 @@ impl EditorView {
                             )
                         }))
                         .on_click(cx.listener(move |view, _, window, cx| {
+                            let Ok(Some(facts)) =
+                                view.prepare_session_selection(Some(track_id), Some(scene_id))
+                            else {
+                                return;
+                            };
                             if view.session_callback_current(revision, generation)
                                 && view.cell_still_contains(
                                     track_id,
@@ -1145,17 +1290,22 @@ impl EditorView {
                             {
                                 view.focus.focus(window);
                                 view.advance_selection_intent();
-                                view.select_session_cell(track_id, scene_id);
+                                view.apply_session_cell(track_id, scene_id, facts);
                             }
                             cx.notify();
                         }));
                 }
-                Some(SessionCellContent::Stop) => {
+                CellDisplay::Stop => {
                     cell = cell
                         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                         .child(theme::text("stop"))
                         .child(theme::text("■"))
                         .on_click(cx.listener(move |view, _, window, cx| {
+                            let Ok(Some(facts)) =
+                                view.prepare_session_selection(Some(track_id), Some(scene_id))
+                            else {
+                                return;
+                            };
                             if view.session_callback_current(revision, generation)
                                 && view.cell_still_contains(
                                     track_id,
@@ -1166,7 +1316,7 @@ impl EditorView {
                                 view.focus_track_details(window);
                                 view.focus.focus(window);
                                 view.advance_selection_intent();
-                                view.select_session_cell(track_id, scene_id);
+                                view.apply_session_cell(track_id, scene_id, facts);
                                 view.queue_session_command(
                                     with_quantization(
                                         SessionPlaybackCommand::StopTrack {
@@ -1181,11 +1331,16 @@ impl EditorView {
                             cx.notify();
                         }));
                 }
-                None => {
+                CellDisplay::Empty => {
                     cell = cell
                         .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                         .child(theme::text("·"))
                         .on_click(cx.listener(move |view, _, window, cx| {
+                            let Ok(Some(facts)) =
+                                view.prepare_session_selection(Some(track_id), Some(scene_id))
+                            else {
+                                return;
+                            };
                             if view.session_callback_current(revision, generation)
                                 && view.cell_still_contains(
                                     track_id,
@@ -1196,7 +1351,7 @@ impl EditorView {
                                 view.focus_track_details(window);
                                 view.focus.focus(window);
                                 view.advance_selection_intent();
-                                view.select_session_cell(track_id, scene_id);
+                                view.apply_session_cell(track_id, scene_id, facts);
                             }
                             cx.notify();
                         }));
@@ -1251,14 +1406,18 @@ impl EditorView {
                     .min_w_0()
                     .flex_1()
                     .truncate()
-                    .child(theme::text(scene.name().to_lowercase()))
+                    .child(theme::text(facts.name.to_lowercase()))
                     .on_click(cx.listener(move |view, _, window, cx| {
+                        let Ok(Some(facts)) = view.prepare_session_selection(None, Some(scene_id))
+                        else {
+                            return;
+                        };
                         if view.session_callback_current(revision, generation)
                             && view.focus_empty_details(window, cx)
                         {
                             view.focus.focus(window);
                             view.advance_selection_intent();
-                            view.select_session_scene(scene_id);
+                            view.apply_session_scene(scene_id, facts);
                         }
                         cx.notify();
                     })),
@@ -1268,12 +1427,16 @@ impl EditorView {
                 "launch scene",
                 ("session-launch-scene", scene_id.value()),
                 cx.listener(move |view, _, window, cx| {
+                    let Ok(Some(facts)) = view.prepare_session_selection(None, Some(scene_id))
+                    else {
+                        return;
+                    };
                     if view.session_callback_current(revision, generation)
                         && view.focus_empty_details(window, cx)
                     {
                         view.focus.focus(window);
                         view.advance_selection_intent();
-                        view.select_session_scene(scene_id);
+                        view.apply_session_scene(scene_id, facts);
                         view.launch_scene(scene_id, revision, view.session_quantization);
                     }
                     cx.notify();
@@ -1473,10 +1636,11 @@ impl EditorView {
     fn session_callback_current(&self, revision: u64, generation: u64) -> bool {
         !self.edit_pending()
             && self.project_generation == generation
-            && self
-                .state
-                .as_ref()
-                .is_some_and(|state| state.revision == revision)
+            && self.state.as_ref().is_some_and(|state| {
+                state
+                    .read_with(|snapshot| snapshot.revision() == revision)
+                    .unwrap_or(false)
+            })
     }
 
     fn cell_still_contains(
@@ -1486,32 +1650,42 @@ impl EditorView {
         expected: CellExpectation,
     ) -> bool {
         self.state.as_ref().is_some_and(|state| {
-            match (expected, state.project.session_cell(track, scene)) {
-                (CellExpectation::Midi(expected), Some(SessionCellContent::Midi(current))) => {
-                    current.id() == expected
-                }
-                (CellExpectation::Audio(expected), Some(SessionCellContent::Audio(current))) => {
-                    current.id() == expected
-                }
-                (CellExpectation::Stop, Some(SessionCellContent::Stop)) => true,
-                (CellExpectation::Empty, None) => true,
-                _ => false,
-            }
+            state
+                .read_with(|snapshot| {
+                    match (expected, snapshot.model().session_cell(track, scene)) {
+                        (
+                            CellExpectation::Midi(expected),
+                            SnapshotSessionCellContentRead::Midi(current),
+                        ) => current.id() == expected,
+                        (
+                            CellExpectation::Audio(expected),
+                            SnapshotSessionCellContentRead::Audio(current),
+                        ) => current.id() == expected,
+                        (CellExpectation::Stop, SnapshotSessionCellContentRead::Stop) => true,
+                        (CellExpectation::Empty, SnapshotSessionCellContentRead::Empty) => true,
+                        _ => false,
+                    }
+                })
+                .unwrap_or(false)
         })
     }
 
     pub(super) fn select_session_midi(&mut self, track: TrackId, scene: SceneId, clip: ClipId) {
+        let Ok(Some(facts)) = self.prepare_session_selection(Some(track), Some(scene)) else {
+            return;
+        };
+        self.apply_session_midi(track, scene, clip, facts);
+    }
+
+    fn apply_session_midi(
+        &mut self,
+        track: TrackId,
+        scene: SceneId,
+        clip: ClipId,
+        facts: SessionSelectionFacts,
+    ) {
         self.cancel_scene_duplicate_selection();
-        if let Some(selected) = self.selected_clip
-            && self.state.as_ref().is_some_and(|state| {
-                state.project.midi_clip(selected).is_some()
-                    || state
-                        .project
-                        .tracks()
-                        .iter()
-                        .any(|track| track.clips().iter().any(|clip| clip.id() == selected))
-            })
-        {
+        if let Some(selected) = facts.copy_source {
             self.session_copy_source = Some(selected);
         }
         self.selected_scene = Some(scene);
@@ -1525,21 +1699,19 @@ impl EditorView {
         self.midi_group_gesture = None;
         self.midi_hit_cycle = None;
         self.piano_beat_start = BeatTime::ZERO;
-        self.reveal_session_position(Some(track), Some(scene));
+        self.apply_session_position(facts);
     }
 
     pub(super) fn select_session_scene(&mut self, scene: SceneId) {
+        let Ok(Some(facts)) = self.prepare_session_selection(None, Some(scene)) else {
+            return;
+        };
+        self.apply_session_scene(scene, facts);
+    }
+
+    fn apply_session_scene(&mut self, scene: SceneId, facts: SessionSelectionFacts) {
         self.cancel_scene_duplicate_selection();
-        if let Some(selected) = self.selected_clip
-            && self.state.as_ref().is_some_and(|state| {
-                state.project.midi_clip(selected).is_some()
-                    || state
-                        .project
-                        .tracks()
-                        .iter()
-                        .any(|track| track.clips().iter().any(|clip| clip.id() == selected))
-            })
-        {
+        if let Some(selected) = facts.copy_source {
             self.session_copy_source = Some(selected);
         }
         self.selected_scene = Some(scene);
@@ -1552,21 +1724,19 @@ impl EditorView {
         self.cancel_midi_stroke();
         self.midi_group_gesture = None;
         self.midi_hit_cycle = None;
-        self.reveal_session_position(None, Some(scene));
+        self.apply_session_position(facts);
     }
 
     pub(super) fn select_session_cell(&mut self, track: TrackId, scene: SceneId) {
+        let Ok(Some(facts)) = self.prepare_session_selection(Some(track), Some(scene)) else {
+            return;
+        };
+        self.apply_session_cell(track, scene, facts);
+    }
+
+    fn apply_session_cell(&mut self, track: TrackId, scene: SceneId, facts: SessionSelectionFacts) {
         self.cancel_scene_duplicate_selection();
-        if let Some(selected) = self.selected_clip
-            && self.state.as_ref().is_some_and(|state| {
-                state.project.midi_clip(selected).is_some()
-                    || state
-                        .project
-                        .tracks()
-                        .iter()
-                        .any(|track| track.clips().iter().any(|clip| clip.id() == selected))
-            })
-        {
+        if let Some(selected) = facts.copy_source {
             self.session_copy_source = Some(selected);
         }
         self.selected_scene = Some(scene);
@@ -1579,7 +1749,7 @@ impl EditorView {
         self.cancel_midi_stroke();
         self.midi_group_gesture = None;
         self.midi_hit_cycle = None;
-        self.reveal_session_position(Some(track), Some(scene));
+        self.apply_session_position(facts);
     }
 
     pub(super) fn reveal_session_position(
@@ -1587,28 +1757,37 @@ impl EditorView {
         track: Option<TrackId>,
         scene: Option<SceneId>,
     ) {
-        let positions = self.state.as_ref().map(|state| {
-            (
-                track.and_then(|track| {
-                    state
-                        .project
-                        .tracks()
-                        .iter()
-                        .position(|item| item.id() == track)
-                }),
-                scene.and_then(|scene| {
-                    state
-                        .project
-                        .scenes()
-                        .iter()
-                        .position(|item| item.id() == scene)
-                }),
-            )
-        });
-        let Some((track_index, scene_index)) = positions else {
-            return;
+        if let Ok(Some(facts)) = self.prepare_session_selection(track, scene) {
+            self.apply_session_position(facts);
+        }
+    }
+
+    fn prepare_session_selection(
+        &self,
+        track: Option<TrackId>,
+        scene: Option<SceneId>,
+    ) -> Result<Option<SessionSelectionFacts>, hex_session::snapshot_exports::SnapshotTransportError>
+    {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
         };
-        if let Some(index) = track_index {
+        state.read_with(|snapshot| {
+            let project = snapshot.model();
+            Some(SessionSelectionFacts {
+                copy_source: self.selected_clip.filter(|id| {
+                    project.midi_clip(*id).is_some()
+                        || project.tracks().any(|track| track.clip(*id).is_some())
+                }),
+                track_index: track
+                    .and_then(|id| project.tracks().position(|track| track.id() == id)),
+                scene_index: scene
+                    .and_then(|id| project.scenes().position(|scene| scene.id() == id)),
+            })
+        })
+    }
+
+    fn apply_session_position(&mut self, facts: SessionSelectionFacts) {
+        if let Some(index) = facts.track_index {
             let page_size = self.session_visible_columns.max(1);
             if index < self.session_track_start
                 || index >= self.session_track_start.saturating_add(page_size)
@@ -1616,13 +1795,31 @@ impl EditorView {
                 self.session_track_start = index / page_size * page_size;
             }
         }
-        if let Some(index) = scene_index {
+        if let Some(index) = facts.scene_index {
             self.session_scene_scroll
                 .scroll_to_item(index, gpui::ScrollStrategy::Top);
         }
     }
 
     pub(super) fn set_mode(&mut self, mode: EditorMode) {
+        let copy_source = if mode == EditorMode::Session {
+            match self
+                .state
+                .as_ref()
+                .map(|state| {
+                    state.read_with(|snapshot| {
+                        self.selected_clip
+                            .filter(|id| snapshot.model().midi_clip(*id).is_some())
+                    })
+                })
+                .transpose()
+            {
+                Ok(source) => source.flatten(),
+                Err(_) => return,
+            }
+        } else {
+            None
+        };
         if self.mode != mode {
             self.cancel_arrangement_pan();
             self.cancel_active_browser_audio_drag();
@@ -1631,13 +1828,7 @@ impl EditorView {
             }
             self.cancel_scene_duplicate_selection();
         }
-        if mode == EditorMode::Session
-            && let Some(selected) = self.selected_clip
-            && self
-                .state
-                .as_ref()
-                .is_some_and(|state| state.project.midi_clip(selected).is_some())
-        {
+        if let Some(selected) = copy_source {
             self.session_copy_source = Some(selected);
         }
         self.mode = mode;
@@ -1667,16 +1858,23 @@ impl EditorView {
     }
 
     fn create_session_midi(&mut self, track: TrackId, scene: SceneId) {
+        if self.edit_pending() {
+            return;
+        }
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        if self.edit_pending() || state.project.track(track).is_none() {
+        let Ok(Some(available)) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            project.track(track)?;
+            Some(matches!(
+                project.session_cell(track, scene),
+                SnapshotSessionCellContentRead::Empty | SnapshotSessionCellContentRead::Stop
+            ))
+        }) else {
             return;
-        }
-        if !matches!(
-            state.project.session_cell(track, scene),
-            None | Some(SessionCellContent::Stop)
-        ) {
+        };
+        if !available {
             self.error = Some("session cell is occupied".into());
             return;
         }
@@ -1692,32 +1890,28 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let Some(source) = self
-            .session_copy_source
-            .or(self.selected_clip)
-            .filter(|clip| state.project.midi_clip(*clip).is_some())
-        else {
+        let Ok(facts) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let source = self.session_copy_source.or(self.selected_clip)?;
+            let source_track = project.midi_clip(source)?.track();
+            let available = project.track(track).is_some()
+                && matches!(
+                    project.session_cell(track, scene),
+                    SnapshotSessionCellContentRead::Empty | SnapshotSessionCellContentRead::Stop
+                );
+            Some((source, source_track, available))
+        }) else {
+            return;
+        };
+        let Some((source, source_track, available)) = facts else {
             self.error = Some("select an arrangement midi clip to copy".into());
             return;
         };
-        let source_track = state.project.tracks().iter().find_map(|track| {
-            track
-                .midi_clips()
-                .iter()
-                .any(|clip| clip.id() == source)
-                .then_some(track.id())
-        });
-        if source_track != Some(track) {
+        if source_track != track {
             self.error = Some("copy into the session cell on the source track".into());
             return;
         }
-        if self.edit_pending()
-            || state.project.track(track).is_none()
-            || !matches!(
-                state.project.session_cell(track, scene),
-                None | Some(SessionCellContent::Stop)
-            )
-        {
+        if self.edit_pending() || !available {
             self.error = Some("session destination cell is unavailable".into());
             return;
         }
@@ -1731,34 +1925,31 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let Some(source) = self
-            .session_copy_source
-            .or(self.selected_clip)
-            .filter(|clip| {
-                state
-                    .project
-                    .tracks()
-                    .iter()
-                    .any(|item| item.clips().iter().any(|source| source.id() == *clip))
-            })
-        else {
+        let Ok(facts) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let source = self.session_copy_source.or(self.selected_clip)?;
+            let source_track = project
+                .tracks()
+                .find(|item| item.clip(source).is_some())?
+                .id();
+            let available = project.track(track).is_some()
+                && matches!(
+                    project.session_cell(track, scene),
+                    SnapshotSessionCellContentRead::Empty
+                );
+            Some((source, source_track, available))
+        }) else {
+            return;
+        };
+        let Some((source, source_track, available)) = facts else {
             self.error = Some("select an arrangement audio clip to copy".into());
             return;
         };
-        let source_track = state.project.tracks().iter().find_map(|item| {
-            item.clips()
-                .iter()
-                .any(|clip| clip.id() == source)
-                .then_some(item.id())
-        });
-        if source_track != Some(track) {
+        if source_track != track {
             self.error = Some("copy audio into the session cell on the source track".into());
             return;
         }
-        if self.edit_pending()
-            || state.project.track(track).is_none()
-            || state.project.session_cell(track, scene).is_some()
-        {
+        if self.edit_pending() || !available {
             self.error = Some("session destination cell is unavailable".into());
             return;
         }

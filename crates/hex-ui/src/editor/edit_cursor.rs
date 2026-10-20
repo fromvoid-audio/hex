@@ -65,23 +65,51 @@ impl EditorView {
         let Some(state) = &self.state else {
             return;
         };
-        if state.project.track(track).is_none() {
+        let Ok(Some(viewport)) = state.read_with(|snapshot| {
+            snapshot
+                .model()
+                .track(track)
+                .map(|_| self.visible_viewport(snapshot, snapshot.timeline_frames()))
+        }) else {
             return;
-        }
+        };
         let Some(lane) = self.drag_lanes.get(&track) else {
             return;
         };
-        let viewport = self.visible_viewport(state.timeline_frames);
         let Some(frame) = super::seek::pointer_to_frame(pointer_x, lane.left, lane.width, viewport)
         else {
             return;
         };
-        let Some(frame) = self.snap_grid.with_platform_modifier(free).snap_frame(
-            &state.project,
-            frame,
-            viewport,
-            lane.width,
-        ) else {
+        let Ok(Some((frame, selected_clip_under_pointer))) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let frame = self
+                .snap_grid
+                .with_platform_modifier(free)
+                .snap_frame(&project, frame, viewport, lane.width)?;
+            let track = project.track(track)?;
+            let selected_clip_under_pointer = track.clips().any(|clip| {
+                self.selected_clip == Some(clip.id())
+                    && frame >= clip.start()
+                    && clip
+                        .start()
+                        .checked_add(clip.duration())
+                        .is_some_and(|end| frame < end)
+            }) || {
+                let beat = project.tempo().frame_to_beat(frame).ok();
+                track.midi_clips().any(|clip| {
+                    self.selected_clip == Some(clip.id())
+                        && beat.is_some_and(|beat| {
+                            beat >= clip.start()
+                                && beat.raw()
+                                    < clip
+                                        .start()
+                                        .raw()
+                                        .saturating_add(clip.arrangement_length().raw())
+                        })
+                })
+            };
+            Some((frame, selected_clip_under_pointer))
+        }) else {
             return;
         };
         self.edit_cursor = Some(EditCursor {
@@ -99,26 +127,6 @@ impl EditorView {
         });
         self.time_selection_project_scope = false;
         self.selected_track = Some(track);
-        let selected_clip_under_pointer = state.project.track(track).is_some_and(|track_data| {
-            track_data.clips().iter().any(|clip| {
-                self.selected_clip == Some(clip.id())
-                    && frame >= clip.start()
-                    && clip
-                        .start()
-                        .checked_add(clip.duration())
-                        .is_some_and(|end| frame < end)
-            }) || {
-                let beat = state.project.tempo_map().frame_to_beat(frame).ok();
-                track_data.midi_clips().iter().any(|clip| {
-                    self.selected_clip == Some(clip.id())
-                        && beat.is_some_and(|beat| {
-                            beat >= clip.start()
-                                && beat.raw()
-                                    < clip.start().raw().saturating_add(clip.length().raw())
-                        })
-                })
-            }
-        });
         self.advance_selection_intent();
         if !selected_clip_under_pointer {
             self.focus_track_details(window);
@@ -138,13 +146,40 @@ impl EditorView {
         {
             return self.cancel_time_selection_gesture();
         }
+        // Resolve membership before changing the cursor or selection. Read pressure is
+        // temporary and must not be treated as a deleted track.
+        let membership = match &self.state {
+            Some(state) => {
+                let Ok(facts) = state.read_with(|snapshot| {
+                    let project = snapshot.model();
+                    let mut tracks = project.tracks();
+                    let first_last = tracks.next().map(|first| {
+                        (
+                            first.id(),
+                            tracks.last().map_or(first.id(), |last| last.id()),
+                        )
+                    });
+                    let cursor_track = if self.time_selection_project_scope {
+                        first_last.map(|(first, _)| first)
+                    } else {
+                        self.edit_cursor.map(|cursor| cursor.track)
+                    };
+                    let cursor_exists = cursor_track.is_some_and(|id| project.track(id).is_some());
+                    let selection_exists = self.time_selection_project_scope
+                        || self.time_selection.is_none_or(|selection| {
+                            project.track(selection.anchor_track).is_some()
+                                && project.track(selection.end_track).is_some()
+                        });
+                    (first_last, cursor_exists, selection_exists)
+                }) else {
+                    return false;
+                };
+                facts
+            }
+            None => (None, false, false),
+        };
+        let (first_last, cursor_exists, selection_exists) = membership;
         if self.time_selection_project_scope {
-            let first_last = self.state.as_ref().and_then(|state| {
-                Some((
-                    state.project.tracks().first()?.id(),
-                    state.project.tracks().last()?.id(),
-                ))
-            });
             if let Some((first, last)) = first_last {
                 if let Some(cursor) = self.edit_cursor.as_mut() {
                     cursor.track = first;
@@ -165,12 +200,7 @@ impl EditorView {
         let Some(cursor) = &mut self.edit_cursor else {
             return self.cancel_time_selection_gesture();
         };
-        if cursor.generation != self.project_generation
-            || self
-                .state
-                .as_ref()
-                .is_none_or(|state| state.project.track(cursor.track).is_none())
-        {
+        if cursor.generation != self.project_generation || !cursor_exists {
             self.edit_cursor = None;
             self.time_selection = None;
             self.time_selection_project_scope = false;
@@ -178,12 +208,7 @@ impl EditorView {
             self.suppress_cursor_click = false;
             return true;
         }
-        if self.time_selection.is_some_and(|selection| {
-            self.state.as_ref().is_none_or(|state| {
-                state.project.track(selection.anchor_track).is_none()
-                    || state.project.track(selection.end_track).is_none()
-            })
-        }) {
+        if !selection_exists {
             self.time_selection = None;
             self.time_selection_project_scope = false;
             self.time_selection_gesture = None;
@@ -265,102 +290,108 @@ impl EditorView {
         let Some(state) = &self.state else {
             return;
         };
-        if self.time_selection_project_scope {
-            let tracks: Vec<_> = state
-                .project
-                .tracks()
-                .iter()
-                .map(|track| track.id())
-                .collect();
-            let beat = state.project.tempo_map().frame_to_beat(cursor.frame).ok();
-            let has_crossing_clip = state.project.tracks().iter().any(|track| {
-                track.clips().iter().any(|clip| {
-                    cursor.frame > clip.start()
-                        && clip
-                            .start()
-                            .checked_add(clip.duration())
-                            .is_some_and(|end| cursor.frame < end)
-                }) || beat.is_some_and(|beat| {
-                    track.midi_clips().iter().any(|clip| {
+        enum SplitPlan {
+            Project(Vec<TrackId>),
+            Clip(ClipId, Command),
+        }
+        let plan = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let beat = project.tempo().frame_to_beat(cursor.frame).ok();
+            let crosses_audio = |clip: &hex_session::snapshot_exports::SnapshotClipRead<'_>| {
+                cursor.frame > clip.start()
+                    && clip
+                        .start()
+                        .checked_add(clip.duration())
+                        .is_some_and(|end| cursor.frame < end)
+            };
+            let crosses_midi =
+                |clip: &hex_session::snapshot_exports::ui_consumers::SnapshotMidiClipRead<'_>| {
+                    beat.is_some_and(|beat| {
                         beat > clip.start()
                             && clip
                                 .start()
                                 .raw()
-                                .checked_add(clip.length().raw())
+                                .checked_add(clip.arrangement_length().raw())
                                 .is_some_and(|end| beat.raw() < end)
                     })
-                })
-            });
-            if !has_crossing_clip {
-                self.error = Some("edit cursor must be inside a clip to split".into());
-                return;
+                };
+            if self.time_selection_project_scope {
+                let has_crossing_clip = project.tracks().any(|track| {
+                    track.clips().any(|clip| crosses_audio(&clip))
+                        || track.midi_clips().any(|clip| crosses_midi(&clip))
+                });
+                return if has_crossing_clip {
+                    Ok(SplitPlan::Project(
+                        project.tracks().map(|track| track.id()).collect(),
+                    ))
+                } else {
+                    Err("edit cursor must be inside a clip to split")
+                };
             }
-            self.cancel_duplicate_chain();
-            if self.enqueue(Request::Edit(Command::SplitTracksAtFrame {
-                tracks,
-                frame: cursor.frame,
-            })) {
-                self.selected_clip = None;
-            }
-            return;
-        }
-        let Some(track) = state.project.track(cursor.track) else {
-            self.error = Some("edit cursor track no longer exists".into());
-            return;
-        };
-        let audio = track.clips().iter().filter(|clip| {
-            cursor.frame > clip.start()
-                && clip
-                    .start()
-                    .checked_add(clip.duration())
-                    .is_some_and(|end| cursor.frame < end)
-        });
-        let beat = state.project.tempo_map().frame_to_beat(cursor.frame).ok();
-        let midi = track.midi_clips().iter().filter(|clip| {
-            beat.is_some_and(|beat| {
-                beat > clip.start()
-                    && clip
-                        .start()
-                        .raw()
-                        .checked_add(clip.length().raw())
-                        .is_some_and(|end| beat.raw() < end)
-            })
-        });
-        let mut commands: Vec<(ClipId, Command)> = audio
-            .map(|clip| {
-                (
-                    clip.id(),
-                    Command::SplitClip {
-                        clip: clip.id(),
-                        frame: cursor.frame,
-                    },
-                )
-            })
-            .chain(midi.filter_map(|clip| {
-                beat.map(|beat| {
+            let track = project
+                .track(cursor.track)
+                .ok_or("edit cursor track no longer exists")?;
+            let mut commands: Vec<(ClipId, Command)> = track
+                .clips()
+                .filter(crosses_audio)
+                .map(|clip| {
                     (
                         clip.id(),
-                        Command::SplitMidiClip {
+                        Command::SplitClip {
                             clip: clip.id(),
-                            beat,
+                            frame: cursor.frame,
                         },
                     )
                 })
-            }))
-            .collect();
-        let selected = self
-            .selected_clip
-            .and_then(|id| commands.iter().position(|(clip, _)| *clip == id))
-            .unwrap_or(0);
-        if commands.is_empty() {
-            self.error = Some("edit cursor must be inside a clip to split".into());
-            return;
-        }
-        let (clip, command) = commands.swap_remove(selected);
+                .chain(track.midi_clips().filter(crosses_midi).filter_map(|clip| {
+                    beat.map(|beat| {
+                        (
+                            clip.id(),
+                            Command::SplitMidiClip {
+                                clip: clip.id(),
+                                beat,
+                            },
+                        )
+                    })
+                }))
+                .collect();
+            if commands.is_empty() {
+                return Err("edit cursor must be inside a clip to split");
+            }
+            let selected = self
+                .selected_clip
+                .and_then(|id| commands.iter().position(|(clip, _)| *clip == id))
+                .unwrap_or(0);
+            let (clip, command) = commands.swap_remove(selected);
+            Ok(SplitPlan::Clip(clip, command))
+        });
+        let plan = match plan {
+            Ok(Ok(plan)) => plan,
+            Ok(Err(error)) => {
+                self.error = Some(error.into());
+                return;
+            }
+            Err(_) => {
+                self.error = Some("project read unavailable".into());
+                return;
+            }
+        };
         self.cancel_duplicate_chain();
-        if self.enqueue(Request::Edit(command)) {
-            self.selected_clip = Some(clip);
-            self.selected_track = Some(cursor.track);
+        match plan {
+            SplitPlan::Project(tracks) => {
+                if self.enqueue(Request::Edit(Command::SplitTracksAtFrame {
+                    tracks,
+                    frame: cursor.frame,
+                })) {
+                    self.selected_clip = None;
+                }
+            }
+            SplitPlan::Clip(clip, command) => {
+                if self.enqueue(Request::Edit(command)) {
+                    self.selected_clip = Some(clip);
+                    self.selected_track = Some(cursor.track);
+                }
+            }
         }
     }
 }

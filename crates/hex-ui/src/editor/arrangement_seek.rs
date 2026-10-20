@@ -32,7 +32,7 @@ pub(super) trait SeekAudioControl {
 
 impl SeekAudioControl for Control {
     fn status_view(&self) -> Option<&hex_audio::prepared::Status> {
-        Some(&self.status)
+        Some(self.status())
     }
     fn capture_fence(&self) -> Option<FreshRuntimeFence> {
         self.capture_fresh_runtime_fence()

@@ -6,6 +6,7 @@ use gpui::Window;
 use hex_project::BeatTime;
 use hex_project::{ClipId, MidiNote, NoteId};
 use hex_session::service::Request;
+use hex_session::snapshot_exports::SnapshotTransportError;
 use std::sync::Arc;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -32,7 +33,7 @@ impl EditorView {
         modifiers: StrokeModifiers,
         window: &mut Window,
     ) -> bool {
-        let Some(context) = self.current_stroke_context(rendered.bounds, modifiers) else {
+        let Ok(Some(context)) = self.current_stroke_context(rendered.bounds, modifiers) else {
             return false;
         };
         if !same_rendered_frame(context, rendered)
@@ -45,30 +46,38 @@ impl EditorView {
         let Some(down) = stroke_point(context, point[0], point[1], false) else {
             return false;
         };
-        let Some(clip) = self
-            .state
-            .as_ref()
-            .and_then(|s| s.project.midi_source(context.clip))
-        else {
-            return false;
+        let baseline = self.state.as_ref().map(|state| {
+            state.read_with(|snapshot| {
+                let Some(clip) = snapshot.model().midi_source(context.clip) else {
+                    return Ok(None);
+                };
+                let notes = clip.notes();
+                if notes.len() > hex_project::MAX_NOTES {
+                    return Err("midi clip exceeds the draw stroke note limit");
+                }
+                let mut baseline = Vec::new();
+                baseline
+                    .try_reserve_exact(notes.len())
+                    .map_err(|_| "could not reserve midi draw baseline")?;
+                baseline.extend(notes.map(|note| midi_stroke::BaselineNote {
+                    id: note.id(),
+                    start: note.start().raw(),
+                    duration: note.duration().raw(),
+                    pitch: note.pitch(),
+                    channel: note.channel(),
+                    velocity: note.velocity(),
+                }));
+                Ok(Some(baseline))
+            })
+        });
+        let baseline = match baseline {
+            Some(Ok(Ok(Some(baseline)))) => baseline,
+            Some(Ok(Err(error))) => {
+                self.error = Some(error.into());
+                return false;
+            }
+            _ => return false,
         };
-        if clip.notes().len() > hex_project::MAX_NOTES {
-            self.error = Some("midi clip exceeds the draw stroke note limit".into());
-            return false;
-        }
-        let mut baseline = Vec::new();
-        if baseline.try_reserve_exact(clip.notes().len()).is_err() {
-            self.error = Some("could not reserve midi draw baseline".into());
-            return false;
-        }
-        baseline.extend(clip.notes().iter().map(|note| midi_stroke::BaselineNote {
-            id: note.id(),
-            start: note.start().raw(),
-            duration: note.duration().raw(),
-            pitch: note.pitch(),
-            channel: note.channel(),
-            velocity: note.velocity(),
-        }));
         match midi_stroke::MidiStroke::begin_with_hit(
             context,
             context.clip_length,
@@ -98,8 +107,10 @@ impl EditorView {
         point: [f32; 2],
         modifiers: StrokeModifiers,
     ) -> bool {
-        let Some(context) = self.current_stroke_context(canvas_bounds(bounds), modifiers) else {
-            return self.cancel_midi_stroke();
+        let context = match self.current_stroke_context(canvas_bounds(bounds), modifiers) {
+            Ok(Some(context)) => context,
+            Ok(None) => return self.cancel_midi_stroke(),
+            Err(_) => return false,
         };
         let Some(point) = stroke_point(context, point[0], point[1], true) else {
             return self.cancel_midi_stroke();
@@ -127,16 +138,19 @@ impl EditorView {
         inside: bool,
         modifiers: StrokeModifiers,
     ) -> bool {
+        if self.midi_stroke.is_none() {
+            return false;
+        }
+        if !inside {
+            return self.cancel_midi_stroke();
+        }
+        let context = match self.current_stroke_context(canvas_bounds(bounds), modifiers) {
+            Ok(Some(context)) => context,
+            Ok(None) => return self.cancel_midi_stroke(),
+            Err(_) => return false,
+        };
         let Some(mut stroke) = self.midi_stroke.take() else {
             return false;
-        };
-        if !inside {
-            stroke.cancel();
-            return true;
-        }
-        let Some(context) = self.current_stroke_context(canvas_bounds(bounds), modifiers) else {
-            stroke.cancel();
-            return true;
         };
         let Some(point) = stroke_point(context, point[0], point[1], false) else {
             stroke.cancel();
@@ -173,25 +187,28 @@ impl EditorView {
         &self,
         bounds: midi_stroke::CanvasBounds,
         modifiers: StrokeModifiers,
-    ) -> Option<StrokeContext> {
-        let state = self.state.as_ref()?;
-        let clip_id = self.selected_clip?;
-        let clip = state.project.midi_source(clip_id)?;
-        Some(StrokeContext {
-            generation: self.project_generation,
-            revision: state.revision,
-            clip: clip_id,
-            clip_length: clip.source_length().raw(),
-            grid: self.midi_snap_grid,
-            effective_grid: midi_drag::effective_grid(self.midi_snap_grid, modifiers.snap),
-            snap_modifier: modifiers.snap,
-            pitch_modifier: modifiers.pitch,
-            view_start: self.piano_beat_start.raw(),
-            view_span: self.piano_beat_span.raw(),
-            pitch_low: self.piano_pitch_low,
-            bounds,
-            pitch_locked: self.midi_draw_pitch_locked ^ modifiers.pitch,
-            draw_mode: self.midi_draw_mode,
+    ) -> Result<Option<StrokeContext>, SnapshotTransportError> {
+        let (Some(state), Some(clip_id)) = (self.state.as_ref(), self.selected_clip) else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| {
+            let clip = snapshot.model().midi_source(clip_id)?;
+            Some(StrokeContext {
+                generation: self.project_generation,
+                revision: snapshot.revision(),
+                clip: clip_id,
+                clip_length: clip.source_length().raw(),
+                grid: self.midi_snap_grid,
+                effective_grid: midi_drag::effective_grid(self.midi_snap_grid, modifiers.snap),
+                snap_modifier: modifiers.snap,
+                pitch_modifier: modifiers.pitch,
+                view_start: self.piano_beat_start.raw(),
+                view_span: self.piano_beat_span.raw(),
+                pitch_low: self.piano_pitch_low,
+                bounds,
+                pitch_locked: self.midi_draw_pitch_locked ^ modifiers.pitch,
+                draw_mode: self.midi_draw_mode,
+            })
         })
     }
 }

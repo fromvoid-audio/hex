@@ -59,13 +59,13 @@ pub(super) fn stretch_waveform_view(
         {
             return None;
         }
-        Arc::clone(&accepted.waveform)
+        accepted.waveform.clone()
     } else {
         let source = asset?;
         if (source.source_frames as u64) < asset_frames {
             return None;
         }
-        Arc::clone(source)
+        source.clone()
     };
     let projection = Arc::new(StretchProjection {
         original: original.clone(),

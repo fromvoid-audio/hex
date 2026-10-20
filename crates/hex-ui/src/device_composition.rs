@@ -14,6 +14,7 @@ pub(crate) const EQ8_FRAME_WIDTH: f32 = 600.0;
 pub(crate) const COMPRESSOR_FRAME_WIDTH: f32 = 326.0;
 pub(crate) const GATE_FRAME_WIDTH: f32 = 142.0;
 pub(crate) const AUTO_PAN_FRAME_WIDTH: f32 = 144.0;
+pub(crate) const SAMPLER_FRAME_WIDTH: f32 = 594.0;
 pub(crate) const VECTOR_SHELL_WIDTH: f32 = 3.0 * hex_widgets::MICRO_DIAL_WIDTH + 72.0;
 pub(crate) const VECTOR_DETAIL_WIDTH: f32 = 340.0;
 pub(crate) const VECTOR_PREVIEW_WIDTH: f32 = 2.0 * hex_widgets::MICRO_DIAL_WIDTH + 148.0;
@@ -255,4 +256,28 @@ pub(crate) fn eq_graph_body(graph: impl IntoElement, sidebar: impl IntoElement) 
         .gap(px(2.0))
         .child(plot(graph).min_w_0())
         .child(sidebar)
+}
+
+/// Scalar sampler rails accept controls only after the caller's read loan ends.
+pub(crate) fn sampler(source: Div, pitch: Div, level: Div, envelope: Div) -> Div {
+    body()
+        .w(px(SAMPLER_FRAME_WIDTH))
+        .gap(px(2.0))
+        .children([source, pitch, level, envelope].map(dense_rail))
+}
+
+pub(crate) fn sampler_section(label: &'static str) -> Div {
+    rail_column()
+        .w(px(136.0))
+        .flex_shrink_0()
+        .child(div().h(px(14.0)).text_xs().child(theme::text(label)))
+}
+
+pub(crate) fn sampler_switches() -> Div {
+    device_layout(DeviceLayout::Row).h(px(18.0)).gap(px(3.0))
+}
+
+/// Two existing compact dials keep each full-frame readout at 64 px.
+pub(crate) fn sampler_flag_row() -> Div {
+    device_layout(DeviceLayout::Row).gap(px(2.0))
 }

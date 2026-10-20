@@ -2,7 +2,7 @@
 use super::EditorView;
 use crate::theme;
 use gpui::{Context, Div, ElementId, div, prelude::*, px, rgb};
-use hex_project::{Command, Track};
+use hex_project::{Command, TrackId};
 
 const RETURN_ROW_HEIGHT: f32 = 23.0;
 const RETURN_SECTION_HEADER_HEIGHT: f32 = 20.0;
@@ -23,20 +23,20 @@ impl EditorView {
             return None;
         }
         let track_id = self.send_menu_track?;
-        let state = self.state.as_ref().cloned()?;
-        let Some(track) = state.project.track(track_id).cloned() else {
-            super::device_panel::retire_removed_send_controls(self, cx);
-            self.send_menu_track = None;
-            self.focus.focus(window);
-            cx.notify();
-            return None;
-        };
-        let Some(track_index) = state
-            .project
-            .tracks()
-            .iter()
-            .position(|candidate| candidate.id() == track_id)
-        else {
+        let state = self.state.as_ref()?;
+        let facts = state
+            .read_with(|snapshot| {
+                let project = snapshot.model();
+                let index = project.tracks().position(|track| track.id() == track_id)?;
+                let preceding_height = project
+                    .tracks()
+                    .take(index)
+                    .map(|track| self.track_height(track.id()))
+                    .sum::<f32>();
+                Some((index, preceding_height, project.returns().len()))
+            })
+            .ok()?;
+        let Some((track_index, preceding_height, return_count)) = facts else {
             super::device_panel::retire_removed_send_controls(self, cx);
             self.send_menu_track = None;
             self.focus.focus(window);
@@ -45,12 +45,7 @@ impl EditorView {
         };
         let body = self.arrangement_bounds?;
         let scroll_y = f32::from(self.track_scroll.offset().y);
-        let expected_top = body.top
-            + state.project.tracks()[..track_index]
-                .iter()
-                .map(|track| self.track_height(track.id()))
-                .sum::<f32>()
-            + scroll_y;
+        let expected_top = body.top + preceding_height + scroll_y;
         let expected_bottom = expected_top + self.track_height(track_id);
         let body_bottom = body.top + body.height;
         let row_is_visible = expected_bottom > body.top && expected_top < body_bottom;
@@ -75,7 +70,6 @@ impl EditorView {
         {
             return None;
         }
-        let return_count = state.project.return_tracks().len();
         let menu_height = if return_count == 0 {
             34.0
         } else {
@@ -99,7 +93,7 @@ impl EditorView {
                 .absolute()
                 .left(px(left.max(0.0)))
                 .top(px(top))
-                .child(self.return_send_menu(&track, cx)),
+                .child(self.return_send_menu(track_id, cx)),
         )
     }
 
@@ -110,7 +104,25 @@ impl EditorView {
                 .h(px(0.0))
                 .flex_shrink_0();
         };
-        let returns = state.project.return_tracks();
+        let Ok(returns) = state.read_with(|snapshot| {
+            snapshot
+                .model()
+                .returns()
+                .map(|track| {
+                    (
+                        track.id(),
+                        track.name().to_owned(),
+                        track.gain(),
+                        track.muted(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        }) else {
+            return div()
+                .id("pinned-return-tracks-unavailable")
+                .h(px(0.0))
+                .flex_shrink_0();
+        };
         let height = section_height(returns.len());
         let mut rows = div()
             .id("pinned-return-tracks")
@@ -142,10 +154,12 @@ impl EditorView {
             })
             .child(theme::text("+"))
             .on_click(cx.listener(|view, _, _, cx| {
-                let count = view
-                    .state
-                    .as_ref()
-                    .map_or(0, |state| state.project.return_tracks().len());
+                let Some(state) = view.state.as_ref() else {
+                    return;
+                };
+                let Ok(count) = state.read_with(|snapshot| snapshot.model().returns().len()) else {
+                    return;
+                };
                 super::device_panel::enqueue_return_edit(
                     view,
                     Command::AddReturnTrack {
@@ -174,13 +188,9 @@ impl EditorView {
                 .child(div().flex_1())
                 .child(add),
         );
-        for track in returns {
-            let id = track.id();
+        for (id, name, gain, muted) in returns {
             let selected = self.focused_return == Some(id);
-            let name = track.name().to_owned();
-            let muted = track.muted();
             let (active_background, active_text) = super::track_gain::activator_colors(!muted);
-            let gain = track.gain();
             let gain_control = if self.document_audio_mode
                 == hex_session::DocumentAudioMode::Resident
             {
@@ -188,7 +198,7 @@ impl EditorView {
                     .w(px(82.0))
                     .flex()
                     .flex_shrink_0()
-                    .child(self.return_volume(track, cx))
+                    .child(self.return_volume(id, gain, cx))
             } else {
                 // Preserve the real explicit command path when held previews are unavailable.
                 div()
@@ -326,10 +336,9 @@ impl EditorView {
 
     pub(super) fn return_send_menu(
         &mut self,
-        track: &Track,
+        track_id: TrackId,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        let track_id = track.id();
         let mut menu = div()
             .id(("return-send-menu", track_id.value()))
             .debug_selector(|| format!("return-send-menu-{}", track_id.value()))
@@ -343,10 +352,27 @@ impl EditorView {
             .border_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .shadow_lg();
-        let Some(state) = self.state.as_ref().cloned() else {
+        let Some(state) = self.state.as_ref() else {
             return menu;
         };
-        let returns = state.project.return_tracks();
+        let Ok(Some(returns)) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let track = project.track(track_id)?;
+            Some(
+                project
+                    .returns()
+                    .map(|bus| {
+                        let gain = track
+                            .sends()
+                            .find(|send| send.return_track() == bus.id())
+                            .map_or(0.0, |send| send.gain());
+                        (bus.id(), bus.name().to_owned(), gain)
+                    })
+                    .collect::<Vec<_>>(),
+            )
+        }) else {
+            return menu;
+        };
         if returns.is_empty() {
             return menu.child(
                 div()
@@ -359,14 +385,7 @@ impl EditorView {
                     .child(theme::text("no return tracks")),
             );
         }
-        for return_track in returns {
-            let return_id = return_track.id();
-            let name = return_track.name().to_owned();
-            let gain = track
-                .sends()
-                .iter()
-                .find(|send| send.return_track() == return_id)
-                .map_or(0.0, hex_project::SendLevel::gain);
+        for (return_id, name, gain) in returns {
             let mut row = div()
                 .id(ElementId::Name(
                     format!("return-send-row-{}-{}", track_id.value(), return_id.value()).into(),

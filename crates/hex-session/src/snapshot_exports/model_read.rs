@@ -66,6 +66,9 @@ impl<'a> SnapshotProjectRead<'a> {
     pub fn sample_rate(self) -> u32 {
         self.project.sample_rate()
     }
+    pub fn clip(self, id: ClipId) -> Option<SnapshotClipRead<'a>> {
+        self.project.clip(id).map(|clip| SnapshotClipRead { clip })
+    }
     pub fn loop_region(self) -> Option<hex_project::LoopRegion> {
         self.project.loop_region()
     }

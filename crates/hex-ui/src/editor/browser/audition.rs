@@ -117,6 +117,13 @@ impl EditorView {
         entry: Option<LibraryEntry>,
         cx: &mut Context<Self>,
     ) -> Div {
+        let sample_rate = match self.state.as_ref() {
+            Some(state) => match state.read_with(|snapshot| snapshot.sample_rate()) {
+                Ok(rate) => rate,
+                Err(_) => return div().child(theme::text("sample preview read unavailable")),
+            },
+            None => 48_000,
+        };
         let fallback = entry.as_ref().map_or_else(
             || self.browser_selected_label(cx).to_owned(),
             |entry| entry.name.clone(),
@@ -205,10 +212,7 @@ impl EditorView {
             );
         self.browser.preview_selected = None;
         if let Some(entry) = sample {
-            let rate = self
-                .state
-                .as_ref()
-                .map_or(48_000, |state| state.project.sample_rate());
+            let rate = sample_rate;
             self.browser.preview_selected = Some(PreviewKey {
                 path: entry.path.clone(),
                 sample_rate: rate,

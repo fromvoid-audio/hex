@@ -1,12 +1,14 @@
+mod nominal;
 use crate::theme;
 use gpui::{Context, Div, Window, canvas, div, prelude::*, px, rgb};
 use hex_project::{Clip, ClipFade};
 use hex_session::{CachedPeak, CachedWaveform};
+pub(in crate::editor) use nominal::{EventSegmentRequest, event_segment_view};
 use std::{ops::Range, rc::Rc, sync::Arc};
 
 use super::waveform_geometry::{
-    WaveformGeometryCache, WaveformGeometryRequest, WaveformMapping, cached_waveform_geometry,
-    prepare_waveform_geometry,
+    ClipMapping, WaveformGeometryCache, WaveformGeometryRequest, WaveformMapping,
+    cached_waveform_geometry, prepare_waveform_geometry,
 };
 
 pub(super) use super::waveform_geometry::WaveformGrid;
@@ -95,7 +97,7 @@ pub(super) fn preview_waveform_view_cached(
         Some(timeline_waveform_view_cached(
             Arc::clone(asset?),
             WaveformMapping::Clip {
-                clip: preview.clone(),
+                clip: ClipMapping::from(preview),
                 timeline_origin: preview.start(),
             },
             visible_start,
@@ -157,7 +159,7 @@ pub(super) fn waveform_view_cached(
     waveform_canvas(
         Arc::clone(waveform),
         WaveformMapping::Clip {
-            clip: clip.clone(),
+            clip: ClipMapping::from(clip),
             timeline_origin: clip.start(),
         },
         visible_start,
@@ -477,18 +479,23 @@ fn timeline_source_ranges(
     visible: Range<u64>,
     available_frames: usize,
 ) -> SourceRanges {
-    timeline_source_ranges_at(clip, clip.start(), visible, available_frames)
+    timeline_source_ranges_at(
+        &ClipMapping::from(clip),
+        clip.start(),
+        visible,
+        available_frames,
+    )
 }
 
 pub(super) fn timeline_source_ranges_at(
-    clip: &Clip,
+    clip: &ClipMapping,
     timeline_origin: u64,
     visible: Range<u64>,
     available_frames: usize,
 ) -> SourceRanges {
     // Transformed audio has a prepared root projection. An original asset peak
     // map cannot describe it, including not-yet-prepared drag/trim previews.
-    if clip.audio_edit().is_some() {
+    if clip.transformed {
         return SourceRanges::default();
     }
     let Some(clip_end) = timeline_origin.checked_add(clip.duration()) else {

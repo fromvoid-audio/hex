@@ -1,6 +1,7 @@
 use super::EditorView;
 use gpui::Context;
 use hex_session::service::Request;
+use hex_session::snapshot_exports::SnapshotTransportError;
 use std::path::{Path, PathBuf};
 
 const MAX_PROJECT_PATH_BYTES: usize = 4_096;
@@ -42,50 +43,94 @@ fn prepare_save_path(mut path: PathBuf) -> Result<PathBuf, &'static str> {
 }
 
 impl EditorView {
+    fn report_save_read(&mut self, error: SnapshotTransportError) {
+        if error == SnapshotTransportError::Busy {
+            self.error = Some("project read busy · try saving again".into());
+        } else {
+            self.error = Some("project read is unavailable".into());
+        }
+    }
+
     pub(super) fn save_project(&mut self, cx: &mut Context<Self>) {
-        if !super::device_panel::finalize_controls(self, cx) {
-            return;
+        if let Err(error) = self.save_project_checked(cx) {
+            self.report_save_read(error);
+            cx.notify();
         }
-        if self.state.is_none() {
+    }
+
+    pub(super) fn save_project_checked(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, SnapshotTransportError> {
+        let Some(admission) = self.save_admission()? else {
             self.error = Some("project is still loading".into());
-            return;
-        }
-        match self.save_admission() {
+            return Ok(false);
+        };
+        match admission {
             SaveAdmission::Current => {
+                if !super::device_panel::finalize_controls_checked(self, cx)? {
+                    return Ok(false);
+                }
                 if self.enqueue_device_barrier(Request::SaveCurrent) {
                     self.saving_project = true;
                     self.status = "saving project".into();
                     self.error = None;
+                    return Ok(true);
                 }
+                Ok(false)
             }
-            SaveAdmission::ChoosePath => self.save_as_dialog(cx),
-            SaveAdmission::Reject(message) => self.error = Some(message.into()),
+            SaveAdmission::ChoosePath => self.save_as_dialog_checked(cx),
+            SaveAdmission::Reject(message) => {
+                self.error = Some(message.into());
+                Ok(false)
+            }
         }
     }
 
     pub(super) fn save_as_dialog(&mut self, cx: &mut Context<Self>) {
-        if !super::device_panel::finalize_controls(self, cx) {
-            return;
+        if let Err(error) = self.save_as_dialog_checked(cx) {
+            self.report_save_read(error);
+            cx.notify();
         }
-        if self.state.is_none() {
-            self.error = Some("project is still loading".into());
-            return;
-        }
-        match self.save_admission() {
-            SaveAdmission::Current | SaveAdmission::ChoosePath => {}
-            SaveAdmission::Reject(message) => {
-                self.error = Some(message.into());
-                return;
-            }
-        }
+    }
 
-        let fallback_directory = self
-            .state
-            .as_ref()
-            .and_then(|state| state.document_path.as_deref())
-            .and_then(Path::parent)
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
+    fn save_as_dialog_checked(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Result<bool, SnapshotTransportError> {
+        let Some(admission) = self.save_admission()? else {
+            self.error = Some("project is still loading".into());
+            return Ok(false);
+        };
+        if let SaveAdmission::Reject(message) = admission {
+            self.error = Some(message.into());
+            return Ok(false);
+        }
+        // Reserve bounded path backing before borrowing snapshot metadata.
+        // PathBuf::push copies the exact platform path without growth here.
+        let mut fallback_directory = PathBuf::with_capacity(MAX_PROJECT_PATH_BYTES);
+        let copied = self.dialog_snapshot(|snapshot| {
+            let Some(parent) = snapshot.document_path().and_then(Path::parent) else {
+                return Ok(false);
+            };
+            if parent.as_os_str().len() > fallback_directory.capacity() {
+                return Err("project path exceeds the 4096-byte limit");
+            }
+            fallback_directory.push(parent);
+            Ok(true)
+        })?;
+        match copied {
+            Some(Ok(true)) => {}
+            Some(Ok(false)) => fallback_directory.push("."),
+            Some(Err(message)) => {
+                self.error = Some(message.into());
+                return Ok(false);
+            }
+            None => return Ok(false),
+        }
+        if !super::device_panel::finalize_controls_checked(self, cx)? {
+            return Ok(false);
+        }
         self.save_dialog_open = true;
         let generation = self.project_generation;
         self.with_project_picker_directory(cx, move |view, directory, cx| {
@@ -100,47 +145,71 @@ impl EditorView {
             let directory = directory.unwrap_or(fallback_directory);
             let response = cx.prompt_for_new_path(&directory, Some("untitled.hex"));
             cx.spawn(async move |this, cx| {
-                let picked = response.await;
-                let _ = this.update(cx, |view, cx| {
-                    view.save_dialog_open = false;
-                    if view.project_generation != generation {
-                        cx.notify();
-                        return;
-                    }
-                    match picked {
-                        Ok(Ok(Some(path))) => {
-                            if super::device_panel::finalize_controls(view, cx) {
-                                view.begin_save_new(path);
+                let mut picked = Some(response.await);
+                loop {
+                    let retry = this
+                        .update(cx, |view, cx| {
+                            if !view.save_dialog_open {
+                                return false;
                             }
-                        }
-                        Ok(Err(error)) => {
-                            view.error = Some(error.to_string().to_lowercase().into())
-                        }
-                        _ => {}
+                            if view.project_generation != generation {
+                                view.save_dialog_open = false;
+                                cx.notify();
+                                return false;
+                            }
+                            let has_path = matches!(picked.as_ref(), Some(Ok(Ok(Some(_)))));
+                            let finalized = if has_path {
+                                match super::device_panel::finalize_controls_checked(view, cx) {
+                                    Ok(finalized) => finalized,
+                                    Err(SnapshotTransportError::Busy) => return true,
+                                    Err(error) => {
+                                        view.report_save_read(error);
+                                        false
+                                    }
+                                }
+                            } else {
+                                false
+                            };
+                            view.save_dialog_open = false;
+                            match picked.take() {
+                                Some(Ok(Ok(Some(path)))) if finalized => view.begin_save_new(path),
+                                Some(Ok(Err(error))) => {
+                                    view.error = Some(error.to_string().to_lowercase().into())
+                                }
+                                _ => {}
+                            }
+                            if !view.saving_project {
+                                view.cancel_open_after_save();
+                            }
+                            cx.notify();
+                            false
+                        })
+                        .unwrap_or(false);
+                    if !retry {
+                        break;
                     }
-                    if !view.saving_project {
-                        view.cancel_open_after_save();
-                    }
-                    cx.notify();
-                });
+                    cx.background_executor()
+                        .timer(std::time::Duration::from_millis(5))
+                        .await;
+                }
             })
             .detach();
         });
+        Ok(true)
     }
 
-    fn save_admission(&self) -> SaveAdmission {
-        save_admission(
-            self.state
-                .as_ref()
-                .and_then(|state| state.document_path.as_ref())
-                .is_some(),
-            self.saving_project,
-            self.save_dialog_open,
-            self.close_prompt_open
-                || self.opening_project
-                || (self.project_open.busy() && !self.project_open.permits_save())
-                || self.pending_open_path.is_some(),
-        )
+    fn save_admission(&self) -> Result<Option<SaveAdmission>, SnapshotTransportError> {
+        self.dialog_snapshot(|snapshot| {
+            save_admission(
+                snapshot.document_path().is_some(),
+                self.saving_project,
+                self.save_dialog_open,
+                self.close_prompt_open
+                    || self.opening_project
+                    || (self.project_open.busy() && !self.project_open.permits_save())
+                    || self.pending_open_path.is_some(),
+            )
+        })
     }
 
     fn begin_save_new(&mut self, path: PathBuf) {

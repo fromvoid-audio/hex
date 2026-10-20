@@ -1,11 +1,11 @@
 //! Selected-clip fade controls and bounded control-side admission.
 use super::{
-    EditorView, ViewState,
+    EditorView,
     waveform::{ClipTooltip, button},
 };
 use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
-use hex_project::{ClipFade, Command};
+use hex_project::{ClipFade, ClipId, Command};
 use hex_session::service::Request;
 
 const FADE_STEP_MILLISECONDS: u64 = 5;
@@ -84,15 +84,33 @@ fn adjusted_fades(
 }
 
 impl EditorView {
-    pub(super) fn selected_fade_controls(
+    fn selected_fade_facts(
         &self,
-        state: &ViewState,
-        cx: &mut Context<Self>,
-    ) -> Option<Div> {
-        let (_, clip_id, _, duration, ..) = self.selected_clip_data()?;
-        let clip = state.project.clip(clip_id)?;
-        let fade = clip.retained_fade();
-        let retained = clip.audio_edit().is_some();
+    ) -> Result<
+        Option<(ClipId, u64, ClipFade, bool, u32)>,
+        hex_session::snapshot_exports::SnapshotTransportError,
+    > {
+        let Some((track, clip)) = self.selected() else {
+            return Ok(None);
+        };
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| {
+            let clip = snapshot.model().track(track)?.clip(clip)?;
+            Some((
+                clip.id(),
+                clip.duration(),
+                clip.retained_fade(),
+                clip.audio_edit().is_some(),
+                snapshot.sample_rate(),
+            ))
+        })
+    }
+
+    pub(super) fn selected_fade_controls(&self, cx: &mut Context<Self>) -> Option<Div> {
+        let (clip_id, duration, fade, retained, sample_rate) =
+            self.selected_fade_facts().ok().flatten()?;
         let inherited = retained || fade_is_inherited(fade, duration);
         let admitted = fade_edit_admitted(
             self.opening_project,
@@ -100,8 +118,8 @@ impl EditorView {
             self.worker_requests_pending,
             self.pending_requests.len(),
         );
-        let fade_in_ms = fade_ms(fade.fade_in(), state.project.sample_rate());
-        let fade_out_ms = fade_ms(fade.fade_out(), state.project.sample_rate());
+        let fade_in_ms = fade_ms(fade.fade_in(), sample_rate);
+        let fade_out_ms = fade_ms(fade.fade_out(), sample_rate);
         let mut controls =
             div()
                 .flex()
@@ -230,17 +248,10 @@ impl EditorView {
             self.report_fade_edit_blocked();
             return;
         }
-        let Some((_, clip_id, _, duration, ..)) = self.selected_clip_data() else {
+        let Ok(Some((clip_id, duration, fade, _, sample_rate))) = self.selected_fade_facts() else {
             return;
         };
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
-        let Some(clip) = state.project.clip(clip_id) else {
-            return;
-        };
-        let fade = clip.retained_fade();
-        let step = fade_step_frames(state.project.sample_rate());
+        let step = fade_step_frames(sample_rate);
         let (current, opposite) = if fade_in {
             (fade.fade_in(), fade.fade_out())
         } else {
@@ -307,20 +318,15 @@ impl EditorView {
             self.report_fade_edit_blocked();
             return;
         }
-        let Some((_, clip_id, _, duration, ..)) = self.selected_clip_data() else {
+        let Ok(Some((clip_id, duration, fade, _, _))) = self.selected_fade_facts() else {
             return;
         };
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
-        if state.project.clip(clip_id).is_none_or(|clip| {
-            let fade = clip.retained_fade();
-            fade.span() == duration
-                && fade.offset() == 0
-                && fade.fade_in() == 0
-                && fade.fade_out() == 0
-                && !fade.has_shape()
-        }) {
+        if fade.span() == duration
+            && fade.offset() == 0
+            && fade.fade_in() == 0
+            && fade.fade_out() == 0
+            && !fade.has_shape()
+        {
             return;
         }
         self.enqueue(Request::Edit(Command::SetClipFades {

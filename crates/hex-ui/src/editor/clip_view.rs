@@ -2,6 +2,9 @@
 use super::{EditorMode, EditorView};
 use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
+use hex_session::snapshot_exports::{
+    SnapshotTransportError, ui_consumers::SnapshotSessionCellContentRead,
+};
 
 pub(super) const CLIP_DETAIL_BODY_HEIGHT: f32 = 228.0;
 
@@ -74,23 +77,34 @@ impl EditorView {
         self.focus_clip_details(window, cx)
     }
 
-    fn conversion_selection(&self) -> Option<(hex_project::ClipId, bool)> {
-        let project = &self.state.as_ref()?.project;
-        if self.mode == EditorMode::Session {
-            let (track, scene) = self.selected_cell?;
-            match project.session_cell(track, scene)? {
-                hex_project::SessionCellContent::Midi(clip) => Some((clip.id(), true)),
-                hex_project::SessionCellContent::Audio(clip) => Some((clip.id(), false)),
-                hex_project::SessionCellContent::Stop => None,
-            }
-        } else {
-            let clip = self.selected_clip?;
-            if project.midi_clip(clip).is_some() {
-                Some((clip, true))
+    fn conversion_selection(
+        &self,
+    ) -> Result<Option<(hex_project::ClipId, bool, u64)>, SnapshotTransportError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let (clip, midi) = if self.mode == EditorMode::Session {
+                let (track, scene) = self.selected_cell?;
+                match project.session_cell(track, scene) {
+                    SnapshotSessionCellContentRead::Midi(clip) => (clip.id(), true),
+                    SnapshotSessionCellContentRead::Audio(clip) => (clip.id(), false),
+                    SnapshotSessionCellContentRead::Stop
+                    | SnapshotSessionCellContentRead::Empty => return None,
+                }
             } else {
-                project.clip(clip).map(|_| (clip, false))
-            }
-        }
+                let clip = self.selected_clip?;
+                if project.midi_clip(clip).is_some() {
+                    (clip, true)
+                } else if project.tracks().any(|track| track.clip(clip).is_some()) {
+                    (clip, false)
+                } else {
+                    return None;
+                }
+            };
+            Some((clip, midi, snapshot.revision()))
+        })
     }
 
     pub(super) fn clip_detail_view(
@@ -99,19 +113,28 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Div {
         let open = self.clip_view_open;
-        let selected_midi = self.state.as_ref().is_some_and(|state| {
-            self.selected_clip
-                .is_some_and(|clip| state.project.midi_source(clip).is_some())
-        });
-        let has_session_audio = self.mode == EditorMode::Session
-            && self.selected_cell.is_some_and(|(track, scene)| {
-                self.state.as_ref().is_some_and(|state| {
-                    matches!(
-                        state.project.session_cell(track, scene),
-                        Some(hex_project::SessionCellContent::Audio(_))
-                    )
-                })
-            });
+        let facts = match self.state.as_ref() {
+            Some(state) => state.read_with(|snapshot| {
+                let project = snapshot.model();
+                let midi = self
+                    .selected_clip
+                    .is_some_and(|clip| project.midi_source(clip).is_some());
+                let audio = self.mode == EditorMode::Session
+                    && self.selected_cell.is_some_and(|(track, scene)| {
+                        matches!(
+                            project.session_cell(track, scene),
+                            SnapshotSessionCellContentRead::Audio(_)
+                        )
+                    });
+                (midi, audio)
+            }),
+            None => Ok((false, false)),
+        };
+        let Ok((selected_midi, has_session_audio)) = facts else {
+            return div()
+                .id("clip-detail-read-unavailable")
+                .child(theme::text("clip read unavailable"));
+        };
         let detail = if open {
             if self.device_panel_active {
                 Some(
@@ -218,11 +241,10 @@ impl EditorView {
                 .child(theme::text(label)),
         );
         if !self.device_panel_active
-            && let Some((clip, to_audio)) = self.conversion_selection()
+            && let Ok(Some((clip, to_audio, revision))) = self.conversion_selection()
         {
             let enabled = !self.edit_pending();
             let generation = self.project_generation;
-            let revision = self.state.as_ref().map_or(0, |state| state.revision);
             row = row.child(
                 div()
                     .id("convert-clip")
@@ -253,7 +275,7 @@ impl EditorView {
                         if !enabled
                             || view.edit_pending()
                             || view.project_generation != generation
-                            || view.conversion_selection() != Some((clip, to_audio))
+                            || !matches!(view.conversion_selection(), Ok(Some(current)) if current == (clip, to_audio, revision))
                         {
                             return;
                         }

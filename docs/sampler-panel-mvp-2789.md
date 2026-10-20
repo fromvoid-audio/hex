@@ -26,22 +26,53 @@ The exact four-file scalar-query prerequisite was published as
 It adds Engine metadata decoding and the nominal `SnapshotRead::sampler_parameters`
 method without opening the registry.
 
-Production integration remains blocked on Native's actual retained UI capability
-entry and existing binding-currentness migration. The current parent still uses
-legacy owning state/cache access and holds no `SnapshotRead` or read stamp. This
-component deliberately has a feature-only module mount and no Sampler parent
-dispatch, frame-width arm, raw-state/current-Session shortcut or invented stamp.
-The device-layout guard requires the real instrument dispatch and therefore
-fails while this dependency is outstanding. Dead-code strict-check failures for
-the unconnected leaf are preserved; no lint or guard is weakened to hide them.
+The modern Main component now mounts the production Sampler instrument
+renderer and its 594 px frame. Track, Return and Main rails prepare ephemeral
+scalar recipes through the actual retained capability and strict native
+`controls()` decoder. Each recipe contains IDs, class/type/bypass facts and
+copied parameter descriptors/values; its allocation backing is reserved outside
+the read. The read ends before shared controls or GPUI run. No owning device
+state is decoded, cached or supplied to the Sampler leaf. The former persistent
+`DevicePanel.views` cache is removed. Recipe association uses Native's opaque
+source key, including when project revision values are saturated.
 
-After Native supplies that entry, copy the actual device's 43 facts inside its
-retained read, end the read, and invoke `sampler_panel::render_body`. Integrate the
-instrument-only dispatch/width arms and revalidate actual binding events,
-currentness/refusal, canonical Undo/ACK and the final guards/strict configurations.
-Loading, waveform, host publication and an optimized usable build remain Native
-and coordinator work. This document is a source component report, not delivery or
-full Sampler completion evidence.
+This connection is incomplete and unqualified. The frozen partial library check
+on 20 October reported 560 compiler errors across the remaining UI migration,
+including three mechanical connection errors subsequently repaired: a missing
+Return sample-rate argument, a field accessed as a method and a fallback body
+missing its element ID. The new scalar recipe, shared bindings, Sampler leaf
+and parameter-row reconciliation had no primary diagnostic in that run. The
+repaired source has scoped formatting and diff review only; this is not a clean
+UI build or a canonical binding/ACK test receipt. At that diagnostic, specialized EQ, transfer-curve and audible meter adapters
+and remaining old cache consumers were still unported. Their compile failures are retained rather than hidden behind
+raw-state fallbacks.
+
+After that diagnostic, the owner-switch checked finalizer was moved before
+spectrum/audition clears or switch mutations. Transport refusal displays the
+existing temporary busy/unavailable shell while preserving stored owner,
+drafts, inventory and spectrum/audition requests; it does not run the previous
+owner's mutating renderer or retain another tree/cache. Event waveform requests now carry
+the actual opaque source key and reject a different installed source before
+every initial/paint query, including equal saturated revision values. Those
+bounded corrections have scoped format/diff/layout-guard checks only. No current
+UI-source tests have run; existing focused Core query tests passed separately.
+
+A later bounded stage replaced the Saturator/Compressor owning state previews
+with actual borrowed native transfer queries and scalar/source-key caches,
+sharing a read-only effective-value helper with the existing bindings. The
+frozen partial library check at `372a933a` reported 542 compiler errors elsewhere
+and no primary diagnostic in those panels, the Sampler recipe or new helper.
+The earlier three connection errors were absent. EQ, audible meters, remaining
+readers and controller/backend ownership still prevent a clean UI build. This
+failed check adds no UI test, native or merge qualification.
+
+The production device-composition source guard passes with the real instrument
+dispatch. Earlier staged leaf tests (UI2, Engine2, Session30) remain evidence for
+that earlier immutable component only. The earlier feature-only mount and its
+dead-code/guard failures are historical, not the current integration shape.
+Canonical edit/ACK, pressure, history, loading, waveform, native playback and an
+optimized usable build still require the completed UI/Service integration and
+new exact-source verification. No native app operation has been performed.
 
 ## source readout measurement
 

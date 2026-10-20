@@ -143,10 +143,16 @@ impl EditorView {
         {
             return false;
         }
-        let Some(horizon) = self.state.as_ref().map(|state| state.timeline_frames) else {
+        let Some((horizon, viewport)) = self.state.as_ref().and_then(|state| {
+            state
+                .read_with(|snapshot| {
+                    let horizon = snapshot.timeline_frames();
+                    (horizon, self.visible_viewport(snapshot, horizon))
+                })
+                .ok()
+        }) else {
             return false;
         };
-        let viewport = self.visible_viewport(horizon);
         if let Some(drag) = self.active_clip_drag.clone() {
             if !self.drag_start_is_current(&drag) {
                 return false;

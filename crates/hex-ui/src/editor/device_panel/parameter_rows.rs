@@ -109,46 +109,55 @@ fn cell_height(parameter: &NativeDeviceParameterView) -> f32 {
 
 /// Reconcile all cached descriptors, including horizontally/vertically hidden ones.
 /// This never creates an entity for a parameter that has not mounted.
-pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
-    let mut descriptors: HashMap<_, _> = view
-        .device_panel
-        .views
+pub(super) fn reconcile(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    devices: &[read_facts::DeviceFacts],
+) {
+    let mut descriptors: HashMap<_, _> = devices
         .iter()
-        .flat_map(|(device, (class, _, result))| {
-            result.as_ref().ok().into_iter().flat_map(move |metadata| {
-                metadata.parameters.iter().map(move |parameter| {
-                    (
-                        ParameterKey {
-                            device: *device,
-                            parameter: parameter.descriptor.id,
-                        },
+        .flat_map(|device| {
+            device
+                .controls
+                .as_ref()
+                .ok()
+                .into_iter()
+                .flat_map(move |metadata| {
+                    metadata.parameters.iter().map(move |parameter| {
                         (
-                            *class,
-                            metadata.type_id,
-                            parameter.descriptor,
-                            compatible(parameter),
-                            parameter.enabled,
-                        ),
-                    )
+                            ParameterKey {
+                                device: device.id,
+                                parameter: parameter.descriptor.id,
+                            },
+                            (
+                                device.class,
+                                device.type_id,
+                                parameter.descriptor,
+                                compatible(parameter),
+                                parameter.enabled,
+                            ),
+                        )
+                    })
                 })
-            })
         })
         .collect();
-    // Host input/output gain are not device-owned row descriptors. Preserve
-    // both cached entities even for unavailable DSP metadata, until the actual
-    // owner/type retires.
-    for (device, (class, state, _)) in &view.device_panel.views {
-        for descriptor in [
-            hex_engine::DEVICE_INPUT_GAIN,
-            hex_engine::DEVICE_OUTPUT_GAIN,
-        ] {
-            descriptors.insert(
-                ParameterKey {
-                    device: *device,
-                    parameter: descriptor.id,
-                },
-                (*class, state.type_id(), descriptor, true, true),
-            );
+    for device in devices {
+        if let Some(trims) = device.trims {
+            for parameter in trims {
+                descriptors.insert(
+                    ParameterKey {
+                        device: device.id,
+                        parameter: parameter.descriptor.id,
+                    },
+                    (
+                        device.class,
+                        device.type_id,
+                        parameter.descriptor,
+                        compatible(&parameter),
+                        parameter.enabled,
+                    ),
+                );
+            }
         }
     }
     let stale: Vec<_> =
@@ -190,11 +199,10 @@ pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
             }
         }
     }
-    view.device_panel.parameter_rows.retain(|device, rows| {
-        view.device_panel
-            .views
-            .get(device)
-            .is_some_and(|(class, state, _)| rows.identity == Some((*class, state.type_id())))
+    view.device_panel.parameter_rows.retain(|id, rows| {
+        devices
+            .iter()
+            .any(|device| device.id == *id && rows.identity == Some((device.class, device.type_id)))
     });
 }
 

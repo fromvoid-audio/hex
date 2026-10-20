@@ -105,7 +105,31 @@ impl EditorView {
             .copied()
             .unwrap_or(TRACK_ROW_HEIGHT)
     }
-    pub(super) fn sync_track_layout(&mut self, tracks: &[hex_project::Track]) {
+    pub(super) fn sync_track_layout(&mut self) {
+        let facts = match self.state.as_ref() {
+            Some(state) => state.read_with(|snapshot| {
+                let revision = Some(snapshot.revision());
+                let ids = (self.track_layout.generation != self.project_generation
+                    || self.track_layout.revision != revision)
+                    .then(|| {
+                        snapshot
+                            .model()
+                            .tracks()
+                            .map(|track| track.id())
+                            .collect::<Vec<_>>()
+                    });
+                (revision, ids)
+            }),
+            None => Ok((
+                None,
+                (self.track_layout.generation != self.project_generation
+                    || self.track_layout.revision.is_some())
+                .then(Vec::new),
+            )),
+        };
+        let Ok((revision, ids)) = facts else {
+            return;
+        };
         if self.track_layout.generation != self.project_generation {
             self.track_layout.heights.clear();
             self.track_layout.drag = None;
@@ -114,12 +138,13 @@ impl EditorView {
             self.track_scroll.list.reset(0);
             self.track_layout.revision = None;
         }
-        let revision = self.state.as_ref().map(|state| state.revision);
         if self.track_layout.revision == revision {
             return;
         }
         self.track_layout.revision = revision;
-        let ids = tracks.iter().map(|t| t.id()).collect::<Vec<_>>();
+        let Some(ids) = ids else {
+            return;
+        };
         if self.track_layout.tracks != ids {
             if let Some(drag) = self.track_layout.drag.take() {
                 self.restore_track_resize(drag);
@@ -171,13 +196,18 @@ impl EditorView {
         {
             return;
         }
-        let Some(state) = self.state.as_ref() else {
+        let Some(revision) = self.state.as_ref().and_then(|state| {
+            state
+                .read_with(|snapshot| {
+                    track
+                        .is_none_or(|id| snapshot.model().track(id).is_some())
+                        .then_some(snapshot.revision())
+                })
+                .ok()
+                .flatten()
+        }) else {
             return;
         };
-        if track.is_some_and(|id| state.project.track(id).is_none()) {
-            return;
-        }
-        let revision = state.revision;
         let previous = track.map_or(self.track_layout.width, |id| {
             self.track_layout.heights.get(&id).copied()
         });
@@ -200,22 +230,34 @@ impl EditorView {
         self.focus.focus(window);
         cx.notify();
     }
-    fn track_resize_current(&self, drag: ResizeDrag) -> bool {
-        self.mode == super::EditorMode::Arrangement
-            && drag.generation == self.project_generation
-            && self.state.as_ref().is_some_and(|state| {
-                state.revision == drag.revision
-                    && drag
-                        .track
-                        .is_none_or(|id| state.project.track(id).is_some())
+    fn track_resize_current(
+        &self,
+        drag: ResizeDrag,
+    ) -> Result<bool, hex_session::snapshot_exports::SnapshotTransportError> {
+        let current = self
+            .state
+            .as_ref()
+            .map(|state| {
+                state.read_with(|snapshot| {
+                    snapshot.revision() == drag.revision
+                        && drag
+                            .track
+                            .is_none_or(|id| snapshot.model().track(id).is_some())
+                })
             })
+            .transpose()?;
+        Ok(self.mode == super::EditorMode::Arrangement
+            && drag.generation == self.project_generation
+            && current.unwrap_or(false))
     }
     pub(super) fn reconcile_track_resize(&mut self, window: &Window, cx: &mut Context<Self>) {
-        if self
-            .track_layout
-            .drag
-            .is_some_and(|drag| !self.track_resize_current(drag) || !self.focus.is_focused(window))
-        {
+        let Some(drag) = self.track_layout.drag else {
+            return;
+        };
+        let Ok(current) = self.track_resize_current(drag) else {
+            return;
+        };
+        if !current || !self.focus.is_focused(window) {
             self.cancel_track_resize(cx);
         }
     }
@@ -223,7 +265,10 @@ impl EditorView {
         let Some(drag) = self.track_layout.drag else {
             return;
         };
-        if !self.track_resize_current(drag) {
+        let Ok(current) = self.track_resize_current(drag) else {
+            return;
+        };
+        if !current {
             self.cancel_track_resize(cx);
             return;
         }

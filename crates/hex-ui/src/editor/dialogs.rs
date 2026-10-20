@@ -3,6 +3,7 @@ use gpui::{AppContext, Context, PathPromptOptions, Window};
 pub(super) mod project_open;
 use hex_project::TrackId;
 use hex_session::service::Request;
+use hex_session::snapshot_exports::{SnapshotRead, SnapshotTransportError};
 
 #[derive(Clone, Copy)]
 struct ImportPromptTarget {
@@ -69,14 +70,59 @@ pub(super) fn install_project_actions(cx: &mut gpui::App) {
 }
 
 impl EditorView {
+    pub(super) fn dialog_snapshot<R>(
+        &self,
+        inspect: impl for<'read> FnOnce(SnapshotRead<'read>) -> R,
+    ) -> Result<Option<R>, SnapshotTransportError> {
+        self.state
+            .as_ref()
+            .map(|state| state.read_with(inspect))
+            .transpose()
+    }
+
+    pub(super) fn dialog_snapshot_ready(&mut self) -> bool {
+        match self.dialog_snapshot(|_| ()) {
+            Ok(Some(())) => true,
+            Ok(None) => {
+                self.error = Some("project is still loading".into());
+                false
+            }
+            Err(SnapshotTransportError::Busy) => {
+                self.error = Some("project read busy · try again".into());
+                false
+            }
+            Err(_) => {
+                self.error = Some("project read is unavailable".into());
+                false
+            }
+        }
+    }
+
     pub(super) fn open_dialog(
         &mut self,
         mode: hex_session::DocumentAudioMode,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !super::device_panel::finalize_controls(self, cx) {
+        if !self.dialog_snapshot_ready() {
+            cx.notify();
             return;
+        }
+        match super::device_panel::finalize_controls_checked(self, cx) {
+            Ok(true) => {}
+            Ok(false) => {
+                cx.notify();
+                return;
+            }
+            Err(error) => {
+                self.error = Some(if error == SnapshotTransportError::Busy {
+                    "project read busy · try opening again".into()
+                } else {
+                    "project read is unavailable".into()
+                });
+                cx.notify();
+                return;
+            }
         }
         if mode == hex_session::DocumentAudioMode::VerifiedStreaming
             && self.source_reservation.is_none()
@@ -122,31 +168,54 @@ impl EditorView {
                 directory.as_deref(),
             );
             cx.spawn(async move |this, cx| {
-                let picked = response.await;
-                let _ = cx.update_window(handle, |_, window, cx| {
-                    let _ = this.update(cx, |view, cx| {
-                        if !view.finish_open_picker(generation, serial) {
-                            return;
-                        }
-                        if window.focused(cx).is_none() {
-                            view.focus.focus(window);
-                        }
-                        match picked {
-                            Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
-                                if let Some(path) = paths.pop() {
-                                    if super::device_panel::finalize_controls(view, cx) {
+                let mut picked = Some(response.await);
+                loop {
+                    let retry = cx.update_window(handle, |_, window, cx| {
+                        this.update(cx, |view, cx| {
+                            if !view.open_picker_is_current(generation, serial) {
+                                view.finish_open_picker(generation, serial);
+                                return false;
+                            }
+                            let has_path = matches!(picked.as_ref(), Some(Ok(Ok(Some(paths)))) if !paths.is_empty());
+                            let finalized = if has_path {
+                                match super::device_panel::finalize_controls_checked(view, cx) {
+                                    Ok(finalized) => finalized,
+                                    Err(SnapshotTransportError::Busy) => return true,
+                                    Err(_) => {
+                                        view.error = Some("project read is unavailable".into());
+                                        false
+                                    }
+                                }
+                            } else { false };
+                            if !view.finish_open_picker(generation, serial) {
+                                return false;
+                            }
+                            if window.focused(cx).is_none() {
+                                view.focus.focus(window);
+                            }
+                            match picked.take() {
+                                Some(Ok(Ok(Some(mut paths)))) if finalized && !paths.is_empty() => {
+                                    if let Some(path) = paths.pop() {
                                         view.choose_project(path, mode);
                                     }
                                 }
+                                Some(Ok(Err(error))) => {
+                                    view.error = Some(error.to_string().to_lowercase().into())
+                                }
+                                Some(Ok(Ok(None))) => view.status = "open cancelled".into(),
+                                Some(Ok(Ok(Some(paths)))) if paths.is_empty() => {
+                                    view.status = "open cancelled".into()
+                                }
+                                Some(Err(_)) => view.status = "open cancelled".into(),
+                                _ => {}
                             }
-                            Ok(Err(error)) => {
-                                view.error = Some(error.to_string().to_lowercase().into())
-                            }
-                            _ => view.status = "open cancelled".into(),
-                        }
-                        cx.notify();
-                    });
-                });
+                            cx.notify();
+                            false
+                        }).unwrap_or(false)
+                    }).unwrap_or(false);
+                    if !retry { break; }
+                    cx.background_executor().timer(std::time::Duration::from_millis(5)).await;
+                }
             })
             .detach();
         });
@@ -205,11 +274,22 @@ impl EditorView {
         if self.opening_project || self.project_open.busy() || self.pending_open_path.is_some() {
             return;
         }
-        let has_content = self.state.as_ref().is_some_and(|state| {
-            state.unsaved
-                || !state.project.tracks().is_empty()
-                || state.project.assets().next().is_some()
-        });
+        let has_content = match self.dialog_snapshot(|snapshot| {
+            snapshot.unsaved()
+                || snapshot.model().tracks().len() != 0
+                || snapshot.model().has_assets()
+        }) {
+            Ok(Some(has_content)) => has_content,
+            Ok(None) => false,
+            Err(SnapshotTransportError::Busy) => {
+                self.error = Some("project read busy · choose new project again".into());
+                return;
+            }
+            Err(_) => {
+                self.error = Some("project read is unavailable".into());
+                return;
+            }
+        };
         let has_content = has_content || self.tuning.client.snapshot().is_some();
         if has_content && self.pending_new_mode != Some(mode) {
             self.pending_new_mode = Some(mode);
@@ -263,15 +343,26 @@ impl EditorView {
     }
 
     pub(super) fn import_dialog(&mut self, cx: &mut Context<Self>) {
-        let destination = ImportPromptTarget {
-            track: (self.mode == super::EditorMode::Arrangement)
+        let track = match self.dialog_snapshot(|snapshot| {
+            (self.mode == super::EditorMode::Arrangement)
                 .then_some(self.selected_track)
                 .flatten()
-                .filter(|track| {
-                    self.state
-                        .as_ref()
-                        .is_some_and(|state| state.project.track(*track).is_some())
-                }),
+                .filter(|track| snapshot.model().track(*track).is_some())
+        }) {
+            Ok(Some(track)) => track,
+            Ok(None) => return,
+            Err(SnapshotTransportError::Busy) => {
+                self.error = Some("project read busy · try importing again".into());
+                cx.notify();
+                return;
+            }
+            Err(_) => {
+                self.error = Some("project read is unavailable".into());
+                return;
+            }
+        };
+        let destination = ImportPromptTarget {
+            track,
             start: self.cursor_position(),
             project_generation: self.project_generation,
         };
@@ -326,22 +417,33 @@ impl EditorView {
             prompt: Some("import audio source to session · one-shot".into()),
         });
         cx.spawn(async move |this, cx| {
-            let picked = response.await;
-            let _ = this.update(cx, |view, cx| {
-                match picked {
+            let mut picked = Some(response.await);
+            loop {
+                let retry = this.update(cx, |view, cx| {
+                    let has_path = matches!(picked.as_ref(), Some(Ok(Ok(Some(paths)))) if !paths.is_empty());
+                    let target_valid = if !has_path || view.project_generation != project_generation {
+                        Some(false)
+                    } else {
+                        match view.dialog_snapshot(|snapshot| {
+                            let project = snapshot.model();
+                            project.track(track).is_some()
+                                && project.scenes().any(|item| item.id() == scene)
+                                && matches!(project.session_cell(track, scene), hex_session::snapshot_exports::ui_consumers::SnapshotSessionCellContentRead::Empty)
+                        }) {
+                            Ok(value) => Some(value.unwrap_or(false)),
+                            Err(SnapshotTransportError::Busy) => return true,
+                            Err(_) => {
+                                view.error = Some("project read is unavailable".into());
+                                cx.notify();
+                                return false;
+                            }
+                        }
+                    };
+                    let Some(picked) = picked.take() else { return false; };
+                    match picked {
                     Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
                         if let Some(path) = paths.pop() {
-                            let target_valid = view.project_generation == project_generation
-                                && view.state.as_ref().is_some_and(|state| {
-                                    state.project.track(track).is_some()
-                                        && state
-                                            .project
-                                            .scenes()
-                                            .iter()
-                                            .any(|item| item.id() == scene)
-                                        && state.project.session_cell(track, scene).is_none()
-                                });
-                            if !target_valid {
+                            if target_valid != Some(true) {
                                 view.error = Some(
                                     "select an empty audio session cell before importing".into(),
                                 );
@@ -353,8 +455,12 @@ impl EditorView {
                     Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
                     _ => {}
                 }
-                cx.notify();
-            });
+                    cx.notify();
+                    false
+                }).unwrap_or(false);
+                if !retry { break; }
+                cx.background_executor().timer(std::time::Duration::from_millis(5)).await;
+            }
         })
         .detach();
     }

@@ -10,8 +10,24 @@ impl EditorView {
         let playing = self
             .audio_status()
             .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Relaxed));
-        let can_undo = self.state().is_some_and(|state| state.can_undo);
-        let can_redo = self.state().is_some_and(|state| state.can_redo);
+        // Copy toolbar facts before constructing controls or invoking GPUI.
+        let (can_undo, can_redo, loop_enabled) = self
+            .state()
+            .and_then(|state| {
+                state
+                    .read_with(|snapshot| {
+                        (
+                            snapshot.can_undo(),
+                            snapshot.can_redo(),
+                            snapshot
+                                .model()
+                                .loop_region()
+                                .is_some_and(|region| region.enabled()),
+                        )
+                    })
+                    .ok()
+            })
+            .unwrap_or((false, false, false));
         let output_label = self.output_label();
         let keyboard_description = format!(
             "computer midi keyboard · m · base midi {} · velocity {} · z/x octave · c/v velocity",
@@ -79,17 +95,11 @@ impl EditorView {
                     |view, _, _| view.toggle_loop(),
                     cx,
                 )
-                .text_color(rgb(
-                    if self
-                        .state()
-                        .and_then(|state| state.project.loop_region())
-                        .is_some_and(|region| region.enabled())
-                    {
-                        theme::color(theme::PaletteRole::Primary)
-                    } else {
-                        theme::color(theme::PaletteRole::Muted)
-                    },
-                )),
+                .text_color(rgb(if loop_enabled {
+                    theme::color(theme::PaletteRole::Primary)
+                } else {
+                    theme::color(theme::PaletteRole::Muted)
+                })),
             )
             .child(self.icon("✂", "split at playback cursor · cmd+e", SplitClip, cx))
             .child(
@@ -243,10 +253,12 @@ impl EditorView {
     }
 
     pub(super) fn title_bar(&self, cx: &mut Context<Self>) -> Stateful<Div> {
-        let title = header::project_title(
-            self.state()
-                .and_then(|state| state.document_path.as_deref()),
-        );
+        let title = match self.state() {
+            Some(state) => state
+                .read_with(|snapshot| header::project_title(snapshot.document_path()))
+                .unwrap_or_else(|_| "project read unavailable".to_owned()),
+            None => header::project_title(None),
+        };
         header::title_bar(title, |control| match control {
             header::TitlebarControl::Close => Box::new(cx.listener(|view, _, window, cx| {
                 if view.request_window_close(window, cx) {
@@ -360,9 +372,13 @@ impl EditorView {
 
     fn position_label(&self) -> String {
         let frame = self.cursor_position();
-        let rate = self
-            .state()
-            .map_or(48_000_u64, |state| u64::from(state.project.sample_rate()));
+        let rate = match self.state() {
+            Some(state) => match state.read_with(|snapshot| u64::from(snapshot.sample_rate())) {
+                Ok(rate) => rate,
+                Err(_) => return "read unavailable".to_owned(),
+            },
+            None => 48_000,
+        };
         let millis = frame.saturating_mul(1_000) / rate.max(1);
         format!(
             "{}:{:02}.{:03}",

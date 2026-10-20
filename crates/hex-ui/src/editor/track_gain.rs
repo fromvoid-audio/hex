@@ -3,8 +3,9 @@ use super::{EditorView, device_panel};
 use crate::theme;
 use gpui::{Context, Div, Entity, Subscription, div, prelude::*, px};
 use hex_lattice_contract::ParameterValue;
-use hex_project::{ReturnId, ReturnTrack, Track, TrackId};
+use hex_project::{ReturnId, Track, TrackId};
 use hex_session::device_gesture::GestureTarget;
+use hex_session::snapshot_exports::{SnapshotProjectRead, SnapshotRead, SnapshotTransportError};
 use hex_widgets::{
     NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
     NumericControlKind, NumericDragAxis, NumericEventPhase, NumericScale, NumericSpec,
@@ -34,14 +35,17 @@ impl MixerKey {
             Self::ReturnGain(return_track) => GestureTarget::ReturnGain { return_track },
         }
     }
+    fn current_in(self, project: SnapshotProjectRead<'_>) -> bool {
+        match self {
+            Self::Balance(track) => project.track(track).is_some(),
+            Self::ReturnGain(id) => project.returns().any(|track| track.id() == id),
+        }
+    }
     fn current(self, view: &EditorView) -> bool {
-        view.state.as_ref().is_some_and(|state| match self {
-            Self::Balance(track) => state.project.track(track).is_some(),
-            Self::ReturnGain(id) => state
-                .project
-                .return_tracks()
-                .iter()
-                .any(|track| track.id() == id),
+        view.state.as_ref().is_some_and(|state| {
+            state
+                .read_with(|snapshot| self.current_in(snapshot.model()))
+                .unwrap_or(false)
         })
     }
 }
@@ -72,25 +76,70 @@ fn automated(track: &Track) -> bool {
     !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty()
 }
 
-fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
-    let Some(state) = view.state.as_ref() else {
+pub(super) struct Retirement {
+    generation: u64,
+    revision: u64,
+    gains: Vec<TrackId>,
+    mixer: Vec<MixerKey>,
+}
+pub(super) fn retirement_buffers(view: &EditorView) -> Result<Retirement, &'static str> {
+    let mut gains = Vec::new();
+    let mut mixer = Vec::new();
+    gains
+        .try_reserve_exact(view.track_gain_controls.bindings.len())
+        .map_err(|_| "could not reserve volume retirement")?;
+    mixer
+        .try_reserve_exact(view.track_gain_controls.mixer.len())
+        .map_err(|_| "could not reserve mixer retirement")?;
+    Ok(Retirement {
+        generation: view.project_generation,
+        revision: 0,
+        gains,
+        mixer,
+    })
+}
+pub(super) fn retirement(
+    view: &EditorView,
+    snapshot: SnapshotRead<'_>,
+    output: &mut Retirement,
+) -> Result<bool, &'static str> {
+    // Reconcile the actual read even when its revision is saturated. A different
+    // installed source can legitimately carry the same project revision.
+    let project = snapshot.model();
+    output.revision = snapshot.revision();
+    for id in view.track_gain_controls.bindings.keys().copied() {
+        if view.track_gain_controls.generation != view.project_generation
+            || project.track(id).is_none_or(|track| {
+                !track.gain_points().is_empty() || track.gain_spans().next().is_some()
+            })
+        {
+            if output.gains.len() == output.gains.capacity() {
+                return Err("volume retirement inventory changed");
+            }
+            output.gains.push(id);
+        }
+    }
+    for key in view.track_gain_controls.mixer.keys().copied() {
+        if view.track_gain_controls.generation != view.project_generation
+            || !key.current_in(project)
+        {
+            if output.mixer.len() == output.mixer.capacity() {
+                return Err("mixer retirement inventory changed");
+            }
+            output.mixer.push(key);
+        }
+    }
+    Ok(true)
+}
+pub(super) fn apply_retirement(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+    prepared: Option<Retirement>,
+) {
+    let Some(prepared) = prepared else {
         return;
     };
-    if view.track_gain_controls.generation == view.project_generation
-        && view.track_gain_controls.revision == Some(state.revision)
-    {
-        return;
-    }
-    let stale = view
-        .track_gain_controls
-        .bindings
-        .keys()
-        .copied()
-        .filter(|id| {
-            view.track_gain_controls.generation != view.project_generation
-                || state.project.track(*id).is_none_or(automated)
-        })
-        .collect::<Vec<_>>();
+    let stale = prepared.gains;
     for track in stale {
         if let Some(binding) = view.track_gain_controls.bindings.remove(&track) {
             if device_panel::owns_numeric_gesture(
@@ -104,15 +153,7 @@ fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
             binding.entity.update(cx, |control, cx| control.cancel(cx));
         }
     }
-    let stale = view
-        .track_gain_controls
-        .mixer
-        .keys()
-        .copied()
-        .filter(|key| {
-            view.track_gain_controls.generation != view.project_generation || !key.current(view)
-        })
-        .collect::<Vec<_>>();
+    let stale = prepared.mixer;
     for key in stale {
         if let Some(binding) = view.track_gain_controls.mixer.remove(&key) {
             if device_panel::owns_numeric_gesture(view, key.target(), &binding.lease) {
@@ -122,15 +163,40 @@ fn retire_stale(view: &mut EditorView, cx: &mut Context<EditorView>) {
             binding.entity.update(cx, |control, cx| control.cancel(cx));
         }
     }
-    view.track_gain_controls.generation = view.project_generation;
-    view.track_gain_controls.revision = view.state.as_ref().map(|state| state.revision);
+    view.track_gain_controls.generation = prepared.generation;
+    view.track_gain_controls.revision = Some(prepared.revision);
+}
+fn retire_stale(
+    view: &mut EditorView,
+    cx: &mut Context<EditorView>,
+) -> Result<bool, SnapshotTransportError> {
+    let Some(state) = view.state.as_ref() else {
+        return Ok(true);
+    };
+    let mut output = match retirement_buffers(view) {
+        Ok(output) => output,
+        Err(reason) => {
+            view.error = Some(reason.into());
+            return Ok(false);
+        }
+    };
+    let apply = state.read_with(|snapshot| retirement(view, snapshot, &mut output))?;
+    match apply {
+        Ok(changed) => apply_retirement(view, cx, changed.then_some(output)),
+        Err(reason) => {
+            view.error = Some(reason.into());
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
 
 pub(super) fn controls_for_finalize(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
 ) -> Vec<(GestureTarget, Entity<NumericControl>)> {
-    retire_stale(view, cx);
+    // Retirement was prepared with the finalizer's single scoped read.
+    let _ = cx;
     view.track_gain_controls
         .bindings
         .iter()
@@ -151,7 +217,9 @@ pub(super) fn controls_for_finalize(
 
 impl EditorView {
     pub(super) fn track_volume(&mut self, track: &Track, cx: &mut Context<Self>) -> Div {
-        retire_stale(self, cx);
+        if !matches!(retire_stale(self, cx), Ok(true)) {
+            return div();
+        }
         let id = track.id();
         if automated(track) {
             return div()
@@ -204,6 +272,17 @@ impl EditorView {
                         return;
                     }
                     if event.phase == NumericEventPhase::Begin {
+                        let Some(state) = view.state.as_ref() else {
+                            return;
+                        };
+                        let Ok(owns_automation) = state.read_with(|snapshot| {
+                            snapshot.model().track(id).is_none_or(|track| {
+                                !track.gain_points().is_empty()
+                                    || track.gain_spans().next().is_some()
+                            })
+                        }) else {
+                            return;
+                        };
                         // Gesture pumping bypasses ordinary edit admission while recording.
                         let reason = if view.document_audio_mode
                             != hex_session::DocumentAudioMode::Resident
@@ -211,12 +290,7 @@ impl EditorView {
                             Some("live track volume is unavailable in this project mode")
                         } else if view.gain_recorder.blocks_edits() {
                             Some("finish gain recording before changing track volume")
-                        } else if view
-                            .state
-                            .as_ref()
-                            .and_then(|s| s.project.track(id))
-                            .is_none_or(automated)
-                        {
+                        } else if owns_automation {
                             Some("automation owns gain · edit or clear the gain lane")
                         } else if view.edit_pending() {
                             Some("wait for the current project edit before changing volume")
@@ -295,7 +369,7 @@ impl EditorView {
         )
     }
 
-    pub(super) fn return_volume(&mut self, track: &ReturnTrack, cx: &mut Context<Self>) -> Div {
+    pub(super) fn return_volume(&mut self, id: ReturnId, gain: f32, cx: &mut Context<Self>) -> Div {
         let Ok(spec) = NumericSpec::new(
             0.0,
             2.0,
@@ -307,11 +381,11 @@ impl EditorView {
             return div();
         };
         self.mixer_control(
-            MixerKey::ReturnGain(track.id()),
-            format!("return-volume-{}", track.id().value()),
+            MixerKey::ReturnGain(id),
+            format!("return-volume-{}", id.value()),
             "return volume · db",
             spec,
-            track.gain(),
+            gain,
             cx,
         )
     }
@@ -325,7 +399,9 @@ impl EditorView {
         canonical: f32,
         cx: &mut Context<Self>,
     ) -> Div {
-        retire_stale(self, cx);
+        if !matches!(retire_stale(self, cx), Ok(true)) {
+            return div();
+        }
         let target = key.target();
         let generation = self.project_generation;
         if let std::collections::btree_map::Entry::Vacant(entry) =

@@ -5,18 +5,27 @@ use hex_session::service::{ExportControl, ExportSignal, Request, Stem};
 use std::{path::PathBuf, sync::mpsc::TryRecvError};
 
 impl EditorView {
+    #[cfg(test)]
     pub(super) fn selected_export_tracks(&self) -> Vec<Stem> {
-        self.state().map_or_else(Vec::new, |state| {
-            self.selected_track_ids()
-                .into_iter()
-                .filter_map(|id| {
-                    state.project.track(id).map(|track| Stem {
-                        id: hex_engine::OutputCaptureId::Track(id),
-                        name: track.name().to_owned(),
+        self.state()
+            .and_then(|state| {
+                state
+                    .read_with(|snapshot| {
+                        let project = snapshot.model();
+                        self.track_selection
+                            .ordered(&project)
+                            .into_iter()
+                            .filter_map(|id| {
+                                project.track(id).map(|track| Stem {
+                                    id: hex_engine::OutputCaptureId::Track(id),
+                                    name: track.name().to_owned(),
+                                })
+                            })
+                            .collect()
                     })
-                })
-                .collect()
-        })
+                    .ok()
+            })
+            .unwrap_or_default()
     }
 
     pub(super) fn export_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -32,9 +41,6 @@ impl EditorView {
             }
             return;
         }
-        if !super::device_panel::finalize_controls(self, cx) {
-            return;
-        }
         if self.export_dialog_open {
             self.error = Some("an export is already pending".into());
             return;
@@ -43,34 +49,43 @@ impl EditorView {
             self.error = Some("finish the current dialog before exporting".into());
             return;
         }
-        self.export_dialog_open = true;
-        // The selection is canonical frame timing, captured when requesting
-        // the dialog. A time highlight never silently changes output scope.
-        let range = self.normalized_time_selection();
-        let start = range.as_ref().map_or(0, |range| range.start());
-        let frames = range.as_ref().map(|range| range.end() - range.start());
-        let selected = self.selected_track_ids();
-        let returns: Vec<_> = self
-            .state()
-            .map(|state| {
-                state
-                    .project
-                    .return_tracks()
-                    .iter()
-                    .map(|bus| hex_engine::OutputCaptureId::Return(bus.id()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let stems: Vec<_> = self
-            .selected_export_tracks()
-            .into_iter()
-            .chain(self.state().into_iter().flat_map(|state| {
-                state.project.return_tracks().iter().map(|bus| Stem {
+        // Capture output scope only after a successful current read. Pressure
+        // must not turn an existing time range/track selection into a full mix.
+        let Some(state) = self.state() else {
+            return;
+        };
+        let Ok((range, selected, returns, stems)) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let range = self.normalized_time_selection_in(project);
+            let selected = self.track_selection.ordered(&project);
+            let returns: Vec<_> = project
+                .returns()
+                .map(|bus| hex_engine::OutputCaptureId::Return(bus.id()))
+                .collect();
+            let stems: Vec<_> = selected
+                .iter()
+                .filter_map(|id| {
+                    project.track(*id).map(|track| Stem {
+                        id: hex_engine::OutputCaptureId::Track(*id),
+                        name: track.name().to_owned(),
+                    })
+                })
+                .chain(project.returns().map(|bus| Stem {
                     id: hex_engine::OutputCaptureId::Return(bus.id()),
                     name: bus.name().to_owned(),
-                })
-            }))
-            .collect();
+                }))
+                .collect();
+            (range, selected, returns, stems)
+        }) else {
+            self.error = Some("project read unavailable · cannot export".into());
+            return;
+        };
+        if !super::device_panel::finalize_controls(self, cx) {
+            return;
+        }
+        self.export_dialog_open = true;
+        let start = range.as_ref().map_or(0, |range| range.start());
+        let frames = range.as_ref().map(|range| range.end() - range.start());
         let handle = window.window_handle();
         let scope = window.prompt(
             PromptLevel::Info,
