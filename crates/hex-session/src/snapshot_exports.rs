@@ -442,15 +442,37 @@ impl SnapshotExportRecords {
         stamp: &SnapshotReadStamp,
         read: impl for<'view> FnOnce(SnapshotRead<'view>) -> R,
     ) -> Result<R, ExportRecordError> {
+        Ok(read(SnapshotRead {
+            snapshot: self.snapshot_for_read(stamp)?,
+        }))
+    }
+    fn snapshot_for_read(
+        &self,
+        stamp: &SnapshotReadStamp,
+    ) -> Result<&ViewState, ExportRecordError> {
         if self.read_record(stamp)?.released.load(Ordering::Acquire) {
             return Err(ExportRecordError::Stale);
         }
-        let snapshot = self
-            .record(stamp.snapshot)?
+        self.record(stamp.snapshot)?
             .snapshot
+            .as_deref()
+            .ok_or(ExportRecordError::Stale)
+    }
+    /// Ordered authoring correlation of TWO actual live reads. Both records
+    /// stay borrowed under the SAME family exclusion; no nested acquisition.
+    /// This boolean conveys neither native admission nor a storage receipt.
+    pub fn follows_source(
+        &self,
+        current: &SnapshotReadStamp,
+        previous: &SnapshotReadStamp,
+        generation: u64,
+    ) -> Result<bool, ExportRecordError> {
+        let current = self.snapshot_for_read(current)?;
+        let previous = self.snapshot_for_read(previous)?;
+        Ok(current
+            .comparison_audio
             .as_ref()
-            .ok_or(ExportRecordError::Stale)?;
-        Ok(read(SnapshotRead { snapshot }))
+            .is_some_and(|binding| binding.follows(previous, current, generation)))
     }
     /// Durable release only: no snapshot destruction, byte-release claim or
     /// owning enqueue. The service later processes this exact incarnation.

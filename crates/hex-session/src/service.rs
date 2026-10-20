@@ -35,6 +35,7 @@ use worker_roots::WorkerDispatchState;
 pub use worker_roots::{WorkerRootChildInventory, WorkerRootDispatch, WorkerRootView};
 mod worker_startup;
 use worker_startup::{ServiceStop, WorkerStartup};
+mod comparison_audio;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -43,6 +44,7 @@ pub use canonical_audio_source::{
     CanonicalAudioSourceSnapshot, SharedCanonicalAudioSource,
     visit_canonical_source_selected_storage_on_control,
 };
+pub use comparison_audio::ComparisonAudioBinding;
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
@@ -81,6 +83,7 @@ pub struct ViewState {
     /// Present only for a canonical worker snapshot. Preview views cannot mint
     /// source freshness for streamed constructor publication.
     pub canonical_audio_source: Option<SharedCanonicalAudioSource>,
+    pub comparison_audio: Option<ComparisonAudioBinding>,
     pub project: crate::SharedProject,
     pub waveforms: SortedEntries<hex_project::AssetId, crate::SharedWaveform>,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
@@ -1031,6 +1034,30 @@ pub(crate) fn view_state_owned(
     unsaved: bool,
     document_path: Option<&Path>,
 ) -> ViewState {
+    view_state_owned_bound(
+        session,
+        midi_preview,
+        revision,
+        project_generation,
+        unsaved,
+        document_path,
+        None,
+    )
+}
+// Same worker constructor only. The closed caller quotes the actual old/new
+// pair and all view children before entry; this helper grants no admission.
+fn view_state_owned_bound(
+    session: &Session,
+    midi_preview: hex_engine::SharedMidiArrangementPreview,
+    revision: u64,
+    project_generation: u64,
+    unsaved: bool,
+    document_path: Option<&Path>,
+    previous: Option<&ViewState>,
+) -> ViewState {
+    let comparison_audio = previous.and_then(|previous| {
+        ComparisonAudioBinding::advance(previous, project_generation, revision, session)
+    });
     let project = crate::SharedProject::new_on_control(session.project().clone());
     let rate = u64::from(project.sample_rate());
     let latest_clip_end = latest_clip_end(&project);
@@ -1041,9 +1068,18 @@ pub(crate) fn view_state_owned(
             .unwrap_or(0),
     );
     ViewState {
-        canonical_audio_source: Some(SharedCanonicalAudioSource::new_on_control(
-            CanonicalAudioSourceSnapshot::capture(&project, project_generation, revision, session),
-        )),
+        canonical_audio_source: Some(match &comparison_audio {
+            Some(binding) => binding.source.clone(),
+            None => {
+                SharedCanonicalAudioSource::new_on_control(CanonicalAudioSourceSnapshot::capture(
+                    &project,
+                    project_generation,
+                    revision,
+                    session,
+                ))
+            }
+        }),
+        comparison_audio,
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project)
             .map(hex_engine::SharedGainAutomationPreview::new_on_control),
         project,
@@ -1075,6 +1111,7 @@ fn preview_view_state(
     );
     Arc::new(ViewState {
         canonical_audio_source: None,
+        comparison_audio: None,
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project)
             .map(hex_engine::SharedGainAutomationPreview::new_on_control),
         project,

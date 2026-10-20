@@ -30,6 +30,12 @@ type Derive = fn(
 ) -> Result<SnapshotReadStamp, SnapshotTransportError>;
 type Release = fn(RetainedControlJobRoute, SnapshotReadStamp) -> Result<(), SnapshotTransportError>;
 type Report = fn(RetainedControlJobRoute, SnapshotTransportError);
+type FollowsSource = fn(
+    RetainedControlJobRoute,
+    &SnapshotReadStamp,
+    &SnapshotReadStamp,
+    u64,
+) -> Result<bool, SnapshotTransportError>;
 
 /// Neutral composition hooks only, NOT generic native authority. Production
 /// supplies one private static audited desktop adapter, with no owner capture.
@@ -42,6 +48,7 @@ pub struct SnapshotReadOperations {
     derive: Derive,
     release: Release,
     report: Report,
+    follows_source: FollowsSource,
 }
 impl SnapshotReadOperations {
     pub const fn new_unqualified(
@@ -50,6 +57,7 @@ impl SnapshotReadOperations {
         derive: Derive,
         release: Release,
         report: Report,
+        follows_source: FollowsSource,
     ) -> Self {
         Self {
             validate,
@@ -57,6 +65,7 @@ impl SnapshotReadOperations {
             derive,
             release,
             report,
+            follows_source,
         }
     }
 }
@@ -139,6 +148,24 @@ impl SnapshotReadCapability {
             return Err(SnapshotTransportError::Protocol);
         }
         continuation.result.ok_or(SnapshotTransportError::Protocol)
+    }
+    /// Query the ordered worker binding under ONE actual family read. Both
+    /// capabilities must use the same concrete registered route/adapter.
+    /// Call outside all existing read/native/GPUI scopes; no owner escapes.
+    pub fn follows_source(
+        &self,
+        previous: &Self,
+        generation: u64,
+    ) -> Result<bool, SnapshotTransportError> {
+        if self.route != previous.route || !std::ptr::eq(self.operations, previous.operations) {
+            return Err(SnapshotTransportError::Stale);
+        }
+        let current = self.stamp.as_ref().ok_or(SnapshotTransportError::Stale)?;
+        let previous = previous
+            .stamp
+            .as_ref()
+            .ok_or(SnapshotTransportError::Stale)?;
+        (self.operations.follows_source)(self.route, current, previous, generation)
     }
     pub fn try_derive(&self) -> Result<Self, SnapshotTransportError> {
         let stamp = self.stamp.as_ref().ok_or(SnapshotTransportError::Stale)?;

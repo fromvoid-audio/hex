@@ -97,6 +97,37 @@ impl CanonicalAudioSourceSnapshot {
     pub fn project_owner_on_control(&self) -> &crate::SharedProject {
         &self.project
     }
+    // Borrow actual current bindings, without constructing a temporary owner map.
+    pub(super) fn matches_session_sources(&self, session: &Session) -> bool {
+        if self.mode != session.audio_mode() {
+            return false;
+        }
+        let current = session
+            .project()
+            .asset_entries_on_control()
+            .iter()
+            .filter(|(id, _)| {
+                session.verified_sources.get(id).is_some() || session.audio(**id).is_some()
+            })
+            .count();
+        self.sources.len() == current
+            && self.sources.iter().all(|(id, source)| {
+                session.project().asset(*id).is_some()
+                    && match source {
+                        crate::AudioSourceBinding::Resident(old) => {
+                            session.verified_sources.get(id).is_none()
+                                && session.audio(*id).is_some_and(|new| {
+                                    old.sample_rate() == new.sample_rate()
+                                        && old.shares_pcm_with(new)
+                                })
+                        }
+                        crate::AudioSourceBinding::VerifiedFile(old) => session
+                            .verified_sources
+                            .get(id)
+                            .is_some_and(|new| old == new),
+                    }
+            })
+    }
     pub fn audio_mode(&self) -> crate::DocumentAudioMode {
         self.mode
     }

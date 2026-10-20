@@ -27,6 +27,7 @@ pub(super) fn copy_view(source: &ViewState) -> ViewState {
     // Legacy preview/parent custody remains unqualified outside this protocol oracle.
     ViewState {
         canonical_audio_source: source.canonical_audio_source.clone(),
+        comparison_audio: source.comparison_audio.clone(),
         project: source.project.clone(),
         waveforms: source.waveforms.clone(),
         audio_clip_waveforms: source.audio_clip_waveforms.clone(),
@@ -185,6 +186,33 @@ fn actual_registered_event_transport_releases_discarded_queued_preview_and_unpai
     assert!(refused_read.is_some());
     release_pending_on_control(id, &mut refused_read).unwrap();
     assert!(refused_read.is_none());
+    let mut foreign_view = Some(copy_view(&initial.state));
+    let mut foreign_stamp = Some(
+        with_family(foreign_id, |family| {
+            family.insert_event_read_on_control(&foreign_key, &mut foreign_view)
+        })
+        .unwrap(),
+    );
+    let foreign_cap = bind(foreign_id, &mut foreign_stamp);
+    assert_eq!(base.follows_source(&foreign_cap, 1), Err(Error::Stale));
+    let same = wait_derive(&base);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match base.follows_source(&same, 1) {
+            Ok(false) => break, // no sealed ordered metadata transition in this fixture
+            Err(Error::Busy) if Instant::now() < deadline => std::thread::yield_now(),
+            other => panic!("registered ordered source dispatch refused: {other:?}"),
+        }
+    }
+    let allocation = allocation_counter::measure(|| {
+        let result = base.follows_source(&same, 1);
+        assert!(matches!(result, Ok(false) | Err(Error::Busy)));
+        assert_eq!(base.follows_source(&foreign_cap, 1), Err(Error::Stale));
+    });
+    assert_eq!(allocation.count_total, 0);
+    assert_eq!(allocation.count_current, 0);
+    drop(same);
+    drop(foreign_cap);
     with_family(foreign_id, |family| family.abandon_on_control(&foreign_key)).unwrap();
     verify_two_free(&base);
     // Real producer abandonment closes future snapshots; old live reads/derive
