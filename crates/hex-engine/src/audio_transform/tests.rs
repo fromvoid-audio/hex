@@ -5,6 +5,8 @@ use hex_project::{
 };
 use std::{collections::BTreeMap, sync::atomic::Ordering};
 
+mod trim_facade;
+
 fn fixture(
     looping: bool,
 ) -> (

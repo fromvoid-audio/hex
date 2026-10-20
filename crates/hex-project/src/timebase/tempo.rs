@@ -42,6 +42,27 @@ pub struct TempoMap {
 }
 
 impl TempoMap {
+    pub(crate) fn visit_content_eq(
+        &self,
+        emit: &mut dyn FnMut(crate::clip_content::ContentAtom) -> Result<(), Invalid>,
+    ) -> Result<(), Invalid> {
+        use crate::clip_content::ContentAtom;
+        let Self {
+            sample_rate,
+            points,
+            frame_prefix_q32,
+        } = self;
+        emit(ContentAtom::Word(u64::from(*sample_rate)))?;
+        emit(ContentAtom::Word(points.len() as u64))?;
+        for point in points {
+            emit(ContentAtom::TempoPoint(*point))?;
+        }
+        emit(ContentAtom::Word(frame_prefix_q32.len() as u64))?;
+        for prefix in frame_prefix_q32 {
+            emit(ContentAtom::Wide(*prefix))?;
+        }
+        Ok(())
+    }
     /// First raw Q32.32 value beyond the representable beat domain.
     pub const BEAT_RANGE_SENTINEL: u128 = u64::MAX as u128 + 1;
 
@@ -504,5 +525,25 @@ mod tests {
         assert_eq!(ceil_ratio(4, 2).unwrap(), 2);
         assert_eq!(ceil_ratio(5, 2).unwrap(), 3);
         assert!(ceil_ratio(1, 0).is_err());
+    }
+
+    #[test]
+    fn clip_content_walk_includes_frozen_fractional_prefix_not_only_public_points() {
+        let original = TempoMap::constant(48_000, Tempo::DEFAULT).unwrap();
+        let mut changed = original.clone();
+        changed.frame_prefix_q32[0] = 1;
+        assert_eq!(original.points(), changed.points());
+        assert_eq!(original.sample_rate(), changed.sample_rate());
+        assert_ne!(original, changed);
+        let atoms = |map: &TempoMap| {
+            let mut values = Vec::new();
+            map.visit_content_eq(&mut |atom| {
+                values.push(atom);
+                Ok(())
+            })
+            .unwrap();
+            values
+        };
+        assert_ne!(atoms(&original), atoms(&changed));
     }
 }

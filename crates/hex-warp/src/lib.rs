@@ -146,8 +146,13 @@ pub struct MapSegment {
 pub struct TimeMap {
     segments: Vec<MapSegment>,
 }
-impl TimeMap {
-    pub fn new(segments: Vec<MapSegment>, output_frames: usize) -> Result<Self, Error> {
+/// Borrowed metadata admission using exactly the owning map constructor and
+/// stretch law. No allocation, ownership or PCM preparation is performed.
+pub struct TimeMapRead<'a> {
+    segments: &'a [MapSegment],
+}
+impl<'a> TimeMapRead<'a> {
+    pub fn new(segments: &'a [MapSegment], output_frames: usize) -> Result<Self, Error> {
         if output_frames == 0
             || output_frames > MAX_OUTPUT_FRAMES
             || segments.is_empty()
@@ -161,7 +166,7 @@ impl TimeMap {
                 "audio map needs bounded explicit output endpoints",
             ));
         }
-        for segment in &segments {
+        for segment in segments {
             if segment.output_start >= segment.output_end
                 || segment.source_start_q32 >= segment.source_end_q32
             {
@@ -185,16 +190,13 @@ impl TimeMap {
         }
         Ok(Self { segments })
     }
-    /// Validate the renderer's exact per-segment stretch and pitch capability.
-    /// Metadata only; the existing map constructor owns extent/segment validity.
-    /// This does not admit PCM, algorithm settings, scratch or render work.
     pub fn validate_stretch(&self, mode: Mode, pitch_cents: i16) -> Result<(), Error> {
         if !(-4_800..=4_800).contains(&pitch_cents) {
             return Err(Error::Invalid("invalid audio transform extent or pitch"));
         }
         let pitch = 2.0_f64.powf(f64::from(pitch_cents) / 1_200.0);
         if !matches!(mode, Mode::Resample) {
-            for segment in self.segments() {
+            for segment in self.segments {
                 let ratio = (segment.output_end - segment.output_start) as f64 * Q32 as f64
                     / (segment.source_end_q32 - segment.source_start_q32) as f64;
                 let compensated = if matches!(mode, Mode::RePitch) {
@@ -210,6 +212,21 @@ impl TimeMap {
             }
         }
         Ok(())
+    }
+}
+impl TimeMap {
+    pub fn new(segments: Vec<MapSegment>, output_frames: usize) -> Result<Self, Error> {
+        TimeMapRead::new(&segments, output_frames)?;
+        Ok(Self { segments })
+    }
+    /// Validate the renderer's exact per-segment stretch and pitch capability.
+    /// Metadata only; the existing map constructor owns extent/segment validity.
+    /// This does not admit PCM, algorithm settings, scratch or render work.
+    pub fn validate_stretch(&self, mode: Mode, pitch_cents: i16) -> Result<(), Error> {
+        TimeMapRead {
+            segments: &self.segments,
+        }
+        .validate_stretch(mode, pitch_cents)
     }
     pub fn segments(&self) -> &[MapSegment] {
         &self.segments
