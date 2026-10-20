@@ -355,3 +355,11 @@ schedules one follow-up reconciliation even if no expanded-folder worker starts.
 History therefore restores the saved highlight on the initiating mouse-down,
 without waiting for mouse-up or an unrelated redraw. Stable roots quiesce; real
 listing/tree/catalog work still fences restoration until its provider is ready.
+
+Restoration distinguishes physical folder-worker ownership from projection
+readiness. A scan whose source epoch or path/serial no longer contributes to the
+current rows cannot block an already available saved item. The same single worker
+remains busy until its real result returns; no replacement worker is started.
+Current expanded-directory work still fences restoration, including directory
+augmentations in indexed All and Place queries. Strict saved top-row identity is
+resolved after the actual refresh inserts or removes rows.

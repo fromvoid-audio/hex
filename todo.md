@@ -6147,3 +6147,13 @@ acceptance remain separate; prior fixture-only baseline failure is not a product
   Schedule only root-projection re-dirtiness through existing reconciliation,
   preserving real worker waits and all prior history/hidden-source controls.
   Current focused checks and final qualification remain pending.
+
+- PR286 readiness continuation: retained the single physical folder worker while
+  fencing restoration only on current projection-capable epoch/path/serial work,
+  including indexed expanded All/Place rows. Actual held-worker baseline had two
+  failures; corrected owning history17/17 plus default/feature strict and format
+  passed. The first new scroll fixture was bottom-clamped; its failed result is
+  retained and the corrected fixture verifies its initial unclamped position.
+  Historical bf8 full21 pass remains review-blocked source evidence, not a pass
+  for this changed candidate. Current required plan/review/merge remains pending;
+  no native or installed-build acceptance is claimed.
