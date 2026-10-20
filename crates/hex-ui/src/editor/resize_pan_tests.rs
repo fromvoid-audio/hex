@@ -60,12 +60,27 @@ fn fixture_with_streamed_source(
     ClipId,
     super::super::external_audio_drop_ui_test::BatchFiles,
 ) {
+    fixture_with_streamed_source_at_rate(cx, midi, viewport, streamed_source, 48_000)
+}
+fn fixture_with_streamed_source_at_rate(
+    cx: &mut TestAppContext,
+    midi: bool,
+    viewport: Option<Viewport>,
+    streamed_source: bool,
+    sample_rate: u32,
+) -> (
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    TrackId,
+    ClipId,
+    super::super::external_audio_drop_ui_test::BatchFiles,
+) {
     cx.update(super::super::bind_editor_keys);
     let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
-    let browser_marker = files.wav("bounded-browser.wav", 48_000, 48);
+    let browser_marker = files.wav("bounded-browser.wav", sample_rate, sample_rate / 1_000);
     let directory = browser_marker.parent().unwrap();
     std::fs::create_dir(directory.join("samples")).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    let service = Service::new(sample_rate, 32, 8_000_000).unwrap();
     next(&service);
     let replacement = if streamed_source {
         assert!(!midi);
@@ -127,7 +142,11 @@ fn fixture_with_streamed_source(
         (next(&service), track, clip)
     } else {
         service
-            .submit(Request::Import(files.wav("resize.wav", 48_000, 96_000)))
+            .submit(Request::Import(files.wav(
+                "resize.wav",
+                sample_rate,
+                sample_rate * 2,
+            )))
             .unwrap();
         let event = next(&service);
         let track = event.state.project.tracks()[0].id();
@@ -136,7 +155,7 @@ fn fixture_with_streamed_source(
             .submit(Request::Edit(Command::MoveClip {
                 clip,
                 track,
-                start: 96_000,
+                start: u64::from(sample_rate) * 2,
             }))
             .unwrap();
         next(&service);
@@ -439,7 +458,10 @@ fn resize_left_pan_stops_at_zero_and_nonloop_audio_source_limit_stops_right_pan(
 #[gpui::test]
 fn resize_pan_preserves_stationary_snap_and_shift_stretch_preview_release(cx: &mut TestAppContext) {
     for stretch in [false, true] {
-        let (handle, editor, track, clip, _files) = fixture(cx, false, None);
+        // Keep the two-second musical geometry and actual Beats preparation,
+        // bounding debug DSP work while testing gesture and terminal delivery.
+        let (handle, editor, track, clip, _files) =
+            fixture_with_streamed_source_at_rate(cx, false, None, false, 8_000);
         let mut visual = VisualTestContext::from_window(handle, cx);
         editor.update(&mut visual, |v, cx| {
             v.snap_grid = SnapGrid::default();
