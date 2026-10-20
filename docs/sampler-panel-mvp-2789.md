@@ -83,6 +83,14 @@ allocation instrumentation and real nominal UI fixtures remain unexecuted.
 This is continued source integration, with startup/playback/full qualification
 and optimized delivery still open.
 
+The next loop-rail read port retains the original mouse-up through snapshot
+Busy, restores prior pending-loop display after refused submission, and checks
+its gesture incarnation before retry. The partial library diagnostic reports
+441 actual errors with no primary loop-rail diagnostic. Automatic retry of UI
+queue capacity remains explicitly incomplete until enqueue returns typed
+admission results; permanent refusal must not be retried as if it were Busy.
+Its pure nonce test and actual registered UI pressure tests have not run.
+
 The production device-composition source guard passes with the real instrument
 dispatch. Earlier staged leaf tests (UI2, Engine2, Session30) remain evidence for
 that earlier immutable component only. The earlier feature-only mount and its

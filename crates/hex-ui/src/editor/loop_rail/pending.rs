@@ -44,18 +44,21 @@ impl EditorView {
         false
     }
 
-    pub(super) fn submit_loop_preview(&mut self, generation: u64, region: LoopRegion) {
+    pub(super) fn submit_loop_preview(&mut self, generation: u64, region: LoopRegion) -> bool {
+        let previous = self.pending_loop;
         self.pending_loop = Some(PendingLoop {
             generation,
             region,
             remaining: None,
         });
-        if !self.enqueue(Request::Edit(Command::SetLoopRegion {
+        let accepted = self.enqueue(Request::Edit(Command::SetLoopRegion {
             start: region.start(),
             end: region.end(),
             enabled: region.enabled(),
-        })) {
-            self.pending_loop = None;
+        }));
+        if !accepted {
+            self.pending_loop = previous;
         }
+        accepted
     }
 }

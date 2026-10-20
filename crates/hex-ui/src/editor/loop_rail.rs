@@ -7,6 +7,19 @@ use gpui::{
 };
 use hex_project::{Command, LoopRegion};
 use hex_session::service::Request;
+use hex_session::snapshot_exports::SnapshotTransportError;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+// File-local monotonic UI gesture incarnation, never a source/admission token.
+// Exhaustion refuses a new gesture instead of reusing an old task's identity.
+static NEXT_LOOP_GESTURE: AtomicU64 = AtomicU64::new(1);
+fn next_loop_incarnation(counter: &AtomicU64) -> Option<u64> {
+    counter
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            value.checked_add(1)
+        })
+        .ok()
+}
 
 mod pending;
 
@@ -31,6 +44,8 @@ enum EditMode {
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct LoopRailGesture {
+    incarnation: u64,
+    pending_release: Option<PendingRelease>,
     generation: u64,
     revision: u64,
     loop_region: Option<LoopRegion>,
@@ -46,6 +61,22 @@ pub(super) struct LoopRailGesture {
     toggle_on_click: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct PendingRelease {
+    position: gpui::Point<gpui::Pixels>,
+    modifiers: Modifiers,
+}
+#[derive(Clone, Copy, Debug)]
+enum PreparedLoopUpdate {
+    NoGesture,
+    Cancel,
+    Candidate(LoopRailGesture),
+}
+#[derive(Clone, Copy, Debug)]
+enum LoopFinish {
+    Handled(bool),
+    AdmissionRefused,
+}
 #[derive(Clone, Copy, Debug)]
 enum Hover {
     Paint,
@@ -96,53 +127,170 @@ impl EditorView {
             return false;
         };
 
-        if let Some(region) = region
-            && let Some(mode) = region_edit_mode(region, viewport, bounds, x)
-        {
-            self.loop_rail_gesture = Some(LoopRailGesture {
+        let Some(incarnation) = next_loop_incarnation(&NEXT_LOOP_GESTURE) else {
+            self.error = Some("loop gesture identity limit reached".into());
+            return false;
+        };
+        let candidate = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let (mode, preview, toggle_on_click) = if let Some(region) = region
+                && let Some(mode) = region_edit_mode(region, viewport, bounds, x)
+            {
+                (mode, Some(region), modifiers.platform)
+            } else {
+                let anchor = snap_frame(
+                    self,
+                    &project,
+                    frame,
+                    viewport,
+                    timeline_width,
+                    modifiers.platform,
+                )?;
+                (EditMode::Paint { anchor }, None, false)
+            };
+            Some(LoopRailGesture {
+                incarnation,
+                pending_release: None,
                 generation: self.project_generation,
-                revision: state.revision,
-                loop_region: Some(region),
+                revision: snapshot.revision(),
+                loop_region: region,
                 viewport,
                 timeline_left,
                 timeline_width,
                 mode,
-                preview: Some(region),
+                preview,
                 pointer_down: position,
                 last_pointer: position,
                 moved: false,
                 click_disqualified: false,
-                toggle_on_click: modifiers.platform,
-            });
-            return true;
-        }
-
-        let Some(anchor) = snap_frame(
-            self,
-            &state.project,
-            frame,
-            viewport,
-            timeline_width,
-            modifiers.platform,
-        ) else {
-            return false;
-        };
-        self.loop_rail_gesture = Some(LoopRailGesture {
-            generation: self.project_generation,
-            revision: state.revision,
-            loop_region: region,
-            viewport,
-            timeline_left,
-            timeline_width,
-            mode: EditMode::Paint { anchor },
-            preview: None,
-            pointer_down: position,
-            last_pointer: position,
-            moved: false,
-            click_disqualified: false,
-            toggle_on_click: false,
+                toggle_on_click,
+            })
         });
-        true
+        match candidate {
+            Ok(Some(gesture)) => {
+                self.loop_rail_gesture = Some(gesture);
+                true
+            }
+            Ok(None) => false,
+            Err(error) => {
+                self.report_loop_read_refusal(error);
+                false
+            }
+        }
+    }
+
+    fn report_loop_read_refusal(&mut self, error: SnapshotTransportError) {
+        if error != SnapshotTransportError::Busy {
+            self.error = Some("loop source is unavailable".into());
+        }
+    }
+
+    // Compute the complete Copy candidate under one actual snapshot read. No
+    // gesture writes, enqueue, notification or scheduling occurs under its guard.
+    fn prepare_loop_rail_update(
+        &self,
+        position: gpui::Point<gpui::Pixels>,
+        modifiers: Modifiers,
+    ) -> Result<PreparedLoopUpdate, SnapshotTransportError> {
+        let x = f32::from(position.x);
+        let Some(mut gesture) = self.loop_rail_gesture else {
+            return Ok(PreparedLoopUpdate::NoGesture);
+        };
+        let state = self.state.as_ref().ok_or(SnapshotTransportError::Stale)?;
+        state.read_with(|snapshot| {
+            let project = snapshot.model();
+            if self.mode != EditorMode::Arrangement
+                || gesture.generation != self.project_generation
+                || gesture.revision != snapshot.revision()
+                || gesture.loop_region != project.loop_region()
+                || gesture.viewport != self.visible_viewport(snapshot, snapshot.timeline_frames())
+                || modifiers.alt
+                || modifiers.control
+                || self.context_menu.is_some()
+                || self.opening_project
+                || self.close_prompt_open
+                || !x.is_finite()
+                || !f32::from(position.y).is_finite()
+            {
+                return PreparedLoopUpdate::Cancel;
+            }
+            let Some(frame) = super::seek::pointer_to_frame(
+                x,
+                gesture.timeline_left,
+                gesture.timeline_width,
+                gesture.viewport,
+            ) else {
+                return PreparedLoopUpdate::Candidate(gesture);
+            };
+            gesture.last_pointer = position;
+            gesture.moved |= (x - f32::from(gesture.pointer_down.x)).abs() > 3.0;
+            // Vertical travel disqualifies a click without qualifying a horizontal move.
+            gesture.click_disqualified |= gesture.moved
+                || (f32::from(position.y) - f32::from(gesture.pointer_down.y)).abs() > 3.0;
+            if let EditMode::Move { original, anchor } = gesture.mode {
+                if !gesture.moved {
+                    gesture.preview = Some(original);
+                    return PreparedLoopUpdate::Candidate(gesture);
+                }
+                let delta = i128::from(frame) - i128::from(anchor);
+                let start = if modifiers.shift {
+                    stepped_start(original, delta)
+                } else {
+                    let candidate = (i128::from(original.start()) + delta).clamp(
+                        0,
+                        i128::from(u64::MAX - (original.end() - original.start())),
+                    ) as u64;
+                    snap_frame(
+                        self,
+                        &project,
+                        candidate,
+                        gesture.viewport,
+                        gesture.timeline_width,
+                        modifiers.platform,
+                    )
+                    .map(|start| start.min(u64::MAX - (original.end() - original.start())))
+                };
+                gesture.preview = start.and_then(|start| {
+                    LoopRegion::new(
+                        start,
+                        start.checked_add(original.end() - original.start())?,
+                        original.enabled(),
+                    )
+                    .ok()
+                });
+                return PreparedLoopUpdate::Candidate(gesture);
+            }
+            let Some(frame) = snap_frame(
+                self,
+                &project,
+                frame,
+                gesture.viewport,
+                gesture.timeline_width,
+                modifiers.platform,
+            ) else {
+                return PreparedLoopUpdate::Candidate(gesture);
+            };
+            gesture.preview = match gesture.mode {
+                EditMode::Move { .. } => gesture.preview,
+                EditMode::Paint { anchor } => {
+                    let start = anchor.min(frame);
+                    let end = anchor.max(frame);
+                    LoopRegion::new(start, end, false).ok()
+                }
+                EditMode::ResizeStart { fixed_end, enabled } => {
+                    let candidate = frame.min(fixed_end.saturating_sub(1));
+                    LoopRegion::new(candidate, fixed_end, enabled).ok()
+                }
+                EditMode::ResizeEnd {
+                    fixed_start,
+                    enabled,
+                } => {
+                    let candidate = frame.max(fixed_start.saturating_add(1));
+                    LoopRegion::new(fixed_start, candidate, enabled).ok()
+                }
+            };
+            PreparedLoopUpdate::Candidate(gesture)
+        })
     }
 
     fn update_loop_rail_gesture(
@@ -150,149 +298,149 @@ impl EditorView {
         position: gpui::Point<gpui::Pixels>,
         modifiers: Modifiers,
     ) -> bool {
-        let x = f32::from(position.x);
-        let Some(mut gesture) = self.loop_rail_gesture.take() else {
-            return false;
-        };
-        let Some(state) = self.state.as_ref() else {
-            return true;
-        };
-        if self.mode != EditorMode::Arrangement
-            || gesture.generation != self.project_generation
-            || gesture.revision != state.revision
-            || gesture.loop_region != state.project.loop_region()
-            || gesture.viewport != self.visible_viewport(state.timeline_frames)
-            || modifiers.alt
-            || modifiers.control
-            || self.context_menu.is_some()
-            || self.opening_project
-            || self.close_prompt_open
-            || !x.is_finite()
-            || !f32::from(position.y).is_finite()
+        if self
+            .loop_rail_gesture
+            .is_some_and(|gesture| gesture.pending_release.is_some())
         {
             return true;
         }
-        let Some(frame) = super::seek::pointer_to_frame(
-            x,
-            gesture.timeline_left,
-            gesture.timeline_width,
-            gesture.viewport,
-        ) else {
-            self.loop_rail_gesture = Some(gesture);
-            return true;
-        };
-        gesture.last_pointer = position;
-        gesture.moved |= (x - f32::from(gesture.pointer_down.x)).abs() > 3.0;
-        // Vertical travel disqualifies a click without qualifying a horizontal move.
-        gesture.click_disqualified |= gesture.moved
-            || (f32::from(position.y) - f32::from(gesture.pointer_down.y)).abs() > 3.0;
-        if let EditMode::Move { original, anchor } = gesture.mode {
-            if !gesture.moved {
-                gesture.preview = Some(original);
+        match self.prepare_loop_rail_update(position, modifiers) {
+            Ok(PreparedLoopUpdate::NoGesture) => false,
+            Ok(PreparedLoopUpdate::Cancel) => self.cancel_loop_rail_gesture(),
+            Ok(PreparedLoopUpdate::Candidate(gesture)) => {
                 self.loop_rail_gesture = Some(gesture);
-                return true;
+                true
             }
-            let delta = i128::from(frame) - i128::from(anchor);
-            let start = if modifiers.shift {
-                stepped_start(original, delta)
-            } else {
-                let candidate = (i128::from(original.start()) + delta).clamp(
-                    0,
-                    i128::from(u64::MAX - (original.end() - original.start())),
-                ) as u64;
-                snap_frame(
-                    self,
-                    &state.project,
-                    candidate,
-                    gesture.viewport,
-                    gesture.timeline_width,
-                    modifiers.platform,
-                )
-                .map(|start| start.min(u64::MAX - (original.end() - original.start())))
-            };
-            gesture.preview = start.and_then(|start| {
-                LoopRegion::new(
-                    start,
-                    start.checked_add(original.end() - original.start())?,
-                    original.enabled(),
-                )
-                .ok()
-            });
-            self.loop_rail_gesture = Some(gesture);
-            return true;
+            Err(error) => {
+                self.report_loop_read_refusal(error);
+                true
+            }
         }
-        let Some(frame) = snap_frame(
-            self,
-            &state.project,
-            frame,
-            gesture.viewport,
-            gesture.timeline_width,
-            modifiers.platform,
-        ) else {
+    }
+
+    fn finish_loop_rail_gesture_checked(
+        &mut self,
+        position: gpui::Point<gpui::Pixels>,
+        modifiers: Modifiers,
+    ) -> Result<LoopFinish, SnapshotTransportError> {
+        let gesture = match self.prepare_loop_rail_update(position, modifiers)? {
+            PreparedLoopUpdate::NoGesture => return Ok(LoopFinish::Handled(false)),
+            PreparedLoopUpdate::Cancel => {
+                self.cancel_loop_rail_gesture();
+                return Ok(LoopFinish::Handled(true));
+            }
+            PreparedLoopUpdate::Candidate(gesture) => gesture,
+        };
+        let accepted =
+            if !gesture.click_disqualified && gesture.toggle_on_click && modifiers.platform {
+                self.enqueue(Request::Edit(Command::ToggleLoopRegion))
+            } else if matches!(gesture.mode, EditMode::Move { .. }) && !gesture.moved {
+                true
+            } else if let Some(region) = gesture.preview {
+                Some(region) == gesture.loop_region
+                    || self.submit_loop_preview(gesture.generation, region)
+            } else {
+                self.error = Some("loop region needs a non-empty time range".into());
+                true
+            };
+        if accepted {
+            self.loop_rail_gesture = None;
+            Ok(LoopFinish::Handled(true))
+        } else {
+            // The actual candidate survives refused admission. No request was
+            // accepted, so it must not be mistaken for a completed release.
             self.loop_rail_gesture = Some(gesture);
-            return true;
-        };
-        gesture.preview = match gesture.mode {
-            EditMode::Move { .. } => gesture.preview,
-            EditMode::Paint { anchor } => {
-                let start = anchor.min(frame);
-                let end = anchor.max(frame);
-                LoopRegion::new(start, end, false).ok()
-            }
-            EditMode::ResizeStart { fixed_end, enabled } => {
-                let candidate = frame.min(fixed_end.saturating_sub(1));
-                LoopRegion::new(candidate, fixed_end, enabled).ok()
-            }
-            EditMode::ResizeEnd {
-                fixed_start,
-                enabled,
-            } => {
-                let candidate = frame.max(fixed_start.saturating_add(1));
-                LoopRegion::new(fixed_start, candidate, enabled).ok()
-            }
-        };
-        self.loop_rail_gesture = Some(gesture);
-        true
+            Ok(LoopFinish::AdmissionRefused)
+        }
     }
 
     fn finish_loop_rail_gesture(
         &mut self,
         position: gpui::Point<gpui::Pixels>,
         modifiers: Modifiers,
+        cx: &mut Context<Self>,
     ) -> bool {
-        if self.loop_rail_gesture.is_none() {
+        let Some(gesture) = self.loop_rail_gesture else {
             return false;
-        }
-        self.update_loop_rail_gesture(position, modifiers);
-        let Some(gesture) = self.loop_rail_gesture.take() else {
-            return true;
         };
-        let Some(state) = self.state.as_ref() else {
-            return true;
-        };
-        if gesture.generation != self.project_generation
-            || gesture.revision != state.revision
-            || gesture.loop_region != state.project.loop_region()
-            || self.mode != EditorMode::Arrangement
-        {
+        if gesture.pending_release.is_some() {
             return true;
         }
-        if !gesture.click_disqualified && gesture.toggle_on_click && modifiers.platform {
-            let _ = self.enqueue(Request::Edit(Command::ToggleLoopRegion));
-            return true;
+        match self.finish_loop_rail_gesture_checked(position, modifiers) {
+            Ok(LoopFinish::Handled(handled)) => handled,
+            Ok(LoopFinish::AdmissionRefused) => {
+                if let Some(current) = self.loop_rail_gesture.as_mut()
+                    && current.incarnation == gesture.incarnation
+                {
+                    current.pending_release = Some(PendingRelease {
+                        position,
+                        modifiers,
+                    });
+                }
+                true
+            }
+            Err(SnapshotTransportError::Busy) => {
+                // One original release and one task per incarnation. Ordinary
+                // moves/modifier refreshes cannot change this pending candidate.
+                if let Some(current) = self.loop_rail_gesture.as_mut()
+                    && current.incarnation == gesture.incarnation
+                {
+                    current.pending_release = Some(PendingRelease {
+                        position,
+                        modifiers,
+                    });
+                    self.retry_loop_rail_release(gesture.incarnation, cx);
+                }
+                true
+            }
+            Err(error) => {
+                self.cancel_loop_rail_gesture();
+                self.report_loop_read_refusal(error);
+                true
+            }
         }
-        if matches!(gesture.mode, EditMode::Move { .. }) && !gesture.moved {
-            return true;
-        }
-        let Some(region) = gesture.preview else {
-            self.error = Some("loop region needs a non-empty time range".into());
-            return true;
-        };
-        if Some(region) == gesture.loop_region {
-            return true;
-        }
-        self.submit_loop_preview(gesture.generation, region);
-        true
+    }
+
+    fn retry_loop_rail_release(&mut self, incarnation: u64, cx: &mut Context<Self>) {
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(5))
+                    .await;
+                let retry = this
+                    .update(cx, |view, cx| {
+                        let Some(gesture) = view.loop_rail_gesture else {
+                            return false;
+                        };
+                        if gesture.incarnation != incarnation {
+                            return false;
+                        }
+                        let Some(release) = gesture.pending_release else {
+                            return false;
+                        };
+                        match view
+                            .finish_loop_rail_gesture_checked(release.position, release.modifiers)
+                        {
+                            Err(SnapshotTransportError::Busy) => true,
+                            Ok(LoopFinish::Handled(_) | LoopFinish::AdmissionRefused) => {
+                                cx.notify();
+                                false
+                            }
+                            Err(error) => {
+                                view.cancel_loop_rail_gesture();
+                                view.report_loop_read_refusal(error);
+                                cx.notify();
+                                false
+                            }
+                        }
+                    })
+                    .unwrap_or(false);
+                if !retry {
+                    break;
+                }
+            }
+        })
+        .detach();
     }
 
     pub(super) fn cancel_loop_rail_gesture(&mut self) -> bool {
@@ -311,20 +459,21 @@ impl EditorView {
             .is_some_and(|gesture| self.update_loop_rail_gesture(gesture.last_pointer, modifiers))
     }
 
-    fn loop_rail_hover(&self, x: f32, viewport: Viewport, bounds: Bounds<gpui::Pixels>) -> Hover {
-        let Some(region) = self.state.as_ref().and_then(|state| {
-            state
-                .read_with(|snapshot| snapshot.model().loop_region())
-                .ok()
-                .flatten()
-        }) else {
-            return Hover::Paint;
-        };
-        match region_edit_mode(region, viewport, bounds, x) {
-            Some(EditMode::Move { .. }) => Hover::Move,
-            Some(EditMode::ResizeStart { .. } | EditMode::ResizeEnd { .. }) => Hover::Resize,
-            Some(EditMode::Paint { .. }) | None => Hover::Paint,
-        }
+    fn loop_rail_hover(
+        &self,
+        x: f32,
+        viewport: Viewport,
+        bounds: Bounds<gpui::Pixels>,
+    ) -> Result<Hover, SnapshotTransportError> {
+        let state = self.state.as_ref().ok_or(SnapshotTransportError::Stale)?;
+        let region = state.read_with(|snapshot| snapshot.model().loop_region())?;
+        Ok(
+            match region.and_then(|region| region_edit_mode(region, viewport, bounds, x)) {
+                Some(EditMode::Move { .. }) => Hover::Move,
+                Some(EditMode::ResizeStart { .. } | EditMode::ResizeEnd { .. }) => Hover::Resize,
+                Some(EditMode::Paint { .. }) | None => Hover::Paint,
+            },
+        )
     }
 }
 
@@ -428,20 +577,23 @@ pub(super) fn view(
                                     }
                                     if event.pressed_button != Some(MouseButton::Left) {
                                         let hover = move_entity.update(cx, |view, _| {
+                                            if view.loop_rail_gesture.is_some_and(|gesture| gesture.pending_release.is_some()) { return false; }
+                                            // Read before cancellation; a Busy hover cannot
+                                            // consume an existing gesture or pending release.
+                                            let kind = match view.loop_rail_hover(
+                                                f32::from(event.position.x), viewport, move_bounds,
+                                            ) {
+                                                Ok(kind) => kind,
+                                                Err(error) => { view.report_loop_read_refusal(error); return false; },
+                                            };
                                             let cancelled = view.cancel_loop_rail_gesture();
                                             let hover = if move_bounds.contains(&event.position) {
-                                                match view.loop_rail_hover(
-                                                    f32::from(event.position.x),
-                                                    viewport,
-                                                    move_bounds,
-                                                ) {
+                                                match kind {
                                                     Hover::Paint => CursorStyle::Crosshair,
                                                     Hover::Move => CursorStyle::OpenHand,
                                                     Hover::Resize => CursorStyle::ResizeLeftRight,
                                                 }
-                                            } else {
-                                                CursorStyle::Crosshair
-                                            };
+                                            } else { CursorStyle::Crosshair };
                                             if view.loop_rail_cursor == hover {
                                                 return cancelled;
                                             }
@@ -472,11 +624,12 @@ pub(super) fn view(
                                     if !phase.capture() || event.button != MouseButton::Left {
                                         return;
                                     }
-                                    let finished = up_entity.update(cx, |view, _| {
+                                    let finished = up_entity.update(cx, |view, cx| {
                                         if !view.focus.is_focused(window) { return view.cancel_loop_rail_gesture(); }
                                         view.finish_loop_rail_gesture(
                                             event.position,
                                             event.modifiers,
+                                            cx,
                                         )
                                     });
                                     if finished {
@@ -499,7 +652,7 @@ pub(super) fn view(
 
 fn snap_frame(
     view: &EditorView,
-    project: &hex_project::Project,
+    project: &dyn super::musical_time::MusicalProject,
     frame: u64,
     viewport: Viewport,
     width: f32,
@@ -725,6 +878,16 @@ mod tests {
     use super::{binary_duration, stepped_start, visible_region_pixels};
     use crate::editor::viewport::Viewport;
     use hex_project::LoopRegion;
+
+    #[test]
+    fn gesture_incarnations_never_reuse_the_last_identity_at_exhaustion() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let counter = AtomicU64::new(u64::MAX - 1);
+        assert_eq!(super::next_loop_incarnation(&counter), Some(u64::MAX - 1));
+        assert_eq!(super::next_loop_incarnation(&counter), None);
+        assert_eq!(super::next_loop_incarnation(&counter), None);
+        assert_eq!(counter.load(Ordering::Relaxed), u64::MAX);
+    }
 
     #[test]
     fn visible_range_clips_loop_edges_to_zoomed_viewport() {

@@ -101,7 +101,7 @@ fn narrow_loop_center_drag_preserves_whole_range_at_two_zoom_levels(cx: &mut Tes
             editor.read_with(&visual, |v, _| {
                 assert!(matches!(
                     v.loop_rail_hover(f32::from(down.x), viewport, rail),
-                    super::super::Hover::Move
+                    Ok(super::super::Hover::Move)
                 ));
             });
             visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());

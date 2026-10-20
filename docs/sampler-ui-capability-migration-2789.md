@@ -139,6 +139,31 @@ add-menu hunk. Remaining Return errors are the existing EQ/meter dependencies.
 Scoped format/diff/layout checks pass. No tests, clean UI build, full audit,
 Native startup/playback or optimized delivery are qualified by this run.
 
+The loop-rail boundary now computes its Copy gesture candidate under one actual
+read before changing the gesture. A Busy mouse-up retains one original position
+and modifier payload; one weak-view task retries it after 5 ms against a checked,
+nonwrapping gesture incarnation. Move/modifier/duplicate release cannot replace
+that payload. Cancellation, replacement and permanent source refusal stop the
+task. Toggle/Set submission retires the gesture only after enqueue acceptance;
+refusal restores the prior pending-loop display and retains the candidate.
+
+The current bool enqueue API conflates queue capacity and permanent refusal.
+Therefore admission refusal remains a visible retained terminal candidate and
+stops automatic retries; only actual snapshot Busy retries. Automatic capacity
+retry is explicitly incomplete until controller admission exposes typed results.
+No error-string heuristic or arbitrary retry limit is used. Pending FIFO/counter
+laws are unchanged. The existing hover assertion now expects the checked Result;
+a pure incarnation-exhaustion test was added but remains unexecuted, as do real
+registered UI pressure/release/cancellation tests.
+
+The frozen `modern-loop-rail` library check at HEAD `f163734f` completed with exit
+101 and 441 actual errors (442 headings), unchanged source SHA-256
+`c4fec424c78052d877519ba226ed8811620bd5f04fd827b39efff4fcea36f374`.
+No primary diagnostic is in loop-rail. Scoped format/diff/layout checks pass;
+this is not a test, strict, full-audit, native or playable-build qualification.
+Controller intake still requires the same-head/previous-source comparison
+preflight before claim, plus actual backend-associated completion routes.
+
 The sections below preserve the older b94-based component's source history;
 their unconnected-dispatch and unavailable-query descriptions are historical.
 
