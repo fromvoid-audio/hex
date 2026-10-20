@@ -593,6 +593,9 @@ impl<'a> SnapshotTempoRead<'a> {
     pub fn frame_to_beat(self, frame: u64) -> Result<BeatTime, hex_project::Invalid> {
         self.map.frame_to_beat(frame)
     }
+    pub fn beat_lower_bound_for_frame(self, frame: u64) -> Result<u128, hex_project::Invalid> {
+        self.map.beat_lower_bound_for_frame(frame)
+    }
     pub fn points(self) -> impl ExactSizeIterator<Item = TempoPoint> + 'a {
         self.map.points().iter().copied()
     }
