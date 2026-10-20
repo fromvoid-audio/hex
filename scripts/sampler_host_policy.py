@@ -103,6 +103,7 @@ EXACT = {
     'crates/hex-session/src/service/main_control_file.rs',
     'crates/hex-session/src/service/canonical_audio_source.rs',
     'crates/hex-session/src/service/comparison_audio.rs',
+    'crates/hex-session/src/snapshot_exports/event.rs',
     'crates/hex-session/src/snapshot_exports/source_event.rs',
     'crates/hex-session/src/snapshot_exports/source_event/tests.rs',
     'crates/hex-session/src/service/main_control_file/tests.rs',
@@ -407,6 +408,7 @@ def violations(path: str, source: str) -> list[str]:
         if any(step not in body for step in ['inner.phase != AudioCandidateDisposalPhase::Owned', 'runtime.playback.is_main_control_runtime()', 'inner.validate_fresh_origins()?', 'self.require_unpublished_native_host_class()?', 'inner.visit_fresh_storage(ledger)']):
             return [f'{path}: unpublished owning visitor must preserve original NativeFresh phase/origins/runtime class']
     family_owners = {
+        'crates/hex-session/src/snapshot_exports/source_event/tests.rs',
         # Test-only consumer of the actual existing family construction loan;
         # literal SamplerFamilyGuardFields producers remain restricted below.
         'crates/hex-session/src/snapshot_exports/event/tests.rs',
