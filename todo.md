@@ -6157,3 +6157,18 @@ acceptance remain separate; prior fixture-only baseline failure is not a product
   Historical bf8 full21 pass remains review-blocked source evidence, not a pass
   for this changed candidate. Current required plan/review/merge remains pending;
   no native or installed-build acceptance is claimed.
+# 20 october2026 — Pulse2813 generation 2 Tab investigation (PR489)
+
+- Recovered the existing generation-2 canonical branch/PR; historical merged419
+  and all earlier evidence stay immutable. Pinned qualified main1d1797 once.
+- Real routed Tab after ordinary Arrange/Console clicks passes for both key-char
+  forms; constructor-owned startup and browser-search → header return also pass.
+  Two new cases exercise actual key dispatch, selection/scroll/rail/cursor and
+  canonical Project/revision preservation; no direct-handler-only substitute.
+- Retained the pre-Cargo unknown-cache ownership refusal and the font-test-platform
+  / browser-text fixture failures. Corrected fixtures preserve mandatory production
+  font checks and existing local text input. No production behavior changed.
+- The user subsequently confirmed "Tab works now" to Root; no build label was
+  supplied, and no production repair/cause is claimed. The reproduction blocker
+  is removed without another native probe. Regression-source checks and canonical
+  merge remain separate from that user confirmation and installed-build identity.

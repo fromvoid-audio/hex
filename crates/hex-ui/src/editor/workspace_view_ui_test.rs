@@ -17,6 +17,216 @@ fn next(service: &Service) -> Event {
 use std::time::{Duration, Instant};
 
 #[gpui::test]
+fn workspace_generation2_pointer_selected_views_route_actual_tab(cx: &mut TestAppContext) {
+    for key_char in [None, Some("\t".to_owned())] {
+        let (_files, handle, editor) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.update(|window, _| window.activate_window());
+        visual.run_until_parked();
+        let (track, scene) = editor.read_with(&visual, |v, _| {
+            (v.selected_track.unwrap(), v.selected_scene.unwrap())
+        });
+        for console in [false, true] {
+            let selector = if console {
+                format!("console-cell-{}-{}", track.value(), scene.value())
+            } else {
+                format!("arrangement-lane-{}", track.value())
+            };
+            let bounds = visual
+                .debug_bounds(Box::leak(selector.into_boxed_str()))
+                .unwrap();
+            let point = if console {
+                bounds.center()
+            } else {
+                gpui::point(
+                    bounds.origin.x + bounds.size.width * 0.6,
+                    bounds.origin.y + gpui::px(22.0),
+                )
+            };
+            visual.simulate_click(point, Modifiers::default());
+            visual.run_until_parked();
+            let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+            let view_state = editor.read_with(&visual, |v, _| {
+                (
+                    v.selected_clip_ids(),
+                    v.time_selection,
+                    v.selected_scene,
+                    v.selected_cell,
+                    v.selected_track,
+                    v.track_scroll.offset(),
+                    v.session_track_start,
+                    v.viewport,
+                    (v.clip_view_open, v.device_panel_active, v.offline_cursor),
+                )
+            });
+            let origin = if console {
+                EditorMode::Session
+            } else {
+                EditorMode::Arrangement
+            };
+            editor.read_with(&visual, |v, _| assert_eq!(v.mode, origin));
+            for expected in [
+                if console {
+                    EditorMode::Arrangement
+                } else {
+                    EditorMode::Session
+                },
+                origin,
+            ] {
+                visual.simulate_event(gpui::KeyDownEvent {
+                    keystroke: gpui::Keystroke {
+                        modifiers: Modifiers::default(),
+                        key: "tab".into(),
+                        key_char: key_char.clone(),
+                    },
+                    is_held: false,
+                });
+                visual.simulate_event(gpui::KeyUpEvent {
+                    keystroke: gpui::Keystroke {
+                        modifiers: Modifiers::default(),
+                        key: "tab".into(),
+                        key_char: key_char.clone(),
+                    },
+                });
+                visual.run_until_parked();
+                visual.update(|window, cx| editor.read_with(cx, |v, _| {
+                    eprintln!("ordinary Tab: console={console} key_char={key_char:?} expected={expected:?} actual={:?} root={} header={} pointer={} range={} scrub={}", v.mode, v.focus.is_focused(window), v.track_header_focused(window), v.pointer_down.is_some(), v.time_selection_gesture.is_some(), v.scrub_active());
+                    assert_eq!(v.mode, expected, "real routed key after ordinary workspace click");
+                    assert_eq!(v.state.as_ref().unwrap().project, before.project);
+                    assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+                    assert_eq!(v.worker_requests_pending, 0);
+                    assert!(v.pending_requests.is_empty());
+                    assert_eq!((v.selected_clip_ids(), v.time_selection, v.selected_scene, v.selected_cell,
+                        v.selected_track, v.track_scroll.offset(), v.session_track_start, v.viewport,
+                        (v.clip_view_open, v.device_panel_active, v.offline_cursor)), view_state);
+                }));
+            }
+            if !console {
+                // Use the real toolbar to enter Console for its ordinary click path.
+                let button = visual
+                    .debug_bounds("show console view · tab")
+                    .unwrap()
+                    .center();
+                visual.simulate_click(button, Modifiers::default());
+                visual.run_until_parked();
+            }
+        }
+    }
+}
+
+#[gpui::test]
+fn workspace_generation2_startup_app_bindings_and_browser_return_route_tab(
+    cx: &mut TestAppContext,
+) {
+    // The test platform cannot attest font registration. Keep production's
+    // mandatory font check untouched; install its actual input setup calls.
+    cx.update(|cx| {
+        super::bind_editor_keys(cx);
+        super::menus::install(cx, &[]);
+        super::dialogs::install_project_actions(cx);
+    });
+    let environment = super::test_environment::Environment::new().unwrap();
+    std::fs::create_dir(environment.root().join("samples")).unwrap();
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_environment(window, cx, service, environment.clone())
+            })
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        editor.update(&mut visual, |v, cx| {
+            v.tick(cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        if editor.read_with(&visual, |v, _| v.state.is_some()) {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    // No fixture assignment to mode, state, root focus or selection.
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.browser.directory, environment.root().join("samples"));
+        assert_eq!(v.mode, EditorMode::Arrangement);
+    });
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+    for expected in [EditorMode::Session, EditorMode::Arrangement] {
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.mode, expected,
+                "constructor-owned focus with actual app input setup"
+            );
+            assert_eq!(v.state.as_ref().unwrap().project, before.project);
+            assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+        });
+    }
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(hex_project::Command::AddTrack {
+            name: "focus return".into()
+        })))
+    });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        editor.update(&mut visual, |v, cx| {
+            v.tick(cx);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        if editor.read_with(&visual, |v, _| {
+            v.worker_requests_pending == 0 && v.state.as_ref().unwrap().project.tracks().len() == 1
+        }) {
+            break;
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    eprintln!("actual app input setup and constructor-owned startup focus: reciprocal Tab passed");
+    // The actual search action establishes its normal focus; a header pointer
+    // click must return to the ordinary workspace without a fixture focus call.
+    visual.simulate_keystrokes("cmd-f");
+    visual.simulate_input("piano");
+    visual.simulate_keystrokes("tab");
+    editor.read_with(&visual, |v, cx| {
+        assert_eq!(v.mode, EditorMode::Arrangement);
+        // The existing text handler receives literal Tab. Preserve that local
+        // behavior; workspace navigation must not consume the input instead.
+        assert_eq!(v.browser.search.read(cx).content, "piano\t");
+    });
+    let track = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.tracks()[0].id()
+    });
+    let header = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-track-header-{}", track.value()).into_boxed_str(),
+        ))
+        .unwrap();
+    visual.simulate_click(
+        header.origin + gpui::point(gpui::px(12.0), gpui::px(9.0)),
+        Modifiers::default(),
+    );
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+    for expected in [EditorMode::Session, EditorMode::Arrangement] {
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.mode, expected, "actual header returns focus from browser");
+            assert_eq!(v.state.as_ref().unwrap().project, before.project);
+            assert_eq!(v.state.as_ref().unwrap().revision, before.revision);
+            assert_eq!(v.worker_requests_pending, 0);
+        });
+    }
+}
+
+#[gpui::test]
 fn workspace_review_tab_preserves_held_clip_paint_until_release_or_escape(cx: &mut TestAppContext) {
     for cancel in [false, true] {
         let (_files, handle, editor) = fixture(cx);
