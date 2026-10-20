@@ -158,6 +158,9 @@ impl<'a> SnapshotMidiClipPreviewRead<'a> {
 }
 
 impl<'a> SnapshotProjectRead<'a> {
+    pub fn has_assets(self) -> bool {
+        self.project.assets().next().is_some()
+    }
     pub fn clip_flavor(self, id: ClipId) -> Option<ClipFlavor> {
         self.project.clip_flavor(id)
     }
