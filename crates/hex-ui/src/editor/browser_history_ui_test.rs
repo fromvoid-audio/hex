@@ -465,7 +465,7 @@ fn browser_history_hidden_custom_home_music_never_restore_through_back_or_forwar
 ) {
     for row in ["browser-place-2", "browser-place-1", "browser-place-0"] {
         for forward in [false, true] {
-            let (handle, editor, directory) = fixture(cx);
+            let (handle, editor, directory) = builtin_history_fixture(cx);
             let visual = &mut VisualTestContext::from_window(handle, cx);
             visual.run_until_parked();
             let custom = directory.0.join("history-custom");
@@ -596,4 +596,59 @@ fn browser_history_hidden_custom_home_music_never_restore_through_back_or_forwar
             eprintln!("ACTUAL_HIDDEN_HISTORY {row} forward={forward}");
         }
     }
+}
+
+fn builtin_history_fixture(
+    cx: &mut TestAppContext,
+) -> (
+    gpui::AnyWindowHandle,
+    gpui::Entity<EditorView>,
+    PreferencesTestDirectory,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    let directory = PreferencesTestDirectory::new();
+    let home = directory.0.join("history-home");
+    let music = home.join("Music");
+    std::fs::create_dir_all(&music).unwrap();
+    std::fs::write(music.join("loop.wav"), mono_pcm_wav(24)).unwrap();
+    let handle = *cx.add_window(|_, _| Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.replace_root(cx, |window, cx| {
+                EditorView::new_with_browser_paths(
+                    window,
+                    cx,
+                    Service::new(48_000, 32, 8_000_000).unwrap(),
+                    Err("offline history source test".into()),
+                    (
+                        Default::default(),
+                        Default::default(),
+                        Default::default(),
+                        Default::default(),
+                    ),
+                    crate::editor::test_environment::Inputs {
+                        existing_environment: Some(std::sync::Arc::clone(&directory.1)),
+                        home: Some(home.clone()),
+                        defaults: [true; 4],
+                        ..Default::default()
+                    },
+                )
+            })
+        })
+        .unwrap();
+    editor.read_with(cx, |view, _| {
+        assert!(std::sync::Arc::ptr_eq(&directory.1, &view.test_environment));
+        assert_eq!(view.browser.home, home);
+        assert_eq!(view.browser.music, music);
+        assert_eq!(view.browser.places, vec![music, home]);
+        for (actual, name) in [
+            (view.browser.test_preferences_path(), "browser.json"),
+            (view.recent_projects.test_path(), "recent-projects.json"),
+            (view.theme_settings.test_path(), "theme.json"),
+            (view.project_directory.test_path(), "project-directory.json"),
+        ] {
+            assert_eq!(actual, directory.0.join("config").join(name));
+        }
+    });
+    (handle, editor, directory)
 }
