@@ -81,6 +81,13 @@ explicit base/source commands, partial edit feedback, metadata-only continuation
 and compact handoff format. No-flag invocation still runs all 21 audit stages.
 The merge profile resolves its complete required configuration list from actual
 Git inputs and Cargo dependencies; unknown/high-risk input falls back to full.
+Ordinary app-only UI/core Rust merges retain shared Python invariants while
+omitting unaffected tooling self-test suites; core Rust configurations remain
+complete. Tooling/configuration/test changes and explicit full/release audits
+retain comprehensive Python discovery. The reviewed impact matrix and exact
+selection evidence are described in development-workflow.md. This changes only
+the Python command in applicable merge plans, not guards, Rust configurations,
+Cargo target ownership, failure handling or actual matched-count requirements.
 It cannot turn an old quick or custom component report into required evidence.
 
 As requested on 10 October 2026, agents merge a completed, focused PR immediately

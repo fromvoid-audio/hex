@@ -17,8 +17,29 @@ equivalence from matching names.
 | --- | --- |
 | Prose only: README, todo, docs Markdown | changed local links, conflict/whitespace checks, editorial claim review |
 | Known launcher/packaging Python and their tests | complete script tests, including private real Cargo/signing fixtures, source guards and format |
-| UI/widgets Rust with supported reverse dependencies | script guards, default UI/widgets tests, UI support-feature tests, actual gallery, default and feature strict Clippy, desktop build |
-| Core/audio/model/storage/routing, manifests, lockfile, features, build scripts, third-party code, toolchain/policy, unknown or mixed executable scopes | complete audit |
+| UI/widgets Rust with supported reverse dependencies | shared Python invariants, script guards, default UI/widgets tests, UI support-feature tests, actual gallery, default and feature strict Clippy, desktop build |
+| App-owned core Rust source only | shared Python invariants plus every Rust/guard configuration in the complete audit |
+| Manifests, lockfile, features, build scripts, third-party code, toolchain/policy, unknown or mixed executable inputs | complete audit, including comprehensive Python tests |
+
+Python self-test impact is independent of Rust scope. An ordinary merge that
+changes only Cargo-owned `.rs` files in `src/`, `tests/`, `examples/` or `benches/`
+uses eight explicit shared invariant cases plus the cheap selector tests. This
+retains classification/fallback, rename/deletion/untracked handling, required
+profile configurations, zero-match refusal and semantic build-input identity.
+The whole `test_ci_plan` module is not selected: its remaining cases include real
+Cargo builds. The exact methods live in `scripts/python_test_plan.py`.
+
+Only a single UI or core category can use that fast path. All tooling changes
+(including launcher changes), Python test changes, `build.rs`, Cargo/configuration
+and toolchain source inputs, assets, vendor code, unknown paths, mixed categories
+and new/missing/unregistered test modules select comprehensive Python discovery.
+Explicit full/release and no-flag audits remain comprehensive. Prose-only merge
+checks remain metadata-only. No prior result cache or framework substitution is
+involved. Every selected Rust command, feature, guard and target-ownership flag
+is unchanged. Selected/excluded groups, exact selectors and reasons are recorded
+in the existing hashed plan and printed at the Python step; actual unittest
+counts remain in its log and summary. Missing names, zero matches and all-skipped
+requested configurations refuse qualification.
 
 Docs accompanying a known executable scope do not falsely force a mixed full
 run. Both sides of renames, deletions, dirty and nonignored untracked inputs are
