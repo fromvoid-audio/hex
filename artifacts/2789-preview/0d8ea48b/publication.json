@@ -1,0 +1,8 @@
+{
+  "source": "0d8ea48b411ed3ecdf9b435fc30b2e2c74d9cf35",
+  "base": "b05a9eaa61edc60f711acdc06d907f7525d6197c",
+  "tree": "6248145e3dea427c54bb82bee3dff29cdc3e44e4",
+  "publication": "Original component summaries retain their uncommitted-at-check-time wording. This sidecar records subsequent primary review and source publication with identical18-file hashes/tree. Source history canonical; no source archive is embedded.",
+  "scope": "Original repaired component logs16-24 qualify tree8301fc6b; focused default-warp followup25-30 qualifies changed helper/tests in final6248145e tree. No repeated test counts added. Not full audit, integrated CI, merge or native qualification.",
+  "review": "Primary inspected evaluator, shared plan/operations/plain/materializer and marker/event validation refactor plus immutable manifest/diff. No actionable component finding after executor restored error precedence."
+}
