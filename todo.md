@@ -6062,3 +6062,10 @@ preview interaction. Private fixture uses one Environment before sample/UI
 startup; central Environment tests retain catalog lifecycle coverage. Original paint/selection/
 rename/geometry test body unchanged. Current owning/required checks and review
 pending; native readability/input acceptance remains open.
+
+
+PR346 current integration: actual held-middle-pan plain-L queued a worker edit
+on unchanged owner production (one executed RED). Add existing active-pan guard
+only; original complete-selection/Command-L/typing/Console/drop controls kept.
+Private fixture now shares one Environment before startup; no duplicate lifecycle
+test. Corrected owning/required checks and review pending; native acceptance open.

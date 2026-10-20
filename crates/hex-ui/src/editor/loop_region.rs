@@ -38,6 +38,7 @@ impl EditorView {
 
     fn set_selection_loop(&mut self) {
         if self.edit_pending()
+            || self.arrangement_pan.is_some()
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
             || self.active_clip_drag.is_some()

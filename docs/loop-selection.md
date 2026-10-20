@@ -35,3 +35,12 @@ and musical-keyboard unmodified l do not change the loop. Command-l with musical
 typing enabled must still use the full selection. Verify Session/toolbar toggle
 and unchanged plain-l behavior outside musical typing. Do not replace or launch the user's installed app from
 cloud work; the coordinator owns native dispatch and delivery.
+
+Current integration refuses L and Command-L while a genuine middle-button
+Arrangement pan owns the pointer. The existing active-pan field joins the
+existing loop-shortcut edit guard; no pan lifecycle or keyboard framework
+changes. The real held-pan regression retains project/history/selection and
+pointer ownership, then checks the same keys and Undo/Redo after release.
+The private selection fixture shares one precreated Environment for samples
+and all four preferences. Its original selection/typing/Console/drop tests
+remain intact, with central Environment lifecycle coverage reused.
