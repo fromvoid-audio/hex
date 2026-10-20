@@ -1,5 +1,6 @@
 //! One accepted loop intent, correlated with the existing worker FIFO.
 use super::{EditorView, LoopRegion, PendingLoop, Request};
+use crate::editor::controller::RequestAdmission;
 use hex_project::Command;
 use hex_session::service::Event;
 
@@ -44,18 +45,25 @@ impl EditorView {
         false
     }
 
-    pub(super) fn submit_loop_preview(&mut self, generation: u64, region: LoopRegion) {
+    pub(super) fn submit_loop_preview(
+        &mut self,
+        generation: u64,
+        region: LoopRegion,
+    ) -> RequestAdmission {
+        let previous = self.pending_loop;
         self.pending_loop = Some(PendingLoop {
             generation,
             region,
             remaining: None,
         });
-        if !self.enqueue(Request::Edit(Command::SetLoopRegion {
+        let admission = self.enqueue_with_admission(Request::Edit(Command::SetLoopRegion {
             start: region.start(),
             end: region.end(),
             enabled: region.enabled(),
-        })) {
-            self.pending_loop = None;
+        }));
+        if !admission.accepted() {
+            self.pending_loop = previous;
         }
+        admission
     }
 }

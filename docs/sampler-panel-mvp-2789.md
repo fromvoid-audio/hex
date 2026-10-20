@@ -83,6 +83,28 @@ allocation instrumentation and real nominal UI fixtures remain unexecuted.
 This is continued source integration, with startup/playback/full qualification
 and optimized delivery still open.
 
+The next loop-rail read port retains the original mouse-up through snapshot
+Busy, restores prior pending-loop display after refused submission, and checks
+its gesture incarnation before retry. The partial library diagnostic reports
+441 actual errors with no primary loop-rail diagnostic. Automatic retry of UI
+queue capacity remains explicitly incomplete until enqueue returns typed
+admission results; permanent refusal must not be retried as if it were Busy.
+Its pure nonce test and actual registered UI pressure tests have not run.
+
+A subsequent controller continuation connects typed actual admission outcomes,
+including device defer/barrier capacity. The loop now retries only actual queue
+capacity or snapshot Busy, retaining its original release, while semantic/closed
+refusals stop visibly. Bool callers and FIFO laws remain unchanged. Its frozen
+partial diagnostic still reports 441 errors elsewhere and no primary error in
+new admission code; actual queue-pressure/release/ACK tests remain unexecuted.
+
+A controller metadata preparer now quotes and fills plain display/ACK facts from
+the same retained head with backing reserved outside the guard. It is compiled
+but unconnected: no Event receive, ACK, submission or UI action occurs through
+it. Corrected full-source partial diagnostics still fail with 441 errors and no
+primary helper error. Native paired-source preflight and actual backend
+completion routes remain prerequisites for the real controller port.
+
 The production device-composition source guard passes with the real instrument
 dispatch. Earlier staged leaf tests (UI2, Engine2, Session30) remain evidence for
 that earlier immutable component only. The earlier feature-only mount and its

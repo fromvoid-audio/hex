@@ -139,6 +139,77 @@ add-menu hunk. Remaining Return errors are the existing EQ/meter dependencies.
 Scoped format/diff/layout checks pass. No tests, clean UI build, full audit,
 Native startup/playback or optimized delivery are qualified by this run.
 
+The loop-rail boundary now computes its Copy gesture candidate under one actual
+read before changing the gesture. A Busy mouse-up retains one original position
+and modifier payload; one weak-view task retries it after 5 ms against a checked,
+nonwrapping gesture incarnation. Move/modifier/duplicate release cannot replace
+that payload. Cancellation, replacement and permanent source refusal stop the
+task. Toggle/Set submission retires the gesture only after enqueue acceptance;
+refusal restores the prior pending-loop display and retains the candidate.
+
+The current bool enqueue API conflates queue capacity and permanent refusal.
+Therefore admission refusal remains a visible retained terminal candidate and
+stops automatic retries; only actual snapshot Busy retries. Automatic capacity
+retry is explicitly incomplete until controller admission exposes typed results.
+No error-string heuristic or arbitrary retry limit is used. Pending FIFO/counter
+laws are unchanged. The existing hover assertion now expects the checked Result;
+a pure incarnation-exhaustion test was added but remains unexecuted, as do real
+registered UI pressure/release/cancellation tests.
+
+The frozen `modern-loop-rail` library check at HEAD `f163734f` completed with exit
+101 and 441 actual errors (442 headings), unchanged source SHA-256
+`c4fec424c78052d877519ba226ed8811620bd5f04fd827b39efff4fcea36f374`.
+No primary diagnostic is in loop-rail. Scoped format/diff/layout checks pass;
+this is not a test, strict, full-audit, native or playable-build qualification.
+Controller intake still requires the same-head/previous-source comparison
+preflight before claim, plus actual backend-associated completion routes.
+
+The following controller continuation resolves that source-level admission gap.
+Actual enqueue branches now return `Accepted`, `RetryableQueueCapacity` or
+`Refused`, with the existing bool enqueue/barrier wrappers preserving other
+callers. Both device-terminal defer paths propagate exact capacity results.
+Service Full that is queued locally remains Accepted; Service Busy/export,
+Closed, semantic guards, custody and finalizer failures are Refused. Current
+client finalizer failures are semantic, not hidden capacity results. The loop
+retries its same original release only for actual queue capacity or read Busy;
+permanent refusal remains visible and retains the candidate without retry.
+FIFO order, terminal counts and accepted-request correlation are unchanged.
+
+The frozen `modern-typed-admission` library diagnostic at HEAD `294bcb15`
+completed with exit 101 and 441 actual errors, unchanged source SHA-256
+`7162b68994433330a1f28720fbce4e321b3980a6579506f5a91ebea0b8479f6b`.
+No primary diagnostic is in the new admission methods, device defer helpers or
+loop consumer. Scoped format/diff/layout checks pass. Source-level capacity
+classification is connected, but real full-queue/barrier/refusal/retry/ACK UI
+regressions remain unexecuted until the registered fixture and UI compilation
+are available; no reliable release acceptance or usable build is claimed.
+
+Controller metadata preparation is now staged in `controller/source_notice.rs`.
+It quotes the actual retained head, reserves exact fallible backing outside the
+read, then copies only plain text/paths, bounded slot labels, Copy ACK fields
+and basic snapshot facts from that same head without buffer growth. UTF-8
+conversion and owned display assembly occur after the guard. Empty-versus-absent
+values are retained. It owns no project, compiled/input/PCM source or additional
+capability and performs no receive, ACK, submission or UI action.
+
+This module is **unconnected preparation**, not an event consumer. Its returned
+head is correlation only; it proves no previous-source relation, backend route
+or admission. The existing controller still needs the actual paired preclaim
+comparison and backend-associated completion contracts before it can consume
+this preparation safely. No legacy Event conversion or claim-and-drop shortcut
+is introduced.
+
+The preliminary `modern-event-notice` failed diagnostic omitted the then
+untracked new module from its tracked-only fingerprint; that receipt is retained
+and explicitly does not identify the full candidate. The corrected
+`modern-event-notice-v2` check includes the complete new source and ended with
+exit 101, 441 actual errors, unchanged SHA-256
+`a9c92a38ac5df2aa802a418be641d83ef491d488e0dbc081d07829fd45dd17af`.
+No primary diagnostic is in the new module. Scoped formatting/diff/layout checks
+pass. Same-head change/refusal, exact metadata/ACK delivery and zero allocation
+or deallocation while guarded remain unexecuted behavioral tests; this adds no
+clean UI/strict/full/native/usable qualification.
+
 The sections below preserve the older b94-based component's source history;
 their unconnected-dispatch and unavailable-query descriptions are historical.
 

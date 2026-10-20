@@ -26,6 +26,21 @@ use std::{
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_replacement_tests;
 
+mod source_notice;
+
+/// Result of actual request admission, separate from transport read pressure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RequestAdmission {
+    Accepted,
+    RetryableQueueCapacity,
+    Refused,
+}
+impl RequestAdmission {
+    pub(super) const fn accepted(self) -> bool {
+        matches!(self, Self::Accepted)
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum AudioEventDisposition {
     Current,
@@ -2364,7 +2379,11 @@ impl EditorView {
     }
 
     pub(super) fn enqueue(&mut self, request: Request) -> bool {
-        self.enqueue_request(request, false)
+        self.enqueue_with_admission(request).accepted()
+    }
+
+    pub(super) fn enqueue_with_admission(&mut self, request: Request) -> RequestAdmission {
+        self.enqueue_request_with_admission(request, false)
     }
 
     fn enqueue_duplicate_continuation(&mut self, clip: hex_project::ClipId) -> bool {
@@ -2375,6 +2394,15 @@ impl EditorView {
     }
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
+        self.enqueue_request_with_admission(request, duplicate_continuation)
+            .accepted()
+    }
+
+    fn enqueue_request_with_admission(
+        &mut self,
+        request: Request,
+        duplicate_continuation: bool,
+    ) -> RequestAdmission {
         let open_save = self.project_open.permits_save()
             && matches!(&request, Request::SaveCurrent | Request::SaveNew(_));
         // An already-started recovery must finish while a picker/confirmation
@@ -2387,12 +2415,12 @@ impl EditorView {
             && !recovery_restore
         {
             self.error = Some("finish the current open action before editing".into());
-            return false;
+            return RequestAdmission::Refused;
         }
         if self.gain_recorder.blocks_edits() {
             self.error =
                 Some("finish or cancel gain recording before another project action".into());
-            return false;
+            return RequestAdmission::Refused;
         }
         #[cfg(test)]
         match &request {
@@ -2524,7 +2552,7 @@ impl EditorView {
             } else {
                 "close confirmation open · editing is paused".into()
             });
-            return false;
+            return RequestAdmission::Refused;
         }
         // An owned recovery continuation is not a new user intent: a selected
         // picker path may still be awaiting the next render's Open reconciliation.
@@ -2567,25 +2595,25 @@ impl EditorView {
             self.invalidate_prepared_seek();
         }
         if request.finalizes_parameter_gesture() && self.device_gesture.snapshot().is_some() {
-            return self.enqueue_device_barrier(request);
+            return self.enqueue_device_barrier_admission(request);
         }
         let mut request = Some(request);
-        if let Some(accepted) = self.enqueue_after_device_terminal(&mut request) {
+        if let Some(accepted) = self.enqueue_after_device_terminal_admission(&mut request) {
             return accepted;
         }
         let Some(request) = request else {
-            return false;
+            return RequestAdmission::Refused;
         };
         if self.tuning.client.snapshot().is_some() && request.finalizes_parameter_gesture() {
             if self.pending_requests.len() + self.device_gesture_barriers.len()
                 >= UI_REQUEST_CAPACITY
             {
                 self.error = Some("request queue full · edit was not applied".into());
-                return false;
+                return RequestAdmission::RetryableQueueCapacity;
             }
             if let Err(reason) = self.finalize_tuning_gesture() {
                 self.tuning.error = Some(reason.into());
-                return false;
+                return RequestAdmission::Refused;
             }
         }
         if self.tuning.client.has_pending_requests() {
@@ -2593,20 +2621,20 @@ impl EditorView {
                 >= UI_REQUEST_CAPACITY
             {
                 self.error = Some("request queue full · edit was not applied".into());
-                return false;
+                return RequestAdmission::RetryableQueueCapacity;
             }
             self.pending_requests.push_back(request);
-            return true;
+            return RequestAdmission::Accepted;
         }
         if !self.pending_requests.is_empty() {
             if self.pending_requests.len() + self.device_gesture_barriers.len()
                 < UI_REQUEST_CAPACITY
             {
                 self.pending_requests.push_back(request);
-                return true;
+                return RequestAdmission::Accepted;
             } else {
                 self.error = Some("request queue full · edit was not applied".into());
-                return false;
+                return RequestAdmission::RetryableQueueCapacity;
             }
         }
         let resize_request = self.pending_trim_matches(&request);
@@ -2624,26 +2652,26 @@ impl EditorView {
                 if group_copy_request {
                     self.group_copy_submitted();
                 }
-                true
+                RequestAdmission::Accepted
             }
             Err(SubmitError::Full(request))
                 if self.pending_requests.len() + self.device_gesture_barriers.len()
                     < UI_REQUEST_CAPACITY =>
             {
                 self.pending_requests.push_back(request);
-                true
+                RequestAdmission::Accepted
             }
             Err(SubmitError::Full(_)) => {
                 self.error = Some("request queue full · edit was not applied".into());
-                false
+                RequestAdmission::RetryableQueueCapacity
             }
             Err(SubmitError::Busy(_)) => {
                 self.error = Some("an export is already pending".into());
-                false
+                RequestAdmission::Refused
             }
             Err(SubmitError::Closed(_)) => {
                 self.error = Some("project worker stopped".into());
-                false
+                RequestAdmission::Refused
             }
         }
     }
