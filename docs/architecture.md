@@ -115,7 +115,7 @@ of these substitutes for the others.
 | hex-storage | Versioned project metadata and recoverable file creation | hex-project, hex-lattice-contract, serde, serde_json, std |
 | hex-export | Fixed-block linear PCM16 WAV rendering and create-new file publication | hex-engine, std |
 | hex-warp | Pure bounded control-side stereo transformation; no project/I/O/UI/thread ownership | std |
-| hex-engine | Compiled playback data, timing, note scheduling, playback commands, rendering and transform preparation/cache | hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract, std |
+| hex-engine | Compiled playback data, timing, note scheduling, playback commands, rendering and transform preparation/cache | hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract, sha2 (control-side source identity), std |
 | hex-audio | Device stream lifetime, command delivery, callback boundary | hex-engine, CPAL, rtrb |
 | hex-library | Bounded folder/WAV/project listings, recursive WAV catalog and atomic derived cache with original paths | std |
 | hex-widgets | Reusable native control rendering, focus and local edit gestures with caller-supplied style/text | GPUI, std |
@@ -129,6 +129,13 @@ require an explicit policy entry. Cohesive subsystems get separate crates;
 helpers and empty speculative modules do not. This policy follows the
 [PhotoCraft reference adaptation](reference-project.md) while retaining a separate
 real-time audio plane.
+
+`hex-engine` may use pinned `sha2` 0.10.9 only for bounded, cancellable control-side
+verification of original PCM in its existing sealed input bank. This registered
+source-identity dependency does not permit hashing in sample/process callbacks
+or add bank ownership/admission authority. Other runtime hash boundaries and the
+separate `hex-stream` build-only exception remain unchanged. See
+[native device resource scopes](native-device-resource-host.md).
 
 ## Editable project foundation
 
