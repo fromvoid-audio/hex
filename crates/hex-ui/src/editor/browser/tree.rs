@@ -599,10 +599,15 @@ impl EditorView {
         }
         let entries = self.browser_visible_entries(cx);
         if self.browser.tree.dirty.get() {
-            // Computing a changed root projection can re-dirty the tree even
-            // when no folder worker starts. Finish reconciliation next frame;
-            // identical roots stay clean, so this does not become a poll loop.
-            cx.notify();
+            // GPUI suppresses invalidation during render. Notify after this
+            // projection finishes, even when no folder worker starts; stable
+            // roots stay clean, so no further callback is scheduled.
+            let entity = cx.entity().downgrade();
+            cx.defer(move |cx| {
+                if let Some(entity) = entity.upgrade() {
+                    cx.notify(entity.entity_id());
+                }
+            });
         }
         let needed: Vec<_> = entries
             .iter()
