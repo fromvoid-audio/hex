@@ -1,0 +1,44 @@
+diff --git a/scripts/sampler_host_policy.py b/scripts/sampler_host_policy.py
+index 5cc3f0a9..24d70886 100644
+--- a/scripts/sampler_host_policy.py
++++ b/scripts/sampler_host_policy.py
+@@ -137,11 +137,19 @@ def violations(path: str, source: str) -> list[str]:
+                 'self.route != previous.route', 'std::ptr::eq(self.operations, previous.operations)',
+                 '(self.operations.follows_source)(self.route, current, previous, generation)']):
+             return [f'{path}: ordered source query uses same actual route and adapter']
++    if path == 'crates/hex-ui/src/editor/device_panel.rs' and 'mod sampler_ui_tests;' in source:
++        fixture_mount = ('#[cfg(all(test, feature = "ui-test-support"))]\n'
++                         '#[path = "device_panel/sampler_ui_tests.rs"]\n'
++                         'mod sampler_ui_tests;')
++        if fixture_mount not in source:
++            return [f'{path}: direct Sampler query fixture must remain behind the exact test-only mount']
+     if 'sampler_parameters_on_control' in source and path not in {
+             'crates/hex-engine/src/lib.rs',
+             'crates/hex-engine/src/native_device_view.rs',
+             'crates/hex-engine/src/native_device_view/sampler_parameters.rs',
+-            'crates/hex-session/src/snapshot_exports.rs'}:
++            'crates/hex-session/src/snapshot_exports.rs',
++            # Mounted only by cfg(all(test, feature = "ui-test-support")).
++            'crates/hex-ui/src/editor/device_panel/sampler_ui_tests.rs'}:
+         return [f'{path}: Sampler controls are Copy facts through the concrete codec and nominal snapshot query']
+     if path == 'crates/hex-engine/src/native_device_view/sampler_parameters.rs':
+         production = source.split('#[cfg(test)]\nmod tests {', 1)[0]
+diff --git a/scripts/tests/test_sampler_host_policy.py b/scripts/tests/test_sampler_host_policy.py
+index 96f8d640..f3194149 100644
+--- a/scripts/tests/test_sampler_host_policy.py
++++ b/scripts/tests/test_sampler_host_policy.py
+@@ -39,6 +39,14 @@ class SamplerHostPolicyTests(unittest.TestCase):
+         for forbidden in ['native_instrument_registry(', 'state.clone()', 'Vec::new()']:
+             self.assertTrue(violations(path, source.replace('#[cfg(test)]', forbidden + '\n#[cfg(test)]', 1)))
+         self.assertTrue(violations('crates/hex-ui/src/foreign.rs', 'sampler_parameters_on_control(&owned_state)'))
++        fixture = 'crates/hex-ui/src/editor/device_panel/sampler_ui_tests.rs'
++        self.assertEqual(violations(fixture, (Path(__file__).resolve().parents[2] / fixture).read_text()), [])
++        mount = (Path(__file__).resolve().parents[2] / 'crates/hex-ui/src/editor/device_panel.rs').read_text()
++        self.assertIn('#[cfg(all(test, feature = "ui-test-support"))]\n#[path = "device_panel/sampler_ui_tests.rs"]\nmod sampler_ui_tests;', mount)
++        self.assertEqual(violations('crates/hex-ui/src/editor/device_panel.rs', mount), [])
++        self.assertTrue(violations('crates/hex-ui/src/editor/device_panel.rs', mount.replace(
++            '#[cfg(all(test, feature = "ui-test-support"))]\n#[path = "device_panel/sampler_ui_tests.rs"]',
++            '#[path = "device_panel/sampler_ui_tests.rs"]')))
+ 
+     def test_initial_startup_purpose_is_actual_once_only_and_not_edit_authority(self):
+         root = Path(__file__).resolve().parents[2]

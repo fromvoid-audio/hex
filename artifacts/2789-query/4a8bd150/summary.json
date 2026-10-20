@@ -1,0 +1,25 @@
+{
+  "source": "4a8bd150bf64bcee968625f606806f966ef6074b",
+  "tree": "430cf708d1a3b040d30296e7f17664d8d8547c71",
+  "native_source": "493d348ec20d490de9310080d04963ddcb552437",
+  "query_child": "8e685caf",
+  "checks": {
+    "retained_queries": 6,
+    "session_all_targets_strict": true,
+    "architecture_crates": 25,
+    "policy_tests": 45,
+    "diff_check": true
+  },
+  "qualification": {
+    "full_ci": false,
+    "ui_compiles": false,
+    "native_acceptance": false,
+    "merge_qualified": false
+  },
+  "chronology": [
+    "44c query exact6tests+alltargetstrict logs retained. Initial prepared-facts-test failure6Engine errors was incompatible cross-checkout target reuse; correct package cleaned in UI-owned target only and targets separated.",
+    "Composition first query check failed34errors due duplicate model_read module mount introduced by additive merge; remove duplicate only and rerun6PASS. Raw first failure retained.",
+    "Default /usr/bin/python3 architecture invocation lacked tomllib; supported /opt/homebrew/bin/python3.13 exposed precise sampler fixture guard omission. Both initial failures retained in tool output only. Exact test-only fixture allowance + parent-mount sensitivity repaired; policy45 and architecture25PASS.",
+    "No UI source included from Native; dirty UI remains unqualified. Receiver mechanics do not prove preview source seal/Service Initial/backend association."
+  ]
+}
