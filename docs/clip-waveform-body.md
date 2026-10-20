@@ -2,8 +2,8 @@
 
 Pulse2848 / PR450 keeps audio waveform canvas geometry and its paint mask below
 `CLIP_NAME_HEIGHT`. Regular clips, captured trim/stretch overlays and audio drag
-ghosts use a body-only clipping container. Ghosts retain their existing 10px
-name strip. Source/time projection, waveform preparation, peak selection, fades,
+ghosts use a body-only clipping container. Internal clip ghosts now share the canonical name-strip height under PR492;
+external asset placeholders retain their existing bounded title treatment. Source/time projection, waveform preparation, peak selection, fades,
 clip bounds, outer selection border and hit targets are unchanged.
 
 Captured audio trim/stretch previews now retain the same title strip through a

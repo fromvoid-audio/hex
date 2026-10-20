@@ -6111,3 +6111,16 @@ browser Enter/density/capture behavior. Local owning fixtures bind their origina
 paths and catalog jobs to one Environment, with pointer/four-path assertions;
 original test bodies remain. Current focused/required/review and native acceptance
 remain separate; old source receipts do not qualify this combined candidate.
+
+
+## Full-content clip drag previews — pulse2890 / PR492
+
+Shared passive production title/audio/MIDI painters now supply internal landing,
+valid-lane groups, append-row and floating anchor previews. Preserve original
+ready processed content as provisional display when future warp/tempo differs;
+no new decode, PCM owner, model edit or capture/command route. Actual MIDI and
+processed/looped-warp audio painter checks cover body clipping, ready root/offset,
+floating content and mixed move/copy groups. Original missing-note, opacity and
+modifier-fixture failures remain separate. Source checks/handoff in progress;
+sole-merger exact qualification, actual merge and optimized physical acceptance
+remain pending. No app delivery or native user approval is claimed.

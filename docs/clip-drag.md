@@ -127,3 +127,42 @@ spans, exact touches, merged victims, source exclusion/copy toggles and release
 cleanup. Native visual acceptance remains pending: hold an audio or MIDI clip
 over another clip, inspect partial/full overlap and gaps, toggle Option over its
 original position, then cancel/drop and check that the highlight disappears.
+
+
+## Full-content held previews — Pulse2890 / PR492
+
+Internal landing, group, append-row and floating previews compose the same
+read-only clip title, audio body and MIDI note painters as ordinary clips.
+Prepared audio peaks retain their actual original root/offset; edited audio never
+falls back to an asset thumbnail. MIDI uses the accepted prepared note samples
+with the existing per-row shape budget. Titles are passive text, never another
+instance of a live rename input. The theme selection outline identifies the
+clone while retaining opaque readable source content.
+
+A destination may imply a different future tempo/warp projection. Until that
+candidate is compiled, the held image deliberately shows the original ready
+source crop, translated and fitted into destination geometry. A checked mapping
+of the destination's visible fraction crops the original source window; it does
+not claim newly rendered destination audio. No pointer-motion decode, DSP,
+project clone, new PCM owner or drag command is introduced. Escape, stale-state
+refusal, capture and release retain the existing gesture lifecycle. Floating
+multi-selection still uses the existing anchor-card behavior; valid lane group
+previews show each selected member, without adding a new off-lane drag mode.
+
+The owning actual GPUI checks observe MIDI quads, colored title quads, borders,
+waveform paint bounds/masks and the exact accepted processed waveform Arc/offset.
+They cover trimmed/faded/pitched audio, looped Beats-warped audio, landing and
+floating content, and mixed audio/MIDI group move/copy presentation. Project and
+pending command counts remain unchanged while held; Escape removes the preview.
+An original missing-note regression and a later opacity-only mismatch are kept
+as separate evidence. The latter already painted the target note. A third test
+fixture failure required dispatching the actual window modifier change for Alt;
+it did not establish a product copy/capture defect.
+
+These are component/painter observations, not native GPU pixels or listening.
+Final prospective-tree qualification and merge belong to the sole merger.
+User-present optimized acceptance remains open: drag audio/MIDI and mixed groups
+through lane, browser and append positions; inspect source details, clipped edges,
+small/header-only rows, zoom and tempo changes; move/copy/drop, Escape and Undo.
+Future rounded loop-bottom styling remains a separate feature and must preserve
+this shared body clipping; no unmerged loop implementation is imported here.
