@@ -6407,3 +6407,14 @@ explicit lexical parent alias even when it resolves to the same physical target.
 Existing foreign-owner, stale-artifact, source-change, CAS and lock controls stay
 intact. Combined exact-source tooling qualification is recorded in PR505/Pulse;
 no global TMPDIR override or production safety change is used.
+
+## bounded resize-modifier fixture — pulse2924 / PR510
+
+The stationary snap/Shift-stretch gesture fixture uses the supported 8 kHz
+project/source rate with the same two-second source and placement. It still
+submits the actual Beats stretch and waits for its terminal worker completion,
+with unchanged five-second deadline and behavioral assertions. Other resize
+fixtures retain their 48 kHz default. No production UI or DSP behavior changes.
+The two original full-audit deadline failures and exact repair validation remain
+recorded with PR510/Pulse2924; Sampler PR509 requires fresh qualification after
+this prerequisite merges.
