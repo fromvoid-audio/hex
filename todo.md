@@ -1,3 +1,13 @@
+## Browser history source checkpoint (Pulse2669 / PR286)
+
+Session-local bounded source/directory/query history replaces the disabled arrow
+slots. Query edits coalesce at explicit input/navigation boundaries; restoration
+retains native item/top-row identity without audition/import/text focus, rejects
+stale scan results and leaves missing Places recoverable. Current tag/collection
+storage placeholders remain separate. See docs/browser-layout.md for exact
+coalescing, bounds, fallback and finite native acceptance. Source checks and
+immutable handoff are recorded in live Pulse; prospective-tree fullCI/review/merge
+remain the dedicated merger's work, native optimized acceptance remains open.
 ## group batch capacity, copied selection and victim accent — pulse2803 / PR409
 
 The accepted review repair plans the complete final Arrangement state before
@@ -6111,6 +6121,57 @@ browser Enter/density/capture behavior. Local owning fixtures bind their origina
 paths and catalog jobs to one Environment, with pointer/four-path assertions;
 original test bodies remain. Current focused/required/review and native acceptance
 remain separate; old source receipts do not qualify this combined candidate.
+
+## hidden-source browser history integration — pulse2669 / PR286
+
+Actual composed custom-source Remove then Back restored an invisible retained
+Place. Reuse existing browser_place_visible in history availability, preserving
+existing All fallback/entry replacement and Samples/layout policy. Current source
+visibility, sample/instrument Enter, compact layout and unhighlighted-row guards
+remain intact. Original eight history cases are retained; owning fixtures use one
+Environment before their files/Service and actual identity/path assertions. New
+combined hidden custom/Home/Music Back/Forward controls keep branch/no-autoplay/
+no-authoring/media oracles. Required current-head checks/review and native/manual
+acceptance remain separate; prior fixture-only baseline failure is not a product RED.
+
+- PR286 review continuation: captured actual disabled-focus, duplicate-query and
+  unrelated-catalog restoration failures; revised painted-scroll control proved
+  restored0px versus retained-220px. Enabled arrow focus was already correct.
+  Reuse the existing focus path, make disabled arrows inert, collapse adjacent
+  query round trips, wait only the used provider, remove the runtime expect and
+  capture/strictly restore actual fixed-row geometry. Current validation pending;
+  original eight and six hidden-source cases remain, no native claim.
+
+- PR286 seventh return: complete clicks already restored and quiesced; actual
+  held Back mouse-down exposed a pending highlight after one notification.
+  Schedule only root-projection re-dirtiness through existing reconciliation,
+  preserving real worker waits and all prior history/hidden-source controls.
+  Current focused checks and final qualification remain pending.
+
+- PR286 readiness continuation: retained the single physical folder worker while
+  fencing restoration only on current projection-capable epoch/path/serial work,
+  including indexed expanded All/Place rows. Actual held-worker baseline had two
+  failures; corrected owning history17/17 plus default/feature strict and format
+  passed. The first new scroll fixture was bottom-clamped; its failed result is
+  retained and the corrected fixture verifies its initial unclamped position.
+  Historical bf8 full21 pass remains review-blocked source evidence, not a pass
+  for this changed candidate. Current required plan/review/merge remains pending;
+  no native or installed-build acceptance is claimed.
+# 20 october2026 — Pulse2813 generation 2 Tab investigation (PR489)
+
+- Recovered the existing generation-2 canonical branch/PR; historical merged419
+  and all earlier evidence stay immutable. Pinned qualified main1d1797 once.
+- Real routed Tab after ordinary Arrange/Console clicks passes for both key-char
+  forms; constructor-owned startup and browser-search → header return also pass.
+  Two new cases exercise actual key dispatch, selection/scroll/rail/cursor and
+  canonical Project/revision preservation; no direct-handler-only substitute.
+- Retained the pre-Cargo unknown-cache ownership refusal and the font-test-platform
+  / browser-text fixture failures. Corrected fixtures preserve mandatory production
+  font checks and existing local text input. No production behavior changed.
+- The user subsequently confirmed "Tab works now" to Root; no build label was
+  supplied, and no production repair/cause is claimed. The reproduction blocker
+  is removed without another native probe. Regression-source checks and canonical
+  merge remain separate from that user confirmation and installed-build identity.
 
 
 ### 2026-10-20 — pulse2889 / pr491 Arrange pan drag direction
