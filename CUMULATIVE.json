@@ -3,978 +3,1232 @@
     "path": "crates/hex-audio/build.rs",
     "bytes": 7399,
     "sha256": "093ef7ba3acb00390756cb23de8658d0e77cd02bb203d85afbd29456b5fdfe0e",
-    "prior_e555_sha256": "093ef7ba3acb00390756cb23de8658d0e77cd02bb203d85afbd29456b5fdfe0e"
+    "prior_e240_sha256": "093ef7ba3acb00390756cb23de8658d0e77cd02bb203d85afbd29456b5fdfe0e",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody.rs",
     "bytes": 65258,
     "sha256": "bfc9612af2353dfcb495a1674f7050d633b63d3a5dbdf986486b14991ef98488",
-    "prior_e555_sha256": "bfc9612af2353dfcb495a1674f7050d633b63d3a5dbdf986486b14991ef98488"
+    "prior_e240_sha256": "bfc9612af2353dfcb495a1674f7050d633b63d3a5dbdf986486b14991ef98488",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/custody_mutex.rs",
     "bytes": 2829,
     "sha256": "2720624b69eda78eb8e3a0ea9e84782fcd5d7f953101924d20309c23cf975211",
-    "prior_e555_sha256": "2720624b69eda78eb8e3a0ea9e84782fcd5d7f953101924d20309c23cf975211"
+    "prior_e240_sha256": "2720624b69eda78eb8e3a0ea9e84782fcd5d7f953101924d20309c23cf975211",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/eligible.rs",
     "bytes": 56473,
     "sha256": "73e799646a3413848e26bfb0a128608918eed740fedc076609d1ccef4aa0a651",
-    "prior_e555_sha256": "73e799646a3413848e26bfb0a128608918eed740fedc076609d1ccef4aa0a651"
+    "prior_e240_sha256": "73e799646a3413848e26bfb0a128608918eed740fedc076609d1ccef4aa0a651",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/eligible/native_birth_tests.rs",
     "bytes": 6480,
     "sha256": "a7401b116a8604b368a5e7caf205c78de54c8583e6337217cc290a1b709ec606",
-    "prior_e555_sha256": "a7401b116a8604b368a5e7caf205c78de54c8583e6337217cc290a1b709ec606"
+    "prior_e240_sha256": "a7401b116a8604b368a5e7caf205c78de54c8583e6337217cc290a1b709ec606",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/eligible/pages.rs",
     "bytes": 7290,
     "sha256": "f3123960635702e66e89a5318ad53129aafdfdf962cf82d2237d9912b29a1d22",
-    "prior_e555_sha256": "f3123960635702e66e89a5318ad53129aafdfdf962cf82d2237d9912b29a1d22"
+    "prior_e240_sha256": "f3123960635702e66e89a5318ad53129aafdfdf962cf82d2237d9912b29a1d22",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/eligible/publication.rs",
     "bytes": 47592,
     "sha256": "22b01d69b7c064039437fba6f0311d660aad941ea96461a8c76f3e0296d41bba",
-    "prior_e555_sha256": "d8aa2b702e9418e2e8fc0a9997a319a273431502556f17ef2581e67ab37b8025"
+    "prior_e240_sha256": "22b01d69b7c064039437fba6f0311d660aad941ea96461a8c76f3e0296d41bba",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/eligible/publication/disposal.rs",
     "bytes": 20469,
     "sha256": "f684eec56415731dd182cf4a611df12fec48f613ddd3759b46f1c0d9068bd3e3",
-    "prior_e555_sha256": "f684eec56415731dd182cf4a611df12fec48f613ddd3759b46f1c0d9068bd3e3"
+    "prior_e240_sha256": "f684eec56415731dd182cf4a611df12fec48f613ddd3759b46f1c0d9068bd3e3",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/eligible/publication/native_host.rs",
-    "bytes": 23354,
-    "sha256": "b032c29ea9258be83a402e13ab48fea9752d7e3d95e83eb4ac77a7528c24ebfe",
-    "prior_e555_sha256": "6f6a59c7079249df1ed3bf62f28e562da9f92a90f20939d0ca3b7389076aa2a1"
+    "bytes": 25059,
+    "sha256": "2a3934ad807a9e1c082f051b623136bbcd73fd29f4c39d1930eb517edc9256f5",
+    "prior_e240_sha256": "b032c29ea9258be83a402e13ab48fea9752d7e3d95e83eb4ac77a7528c24ebfe",
+    "changed": true
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/eligible/publication/native_host/tests.rs",
     "bytes": 32718,
     "sha256": "565aab8b3d35bbdee9432ffea2baf07422d9183d0c044c9b8dafa4e504fc077f",
-    "prior_e555_sha256": "ad9efaf3900ca13109714238b719c5de3907bcf889932de33c5142a4d1638e1a"
+    "prior_e240_sha256": "565aab8b3d35bbdee9432ffea2baf07422d9183d0c044c9b8dafa4e504fc077f",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/eligible/publication/preparation.rs",
     "bytes": 62811,
     "sha256": "d05569925b65f4629dd5fdd7a8ceb112e9f8b0a270710fca6227cd02f6725bd0",
-    "prior_e555_sha256": "d05569925b65f4629dd5fdd7a8ceb112e9f8b0a270710fca6227cd02f6725bd0"
+    "prior_e240_sha256": "d05569925b65f4629dd5fdd7a8ceb112e9f8b0a270710fca6227cd02f6725bd0",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/eligible/publication/resources.rs",
     "bytes": 6649,
     "sha256": "dea45de74e00feb151c061aa27266fd71dceb549c7e5766c2bbf1c4af289bcdf",
-    "prior_e555_sha256": "dea45de74e00feb151c061aa27266fd71dceb549c7e5766c2bbf1c4af289bcdf"
+    "prior_e240_sha256": "dea45de74e00feb151c061aa27266fd71dceb549c7e5766c2bbf1c4af289bcdf",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/eligible/publication/tests.rs",
     "bytes": 27486,
     "sha256": "c22441a93fb935dfdc6e2e575f6b376fe3f4a16f084ecfae3b8991d54ec2c9d9",
-    "prior_e555_sha256": "c22441a93fb935dfdc6e2e575f6b376fe3f4a16f084ecfae3b8991d54ec2c9d9"
+    "prior_e240_sha256": "c22441a93fb935dfdc6e2e575f6b376fe3f4a16f084ecfae3b8991d54ec2c9d9",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/candidate_custody/root_fields.rs",
     "bytes": 9111,
     "sha256": "f306367e1de05995c6c21846e988700df994e15ea02554ffff37ba656b3bfcfd",
-    "prior_e555_sha256": "f306367e1de05995c6c21846e988700df994e15ea02554ffff37ba656b3bfcfd"
+    "prior_e240_sha256": "f306367e1de05995c6c21846e988700df994e15ea02554ffff37ba656b3bfcfd",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/device.rs",
     "bytes": 46400,
     "sha256": "fa395da88ab41020eb968b1195e9aab43a75877fb4cb631051c5b2e1e8befdc2",
-    "prior_e555_sha256": "d7167e083742a0cde49a4e79298bb40eddaaf0bbfe108e856afa26dc2cd84074"
+    "prior_e240_sha256": "fa395da88ab41020eb968b1195e9aab43a75877fb4cb631051c5b2e1e8befdc2",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/gain_recording.rs",
     "bytes": 18210,
     "sha256": "3798f2c7ef0e36325bcc34fd4873a561ccd3a2838ea51b4b1deda1dc91c5917c",
-    "prior_e555_sha256": "3798f2c7ef0e36325bcc34fd4873a561ccd3a2838ea51b4b1deda1dc91c5917c"
+    "prior_e240_sha256": "3798f2c7ef0e36325bcc34fd4873a561ccd3a2838ea51b4b1deda1dc91c5917c",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/gain_recording/tests.rs",
     "bytes": 8973,
     "sha256": "521b7ed3b60ada3aff839558cc5828db7040ae6ae24298d3106f50a5aa518c8e",
-    "prior_e555_sha256": "521b7ed3b60ada3aff839558cc5828db7040ae6ae24298d3106f50a5aa518c8e"
+    "prior_e240_sha256": "521b7ed3b60ada3aff839558cc5828db7040ae6ae24298d3106f50a5aa518c8e",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/lib.rs",
     "bytes": 8674,
     "sha256": "3872765a0736850c619b7d6df129d9e6ee312e1a735c4690c7fee9df91cf6e88",
-    "prior_e555_sha256": "3872765a0736850c619b7d6df129d9e6ee312e1a735c4690c7fee9df91cf6e88"
+    "prior_e240_sha256": "3872765a0736850c619b7d6df129d9e6ee312e1a735c4690c7fee9df91cf6e88",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/lifecycle.rs",
     "bytes": 87050,
     "sha256": "00c7ea7f7c20651758164a8c82976633fa5ed77bae44e0c29fcbf744fc63bf33",
-    "prior_e555_sha256": "00c7ea7f7c20651758164a8c82976633fa5ed77bae44e0c29fcbf744fc63bf33"
+    "prior_e240_sha256": "00c7ea7f7c20651758164a8c82976633fa5ed77bae44e0c29fcbf744fc63bf33",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/lifecycle/retained_families/inventory.rs",
     "bytes": 18451,
     "sha256": "85ef6395dd8a791c6f20e831c8f091234744a6bffbaa00d118d2910bedd106c0",
-    "prior_e555_sha256": "85ef6395dd8a791c6f20e831c8f091234744a6bffbaa00d118d2910bedd106c0"
+    "prior_e240_sha256": "85ef6395dd8a791c6f20e831c8f091234744a6bffbaa00d118d2910bedd106c0",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/lifecycle/retained_families/tests.rs",
     "bytes": 33169,
     "sha256": "da1db8f9618a973cd32261110251d9533d85c218eb5bbb636ea13fcff3aa2a98",
-    "prior_e555_sha256": "da1db8f9618a973cd32261110251d9533d85c218eb5bbb636ea13fcff3aa2a98"
+    "prior_e240_sha256": "da1db8f9618a973cd32261110251d9533d85c218eb5bbb636ea13fcff3aa2a98",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/native_callback_owner.rs",
     "bytes": 34599,
     "sha256": "f6742ad716eff6604e30afa07ad5d44bd058fb46c16c5e992de2ce1aa82c3ac7",
-    "prior_e555_sha256": "f6742ad716eff6604e30afa07ad5d44bd058fb46c16c5e992de2ce1aa82c3ac7"
+    "prior_e240_sha256": "f6742ad716eff6604e30afa07ad5d44bd058fb46c16c5e992de2ce1aa82c3ac7",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/native_callback_owner/atomic_signal.rs",
     "bytes": 1751,
     "sha256": "391d669d9b3b86a38d53d06c297dc72567880fcada00b85cca991c3dfd681092",
-    "prior_e555_sha256": "391d669d9b3b86a38d53d06c297dc72567880fcada00b85cca991c3dfd681092"
+    "prior_e240_sha256": "391d669d9b3b86a38d53d06c297dc72567880fcada00b85cca991c3dfd681092",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/native_callback_owner/endpoint_tests.rs",
     "bytes": 18779,
     "sha256": "8d05947943b3913a3b79fc36b30eb6765425c3625756d706d25927cdfc8e674c",
-    "prior_e555_sha256": "8d05947943b3913a3b79fc36b30eb6765425c3625756d706d25927cdfc8e674c"
+    "prior_e240_sha256": "8d05947943b3913a3b79fc36b30eb6765425c3625756d706d25927cdfc8e674c",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/native_callback_owner/registered.rs",
     "bytes": 4719,
     "sha256": "81f6b244e941f5891d7b6b6007211410a9b3ea5ac89f311d64c096592a5a7259",
-    "prior_e555_sha256": "81f6b244e941f5891d7b6b6007211410a9b3ea5ac89f311d64c096592a5a7259"
+    "prior_e240_sha256": "81f6b244e941f5891d7b6b6007211410a9b3ea5ac89f311d64c096592a5a7259",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/native_callback_owner/resources.rs",
     "bytes": 8264,
     "sha256": "4bca0ceabe076e3c70dfa62820cd90216049c33a0fa0303410bdf01cf29f6481",
-    "prior_e555_sha256": "4bca0ceabe076e3c70dfa62820cd90216049c33a0fa0303410bdf01cf29f6481"
+    "prior_e240_sha256": "4bca0ceabe076e3c70dfa62820cd90216049c33a0fa0303410bdf01cf29f6481",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/native_callback_owner/ring_storage.rs",
     "bytes": 4218,
     "sha256": "10b213c3e5f6c19208abe047e7915ae51d63f26f312e48d48199bb484791f950",
-    "prior_e555_sha256": "10b213c3e5f6c19208abe047e7915ae51d63f26f312e48d48199bb484791f950"
+    "prior_e240_sha256": "10b213c3e5f6c19208abe047e7915ae51d63f26f312e48d48199bb484791f950",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/native_callback_owner/ring_storage/registered_tests.rs",
     "bytes": 9946,
     "sha256": "be881091d20b4035516279807b062c2688a5f87deb94a3e73aedf9f9e30b4760",
-    "prior_e555_sha256": "be881091d20b4035516279807b062c2688a5f87deb94a3e73aedf9f9e30b4760"
+    "prior_e240_sha256": "be881091d20b4035516279807b062c2688a5f87deb94a3e73aedf9f9e30b4760",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/native_callback_owner/ring_storage/transport.rs",
     "bytes": 6908,
     "sha256": "e298a0e9bbb866186091b9789733b570556cff9702bd93cb499f657608a6b7f9",
-    "prior_e555_sha256": "e298a0e9bbb866186091b9789733b570556cff9702bd93cb499f657608a6b7f9"
+    "prior_e240_sha256": "e298a0e9bbb866186091b9789733b570556cff9702bd93cb499f657608a6b7f9",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/native_callback_owner/storage_tests.rs",
     "bytes": 15790,
     "sha256": "0735400505543919d284bac86495c0a9859d374ae4a24648ed750b40b3c2a239",
-    "prior_e555_sha256": "0735400505543919d284bac86495c0a9859d374ae4a24648ed750b40b3c2a239"
+    "prior_e240_sha256": "0735400505543919d284bac86495c0a9859d374ae4a24648ed750b40b3c2a239",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared.rs",
     "bytes": 282442,
     "sha256": "dc41a3db2c7a4f53745a8bad010503e173cc8dea7cf74bf1be6f3f7d5c512cbe",
-    "prior_e555_sha256": "dc41a3db2c7a4f53745a8bad010503e173cc8dea7cf74bf1be6f3f7d5c512cbe"
+    "prior_e240_sha256": "dc41a3db2c7a4f53745a8bad010503e173cc8dea7cf74bf1be6f3f7d5c512cbe",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/candidate_tests.rs",
     "bytes": 23187,
     "sha256": "0e16a2241084a58233175785fb98a888194e24490c230d682718468f91a468a4",
-    "prior_e555_sha256": "0e16a2241084a58233175785fb98a888194e24490c230d682718468f91a468a4"
+    "prior_e240_sha256": "0e16a2241084a58233175785fb98a888194e24490c230d682718468f91a468a4",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/endpoints.rs",
     "bytes": 19548,
     "sha256": "e17e3900f9e74269aa390f83611b2c0898107c5fcbde57394affd95eda21bf23",
-    "prior_e555_sha256": "e17e3900f9e74269aa390f83611b2c0898107c5fcbde57394affd95eda21bf23"
+    "prior_e240_sha256": "e17e3900f9e74269aa390f83611b2c0898107c5fcbde57394affd95eda21bf23",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/factory.rs",
     "bytes": 7812,
     "sha256": "9b6b7ca06fd277ab011dcf7e8847189f3b0300cc268590f03e215d9d949967ea",
-    "prior_e555_sha256": "9b6b7ca06fd277ab011dcf7e8847189f3b0300cc268590f03e215d9d949967ea"
+    "prior_e240_sha256": "9b6b7ca06fd277ab011dcf7e8847189f3b0300cc268590f03e215d9d949967ea",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/factory/tests.rs",
     "bytes": 30584,
     "sha256": "a7cd63e25f5a2bf633638afd9b0f396862f50a44a5c541ae58f6b6c2ebaae528",
-    "prior_e555_sha256": "a7cd63e25f5a2bf633638afd9b0f396862f50a44a5c541ae58f6b6c2ebaae528"
+    "prior_e240_sha256": "a7cd63e25f5a2bf633638afd9b0f396862f50a44a5c541ae58f6b6c2ebaae528",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/final_active_tests.rs",
     "bytes": 17189,
     "sha256": "f107da29750173224988571f1281720e16148167d52b3789a1f10107aa3d33ae",
-    "prior_e555_sha256": "f107da29750173224988571f1281720e16148167d52b3789a1f10107aa3d33ae"
+    "prior_e240_sha256": "f107da29750173224988571f1281720e16148167d52b3789a1f10107aa3d33ae",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/project_spectrum_tests.rs",
     "bytes": 6118,
     "sha256": "4d34c1759a5647c934c5a4a915643ab281883a6d91cbb84fa3ccfa5ff2593f9f",
-    "prior_e555_sha256": "4d34c1759a5647c934c5a4a915643ab281883a6d91cbb84fa3ccfa5ff2593f9f"
+    "prior_e240_sha256": "4d34c1759a5647c934c5a4a915643ab281883a6d91cbb84fa3ccfa5ff2593f9f",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/resident_forwarding.rs",
     "bytes": 17502,
     "sha256": "0caf5288f3678c53624fd2bdfb594998aaf38115ba1ada47bd1b6048726ba19a",
-    "prior_e555_sha256": "0caf5288f3678c53624fd2bdfb594998aaf38115ba1ada47bd1b6048726ba19a"
+    "prior_e240_sha256": "0caf5288f3678c53624fd2bdfb594998aaf38115ba1ada47bd1b6048726ba19a",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/resident_forwarding/tests.rs",
     "bytes": 19222,
     "sha256": "fd7b387a1022c01e42fbc6b295a730ed11371ffa63dcbecff85e2c239e90c236",
-    "prior_e555_sha256": "fd7b387a1022c01e42fbc6b295a730ed11371ffa63dcbecff85e2c239e90c236"
+    "prior_e240_sha256": "fd7b387a1022c01e42fbc6b295a730ed11371ffa63dcbecff85e2c239e90c236",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/status_owner.rs",
     "bytes": 7885,
     "sha256": "8ab9407efeaa3b9a447322a96a26692573c6fcac849e788e35392273fba09b2c",
-    "prior_e555_sha256": "77bb0d1f0abd25a4740f15e04ef5afc9723bb571b4a293b05cf14468f9f37984"
+    "prior_e240_sha256": "8ab9407efeaa3b9a447322a96a26692573c6fcac849e788e35392273fba09b2c",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/status_owner/tests.rs",
     "bytes": 5019,
     "sha256": "65554f13bcdfd9860c0b8231e48fc473b0e32371d46e4ef7ef6970cd87db661f",
-    "prior_e555_sha256": "65554f13bcdfd9860c0b8231e48fc473b0e32371d46e4ef7ef6970cd87db661f"
+    "prior_e240_sha256": "65554f13bcdfd9860c0b8231e48fc473b0e32371d46e4ef7ef6970cd87db661f",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/status_storage.rs",
     "bytes": 11373,
     "sha256": "a537652ee614aa1d2f7e85be342c6bfd574449eb724a3621cfd23f5ad5146e5c",
-    "prior_e555_sha256": "a537652ee614aa1d2f7e85be342c6bfd574449eb724a3621cfd23f5ad5146e5c"
+    "prior_e240_sha256": "a537652ee614aa1d2f7e85be342c6bfd574449eb724a3621cfd23f5ad5146e5c",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/prepared/worker_publication.rs",
-    "bytes": 12776,
-    "sha256": "42c94e376edd18210f271fb057a090a01fb64cff0139e518cfb3f2c482f05e1f",
-    "prior_e555_sha256": null
+    "bytes": 14289,
+    "sha256": "b12cd15ccfcaeb83771263bcb5a6fffcb3b6e7a1f39bf6b7fed20b72c066b958",
+    "prior_e240_sha256": "42c94e376edd18210f271fb057a090a01fb64cff0139e518cfb3f2c482f05e1f",
+    "changed": true
   },
   {
     "path": "crates/hex-audio/src/prepared/worker_publication/tests.rs",
     "bytes": 7993,
     "sha256": "8fa25af2ae4951241dec5b147178f1f5a35497c0d9805bc3caf146d1136d2cdf",
-    "prior_e555_sha256": "8fa25af2ae4951241dec5b147178f1f5a35497c0d9805bc3caf146d1136d2cdf"
+    "prior_e240_sha256": "8fa25af2ae4951241dec5b147178f1f5a35497c0d9805bc3caf146d1136d2cdf",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/processor_audition.rs",
     "bytes": 23213,
     "sha256": "9f7435f028b13fe7896be370d97b82d587ae30f2bb47003e8bd2dcdbc4798b65",
-    "prior_e555_sha256": "9f7435f028b13fe7896be370d97b82d587ae30f2bb47003e8bd2dcdbc4798b65"
+    "prior_e240_sha256": "9f7435f028b13fe7896be370d97b82d587ae30f2bb47003e8bd2dcdbc4798b65",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/sample_preview.rs",
     "bytes": 31504,
     "sha256": "ff64a6803b5f48412763ce8f2d24bbe93324135ec8254f34c0f5014c9d183ca1",
-    "prior_e555_sha256": "ff64a6803b5f48412763ce8f2d24bbe93324135ec8254f34c0f5014c9d183ca1"
+    "prior_e240_sha256": "ff64a6803b5f48412763ce8f2d24bbe93324135ec8254f34c0f5014c9d183ca1",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/spectrum.rs",
     "bytes": 18676,
     "sha256": "364812feec9918ba2e5886edf134234aad27b9fd7646d63b9d345d629918653b",
-    "prior_e555_sha256": "364812feec9918ba2e5886edf134234aad27b9fd7646d63b9d345d629918653b"
+    "prior_e240_sha256": "364812feec9918ba2e5886edf134234aad27b9fd7646d63b9d345d629918653b",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/spectrum_target.rs",
     "bytes": 20266,
     "sha256": "566ea6f8307479ecc73ed03dde25ba4e44cb051948c71d7864ed51e0d767b2c9",
-    "prior_e555_sha256": "566ea6f8307479ecc73ed03dde25ba4e44cb051948c71d7864ed51e0d767b2c9"
+    "prior_e240_sha256": "566ea6f8307479ecc73ed03dde25ba4e44cb051948c71d7864ed51e0d767b2c9",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/spectrum_worker.rs",
     "bytes": 59586,
     "sha256": "26b62e95b922e01863439217400b11ca1f4800521eb09c27a02cf1edc4755a82",
-    "prior_e555_sha256": "26b62e95b922e01863439217400b11ca1f4800521eb09c27a02cf1edc4755a82"
+    "prior_e240_sha256": "26b62e95b922e01863439217400b11ca1f4800521eb09c27a02cf1edc4755a82",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/spectrum_worker/native.rs",
     "bytes": 31348,
     "sha256": "56981e48984ca73d98e674b1ec55708c0e8f24d7b5ff7d82c18c931d290faf16",
-    "prior_e555_sha256": "56981e48984ca73d98e674b1ec55708c0e8f24d7b5ff7d82c18c931d290faf16"
+    "prior_e240_sha256": "56981e48984ca73d98e674b1ec55708c0e8f24d7b5ff7d82c18c931d290faf16",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/spectrum_worker/project.rs",
     "bytes": 78626,
     "sha256": "4b6dc75cc6907b4293335f79c1b52decfbea81e526b5c16e781eda65335e7156",
-    "prior_e555_sha256": "4b6dc75cc6907b4293335f79c1b52decfbea81e526b5c16e781eda65335e7156"
+    "prior_e240_sha256": "4b6dc75cc6907b4293335f79c1b52decfbea81e526b5c16e781eda65335e7156",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/spectrum_worker/project/packet.rs",
     "bytes": 9511,
     "sha256": "62d1fc9e1bbf9da91466bb63551bd0054e359e2e2c07490fc95b5311ab182ffa",
-    "prior_e555_sha256": "62d1fc9e1bbf9da91466bb63551bd0054e359e2e2c07490fc95b5311ab182ffa"
+    "prior_e240_sha256": "62d1fc9e1bbf9da91466bb63551bd0054e359e2e2c07490fc95b5311ab182ffa",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/spectrum_worker/project/packet/carrier_binding_tests.rs",
     "bytes": 2528,
     "sha256": "66a2f21259ead16d8cfa40eaee4a8611279a6903687f4c681cec4f561e15219f",
-    "prior_e555_sha256": "66a2f21259ead16d8cfa40eaee4a8611279a6903687f4c681cec4f561e15219f"
+    "prior_e240_sha256": "66a2f21259ead16d8cfa40eaee4a8611279a6903687f4c681cec4f561e15219f",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/spectrum_worker/project/result.rs",
     "bytes": 15140,
     "sha256": "8a83d398d71651bf8bdf1a52b306f61d383ed66d94140aa28ef515cf6bbecb6a",
-    "prior_e555_sha256": "8a83d398d71651bf8bdf1a52b306f61d383ed66d94140aa28ef515cf6bbecb6a"
+    "prior_e240_sha256": "8a83d398d71651bf8bdf1a52b306f61d383ed66d94140aa28ef515cf6bbecb6a",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/spectrum_worker/stop.rs",
     "bytes": 7146,
     "sha256": "c64e87e2cb81e04795a0422041bba9adbcdba584229b80632b8d0be3727d3405",
-    "prior_e555_sha256": "c64e87e2cb81e04795a0422041bba9adbcdba584229b80632b8d0be3727d3405"
+    "prior_e240_sha256": "c64e87e2cb81e04795a0422041bba9adbcdba584229b80632b8d0be3727d3405",
+    "changed": false
   },
   {
     "path": "crates/hex-audio/src/worker_fixture.rs",
     "bytes": 5986,
     "sha256": "c80e13159cd161b3a5065b11caabc0adc17baee014c25a7f7b3f40b283c6afb8",
-    "prior_e555_sha256": null
+    "prior_e240_sha256": "c80e13159cd161b3a5065b11caabc0adc17baee014c25a7f7b3f40b283c6afb8",
+    "changed": false
   },
   {
     "path": "crates/hex-desktop/src/native_audio.rs",
     "bytes": 31650,
     "sha256": "eb60a69c0fb2c04d8034f7837dbae14f3f815e447d1fcdcb2e4676e4dde92462",
-    "prior_e555_sha256": "eb60a69c0fb2c04d8034f7837dbae14f3f815e447d1fcdcb2e4676e4dde92462"
+    "prior_e240_sha256": "eb60a69c0fb2c04d8034f7837dbae14f3f815e447d1fcdcb2e4676e4dde92462",
+    "changed": false
   },
   {
     "path": "crates/hex-desktop/src/native_audio/tests.rs",
     "bytes": 41733,
     "sha256": "e1aedac33909202daa2447a673982c263dfc577d1940ee7218de2c00c65423cc",
-    "prior_e555_sha256": null
+    "prior_e240_sha256": "e1aedac33909202daa2447a673982c263dfc577d1940ee7218de2c00c65423cc",
+    "changed": false
   },
   {
     "path": "crates/hex-desktop/src/native_audio/tests/closed_original.rs",
     "bytes": 11276,
     "sha256": "0b882aa71c3de89ca265ad8cef3d44bdaeb20aff41ffb5a1a09f1caa5f917a86",
-    "prior_e555_sha256": null
+    "prior_e240_sha256": "0b882aa71c3de89ca265ad8cef3d44bdaeb20aff41ffb5a1a09f1caa5f917a86",
+    "changed": false
   },
   {
     "path": "crates/hex-desktop/src/snapshot_transport.rs",
     "bytes": 7617,
     "sha256": "cc1b7d7bf9cb8f7ed333fa7dc1effbd74edaa28e2b19913fbe8cf73b89f4096b",
-    "prior_e555_sha256": null
+    "prior_e240_sha256": "cc1b7d7bf9cb8f7ed333fa7dc1effbd74edaa28e2b19913fbe8cf73b89f4096b",
+    "changed": false
   },
   {
     "path": "crates/hex-desktop/src/snapshot_transport/inventory.rs",
     "bytes": 7477,
     "sha256": "3eec84bf355a1ad2c0e401f94140d195e36c5a328897f281f2c0098b38bdfa68",
-    "prior_e555_sha256": "3eec84bf355a1ad2c0e401f94140d195e36c5a328897f281f2c0098b38bdfa68"
+    "prior_e240_sha256": "3eec84bf355a1ad2c0e401f94140d195e36c5a328897f281f2c0098b38bdfa68",
+    "changed": false
   },
   {
     "path": "crates/hex-desktop/src/snapshot_transport/inventory/tests.rs",
     "bytes": 14298,
     "sha256": "7ae98d5c89bfa9c9fc5fef1f7da0ec43b6cee4d2d80f42afd5dc890ddf017495",
-    "prior_e555_sha256": "7ae98d5c89bfa9c9fc5fef1f7da0ec43b6cee4d2d80f42afd5dc890ddf017495"
+    "prior_e240_sha256": "7ae98d5c89bfa9c9fc5fef1f7da0ec43b6cee4d2d80f42afd5dc890ddf017495",
+    "changed": false
   },
   {
     "path": "crates/hex-desktop/src/snapshot_transport/tests.rs",
     "bytes": 10419,
     "sha256": "b2c064ab4d908b2d2229ee60f1d14462d20f4ae8516f7de89127881330e85c90",
-    "prior_e555_sha256": null
+    "prior_e240_sha256": "b2c064ab4d908b2d2229ee60f1d14462d20f4ae8516f7de89127881330e85c90",
+    "changed": false
   },
   {
     "path": "crates/hex-desktop/src/snapshot_transport/worker_control.rs",
     "bytes": 36769,
     "sha256": "6270d061ba2de1363497e4c0b58b6129dcf170d698bdd03234536c9c0a5b8ce1",
-    "prior_e555_sha256": "6270d061ba2de1363497e4c0b58b6129dcf170d698bdd03234536c9c0a5b8ce1"
+    "prior_e240_sha256": "6270d061ba2de1363497e4c0b58b6129dcf170d698bdd03234536c9c0a5b8ce1",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/build.rs",
     "bytes": 13075,
     "sha256": "86c7b52dddba2560b40a415e8d3dae137f6d429a46ab8c800313439105afe6c9",
-    "prior_e555_sha256": "86c7b52dddba2560b40a415e8d3dae137f6d429a46ab8c800313439105afe6c9"
+    "prior_e240_sha256": "86c7b52dddba2560b40a415e8d3dae137f6d429a46ab8c800313439105afe6c9",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/build_support/document_token_gate.rs",
     "bytes": 2691,
     "sha256": "d45a6344b12d0803ba48daa8c7770eb33acd1db84d36b11f9f3a6bfdc33303b8",
-    "prior_e555_sha256": "d45a6344b12d0803ba48daa8c7770eb33acd1db84d36b11f9f3a6bfdc33303b8"
+    "prior_e240_sha256": "d45a6344b12d0803ba48daa8c7770eb33acd1db84d36b11f9f3a6bfdc33303b8",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_candidate.rs",
     "bytes": 28667,
     "sha256": "89ede8f4636a8508a017805e6a5675676a63d84eba5114a58784f14a7bca73b4",
-    "prior_e555_sha256": "89ede8f4636a8508a017805e6a5675676a63d84eba5114a58784f14a7bca73b4"
+    "prior_e240_sha256": "89ede8f4636a8508a017805e6a5675676a63d84eba5114a58784f14a7bca73b4",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_candidate/claimed.rs",
     "bytes": 52160,
     "sha256": "51b4998ce46f0f97d00a7e4003048bf1c44bf77a96ff80dac3d4c18a1071cfdc",
-    "prior_e555_sha256": "51b4998ce46f0f97d00a7e4003048bf1c44bf77a96ff80dac3d4c18a1071cfdc"
+    "prior_e240_sha256": "51b4998ce46f0f97d00a7e4003048bf1c44bf77a96ff80dac3d4c18a1071cfdc",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_candidate/draft.rs",
     "bytes": 22749,
     "sha256": "24cd05cce0803df4ad2f602a29832db04eeb980a63aa8a181cdfd1ed79fea903",
-    "prior_e555_sha256": "24cd05cce0803df4ad2f602a29832db04eeb980a63aa8a181cdfd1ed79fea903"
+    "prior_e240_sha256": "24cd05cce0803df4ad2f602a29832db04eeb980a63aa8a181cdfd1ed79fea903",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_candidate/groups.rs",
     "bytes": 43423,
     "sha256": "7293d49729d1901d1d725c0bdd323c3e4e4fd8f1000fe8a57e166a31797166ca",
-    "prior_e555_sha256": "7293d49729d1901d1d725c0bdd323c3e4e4fd8f1000fe8a57e166a31797166ca"
+    "prior_e240_sha256": "7293d49729d1901d1d725c0bdd323c3e4e4fd8f1000fe8a57e166a31797166ca",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_candidate/groups/retained.rs",
     "bytes": 21264,
     "sha256": "c2edea42e9ca6087f6abc64ebea5e15015597ea1eaf22fb2bd28eefbacda59e3",
-    "prior_e555_sha256": "c2edea42e9ca6087f6abc64ebea5e15015597ea1eaf22fb2bd28eefbacda59e3"
+    "prior_e240_sha256": "c2edea42e9ca6087f6abc64ebea5e15015597ea1eaf22fb2bd28eefbacda59e3",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_candidate/preparation.rs",
     "bytes": 20415,
     "sha256": "ba14100b8c8c5fe338ca956b2fdff055b4a4b2d9843c4b98b724a97e2146be68",
-    "prior_e555_sha256": "7494bec65fa4c8a801fa4fc6693238712d224249fa1b045d6825d9f3a732b886"
+    "prior_e240_sha256": "ba14100b8c8c5fe338ca956b2fdff055b4a4b2d9843c4b98b724a97e2146be68",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_candidate/preparation/control_work.rs",
     "bytes": 17258,
     "sha256": "91f12817eca14bc376e1c0a39a055017d6fc2aca4b8ea913cb8d035690e0f1c8",
-    "prior_e555_sha256": "1866acd1ae99d74af079de2f4078f895861b53bcc2858d582c21ed4ab34b04cf"
+    "prior_e240_sha256": "91f12817eca14bc376e1c0a39a055017d6fc2aca4b8ea913cb8d035690e0f1c8",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_candidate/preparation/native_fields.rs",
     "bytes": 9050,
     "sha256": "b7c9587038efd14797705a8c1d28567d1b6ebdaaac4ef3e5aafa59f5f71eb8e9",
-    "prior_e555_sha256": "8f5e39412a51eddfac14cfb9109273502d00c1ce01ddc14e70787c5b2573d8e6"
+    "prior_e240_sha256": "b7c9587038efd14797705a8c1d28567d1b6ebdaaac4ef3e5aafa59f5f71eb8e9",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources.rs",
-    "bytes": 19113,
-    "sha256": "6cabc4e9fcc10c1e201d20a71b20355d91ae16933e8457cb7fabdbf4ffb9dde3",
-    "prior_e555_sha256": "a2418adffc58842c473045d1b03d32c22b164d786418a8824eca3805903d5583"
+    "bytes": 19365,
+    "sha256": "955569d526a636e992331ed2a9152efdc38080a5544ede1a3def122664e2ab01",
+    "prior_e240_sha256": "6cabc4e9fcc10c1e201d20a71b20355d91ae16933e8457cb7fabdbf4ffb9dde3",
+    "changed": true
   },
   {
     "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources/tests/runtime.rs",
     "bytes": 25540,
     "sha256": "5ef24fe3899b77f6bd5954d8619f7c295a2f276720166dc44ab6c31e978bea75",
-    "prior_e555_sha256": "5af7b63f6c87e07a97576cad3f18ef04c6a45e12a4236c1776b199b6f6df2a11"
+    "prior_e240_sha256": "5ef24fe3899b77f6bd5954d8619f7c295a2f276720166dc44ab6c31e978bea75",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_candidate/preparation_operations.rs",
     "bytes": 12087,
     "sha256": "ad75be6179a6a92acf75d6b825607f00106a3fe0cf40b50e6a02fe6748dda514",
-    "prior_e555_sha256": "7ea7550659e0fb4dbd095f42adff227cc4db2f84b430460d4675b126efc1a703"
+    "prior_e240_sha256": "ad75be6179a6a92acf75d6b825607f00106a3fe0cf40b50e6a02fe6748dda514",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_candidate/storage.rs",
     "bytes": 43187,
     "sha256": "c33c71ff9f7509138d1347068fcfb3f2a5301909254e21d641e6a634b920d839",
-    "prior_e555_sha256": "cb84b46a34ebe16208e42ab51dcf0251f6a5b2b941d26159151790274a292489"
+    "prior_e240_sha256": "c33c71ff9f7509138d1347068fcfb3f2a5301909254e21d641e6a634b920d839",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_preparation.rs",
     "bytes": 73598,
     "sha256": "deddc1ea63af1f319d55b0c3a0c8ee05c18bae7c99c6a1cbdff87a57566979a9",
-    "prior_e555_sha256": "deddc1ea63af1f319d55b0c3a0c8ee05c18bae7c99c6a1cbdff87a57566979a9"
+    "prior_e240_sha256": "deddc1ea63af1f319d55b0c3a0c8ee05c18bae7c99c6a1cbdff87a57566979a9",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_preparation/arrangement_clips.rs",
     "bytes": 28265,
     "sha256": "1eaf0ac3087ab217aa2eb8375c37f6e737c180b6311c55b1390799148ec6c980",
-    "prior_e555_sha256": "1eaf0ac3087ab217aa2eb8375c37f6e737c180b6311c55b1390799148ec6c980"
+    "prior_e240_sha256": "1eaf0ac3087ab217aa2eb8375c37f6e737c180b6311c55b1390799148ec6c980",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
-    "bytes": 27021,
-    "sha256": "acbee36655d67373893a92dbb88aac18e02d5e2f2c424f69949ebd8fcb0d0b33",
-    "prior_e555_sha256": "6fbb0ebf684f19e70ba83e4d6d2fba1676c5895cb192c5d8fc0abe29482f16e1"
+    "bytes": 27211,
+    "sha256": "7d9f4a5f6b8ebb95955827451c9ae259e78fbe20443d3e64cee94e25dda986cb",
+    "prior_e240_sha256": "acbee36655d67373893a92dbb88aac18e02d5e2f2c424f69949ebd8fcb0d0b33",
+    "changed": true
   },
   {
     "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs",
     "bytes": 13201,
     "sha256": "509c3a28c9ef78abdf8bba45dc88940afb9d4b92eee7f977c95485cf4176a45d",
-    "prior_e555_sha256": "c984ec26d814cb3939d2f0a3069a69643ffa0667ae49db1fdc63271245b9ddc3"
+    "prior_e240_sha256": "509c3a28c9ef78abdf8bba45dc88940afb9d4b92eee7f977c95485cf4176a45d",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs",
     "bytes": 28981,
     "sha256": "db19e9b548e08c49e8328a3f252dadfa051b0457fe25d85cff469f61714fbaf5",
-    "prior_e555_sha256": "bd2fc79134495849bc93350d9bd5e4a3fe66019edbfb91a79e2aa06e9b860b57"
+    "prior_e240_sha256": "db19e9b548e08c49e8328a3f252dadfa051b0457fe25d85cff469f61714fbaf5",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs",
     "bytes": 37488,
     "sha256": "6a8da6b9c78e228fb7aac8f1c92a321391f117c8017fc1308c62188bbde2971b",
-    "prior_e555_sha256": "8dba02f8febdc2b64292c9ef4cedf2b8e49090752a93099150ebcde4530dec29"
+    "prior_e240_sha256": "6a8da6b9c78e228fb7aac8f1c92a321391f117c8017fc1308c62188bbde2971b",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs",
     "bytes": 24551,
     "sha256": "49ea642d45d41911de16d8e182b43c7340ed2a6864242e2c92f804b9e9657525",
-    "prior_e555_sha256": "8eb6fa59977d8a1a06dde6556edb730ddf3ce602a0ba0db1588d6def6768ec18"
+    "prior_e240_sha256": "49ea642d45d41911de16d8e182b43c7340ed2a6864242e2c92f804b9e9657525",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_preparation/original_resources.rs",
     "bytes": 3530,
     "sha256": "5148a9538fb7fc41582b9e37fa966a194bb5eda7c1ed5c7e6dafd8f4f94a228c",
-    "prior_e555_sha256": null
+    "prior_e240_sha256": "5148a9538fb7fc41582b9e37fa966a194bb5eda7c1ed5c7e6dafd8f4f94a228c",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_preparation/original_resources/tests.rs",
     "bytes": 11098,
     "sha256": "aa6293fcb66feeee7f5272f9565b13e200ecc7c671c069d149bc1b845a7f4a8c",
-    "prior_e555_sha256": null
+    "prior_e240_sha256": "aa6293fcb66feeee7f5272f9565b13e200ecc7c671c069d149bc1b845a7f4a8c",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage.rs",
-    "bytes": 34692,
-    "sha256": "a85185d53cd6091851a91d377c45f9926484aa66d711b5424358f7a5887cf465",
-    "prior_e555_sha256": "a85185d53cd6091851a91d377c45f9926484aa66d711b5424358f7a5887cf465"
+    "bytes": 34791,
+    "sha256": "ef2e59b9f5fe2d5f6ba646f5d41e84c86551f40d908bac956c10dcce209194bc",
+    "prior_e240_sha256": "a85185d53cd6091851a91d377c45f9926484aa66d711b5424358f7a5887cf465",
+    "changed": true
   },
   {
     "path": "crates/hex-engine/src/audio_storage/arithmetic.rs",
     "bytes": 13984,
     "sha256": "cfd469da39cafa18a24ba740b962a8f0bc9d24a7c13f1424055ae14c3d228a6c",
-    "prior_e555_sha256": "cfd469da39cafa18a24ba740b962a8f0bc9d24a7c13f1424055ae14c3d228a6c"
+    "prior_e240_sha256": "cfd469da39cafa18a24ba740b962a8f0bc9d24a7c13f1424055ae14c3d228a6c",
+    "changed": false
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/canonical_state.rs",
+    "bytes": 14091,
+    "sha256": "cf9e2dfb74306b5f0688c0305d783ac1fcd2a0bf3eb675e6c4b22f584d81ad06",
+    "prior_e240_sha256": null,
+    "changed": true
   },
   {
     "path": "crates/hex-engine/src/audio_storage/document_token.rs",
     "bytes": 7634,
     "sha256": "ba51b2426c754ad76684b3d229164bc3ee47073bc55de8d4178104b1d34efcce",
-    "prior_e555_sha256": "ba51b2426c754ad76684b3d229164bc3ee47073bc55de8d4178104b1d34efcce"
+    "prior_e240_sha256": "ba51b2426c754ad76684b3d229164bc3ee47073bc55de8d4178104b1d34efcce",
+    "changed": false
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/model_buffers.rs",
+    "bytes": 8353,
+    "sha256": "68af6d953e5e7be18e98ce629beaf38bca9d8e80222eadcbd6c0205bce51895e",
+    "prior_e240_sha256": null,
+    "changed": true
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/models.rs",
+    "bytes": 10025,
+    "sha256": "ea00777b617107d3d1909125db7a123743c1a9687fda20823594126fc306620a",
+    "prior_e240_sha256": null,
+    "changed": true
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_atomic_signal.rs",
     "bytes": 9305,
     "sha256": "d4cd65ef7abdc88786a71d2d0fd0a0551817e8f1ea4a6d0a07a116354479a8b1",
-    "prior_e555_sha256": "d4cd65ef7abdc88786a71d2d0fd0a0551817e8f1ea4a6d0a07a116354479a8b1"
+    "prior_e240_sha256": "d4cd65ef7abdc88786a71d2d0fd0a0551817e8f1ea4a6d0a07a116354479a8b1",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_atomic_signal/tests.rs",
     "bytes": 11479,
     "sha256": "9bd4c716037fac3ce62d155295bc7d76f56bc29e34c15d15e31a693595971b6d",
-    "prior_e555_sha256": "9bd4c716037fac3ce62d155295bc7d76f56bc29e34c15d15e31a693595971b6d"
+    "prior_e240_sha256": "9bd4c716037fac3ce62d155295bc7d76f56bc29e34c15d15e31a693595971b6d",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_carrier.rs",
     "bytes": 20963,
     "sha256": "7fe59d7b0f91d3fb9f4919cd5048f1db2d8bf871b7396d588d054fb7200ec420",
-    "prior_e555_sha256": "7fe59d7b0f91d3fb9f4919cd5048f1db2d8bf871b7396d588d054fb7200ec420"
+    "prior_e240_sha256": "7fe59d7b0f91d3fb9f4919cd5048f1db2d8bf871b7396d588d054fb7200ec420",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_fixed_ring.rs",
     "bytes": 9809,
     "sha256": "492b0d460fbb52a02c1ae78b05ab4aed85fa3f4fc2b0fd91938a08dcb4196e7c",
-    "prior_e555_sha256": "492b0d460fbb52a02c1ae78b05ab4aed85fa3f4fc2b0fd91938a08dcb4196e7c"
+    "prior_e240_sha256": "492b0d460fbb52a02c1ae78b05ab4aed85fa3f4fc2b0fd91938a08dcb4196e7c",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_group_book.rs",
     "bytes": 12469,
     "sha256": "825e3c59e5ef759bab02dc2dbdf5ded4a86e927e6c3e0760f4cc053d29447dd8",
-    "prior_e555_sha256": "825e3c59e5ef759bab02dc2dbdf5ded4a86e927e6c3e0760f4cc053d29447dd8"
+    "prior_e240_sha256": "825e3c59e5ef759bab02dc2dbdf5ded4a86e927e6c3e0760f4cc053d29447dd8",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_journal.rs",
     "bytes": 12176,
     "sha256": "eb6d4a8a20faa52ffa794cc60f42b8e14af64397e86f6b8b8cd75f4928f2efb0",
-    "prior_e555_sha256": "eb6d4a8a20faa52ffa794cc60f42b8e14af64397e86f6b8b8cd75f4928f2efb0"
+    "prior_e240_sha256": "eb6d4a8a20faa52ffa794cc60f42b8e14af64397e86f6b8b8cd75f4928f2efb0",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_resident.rs",
     "bytes": 9534,
     "sha256": "3a0d32478e631ba937223952f6d39c6956a6103e9391cab3f5ed2a6131b50638",
-    "prior_e555_sha256": "3a0d32478e631ba937223952f6d39c6956a6103e9391cab3f5ed2a6131b50638"
+    "prior_e240_sha256": "3a0d32478e631ba937223952f6d39c6956a6103e9391cab3f5ed2a6131b50638",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_retained.rs",
     "bytes": 16945,
     "sha256": "29645ab9f3799113e7114c6e1278cc5054ebe9b9ec12545b2eacc8e4916073c3",
-    "prior_e555_sha256": "29645ab9f3799113e7114c6e1278cc5054ebe9b9ec12545b2eacc8e4916073c3"
+    "prior_e240_sha256": "29645ab9f3799113e7114c6e1278cc5054ebe9b9ec12545b2eacc8e4916073c3",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_root_fields.rs",
     "bytes": 8097,
     "sha256": "a50543f6f14a03931c3f56723135e0aa130461b63047ae95566f1fd015633c21",
-    "prior_e555_sha256": "a50543f6f14a03931c3f56723135e0aa130461b63047ae95566f1fd015633c21"
+    "prior_e240_sha256": "a50543f6f14a03931c3f56723135e0aa130461b63047ae95566f1fd015633c21",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_spectrum.rs",
     "bytes": 9990,
     "sha256": "8e3f75565143e2a3bba39fcf56701dc43d930c89a2740fe5fe1289c0693cccb1",
-    "prior_e555_sha256": "8e3f75565143e2a3bba39fcf56701dc43d930c89a2740fe5fe1289c0693cccb1"
+    "prior_e240_sha256": "8e3f75565143e2a3bba39fcf56701dc43d930c89a2740fe5fe1289c0693cccb1",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_spectrum/packet.rs",
     "bytes": 10734,
     "sha256": "c9be6301c58058509c51eba40dadc70a2035258f7f8d5b80d6ca8a3930c4dccd",
-    "prior_e555_sha256": "c9be6301c58058509c51eba40dadc70a2035258f7f8d5b80d6ca8a3930c4dccd"
+    "prior_e240_sha256": "c9be6301c58058509c51eba40dadc70a2035258f7f8d5b80d6ca8a3930c4dccd",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_spectrum/result.rs",
     "bytes": 12171,
     "sha256": "14d11d7c0299f11b26a6c47fd946ab108af34dc6630ea529e6aed70223c17cf5",
-    "prior_e555_sha256": "14d11d7c0299f11b26a6c47fd946ab108af34dc6630ea529e6aed70223c17cf5"
+    "prior_e240_sha256": "14d11d7c0299f11b26a6c47fd946ab108af34dc6630ea529e6aed70223c17cf5",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_spectrum/tests.rs",
     "bytes": 6942,
     "sha256": "fecab43203c88701946aa73db0fd4b097ed045f70622c1e47aa30584a95ea3d1",
-    "prior_e555_sha256": "fecab43203c88701946aa73db0fd4b097ed045f70622c1e47aa30584a95ea3d1"
+    "prior_e240_sha256": "fecab43203c88701946aa73db0fd4b097ed045f70622c1e47aa30584a95ea3d1",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_state.rs",
     "bytes": 16684,
     "sha256": "84859648ddb93685f5e64fb686e110bd4150928e798033542582fff24d0cfec7",
-    "prior_e555_sha256": "84859648ddb93685f5e64fb686e110bd4150928e798033542582fff24d0cfec7"
+    "prior_e240_sha256": "84859648ddb93685f5e64fb686e110bd4150928e798033542582fff24d0cfec7",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_storage/native_status.rs",
     "bytes": 11399,
     "sha256": "9a6ad19dc4cbff721a05291a7f24fe76761386dbf14eaba37af313358f212610",
-    "prior_e555_sha256": "9a6ad19dc4cbff721a05291a7f24fe76761386dbf14eaba37af313358f212610"
+    "prior_e240_sha256": "9a6ad19dc4cbff721a05291a7f24fe76761386dbf14eaba37af313358f212610",
+    "changed": false
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/original_sampler_pending.rs",
+    "bytes": 5969,
+    "sha256": "3e1d4853f53a6fc1aa537e8042d7ac9db2adc2881b43af339859ca7a922832eb",
+    "prior_e240_sha256": null,
+    "changed": true
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/original_sampler_pending/tests.rs",
+    "bytes": 4538,
+    "sha256": "de094d512b5c43383626c2ad7d6eecfa258d5c0be08f442d6977419a664c25b3",
+    "prior_e240_sha256": null,
+    "changed": true
   },
   {
     "path": "crates/hex-engine/src/audio_transform/mod.rs",
     "bytes": 28930,
     "sha256": "4118fb8aeaf0691041834715012a166a597ec6f56a0cae597b870e62a0060049",
-    "prior_e555_sha256": "4118fb8aeaf0691041834715012a166a597ec6f56a0cae597b870e62a0060049"
+    "prior_e240_sha256": "4118fb8aeaf0691041834715012a166a597ec6f56a0cae597b870e62a0060049",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_transform/original_sampler.rs",
     "bytes": 8342,
     "sha256": "4abd61adc31d46aa588f0e62ca720dd381b8c3b01ea4ad01c8b496ca750b720c",
-    "prior_e555_sha256": "4abd61adc31d46aa588f0e62ca720dd381b8c3b01ea4ad01c8b496ca750b720c"
+    "prior_e240_sha256": "4abd61adc31d46aa588f0e62ca720dd381b8c3b01ea4ad01c8b496ca750b720c",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/audio_transform/pcm_inventory.rs",
     "bytes": 8466,
     "sha256": "469704e53465ff2af2a8669b1be707845c7351a086795536b6da082c8f48c5d6",
-    "prior_e555_sha256": "469704e53465ff2af2a8669b1be707845c7351a086795536b6da082c8f48c5d6"
+    "prior_e240_sha256": "469704e53465ff2af2a8669b1be707845c7351a086795536b6da082c8f48c5d6",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/lib.rs",
     "bytes": 122219,
     "sha256": "6f5f6addd22e9df17c59f63f2746e97fb3f448cf5f3d88a6a127389ae230d3f8",
-    "prior_e555_sha256": "6f5f6addd22e9df17c59f63f2746e97fb3f448cf5f3d88a6a127389ae230d3f8"
+    "prior_e240_sha256": "6f5f6addd22e9df17c59f63f2746e97fb3f448cf5f3d88a6a127389ae230d3f8",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/native_device_resources/producer.rs",
     "bytes": 16244,
     "sha256": "48780284c806aa0fa0968a92f18b0d2955c60186b65d89c6db2921ad215776f7",
-    "prior_e555_sha256": "48780284c806aa0fa0968a92f18b0d2955c60186b65d89c6db2921ad215776f7"
+    "prior_e240_sha256": "48780284c806aa0fa0968a92f18b0d2955c60186b65d89c6db2921ad215776f7",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/native_device_resources/producer/tests.rs",
     "bytes": 9996,
     "sha256": "483cd80059e4099b85454c295ab855bcd7f739eeea54d16dbd13495a278e6ebd",
-    "prior_e555_sha256": "483cd80059e4099b85454c295ab855bcd7f739eeea54d16dbd13495a278e6ebd"
+    "prior_e240_sha256": "483cd80059e4099b85454c295ab855bcd7f739eeea54d16dbd13495a278e6ebd",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/native_device_resources/retained.rs",
     "bytes": 21718,
     "sha256": "29444530fecbd3de63c535dea3971709056673c6617d91299665b3ec9ba4ea74",
-    "prior_e555_sha256": "29444530fecbd3de63c535dea3971709056673c6617d91299665b3ec9ba4ea74"
+    "prior_e240_sha256": "29444530fecbd3de63c535dea3971709056673c6617d91299665b3ec9ba4ea74",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/prepared_revision/compiled_reader.rs",
     "bytes": 31835,
     "sha256": "20b7ae750f3fe4c32b69f36608b30518ba831661567839c522df884108bd2102",
-    "prior_e555_sha256": "14c31b5440b0f4ff2512fb796c6f85f13ebecf9903bd8e5bb18a3139c09c6fdc"
+    "prior_e240_sha256": "20b7ae750f3fe4c32b69f36608b30518ba831661567839c522df884108bd2102",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/retained_control_job.rs",
     "bytes": 8154,
     "sha256": "d6a889b28b1ce7c92e6a01e84440aafedf64f172b86fb45b3aa466ccacf7c906",
-    "prior_e555_sha256": "d6a889b28b1ce7c92e6a01e84440aafedf64f172b86fb45b3aa466ccacf7c906"
+    "prior_e240_sha256": "d6a889b28b1ce7c92e6a01e84440aafedf64f172b86fb45b3aa466ccacf7c906",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/retained_control_job/cancellation.rs",
     "bytes": 9532,
     "sha256": "70b41968e989e0a9352cc14a4fd141a67793d4e382de23f2a99ce5adcb008405",
-    "prior_e555_sha256": "70b41968e989e0a9352cc14a4fd141a67793d4e382de23f2a99ce5adcb008405"
+    "prior_e240_sha256": "70b41968e989e0a9352cc14a4fd141a67793d4e382de23f2a99ce5adcb008405",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/sampler_host_fields.rs",
-    "bytes": 3641,
-    "sha256": "c5066f0acf01bd6eacdfe13ca01acb56af61390af9b3fcc815ed461db24e91d6",
-    "prior_e555_sha256": "ed8fb3699e02faf6f8a92dbdd4b6d1d6eae19ab70c4fec924153645bf2191a9c"
+    "bytes": 4009,
+    "sha256": "f72882f8ed14aa11ec478c82c63ed883a4814ffcfbf85117ba4e9f5dc8940e85",
+    "prior_e240_sha256": "c5066f0acf01bd6eacdfe13ca01acb56af61390af9b3fcc815ed461db24e91d6",
+    "changed": true
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields/captured_source.rs",
+    "bytes": 2513,
+    "sha256": "bf1f0c2901afef262cb1fba752b5f1d355fa3a9dee30c8507839f1ad49cb0d76",
+    "prior_e240_sha256": null,
+    "changed": true
   },
   {
     "path": "crates/hex-engine/src/sampler_host_fields/event.rs",
     "bytes": 3569,
     "sha256": "f2a910a4ab89ad7137c7836bae47c2690023d81ec72e5bbc5a59f2545ea18ebb",
-    "prior_e555_sha256": "f2a910a4ab89ad7137c7836bae47c2690023d81ec72e5bbc5a59f2545ea18ebb"
+    "prior_e240_sha256": "f2a910a4ab89ad7137c7836bae47c2690023d81ec72e5bbc5a59f2545ea18ebb",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/sampler_host_fields/family.rs",
     "bytes": 9485,
     "sha256": "5c3bb6d30178bac610f3c6d25e7717bc7cc72f2a7b1a4ece0a835e262f09f71c",
-    "prior_e555_sha256": "5c3bb6d30178bac610f3c6d25e7717bc7cc72f2a7b1a4ece0a835e262f09f71c"
+    "prior_e240_sha256": "5c3bb6d30178bac610f3c6d25e7717bc7cc72f2a7b1a4ece0a835e262f09f71c",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/sampler_host_fields/family_inventory.rs",
     "bytes": 5050,
     "sha256": "fff3416f641c797ad78b197c929a4224802e3f4594818ed26037b5838769d2da",
-    "prior_e555_sha256": "fff3416f641c797ad78b197c929a4224802e3f4594818ed26037b5838769d2da"
+    "prior_e240_sha256": "fff3416f641c797ad78b197c929a4224802e3f4594818ed26037b5838769d2da",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/sampler_host_fields/file_slots.rs",
     "bytes": 3557,
     "sha256": "ce1ecb47dc0646ae5e235a23d62dc5dc17dc18cafe64566e260691646c401c29",
-    "prior_e555_sha256": null
+    "prior_e240_sha256": "ce1ecb47dc0646ae5e235a23d62dc5dc17dc18cafe64566e260691646c401c29",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/sampler_host_fields/native.rs",
     "bytes": 9815,
     "sha256": "29a68a9342194825efb5a05d4e50ae2c4046dbecf822005a2db68acc5d2a41e6",
-    "prior_e555_sha256": "e1eb8812e4820fb3c367c81630b27de2a18b00b8727eec8b080a5ff26f1317be"
+    "prior_e240_sha256": "29a68a9342194825efb5a05d4e50ae2c4046dbecf822005a2db68acc5d2a41e6",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/sampler_host_fields/original_driver.rs",
-    "bytes": 8039,
-    "sha256": "e635c515e0dd24c5733289fbfc606d1bcc6c953c1a664bddbf7432bc7bc23562",
-    "prior_e555_sha256": "fe937fb150ac840876cac00507cbd52cf8663c6c30791eebcd36ad4ead2d9541"
+    "bytes": 13385,
+    "sha256": "1029e3091f49a128c1630367ad0a8c17f067609fc6d9891f8432ef8e874e4e4a",
+    "prior_e240_sha256": "e635c515e0dd24c5733289fbfc606d1bcc6c953c1a664bddbf7432bc7bc23562",
+    "changed": true
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields/pending_session.rs",
+    "bytes": 10369,
+    "sha256": "1e48d4c0044908788c9ce4a868b4e6e8c00d6a5a8254f17b435d89649374b867",
+    "prior_e240_sha256": null,
+    "changed": true
   },
   {
     "path": "crates/hex-engine/src/sampler_host_fields/physical.rs",
-    "bytes": 6908,
-    "sha256": "20d368fc3d1ac00930bee8c6b6964250050db58e8fdc0bb0ffbeb5988a30854a",
-    "prior_e555_sha256": "20d368fc3d1ac00930bee8c6b6964250050db58e8fdc0bb0ffbeb5988a30854a"
+    "bytes": 7615,
+    "sha256": "7f33b349387935285bbe3ff9a8141e79691d844d26b117117f6217f1b52eb8b8",
+    "prior_e240_sha256": "20d368fc3d1ac00930bee8c6b6964250050db58e8fdc0bb0ffbeb5988a30854a",
+    "changed": true
   },
   {
     "path": "crates/hex-engine/src/sampler_host_fields/resident.rs",
-    "bytes": 5119,
-    "sha256": "bcba33850d6a63ca1d7d3503bb7c0709370cce1d556449e583f224706ee313fe",
-    "prior_e555_sha256": "bcba33850d6a63ca1d7d3503bb7c0709370cce1d556449e583f224706ee313fe"
+    "bytes": 6865,
+    "sha256": "7519e76c06b30f748f7549ac335ed5613367f25425fdb45e5a4f4ac6b08e0c65",
+    "prior_e240_sha256": "bcba33850d6a63ca1d7d3503bb7c0709370cce1d556449e583f224706ee313fe",
+    "changed": true
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields/snapshot_view.rs",
+    "bytes": 4843,
+    "sha256": "8568a9b0042a4c7009dfa0014bf8f2d522c614717f4538de916b83d86aa9e110",
+    "prior_e240_sha256": null,
+    "changed": true
   },
   {
     "path": "crates/hex-engine/src/sampler_host_fields/spectrum.rs",
     "bytes": 6054,
     "sha256": "1d6a79a82e68154a8074f2b36cb240e3b96bfa2805c6ffed8238165bd7e94879",
-    "prior_e555_sha256": "1d6a79a82e68154a8074f2b36cb240e3b96bfa2805c6ffed8238165bd7e94879"
+    "prior_e240_sha256": "1d6a79a82e68154a8074f2b36cb240e3b96bfa2805c6ffed8238165bd7e94879",
+    "changed": false
   },
   {
     "path": "crates/hex-engine/src/sampler_host_fields/worker.rs",
-    "bytes": 8197,
-    "sha256": "e4591cc5548f4a5d18980c9aa8df2bca837ca1d579acd4b92c9370d7919bdb78",
-    "prior_e555_sha256": "6e9a9f5b6ed818138fadcf25b8cdb6ec40ff73c8b398d9dd8ca6d602b5ff32e4"
+    "bytes": 9516,
+    "sha256": "c5d99d9dcdf4afbb569b643ed5df0393c679d968fa644e774bd9ff0ad2da470d",
+    "prior_e240_sha256": "e4591cc5548f4a5d18980c9aa8df2bca837ca1d579acd4b92c9370d7919bdb78",
+    "changed": true
   },
   {
     "path": "crates/hex-engine/src/session_playback/candidate_storage.rs",
     "bytes": 11032,
     "sha256": "0349530d39aed2ac951d03fcb700d6fe0ceac9d2a5f421f1c18ab3db78d8e4eb",
-    "prior_e555_sha256": "0349530d39aed2ac951d03fcb700d6fe0ceac9d2a5f421f1c18ab3db78d8e4eb"
+    "prior_e240_sha256": "0349530d39aed2ac951d03fcb700d6fe0ceac9d2a5f421f1c18ab3db78d8e4eb",
+    "changed": false
+  },
+  {
+    "path": "crates/hex-project/src/history.rs",
+    "bytes": 18567,
+    "sha256": "4aa140957cb1169973d2027998d65c3e34aeed169c84ac1e95f0fad34521a43c",
+    "prior_e240_sha256": null,
+    "changed": true
+  },
+  {
+    "path": "crates/hex-project/src/history/original_sampler.rs",
+    "bytes": 20196,
+    "sha256": "f5251d2a8b11d2c28e2d5cc9666b6c4573cb12d08355e6f59bdf0aeea948cbdd",
+    "prior_e240_sha256": null,
+    "changed": true
+  },
+  {
+    "path": "crates/hex-project/src/history/original_sampler/tests.rs",
+    "bytes": 10304,
+    "sha256": "b92bb16778121e096572cd605371785cc6d9ba9ba6e8c7e7ad1e138c2079cae8",
+    "prior_e240_sha256": null,
+    "changed": true
+  },
+  {
+    "path": "crates/hex-project/src/lib.rs",
+    "bytes": 27168,
+    "sha256": "9917ceb42d48df45eff24608fc4435b595f098d75b98df6c2e29527b5bd8b331",
+    "prior_e240_sha256": null,
+    "changed": true
   },
   {
     "path": "crates/hex-session/src/lib.rs",
-    "bytes": 64791,
-    "sha256": "42ef49a9e6eaa9e123ff486306fadea668c5dc08cda3120439861204b12219eb",
-    "prior_e555_sha256": "42ef49a9e6eaa9e123ff486306fadea668c5dc08cda3120439861204b12219eb"
+    "bytes": 65024,
+    "sha256": "b8fbc1fc6c2cdb9d88799b47f5a5dcbb2f055962620012e8ea0d4ccb6d81ab39",
+    "prior_e240_sha256": "42ef49a9e6eaa9e123ff486306fadea668c5dc08cda3120439861204b12219eb",
+    "changed": true
   },
   {
     "path": "crates/hex-session/src/resource_plan.rs",
-    "bytes": 10515,
-    "sha256": "dc7813064bf411428a337f5d91b821d9ccd6021bd767d868ef221e08fd16319d",
-    "prior_e555_sha256": "dc7813064bf411428a337f5d91b821d9ccd6021bd767d868ef221e08fd16319d"
+    "bytes": 11640,
+    "sha256": "a6b0ffdace465f4d3c7f0ddfd94343927ff63dddbc430ee08bf7627e9087656a",
+    "prior_e240_sha256": "dc7813064bf411428a337f5d91b821d9ccd6021bd767d868ef221e08fd16319d",
+    "changed": true
   },
   {
     "path": "crates/hex-session/src/resource_plan/original_sampler.rs",
-    "bytes": 9002,
-    "sha256": "c8330e92b60564a71279e9cb18fb5f109b11bdb0861195f11d8ac80e5ecc769e",
-    "prior_e555_sha256": "c8330e92b60564a71279e9cb18fb5f109b11bdb0861195f11d8ac80e5ecc769e"
+    "bytes": 28554,
+    "sha256": "b06a9573ee8f9ab8ca43f6c3beebc7d97ea3f69a2ead1ba2c77ac428e74ccfa7",
+    "prior_e240_sha256": "c8330e92b60564a71279e9cb18fb5f109b11bdb0861195f11d8ac80e5ecc769e",
+    "changed": true
+  },
+  {
+    "path": "crates/hex-session/src/resource_plan/original_sampler/tests.rs",
+    "bytes": 16482,
+    "sha256": "d9ee46c7d349e6d5ec9249374d6a1b1f7e93da433ad4e58e8f2f18d8b1de4a06",
+    "prior_e240_sha256": null,
+    "changed": true
   },
   {
     "path": "crates/hex-session/src/resource_plan/tests.rs",
     "bytes": 51122,
     "sha256": "79a0ab897cd1a5a166bf8a9cd8bed095d465bbc8c4846ab85f61945be4364b0a",
-    "prior_e555_sha256": "79a0ab897cd1a5a166bf8a9cd8bed095d465bbc8c4846ab85f61945be4364b0a"
+    "prior_e240_sha256": "79a0ab897cd1a5a166bf8a9cd8bed095d465bbc8c4846ab85f61945be4364b0a",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/service.rs",
     "bytes": 306521,
     "sha256": "37cfc0c9551f5edcae7b64a30f2e1b95c411674a04598ff9b7d6509130501f6b",
-    "prior_e555_sha256": "863d0fc29a0e2b96f7af909ffd81330a958a589a4f004b7d49c17c4e251588d7"
+    "prior_e240_sha256": "37cfc0c9551f5edcae7b64a30f2e1b95c411674a04598ff9b7d6509130501f6b",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/service/audio_sink.rs",
     "bytes": 30069,
     "sha256": "d01f7d060cab81e863d489bb867dbd16b22bdcf4a8153ba5383aa917e4161409",
-    "prior_e555_sha256": "d01f7d060cab81e863d489bb867dbd16b22bdcf4a8153ba5383aa917e4161409"
+    "prior_e240_sha256": "d01f7d060cab81e863d489bb867dbd16b22bdcf4a8153ba5383aa917e4161409",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/service/canonical_audio_source.rs",
-    "bytes": 20963,
-    "sha256": "67fc5f72e6c62f851fa73f6eb7bf91b4a9b218f9ca4b2e2f7cd6a9536f675aab",
-    "prior_e555_sha256": null
+    "bytes": 22425,
+    "sha256": "9aed0965d1be2438b0181ff2e10894b3a1b5c85e39f6c7123ddabc5f08dcea2a",
+    "prior_e240_sha256": "67fc5f72e6c62f851fa73f6eb7bf91b4a9b218f9ca4b2e2f7cd6a9536f675aab",
+    "changed": true
   },
   {
     "path": "crates/hex-session/src/service/event_fields.rs",
     "bytes": 4392,
     "sha256": "b17e923d99726581f952b76c0da0fd6ba67a9bdd07a8087c15fd009f59ad6929",
-    "prior_e555_sha256": "b17e923d99726581f952b76c0da0fd6ba67a9bdd07a8087c15fd009f59ad6929"
+    "prior_e240_sha256": "b17e923d99726581f952b76c0da0fd6ba67a9bdd07a8087c15fd009f59ad6929",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/service/export_renderer.rs",
     "bytes": 847,
     "sha256": "50a88e68d4ee15ba452d05b98798040db6215dfa5e22b561b1c19f38c5e8044a",
-    "prior_e555_sha256": "50a88e68d4ee15ba452d05b98798040db6215dfa5e22b561b1c19f38c5e8044a"
+    "prior_e240_sha256": "50a88e68d4ee15ba452d05b98798040db6215dfa5e22b561b1c19f38c5e8044a",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/service/export_result_transport.rs",
     "bytes": 3368,
     "sha256": "8535c51dd77d76f2cd0d5c0c64e00f10cd054b30c8acacc79286bcd41b797ca8",
-    "prior_e555_sha256": "8535c51dd77d76f2cd0d5c0c64e00f10cd054b30c8acacc79286bcd41b797ca8"
+    "prior_e240_sha256": "8535c51dd77d76f2cd0d5c0c64e00f10cd054b30c8acacc79286bcd41b797ca8",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/service/main_control_file.rs",
     "bytes": 12702,
     "sha256": "7f1c9106ed9a58b0a6699d9b89ed3c32684162fc00c45cbf0a212ad48c8f9311",
-    "prior_e555_sha256": null
+    "prior_e240_sha256": "7f1c9106ed9a58b0a6699d9b89ed3c32684162fc00c45cbf0a212ad48c8f9311",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/service/main_control_file/tests.rs",
     "bytes": 22746,
     "sha256": "86d5dd1b839634b73047b0973397c7e8142a26499a051681d9901d0f00061b04",
-    "prior_e555_sha256": null
+    "prior_e240_sha256": "86d5dd1b839634b73047b0973397c7e8142a26499a051681d9901d0f00061b04",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/service/worker_roots.rs",
-    "bytes": 44064,
-    "sha256": "c82889b890a046a9f67240d7c230ab6462e2557ca9386d42ab28d962227e91cb",
-    "prior_e555_sha256": "431420f42f295a45b771d13bf2c8438b4f9164bb220858082e881da1738b3db7"
+    "bytes": 50899,
+    "sha256": "6415482557daa7443b739a2fd132e556073df6dfc5f693c1574649f4e9c1fc1a",
+    "prior_e240_sha256": "c82889b890a046a9f67240d7c230ab6462e2557ca9386d42ab28d962227e91cb",
+    "changed": true
   },
   {
     "path": "crates/hex-session/src/service/worker_startup.rs",
     "bytes": 7446,
     "sha256": "0bc7f48cdb20948dd7dd88f7255a5cfeebd3e0bd9ad1f4cb8a3770c419814881",
-    "prior_e555_sha256": "0bc7f48cdb20948dd7dd88f7255a5cfeebd3e0bd9ad1f4cb8a3770c419814881"
+    "prior_e240_sha256": "0bc7f48cdb20948dd7dd88f7255a5cfeebd3e0bd9ad1f4cb8a3770c419814881",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/snapshot_exports.rs",
     "bytes": 19902,
     "sha256": "bec9cac2af937567e401ab104b1c0d1734e1ad33a832bc61d95b78107e6e80dd",
-    "prior_e555_sha256": "bec9cac2af937567e401ab104b1c0d1734e1ad33a832bc61d95b78107e6e80dd"
+    "prior_e240_sha256": "bec9cac2af937567e401ab104b1c0d1734e1ad33a832bc61d95b78107e6e80dd",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/snapshot_exports/family.rs",
     "bytes": 39713,
     "sha256": "35d909e66eeacf9b8dd22b604f0cea6616145135c9cae1488d7755a161aa363c",
-    "prior_e555_sha256": "35d909e66eeacf9b8dd22b604f0cea6616145135c9cae1488d7755a161aa363c"
+    "prior_e240_sha256": "35d909e66eeacf9b8dd22b604f0cea6616145135c9cae1488d7755a161aa363c",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/snapshot_exports/native_export_results.rs",
     "bytes": 9235,
     "sha256": "339d7cf2b5bc79ff6a2f7a6bd4c2ea93402190c2d6090e8111a4cc94baf5d1e7",
-    "prior_e555_sha256": "339d7cf2b5bc79ff6a2f7a6bd4c2ea93402190c2d6090e8111a4cc94baf5d1e7"
+    "prior_e240_sha256": "339d7cf2b5bc79ff6a2f7a6bd4c2ea93402190c2d6090e8111a4cc94baf5d1e7",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/snapshot_exports/native_export_results/tests.rs",
     "bytes": 10921,
     "sha256": "6a98c24ecc73a76c0bcd67b03662726a4bcd78a5a22a8693dc789d741f1687b4",
-    "prior_e555_sha256": "6a98c24ecc73a76c0bcd67b03662726a4bcd78a5a22a8693dc789d741f1687b4"
+    "prior_e240_sha256": "6a98c24ecc73a76c0bcd67b03662726a4bcd78a5a22a8693dc789d741f1687b4",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/snapshot_exports/native_requests.rs",
     "bytes": 37338,
     "sha256": "16228d34f43e3225c68d21b87c6640302152a4fbaa2ef8a56ab348c96738fc14",
-    "prior_e555_sha256": "16228d34f43e3225c68d21b87c6640302152a4fbaa2ef8a56ab348c96738fc14"
+    "prior_e240_sha256": "16228d34f43e3225c68d21b87c6640302152a4fbaa2ef8a56ab348c96738fc14",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/snapshot_exports/native_transport.rs",
     "bytes": 12931,
     "sha256": "e02ab82ddce63676390ada20a6af473505238a9d4790bf0b492d1ac60c56545e",
-    "prior_e555_sha256": "e02ab82ddce63676390ada20a6af473505238a9d4790bf0b492d1ac60c56545e"
+    "prior_e240_sha256": "e02ab82ddce63676390ada20a6af473505238a9d4790bf0b492d1ac60c56545e",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/snapshot_exports/storage.rs",
-    "bytes": 22669,
-    "sha256": "b2944e627f37e0e93c14303abad6777806fa85f6ff5c2e80babecd64df9700cf",
-    "prior_e555_sha256": "b2944e627f37e0e93c14303abad6777806fa85f6ff5c2e80babecd64df9700cf"
+    "bytes": 22843,
+    "sha256": "188906eb5fc715e64972edb916721c7edeba1869580c586929102a57eeb41b50",
+    "prior_e240_sha256": "b2944e627f37e0e93c14303abad6777806fa85f6ff5c2e80babecd64df9700cf",
+    "changed": true
   },
   {
     "path": "crates/hex-session/src/snapshot_exports/worker_control.rs",
     "bytes": 9183,
     "sha256": "b75d37fcf9f81ae0d68adb6841a8ed8fdb1a9036c042cb8e3b399a85da8b573b",
-    "prior_e555_sha256": "b75d37fcf9f81ae0d68adb6841a8ed8fdb1a9036c042cb8e3b399a85da8b573b"
+    "prior_e240_sha256": "b75d37fcf9f81ae0d68adb6841a8ed8fdb1a9036c042cb8e3b399a85da8b573b",
+    "changed": false
   },
   {
     "path": "crates/hex-session/src/snapshot_exports/worker_export_results.rs",
     "bytes": 3850,
     "sha256": "3aedf84842ea735bd1ef7a0e02a67f25a02e0795a45cc2c56e01c9469a5236d6",
-    "prior_e555_sha256": "3aedf84842ea735bd1ef7a0e02a67f25a02e0795a45cc2c56e01c9469a5236d6"
+    "prior_e240_sha256": "3aedf84842ea735bd1ef7a0e02a67f25a02e0795a45cc2c56e01c9469a5236d6",
+    "changed": false
   },
   {
     "path": "crates/hex-storage/src/files.rs",
     "bytes": 22305,
     "sha256": "a36dcbfaf20d7295b25b3cae5f2209c8d77d1bf914e17a7b31f23f1fc94a9ba8",
-    "prior_e555_sha256": "a36dcbfaf20d7295b25b3cae5f2209c8d77d1bf914e17a7b31f23f1fc94a9ba8"
+    "prior_e240_sha256": "a36dcbfaf20d7295b25b3cae5f2209c8d77d1bf914e17a7b31f23f1fc94a9ba8",
+    "changed": false
   },
   {
     "path": "crates/hex-storage/src/journal.rs",
     "bytes": 28313,
     "sha256": "70b7efa89456e48579038674078d32d6e1796a7c86745d6d1ff78443822aafb7",
-    "prior_e555_sha256": "70b7efa89456e48579038674078d32d6e1796a7c86745d6d1ff78443822aafb7"
+    "prior_e240_sha256": "70b7efa89456e48579038674078d32d6e1796a7c86745d6d1ff78443822aafb7",
+    "changed": false
   },
   {
     "path": "crates/hex-storage/src/lib.rs",
     "bytes": 7369,
     "sha256": "090c576369c84cc5d12648fdf965b73c99f4033797b7f52a5580af17825a2e1d",
-    "prior_e555_sha256": "090c576369c84cc5d12648fdf965b73c99f4033797b7f52a5580af17825a2e1d"
+    "prior_e240_sha256": "090c576369c84cc5d12648fdf965b73c99f4033797b7f52a5580af17825a2e1d",
+    "changed": false
   },
   {
     "path": "crates/hex-ui/Cargo.toml",
     "bytes": 966,
     "sha256": "c9a3ac85490916fcb0bd7fa82681f08c5ec77fe7a6db702c0933bf384cd15f9a",
-    "prior_e555_sha256": "c9a3ac85490916fcb0bd7fa82681f08c5ec77fe7a6db702c0933bf384cd15f9a"
+    "prior_e240_sha256": "c9a3ac85490916fcb0bd7fa82681f08c5ec77fe7a6db702c0933bf384cd15f9a",
+    "changed": false
   },
   {
     "path": "crates/hex-ui/src/editor/export.rs",
     "bytes": 14550,
     "sha256": "338265adcf2825bcd38efc24fc9b176f5ab010fca54c618fad9cb66f298455ed",
-    "prior_e555_sha256": "338265adcf2825bcd38efc24fc9b176f5ab010fca54c618fad9cb66f298455ed"
+    "prior_e240_sha256": "338265adcf2825bcd38efc24fc9b176f5ab010fca54c618fad9cb66f298455ed",
+    "changed": false
   },
   {
     "path": "crates/hex-ui/src/editor/project_spectrum.rs",
     "bytes": 20300,
     "sha256": "bcaaee646d07a5435ceac76cf76d56880233ed9955faa6bb165ccf0eb5d98524",
-    "prior_e555_sha256": "bcaaee646d07a5435ceac76cf76d56880233ed9955faa6bb165ccf0eb5d98524"
+    "prior_e240_sha256": "bcaaee646d07a5435ceac76cf76d56880233ed9955faa6bb165ccf0eb5d98524",
+    "changed": false
   },
   {
     "path": "crates/hex-ui/src/editor/project_spectrum/tests.rs",
     "bytes": 13800,
     "sha256": "935082726ec51796602835a29c9847bcd2047df6675687a319a8462d92b2b834",
-    "prior_e555_sha256": "935082726ec51796602835a29c9847bcd2047df6675687a319a8462d92b2b834"
+    "prior_e240_sha256": "935082726ec51796602835a29c9847bcd2047df6675687a319a8462d92b2b834",
+    "changed": false
   },
   {
     "path": "docs/native-device-resource-host.md",
     "bytes": 61832,
     "sha256": "d7b0f835c513ee18f27ae763d751838542b7b98b5486b3fc5e1c42337a397f59",
-    "prior_e555_sha256": "d7b0f835c513ee18f27ae763d751838542b7b98b5486b3fc5e1c42337a397f59"
+    "prior_e240_sha256": "d7b0f835c513ee18f27ae763d751838542b7b98b5486b3fc5e1c42337a397f59",
+    "changed": false
   },
   {
     "path": "docs/native-document-token-storage.md",
     "bytes": 3910,
     "sha256": "f95d550d384704b5d3db3651c88bd3f3f60b1b32dbf5685f9acbbbcc6a99770e",
-    "prior_e555_sha256": "f95d550d384704b5d3db3651c88bd3f3f60b1b32dbf5685f9acbbbcc6a99770e"
+    "prior_e240_sha256": "f95d550d384704b5d3db3651c88bd3f3f60b1b32dbf5685f9acbbbcc6a99770e",
+    "changed": false
   },
   {
     "path": "scripts/custody_mutex_policy.py",
     "bytes": 7197,
     "sha256": "ac4daf79b6407263b9ecbf21fc34fec379f43169fd385b25d871acfa241a3344",
-    "prior_e555_sha256": "ac4daf79b6407263b9ecbf21fc34fec379f43169fd385b25d871acfa241a3344"
+    "prior_e240_sha256": "ac4daf79b6407263b9ecbf21fc34fec379f43169fd385b25d871acfa241a3344",
+    "changed": false
   },
   {
     "path": "scripts/sampler_host_policy.py",
-    "bytes": 52065,
-    "sha256": "8e225a7dcc4ab2f36f5692a3f409bfba142d9cdc711419a0904834018d1098cb",
-    "prior_e555_sha256": "7333a1832c0c2d4436df3f22c58f8e709d7b9af2650da429509a594bfcbbf174"
+    "bytes": 60204,
+    "sha256": "c1f611788591278cb2cb2020b2ecc26cf6a0163eaf5e2cb30f1196747b10791d",
+    "prior_e240_sha256": "8e225a7dcc4ab2f36f5692a3f409bfba142d9cdc711419a0904834018d1098cb",
+    "changed": true
   },
   {
     "path": "scripts/tests/test_custody_mutex_policy.py",
     "bytes": 4636,
     "sha256": "f6061b20aa23744bd1d345c828565a19d04fe343cd06497bd4b6d0b2ba63f26b",
-    "prior_e555_sha256": "f6061b20aa23744bd1d345c828565a19d04fe343cd06497bd4b6d0b2ba63f26b"
+    "prior_e240_sha256": "f6061b20aa23744bd1d345c828565a19d04fe343cd06497bd4b6d0b2ba63f26b",
+    "changed": false
   },
   {
     "path": "scripts/tests/test_sampler_host_policy.py",
-    "bytes": 31086,
-    "sha256": "224b74af79e8df73c511afd844bb8c6e4171ede6a94dcf8ba0509725affa8d70",
-    "prior_e555_sha256": "3c1a34044564a00455b042144012fe0e64d9982ed27bc015cc43ed8214da65ed"
+    "bytes": 34374,
+    "sha256": "578b8b4d7359e512b881a74f6648f154ffe4c94634d5a8005dc84060d148de0f",
+    "prior_e240_sha256": "224b74af79e8df73c511afd844bb8c6e4171ede6a94dcf8ba0509725affa8d70",
+    "changed": true
   }
 ]

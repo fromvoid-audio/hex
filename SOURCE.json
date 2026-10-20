@@ -1,348 +1,286 @@
 {
   "canonical_head": "b94b0e2f6fbec0932d422c00d4584739c192cb9a",
-  "kind": "read-only-current-WIP-and-decision-context",
+  "baseline_evidence": "e240403aaae216619848b3979181f641064e4557",
+  "kind": "read-only-WIP-not-admission-or-merge-candidate",
   "sources": [
     {
-      "path": "crates/hex-audio/src/candidate_custody/eligible/publication.rs",
-      "bytes": 47592,
-      "sha256": "22b01d69b7c064039437fba6f0311d660aad941ea96461a8c76f3e0296d41bba",
-      "canonical_blob": "eec14de8fb6fe24d848aa0efb9cb7985c950cdfd",
-      "prior_e555_sha256": "d8aa2b702e9418e2e8fc0a9997a319a273431502556f17ef2581e67ab37b8025",
-      "intake_before_sha256": "d8aa2b702e9418e2e8fc0a9997a319a273431502556f17ef2581e67ab37b8025"
-    },
-    {
       "path": "crates/hex-audio/src/candidate_custody/eligible/publication/native_host.rs",
-      "bytes": 23354,
-      "sha256": "b032c29ea9258be83a402e13ab48fea9752d7e3d95e83eb4ac77a7528c24ebfe",
-      "canonical_blob": null,
-      "prior_e555_sha256": "6f6a59c7079249df1ed3bf62f28e562da9f92a90f20939d0ca3b7389076aa2a1",
-      "intake_before_sha256": "6f6a59c7079249df1ed3bf62f28e562da9f92a90f20939d0ca3b7389076aa2a1"
-    },
-    {
-      "path": "crates/hex-audio/src/device.rs",
-      "bytes": 46400,
-      "sha256": "fa395da88ab41020eb968b1195e9aab43a75877fb4cb631051c5b2e1e8befdc2",
-      "canonical_blob": "a09507f4d93189c727053f06b0f6b1088e28ea48",
-      "prior_e555_sha256": "d7167e083742a0cde49a4e79298bb40eddaaf0bbfe108e856afa26dc2cd84074",
-      "intake_before_sha256": "d7167e083742a0cde49a4e79298bb40eddaaf0bbfe108e856afa26dc2cd84074"
-    },
-    {
-      "path": "crates/hex-audio/src/prepared/status_owner.rs",
-      "bytes": 7885,
-      "sha256": "8ab9407efeaa3b9a447322a96a26692573c6fcac849e788e35392273fba09b2c",
-      "canonical_blob": null,
-      "prior_e555_sha256": "77bb0d1f0abd25a4740f15e04ef5afc9723bb571b4a293b05cf14468f9f37984",
-      "intake_before_sha256": "77bb0d1f0abd25a4740f15e04ef5afc9723bb571b4a293b05cf14468f9f37984"
+      "bytes": 25059,
+      "sha256": "2a3934ad807a9e1c082f051b623136bbcd73fd29f4c39d1930eb517edc9256f5",
+      "before_bytes": 23354,
+      "before_sha256": "b032c29ea9258be83a402e13ab48fea9752d7e3d95e83eb4ac77a7528c24ebfe",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-audio/src/candidate_custody/eligible/publication/native_host.rs",
+      "canonical_blob": null
     },
     {
       "path": "crates/hex-audio/src/prepared/worker_publication.rs",
-      "bytes": 12776,
-      "sha256": "42c94e376edd18210f271fb057a090a01fb64cff0139e518cfb3f2c482f05e1f",
-      "canonical_blob": "db7132d3fee19006ebd74df72b0c4659e3641b89",
-      "prior_e555_sha256": null,
-      "intake_before_sha256": "a5f99cf429a01d7e5bf235a8c1ad84a2a06149b13fd4bfcab9f6c16b5ec497a4"
-    },
-    {
-      "path": "crates/hex-audio/src/worker_fixture.rs",
-      "bytes": 5986,
-      "sha256": "c80e13159cd161b3a5065b11caabc0adc17baee014c25a7f7b3f40b283c6afb8",
-      "canonical_blob": "aedff02ecc99477b9b9321d011a5c0495882341e",
-      "prior_e555_sha256": null,
-      "intake_before_sha256": "b4ee92b3b738bed8fa18eee49066cbdb4d91d3a4ec04704f466043c9541c960e"
-    },
-    {
-      "path": "crates/hex-desktop/src/native_audio/tests.rs",
-      "bytes": 41733,
-      "sha256": "e1aedac33909202daa2447a673982c263dfc577d1940ee7218de2c00c65423cc",
-      "canonical_blob": "7db523901e15e5d70a91692b5baa47b777e4133d",
-      "prior_e555_sha256": null,
-      "intake_before_sha256": "89ba8e18bf3bd6424fdad4ce78b49ddefd222c9f2fc09e58f17d04cd6af9dc7c"
-    },
-    {
-      "path": "crates/hex-desktop/src/native_audio/tests/closed_original.rs",
-      "bytes": 11276,
-      "sha256": "0b882aa71c3de89ca265ad8cef3d44bdaeb20aff41ffb5a1a09f1caa5f917a86",
-      "canonical_blob": null,
-      "prior_e555_sha256": null
-    },
-    {
-      "path": "crates/hex-desktop/src/snapshot_transport.rs",
-      "bytes": 7617,
-      "sha256": "cc1b7d7bf9cb8f7ed333fa7dc1effbd74edaa28e2b19913fbe8cf73b89f4096b",
-      "canonical_blob": "448db3fc82f31a01820fb74ea2d54679c604119a",
-      "prior_e555_sha256": null,
-      "intake_before_sha256": "56b467a0dc4ec9e59bcd792fe26b1ac9db2558f08fbce620ad80a05ad161fd0d"
-    },
-    {
-      "path": "crates/hex-desktop/src/snapshot_transport/tests.rs",
-      "bytes": 10419,
-      "sha256": "b2c064ab4d908b2d2229ee60f1d14462d20f4ae8516f7de89127881330e85c90",
-      "canonical_blob": "199763570dd5bce549053a0663b2775d38dcd25d",
-      "prior_e555_sha256": null,
-      "intake_before_sha256": "875cc90aade878fec7e65f6e47d3a362796de047baeafac14c8c250b92aab5c6"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_candidate/preparation.rs",
-      "bytes": 20415,
-      "sha256": "ba14100b8c8c5fe338ca956b2fdff055b4a4b2d9843c4b98b724a97e2146be68",
-      "canonical_blob": "034feeb21a9850ffadeeaf43bd60a6e2642e27e1",
-      "prior_e555_sha256": "7494bec65fa4c8a801fa4fc6693238712d224249fa1b045d6825d9f3a732b886",
-      "intake_before_sha256": "7494bec65fa4c8a801fa4fc6693238712d224249fa1b045d6825d9f3a732b886"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_candidate/preparation/control_work.rs",
-      "bytes": 17258,
-      "sha256": "91f12817eca14bc376e1c0a39a055017d6fc2aca4b8ea913cb8d035690e0f1c8",
-      "canonical_blob": "d7ca89046aa3ac5ad79e73f46f59e2383cda6f6b",
-      "prior_e555_sha256": "1866acd1ae99d74af079de2f4078f895861b53bcc2858d582c21ed4ab34b04cf"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_candidate/preparation/native_fields.rs",
-      "bytes": 9050,
-      "sha256": "b7c9587038efd14797705a8c1d28567d1b6ebdaaac4ef3e5aafa59f5f71eb8e9",
-      "canonical_blob": null,
-      "prior_e555_sha256": "8f5e39412a51eddfac14cfb9109273502d00c1ce01ddc14e70787c5b2573d8e6",
-      "intake_before_sha256": "8f5e39412a51eddfac14cfb9109273502d00c1ce01ddc14e70787c5b2573d8e6"
+      "bytes": 14289,
+      "sha256": "b12cd15ccfcaeb83771263bcb5a6fffcb3b6e7a1f39bf6b7fed20b72c066b958",
+      "before_bytes": 12776,
+      "before_sha256": "42c94e376edd18210f271fb057a090a01fb64cff0139e518cfb3f2c482f05e1f",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-audio/src/prepared/worker_publication.rs",
+      "canonical_blob": "db7132d3fee19006ebd74df72b0c4659e3641b89"
     },
     {
       "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources.rs",
-      "bytes": 19113,
-      "sha256": "6cabc4e9fcc10c1e201d20a71b20355d91ae16933e8457cb7fabdbf4ffb9dde3",
-      "canonical_blob": "c8b80909cd82d52dbba06aa6545685f2c89c8f9f",
-      "prior_e555_sha256": "a2418adffc58842c473045d1b03d32c22b164d786418a8824eca3805903d5583",
-      "intake_before_sha256": "a2418adffc58842c473045d1b03d32c22b164d786418a8824eca3805903d5583"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources/tests/runtime.rs",
-      "bytes": 25540,
-      "sha256": "5ef24fe3899b77f6bd5954d8619f7c295a2f276720166dc44ab6c31e978bea75",
-      "canonical_blob": "651eabbe5a3c26bbb6c7555b0667dbfc9c6c8faf",
-      "prior_e555_sha256": "5af7b63f6c87e07a97576cad3f18ef04c6a45e12a4236c1776b199b6f6df2a11",
-      "intake_before_sha256": "5af7b63f6c87e07a97576cad3f18ef04c6a45e12a4236c1776b199b6f6df2a11"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_candidate/preparation_operations.rs",
-      "bytes": 12087,
-      "sha256": "ad75be6179a6a92acf75d6b825607f00106a3fe0cf40b50e6a02fe6748dda514",
-      "canonical_blob": "d07a518a006ff1529d9a559cce24c784e7b9bb65",
-      "prior_e555_sha256": "7ea7550659e0fb4dbd095f42adff227cc4db2f84b430460d4675b126efc1a703",
-      "intake_before_sha256": "7ea7550659e0fb4dbd095f42adff227cc4db2f84b430460d4675b126efc1a703"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_candidate/storage.rs",
-      "bytes": 43187,
-      "sha256": "c33c71ff9f7509138d1347068fcfb3f2a5301909254e21d641e6a634b920d839",
-      "canonical_blob": "aaba0a0adfbca4d119e1e87f8436891e4052f078",
-      "prior_e555_sha256": "cb84b46a34ebe16208e42ab51dcf0251f6a5b2b941d26159151790274a292489",
-      "intake_before_sha256": "cb84b46a34ebe16208e42ab51dcf0251f6a5b2b941d26159151790274a292489"
+      "bytes": 19365,
+      "sha256": "955569d526a636e992331ed2a9152efdc38080a5544ede1a3def122664e2ab01",
+      "before_bytes": 19113,
+      "before_sha256": "6cabc4e9fcc10c1e201d20a71b20355d91ae16933e8457cb7fabdbf4ffb9dde3",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-engine/src/audio_candidate/preparation/original_resources.rs",
+      "canonical_blob": "c8b80909cd82d52dbba06aa6545685f2c89c8f9f"
     },
     {
       "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
-      "bytes": 27021,
-      "sha256": "acbee36655d67373893a92dbb88aac18e02d5e2f2c424f69949ebd8fcb0d0b33",
-      "canonical_blob": "ef43658c952330d6a2a0b12a3b3a159bd2f07161",
-      "prior_e555_sha256": "6fbb0ebf684f19e70ba83e4d6d2fba1676c5895cb192c5d8fc0abe29482f16e1",
-      "intake_before_sha256": "6fbb0ebf684f19e70ba83e4d6d2fba1676c5895cb192c5d8fc0abe29482f16e1"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs",
-      "bytes": 13201,
-      "sha256": "509c3a28c9ef78abdf8bba45dc88940afb9d4b92eee7f977c95485cf4176a45d",
-      "canonical_blob": "7020e3964770e326087f8778d50757a8892a8198",
-      "prior_e555_sha256": "c984ec26d814cb3939d2f0a3069a69643ffa0667ae49db1fdc63271245b9ddc3",
-      "intake_before_sha256": "c984ec26d814cb3939d2f0a3069a69643ffa0667ae49db1fdc63271245b9ddc3"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs",
-      "bytes": 28981,
-      "sha256": "db19e9b548e08c49e8328a3f252dadfa051b0457fe25d85cff469f61714fbaf5",
-      "canonical_blob": "2c4c9f9ec0a77c56c88ce977284ecfb55f5cfb1f",
-      "prior_e555_sha256": "bd2fc79134495849bc93350d9bd5e4a3fe66019edbfb91a79e2aa06e9b860b57",
-      "intake_before_sha256": "9cdf647594123ebecde79d58fa1be56d5328758fe7c2320df7d1fca019545f0b"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs",
-      "bytes": 37488,
-      "sha256": "6a8da6b9c78e228fb7aac8f1c92a321391f117c8017fc1308c62188bbde2971b",
-      "canonical_blob": "b22f5bc6ecd39bdb8e1b8916c190868fcc1bfe94",
-      "prior_e555_sha256": "8dba02f8febdc2b64292c9ef4cedf2b8e49090752a93099150ebcde4530dec29",
-      "intake_before_sha256": "13180a08d50c7f2c28edf510cfbf169e3a69b0bb748384c18690d4250a3f1452"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs",
-      "bytes": 24551,
-      "sha256": "49ea642d45d41911de16d8e182b43c7340ed2a6864242e2c92f804b9e9657525",
-      "canonical_blob": "b0cb0a865b74c1c02be2611e1893f949c52c42e0",
-      "prior_e555_sha256": "8eb6fa59977d8a1a06dde6556edb730ddf3ce602a0ba0db1588d6def6768ec18",
-      "intake_before_sha256": "202b4dfaf58fc4e3c8afbcfa0738cdcee5eb13828e7fb4d2f7affed99d070970"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_preparation/original_resources.rs",
-      "bytes": 3530,
-      "sha256": "5148a9538fb7fc41582b9e37fa966a194bb5eda7c1ed5c7e6dafd8f4f94a228c",
-      "canonical_blob": "e6035c71183192cc0e4f5d70ce97155e0138652e",
-      "prior_e555_sha256": null,
-      "intake_before_sha256": "dcc1680cf00e65f921757ae4950cc7eff3a34c2cd6b3614f1cc6fb179b35dc9b"
-    },
-    {
-      "path": "crates/hex-engine/src/audio_preparation/original_resources/tests.rs",
-      "bytes": 11098,
-      "sha256": "aa6293fcb66feeee7f5272f9565b13e200ecc7c671c069d149bc1b845a7f4a8c",
-      "canonical_blob": "62f51ca5f3b1b9aa13a6d75a40a0e52e5bfb6d53",
-      "prior_e555_sha256": null
+      "bytes": 27211,
+      "sha256": "7d9f4a5f6b8ebb95955827451c9ae259e78fbe20443d3e64cee94e25dda986cb",
+      "before_bytes": 27021,
+      "before_sha256": "acbee36655d67373893a92dbb88aac18e02d5e2f2c424f69949ebd8fcb0d0b33",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
+      "canonical_blob": "ef43658c952330d6a2a0b12a3b3a159bd2f07161"
     },
     {
       "path": "crates/hex-engine/src/audio_storage.rs",
-      "bytes": 34692,
-      "sha256": "a85185d53cd6091851a91d377c45f9926484aa66d711b5424358f7a5887cf465",
-      "canonical_blob": "3ab00af8528a11da127daf5c1c4f33c00add3560",
-      "prior_e555_sha256": "a85185d53cd6091851a91d377c45f9926484aa66d711b5424358f7a5887cf465"
+      "bytes": 34791,
+      "sha256": "ef2e59b9f5fe2d5f6ba646f5d41e84c86551f40d908bac956c10dcce209194bc",
+      "before_bytes": 34692,
+      "before_sha256": "a85185d53cd6091851a91d377c45f9926484aa66d711b5424358f7a5887cf465",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-engine/src/audio_storage.rs",
+      "canonical_blob": "3ab00af8528a11da127daf5c1c4f33c00add3560"
     },
     {
-      "path": "crates/hex-engine/src/prepared_revision.rs",
-      "bytes": 37113,
-      "sha256": "af720059e546601eae2e6764711bbef470927661e3ea4a5f15e001e19b5b2ce6",
-      "canonical_blob": "cae875eee8a53691d4f14471c042051b4e6da327",
-      "prior_e555_sha256": null
+      "path": "crates/hex-engine/src/audio_storage/canonical_state.rs",
+      "bytes": 14091,
+      "sha256": "cf9e2dfb74306b5f0688c0305d783ac1fcd2a0bf3eb675e6c4b22f584d81ad06",
+      "before_bytes": 13940,
+      "before_sha256": "ba41d28eff142490f6b1bd75cfbe2d60d0feceea25d8505914d5eb3aab048aa8",
+      "before_origin": "canonical b94 Git blob",
+      "canonical_blob": "4a477560989777c4dbd9fe8618e7d5a1a511fcdd"
     },
     {
-      "path": "crates/hex-engine/src/prepared_revision/compiled_reader.rs",
-      "bytes": 31835,
-      "sha256": "20b7ae750f3fe4c32b69f36608b30518ba831661567839c522df884108bd2102",
-      "canonical_blob": "a576279e5e95c1309aa508a63b108fe4d87f0ad1",
-      "prior_e555_sha256": "14c31b5440b0f4ff2512fb796c6f85f13ebecf9903bd8e5bb18a3139c09c6fdc",
-      "intake_before_sha256": "14c31b5440b0f4ff2512fb796c6f85f13ebecf9903bd8e5bb18a3139c09c6fdc"
+      "path": "crates/hex-engine/src/audio_storage/model_buffers.rs",
+      "bytes": 8353,
+      "sha256": "68af6d953e5e7be18e98ce629beaf38bca9d8e80222eadcbd6c0205bce51895e",
+      "before_bytes": 8214,
+      "before_sha256": "d379b3caebc39be9a388cea20d4d8cca4a822028b0be31388d684c550326771f",
+      "before_origin": "canonical b94 Git blob",
+      "canonical_blob": "59a73930da061dbb77ae8f5440d4edd892e7c30d"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/models.rs",
+      "bytes": 10025,
+      "sha256": "ea00777b617107d3d1909125db7a123743c1a9687fda20823594126fc306620a",
+      "before_bytes": 9228,
+      "before_sha256": "f19672822a902bf0b45eb1191be0b7342a45167d61122b9098456aa7ab5f5172",
+      "before_origin": "canonical b94 Git blob",
+      "canonical_blob": "d18d5fb4ba04a04ac676d60e783396308fd8d882"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/original_sampler_pending.rs",
+      "bytes": 5969,
+      "sha256": "3e1d4853f53a6fc1aa537e8042d7ac9db2adc2881b43af339859ca7a922832eb",
+      "before_bytes": 0,
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "before_origin": "new file, no canonical/prior entry",
+      "canonical_blob": null
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/original_sampler_pending/tests.rs",
+      "bytes": 4538,
+      "sha256": "de094d512b5c43383626c2ad7d6eecfa258d5c0be08f442d6977419a664c25b3",
+      "before_bytes": 0,
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "before_origin": "new file, no canonical/prior entry",
+      "canonical_blob": null
     },
     {
       "path": "crates/hex-engine/src/sampler_host_fields.rs",
-      "bytes": 3641,
-      "sha256": "c5066f0acf01bd6eacdfe13ca01acb56af61390af9b3fcc815ed461db24e91d6",
-      "canonical_blob": "811daeba50213c9cecfdfa42b7b0649c7a950f01",
-      "prior_e555_sha256": "ed8fb3699e02faf6f8a92dbdd4b6d1d6eae19ab70c4fec924153645bf2191a9c",
-      "intake_before_sha256": "ed8fb3699e02faf6f8a92dbdd4b6d1d6eae19ab70c4fec924153645bf2191a9c"
+      "bytes": 4009,
+      "sha256": "f72882f8ed14aa11ec478c82c63ed883a4814ffcfbf85117ba4e9f5dc8940e85",
+      "before_bytes": 3641,
+      "before_sha256": "c5066f0acf01bd6eacdfe13ca01acb56af61390af9b3fcc815ed461db24e91d6",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-engine/src/sampler_host_fields.rs",
+      "canonical_blob": "811daeba50213c9cecfdfa42b7b0649c7a950f01"
     },
     {
-      "path": "crates/hex-engine/src/sampler_host_fields/file_slots.rs",
-      "bytes": 3557,
-      "sha256": "ce1ecb47dc0646ae5e235a23d62dc5dc17dc18cafe64566e260691646c401c29",
-      "canonical_blob": "5982de80dee5a478cc1b4749fe989664cc8bff78",
-      "prior_e555_sha256": null,
-      "intake_before_sha256": "7238f6a16431c256f0a02efed378732cb4ffa506ca670f8d6ff491ea3c8b1077"
-    },
-    {
-      "path": "crates/hex-engine/src/sampler_host_fields/native.rs",
-      "bytes": 9815,
-      "sha256": "29a68a9342194825efb5a05d4e50ae2c4046dbecf822005a2db68acc5d2a41e6",
-      "canonical_blob": null,
-      "prior_e555_sha256": "e1eb8812e4820fb3c367c81630b27de2a18b00b8727eec8b080a5ff26f1317be",
-      "intake_before_sha256": "e1eb8812e4820fb3c367c81630b27de2a18b00b8727eec8b080a5ff26f1317be"
+      "path": "crates/hex-engine/src/sampler_host_fields/captured_source.rs",
+      "bytes": 2513,
+      "sha256": "bf1f0c2901afef262cb1fba752b5f1d355fa3a9dee30c8507839f1ad49cb0d76",
+      "before_bytes": 2461,
+      "before_sha256": "ee1ef296cad77f219f5398891a28121be441aa14f3852c93552496129438c268",
+      "before_origin": "canonical b94 Git blob",
+      "canonical_blob": "bcf12ab9d84930ab28f6d7312ffb1a784c218785"
     },
     {
       "path": "crates/hex-engine/src/sampler_host_fields/original_driver.rs",
-      "bytes": 8039,
-      "sha256": "e635c515e0dd24c5733289fbfc606d1bcc6c953c1a664bddbf7432bc7bc23562",
-      "canonical_blob": null,
-      "prior_e555_sha256": "fe937fb150ac840876cac00507cbd52cf8663c6c30791eebcd36ad4ead2d9541",
-      "intake_before_sha256": "fe937fb150ac840876cac00507cbd52cf8663c6c30791eebcd36ad4ead2d9541"
+      "bytes": 13385,
+      "sha256": "1029e3091f49a128c1630367ad0a8c17f067609fc6d9891f8432ef8e874e4e4a",
+      "before_bytes": 8039,
+      "before_sha256": "e635c515e0dd24c5733289fbfc606d1bcc6c953c1a664bddbf7432bc7bc23562",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-engine/src/sampler_host_fields/original_driver.rs",
+      "canonical_blob": null
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/pending_session.rs",
+      "bytes": 10369,
+      "sha256": "1e48d4c0044908788c9ce4a868b4e6e8c00d6a5a8254f17b435d89649374b867",
+      "before_bytes": 0,
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "before_origin": "new file, no canonical/prior entry",
+      "canonical_blob": null
     },
     {
       "path": "crates/hex-engine/src/sampler_host_fields/physical.rs",
-      "bytes": 6908,
-      "sha256": "20d368fc3d1ac00930bee8c6b6964250050db58e8fdc0bb0ffbeb5988a30854a",
-      "canonical_blob": "e5965874def5d138921c5f52850f8bd29dbd283b",
-      "prior_e555_sha256": "20d368fc3d1ac00930bee8c6b6964250050db58e8fdc0bb0ffbeb5988a30854a"
+      "bytes": 7615,
+      "sha256": "7f33b349387935285bbe3ff9a8141e79691d844d26b117117f6217f1b52eb8b8",
+      "before_bytes": 6908,
+      "before_sha256": "20d368fc3d1ac00930bee8c6b6964250050db58e8fdc0bb0ffbeb5988a30854a",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-engine/src/sampler_host_fields/physical.rs",
+      "canonical_blob": "e5965874def5d138921c5f52850f8bd29dbd283b"
     },
     {
       "path": "crates/hex-engine/src/sampler_host_fields/resident.rs",
-      "bytes": 5119,
-      "sha256": "bcba33850d6a63ca1d7d3503bb7c0709370cce1d556449e583f224706ee313fe",
-      "canonical_blob": null,
-      "prior_e555_sha256": "bcba33850d6a63ca1d7d3503bb7c0709370cce1d556449e583f224706ee313fe"
+      "bytes": 6865,
+      "sha256": "7519e76c06b30f748f7549ac335ed5613367f25425fdb45e5a4f4ac6b08e0c65",
+      "before_bytes": 5119,
+      "before_sha256": "bcba33850d6a63ca1d7d3503bb7c0709370cce1d556449e583f224706ee313fe",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-engine/src/sampler_host_fields/resident.rs",
+      "canonical_blob": null
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/snapshot_view.rs",
+      "bytes": 4843,
+      "sha256": "8568a9b0042a4c7009dfa0014bf8f2d522c614717f4538de916b83d86aa9e110",
+      "before_bytes": 4805,
+      "before_sha256": "1018bf7feb348681aca8130b5f5084a3f134f940fd589c3462e62bbff8249c22",
+      "before_origin": "canonical b94 Git blob",
+      "canonical_blob": "da310b04beed0ba67a8cc21d080a268aec45fa8c"
     },
     {
       "path": "crates/hex-engine/src/sampler_host_fields/worker.rs",
-      "bytes": 8197,
-      "sha256": "e4591cc5548f4a5d18980c9aa8df2bca837ca1d579acd4b92c9370d7919bdb78",
-      "canonical_blob": "c6c0b850e4859049ce93766999cbfff9cd36bd9e",
-      "prior_e555_sha256": "6e9a9f5b6ed818138fadcf25b8cdb6ec40ff73c8b398d9dd8ca6d602b5ff32e4",
-      "intake_before_sha256": "6e9a9f5b6ed818138fadcf25b8cdb6ec40ff73c8b398d9dd8ca6d602b5ff32e4"
+      "bytes": 9516,
+      "sha256": "c5d99d9dcdf4afbb569b643ed5df0393c679d968fa644e774bd9ff0ad2da470d",
+      "before_bytes": 8197,
+      "before_sha256": "e4591cc5548f4a5d18980c9aa8df2bca837ca1d579acd4b92c9370d7919bdb78",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-engine/src/sampler_host_fields/worker.rs",
+      "canonical_blob": "c6c0b850e4859049ce93766999cbfff9cd36bd9e"
     },
     {
       "path": "crates/hex-project/src/history.rs",
-      "bytes": 17861,
-      "sha256": "6845aeb6020685b5ee87b5c13bd91427e6792e00b681c312d79f917a4d3742f0",
-      "canonical_blob": "faaa7c239b158f3a5f55680aee9c860c8ef7bc19",
-      "prior_e555_sha256": null
+      "bytes": 18567,
+      "sha256": "4aa140957cb1169973d2027998d65c3e34aeed169c84ac1e95f0fad34521a43c",
+      "before_bytes": 17861,
+      "before_sha256": "6845aeb6020685b5ee87b5c13bd91427e6792e00b681c312d79f917a4d3742f0",
+      "before_origin": "canonical b94 Git blob",
+      "canonical_blob": "faaa7c239b158f3a5f55680aee9c860c8ef7bc19"
+    },
+    {
+      "path": "crates/hex-project/src/history/original_sampler.rs",
+      "bytes": 20196,
+      "sha256": "f5251d2a8b11d2c28e2d5cc9666b6c4573cb12d08355e6f59bdf0aeea948cbdd",
+      "before_bytes": 0,
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "before_origin": "new file, no canonical/prior entry",
+      "canonical_blob": null
+    },
+    {
+      "path": "crates/hex-project/src/history/original_sampler/tests.rs",
+      "bytes": 10304,
+      "sha256": "b92bb16778121e096572cd605371785cc6d9ba9ba6e8c7e7ad1e138c2079cae8",
+      "before_bytes": 0,
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "before_origin": "new file, no canonical/prior entry",
+      "canonical_blob": null
+    },
+    {
+      "path": "crates/hex-project/src/lib.rs",
+      "bytes": 27168,
+      "sha256": "9917ceb42d48df45eff24608fc4435b595f098d75b98df6c2e29527b5bd8b331",
+      "before_bytes": 27031,
+      "before_sha256": "ad5e4e1ccface79848d60ef84593fc5d82800fa43069816e1cc4d0a075b2faef",
+      "before_origin": "canonical b94 Git blob",
+      "canonical_blob": "72c592e2a3c9262560e25e6e992c96e03e3475c8"
     },
     {
       "path": "crates/hex-session/src/lib.rs",
-      "bytes": 64791,
-      "sha256": "42ef49a9e6eaa9e123ff486306fadea668c5dc08cda3120439861204b12219eb",
-      "canonical_blob": "ab1d6aba19cd10f4f5f7974e1874ea4c4c76d67f",
-      "prior_e555_sha256": "42ef49a9e6eaa9e123ff486306fadea668c5dc08cda3120439861204b12219eb"
+      "bytes": 65024,
+      "sha256": "b8fbc1fc6c2cdb9d88799b47f5a5dcbb2f055962620012e8ea0d4ccb6d81ab39",
+      "before_bytes": 64791,
+      "before_sha256": "42ef49a9e6eaa9e123ff486306fadea668c5dc08cda3120439861204b12219eb",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-session/src/lib.rs",
+      "canonical_blob": "ab1d6aba19cd10f4f5f7974e1874ea4c4c76d67f"
+    },
+    {
+      "path": "crates/hex-session/src/resource_plan.rs",
+      "bytes": 11640,
+      "sha256": "a6b0ffdace465f4d3c7f0ddfd94343927ff63dddbc430ee08bf7627e9087656a",
+      "before_bytes": 10515,
+      "before_sha256": "dc7813064bf411428a337f5d91b821d9ccd6021bd767d868ef221e08fd16319d",
+      "before_origin": "/tmp/hex395-pending-pair-before/crates/hex-session/src/resource_plan.rs",
+      "canonical_blob": "e7969a22c389502e2fe84d76bebdf2d3e5960c04"
     },
     {
       "path": "crates/hex-session/src/resource_plan/original_sampler.rs",
-      "bytes": 9002,
-      "sha256": "c8330e92b60564a71279e9cb18fb5f109b11bdb0861195f11d8ac80e5ecc769e",
-      "canonical_blob": null,
-      "prior_e555_sha256": "c8330e92b60564a71279e9cb18fb5f109b11bdb0861195f11d8ac80e5ecc769e"
+      "bytes": 28554,
+      "sha256": "b06a9573ee8f9ab8ca43f6c3beebc7d97ea3f69a2ead1ba2c77ac428e74ccfa7",
+      "before_bytes": 9002,
+      "before_sha256": "c8330e92b60564a71279e9cb18fb5f109b11bdb0861195f11d8ac80e5ecc769e",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-session/src/resource_plan/original_sampler.rs",
+      "canonical_blob": null
     },
     {
-      "path": "crates/hex-session/src/service.rs",
-      "bytes": 306521,
-      "sha256": "37cfc0c9551f5edcae7b64a30f2e1b95c411674a04598ff9b7d6509130501f6b",
-      "canonical_blob": "4f2fee091cd1fc6b41b2c54ff76a0b4506925222",
-      "prior_e555_sha256": "863d0fc29a0e2b96f7af909ffd81330a958a589a4f004b7d49c17c4e251588d7",
-      "intake_before_sha256": "863d0fc29a0e2b96f7af909ffd81330a958a589a4f004b7d49c17c4e251588d7"
+      "path": "crates/hex-session/src/resource_plan/original_sampler/tests.rs",
+      "bytes": 16482,
+      "sha256": "d9ee46c7d349e6d5ec9249374d6a1b1f7e93da433ad4e58e8f2f18d8b1de4a06",
+      "before_bytes": 0,
+      "before_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "before_origin": "new file, no canonical/prior entry",
+      "canonical_blob": null
     },
     {
       "path": "crates/hex-session/src/service/canonical_audio_source.rs",
-      "bytes": 20963,
-      "sha256": "67fc5f72e6c62f851fa73f6eb7bf91b4a9b218f9ca4b2e2f7cd6a9536f675aab",
-      "canonical_blob": "be7580fa7a90ee64ba27af5e7ddabaa9490744f5",
-      "prior_e555_sha256": null,
-      "intake_before_sha256": "89ef57405398972d19578d5f2f40e0181bfbe5ae0f536cbed6158cba8c4095d1"
-    },
-    {
-      "path": "crates/hex-session/src/service/main_control_file.rs",
-      "bytes": 12702,
-      "sha256": "7f1c9106ed9a58b0a6699d9b89ed3c32684162fc00c45cbf0a212ad48c8f9311",
-      "canonical_blob": "7e7d3d29846bd98209b5baf44d0f5e89bf80bfa5",
-      "prior_e555_sha256": null,
-      "intake_before_sha256": "1d6c0e74b361702f7cb1445a539719d9d682ab8a53bd760f2102a47fc42ead17"
-    },
-    {
-      "path": "crates/hex-session/src/service/main_control_file/tests.rs",
-      "bytes": 22746,
-      "sha256": "86d5dd1b839634b73047b0973397c7e8142a26499a051681d9901d0f00061b04",
-      "canonical_blob": "e3cb3f83ecd4e128715cb33ef76aa9dea006b23c",
-      "prior_e555_sha256": null,
-      "intake_before_sha256": "258d5dd8a07daa3e192b938bac3e5ee75f582fd3c8a3110dbd5c06c1994e39f9"
+      "bytes": 22425,
+      "sha256": "9aed0965d1be2438b0181ff2e10894b3a1b5c85e39f6c7123ddabc5f08dcea2a",
+      "before_bytes": 20963,
+      "before_sha256": "67fc5f72e6c62f851fa73f6eb7bf91b4a9b218f9ca4b2e2f7cd6a9536f675aab",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-session/src/service/canonical_audio_source.rs",
+      "canonical_blob": "be7580fa7a90ee64ba27af5e7ddabaa9490744f5"
     },
     {
       "path": "crates/hex-session/src/service/worker_roots.rs",
-      "bytes": 44064,
-      "sha256": "c82889b890a046a9f67240d7c230ab6462e2557ca9386d42ab28d962227e91cb",
-      "canonical_blob": "58c30999e4dfeea86efee046171cf76f9b53c774",
-      "prior_e555_sha256": "431420f42f295a45b771d13bf2c8438b4f9164bb220858082e881da1738b3db7",
-      "intake_before_sha256": "431420f42f295a45b771d13bf2c8438b4f9164bb220858082e881da1738b3db7"
+      "bytes": 50899,
+      "sha256": "6415482557daa7443b739a2fd132e556073df6dfc5f693c1574649f4e9c1fc1a",
+      "before_bytes": 44064,
+      "before_sha256": "c82889b890a046a9f67240d7c230ab6462e2557ca9386d42ab28d962227e91cb",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/crates/hex-session/src/service/worker_roots.rs",
+      "canonical_blob": "58c30999e4dfeea86efee046171cf76f9b53c774"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/storage.rs",
+      "bytes": 22843,
+      "sha256": "188906eb5fc715e64972edb916721c7edeba1869580c586929102a57eeb41b50",
+      "before_bytes": 22669,
+      "before_sha256": "b2944e627f37e0e93c14303abad6777806fa85f6ff5c2e80babecd64df9700cf",
+      "before_origin": "exact authenticated e240 SHA reconstruction: remove ONLY two revision_field methods",
+      "canonical_blob": "635e691c601fa1142aa550236572d5d1b8fa6384"
     },
     {
       "path": "scripts/sampler_host_policy.py",
-      "bytes": 52065,
-      "sha256": "8e225a7dcc4ab2f36f5692a3f409bfba142d9cdc711419a0904834018d1098cb",
-      "canonical_blob": "8069e7ef2442b5aaf7738ffcfd7209efc7df4e03",
-      "prior_e555_sha256": "7333a1832c0c2d4436df3f22c58f8e709d7b9af2650da429509a594bfcbbf174",
-      "intake_before_sha256": "7333a1832c0c2d4436df3f22c58f8e709d7b9af2650da429509a594bfcbbf174"
+      "bytes": 60204,
+      "sha256": "c1f611788591278cb2cb2020b2ecc26cf6a0163eaf5e2cb30f1196747b10791d",
+      "before_bytes": 52065,
+      "before_sha256": "8e225a7dcc4ab2f36f5692a3f409bfba142d9cdc711419a0904834018d1098cb",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/scripts/sampler_host_policy.py",
+      "canonical_blob": "8069e7ef2442b5aaf7738ffcfd7209efc7df4e03"
     },
     {
       "path": "scripts/tests/test_sampler_host_policy.py",
-      "bytes": 31086,
-      "sha256": "224b74af79e8df73c511afd844bb8c6e4171ede6a94dcf8ba0509725affa8d70",
-      "canonical_blob": "5bd70526e9048da89207c77b98cd22fb133c0ee0",
-      "prior_e555_sha256": "3c1a34044564a00455b042144012fe0e64d9982ed27bc015cc43ed8214da65ed",
-      "intake_before_sha256": "3c1a34044564a00455b042144012fe0e64d9982ed27bc015cc43ed8214da65ed"
+      "bytes": 34374,
+      "sha256": "578b8b4d7359e512b881a74f6648f154ffe4c94634d5a8005dc84060d148de0f",
+      "before_bytes": 31086,
+      "before_sha256": "224b74af79e8df73c511afd844bb8c6e4171ede6a94dcf8ba0509725affa8d70",
+      "before_origin": "/tmp/hex395-compiled-precommit-327/source/scripts/tests/test_sampler_host_policy.py",
+      "canonical_blob": "5bd70526e9048da89207c77b98cd22fb133c0ee0"
     }
   ]
 }
