@@ -2042,8 +2042,11 @@ fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomicall
     let service = Service::new(48_000, 16, 128).unwrap();
     next_event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "target".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let baseline = next_event(&service);

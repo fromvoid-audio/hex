@@ -53,6 +53,7 @@ widgets = (
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     # Split browser components normalize every caption at their boundary.
+    'self.browser_history_arrow(',
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
     'picker_label(', 'picker_heading(', 'picker_group_heading(',
     # Audition row controls normalize labels; miniature waveform contains no text.
@@ -66,6 +67,7 @@ widgets = (
 
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
+    'layout::resize_divider_line(', 'resize_divider_line(',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
     'musical_control_row(', 'musical_control_label(', 'super::musical_audio_controls::view(',
     # Beats controls compose themed buttons/labels, not direct text children.
@@ -150,7 +152,17 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/waveform_header_ui_test.rs'
             and suffix.startswith('gpui::canvas(')
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas:
+        # Header mixer composition uses typed controls; each caption is checked
+        # separately at its theme::text boundary. Keep variable names file-local.
+        header_mixer_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/tracks.rs'
+            and suffix.startswith(('utilities)', 'activator)', 'solo)', 'arm)',
+                                   'self.track_pan(', 'header_content)'))
+        ) or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/return_tracks.rs'
+            and suffix.startswith(('self.return_volume(', 'gain_control)'))
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

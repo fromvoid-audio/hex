@@ -431,6 +431,53 @@ def recovery_hash(runner, ci, source: str, ancestor) -> str | None:
         raise RestartError("malformed release ownership; no implicit operator adoption") from error
 
 
+def inspect_recreated_target(root: Path, app: Path, source: str, ci, delivery, assert_no_raw):
+    """Explicit read-only inspection; never construct a native process controller."""
+    delivery.assert_plain_path(app)
+    runner = ci.LocalCiRunner(root, adopt_target=False)
+    artifacts = root / "artifacts/launch"
+    artifacts.mkdir(parents=True, exist_ok=True)
+    output = Path(tempfile.mkdtemp(prefix="target-recovery-", dir=artifacts))
+    report = {"kind": "explicit recreated-target inspection; tests not run",
+              "candidate": source, "app": str(app), "status": "incomplete"}
+    try:
+        # A supported configured app may not have an output directory yet.
+        # Validate before creation and again before opening its activation lock.
+        delivery.assert_plain_path(app)
+        app.parent.mkdir(parents=True, exist_ok=True)
+        delivery.assert_plain_path(app)
+        with delivery.activation_lock(app):
+            delivery.assert_inactive(app)
+            assert_no_raw(root)
+            frozen = delivery.validate_source(runner, source)
+            if not runner._resolve_cargo_identity() or not runner._check_disk_headroom():
+                raise RestartError("recreated-target prerequisites failed before mutation")
+            target = Path(runner.cargo_identity["target_directory"])
+            lock_path, _ = ci.target_state_paths(target, runner.target_state_dir)
+            lock = ci.CargoTargetLock(lock_path, {"operation": "explicit-target-recovery-inspection",
+                                                "workspace_root": str(root), "commit": source})
+            lock.acquire()
+            runner.target_lock = lock
+            try:
+                authority = runner.inspect_recreated_release_target()
+                delivery.assert_inactive(app)
+                assert_no_raw(root)
+                delivery.validate_source(runner, source, expected=frozen)
+                report.update(status="inspected_only", authority=authority, source=frozen)
+            finally:
+                error = lock.release()
+                runner.target_lock = None
+                if error:
+                    raise RestartError(error)
+        return authority
+    except BaseException as error:
+        report.update(status="interrupted" if isinstance(error, KeyboardInterrupt) else "refused",
+                      error=str(error))
+        raise
+    finally:
+        delivery.write_json(output / "target-recovery-inspection.json", report)
+
+
 def prepare(root: Path, app: Path, source: str, ci, delivery, assert_no_raw,
             *, controller_factory=NativeController) -> str | None:
     """Inspect/quit/recover under existing exclusions; never write release ownership."""

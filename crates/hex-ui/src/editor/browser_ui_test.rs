@@ -4128,7 +4128,7 @@ fn place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks(
             view.browser.playback_generation, generation,
             "old waveform callback admitted stale preview"
         );
-        view.import_browser_audio(path.clone());
+        view.insert_browser_audio(path.clone(), cx);
         assert!(
             view.last_enqueued_import_to_track.is_none(),
             "old result callback admitted stale import"
@@ -4613,7 +4613,10 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
                     .insert(path.clone(), "samples".into());
                 assert_eq!(view.browser_place_glyph(&path), "□");
                 view.open_browser_place_icons(path, point(px(0.0), px(0.0)), window, cx);
-                assert!(view.context_menu.is_none(), "defaults aren't custom Places");
+                assert!(
+                    view.context_menu.is_none(),
+                    "these built-ins are absent from this custom-only fixture"
+                );
             }
             view.browser.preferences_loading = true;
             view.open_browser_place_icons(directory.0.clone(), point(px(0.0), px(0.0)), window, cx);
@@ -4865,6 +4868,9 @@ fn browser_place_icon_grid_uses_clicked_row_reset_and_reopens(cx: &mut TestAppCo
 
 #[path = "browser_focus_ui_test.rs"]
 mod explicit_focus;
+
+#[path = "browser_insert_ui_test.rs"]
+mod insertion;
 #[gpui::test]
 fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
     cx: &mut TestAppContext,
@@ -4926,6 +4932,10 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
     });
 }
 
+#[path = "browser_history_ui_test.rs"]
+mod browser_history_ui_test;
+#[path = "browser_builtin_source_ui_test.rs"]
+mod builtin_sources;
 #[path = "browser_resize_feedback_ui_test.rs"]
 mod resize_feedback;
 
@@ -4937,3 +4947,184 @@ mod test_environment;
 
 #[path = "browser_picker_compact_ui_test.rs"]
 mod compact_picker;
+
+#[path = "browser_arrow_fixture_ui_test.rs"]
+mod arrow_fixture;
+use arrow_fixture::arrow_row_fixture;
+
+fn unhighlighted_arrow_action(cx: &mut TestAppContext, sample: bool, escape: bool, left: bool) {
+    let (handle, editor, _directory, samples) = arrow_row_fixture(cx, sample);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let category = if sample {
+        "browser-place-0"
+    } else {
+        "browser-section-projects"
+    };
+    let point = visual.debug_bounds(category).unwrap().center();
+    visual.simulate_click(point, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, cx| {
+        let entries = v.browser_visible_entries(cx);
+        assert!(!entries.is_empty(), "actual async entries available");
+        assert_eq!(
+            entries[0].path,
+            if sample {
+                samples.join("loop.wav")
+            } else {
+                samples.join("a")
+            }
+        );
+    });
+    if escape || left {
+        let row = visual.debug_bounds("browser-entry-0").unwrap().center();
+        visual.simulate_click(row, Modifiers::default());
+        editor.read_with(&visual, |v, _| assert!(v.browser.results_focused));
+        if left {
+            visual.simulate_keystrokes("right");
+            visual.run_until_parked();
+            editor.read_with(&visual, |v, _| {
+                assert!((v.browser.tree.icon(&samples.join("a")) == "▾"))
+            });
+        }
+        visual.simulate_keystrokes("escape");
+    }
+    visual.update(|window, cx| {
+        editor.read_with(cx, |v, cx| {
+            assert!(!v.browser.results_focused);
+            assert!(v.browser.results_focus.is_focused(window));
+            assert_eq!(v.browser_key_context(window, cx), "hex_browser");
+        })
+    });
+    let canonical = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+    let before = editor.read_with(&visual, |v, _| {
+        (
+            v.browser.playback_generation,
+            v.browser.tree.icon(&samples.join("a")),
+            v.browser.tree.requests_started,
+        )
+    });
+    visual.simulate_keystrokes(if left { "left" } else { "right" });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let after = (v.browser.playback_generation, v.browser.tree.icon(&samples.join("a")), v.browser.tree.requests_started);
+        eprintln!("ACTUAL_UNHIGHLIGHTED_ROW sample={sample} escape={escape} left={left} before={before:?} after={after:?}");
+        assert_eq!(after, before, "unhighlighted navigation must not dispatch a row action");
+        assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
+        let state = v.state.as_ref().unwrap();
+        assert_eq!(state.project, canonical.project);
+        assert_eq!((state.revision, state.can_undo, state.can_redo, state.unsaved),
+                   (canonical.revision, canonical.can_undo, canonical.can_redo, canonical.unsaved));
+        assert_eq!(v.worker_requests_pending, 0);
+    });
+}
+
+#[gpui::test]
+fn browser_arrows_source_sample_right(cx: &mut TestAppContext) {
+    unhighlighted_arrow_action(cx, true, false, false);
+}
+#[gpui::test]
+fn browser_arrows_escape_sample_right(cx: &mut TestAppContext) {
+    unhighlighted_arrow_action(cx, true, true, false);
+}
+#[gpui::test]
+fn browser_arrows_source_folder_right(cx: &mut TestAppContext) {
+    unhighlighted_arrow_action(cx, false, false, false);
+}
+#[gpui::test]
+fn browser_arrows_escape_folder_right(cx: &mut TestAppContext) {
+    unhighlighted_arrow_action(cx, false, true, false);
+}
+#[gpui::test]
+fn browser_arrows_escape_folder_left(cx: &mut TestAppContext) {
+    unhighlighted_arrow_action(cx, false, true, true);
+}
+
+#[gpui::test]
+fn browser_arrows_selected_controls(cx: &mut TestAppContext) {
+    for sample in [false, true] {
+        let (handle, editor, _directory, samples) = arrow_row_fixture(cx, sample);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let category = if sample {
+            "browser-place-0"
+        } else {
+            "browser-section-projects"
+        };
+        let category = visual.debug_bounds(category).unwrap().center();
+        visual.simulate_click(category, Modifiers::default());
+        visual.run_until_parked();
+        let row = visual.debug_bounds("browser-entry-0").unwrap().center();
+        visual.simulate_click(row, Modifiers::default());
+        let before = editor.read_with(&visual, |v, _| {
+            assert!(v.browser.results_focused);
+            v.browser.playback_generation
+        });
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            if sample {
+                assert!(v.browser.playback_generation > before);
+            } else {
+                assert_eq!(v.browser.tree.icon(&samples.join("a")), "▾");
+            }
+        });
+        if !sample {
+            visual.simulate_keystrokes("left");
+            editor.read_with(&visual, |v, _| {
+                assert_ne!(v.browser.tree.icon(&samples.join("a")), "▾")
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn browser_arrows_up_down_enter_results_and_command_f_keeps_text_input(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler;
+    let (handle, editor, _directory, _samples) = arrow_row_fixture(cx, true);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let place = visual.debug_bounds("browser-place-0").unwrap().center();
+    visual.simulate_click(place, Modifiers::default());
+    visual.run_until_parked();
+    for key in ["down", "up"] {
+        editor.read_with(&visual, |v, _| assert!(!v.browser.results_focused));
+        visual.simulate_keystrokes(key);
+        let before = editor.read_with(&visual, |v, _| {
+            assert!(v.browser.results_focused);
+            assert_eq!(v.browser.selected_index, 0);
+            v.browser.playback_generation
+        });
+        visual.simulate_keystrokes("right");
+        editor.read_with(&visual, |v, _| {
+            assert!(v.browser.playback_generation > before)
+        });
+        visual.simulate_keystrokes("escape");
+    }
+    visual.simulate_keystrokes("cmd-f");
+    visual.simulate_input("loop");
+    visual.simulate_keystrokes("cmd-f");
+    let before = editor.read_with(&visual, |v, _| v.browser.playback_generation);
+    visual.update(|window, cx| {
+        let input = editor.read(cx).browser.search.clone();
+        input.update(cx, |input, cx| {
+            assert_eq!(
+                input.selected_text_range(false, window, cx).unwrap().range,
+                0..4
+            )
+        });
+    });
+    visual.simulate_keystrokes("right");
+    visual.simulate_input("x");
+    editor.read_with(&visual, |v, cx| {
+        assert_eq!(v.browser.search.read(cx).content, "loopx");
+        assert_eq!(v.browser.playback_generation, before);
+        assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
+    });
+}
+
+#[path = "browser_divider_paint_ui_test.rs"]
+mod divider_paint;
+
+#[path = "browser_instrument_enter_ui_test.rs"]
+mod instrument_enter;

@@ -135,10 +135,11 @@ impl EditorView {
                 ruler_width,
                 self.snap_grid,
             );
-            let bands = super::musical_time::adaptive_grid_bands(
+            let bands = super::musical_time::adaptive_grid_bands_for_grid(
                 &state.project,
                 empty_viewport,
                 ruler_width,
+                self.snap_grid,
             );
             let overview = super::overview::widget(
                 super::overview::cached(&self.overview_cache, self.project_generation, &state),
@@ -195,7 +196,12 @@ impl EditorView {
         let viewport = self.visible_viewport(state.timeline_frames);
         let grid =
             super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid);
-        let bands = super::musical_time::adaptive_grid_bands(&state.project, viewport, ruler_width);
+        let bands = super::musical_time::adaptive_grid_bands_for_grid(
+            &state.project,
+            viewport,
+            ruler_width,
+            self.snap_grid,
+        );
         let overview = super::overview::widget(
             super::overview::cached(&self.overview_cache, self.project_generation, &state),
             viewport,
@@ -303,7 +309,7 @@ impl EditorView {
                 MouseButton::Right,
                 cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    view.open_track_context_menu(event.position, None, window, cx);
+                    view.open_arranger_grid_context_menu(event.position, window, cx);
                 }),
             );
         let header_width = self.track_header_width();

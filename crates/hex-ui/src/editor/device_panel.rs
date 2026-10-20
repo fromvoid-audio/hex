@@ -256,6 +256,11 @@ pub(super) fn control_style() -> ControlStyle {
     theme::device_style(theme::DeviceStyleRole::Control)
 }
 
+// Reuse the canonical device-side balance display/parser for track mixer fields.
+pub(super) fn balance_spec(spec: NumericSpec) -> NumericSpec {
+    numeric_display::NumericDisplayCodec::Balance.apply(spec)
+}
+
 pub(super) fn device_layout_style() -> ControlStyle {
     theme::device_style(theme::DeviceStyleRole::Layout)
 }
@@ -783,7 +788,10 @@ fn render_track(
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
-        GestureTarget::ReturnSend { .. } | GestureTarget::TrackGain { .. } => false,
+        GestureTarget::ReturnSend { .. }
+        | GestureTarget::TrackGain { .. }
+        | GestureTarget::TrackBalance { .. }
+        | GestureTarget::ReturnGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
             view.device_panel.controls.get(key),

@@ -136,3 +136,97 @@ fn name_case_marked_unicode_and_scrolled_caret_use_original_utf16(cx: &mut TestA
         })
     });
 }
+
+#[gpui::test]
+fn name_case_double_click_and_composition_keep_raw_unicode_selection(cx: &mut TestAppContext) {
+    let original = "İAe\u{301}🎛";
+    let (handle, input) = fixture(cx, original);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let at = visual.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input
+                .bounds_for_range(1..1, input.last_bounds.unwrap(), window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    for (count, expected) in [(1, 1..1), (3, 0..6), (1, 1..1), (1, 0..6)] {
+        for click_count in [count, count + 1] {
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: at,
+                button: gpui::MouseButton::Left,
+                modifiers: gpui::Modifiers::default(),
+                click_count,
+                first_mouse: false,
+            });
+            visual.simulate_event(gpui::MouseUpEvent {
+                position: at,
+                button: gpui::MouseButton::Left,
+                modifiers: gpui::Modifiers::default(),
+                click_count,
+            });
+        }
+        visual.update(|window, cx| {
+            input.update(cx, |input, cx| {
+                assert_eq!(input.content, original);
+                assert_eq!(
+                    input.selected_text_range(false, window, cx).unwrap().range,
+                    expected
+                );
+                assert!(
+                    input.content.is_char_boundary(input.selected.start)
+                        && input.content.is_char_boundary(input.selected.end)
+                );
+            })
+        });
+    }
+    visual.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input.replace_and_mark_text_in_range(Some(0..6), "İ🎛", Some(0..1), window, cx)
+        })
+    });
+    visual.run_until_parked();
+    let at = visual.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            input
+                .bounds_for_range(1..1, input.last_bounds.unwrap(), window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    for click_count in [1, 2] {
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: at,
+            button: gpui::MouseButton::Left,
+            modifiers: gpui::Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        visual.simulate_event(gpui::MouseUpEvent {
+            position: at,
+            button: gpui::MouseButton::Left,
+            modifiers: gpui::Modifiers::default(),
+            click_count,
+        });
+    }
+    visual.update(|window, cx| {
+        input.update(cx, |input, cx| {
+            assert_eq!(input.content, "İ🎛");
+            assert_eq!(
+                input.selected_text_range(false, window, cx).unwrap().range,
+                0..3
+            );
+            assert_eq!(input.marked_text_range(window, cx), None);
+        })
+    });
+    visual.simulate_keystrokes("cmd-c");
+    visual.update(|_, cx| {
+        assert_eq!(
+            cx.read_from_clipboard()
+                .and_then(|item| item.text())
+                .as_deref(),
+            Some("İ🎛")
+        )
+    });
+}
