@@ -205,10 +205,31 @@ fn lane_concatenation_uses_converted_lengths_and_existing_overwrite() {
 #[test]
 fn single_file_equivalent_to_existing_methods_for_both_destinations() {
     for lane in [false, true] {
-        let mut old = session();
-        let mut new = session();
-        let old_track = track(&mut old);
-        let new_track = track(&mut new);
+        // Both import routes start from the same authored project. Cyan is the
+        // only unused hue, so creation remains deterministic without replacing
+        // production randomness or discarding colors from the comparison.
+        let mut fixture = hex_project::Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+        for color in hex_project::ElementColor::TRACK_CHOICES
+            .into_iter()
+            .filter(|color| *color != hex_project::ElementColor::Cyan)
+        {
+            let Created::Track(track) = fixture
+                .execute(hex_project::Command::AddTrack {
+                    name: "authored color fixture".into(),
+                })
+                .unwrap()
+            else {
+                panic!("expected track")
+            };
+            fixture
+                .execute(hex_project::Command::SetTrackColor { track, color })
+                .unwrap();
+        }
+        let baseline = fixture.project().clone();
+        let mut old = Session::from_loaded(baseline.clone(), 16, 8_000_000, Vec::new()).unwrap();
+        let mut new = Session::from_loaded(baseline, 16, 8_000_000, Vec::new()).unwrap();
+        let old_track = old.project().tracks()[0].id();
+        let new_track = new.project().tracks()[0].id();
         let a = media(24_000, 6, 100);
         let mut b = media(24_000, 6, 100);
         b.path = a.path.clone();
@@ -231,10 +252,26 @@ fn single_file_equivalent_to_existing_methods_for_both_destinations() {
             }
         };
         import(&mut new, vec![b], destination);
+        if !lane {
+            assert_eq!(
+                old.project().tracks()[0].color(),
+                hex_project::ElementColor::Cyan
+            );
+        }
         assert_eq!(old.project(), new.project());
         assert_eq!(old.resident_frames(), new.resident_frames());
         assert_eq!(old.resident_waveform_bins(), new.resident_waveform_bins());
         assert_eq!(old.resident_waveform_bytes(), new.resident_waveform_bytes());
+        let after = old.project().clone();
+        assert!(old.undo() && new.undo());
+        assert_eq!(
+            old.project(),
+            new.project(),
+            "complete canonical undo states"
+        );
+        assert!(old.redo() && new.redo());
+        assert_eq!(old.project(), &after);
+        assert_eq!(new.project(), &after);
     }
 }
 

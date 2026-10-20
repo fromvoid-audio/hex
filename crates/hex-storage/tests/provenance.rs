@@ -104,7 +104,7 @@ fn schema_seventeen_migrates_absent_and_rejects_provenance_backport() {
     let empty = Project::new(48_000).unwrap();
     assert!(empty.import_provenance().is_none());
     let mut legacy: Value = serde_json::from_slice(&encode(&empty).unwrap()).unwrap();
-    assert_eq!(legacy["version"], 31);
+    assert_eq!(legacy["version"], 32);
     assert!(legacy["import_provenance"].is_null());
     legacy["version"] = json!(17);
     legacy.as_object_mut().unwrap().remove("tuning");

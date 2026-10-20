@@ -97,3 +97,98 @@ Later, while the user is present in the qualified optimized app:
 Physical UI/paint/audio acceptance and optimized app delivery remain open/root
 owned. Cloud work performs no Mac/app operations. No listening, sample-access,
 MTS or unrelated suite acceptance is inferred.
+
+## returned meter-origin quota repair
+
+A later independent review found a separate early quota omission:100 long visible
+meter sections reserved100 marker slots even though their origins were also the
+regular section landmarks. The actual frozen83138-derived regression produced
+only100 painted lines with a256-line budget. The repair shares those identities;
+only frame-quantized viewport-edge markers outside the regular beat span need
+extra reserved slots. The existing binary searches bound that check to two edge
+origins, with no cache, allocation or whole-history scan added to snapping.
+
+Bounded tests cover100 sections/all three densities/three pan phases, enough
+remaining regular landmarks, paint/snap/directional matching and temporary bypass;
+separate one-frame rounding cases keep both edge markers reachable. All earlier
+phase-independent count, dense256 sampling and offscreen-history no-paint-list
+regressions remain. The9 actual menu/input/discoverability cases are unchanged.
+Original red/green receipts and earlier immutable archives retain their source
+identities. Final candidate integration/full20 and inherited333 qualification
+remain the dedicated merger's responsibility; no old report qualifies another
+tree. The production menu is still available only after actual merge/delivery;
+no installed-app or native visual/input acceptance is inferred.
+
+## returned visible-section remainder repair
+
+The next review boundary compared128 and129 long visible sections. Applying the
+same floored quota to every section painted256 lines for128 sections but only129
+for129 sections; later candidate sampling could not restore discarded targets.
+The resolver now distributes the available quota's remainder in visible-section
+order before dyadic coarsening, matching candidate allocation. The256-line cap
+and exceptional frame-quantized edge-marker reservation are unchanged.
+
+A focused regression compares both section counts across all presets and three
+pan phases, checks the actual painted identities, snap and directional targets,
+and temporary bypass. Existing pan stability, dense-map sampling, offscreen
+history and edge-marker cases remain. This source repair does not qualify
+physical menu interaction, delivery, inherited feature ancestry or the merger's
+final combined tree; earlier source-bound receipts remain historical.
+
+## returned mixed-section capacity repair
+
+The all-long128/129 regression above did not cover unused short-section slots.
+On unchanged4f3a39fe,128 one-quarter sections plus one8192-quarter section painted
+only129 lines when the long section was last, or130 when first. Both keep enough
+natural landmarks for256. The exact18-case mixed test retains all presets, three
+pan phases, actual painted identities, matching nearest/directional snap and
+modifier bypass. Its original count failures remain separate evidence.
+
+The resolver now computes each visible section's natural demand from the unchanged
+base adaptive step and the same conservative visible span. Max-min capped sharing
+assigns the largest level whose capped demand sum fits, then residual slots to
+unsatisfied sections in their existing order. Short sections consume only their
+natural demand; long sections receive the unused capacity before dyadic coarsening.
+Paint selection uses the same rule and emits every coarsened landmark when all fit.
+The existing over-budget section sampler, edge-marker reservation and256-line cap
+are unchanged. Arbitrary alignment/dyadic spans need not use every available slot.
+
+Counts saturate at the small budget-plus-one bound; raw beat spans use widened
+integer arithmetic. The inclusive level range0..=256 requires at most nine probes,
+plus one final sum, not eight probes. Resolution scans only binary-bounded visible
+sections and adds no heap storage, persistent cache or historical scan. The
+existing offscreen-history test verifies that snap/nudge do not build paint lists;
+this counter is not an allocator-wide byte measurement. Independent quota boundary
+checks compare zero/one/huge demands against one-slot-per-round allocation.
+
+The mixed regression reports actual debug paint/snap/directional elapsed work
+separately from no-new-heap source inspection and paint-list counters. It calculates
+each snap once before checking membership; the first after-run's redundant
+per-line recalculations were stopped and preserved as a test-efficiency correction,
+not a product failure. Timing is build/workload-specific and establishes no native
+or optimized UI deadline. Source checks and required prospective-tree CI remain
+separate, as do actual user menu/grid acceptance and delivery.
+
+### Per-operation quota resolution
+
+Each paint, nearest snap, directional nudge, or density-band operation resolves
+its visible natural demands and fair-share quotas once. A private fixed-size
+256-entry `u16` scratch holds demands, then quotas; the residual pass keeps the
+same earliest-unsatisfied ordering. Snap/nudge paint-list fallback borrows that
+same resolution. Nothing persists across operations, edits, pan, zoom or density
+changes. The existing 256-line cap, phase-independent span count, edge-marker
+reservation, dyadic coarsening and outside-neighbor/dense-map fallback stay intact.
+
+The repeated fair-share path applies only when visible sections fit the available
+budget (at most 256), not at 1,024 sections. Counted literal-production optimized
+cloud probes at 256 sections reduced natural-demand evaluations from 688,512 to 256
+for paint, and 1,377,024 to 256 for a directional nudge including its painted fallback.
+At 1,024 sections both versions use zero natural-demand evaluations. These are
+metadata helper measurements, not native frame deadlines or physical acceptance.
+The fixed quota scratch adds no heap allocation; existing paint lists still do.
+
+Verification includes exact old/new production-output differentials through real
+Project tempo/meter maps, zero/overflow viewports, narrow/wide widths, phases,
+short/long sections and all densities; bounded-work assertions; and real GPUI
+context-menu choice/cancel/keyboard/edit routing. Final prospective-tree checks
+and optimized native interaction acceptance remain separate.

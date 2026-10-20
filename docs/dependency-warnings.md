@@ -100,3 +100,56 @@ is integrated here as a prerequisite, preserving its exact vendor files, guard,
 license/provenance and unchanged package version. The two warning patches remain
 identical. This integration creates a new source revision; earlier exact-commit
 Mac CI/release evidence must be renewed before acceptance.
+
+## current warning cleanup — pulse2872 / pr474
+
+The historical 46 `missing_abi` warnings above are now addressed by explicit C
+ABI on all ten external declaration/function sites in the actual block source.
+The previous implicit external ABI was C, including function-pointer and macro
+callback declarations; signatures, symbols, ownership and marker layout remain
+unchanged. The existing provenance guard reverses this finite ABI spelling delta
+as well as the opaque marker change, then verifies the original published hash
+and complete patch. Original archive identity, retained files/licenses, package
+version and lockfile remain unchanged. The actual dependency-lint compilation
+now denies `missing_abi` too. This compiler evidence does not renew native block
+callback/lifetime acceptance on macOS.
+
+The declaration spelling follows the [Rust Reference's explicit C/default ABI
+contract](https://doc.rust-lang.org/reference/items/external-blocks.html#abi).
+The zero-context recorded vendor diff avoids whitespace-only patch context;
+its exact reconstruction/hash guard still verifies every original byte.
+
+### pinned clippy and declared pcm layout
+
+The old PCM `Unknown: unsupported_wrapper_or_ambiguous_flags` warning in strict
+Clippy was real: Cargo sets `RUSTC_WORKSPACE_WRAPPER` to its installed driver.
+The default gate still refuses unsupported flags, targets, compilers, nested or
+foreign wrappers, sysroot/bootstrap/build-std overrides and missing evidence.
+A finite build-only exception now qualifies the pinned official Clippy component
+under the existing ordinary installed-toolchain trust: exact native Rust 1.94.0
+commit/std installation, exact non-symlink installed compiler/driver paths and
+component manifests, matching complete compiler metadata, sysroot and pinned
+Clippy version, and unchanged file identities before/after probes. Missing or
+repaired component entries are tracked for Cargo reruns too.
+
+The [actual pinned driver source](https://github.com/rust-lang/rust/blob/4a4ef493e3a1488c6e321570238084b38948f6db/src/tools/clippy/src/driver.rs)
+uses embedded rustc, consumes `SYSROOT` and parses `CLIPPY_ARGS`; info queries
+bypass those arguments. Consequently `SYSROOT` is refused independently and only
+empty args or the exact observed Cargo `-D warnings` encoding is accepted. No
+arbitrary option prefix, response file or wrapper filename is trusted.
+
+Clippy adds `cfg(clippy)` and changes MIR passes. The concrete `Frame = [f32; 2]`,
+`AudioData` retained Vec/optional reservation, source constructor and receipt
+paths have no `cfg(clippy)` layout alternatives. The pinned std `ArcInner` is
+`repr(C, align(2))` with strong/weak atomic counters followed by the payload;
+receipt payload layout is measured from the actual compiled type. This supports
+the existing declared-storage-layout law, not runtime equivalence or physical
+allocator usage. A modified/hostile installed toolchain is outside the existing
+installation trust; metadata/version checks are not binary authenticity proof.
+No production PCM, Audio construction, audio callback or allocator law changed.
+
+Native macOS compilation and optimized physical behavior remain separate checks.
+The native owner reports PR395's original two Audio unused-host errors cleared in
+its intermediate cfg(test) source (Pulse29631/29634); production promotion and
+any other build diagnostics remain with that owner. This PR does not edit those
+in-flight files or use Linux checks to establish Mac acceptance.

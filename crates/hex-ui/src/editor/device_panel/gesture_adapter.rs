@@ -4,7 +4,7 @@ use hex_session::device_gesture::GestureKey;
 use std::{cell::Cell, rc::Rc};
 
 /// A widget owns only the gesture token it successfully began.
-pub(super) type NumericGestureLease = Rc<Cell<Option<GestureKey>>>;
+pub(in crate::editor) type NumericGestureLease = Rc<Cell<Option<GestureKey>>>;
 use hex_lattice_contract::ParameterValue;
 use hex_project::Command;
 use hex_session::{device_gesture::GestureTarget, service::Request};
@@ -45,6 +45,27 @@ pub fn commit_owned_numeric_edit(
         || view.device_gesture.has_pending_terminal()
     {
         let command = match target {
+            GestureTarget::TrackBalance { track } => Request::Edit(Command::Balance {
+                track,
+                balance: match value {
+                    ParameterValue::Float(balance) => balance,
+                    _ => return Err("track balance requires a float value"),
+                },
+            }),
+            GestureTarget::ReturnGain { return_track } => Request::Edit(Command::ReturnGain {
+                return_track,
+                gain: match value {
+                    ParameterValue::Float(gain) => gain,
+                    _ => return Err("return gain requires a float value"),
+                },
+            }),
+            GestureTarget::TrackGain { track } => Request::Edit(Command::Gain {
+                track,
+                gain: match value {
+                    ParameterValue::Float(gain) => gain,
+                    _ => return Err("track gain requires a float value"),
+                },
+            }),
             GestureTarget::DeviceParameter { device, parameter } => Request::SetDeviceParameter {
                 device,
                 parameter,
@@ -85,7 +106,7 @@ pub fn commit_owned_numeric_edit(
     view.finish_device_gesture(value)
 }
 
-pub(super) fn dispatch_bound_numeric_gesture(
+pub(in crate::editor) fn dispatch_bound_numeric_gesture(
     view: &mut EditorView,
     target: GestureTarget,
     lease: &NumericGestureLease,
@@ -107,7 +128,7 @@ pub(super) fn dispatch_bound_numeric_gesture(
     Ok(())
 }
 
-pub(super) fn owns_numeric_gesture(
+pub(in crate::editor) fn owns_numeric_gesture(
     view: &EditorView,
     target: GestureTarget,
     lease: &NumericGestureLease,
