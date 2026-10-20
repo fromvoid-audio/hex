@@ -1,0 +1,9 @@
+{
+  "kind": "UNAPPLIED_UNCOMPILED_DRAFT",
+  "target": "crates/hex-session/src/snapshot_exports/model_read/ui_consumers.rs",
+  "target_source_base": "add0ee5e4dc69b93e5a03e2abd5d31a95c53ff35",
+  "requires_model": "268821da3cd205cebeba710be6883ab745577d56",
+  "requires": "Actual modernMain/Native composed source. Do not apply to old b94 Project. Primary has not compiled or qualified these wrappers.",
+  "semantics": "All clip/asset/tempo lookups inside the same SnapshotRead. None only absent/non-audio clip; missing referenced asset returns explicit Invalid. Model errors propagate; Busy belongs to outer capability. HRTB model reads do not escape.",
+  "scope": "Three additive finite methods only: with_audio_clip_preview, with_audio_event_root, default_audio_warp_markers. No Service/backend/role/profile/canonical PR changes."
+}

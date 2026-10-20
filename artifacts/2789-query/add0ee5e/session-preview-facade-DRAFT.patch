@@ -1,0 +1,64 @@
+--- a/crates/hex-session/src/snapshot_exports/model_read/ui_consumers.rs
++++ b/crates/hex-session/src/snapshot_exports/model_read/ui_consumers.rs
+@@ -87,6 +87,61 @@
+ }
+ 
+ impl<'a> SnapshotRead<'a> {
++    /// Prospective audio geometry from this exact snapshot's clip, asset and tempo.
++    pub fn with_audio_clip_preview<R>(
++        self,
++        id: ClipId,
++        operation: hex_project::AudioClipPreviewOperation,
++        frame: u64,
++        inspect: impl for<'read> FnOnce(hex_project::AudioClipPreviewRead<'read>) -> R,
++    ) -> Result<Option<R>, hex_project::Invalid> {
++        let project = &self.snapshot.project;
++        let Some(clip) = project.clip(id) else {
++            return Ok(None);
++        };
++        let asset = project
++            .asset(clip.asset())
++            .ok_or(hex_project::Invalid("audio clip references missing media"))?;
++        clip.with_audio_preview(
++            operation,
++            frame,
++            asset.playback_frames(),
++            project.tempo_map(),
++            inspect,
++        )
++        .map(Some)
++    }
++
++    /// Current/default root metadata only; no owning edit or domain is captured.
++    pub fn with_audio_event_root<R>(
++        self,
++        id: ClipId,
++        inspect: impl for<'read> FnOnce(hex_project::AudioClipRootRead<'read>) -> R,
++    ) -> Result<Option<R>, hex_project::Invalid> {
++        let project = &self.snapshot.project;
++        let Some(clip) = project.clip(id) else {
++            return Ok(None);
++        };
++        project
++            .asset(clip.asset())
++            .ok_or(hex_project::Invalid("audio clip references missing media"))?;
++        Ok(Some(clip.with_audio_event_root(project.tempo_map(), inspect)))
++    }
++
++    pub fn default_audio_warp_markers(
++        self,
++        id: ClipId,
++    ) -> Result<Option<[hex_project::WarpMarker; 2]>, hex_project::Invalid> {
++        let project = &self.snapshot.project;
++        let Some(clip) = project.clip(id) else {
++            return Ok(None);
++        };
++        project
++            .asset(clip.asset())
++            .ok_or(hex_project::Invalid("audio clip references missing media"))?;
++        hex_project::default_audio_warp_markers(clip, project.tempo_map()).map(Some)
++    }
++
+     pub fn midi_clip_frame_bounds(self, id: ClipId) -> Option<(u64, u64)> {
+         self.midi_clip_preview(id)
+             .map(|preview| preview.frame_bounds())
