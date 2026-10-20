@@ -11,6 +11,24 @@ violations = policy.violations
 
 
 class SamplerHostPolicyTests(unittest.TestCase):
+    def test_ordered_source_query_keeps_actual_binding_and_all_owning_fields(self):
+        root = Path(__file__).resolve().parents[2]
+        path = 'crates/hex-session/src/service/comparison_audio.rs'
+        source = (root / path).read_text()
+        self.assertEqual(violations(path, source), [])
+        for step in ['source: SharedCanonicalAudioSource', 'previous.revision.checked_add(1)',
+                     'source.matches_session_sources(session)', 'source: source.clone()']:
+            self.assertTrue(violations(path, source.replace(step, 'omitted()')), step)
+        self.assertTrue(violations('crates/hex-ui/src/foreign.rs', 'ComparisonAudioBinding::advance()'))
+        path = 'crates/hex-engine/src/sampler_host_fields/snapshot_view.rs'
+        source = (root / path).read_text()
+        self.assertEqual(violations(path, source), [])
+        self.assertTrue(violations(path, source.replace('payload.comparison_source()', 'None')))
+        path = 'crates/hex-session/src/snapshot_exports/transport.rs'
+        source = (root / path).read_text()
+        self.assertEqual(violations(path, source), [])
+        self.assertTrue(violations(path, source.replace('self.route != previous.route', 'false')))
+
     def test_actual_file_owner_is_allowed(self):
         self.assertEqual(violations(
             'crates/hex-session/src/service/main_control_file.rs',

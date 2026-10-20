@@ -31,6 +31,7 @@ EXACT = {
     'crates/hex-export/src/buffered_file.rs',
     'crates/hex-session/src/service/main_control_file.rs',
     'crates/hex-session/src/service/canonical_audio_source.rs',
+    'crates/hex-session/src/service/comparison_audio.rs',
     'crates/hex-session/src/service/main_control_file/tests.rs',
 }
 # Whole subtrees are restricted to the new Engine schema itself, not arbitrary
@@ -40,6 +41,28 @@ NAMES = re.compile(r'\b(?:borrow_sampler_worker_fields_on_control|track_buffer_o
 
 
 def violations(path: str, source: str) -> list[str]:
+    if 'ComparisonAudioBinding::advance' in source and path not in {
+            'crates/hex-session/src/service.rs',
+            'crates/hex-session/src/service/comparison_audio.rs'}:
+        return [f'{path}: ordered source binding has one owning worker constructor']
+    if path == 'crates/hex-session/src/service/comparison_audio.rs':
+        required = ['source: SharedCanonicalAudioSource', 'pub(super) fn advance(',
+                    'previous.revision.checked_add(1)', 'source.matches_session_sources(session)',
+                    'previous.audio_authoring_revision(source.context())',
+                    'source.shares_owner_with(&self.source)', 'source: source.clone()',
+                    'canonical_audio_source::sampler_fields_on_control(source)']
+        if any(step not in source for step in required):
+            return [f'{path}: ordered binding retains actual source and validates private producer chain']
+        if re.search(r'Arc::|unsafe|transmute|source_bindings\(', source):
+            return [f'{path}: no raw source adoption or temporary binding owner']
+    if path == 'crates/hex-engine/src/sampler_host_fields/snapshot_view.rs':
+        if '[payload.source(), payload.comparison_source()]' not in source:
+            return [f'{path}: both actual source owning fields are mandatory']
+    if path == 'crates/hex-session/src/snapshot_exports/transport.rs':
+        if 'pub fn follows_source(' in source and any(step not in source for step in [
+                'self.route != previous.route', 'std::ptr::eq(self.operations, previous.operations)',
+                '(self.operations.follows_source)(self.route, current, previous, generation)']):
+            return [f'{path}: ordered source query uses same actual route and adapter']
     if not NAMES.search(source):
         return []
     if path in EXACT or path.startswith(PREFIXES):
