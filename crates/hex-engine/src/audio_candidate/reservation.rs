@@ -313,8 +313,11 @@ mod tests {
         let mut editor =
             hex_project::Editor::new(hex_project::Project::new(48000).unwrap(), 8).unwrap();
         editor
-            .execute(hex_project::Command::AddTrack {
+            .execute(hex_project::Command::InsertTrackWithDevice {
                 name: "instrument".into(),
+                before: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap();
         assert!(matches!(

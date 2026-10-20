@@ -14,8 +14,11 @@ static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 fn built_in_fm4_offline_export_matches_independent_carrier_pcm() {
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 8).expect("editor");
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "fm4 export".into(),
+            before: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("midi track")
     else {

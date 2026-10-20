@@ -171,7 +171,12 @@ fn two_registered_analytic_definitions_prepare_arrangement_and_session_notes() {
     let mut tracks = Vec::new();
     for (name, definition) in [("left", &left), ("right", &right)] {
         let Created::Track(track) = editor
-            .execute(Command::AddMidiTrack { name: name.into() })
+            .execute(Command::InsertTrackWithDevice {
+                name: name.into(),
+                before: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
+            })
             .unwrap()
         else {
             panic!("track")

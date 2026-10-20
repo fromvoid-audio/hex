@@ -19,7 +19,12 @@ fn fixture(routed: bool) -> Fixture {
     let mut tracks = Vec::new();
     for _ in 0..3 {
         let Created::Track(track) = editor
-            .execute(Command::AddMidiTrack { name: "bus".into() })
+            .execute(Command::InsertTrackWithDevice {
+                name: "bus".into(),
+                before: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
+            })
             .unwrap()
         else {
             panic!("track")

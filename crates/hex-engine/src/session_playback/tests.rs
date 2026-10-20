@@ -3104,8 +3104,11 @@ fn shared_context_table_admits_the_full_track_bound_without_duplicate_owners() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 128).unwrap();
     for index in 0..hex_project::MAX_TRACKS {
         let track = match editor
-            .execute(Command::AddMidiTrack {
+            .execute(Command::InsertTrackWithDevice {
                 name: format!("context {index}"),
+                before: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         {
@@ -3473,8 +3476,11 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "short source".into(),
+            before: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3482,8 +3488,11 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
         _ => panic!("expected first MIDI track"),
     };
     let second_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "held source".into(),
+            before: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3648,8 +3657,11 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "removed mutable track".into(),
+            before: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3657,8 +3669,11 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
         _ => panic!("expected first MIDI track"),
     };
     let retained_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "retained mutable track".into(),
+            before: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -6926,8 +6941,11 @@ fn instrument_edit_captures_only_the_changed_session_track() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "first".into(),
+            before: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -6935,8 +6953,11 @@ fn instrument_edit_captures_only_the_changed_session_track() {
         _ => panic!("first MIDI track"),
     };
     let second = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "second".into(),
+            before: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
