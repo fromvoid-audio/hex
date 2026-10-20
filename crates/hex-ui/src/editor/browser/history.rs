@@ -114,6 +114,16 @@ impl History {
 
 impl EditorView {
     fn browser_history_entry(&self, cx: &App) -> Entry {
+        let top = {
+            // The convenience index accessor is test-support-only in GPUI.
+            // Its existing public state carries the same pending/layout value.
+            let scroll = self.browser.scroll.0.borrow();
+            scroll
+                .deferred_scroll_to_item
+                .as_ref()
+                .map(|deferred| deferred.item_index)
+                .unwrap_or_else(|| scroll.base_handle.logical_scroll_top().0)
+        };
         Entry {
             location: Location {
                 section: self.browser.section.clone(),
@@ -122,7 +132,7 @@ impl EditorView {
             },
             position: Position {
                 selected: self.browser_selected_item(cx),
-                top: self.browser_item_at(self.browser.scroll.logical_scroll_top_index(), cx),
+                top: self.browser_item_at(top, cx),
             },
         }
     }
