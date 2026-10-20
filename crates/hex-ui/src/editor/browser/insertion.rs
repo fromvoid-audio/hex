@@ -1,5 +1,4 @@
 //! Enter captures one selected Arrangement target before bounded worker preparation.
-use super::super::musical_time::SnapGrid;
 use super::{EditorMode, EditorView};
 use gpui::Context;
 use hex_session::import_batch::AudioBatchDestination;
@@ -70,7 +69,7 @@ impl EditorView {
             .ok_or("sample insertion refused · select an arrangement track")?;
         let mut start = self.cursor_position();
         if self.browser.insert_quantized {
-            if self.snap_grid == SnapGrid::Off {
+            if self.snap_grid.is_off() {
                 return Err("sample insertion refused · enable the arrangement grid".into());
             }
             let lane = self

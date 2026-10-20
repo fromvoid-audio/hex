@@ -313,3 +313,10 @@ private filesystem workers and canonical Service Init; refused row actions leave
 canonical metadata/history and project requests unchanged. Selected-row controls
 and Up/Down-to-Right plus Command-F typing remain positive cases. This is source
 coverage, not physical keyboard/audio-output or native delivery acceptance.
+
+Quantized sample input refuses every disabled Arrangement grid, including a
+remembered fine, medium or coarse density. Disabling input quantization keeps
+the exact invocation frame even when the Arrangement grid is disabled. Active
+density presets continue to use the same nearest-grid resolver. Integration
+controls exercise actual Enter, no queued import/history mutation on refusal,
+real worker commits and Undo, retaining the original six caller cases.

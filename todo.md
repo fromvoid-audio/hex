@@ -6084,3 +6084,14 @@ unchanged missing-guard source (one executed RED). Add existing scrub_active
 predicate beside the pan guard, preserving held/released final seek target
 through existing admission/refusal. L/CmdL and post-retirement Undo/Redo
 controls added; no seek/controller policy change. Current checks/review pending.
+
+## selected-track sample input integration — PR427 / pulse2821
+
+Composed canonical source onto current qualified main, preserving worker-owned
+instrument Enter and all other browser behavior. Reuse the existing is_off grid
+predicate so remembered disabled densities visibly refuse quantized insertion.
+Actual Enter reproduced Off passing refusal then OffDensity(Fine) failing it;
+later variants were not executed after that failure. The private sample fixture
+now precreates one shared Environment before WAV/Service startup and checks its
+identity and four preference paths; original six behavior/helper bodies remain.
+Current-head required qualification/review and native acceptance remain separate.

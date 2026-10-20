@@ -465,3 +465,91 @@ fn browser_insert_all_disabled_densities_refuse_actual_enter(cx: &mut TestAppCon
         eprintln!("ACTUAL_DISABLED_GRID_REFUSAL {grid:?}");
     }
 }
+
+#[gpui::test]
+fn browser_insert_active_densities_snap_and_disabled_unquantized_keeps_frame(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::musical_time::{AdaptiveGridDensity, SnapGrid};
+    let (handle, editor, _directory, path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    let track = select_sample(&editor, visual);
+    for density in AdaptiveGridDensity::ALL {
+        for quantized in [true, false] {
+            let expected = editor.update(visual, |view, _| {
+                view.browser.insert_quantized = quantized;
+                view.snap_grid = if quantized {
+                    SnapGrid::AdaptiveDensity(density)
+                } else {
+                    SnapGrid::OffDensity(density)
+                };
+                view.offline_cursor = 25_000;
+                assert!(
+                    view.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .track(track)
+                        .unwrap()
+                        .clips()
+                        .is_empty()
+                );
+                if quantized {
+                    let state = view.state.as_ref().unwrap();
+                    let lane = view.main_track_lane_bounds.unwrap();
+                    let expected = view
+                        .snap_grid
+                        .snap_frame(
+                            &state.project,
+                            25_000,
+                            view.visible_viewport(state.timeline_frames),
+                            lane.width,
+                        )
+                        .unwrap();
+                    assert_ne!(expected, 25_000, "actual nearest-grid control must snap");
+                    expected
+                } else {
+                    25_000
+                }
+            });
+            visual.simulate_keystrokes("enter");
+            editor.read_with(visual, |view, _| {
+                assert_eq!(
+                    view.last_enqueued_import_to_track,
+                    Some((path.clone(), track, expected, true))
+                );
+            });
+            receive_worker(&editor, cx, false);
+            editor.read_with(cx, |view, _| {
+                let clips = view
+                    .state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .clips();
+                assert_eq!(clips.len(), 1);
+                assert_eq!((clips[0].start(), clips[0].duration()), (expected, 24));
+                assert!(view.error.is_none());
+            });
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+            receive_worker(&editor, cx, false);
+            editor.read_with(cx, |view, _| {
+                assert!(
+                    view.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .track(track)
+                        .unwrap()
+                        .clips()
+                        .is_empty()
+                );
+                assert_eq!(view.worker_requests_pending, 0);
+                assert!(view.pending_requests.is_empty() && view.audio_batch.is_none());
+            });
+            eprintln!("ACTUAL_DENSITY_INPUT {density:?} quantized={quantized} frame={expected}");
+        }
+    }
+}
