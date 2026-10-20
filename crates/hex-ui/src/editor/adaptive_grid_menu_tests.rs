@@ -4,27 +4,19 @@ use super::*;
 use gpui::{Modifiers, MouseButton, TestAppContext, VisualTestContext, px};
 use std::sync::Arc;
 
-// Depends only on PR363's frozen test constructor; never duplicates that seam.
-struct GridTestDirectory(std::path::PathBuf);
+// One fixture root is leased by the view and its real catalog jobs.
+struct GridTestDirectory(
+    std::path::PathBuf,
+    Arc<super::super::super::test_environment::Environment>,
+);
 
 impl GridTestDirectory {
-    fn new() -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "hex-grid-menu-test-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&path).unwrap();
-        std::fs::create_dir(path.join("samples")).unwrap();
-        Self(path)
-    }
-}
-
-impl Drop for GridTestDirectory {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+    fn with_environment(
+        environment: Arc<super::super::super::test_environment::Environment>,
+    ) -> Self {
+        let root = environment.root().to_owned();
+        std::fs::create_dir_all(root.join("samples")).unwrap();
+        Self(root, environment)
     }
 }
 
@@ -37,22 +29,47 @@ fn editor_window(
     gpui::Entity<EditorView>,
     GridTestDirectory,
 ) {
+    editor_window_with_environment(
+        cx,
+        project,
+        midi_preview,
+        super::super::super::test_environment::Environment::new().unwrap(),
+    )
+}
+
+fn editor_window_with_environment(
+    cx: &mut TestAppContext,
+    project: hex_project::Project,
+    midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    environment: Arc<super::super::super::test_environment::Environment>,
+) -> (
+    gpui::AnyWindowHandle,
+    gpui::Entity<EditorView>,
+    GridTestDirectory,
+) {
     use gpui::AppContext;
-    let directory = GridTestDirectory::new();
+    let directory = GridTestDirectory::with_environment(environment);
     let bootstrap = cx.add_window(|_, _| gpui::Empty);
     let handle = *bootstrap;
     let editor = cx
         .update_window(handle, |_, window, cx| {
             let service = hex_session::service::Service::new(48_000, 32, 8_000_000).unwrap();
             let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test_with_browser_directory(window, cx, service, &directory.0)
+                EditorView::new_for_test_with_environment(
+                    window,
+                    cx,
+                    service,
+                    Arc::clone(&directory.1),
+                )
             });
             super::super::super::install_close_guard(window, cx, editor.downgrade());
             editor.update(cx, |view, cx| {
+                assert!(Arc::ptr_eq(&directory.1, &view.test_environment));
                 assert_eq!(view.browser.directory, directory.0.join("samples"));
                 assert_eq!(view.browser.places, vec![directory.0.join("samples")]);
                 view.state = Some(Arc::new(hex_session::service::ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -287,4 +304,102 @@ fn adaptive_grid_menu_empty_arranger_choice_survives_keyboard_snap_toggle(cx: &m
             assert!(view.last_enqueued_edit.is_none());
         });
     }
+}
+
+#[gpui::test]
+fn grid_fixture_real_catalog_retains_one_root_after_view_and_caller_drop(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering;
+    let environment = super::super::super::test_environment::Environment::new().unwrap();
+    let root = environment.root().to_owned();
+    std::fs::create_dir(root.join("samples")).unwrap();
+    let wav = root.join("samples/grid.wav");
+    let bytes = [
+        b"RIFF".as_slice(),
+        &44_u32.to_le_bytes(),
+        b"WAVEfmt ",
+        &16_u32.to_le_bytes(),
+        &1_u16.to_le_bytes(),
+        &1_u16.to_le_bytes(),
+        &48_000_u32.to_le_bytes(),
+        &96_000_u32.to_le_bytes(),
+        &2_u16.to_le_bytes(),
+        &16_u16.to_le_bytes(),
+        b"data",
+        &8_u32.to_le_bytes(),
+        &[1, 0, 1, 0, 1, 0, 1, 0],
+    ]
+    .concat();
+    std::fs::write(&wav, &bytes).unwrap();
+    let weak = Arc::downgrade(&environment);
+    let gate = environment.gate_next_catalog_save();
+    let (project, _, _, _) = audio_project();
+    let (handle, editor, owner) =
+        editor_window_with_environment(cx, project, Arc::default(), environment);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    assert!(gate.reached.load(Ordering::Acquire));
+    assert!(!gate.finished.load(Ordering::Acquire));
+    let paths = editor.read_with(&visual, |view, _| {
+        assert!(Arc::ptr_eq(&owner.1, &view.test_environment));
+        assert_eq!(view.browser.directory, owner.0.join("samples"));
+        assert_eq!(view.browser.places, vec![owner.0.join("samples")]);
+        [
+            view.browser.test_preferences_path().to_owned(),
+            view.recent_projects.test_path().to_owned(),
+            view.theme_settings.test_path().to_owned(),
+            view.project_directory.test_path().to_owned(),
+        ]
+    });
+    for (path, name) in paths.iter().zip([
+        "browser.json",
+        "recent-projects.json",
+        "theme.json",
+        "project-directory.json",
+    ]) {
+        assert_eq!(*path, root.join("config").join(name));
+    }
+    let database = paths[0].with_extension("samples-v1.db");
+    assert_eq!(database, root.join("config/browser.samples-v1.db"));
+    assert!(!database.exists());
+    let editor_weak = editor.downgrade();
+    visual.update(|window, cx| {
+        let _ = window.replace_root(cx, |_, _| gpui::Empty);
+    });
+    drop(editor);
+    drop(owner);
+    visual.update(|_, _| {});
+    visual.run_until_parked();
+    assert!(editor_weak.upgrade().is_none());
+    assert_eq!(
+        weak.strong_count(),
+        1,
+        "actual held catalog job retains its path owner"
+    );
+    assert_eq!(std::fs::read(&wav).unwrap(), bytes);
+    for path in &paths {
+        assert!(path.parent().unwrap().is_dir());
+    }
+    gate.release();
+    visual.run_until_parked();
+    assert!(gate.finished.load(Ordering::Acquire));
+    assert!(gate.save_succeeded.load(Ordering::Relaxed));
+    assert!(gate.root_present_during_save.load(Ordering::Relaxed));
+    visual.update(|_, _| {});
+    assert!(weak.upgrade().is_none());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while root.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "owned grid root cleanup"
+        );
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    assert!(
+        !root.exists(),
+        "retired catalog job cannot recreate grid root"
+    );
+    eprintln!(
+        "grid fixture SAME Environment/WAV/fourprefs/database, actual held save, view+caller retired, cleanup verified"
+    );
 }
