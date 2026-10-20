@@ -1,5 +1,6 @@
 //! Enter captures one selected Arrangement target before bounded worker preparation.
-use super::super::{EditorMode, EditorView, musical_time::SnapGrid};
+use super::super::musical_time::SnapGrid;
+use super::{EditorMode, EditorView};
 use gpui::Context;
 use hex_session::import_batch::AudioBatchDestination;
 use hex_session::import_batch_decode::AudioBatchContext;
