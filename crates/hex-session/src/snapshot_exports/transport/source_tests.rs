@@ -222,6 +222,12 @@ fn binding_busy_retains_exact_claim_and_receiver_drop_acknowledges_all_actual_ro
     ));
     REFUSE_BIND.store(false, Ordering::Relaxed);
     let delivery = receiver.try_receive(head, true).unwrap();
+    let current = delivery.reads.canonical.as_ref().unwrap();
+    let pending = delivery.canonical_pending.as_ref().unwrap();
+    assert_eq!(current.source_key(), pending.source_key());
+    let derived = current.try_derive().unwrap();
+    assert_eq!(current.source_key(), derived.source_key());
+    drop(derived);
     assert_eq!(
         delivery
             .reads
