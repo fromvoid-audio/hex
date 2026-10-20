@@ -6,34 +6,44 @@ use gpui::{
 use hex_project::{Command, Editor, TrackId};
 use std::sync::Arc;
 
-// Every path is installed before browser workers start and retained through the test.
-struct BrowserDirectory(std::path::PathBuf);
+// One precreated path owner is retained by both the view and actual background jobs.
+struct BrowserDirectory(
+    std::path::PathBuf,
+    Arc<super::super::test_environment::Environment>,
+);
 impl BrowserDirectory {
     fn new() -> Self {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static NEXT: AtomicU64 = AtomicU64::new(0);
-        let root = std::env::temp_dir().join(format!(
-            "hex-header-volume-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        std::fs::create_dir(&root).unwrap();
-        std::fs::create_dir(root.join("samples")).unwrap();
-        Self(root)
+        Self::with_environment(super::super::test_environment::Environment::new().unwrap())
+    }
+    fn with_environment(environment: Arc<super::super::test_environment::Environment>) -> Self {
+        let root = environment.root().to_owned();
+        std::fs::create_dir_all(root.join("samples")).unwrap();
+        Self(root, environment)
     }
     fn assert_owned(&self, view: &EditorView) {
+        assert!(Arc::ptr_eq(&self.1, &view.test_environment));
         assert_eq!(view.browser.directory, self.0.join("samples"));
         assert_eq!(view.browser.places, vec![self.0.join("samples")]);
-    }
-}
-impl Drop for BrowserDirectory {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
     }
 }
 
 fn actor_fixture(
     cx: &mut TestAppContext,
+) -> (
+    BrowserDirectory,
+    VisualTestContext,
+    Entity<EditorView>,
+    [TrackId; 2],
+) {
+    actor_fixture_with_environment(
+        cx,
+        super::super::test_environment::Environment::new().unwrap(),
+    )
+}
+
+fn actor_fixture_with_environment(
+    cx: &mut TestAppContext,
+    environment: Arc<super::super::test_environment::Environment>,
 ) -> (
     BrowserDirectory,
     VisualTestContext,
@@ -75,12 +85,17 @@ fn actor_fixture(
         state = Some(receive(&service).state);
         tracks.push(track);
     }
-    let browser = BrowserDirectory::new();
+    let browser = BrowserDirectory::with_environment(environment);
     let handle = *cx.add_window(|_, _| gpui::Empty);
     let editor = cx
         .update_window(handle, |_, window, cx| {
             let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test_with_browser_directory(window, cx, service, &browser.0)
+                EditorView::new_for_test_with_environment(
+                    window,
+                    cx,
+                    service,
+                    Arc::clone(&browser.1),
+                )
             });
             editor.update(cx, |view, cx| {
                 browser.assert_owned(view);
@@ -390,7 +405,12 @@ fn fixture(
         .update_window(handle, |_, window, cx| {
             let service = hex_session::service::Service::new(48_000, 32, 8_000_000).unwrap();
             let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test_with_browser_directory(window, cx, service, &browser.0)
+                EditorView::new_for_test_with_environment(
+                    window,
+                    cx,
+                    service,
+                    Arc::clone(&browser.1),
+                )
             });
             editor.update(cx, |view, cx| {
                 browser.assert_owned(view);
@@ -813,4 +833,98 @@ fn return_header_filled_gain_commits_and_keyboard_invalid_draft_blocks_owner_tra
     });
     visual.run_until_parked();
     assert_ne!(visual.rendered_background(mute_id).unwrap(), on);
+}
+
+#[gpui::test]
+fn header_fixture_real_catalog_retains_one_root_after_view_and_caller_drop(
+    cx: &mut TestAppContext,
+) {
+    use std::sync::atomic::Ordering;
+    let environment = super::super::test_environment::Environment::new().unwrap();
+    let root = environment.root().to_owned();
+    std::fs::create_dir(root.join("samples")).unwrap();
+    let wav = root.join("samples/header.wav");
+    let bytes = [
+        b"RIFF".as_slice(),
+        &44_u32.to_le_bytes(),
+        b"WAVEfmt ",
+        &16_u32.to_le_bytes(),
+        &1_u16.to_le_bytes(),
+        &1_u16.to_le_bytes(),
+        &48_000_u32.to_le_bytes(),
+        &96_000_u32.to_le_bytes(),
+        &2_u16.to_le_bytes(),
+        &16_u16.to_le_bytes(),
+        b"data",
+        &8_u32.to_le_bytes(),
+        &[1, 0, 1, 0, 1, 0, 1, 0],
+    ]
+    .concat();
+    std::fs::write(&wav, &bytes).unwrap();
+    let weak = Arc::downgrade(&environment);
+    let gate = environment.gate_next_catalog_save();
+    let (owner, mut visual, editor, _) = actor_fixture_with_environment(cx, environment);
+    assert!(gate.reached.load(Ordering::Acquire));
+    assert!(!gate.finished.load(Ordering::Acquire));
+    let paths = editor.read_with(&visual, |view, _| {
+        owner.assert_owned(view);
+        [
+            view.browser.test_preferences_path().to_owned(),
+            view.recent_projects.test_path().to_owned(),
+            view.theme_settings.test_path().to_owned(),
+            view.project_directory.test_path().to_owned(),
+        ]
+    });
+    for (path, name) in paths.iter().zip([
+        "browser.json",
+        "recent-projects.json",
+        "theme.json",
+        "project-directory.json",
+    ]) {
+        assert_eq!(*path, root.join("config").join(name));
+    }
+    let database = paths[0].with_extension("samples-v1.db");
+    assert_eq!(database, root.join("config/browser.samples-v1.db"));
+    assert!(!database.exists());
+    let editor_weak = editor.downgrade();
+    visual.update(|window, cx| {
+        let _ = window.replace_root(cx, |_, _| gpui::Empty);
+    });
+    drop(editor);
+    drop(owner);
+    visual.update(|_, _| {});
+    visual.run_until_parked();
+    assert!(editor_weak.upgrade().is_none());
+    assert_eq!(
+        weak.strong_count(),
+        1,
+        "actual held catalog job retains its path owner"
+    );
+    assert_eq!(std::fs::read(&wav).unwrap(), bytes);
+    for path in &paths {
+        assert!(path.parent().unwrap().is_dir());
+    }
+    gate.release();
+    visual.run_until_parked();
+    assert!(gate.finished.load(Ordering::Acquire));
+    assert!(gate.save_succeeded.load(Ordering::Relaxed));
+    assert!(gate.root_present_during_save.load(Ordering::Relaxed));
+    visual.update(|_, _| {});
+    assert!(weak.upgrade().is_none());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while root.exists() {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "owned header root cleanup"
+        );
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    assert!(
+        !root.exists(),
+        "retired catalog job cannot recreate header root"
+    );
+    eprintln!(
+        "header fixture SAME Environment/WAV/fourprefs/database, actual held save, view+caller retired, cleanup verified"
+    );
 }
