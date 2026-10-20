@@ -5178,6 +5178,17 @@ open.
   are added; exact-source results follow in PR334/Pulse2718. Native optimized
   audio/MIDI/looped painting acceptance remains coordinator-owned and open.
 
+### pulse2694 — adaptive arranger grid context choices
+
+Canonical PR310 adds fine/medium/coarse adaptive density choices using existing
+popup/focus contracts and the shared painting/snap resolver. Medium remains18px;
+selected density survives snap toggle/bypass without project/history/persistence
+changes. Boundary red→green repairs capped-grid hidden snap targets while
+retaining256-line bounds. See [grid menu](docs/adaptive-grid-menu.md) for original
+failed/green evidence, targeted cases, shared-wiring scope and finite native
+checklist. Final prospective-tree fullCI/integration/merge belongs to the
+separate merger; native/app delivery and physical acceptance remain root-owned.
+
 ## Place availability and query correctness — pulse2791 / PR397, 18 october 2026
 
 Focused follow-up to merged2727/340: pending or failed Place validation hides cached
