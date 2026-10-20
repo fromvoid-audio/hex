@@ -853,3 +853,81 @@ fn review_history_waits_for_the_used_catalog_not_an_unrelated_scan(cx: &mut Test
         });
     }
 }
+
+#[gpui::test]
+fn review_history_root_projection_restores_both_directions_and_quiesces(cx: &mut TestAppContext) {
+    let (handle, editor, _directory) = builtin_history_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(visual, |view, _| view.browser.auto_audition = false);
+    // Home is deliberately the current directory but excluded from Samples.
+    // Actual row clicks settle each projection before the tested navigation.
+    click(visual, "browser-place-1");
+    click(visual, "browser-section-samples");
+    click(visual, "browser-entry-0");
+    let samples_root = editor.read_with(visual, |view, cx| {
+        assert!(!view.browser.loading && !view.browser.tree.history_loading());
+        assert!(!view.browser.samples.history_loading());
+        assert_eq!(view.browser.directory, view.browser.home);
+        let Some(crate::editor::browser::BrowserItemKey::File(path)) =
+            view.browser_selected_item(cx)
+        else {
+            panic!("actual Samples root must be selected")
+        };
+        assert_eq!(path, view.browser.music);
+        path
+    });
+    click(visual, "browser-section-all");
+    click(visual, "browser-entry-0");
+    let (all_root, before) = editor.read_with(visual, |view, cx| {
+        assert!(!view.browser.loading && !view.browser.tree.history_loading());
+        assert!(!view.browser.samples.history_loading());
+        let Some(crate::editor::browser::BrowserItemKey::File(path)) =
+            view.browser_selected_item(cx)
+        else {
+            panic!("actual All root must be selected")
+        };
+        assert_eq!(path, view.browser.home);
+        (path, view.state.as_ref().unwrap().clone())
+    });
+    assert_ne!(
+        samples_root, all_root,
+        "exercise different actual provider root sets"
+    );
+    let notifications = std::rc::Rc::new(std::cell::Cell::new(0usize));
+    let observed = notifications.clone();
+    let _subscription =
+        visual.update(|_, cx| cx.observe(&editor, move |_, _| observed.set(observed.get() + 1)));
+    for (selector, expected) in [
+        ("browser-history-back", samples_root),
+        ("browser-history-forward", all_root),
+    ] {
+        notifications.set(0);
+        // No manual notify/timer/extra input after the history click.
+        click(visual, selector);
+        editor.read_with(visual, |view, cx| {
+            assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::File(path)) if path == expected), "history must settle the actual saved root after {selector}");
+            assert!(!view.browser.tree.history_loading(), "projection must reach a clean fixed point");
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(state.project, before.project);
+            assert_eq!((state.revision,state.can_undo,state.can_redo), (before.revision,before.can_undo,before.can_redo));
+            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert!(view.browser.playback_path.is_none());
+        });
+        assert!(
+            visual.debug_bounds("browser-entry-0").is_some(),
+            "restored row must be painted"
+        );
+        let settled = notifications.get();
+        assert!(
+            settled > 0 && settled <= 4,
+            "bounded history/projection notifications, got {settled}"
+        );
+        visual.run_until_parked();
+        assert_eq!(
+            notifications.get(),
+            settled,
+            "stable provider roots must not keep notifying"
+        );
+    }
+}
