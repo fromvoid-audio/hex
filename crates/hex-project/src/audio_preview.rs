@@ -11,10 +11,12 @@ mod operations;
 mod plain;
 mod plan;
 mod validation;
+mod warp_read;
 pub(crate) use materialize::{
     anchor_edit, default_audio_warp, materialize, materialize_plain, project_clip, retime_edit,
 };
 use plan::{EditPlan, Plan, Scale, WarpPlan};
+pub use warp_read::AudioWarpMapRead;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioClipPreviewOperation {

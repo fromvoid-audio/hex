@@ -4,6 +4,7 @@ mod events;
 mod mapping;
 use crate::{Audio, CancellationQuery, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
+pub use mapping::WarpPreviewWorkspace;
 #[cfg(test)]
 mod control_storage_tests;
 mod original_sampler;
@@ -19,42 +20,50 @@ use std::{
     cell::{Cell, RefCell},
     sync::{Arc, atomic::AtomicBool},
 };
-fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
-    Ok(if domain.warp_enabled {
-        match domain
-            .warp
-            .as_ref()
-            .ok_or(Invalid("warp settings missing"))?
-            .mode
-        {
-            WarpMode::RePitch => hex_warp::Mode::RePitch,
-            WarpMode::Beats { tail, decay, .. } => hex_warp::Mode::Beats {
-                division_frames: None,
-                tail: match tail {
-                    BeatsTail::Off => hex_warp::Tail::Off,
-                    BeatsTail::Forward => hex_warp::Tail::Forward,
-                    BeatsTail::Alternating => hex_warp::Tail::Alternating,
-                },
-                decay,
+fn render_warp_mode(mode: Option<WarpMode>) -> hex_warp::Mode {
+    let Some(mode) = mode else {
+        return hex_warp::Mode::Resample;
+    };
+    match mode {
+        WarpMode::RePitch => hex_warp::Mode::RePitch,
+        WarpMode::Beats { tail, decay, .. } => hex_warp::Mode::Beats {
+            division_frames: None,
+            tail: match tail {
+                BeatsTail::Off => hex_warp::Tail::Off,
+                BeatsTail::Forward => hex_warp::Tail::Forward,
+                BeatsTail::Alternating => hex_warp::Tail::Alternating,
             },
-            WarpMode::Tones { grain_ms } => hex_warp::Mode::Tones { grain_ms },
-            WarpMode::Texture {
-                grain_ms,
-                fluctuation,
-                seed,
-            } => hex_warp::Mode::Texture {
-                grain_ms,
-                fluctuation,
-                seed,
-            },
-            WarpMode::Complex => hex_warp::Mode::Complex,
-            WarpMode::ComplexPro { formants, envelope } => {
-                hex_warp::Mode::ComplexPro { formants, envelope }
-            }
+            decay,
+        },
+        WarpMode::Tones { grain_ms } => hex_warp::Mode::Tones { grain_ms },
+        WarpMode::Texture {
+            grain_ms,
+            fluctuation,
+            seed,
+        } => hex_warp::Mode::Texture {
+            grain_ms,
+            fluctuation,
+            seed,
+        },
+        WarpMode::Complex => hex_warp::Mode::Complex,
+        WarpMode::ComplexPro { formants, envelope } => {
+            hex_warp::Mode::ComplexPro { formants, envelope }
         }
+    }
+}
+fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
+    let mode = if domain.warp_enabled {
+        Some(
+            domain
+                .warp
+                .as_ref()
+                .ok_or(Invalid("warp settings missing"))?
+                .mode,
+        )
     } else {
-        hex_warp::Mode::Resample
-    })
+        None
+    };
+    Ok(render_warp_mode(mode))
 }
 
 /// Check the existing renderer's projected stretch capability without PCM or
@@ -71,6 +80,17 @@ pub fn validate_clip_warp_preview(
     let (map, _) = mapping::prepare_map(edit, tempo, &AtomicBool::new(false))?;
     map.validate_stretch(render_mode(&edit.domain)?, edit.domain.pitch_cents)
         .map_err(warp_error)
+}
+
+/// Validate the actual prospective metadata with the SAME mapping/renderer law.
+/// Reserve workspace outside the retained read; this fills Copy-only scratch
+/// without allocation/free. Geometry validity alone is not renderer admission.
+/// This does not admit PCM, work budget, resources or canonical mutation.
+pub fn validate_audio_clip_preview_warp(
+    preview: &hex_project::AudioClipPreviewRead<'_>,
+    workspace: &mut WarpPreviewWorkspace,
+) -> Result<(), Invalid> {
+    mapping::validate_preview(preview, workspace)
 }
 
 pub const MAX_CACHED_DERIVED_BYTES: usize = 256 * 1024 * 1024;

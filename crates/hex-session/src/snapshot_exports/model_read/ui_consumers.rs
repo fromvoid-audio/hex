@@ -3,6 +3,9 @@
 //! These wrappers keep every model borrow tied to the enclosing snapshot read.
 //! They expose copyable values and iterators over purpose-specific wrappers;
 //! no project, source, edit root, asset owner, or mutable runtime state escapes.
+#[cfg(test)]
+#[path = "ui_consumers/trim_tests.rs"]
+mod trim_tests;
 use super::{
     SnapshotClipRead, SnapshotDeviceRead, SnapshotProjectRead, SnapshotRead, SnapshotTrackRead,
 };
@@ -411,6 +414,18 @@ impl<'a> SnapshotTrackRead<'a> {
 }
 
 impl<'a> SnapshotClipRead<'a> {
+    pub fn content_token_capacity(self) -> Result<usize, hex_project::Invalid> {
+        self.clip.content_token_capacity()
+    }
+    pub fn capture_content(
+        self,
+        token: &mut hex_project::ClipContentToken,
+    ) -> Result<(), hex_project::Invalid> {
+        self.clip.capture_content(token)
+    }
+    pub fn matches_content(self, token: &hex_project::ClipContentToken) -> bool {
+        self.clip.matches_content(token)
+    }
     pub fn flavor(self) -> ClipFlavor {
         self.clip.flavor()
     }
@@ -433,6 +448,25 @@ impl<'a> SnapshotClipRead<'a> {
 }
 
 impl<'a> SnapshotMidiClipRead<'a> {
+    pub fn preview_edge_trim(
+        self,
+        edge: hex_project::TrimEdge,
+        beat: BeatTime,
+    ) -> Result<hex_project::MidiClipTrim, hex_project::Invalid> {
+        self.clip.preview_edge_trim(edge, beat)
+    }
+    pub fn content_token_capacity(self) -> Result<usize, hex_project::Invalid> {
+        self.clip.content_token_capacity()
+    }
+    pub fn capture_content(
+        self,
+        token: &mut hex_project::ClipContentToken,
+    ) -> Result<(), hex_project::Invalid> {
+        self.clip.capture_content(token)
+    }
+    pub fn matches_content(self, token: &hex_project::ClipContentToken) -> bool {
+        self.clip.matches_content(token)
+    }
     pub fn id(self) -> ClipId {
         self.clip.id()
     }

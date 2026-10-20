@@ -11,9 +11,11 @@ mod audio_edit;
 mod audio_preview;
 pub use audio_preview::{
     AudioClipPreview, AudioClipPreviewOperation, AudioClipPreviewRead,
-    AudioPreviewWaveformPosition, default_audio_warp_markers,
+    AudioPreviewWaveformPosition, AudioWarpMapRead, default_audio_warp_markers,
 };
+mod clip_content;
 mod clip_fade_trim;
+pub use clip_content::ClipContentToken;
 mod clip_name;
 pub use audio_edit::{
     AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, AudioViewMode,
