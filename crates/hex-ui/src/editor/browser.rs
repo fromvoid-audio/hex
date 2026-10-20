@@ -5,7 +5,7 @@ mod place_icons;
 mod samples;
 mod tree;
 
-use super::{EditorView, browser_input::BrowserSearch, drag};
+use super::{EditorMode, EditorView, browser_input::BrowserSearch, drag};
 use crate::theme;
 use gpui::{
     App, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
