@@ -6122,6 +6122,7 @@ remain separate; old source receipts do not qualify this combined candidate.
 - Retained the pre-Cargo unknown-cache ownership refusal and the font-test-platform
   / browser-text fixture failures. Corrected fixtures preserve mandatory production
   font checks and existing local text input. No production behavior changed.
-- User-reported running-build/focus/native-event failure remains unreproduced.
-  Root-owned runtime discriminator and physical acceptance remain open; this
-  investigation checkpoint must not be called a fix or merged/user accepted.
+- The user subsequently confirmed "Tab works now" to Root; no build label was
+  supplied, and no production repair/cause is claimed. The reproduction blocker
+  is removed without another native probe. Regression-source checks and canonical
+  merge remain separate from that user confirmation and installed-build identity.

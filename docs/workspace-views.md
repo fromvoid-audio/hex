@@ -2,9 +2,10 @@
 
 ## 20 october2026 — generation 2 runtime investigation
 
-The user reports that unmodified Tab does nothing in their running app; that
-build and its actual focused surface have not been identified. The earlier
-source/native receipts below remain historical and do not close this report.
+The user reported that unmodified Tab did nothing, then explicitly confirmed
+"Tab works now" in Root's targeted Arrange/Console follow-up. No build label was
+supplied, so that confirmation is not attributed to this investigation commit
+or a production repair. The earlier source/native receipts remain historical.
 Generation 2 uses canonical PR489 and preserves the merged PR419 history.
 
 Two new routed-key regressions on qualified main `1d1797bb` have not reproduced
@@ -27,13 +28,11 @@ change; its retained failure instead established local `"piano\t"` input, and th
 corrected oracle preserves that behavior. These are fixture limits, not product
 Tab failures.
 
-There is **no production repair or resolved runtime cause in this checkpoint**.
-Root needs the actual running source/build and last-click/focus context, followed
-by Arrange and Console workspace/header → Tab observations. If that still fails,
-the next discriminator is native event delivery versus an intentionally refusing
-focus/capture guard. No existing modal, text, nested-control or pending-final-target
-guard should be relaxed without that evidence. Physical keyboard/IME/native
-dispatch and user acceptance remain open; no app operation is dispatched here.
+There is **no production repair or reproduced runtime cause in this checkpoint**.
+The user's confirmation removes the reproduction blocker; no repeat question or
+native probe is requested. Existing modal, text, nested-control and pending-final-
+target guards remain intact. Native event delivery/IME and a particular optimized
+build are not newly qualified by the statement; no app operation is dispatched.
 
 The bounded new component selector is `workspace_generation2_`, expected **2
 unique tests, zero ignored**. It supplements, rather than relabels or replaces,
