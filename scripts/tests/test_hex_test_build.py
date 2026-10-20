@@ -717,6 +717,54 @@ class DeliveryTests(unittest.TestCase):
                 delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
 
 
+    def test_core_shared_python_refuses_native_before_pending_but_dev_and_full_work(self):
+        # Synthetic passing reports exercise the consumer, not product tests.
+        # The existing fake-tool fixture runs the actual guarded release boundary.
+        import test_local_ci as fixtures
+        fixture = fixtures.LocalCiRunnerTests()
+        fixture.setUp()
+        self.addCleanup(fixture.tearDown)
+        runner = fixture.runner("core-python-consumer")
+        self.assertTrue(runner._capture_repository_state("start_tree"))
+        tree = runner.summary["start_tree"]
+        impact = delivery.ci.ci_plan.python_tests
+        selected = impact.select("merge", ["crates/hex-engine/src/lib.rs"],
+            [{"name": "hex-engine", "manifest": "crates/hex-engine/Cargo.toml"}],
+            delivery.ci.ci_plan.UI_PACKAGES, sorted(impact.REVIEWED_MODULES))
+        plan = {"scope": "full", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "base", "python_tests": selected}
+        dependencies = {"fixture": "same guarded inputs"}
+        def evidence_for(chosen):
+            return {"schema_version": 2, "mode": chosen["profile"], "status": "passed",
+                    "stale": False, "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "plan": chosen,
+                    "target_cache": {"dependency_inputs": dependencies},
+                    "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}}
+                              for step in delivery.ci.planned_steps(chosen)]}
+        report = fixture.repo / "core-ci.json"
+        delivery.write_json(report, evidence_for(plan))
+        with patch.object(delivery, "run", return_value="{}"), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value=plan) as resolve, \
+                patch.object(runner, "_dependency_context", return_value=dependencies):
+            def verify():
+                delivery.validate_ci(report, runner, tree["commit"])
+            with self.assertRaisesRegex(delivery.DeliveryError, "full audit"):
+                with runner.guarded_release(verification_check=verify):
+                    self.fail("partial Python coverage reached release pending/build boundary")
+            self.assertFalse(list(fixture.target_state_dir.glob("*.release-owner.json")))
+            self.assertIsNone(runner.target_lock)
+            calls = fixture.call_log.read_text()
+            self.assertNotIn("cargo build", calls)
+            self.assertNotIn("cargo clean", calls)
+            delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+            complete = {**plan, "profile": "release", "python_tests": impact.select(
+                "release", [], [], set(), sorted(impact.REVIEWED_MODULES))}
+            resolve.return_value = complete
+            delivery.write_json(report, evidence_for(complete))
+            delivery.validate_ci(report, runner, tree["commit"])
+
+
 @unittest.skipUnless(sys.platform == "darwin", "native macOS signature behavior")
 class NativeSignatureTests(unittest.TestCase):
     def test_developer_id_seals_receipt_and_keeps_requirement_across_changed_executables(self):
