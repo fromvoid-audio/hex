@@ -740,7 +740,7 @@ fn loop_review_session_cell_selection_is_not_a_stale_arrangement_selection(
         assert_eq!(v.selected_clip, Some(session_id));
         assert_eq!(v.selected_cell, Some((track, scene)));
     });
-    let position = visual.debug_bounds("show arrangement").unwrap().center();
+    let position = visual.debug_bounds("show arrange view · tab").unwrap().center();
     visual.simulate_click(position, Modifiers::default());
     visual.run_until_parked();
     let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
