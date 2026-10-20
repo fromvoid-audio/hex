@@ -7,8 +7,11 @@ fn fixture() -> Project {
     let mut ids = Vec::new();
     for _ in 0..3 {
         let Created::Track(id) = editor
-            .execute(Command::AddTrack {
+            .execute(Command::InsertTrackWithDevice {
                 name: "track".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         else {

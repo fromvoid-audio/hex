@@ -14,8 +14,11 @@ fn beat(quarters: u64) -> BeatTime {
 fn fixture() -> (Project, hex_project::ClipId, hex_project::TrackId) {
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 16).expect("editor");
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "fm4 route".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("midi track")
     else {

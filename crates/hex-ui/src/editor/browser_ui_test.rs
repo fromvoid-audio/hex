@@ -5115,3 +5115,6 @@ fn browser_arrows_up_down_enter_results_and_command_f_keeps_text_input(cx: &mut 
 
 #[path = "browser_divider_paint_ui_test.rs"]
 mod divider_paint;
+
+#[path = "browser_instrument_enter_ui_test.rs"]
+mod instrument_enter;

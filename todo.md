@@ -6014,3 +6014,19 @@ capture gutter. Paint a separate1px themed leading line while retaining all4px
 of capture/geometry/cursor. Actual line+transparent-edge drags and normal/compact,
 editor open/closed paint checks; preserve PR324 gesture color/cancellation.
 Targeted evidence in Pulse; sole merger fullCI/merge, root native acceptance.
+
+
+## 408 empty-track source continuation
+
+- Compose original c206 empty ordinary-track insertion with current non-gray
+  color selection and the 345a one-Environment keyboard fixture return.
+- Original model/Service PCM/storage/Engine and new fixture receipts are source
+  component evidence; current required checks and actual merge are recorded in
+  Pulse2802. Physical input, delivery and listening acceptance remain separate.
+
+408 integration: preserve actual implicit-instrument fixture failures, explicitly
+create only their intended private devices, and retain all history/PCM/allocation
+oracles. Keep common imports and new-track behavior empty. Browser Enter uses the
+selected registered instrument; clip-only transfer does not copy device chains.
+Source-bound component results and the final exact-candidate qualification are
+recorded separately in Pulse2802; native input/listening/delivery remain open.

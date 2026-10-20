@@ -288,8 +288,11 @@ fn failed_prepared_import_preserves_project_ids_and_resident_media() {
         panic!("import result expected")
     };
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("add instrument track")
     else {
@@ -436,8 +439,11 @@ fn offline_export_renders_repeated_midi_from_the_prepared_session_graph() {
     let path = directory.path().join("looped-midi.wav");
     let mut session = Session::new(48_000, 12, 0).expect("session");
     let track = match session
-        .command(Command::AddMidiTrack {
+        .command(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("instrument track")
     {
@@ -817,8 +823,11 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
 fn ordered_instrument_candidate_prepares_and_roundtrips_history() {
     let mut session = Session::new(48_000, 16, 0).expect("session");
     let (track, _) = match session
-        .command(Command::AddTrack {
+        .command(Command::InsertTrackWithDevice {
             name: "chain".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("track")
     {

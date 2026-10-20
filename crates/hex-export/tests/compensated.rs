@@ -30,6 +30,12 @@ fn compensated_export_skips_startup_and_publishes_exact_first_and_final_source_f
     else {
         panic!("import")
     };
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
     editor.execute(Command::RemoveInstrument { track }).unwrap();
     editor
         .execute(Command::InsertDevice {
