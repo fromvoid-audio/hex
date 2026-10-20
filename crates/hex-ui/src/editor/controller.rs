@@ -1748,6 +1748,7 @@ impl EditorView {
             } else {
                 None
             };
+        self.observe_effect_bus_barrier(&event);
         let event_state = Arc::clone(&event.state);
         let revision = event_state.revision;
         if !event.project_replaced {
@@ -1878,6 +1879,7 @@ impl EditorView {
             }
             self.device_gesture.reset();
             self.device_gesture_barriers.clear();
+            self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
             self.clip_paint_gesture = None;
             self.time_selection = None;
@@ -2212,6 +2214,7 @@ impl EditorView {
             if let Some(snapshot) = self.device_gesture.snapshot() {
                 self.bind_tuning_library_device_terminal(snapshot.key, false);
             }
+            self.refuse_effect_bus_barriers("effect insertion canceled · device edit was retired");
             self.device_gesture.reset();
             super::device_gesture::retire_deferred(
                 &mut self.pending_requests,
@@ -2327,6 +2330,9 @@ impl EditorView {
             if let Some(message) = message {
                 self.error = Some(message.into());
             }
+        }
+        if let Some(reason) = self.take_effect_bus_barrier_error() {
+            self.error = Some(reason.into());
         }
         self.reconcile_publication_observation();
         if event.request_complete
@@ -2518,6 +2524,7 @@ impl EditorView {
                 | Request::DropNativeDevice { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
+                | Request::InsertEffectBusDevice { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
                 | Request::CompareDevice { .. }

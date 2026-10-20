@@ -1,4 +1,6 @@
+mod effect_bus_barrier;
 use super::EditorView;
+pub(super) use effect_bus_barrier::EffectBusBarrierState;
 use hex_session::device_gesture::{
     GesturePhase, GestureTarget, ParameterPairValue, ParameterValue,
 };
@@ -171,6 +173,7 @@ impl EditorView {
             Err(SubmitError::Busy(_)) => {
                 self.device_gesture.reset();
                 self.device_gesture_barriers.clear();
+                self.effect_bus_barrier.custody = None;
                 self.retire_tuning_library_device_terminal();
                 self.refuse_deferred_tuning_writes();
                 self.error = Some("an export is already pending".into());
@@ -179,6 +182,7 @@ impl EditorView {
             Err(SubmitError::Closed(_)) => {
                 self.device_gesture.reset();
                 self.device_gesture_barriers.clear();
+                self.effect_bus_barrier.custody = None;
                 self.retire_tuning_library_device_terminal();
                 self.refuse_deferred_tuning_writes();
                 self.error = Some("project worker stopped".into());
@@ -194,9 +198,13 @@ impl EditorView {
         let terminal = matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel);
         let matched = self.device_gesture.acknowledge(ack);
         if !matched {
+            self.refuse_effect_bus_barriers(
+                "effect insertion canceled · device acknowledgment did not match",
+            );
             return false;
         }
         if terminal {
+            self.settle_effect_bus_barriers(ack);
             self.bind_tuning_library_device_terminal(ack.key, ack.accepted);
             if !ack.accepted {
                 self.refuse_deferred_tuning_writes();
@@ -228,6 +236,7 @@ impl EditorView {
                 &mut self.device_gesture_barriers,
             );
         } else if ack.phase == GesturePhase::Begin && !ack.accepted {
+            self.refuse_effect_bus_barriers("effect insertion canceled · device edit was refused");
             // The worker refused to admit the draft, so release dependent
             // barriers in their accepted order without an edit to finalize.
             release_deferred(
@@ -254,6 +263,13 @@ impl EditorView {
             self.error = Some("device edit queue full · request was not applied".into());
             return false;
         }
+        let custody = match self.effect_bus_custody(&request) {
+            Ok(proof) => proof,
+            Err(reason) => {
+                self.error = Some(reason.into());
+                return false;
+            }
+        };
         if !self.device_gesture.has_pending_terminal() {
             if let Err(error) = self.device_gesture.finish_current() {
                 self.error = Some(error.into());
@@ -265,6 +281,9 @@ impl EditorView {
             &mut self.device_gesture_barriers,
             request,
         ) {
+            if let Some(proof) = custody {
+                self.effect_bus_barrier.custody = Some(proof);
+            }
             true
         } else {
             self.error = Some("device edit queue full · request was not applied".into());
@@ -282,11 +301,21 @@ impl EditorView {
         let Some(request) = request.take() else {
             return Some(false);
         };
+        let custody = match self.effect_bus_custody(&request) {
+            Ok(proof) => proof,
+            Err(reason) => {
+                self.error = Some(reason.into());
+                return Some(false);
+            }
+        };
         if defer_request(
             &mut self.pending_requests,
             &mut self.device_gesture_barriers,
             request,
         ) {
+            if let Some(proof) = custody {
+                self.effect_bus_barrier.custody = Some(proof);
+            }
             Some(true)
         } else {
             self.error = Some("device edit queue full · request was not applied".into());

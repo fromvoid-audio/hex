@@ -201,6 +201,247 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
     }
 }
 
+fn review_window(cx: &mut TestAppContext) -> (gpui::AnyWindowHandle, Entity<EditorView>) {
+    cx.update(crate::editor::bind_editor_keys);
+    let environment = Environment::new().unwrap();
+    std::fs::create_dir_all(environment.root().join("samples")).unwrap();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_environment(
+                    window,
+                    cx,
+                    Service::new(48_000, 32, 8_000_000).unwrap(),
+                    Arc::clone(&environment),
+                )
+            })
+        })
+        .unwrap();
+    (handle, editor)
+}
+
+fn focus_bus(visual: &mut VisualTestContext, owner: EffectBusOwner) {
+    let selector = match owner {
+        EffectBusOwner::Main => "main-track-header".to_owned(),
+        EffectBusOwner::Return(id) => format!("return-track-focus-{}", id.value()),
+    };
+    let bounds = visual
+        .debug_bounds(Box::leak(selector.into_boxed_str()))
+        .unwrap();
+    let target = if owner == EffectBusOwner::Main {
+        point(bounds.left() + px(14.), bounds.center().y)
+    } else {
+        bounds.center()
+    };
+    visual.simulate_click(target, Modifiers::default());
+    visual.run_until_parked();
+}
+
+fn click_bus_add(visual: &mut VisualTestContext, owner: EffectBusOwner) {
+    let toggle = visual.debug_bounds("device-add-toggle").unwrap().center();
+    visual.simulate_click(toggle, Modifiers::default());
+    visual.run_until_parked();
+    let selector = format!("add-{}-effect-hex.utility", owner.prefix());
+    let item = visual
+        .debug_bounds(Box::leak(selector.into_boxed_str()))
+        .unwrap()
+        .center();
+    visual.simulate_click(item, Modifiers::default());
+    visual.run_until_parked();
+}
+
+#[gpui::test]
+fn main_and_return_add_after_changed_or_noop_gesture_preserves_two_history_steps(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor) = review_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1600.), px(900.)));
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddReturnTrack {
+            name: "return".into()
+        })))
+    });
+    pump(&editor, &mut visual);
+    let bus = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.return_tracks()[0].id()
+    });
+    for owner in [EffectBusOwner::Main, EffectBusOwner::Return(bus)] {
+        focus_bus(&mut visual, owner);
+        click_bus_add(&mut visual, owner);
+        pump(&editor, &mut visual);
+        let device = editor.read_with(&visual, |v, _| {
+            owner.devices(&v.state.as_ref().unwrap().project).unwrap()[0].id()
+        });
+        for changed in [true, false] {
+            let before =
+                editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+            let parameter = hex_lattice_contract::ParameterId::from_static(1);
+            let initial = hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Effect,
+                before.device(device).unwrap().state(),
+                parameter,
+            )
+            .unwrap();
+            let value = if changed {
+                ParameterValue::Float(0.5)
+            } else {
+                initial
+            };
+            editor.update(&mut visual, |v, _| {
+                v.begin_device_gesture(
+                    GestureTarget::DeviceParameter { device, parameter },
+                    initial,
+                )
+                .unwrap();
+                v.change_device_gesture(value).unwrap();
+            });
+            pump_control(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert!(v.device_gesture.snapshot().is_some());
+                assert!(v.error.is_none(), "preview refused: {:?}", v.error);
+                assert_eq!(
+                    v.state.as_ref().unwrap().project,
+                    before,
+                    "preview remains transient"
+                );
+            });
+            click_bus_add(&mut visual, owner);
+            pump(&editor, &mut visual);
+            let added = editor.read_with(&visual, |v, _| {
+                assert!(
+                    v.error.is_none(),
+                    "{owner:?} changed={changed}: {:?}",
+                    v.error
+                );
+                assert!(v.device_gesture.snapshot().is_none());
+                assert!(v.device_gesture_barriers.is_empty());
+                let project = &v.state.as_ref().unwrap().project;
+                assert_eq!(
+                    owner.devices(project).unwrap().len(),
+                    owner.devices(&before).unwrap().len() + 1
+                );
+                assert_eq!(
+                    hex_engine::native_device_parameter_for_class(
+                        NativeDeviceClass::Effect,
+                        project.device(device).unwrap().state(),
+                        parameter
+                    )
+                    .unwrap(),
+                    value
+                );
+                project.clone()
+            });
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                let project = &v.state.as_ref().unwrap().project;
+                assert_eq!(
+                    owner.devices(project).unwrap().len(),
+                    owner.devices(&before).unwrap().len()
+                );
+                assert_eq!(
+                    hex_engine::native_device_parameter_for_class(
+                        NativeDeviceClass::Effect,
+                        project.device(device).unwrap().state(),
+                        parameter
+                    )
+                    .unwrap(),
+                    value
+                );
+            });
+            if changed {
+                editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+                pump(&editor, &mut visual);
+                editor.read_with(&visual, |v, _| {
+                    let mut expected = before.snapshot();
+                    expected.next_id = added.next_identity();
+                    assert_eq!(v.state.as_ref().unwrap().project.snapshot(), expected);
+                });
+                editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+                pump(&editor, &mut visual);
+            }
+            editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(v.state.as_ref().unwrap().project, added)
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn main_utility_width_popup_dispatches_actual_mode_action_and_history(cx: &mut TestAppContext) {
+    let (handle, editor) = review_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1600.), px(900.)));
+    pump(&editor, &mut visual);
+    focus_bus(&mut visual, EffectBusOwner::Main);
+    click_bus_add(&mut visual, EffectBusOwner::Main);
+    pump(&editor, &mut visual);
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.clone());
+    let device = before.main_devices()[0].id();
+    let selector = format!("utility-width-dial-{}", device.value());
+    let point = visual
+        .debug_bounds(Box::leak(selector.into_boxed_str()))
+        .unwrap()
+        .center();
+    visual.simulate_mouse_down(point, MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(point, MouseButton::Right, Modifiers::default());
+    visual.run_until_parked();
+    let item = visual
+        .debug_bounds("context-menu-item")
+        .expect("Main Utility mode popup remains available")
+        .center();
+    visual.simulate_click(item, Modifiers::default());
+    pump(&editor, &mut visual);
+    let after = editor.read_with(&visual, |v, _| {
+        assert!(v.error.is_none(), "{:?}", v.error);
+        let project = &v.state.as_ref().unwrap().project;
+        assert_eq!(
+            hex_engine::native_device_parameter_for_class(
+                NativeDeviceClass::Effect,
+                project.device(device).unwrap().state(),
+                hex_lattice_contract::ParameterId::from_static(9)
+            )
+            .unwrap(),
+            ParameterValue::Bool(true)
+        );
+        project.clone()
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, before)
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project, after)
+    });
+}
+
+fn pump_control(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+    let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut idle = 0;
+    while idle < 2 {
+        let done = editor.update(&mut *visual, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+            view.worker_requests_pending == 0 && view.pending_requests.is_empty()
+        });
+        visual.run_until_parked();
+        idle = if done { idle + 1 } else { 0 };
+        assert!(std::time::Instant::now() < end);
+        std::thread::yield_now();
+    }
+}
+
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {

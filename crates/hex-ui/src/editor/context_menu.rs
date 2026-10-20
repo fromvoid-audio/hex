@@ -521,19 +521,24 @@ fn clip_belongs_to_track(project: &hex_project::Project, track: TrackId, clip: C
 }
 
 fn utility_device_exists(project: &hex_project::Project, id: DeviceId) -> bool {
-    project.tracks().iter().any(|track| {
-        track.ordered_device_chain().any(|node| {
-            let device = match node {
-                hex_project::TrackDeviceRef::Instrument(device)
-                | hex_project::TrackDeviceRef::Effect(device) => device,
-            };
-            device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+    project
+        .main_devices()
+        .iter()
+        .any(|device| device.id() == id && device.state().type_id().as_str() == Ok("hex.utility"))
+        || project.tracks().iter().any(|track| {
+            track.ordered_device_chain().any(|node| {
+                let device = match node {
+                    hex_project::TrackDeviceRef::Instrument(device)
+                    | hex_project::TrackDeviceRef::Effect(device) => device,
+                };
+                device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+            })
         })
-    }) || project.return_tracks().iter().any(|track| {
-        track.devices().iter().any(|device| {
-            device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+        || project.return_tracks().iter().any(|track| {
+            track.devices().iter().any(|device| {
+                device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+            })
         })
-    })
 }
 
 fn insertion_anchor(state: &ViewState, after_track: Option<TrackId>) -> Option<TrackId> {

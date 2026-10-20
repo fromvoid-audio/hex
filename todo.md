@@ -6307,3 +6307,11 @@ insert commands, selection, same-owner reorder and ordinary empty tracks remain.
 New Service and rendered controls cover both destinations, history and atomic
 refusal. This is an implementation checkpoint; exact-source owning checks,
 required CI, review and merge remain pending. Native delivery remains separate.
+
+PR484 integration continuation: worker-only Main/Return catalog construction is
+implemented. Actual Main/Return menu and browser-drop ACK/history controls pass;
+Service admission/refusal/gesture controls and retained Track controls remain
+source-scoped. The two new review regressions (deferred Add revision and Main
+Utility popup) were reproduced and now pass through actual Service/UI paths,
+including changed/no-op gesture history. Final refusal controls, exact required
+plan and current review remain pending; no merge or native acceptance claimed.

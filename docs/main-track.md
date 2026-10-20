@@ -208,3 +208,13 @@ request resolves the registered default on the worker and uses the existing
 atomic Main/Return insertion command and ordinary prepared-edit publication.
 It retains the selected bus, created-device response and one Undo/Redo step.
 Existing-device same-owner reorder and ordinary empty-track behavior are unchanged.
+
+A bus addition deliberately deferred behind a local device gesture retains that
+exact gesture key, generation, original revision and destination/type/anchor in
+the existing bounded UI barrier state. Only its matched accepted Commit ACK can
+rebind it to the canonical state adopted from that event: an unchanged no-op
+revision or a checked single-step commit. Unrelated transitions, old ACKs,
+cancellation, refusal, replacement and invalidated destinations retire the
+addition visibly. Direct stale requests remain worker-refused. Generic deferred
+Save/export/tuning/edit FIFO behavior is unchanged. Main Utility uses the same
+identity/type validation as Track and Return for its width/mid-side popup.
