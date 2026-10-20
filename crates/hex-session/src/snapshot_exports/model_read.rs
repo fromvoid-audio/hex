@@ -4,6 +4,8 @@
 use super::SnapshotRead;
 use hex_project::{ClipId, DeviceId, ReturnId, TrackId};
 
+pub mod ui_consumers;
+
 /// A model query tied to one existing family read, never an owning Project.
 ///
 /// ```compile_fail
