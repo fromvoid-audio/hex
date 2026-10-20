@@ -23,7 +23,7 @@ DELIVERY_SPEC.loader.exec_module(delivery)
 class UiBuildIdentityTests(unittest.TestCase):
     def test_real_cargo_freshness_source_untracked_changelog_and_raw_fallback(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             package = root / "crates/ui"
             (package / "src").mkdir(parents=True)
             (root / "changelog").mkdir()

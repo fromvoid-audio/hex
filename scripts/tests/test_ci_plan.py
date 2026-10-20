@@ -225,7 +225,7 @@ class ScopeTests(unittest.TestCase):
 
     def test_review_default_tool_relative_and_empty_path_uses_cargo_cwd(self):
         with tempfile.TemporaryDirectory() as directory:
-            base = Path(directory)
+            base = Path(directory).resolve()
             root, caller = base / "repo", base / "caller"
             for parent in (root, caller):
                 (parent / "bin").mkdir(parents=True)
