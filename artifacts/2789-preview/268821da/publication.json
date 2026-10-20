@@ -1,0 +1,13 @@
+{
+  "source": "268821da3cd205cebeba710be6883ab745577d56",
+  "parent": "0d8ea48b411ed3ecdf9b435fc30b2e2c74d9cf35",
+  "tree": "c5f23a25602ea50e74664e121e063296d76e0fd5",
+  "publication": "Original continuation summary retains uncommitted-at-check-time wording; this sidecar records subsequent identical10-file hash/tree source publication. Prior archives unchanged.",
+  "qualification": {
+    "targeted_component_checks": true,
+    "workspace_or_full": false,
+    "native": false,
+    "merge": false
+  },
+  "review": "Primary inspected opaque fact/read surface, virtual split overlays, shared event geometry/split law, root projection and capture changes. No actionable finding. Source does not export domain/map/list owners; clipboard equality still requires exact Copy point values outside read."
+}
