@@ -36,7 +36,7 @@ fn fixture_with_session_note_duration(
     let track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -173,7 +173,7 @@ fn session_audio_and_midi_routes_use_the_prepared_track_device_matrix() {
     let midi_track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "midi".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -301,7 +301,7 @@ fn one_hybrid_track_switches_audio_midi_audio_and_releases_the_midi_tail() {
     let track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "hybrid".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -740,7 +740,7 @@ fn inherited_tail_occupancy_does_not_block_another_tracks_pending_transition() {
     let other_track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "other keys".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -1093,7 +1093,7 @@ fn a_late_chunk_failure_rolls_back_a_due_pending_route_and_zeros_earlier_audio()
     let other_track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "second keys".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -1285,7 +1285,7 @@ fn mixed_audio_session_midi_and_explicit_silence_match_independent_source_compos
     let session_track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "session midi".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -1297,7 +1297,7 @@ fn mixed_audio_session_midi_and_explicit_silence_match_independent_source_compos
     let stopped_track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "stopped midi".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })

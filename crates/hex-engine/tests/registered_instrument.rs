@@ -173,7 +173,7 @@ fn two_registered_analytic_definitions_prepare_arrangement_and_session_notes() {
         let Created::Track(track) = editor
             .execute(Command::InsertTrackWithDevice {
                 name: name.into(),
-                before: None,
+                before_track: None,
                 slot: hex_project::TrackDeviceSlot::Instrument,
                 state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })

@@ -178,7 +178,7 @@ fn fixture() -> (
     let midi_track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -330,7 +330,7 @@ fn ordered_hybrid_streamed_render_matches_resident_audio_and_midi() {
     let track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "ordered hybrid".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })

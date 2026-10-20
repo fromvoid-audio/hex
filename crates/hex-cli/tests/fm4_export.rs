@@ -16,7 +16,7 @@ fn built_in_fm4_offline_export_matches_independent_carrier_pcm() {
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
             name: "fm4 export".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })

@@ -42,7 +42,7 @@ fn saved_mixed_project_preserves_midi_and_renders_audible_mix() {
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
             name: "Original-MiXeD instrument".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })

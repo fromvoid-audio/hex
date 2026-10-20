@@ -89,7 +89,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
     editor
         .execute(Command::InsertTrackWithDevice {
             name: "admission proof".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })

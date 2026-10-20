@@ -81,7 +81,7 @@ fn fixture(mute_audio: bool, solo_instrument: bool) -> PlaybackProject {
     let instrument = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "instrument".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })

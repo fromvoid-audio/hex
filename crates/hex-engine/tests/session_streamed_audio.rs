@@ -138,7 +138,7 @@ fn project_with_arrangement_midi(source_start: u64, source_end: u64) -> Project 
     let track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })

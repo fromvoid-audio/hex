@@ -8,7 +8,7 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
             name: "activity".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -134,7 +134,7 @@ fn activity_fixture() -> (Editor, [hex_project::TrackId; 3], hex_project::Device
         let Created::Track(track) = editor
             .execute(Command::InsertTrackWithDevice {
                 name: "activity".into(),
-                before: None,
+                before_track: None,
                 slot: hex_project::TrackDeviceSlot::Instrument,
                 state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })

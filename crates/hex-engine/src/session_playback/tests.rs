@@ -3106,7 +3106,7 @@ fn shared_context_table_admits_the_full_track_bound_without_duplicate_owners() {
         let track = match editor
             .execute(Command::InsertTrackWithDevice {
                 name: format!("context {index}"),
-                before: None,
+                before_track: None,
                 slot: hex_project::TrackDeviceSlot::Instrument,
                 state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
@@ -3478,7 +3478,7 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
     let first_track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "short source".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -3490,7 +3490,7 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
     let second_track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "held source".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -3659,7 +3659,7 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
     let first_track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "removed mutable track".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -3671,7 +3671,7 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
     let retained_track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "retained mutable track".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -6943,7 +6943,7 @@ fn instrument_edit_captures_only_the_changed_session_track() {
     let first = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "first".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -6955,7 +6955,7 @@ fn instrument_edit_captures_only_the_changed_session_track() {
     let second = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "second".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })

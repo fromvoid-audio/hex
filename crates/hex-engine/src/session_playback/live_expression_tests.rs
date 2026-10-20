@@ -16,7 +16,7 @@ fn fixture() -> Fixture {
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
             name: "controller".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })

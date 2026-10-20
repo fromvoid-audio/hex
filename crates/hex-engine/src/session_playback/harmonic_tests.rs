@@ -116,7 +116,7 @@ fn routed_session_fixture() -> (
     let Created::Track(source) = editor
         .execute(Command::InsertTrackWithDevice {
             name: "source".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
@@ -127,7 +127,7 @@ fn routed_session_fixture() -> (
     let Created::Track(destination) = editor
         .execute(Command::InsertTrackWithDevice {
             name: "destination".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })

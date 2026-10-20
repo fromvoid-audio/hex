@@ -8,7 +8,7 @@ fn neutral_enabled_tuning_admits_and_unsupported_pitch_refuses_transactionally()
     let Created::Track(track) = editor
         .execute(Command::InsertTrackWithDevice {
             name: "tuning".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })

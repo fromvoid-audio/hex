@@ -130,7 +130,7 @@ fn arrangement_midi_receives_the_same_fused_device_transform() {
     let track = match editor
         .execute(Command::InsertTrackWithDevice {
             name: "midi".into(),
-            before: None,
+            before_track: None,
             slot: hex_project::TrackDeviceSlot::Instrument,
             state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
