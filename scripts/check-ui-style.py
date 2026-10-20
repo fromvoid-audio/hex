@@ -151,7 +151,17 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/waveform_header_ui_test.rs'
             and suffix.startswith('gpui::canvas(')
         )
-        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas:
+        # Header mixer composition uses typed controls; each caption is checked
+        # separately at its theme::text boundary. Keep variable names file-local.
+        header_mixer_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/tracks.rs'
+            and suffix.startswith(('utilities)', 'activator)', 'solo)', 'arm)',
+                                   'self.track_pan(', 'header_content)'))
+        ) or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/return_tracks.rs'
+            and suffix.startswith(('self.return_volume(', 'gain_control)'))
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

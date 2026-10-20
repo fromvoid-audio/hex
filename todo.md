@@ -6030,3 +6030,17 @@ oracles. Keep common imports and new-track behavior empty. Browser Enter uses th
 selected registered instrument; clip-only transfer does not copy device chains.
 Source-bound component results and the final exact-candidate qualification are
 recorded separately in Pulse2802; native input/listening/delivery remain open.
+
+## reference track-header mixer component — Pulse2835 / PR439, 19 october2026
+
+Additive shared filled numeric fields replace the rejected separate resident
+rail/readout composition. Track activator/Solo, gain/pan and Return gain/mute
+retain canonical commands; TrackBalance/ReturnGain reuse existing worker gesture
+custody, transient prepared previews, Cancel and one-step history. Standard widget
+appearances, automation-owned `auto`, streaming +/- and pinned Return placement
+remain. See docs/track-header-volume.md for exact scope and evidence limits.
+Recording arm is disabled/unavailable and remains Pulse26's deferred0.2 dependency;
+Return pan/Solo have no current model and are omitted. Full2835 acceptance and
+optimized native visual/listening checks stay open. No PR438/431 implementation,
+recording backend, codec, new DSP or native app action is included. Final current
+candidate checks/review/merge belong to the sole merger.
