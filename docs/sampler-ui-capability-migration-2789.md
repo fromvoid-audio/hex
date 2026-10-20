@@ -164,6 +164,26 @@ this is not a test, strict, full-audit, native or playable-build qualification.
 Controller intake still requires the same-head/previous-source comparison
 preflight before claim, plus actual backend-associated completion routes.
 
+The following controller continuation resolves that source-level admission gap.
+Actual enqueue branches now return `Accepted`, `RetryableQueueCapacity` or
+`Refused`, with the existing bool enqueue/barrier wrappers preserving other
+callers. Both device-terminal defer paths propagate exact capacity results.
+Service Full that is queued locally remains Accepted; Service Busy/export,
+Closed, semantic guards, custody and finalizer failures are Refused. Current
+client finalizer failures are semantic, not hidden capacity results. The loop
+retries its same original release only for actual queue capacity or read Busy;
+permanent refusal remains visible and retains the candidate without retry.
+FIFO order, terminal counts and accepted-request correlation are unchanged.
+
+The frozen `modern-typed-admission` library diagnostic at HEAD `294bcb15`
+completed with exit 101 and 441 actual errors, unchanged source SHA-256
+`7162b68994433330a1f28720fbce4e321b3980a6579506f5a91ebea0b8479f6b`.
+No primary diagnostic is in the new admission methods, device defer helpers or
+loop consumer. Scoped format/diff/layout checks pass. Source-level capacity
+classification is connected, but real full-queue/barrier/refusal/retry/ACK UI
+regressions remain unexecuted until the registered fixture and UI compilation
+are available; no reliable release acceptance or usable build is claimed.
+
 The sections below preserve the older b94-based component's source history;
 their unconnected-dispatch and unavailable-query descriptions are historical.
 

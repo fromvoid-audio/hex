@@ -1,4 +1,5 @@
 //! Compact Arrangement loop-range rail with a control-side preview gesture.
+use super::controller::RequestAdmission;
 use super::{EditorMode, EditorView, musical_time::GridLine, viewport::Viewport};
 use crate::theme;
 use gpui::{
@@ -75,6 +76,7 @@ enum PreparedLoopUpdate {
 #[derive(Clone, Copy, Debug)]
 enum LoopFinish {
     Handled(bool),
+    RetryableQueueCapacity,
     AdmissionRefused,
 }
 #[derive(Clone, Copy, Debug)]
@@ -331,26 +333,34 @@ impl EditorView {
             }
             PreparedLoopUpdate::Candidate(gesture) => gesture,
         };
-        let accepted =
+        let admission =
             if !gesture.click_disqualified && gesture.toggle_on_click && modifiers.platform {
-                self.enqueue(Request::Edit(Command::ToggleLoopRegion))
+                self.enqueue_with_admission(Request::Edit(Command::ToggleLoopRegion))
             } else if matches!(gesture.mode, EditMode::Move { .. }) && !gesture.moved {
-                true
+                RequestAdmission::Accepted
             } else if let Some(region) = gesture.preview {
-                Some(region) == gesture.loop_region
-                    || self.submit_loop_preview(gesture.generation, region)
+                if Some(region) == gesture.loop_region {
+                    RequestAdmission::Accepted
+                } else {
+                    self.submit_loop_preview(gesture.generation, region)
+                }
             } else {
                 self.error = Some("loop region needs a non-empty time range".into());
-                true
+                RequestAdmission::Accepted
             };
-        if accepted {
-            self.loop_rail_gesture = None;
-            Ok(LoopFinish::Handled(true))
-        } else {
-            // The actual candidate survives refused admission. No request was
-            // accepted, so it must not be mistaken for a completed release.
-            self.loop_rail_gesture = Some(gesture);
-            Ok(LoopFinish::AdmissionRefused)
+        match admission {
+            RequestAdmission::Accepted => {
+                self.loop_rail_gesture = None;
+                Ok(LoopFinish::Handled(true))
+            }
+            RequestAdmission::RetryableQueueCapacity => {
+                self.loop_rail_gesture = Some(gesture);
+                Ok(LoopFinish::RetryableQueueCapacity)
+            }
+            RequestAdmission::Refused => {
+                self.loop_rail_gesture = Some(gesture);
+                Ok(LoopFinish::AdmissionRefused)
+            }
         }
     }
 
@@ -379,7 +389,7 @@ impl EditorView {
                 }
                 true
             }
-            Err(SnapshotTransportError::Busy) => {
+            Ok(LoopFinish::RetryableQueueCapacity) | Err(SnapshotTransportError::Busy) => {
                 // One original release and one task per incarnation. Ordinary
                 // moves/modifier refreshes cannot change this pending candidate.
                 if let Some(current) = self.loop_rail_gesture.as_mut()
@@ -421,7 +431,8 @@ impl EditorView {
                         match view
                             .finish_loop_rail_gesture_checked(release.position, release.modifiers)
                         {
-                            Err(SnapshotTransportError::Busy) => true,
+                            Ok(LoopFinish::RetryableQueueCapacity)
+                            | Err(SnapshotTransportError::Busy) => true,
                             Ok(LoopFinish::Handled(_) | LoopFinish::AdmissionRefused) => {
                                 cx.notify();
                                 false

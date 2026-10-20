@@ -1,5 +1,5 @@
 mod effect_bus_barrier;
-use super::EditorView;
+use super::{EditorView, controller::RequestAdmission};
 pub(super) use effect_bus_barrier::EffectBusBarrierState;
 use hex_session::device_gesture::{
     GesturePhase, GestureTarget, ParameterPairValue, ParameterValue,
@@ -254,26 +254,33 @@ impl EditorView {
     }
 
     pub(super) fn enqueue_device_barrier(&mut self, request: Request) -> bool {
+        self.enqueue_device_barrier_admission(request).accepted()
+    }
+
+    pub(super) fn enqueue_device_barrier_admission(
+        &mut self,
+        request: Request,
+    ) -> RequestAdmission {
         if self.device_gesture.snapshot().is_none() {
-            return self.enqueue(request);
+            return self.enqueue_with_admission(request);
         }
         if self.pending_requests.len() + self.device_gesture_barriers.len()
             >= super::UI_REQUEST_CAPACITY
         {
             self.error = Some("device edit queue full · request was not applied".into());
-            return false;
+            return RequestAdmission::RetryableQueueCapacity;
         }
         let custody = match self.effect_bus_custody(&request) {
             Ok(proof) => proof,
             Err(reason) => {
                 self.error = Some(reason.into());
-                return false;
+                return RequestAdmission::Refused;
             }
         };
         if !self.device_gesture.has_pending_terminal() {
             if let Err(error) = self.device_gesture.finish_current() {
                 self.error = Some(error.into());
-                return false;
+                return RequestAdmission::Refused;
             }
         }
         if defer_request(
@@ -284,28 +291,28 @@ impl EditorView {
             if let Some(proof) = custody {
                 self.effect_bus_barrier.custody = Some(proof);
             }
-            true
+            RequestAdmission::Accepted
         } else {
             self.error = Some("device edit queue full · request was not applied".into());
-            false
+            RequestAdmission::RetryableQueueCapacity
         }
     }
 
-    pub(super) fn enqueue_after_device_terminal(
+    pub(super) fn enqueue_after_device_terminal_admission(
         &mut self,
         request: &mut Option<Request>,
-    ) -> Option<bool> {
+    ) -> Option<RequestAdmission> {
         if self.device_gesture_barriers.is_empty() && !self.device_gesture.has_pending_terminal() {
             return None;
         }
         let Some(request) = request.take() else {
-            return Some(false);
+            return Some(RequestAdmission::Refused);
         };
         let custody = match self.effect_bus_custody(&request) {
             Ok(proof) => proof,
             Err(reason) => {
                 self.error = Some(reason.into());
-                return Some(false);
+                return Some(RequestAdmission::Refused);
             }
         };
         if defer_request(
@@ -316,10 +323,10 @@ impl EditorView {
             if let Some(proof) = custody {
                 self.effect_bus_barrier.custody = Some(proof);
             }
-            Some(true)
+            Some(RequestAdmission::Accepted)
         } else {
             self.error = Some("device edit queue full · request was not applied".into());
-            Some(false)
+            Some(RequestAdmission::RetryableQueueCapacity)
         }
     }
 }
