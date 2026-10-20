@@ -3,7 +3,9 @@
 //! These wrappers keep every model borrow tied to the enclosing snapshot read.
 //! They expose copyable values and iterators over purpose-specific wrappers;
 //! no project, source, edit root, asset owner, or mutable runtime state escapes.
-use super::{SnapshotClipRead, SnapshotProjectRead, SnapshotRead, SnapshotTrackRead};
+use super::{
+    SnapshotClipRead, SnapshotDeviceRead, SnapshotProjectRead, SnapshotRead, SnapshotTrackRead,
+};
 use hex_project::{
     AssetId, BeatTime, ClipFade, ClipFlavor, ClipId, GainTouchStep, Meter, MeterPoint,
     MeterPosition, MidiNote, NoteId, SceneId, Tempo, TempoPoint, TrackId,
@@ -270,7 +272,24 @@ impl<'a> SnapshotProjectRead<'a> {
     }
 }
 
+/// Canonical chain class and scoped device borrow, in the model's persisted order.
+#[derive(Clone, Copy)]
+pub enum SnapshotTrackDeviceRead<'a> {
+    Instrument(SnapshotDeviceRead<'a>),
+    Effect(SnapshotDeviceRead<'a>),
+}
+
 impl<'a> SnapshotTrackRead<'a> {
+    pub fn ordered_device_chain(self) -> impl Iterator<Item = SnapshotTrackDeviceRead<'a>> + 'a {
+        self.track.ordered_device_chain().map(|node| match node {
+            hex_project::TrackDeviceRef::Instrument(device) => {
+                SnapshotTrackDeviceRead::Instrument(SnapshotDeviceRead { device })
+            }
+            hex_project::TrackDeviceRef::Effect(device) => {
+                SnapshotTrackDeviceRead::Effect(SnapshotDeviceRead { device })
+            }
+        })
+    }
     pub fn sends(self) -> impl ExactSizeIterator<Item = hex_project::SendLevel> + 'a {
         self.track.sends().iter().copied()
     }
@@ -544,7 +563,30 @@ impl<'a> SnapshotAssetRead<'a> {
     }
 }
 
-impl SnapshotAudioEditRead<'_> {
+impl<'a> SnapshotAudioEditRead<'a> {
+    pub fn pitch_cents(self) -> i16 {
+        self.edit.domain.pitch_cents
+    }
+    pub fn musical_start(self) -> Option<BeatTime> {
+        self.edit.musical_start
+    }
+    pub fn warp_mode(self) -> Option<hex_project::WarpMode> {
+        self.edit.domain.warp.as_ref().map(|warp| warp.mode)
+    }
+    pub fn warp_markers(self) -> impl ExactSizeIterator<Item = hex_project::WarpMarker> + 'a {
+        self.edit
+            .domain
+            .warp
+            .as_ref()
+            .map_or(&[][..], |warp| warp.markers.as_slice())
+            .iter()
+            .copied()
+    }
+    pub fn source_gain_points(
+        self,
+    ) -> impl ExactSizeIterator<Item = hex_project::SourceGainPoint> + 'a {
+        self.edit.domain.source_gain.iter().copied()
+    }
     pub fn view_start(self) -> u64 {
         self.edit.view_start
     }
