@@ -161,8 +161,15 @@ fn main_effects_count_against_the_combined_native_runtime_budget() {
         "exact256effect boundary must remain admitted"
     );
     let Created::Track(track) = edit
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "mutable".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+                hex_engine::DeviceTypeId::from_static("hex.instrument.sine"),
+            )
+            .unwrap(),
         })
         .unwrap()
     else {
@@ -229,6 +236,17 @@ fn main_only_unavailable_session_cannot_adopt_an_unowned_fallback() {
     let (mut edit, media) = fixture(false);
     // No Track/Return effects or mutable instruments can mask Main's ownership.
     let track = edit.project().tracks()[0].id();
+    // Author the instrument this removal control previously received implicitly.
+    // The shared audio fixture remains an ordinary empty track.
+    edit.execute(Command::InsertInstrument {
+        track,
+        state: hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            hex_engine::DeviceTypeId::from_static("hex.instrument.sine"),
+        )
+        .unwrap(),
+    })
+    .unwrap();
     edit.execute(Command::RemoveInstrument { track }).unwrap();
     edit.execute(Command::SetLoopRegion {
         start: u64::MAX - 1,

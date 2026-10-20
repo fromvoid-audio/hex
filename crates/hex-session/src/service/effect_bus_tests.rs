@@ -79,7 +79,10 @@ fn effect_bus_worker_main_and_return_use_selected_defaults_and_one_undo_redo() {
                 .all(|track| track.ordered_device_chain().next().is_none())
         );
         let undone = run(&service, Request::Undo);
-        assert_eq!(undone.state.project, before.project);
+        let mut expected = before.project.snapshot();
+        expected.next_id = added.state.project.next_identity();
+        assert!(expected.next_id > before.project.next_identity());
+        assert_eq!(undone.state.project.snapshot(), expected);
         let redone = run(&service, Request::Redo);
         assert_eq!(redone.state.project, added.state.project);
         run(&service, Request::Undo);
@@ -265,5 +268,11 @@ fn effect_bus_worker_refusal_does_not_finalize_an_unrelated_live_gesture() {
         insert(cancelled.state.revision, EffectBusDestination::Main),
     );
     assert!(added.error.is_none());
-    assert_eq!(run(&service, Request::Undo).state.project, before.project);
+    let mut expected = before.project.snapshot();
+    expected.next_id = added.state.project.next_identity();
+    assert!(expected.next_id > before.project.next_identity());
+    assert_eq!(
+        run(&service, Request::Undo).state.project.snapshot(),
+        expected
+    );
 }

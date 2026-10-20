@@ -42,6 +42,22 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
         view.state.as_ref().unwrap().project.return_tracks()[0].id()
     });
     for owner in [EffectBusOwner::Main, EffectBusOwner::Return(return_id)] {
+        // Return detail focus preserves ordinary-track selection; Main clears it.
+        let expected_track = if owner == EffectBusOwner::Main {
+            None
+        } else {
+            let track = editor.read_with(&visual, |view, _| {
+                view.state.as_ref().unwrap().project.tracks()[0].id()
+            });
+            let selector = format!("track-name-{}", track.value());
+            let name = visual
+                .debug_bounds(Box::leak(selector.into_boxed_str()))
+                .unwrap()
+                .center();
+            visual.simulate_click(name, Modifiers::default());
+            visual.run_until_parked();
+            Some(track)
+        };
         let focus_selector = match owner {
             EffectBusOwner::Main => "main-track-header".to_owned(),
             EffectBusOwner::Return(id) => format!("return-track-focus-{}", id.value()),
@@ -56,6 +72,9 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
         };
         visual.simulate_click(focus_point, Modifiers::default());
         visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_track, expected_track, "{owner:?} focus");
+        });
         let before_menu = editor.read_with(&visual, |view, _| {
             view.state.as_ref().unwrap().project.clone()
         });
@@ -81,7 +100,7 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
                 )
                 .unwrap()
             );
-            assert_eq!(view.selected_track, None);
+            assert_eq!(view.selected_track, expected_track, "{owner:?} menu ACK");
             assert_eq!(
                 view.focused_return,
                 if owner == EffectBusOwner::Main {
@@ -101,16 +120,21 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
         editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.state.as_ref().unwrap().project, before_menu)
+            let mut expected = before_menu.snapshot();
+            expected.next_id = menu_project.next_identity();
+            assert!(expected.next_id > before_menu.next_identity());
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), expected)
         });
         editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |view, _| {
             assert_eq!(view.state.as_ref().unwrap().project, menu_project)
         });
-        editor.update(&mut visual, |view, cx| {
-            view.select_browser_source(crate::editor::browser::BrowserSection::Instruments, cx)
-        });
+        let devices = visual
+            .debug_bounds("browser-section-devices")
+            .unwrap()
+            .center();
+        visual.simulate_click(devices, Modifiers::default());
         visual.run_until_parked();
         let source = visual
             .debug_bounds("browser-device-effect-hex.utility")
@@ -144,7 +168,7 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
             assert!(view.active_native_device_drag.is_none());
             let state = view.state.as_ref().unwrap();
             assert_eq!(owner.devices(&state.project).unwrap().len(), 2);
-            assert_eq!(view.selected_track, None);
+            assert_eq!(view.selected_track, expected_track, "{owner:?} drop ACK");
             assert_eq!(
                 view.focused_return,
                 if owner == EffectBusOwner::Main {
@@ -164,7 +188,10 @@ fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_s
         editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |view, _| {
-            assert_eq!(view.state.as_ref().unwrap().project, menu_project)
+            let mut expected = menu_project.snapshot();
+            expected.next_id = dropped.next_identity();
+            assert!(expected.next_id > menu_project.next_identity());
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), expected)
         });
         editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
         pump(&editor, &mut visual);
