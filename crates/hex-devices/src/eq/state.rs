@@ -1,6 +1,6 @@
 use super::*;
 mod borrowed;
-pub use borrowed::EqStateRead;
+pub use borrowed::{EqAutomationLaneRead, EqStateRead};
 
 /// Project-allocated monotonic identity. Parameter slots never depend on order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]

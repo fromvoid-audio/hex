@@ -7,6 +7,7 @@ pub use hex_devices::compressor::{
 };
 /// Control-side EQ node editing and its opaque versioned state contract.
 pub use hex_devices::eq;
+pub use hex_devices::eq8::EqFrequencyResponse;
 pub use hex_devices::operator_state::algorithms::CATALOG as native_operator_algorithms;
 pub use hex_devices::operator_waveform::builtin_waveform_preview as native_operator_waveform_preview;
 pub use hex_devices::saturator::{

@@ -104,6 +104,22 @@ impl<'a> NativeDeviceRead<'a> {
         hex_devices::compressor::transfer_curve_with_overrides(self.state, overrides)
             .map_err(|_| Invalid("native compressor curve is invalid"))
     }
+    /// Owner-free fixed coefficient facts. Effective pending edits use the
+    /// device's existing validated patch law; unsupported classes refuse.
+    pub fn eq_response(
+        self,
+        sample_rate: u32,
+        overrides: &[(ParameterId, ParameterValue)],
+    ) -> Result<hex_devices::eq8::EqFrequencyResponse, Invalid> {
+        let response = if self.state.type_id() == hex_devices::eq::EQ_TYPE_ID {
+            hex_devices::eq::frequency_response_with_overrides(self.state, sample_rate, overrides)
+        } else if self.state.type_id() == hex_devices::eq8::EQ8_TYPE_ID {
+            hex_devices::eq8::frequency_response_with_overrides(self.state, sample_rate, overrides)
+        } else {
+            return Err(Invalid("native eq response is unavailable"));
+        };
+        response.map_err(|_| Invalid("native eq response is invalid"))
+    }
     pub fn name(self) -> &'static str {
         self.metadata.display_name().unwrap_or("native device")
     }
@@ -112,6 +128,12 @@ impl<'a> NativeDeviceRead<'a> {
             || self.metadata.descriptors().len(),
             |eq| 2 + eq.node_count() * 7,
         )
+    }
+    /// Purpose-specific codec read: Copy nodes, lane/point facts and cursor;
+    /// private borrowed bytes cannot be extracted or used as a state owner.
+    pub fn eq(self) -> Result<hex_devices::eq::EqStateRead<'a>, Invalid> {
+        self.eq
+            .ok_or(Invalid("native sparse eq facts are unavailable"))
     }
     fn descriptor_at(self, index: usize) -> Result<ParameterDescriptor, Invalid> {
         if let Some(eq) = self.eq {

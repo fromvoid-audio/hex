@@ -5,6 +5,7 @@ const NODE_BYTES: usize = 20;
 
 #[derive(Clone, Copy)]
 pub struct EqStateRead<'a> {
+    next_node_id: u32,
     mode: u8,
     output_gain: f32,
     nodes: &'a [u8],
@@ -13,14 +14,25 @@ pub struct EqStateRead<'a> {
     lane_count: usize,
 }
 #[derive(Clone, Copy)]
-struct LaneRead<'a> {
+pub struct EqAutomationLaneRead<'a> {
     node: NodeId,
     parameter: NodeParameter,
     count: usize,
     points: &'a [u8],
 }
-impl LaneRead<'_> {
-    fn points(&self) -> impl Iterator<Item = Result<AutomationPoint, DeviceContractError>> + '_ {
+impl EqAutomationLaneRead<'_> {
+    pub fn node(self) -> NodeId {
+        self.node
+    }
+    pub fn parameter(self) -> NodeParameter {
+        self.parameter
+    }
+    pub fn point_count(self) -> usize {
+        self.count
+    }
+    pub fn points(
+        &self,
+    ) -> impl Iterator<Item = Result<AutomationPoint, DeviceContractError>> + '_ {
         let mut reader = Reader {
             bytes: self.points,
             offset: 0,
@@ -33,7 +45,7 @@ impl LaneRead<'_> {
         })
     }
 }
-fn lane<'a>(reader: &mut Reader<'a>) -> Result<LaneRead<'a>, DeviceContractError> {
+fn lane<'a>(reader: &mut Reader<'a>) -> Result<EqAutomationLaneRead<'a>, DeviceContractError> {
     let node = NodeId::new(u64::from(reader.u32()?))?;
     let parameter = *NodeParameter::ALL
         .get(usize::from(reader.byte()?))
@@ -44,7 +56,7 @@ fn lane<'a>(reader: &mut Reader<'a>) -> Result<LaneRead<'a>, DeviceContractError
         let _: [u8; 8] = reader.array()?;
         let _ = reader.float()?;
     }
-    Ok(LaneRead {
+    Ok(EqAutomationLaneRead {
         node,
         parameter,
         count,
@@ -99,6 +111,7 @@ impl<'a> EqStateRead<'a> {
             return Err(DeviceContractError::MalformedState);
         }
         let result = Self {
+            next_node_id: next,
             mode,
             output_gain,
             node_count,
@@ -168,6 +181,38 @@ impl<'a> EqStateRead<'a> {
     }
     pub fn lane_count(self) -> usize {
         self.lane_count
+    }
+    pub fn next_node_id(self) -> u32 {
+        self.next_node_id
+    }
+    pub fn lane_at(self, index: usize) -> Result<EqAutomationLaneRead<'a>, DeviceContractError> {
+        if index >= self.lane_count {
+            return Err(DeviceContractError::UnknownParameter);
+        }
+        let mut reader = Reader {
+            bytes: self.lanes,
+            offset: 0,
+        };
+        for _ in 0..index {
+            let _ = lane(&mut reader)?;
+        }
+        lane(&mut reader)
+    }
+    pub(in super::super) fn has_enabled_lane(
+        self,
+        node: NodeId,
+    ) -> Result<bool, DeviceContractError> {
+        let mut reader = Reader {
+            bytes: self.lanes,
+            offset: 0,
+        };
+        for _ in 0..self.lane_count {
+            let lane = lane(&mut reader)?;
+            if lane.node == node && lane.parameter == NodeParameter::Enabled {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
     pub fn node_at(self, index: usize) -> Result<Node, DeviceContractError> {
         if index >= self.node_count {
@@ -255,6 +300,18 @@ mod tests {
         assert_eq!(read.output_gain(), owned.output_gain);
         assert_eq!(read.node_count(), owned.nodes.len());
         assert_eq!(read.lane_count(), owned.lanes.len());
+        assert_eq!(read.next_node_id(), owned.next_node_id);
+        for (index, expected) in owned.lanes.iter().enumerate() {
+            let lane = read.lane_at(index).unwrap();
+            assert_eq!(
+                (lane.node(), lane.parameter(), lane.point_count()),
+                (expected.node, expected.parameter, expected.points.len())
+            );
+            for (actual, expected) in lane.points().zip(&expected.points) {
+                assert_eq!(actual.unwrap(), *expected);
+            }
+        }
+        assert!(read.lane_at(owned.lanes.len()).is_err());
         for (index, node) in owned.nodes.iter().enumerate() {
             assert_eq!(read.node_at(index).unwrap(), *node);
             for field in NodeParameter::ALL {
