@@ -729,6 +729,18 @@ native/user-test delivery remain separate work; this entry does not claim them.
   and finite optimized operator checklist. PR241 remains the later edit/fault pass;
   original24/177 broader acceptance stays open.
 
+## sampler unassigned native asset import — #2962 / PR546
+
+Real Session-worker source admission is implemented with explicit caller byte,
+construction, row/work and combined frame limits, one retained original PCM
+owner and atomic canonical metadata commit. Ordinary clip reuse refuses until
+an accounted derivative exists. Focused worker/PCM/budget/cancellation/ID-failure
+checks are recorded with PR546; required exact merge-plan evidence remains
+external. This is source admission, not a usable app sampler or native release.
+Next functional slice is sampler assignment → normal prepared revision → actual
+export worker and independent file PCM, retaining the same reservation domain.
+See [sampler contract](docs/sampler.md) for measured scope and exclusions.
+
 ## Sampler / Simpler request — #2679 / PR296, 17 october 2026
 
 The requested device is named sampler and targets Ableton Simpler, including

@@ -240,3 +240,60 @@ canonical state and control preparer before its literal PCM oracle. Marker and
 state storage can retire after control preparation; actual source ownership must
 still survive processing. These checks do not complete host/export custody,
 project-to-WAV export, controls, app playback or optimized delivery.
+
+
+## unassigned native source worker admission — pulse2962 / PR546
+
+`Service::with_native_reservation` opts its initial resident Session into an
+explicit `ResidentNativeReservation`: ledger data/handle/root rows, retained
+bytes, construction bytes and maximum frames per finite PCM scan/hash pass.
+Existing constructors remain opt-out; `Request::ImportDeviceAsset` then refuses
+visibly. The request runs the existing bounded WAV decoder and consumes its
+original-rate normalized stereo PCM through the PR515 constructor bridge. It
+returns the actual `Created::Asset` without inserting a track or clip.
+
+One canonical asset namespace has two mutually exclusive custody arms: the
+ordinary clip media map and `ResidentDeviceAssets`, a bounded Vec of asset IDs
+and boxed sealed input-bank/catalog roots. No original PCM is copied, resampled,
+aliased into the clip map or exposed through an owning clone. Mono files use the
+existing explicit stereo normalization. Source rate, frames and path remain
+original. `ImportDeviceAsset` stores checked expected conversion metadata, not
+a materialized clip derivative; `AddAsset` still requires project-rate PCM.
+Arrangement and Session clip resolution visibly refuses device-only IDs until
+an accounted derivative path exists. Undo can leave source custody retained,
+just like ordinary clip media, within the same finite limits.
+
+The reservation domain starts with owned decoded source admission. Actual PCM
+Vec capacity, constructor-paired wrapper, native bank/source/obligation metadata,
+catalog backing, boxed root payloads, destination Vec and ledger capacities are
+inventoried together; old destination backing overlaps new backing only in the
+construction charge. The source Vec moves through bank preparation; its
+allocation/obligation/catalog buffers remain in the final root, without temporary
+owning clones. Legacy resident PCM uses its existing unique-capacity accounting
+as an explicit allowance in this same check; it gains no native provenance.
+Ordinary imports, including batches, check the combined frame and byte limits.
+Repeated borrowing does not create a handle; separately decoded equal-content
+files remain separately charged. Allocator-private overhead, stack workspaces,
+ordinary project/history/waveform/view preparation (including the transient
+nonowning ID set), encoded file buffers and decoder scratch/pre-admission decode
+peak are outside this inventory. Existing independent file/decode limits remain.
+This is an admission inventory, not a total process/RSS or lifetime proof.
+
+Staging preserves the old vector/canonical state on refusal. The Editor's
+candidate closure prepares native custody and ordinary playback, then checks
+cancellation before fixed source moves and the infallible canonical history
+commit. No callback owner is published. File decode, staging failure drops and
+Session teardown remain on the `hex-session` control worker by ownership and
+control-flow inspection; these checks do not instrument arbitrary destructors.
+New/Open keep their existing constructor policy; opt-in admission is currently
+for the explicitly constructed Session, without native source reopen support.
+
+Focused tests cover the real worker result, literal decoded PCM/Vec identity,
+source metadata at a different project rate, exact/one-byte-under retained and
+construction limits, rows/work/frames, independent equal-content sources,
+pre-cancel and staged callback refusal, ID exhaustion, ordinary import limits
+and explicit clip refusal. Next: canonical sampler assignment through normal
+PreparedRevision and the actual export worker with an independent WAV PCM oracle,
+extending this same reservation through captured export and Session custody.
+Native publication/checkpoints, app playback, native controls/history/reopen,
+full native qualification and optimized delivery remain outstanding.
