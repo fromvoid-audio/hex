@@ -6479,3 +6479,17 @@ The delivery receiver also compares the freshly resolved full-audit commands,
 preventing a core/shared-Python merge report from becoming native/release
 qualification. A consumer regression proved refusal before pending/build; full
 and explicit-development positives remain covered.
+
+## retained stereo source scopes — pulse2929 / PR514
+
+A bounded extraction from preserved PR389 verifies original stereo PCM facts and
+maps authored slots within each prepared configuration to the existing sealed
+input bank. Content hashes do not replace bank/token identity or grant leases.
+Cancellation, frame-work and actual metadata reservations refuse without bank
+mutation. Same-slot configurations retain their own actual source selection.
+The actual-bank analytic/effect/mutable borrow probe requires supported native
+construction and zero total/net allocation and free; synthetic coverage remains.
+Exact source/check evidence is retained with the focused PR. Mono native ingress,
+retained graph/context owners, union accounting and all host publication/export
+retirement remain under2783. Loading/registration and actual musical playback
+remain2789/2902/2903; no usable-sampler or native deadline acceptance is claimed.

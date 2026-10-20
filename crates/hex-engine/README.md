@@ -18,8 +18,9 @@ enters the engine. See [controller input](../../docs/controller-input.md).
 
 ## Dependencies
 
-hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract and the Rust standard
-library; no UI/device-stream dependencies.
+hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract, pinned sha2
+0.10.9 for control-side original-PCM identity, and the Rust standard library;
+no UI/device-stream dependencies.
 
 ## Does not own
 
