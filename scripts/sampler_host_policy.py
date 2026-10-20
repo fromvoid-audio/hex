@@ -103,7 +103,8 @@ EXACT = {
     'crates/hex-export/src/publication.rs',
     'crates/hex-export/src/buffered_file.rs',
     'crates/hex-session/src/service/main_control_file.rs',
-    'crates/hex-session/src/service/worker_export_lane.rs',
+    'crates/hex-desktop/src/native_audio/main_files.rs',
+    'crates/hex-desktop/src/native_audio/tests/main_files.rs',
     'crates/hex-session/src/service/canonical_audio_source.rs',
     'crates/hex-session/src/service/comparison_audio.rs',
     'crates/hex-session/src/snapshot_exports/event.rs',
@@ -118,6 +119,22 @@ NAMES = re.compile(r'\b(?:EventMetadataFields|EventReasonFields|EventBatchFailur
 
 
 def violations(path: str, source: str) -> list[str]:
+    if 'sampler_file_fields_on_control' in source and path not in {
+            'crates/hex-session/src/service/main_control_file.rs',
+            'crates/hex-desktop/src/native_audio/main_files.rs',
+            'crates/hex-desktop/src/native_audio/tests/main_files.rs'}:
+        return [f'{path}: actual embedded File fields have one nominal owner and Desktop producer']
+    if path == 'crates/hex-engine/src/sampler_host_fields/file_slots.rs':
+        if 'contained(slot, body)?' not in source:
+            return [f'{path}: actual embedded File must remain inside the indexed physical Vec element']
+    if path == 'crates/hex-desktop/src/native_audio/main_files.rs':
+        production = source.split('#[cfg(', 1)[0]
+        for step in ['file: MainControlFileJob', 'continuation: Option<CapturedMainFile>',
+                     'if continuation.is_some()', 'Err(AudioStorageError::UnknownStorage)',
+                     'file.sampler_file_fields_on_control()', 'job.file.failed_incomplete()',
+                     'continuation.poll_retirement_on_control()', 'job.file.published_on_control()']:
+            if step not in production:
+                return [f'{path}: actual File and continuation stay paired; unmodeled descendants refuse']
     captured_audio = 'crates/hex-audio/src/candidate_custody/eligible/publication/preparation/captured_main.rs'
     captured_engine = 'crates/hex-engine/src/audio_storage/native_root_fields/captured_main.rs'
     if 'reserve_captured_main_field_on_control' in source and path not in {
@@ -198,15 +215,9 @@ def violations(path: str, source: str) -> list[str]:
         return [f'{path}: initial Session purpose has only the actual startup/Session/native integration owners']
     if path == 'crates/hex-session/src/service/worker_startup.rs':
         production = source.split('#[cfg(test)]\nmod tests {', 1)[0]
-        # Exactly two forwarding accessors borrow actual worker-owned slots;
-        # startup still constructs/implements no arbitrary projection.
-        accessor = r'pub fn main_file_slots_on_control\(.*?\n    }'
-        forwards = re.findall(accessor, production, re.S)
-        if len(forwards) != 2 or any(any(step not in value for step in [
-                'self.main_files', '.map(NativeMainFiles::fields)',
-                '.ok_or(hex_engine::AudioStorageError::UnknownStorage)']) for value in forwards):
-            return [f'{path}: both startup phases forward the actual File slots or refuse']
-        if NAMES.search(re.sub(accessor, '', production, flags=re.S)):
+        if 'NativeMainFiles' in production or 'main_files:' in production:
+            return [f'{path}: the actual native File Vec belongs to its Desktop adapter, never an empty Session header']
+        if NAMES.search(production):
             return [f'{path}: startup phase does not grant generic host projection authority']
         compact = re.sub(r'\s+', '', production)
         for step in ['*self.phase!=InitialSnapshotPhase::Fresh',

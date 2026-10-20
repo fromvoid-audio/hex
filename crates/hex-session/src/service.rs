@@ -26,7 +26,7 @@ pub use main_control_file::{
     MainControlFileError, MainControlFileJob, MainControlFileLoan, MainControlFileProgress,
     MainControlHostError,
 };
-use worker_export_lane::{NativeMainFiles, WorkerExportSender};
+use worker_export_lane::WorkerExportSender;
 mod event_fields;
 mod export_renderer;
 use export_renderer::ExportRenderer;
@@ -885,10 +885,7 @@ impl Service {
                 .ok_or(ServiceError::Session(SessionError::Invalid(
                     "document worker cancellation is unavailable",
                 )))?;
-        let mut worker_events = WorkerEvents::new(event_tx, worker_shutdown, audio);
-        if registered_native {
-            worker_events.install_native_main_files();
-        }
+        let worker_events = WorkerEvents::new(event_tx, worker_shutdown, audio);
         startup.install_events(worker_events);
         let mut pending_queues = Some(worker_startup::WorkerStartupQueues {
             requests: request_rx,

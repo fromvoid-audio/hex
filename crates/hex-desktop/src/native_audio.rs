@@ -22,6 +22,7 @@ use std::sync::{
 };
 
 mod main_control_file;
+mod main_files;
 
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests;
@@ -80,6 +81,8 @@ pub(super) struct NativeAudioSink {
     last_context: Option<AudioSourceContext>,
     last_state: Option<(AudioSourceContext, &'static str)>,
     blocked: Option<AudioSourceContext>,
+    main_files: Vec<main_files::NativeMainFileJob>,
+    main_file_cursor: usize,
     #[cfg(all(test, feature = "allocation-probe"))]
     output_factory: Option<OutputFactory>,
 }
@@ -106,6 +109,8 @@ impl NativeAudioSink {
             last_context: None,
             last_state: None,
             blocked: None,
+            main_files: Vec::new(),
+            main_file_cursor: 0,
             #[cfg(all(test, feature = "allocation-probe"))]
             output_factory: None,
         }
@@ -770,6 +775,7 @@ impl WorkerAudioSink for NativeAudioSink {
         Ok(())
     }
     fn poll(&mut self) {
+        self.poll_main_file_retirement_on_control();
         self.poll_open();
         self.deliver_open();
         if let Some(mut output) = self.output.take() {

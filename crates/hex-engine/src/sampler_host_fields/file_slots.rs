@@ -55,9 +55,10 @@ pub(crate) fn visit_file_slots<'owner: 'a, 'a>(
     for index in 0..slots.len() {
         let slot = slots.element(index)?;
         let FileJobFields { body, copy, staged } = fields.file(index)?;
-        if !slot.same(body) {
-            return Err(AudioStorageError::SourceMismatch);
-        }
+        // A nominal audited wrapper may contain the actual File body. Its
+        // complete element (including spare bodies) is already charged above.
+        // Containment never certifies any continuation descendants absent.
+        contained(slot, body)?;
         contained(body, BodyRef::of(copy))?;
         let StagedFileFields {
             body: staged_body,

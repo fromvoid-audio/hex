@@ -26,17 +26,3 @@ impl WorkerExportSender {
         }
     }
 }
-
-pub(super) struct NativeMainFiles {
-    slots: Vec<MainControlFileJob>,
-}
-impl NativeMainFiles {
-    pub(super) fn new() -> Self {
-        // No reserve/owner birth before the closed full-union prefix. This
-        // actual header belongs to WorkerEvents through startup and dispatch.
-        Self { slots: Vec::new() }
-    }
-    pub(super) fn fields(&self) -> impl hex_engine::sampler_host_fields::FileSlotsFields<'_> {
-        MainControlFileJob::reserved_slots_fields_on_control(&self.slots)
-    }
-}

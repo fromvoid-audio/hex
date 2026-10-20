@@ -121,14 +121,24 @@ impl<'a> hex_engine::sampler_host_fields::FileSlotsFields<'a> for ReservedFileSl
             .slots
             .get(index)
             .ok_or(AudioStorageError::SourceMismatch)?;
-        let MainControlFileJob {
+        job.sampler_file_fields_on_control()
+    }
+}
+impl MainControlFileJob {
+    /// Actual nominal single-job fields for the audited Desktop wrapper. The
+    /// enclosing Vec charges this embedded body once, including its buffers.
+    /// A continuation's Root descendants are a separate mandatory host input.
+    pub fn sampler_file_fields_on_control(
+        &self,
+    ) -> Result<hex_engine::sampler_host_fields::FileJobFields<'_>, AudioStorageError> {
+        let Self {
             file,
             identity,
             copy,
             pending,
             phase,
             first_panic,
-        } = job;
+        } = self;
         if *phase != Phase::Unbound
             || identity.is_some()
             || pending.is_some()
@@ -137,13 +147,14 @@ impl<'a> hex_engine::sampler_host_fields::FileSlotsFields<'a> for ReservedFileSl
             return Err(AudioStorageError::UnknownStorage);
         }
         Ok(hex_engine::sampler_host_fields::FileJobFields {
-            body: hex_engine::sampler_host_fields::BodyRef::of(job),
+            body: hex_engine::sampler_host_fields::BodyRef::of(self),
             copy,
             staged: file.sampler_fields_on_control()?,
         })
     }
-}
-impl MainControlFileJob {
+    pub fn published_on_control(&self) -> bool {
+        self.phase == Phase::Published
+    }
     /// Borrow this actual reserved destination, including spare element bodies.
     /// The opaque projection owns nothing and may not outlive the real Vec.
     pub fn reserved_slots_fields_on_control<'a>(

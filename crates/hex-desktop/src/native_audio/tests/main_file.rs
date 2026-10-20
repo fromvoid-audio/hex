@@ -40,6 +40,19 @@ fn exercise(
     let dir = super::super::tests::Files::new();
     let path = dir.0.join("actual-main-token.wav");
     let mut jobs = vec![MainControlFileJob::create_new_on_control(&path, 44_100, 513).unwrap()];
+    // Reserve the actual adapter slot before constructing its captured parent.
+    // This fixture remains a constituent test, not whole-host admission.
+    let (events, _audio_events) = std::sync::mpsc::sync_channel(4);
+    let mut file_owner = super::super::NativeAudioSink::new(events);
+    if retire_publication_after_block {
+        file_owner.main_files.try_reserve_exact(2).unwrap();
+        file_owner
+            .main_files
+            .push(super::super::main_files::NativeMainFileJob {
+                file: jobs.remove(0),
+                continuation: None,
+            });
+    }
     let publication = hex_audio::AudioCandidatePublicationReservation {
         runtime_slots: 3,
         archive_slots: 3,
@@ -267,15 +280,25 @@ fn exercise(
         }
     );
     drop(original);
-    let job = &mut jobs[0];
+    let job = if retire_publication_after_block {
+        &mut file_owner.main_files[0].file
+    } else {
+        &mut jobs[0]
+    };
     job.bind_main_on_control(identity.unwrap()).unwrap();
     if retire_publication_after_block {
-        let mut captured = output
+        let captured = output
             .publication
             .control()
             .unwrap()
             .begin_captured_main_file_on_control(token, identity.unwrap(), 513)
             .unwrap();
+        file_owner.main_files[0].continuation = Some(captured);
+        let super::super::main_files::NativeMainFileJob {
+            file: job,
+            continuation,
+        } = &mut file_owner.main_files[0];
+        let captured = continuation.as_mut().unwrap();
         let mut forbidden = false;
         assert!(
             output
@@ -383,14 +406,14 @@ fn exercise(
         ));
         drop(client);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while !captured.poll_retirement_on_control() {
+        while !file_owner.main_files.is_empty() {
+            file_owner.poll_main_file_retirement_on_control();
             assert!(
                 std::time::Instant::now() < deadline,
-                "actual Main DATA tail failed normal retirement"
+                "actual persistent File job failed normal DATA retirement"
             );
             std::thread::yield_now();
         }
-        drop(captured);
         replacement_backend.close();
         drop(replacement);
         return Some(bytes);

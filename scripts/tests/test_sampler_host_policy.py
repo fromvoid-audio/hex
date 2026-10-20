@@ -11,6 +11,20 @@ violations = policy.violations
 
 
 class SamplerHostPolicyTests(unittest.TestCase):
+    def test_file_wrapper_keeps_actual_element_containment_and_continuation(self):
+        root = Path(__file__).resolve().parents[2]
+        path = 'crates/hex-desktop/src/native_audio/main_files.rs'
+        source = (root / path).read_text()
+        self.assertEqual(violations(path, source), [])
+        for step in ['continuation: Option<CapturedMainFile>', 'if continuation.is_some()',
+                     'job.file.failed_incomplete()', 'job.file.published_on_control()']:
+            self.assertTrue(violations(path, source.replace(step, 'omitted()')), step)
+        path = 'crates/hex-engine/src/sampler_host_fields/file_slots.rs'
+        source = (root / path).read_text()
+        self.assertEqual(violations(path, source), [])
+        self.assertTrue(violations(path, source.replace('contained(slot, body)?', 'Ok::<(), AudioStorageError>(())?')))
+        self.assertTrue(violations('crates/hex-ui/src/foreign.rs', 'job.sampler_file_fields_on_control()'))
+
     def test_captured_main_has_finite_same_parent_and_lifecycle_producers(self):
         root = Path(__file__).resolve().parents[2]
         path = 'crates/hex-audio/src/candidate_custody/eligible/publication/preparation/captured_main.rs'
