@@ -1,0 +1,38 @@
+{
+  "completed_at_utc": "2026-10-20T16:33:46.653990+00:00",
+  "initial_open_prs": 96,
+  "final_open_prs": 93,
+  "merged_prs": [
+    505
+  ],
+  "closed_superseded_prs": [
+    459,
+    501
+  ],
+  "previous_executor_closed_prs": [
+    442
+  ],
+  "main": "0e42503074fefda8ee00ef8bcecad39dfc6c610f",
+  "initial_remote_branches": 1122,
+  "final_remote_branches": 745,
+  "verified_remote_branch_deletions": 377,
+  "initial_local_branches": 392,
+  "final_local_branches": 112,
+  "verified_local_branch_deletions": 280,
+  "remote_retention": {
+    "retained-evidence": 504,
+    "retained-unique-source-or-diagnostic": 35,
+    "retained-merged-source-provenance-ref": 99,
+    "protected-worktree": 12,
+    "protected-main": 1,
+    "retained-open-pr": 93,
+    "retained-superseded-source-custody": 1
+  },
+  "retained_worktrees": 190,
+  "protected_unpublished_diffs_unchanged": true,
+  "local_main_clean": true,
+  "required_check_report": "pr505-local-ci/summary.json",
+  "required_check_result": "8/8 passed;276 Python tests,1 skip;clean/unchanged/nonstale",
+  "remaining_work": "93 PRs retained:87 planning/intake,6 explicitly incomplete or blocked; no feature implementation resumed",
+  "owned_live_jobs": 0
+}

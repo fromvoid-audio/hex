@@ -1,0 +1,23 @@
+[
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/sampler-preview-math/hex",
+    "head": "f2f992f05527432604ea57171c54586d6af39329",
+    "status": " M crates/hex-ui/src/editor/trim.rs\n",
+    "diff_bytes": 36369,
+    "diff_sha256": "225effd4d5c1eb423bfad473174c52b4a9b238f01c5788bf1e82dc3ecde2bfdc"
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/hex-general-local/hex",
+    "head": "add0ee5e4dc69b93e5a03e2abd5d31a95c53ff35",
+    "status": " M crates/hex-ui/src/editor/tracks.rs\n",
+    "diff_bytes": 2970,
+    "diff_sha256": "0530b480b6f11034bc79dcec942212d64a278e90c7781fe3c1e6a3803c6a1baf"
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/41cd/hex",
+    "head": "a7b577b64c53abac6ef873ff1fa4c648abbaea0e",
+    "status": "",
+    "diff_bytes": 0,
+    "diff_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+  }
+]

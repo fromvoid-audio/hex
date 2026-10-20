@@ -1,0 +1,1737 @@
+[
+  {
+    "path": "/Users/portalsurfer/dev/hex",
+    "exists": true,
+    "metadata": [
+      "HEAD b05a9eaa61edc60f711acdc06d907f7525d6197c",
+      "branch refs/heads/main"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/41cd/hex",
+    "exists": true,
+    "metadata": [
+      "HEAD a7b577b64c53abac6ef873ff1fa4c648abbaea0e",
+      "branch refs/heads/pulse/task-2913-g1-b8f399102248"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/hex-2333-merge/hex",
+    "exists": true,
+    "metadata": [
+      "HEAD 5d1119cc5012120cdcb61cd9d7e2d6b1de555968",
+      "branch refs/heads/pulse/task-2333-g1-a8ceae757bd8"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/hex-2383/hex",
+    "exists": true,
+    "metadata": [
+      "HEAD 29784b6a53473158a23c1903f4f5a231ec7406ad",
+      "detached"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/hex-2469/hex",
+    "exists": true,
+    "metadata": [
+      "HEAD ec364d7abf10000b546a2326051751213e7ed90d",
+      "branch refs/heads/pulse/task-2469-g1-686da72b2211"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/hex-general-local/hex",
+    "exists": true,
+    "metadata": [
+      "HEAD add0ee5e4dc69b93e5a03e2abd5d31a95c53ff35",
+      "branch refs/heads/codex/sampler-panel-mvp-2789"
+    ],
+    "status": " M crates/hex-ui/src/editor/tracks.rs\n",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/hex-pr188-conflict/hex",
+    "exists": false,
+    "metadata": [
+      "HEAD 03a04bff94c5776e008db7036aaa7e12e80b4898",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/hex-pr195-conflict/hex",
+    "exists": false,
+    "metadata": [
+      "HEAD 7c3978ae31b5eee9f5b88a31f6060a9b87b1bbb6",
+      "branch refs/heads/codex/pr195-conflict",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/hex-routing-28/hex",
+    "exists": true,
+    "metadata": [
+      "HEAD 72288dc90a07be827b36296e3835e7a445d871ad",
+      "branch refs/heads/pulse/task-28-g1-a4466fa8bbb8"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/hex-runtime-16/hex",
+    "exists": true,
+    "metadata": [
+      "HEAD b9c4b94142d141c4844380508ace66796bd6988d",
+      "branch refs/heads/pulse/task-16-g1-74e196bd6577"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/hex-simple-install/hex",
+    "exists": true,
+    "metadata": [
+      "HEAD c26001018293e585cc7a46ae7d3d17dff68ca86d",
+      "branch refs/heads/pulse/task-2627-g1-9af4343960e5"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/layout-gallery/hex",
+    "exists": false,
+    "metadata": [
+      "HEAD e9ce986c8bf8a79cfb4a5ab8e4d35bc91f54c6c8",
+      "branch refs/heads/pulse/task-2355-g1-5c9177a2cd80",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/sampler-preview-math/hex",
+    "exists": true,
+    "metadata": [
+      "HEAD f2f992f05527432604ea57171c54586d6af39329",
+      "branch refs/heads/codex/sampler-core-query-ui-2789"
+    ],
+    "status": " M crates/hex-ui/src/editor/trim.rs\n",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/.codex/worktrees/streaming-root-2537/hex",
+    "exists": false,
+    "metadata": [
+      "HEAD 6636e76b9285f517d3b5314d0b21380ee919b35a",
+      "branch refs/heads/pulse/task-2537-g1-908fd188970e",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex-merge-166",
+    "exists": false,
+    "metadata": [
+      "HEAD 56a9aa51a26a52180beacc69849ff87c1025cfdb",
+      "branch refs/heads/pulse/task-2371-g1-1a6fc241524c",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex-native-interaction-22",
+    "exists": false,
+    "metadata": [
+      "HEAD 9ef5794d1f3a3fa17a1c6911d465091d68c172c0",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/gpui-debug-bounds",
+    "exists": true,
+    "metadata": [
+      "HEAD 4b1be162ee511148ffba7d39a2dc22b67f3a5e48",
+      "branch refs/heads/codex/pulse-2286-debug-bounds"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/gpui-grid-literals",
+    "exists": true,
+    "metadata": [
+      "HEAD c356cdf10958ae785968a12b907514c8c476f360",
+      "branch refs/heads/codex/pulse-2318-grid-literals"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/lattice-auto-pan",
+    "exists": true,
+    "metadata": [
+      "HEAD 500e3f1b7d86c21b8fdd2a0daab1fc0f0cfeffda",
+      "branch refs/heads/codex/pulse-2321-auto-pan"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/lattice-compressor",
+    "exists": true,
+    "metadata": [
+      "HEAD aaaa7ba16d2dfa5d15fe7be8042a085f94f1ac26",
+      "branch refs/heads/codex/pulse-2311-compressor"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/lattice-compressor-ui",
+    "exists": true,
+    "metadata": [
+      "HEAD b5045deef66f0c31a01d157c16f5a938ad007783",
+      "branch refs/heads/codex/pulse-2314-compressor-ui"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/lattice-effects-profile",
+    "exists": true,
+    "metadata": [
+      "HEAD 39eaae75dde067620b7af89ae6faa962389489b0",
+      "branch refs/heads/codex/pulse-2317-effects-profile"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/lattice-gate",
+    "exists": true,
+    "metadata": [
+      "HEAD bf5b74381f7156105ab1799e7d8b2b63f5111201",
+      "branch refs/heads/codex/pulse-2313-gate"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/lattice-gate-ui",
+    "exists": true,
+    "metadata": [
+      "HEAD c8e4363f24828432221b12c8330939deb8870779",
+      "branch refs/heads/codex/pulse-2316-gate-ui"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/lattice-knob-reset",
+    "exists": true,
+    "metadata": [
+      "HEAD d946e2481bce28614e7f6f6a08afd81a6948aa8a",
+      "branch refs/heads/codex/pulse-2319-knob-reset"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/lattice-preview-retirement",
+    "exists": true,
+    "metadata": [
+      "HEAD 4960bfce73c7f61e1f952ea012e0bf142bf250be",
+      "branch refs/heads/codex/pulse-2315-preview-retirement"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/lattice-saturator",
+    "exists": true,
+    "metadata": [
+      "HEAD d9655e452016572aba88f6e91e2ddfd6b4a39001",
+      "branch refs/heads/codex/pulse-2309-saturator"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/lattice-saturator-ui",
+    "exists": true,
+    "metadata": [
+      "HEAD 07fc88e8d83822ce99e3fb877aa1cfaf8e10f426",
+      "branch refs/heads/codex/pulse-2312-saturator-ui"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/native-audio-23",
+    "exists": true,
+    "metadata": [
+      "HEAD 6ee98ef2728d5480552bd4324b7c3be163d57041",
+      "branch refs/heads/pulse/task-23-g1-331d9d716668"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/operator-service-gesture",
+    "exists": true,
+    "metadata": [
+      "HEAD f7eced82a7bcff63b0484a8a967ec11c409fdfb1",
+      "branch refs/heads/codex/pulse-2320-operator-gesture"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/dev/hex/artifacts/worktrees/operator-visual",
+    "exists": true,
+    "metadata": [
+      "HEAD 0a064a1e0acde3e71d5dda75c58ab18525184069",
+      "branch refs/heads/pulse/task-2332-g1-14336febfb68"
+    ],
+    "status": "",
+    "status_exit": 0
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-177-mac",
+    "exists": false,
+    "metadata": [
+      "HEAD 8d444c06c295e52a8aa0dde275a89ecec6f454e2",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-ax-4308-mac",
+    "exists": false,
+    "metadata": [
+      "HEAD dfdf17aa5e98f3789db6a28a9fa39245710fd63a",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-clap-mac-preflight",
+    "exists": false,
+    "metadata": [
+      "HEAD d14fbfc18203d47e2d27df2bc820ef070c9b473d",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-review-2333",
+    "exists": false,
+    "metadata": [
+      "HEAD 1d02bc6f5f4b5c2590a1ea934d2a0ad6b3a26889",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-review-2335",
+    "exists": false,
+    "metadata": [
+      "HEAD 2a142d99d4231b495011fa99f3e5925539c54cee",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-review-2347",
+    "exists": false,
+    "metadata": [
+      "HEAD 4286997a495b857123874ca59578e8fa99506313",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-review-2352",
+    "exists": false,
+    "metadata": [
+      "HEAD 1dc67e1c0b806a0ab50e03bebea43ecc715df11a",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-review-2373",
+    "exists": false,
+    "metadata": [
+      "HEAD aa51bc948b964b2dad97cb566dfddfd06ee843d2",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-review-2375",
+    "exists": false,
+    "metadata": [
+      "HEAD 25519021750a8934ac88fc90b1411d87f6b09085",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-review-2386",
+    "exists": false,
+    "metadata": [
+      "HEAD e4c2ae655ecac4b62db03284f3be1cd50df2fa13",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-review-2463",
+    "exists": false,
+    "metadata": [
+      "HEAD 59488241ee725b87992c51d9265ef273f37badb3",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-13/please-set-up-five-cloud-agents/work/hex-review-2475",
+    "exists": false,
+    "metadata": [
+      "HEAD 9f9b57b616cbfa0ae843a5c295d2d1017b526dbb",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-392/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 96ee313a15111b9dded9dd456632d8b288dda515",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-393-full/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 98b644301fa762f7ef3b6120e16f85469ae602c8",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-accessor-4e42/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 4e429051a20f107e3ad74c59fd80668c4eabf7b7",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-affine-050f/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 050f8a6c16ef04dbaaa718601286101f69cb8a27",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-allowance-b54c/source",
+    "exists": false,
+    "metadata": [
+      "HEAD b54c645d7c533069341d7c56459d7c6ebc662d90",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-bank-6782/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 67822dca696d56fee3f40a512bdac0dd37deb99b",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-beats-486e/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 486e7baa57acd574e189a8c06374691ab18d3ece",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-borrowed-1efd/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 1efdd6123b65115e5200a15dd69c0b87a6855c2b",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-bypass-b66b/source",
+    "exists": false,
+    "metadata": [
+      "HEAD b66b9927f0fb8d1647024e8438690d2979899fd7",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-cache-4e460/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 4e46077236b941a57dd44f23183f422cbf9a52c7",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-cancel-f992/source",
+    "exists": false,
+    "metadata": [
+      "HEAD f992f0e4ac808b1414a17e9918a742604353851c",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-capacity-de9e/source",
+    "exists": false,
+    "metadata": [
+      "HEAD de9ef6adf1ca1a3f8c612265d03681c348a00dae",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-carrier-9040/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 904026181a74b88fb3f47a3e758f642e64300f47",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-changelog-15bf/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 15bf3b6cffbe6881257e2683da7c611bc34b428f",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-changelog-1e33/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 1e336c988914635dc38f65a295d0a0060b7716c3",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-changelog-6e82/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 6e826f19a05809ed0d904890addf2132eedc0518",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-changelog-b91/source",
+    "exists": false,
+    "metadata": [
+      "HEAD b91ac4a9d6c41b7cad05d31d7ca0599e7e61a793",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-child-8208/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 82080ea4e9b10a77a95536e9eb4938fb08dd122f",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-clip-border-5776/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 5776b06a8447f17bbadbfd4e6d08531d1e9e03bf",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-coexist-7a52/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 7a52b754c875b830d279c8f70796190d3942eb0c",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-colors-8c7f/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 8c7fffb9796b9136beef66d5ed1716f30a59bf36",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-command-loop-5a2f/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 5a2fa604a159381cffef9d3ad2d04054f79113e6",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-compiler-190e/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 190e618bc6ea0af3a23dd4062065cb5679a55948",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-compiler-preflight-5ee9/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 5ee9012747efed8eede92bc3c09b8dd6fbe8b4ca",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-compound-e96c/source",
+    "exists": false,
+    "metadata": [
+      "HEAD e96c211292296e9997b4d50517cbd2f6cada80e4",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-cutoff-2edd/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 2edde7fa7bd95448b4a23bb75be7607154738114",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-descriptor-48d5/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 48d52fa126dc98898001bae6cba0c0f820a3f89f",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-desktop-2e89/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 2e89a1913cc949f46b2905d7070c97749468bfc3",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-device-focus-6b66/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 6b6627601ae057b06a1d5be138909bc1cce609fa",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-drop-a98e/source",
+    "exists": false,
+    "metadata": [
+      "HEAD a98eb3d7545fe4680a06ce2de9f57ef8de2adf0c",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-duplicate-c4e5/source",
+    "exists": false,
+    "metadata": [
+      "HEAD c4e5459215679e82a4bdf113ea138790e6f050f9",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-envelope-da5c/source",
+    "exists": false,
+    "metadata": [
+      "HEAD da5c2978e2d9c4a0da5147307f3d20dba4233af8",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-eq-24c6/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 24c62cd3a97a95b0d0ffe68be497d09258c84b0a",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-eq-9f56-native/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 9f56b3bf662cba6865f3d074fab6ff8b14735c36",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-eq-gesture-92f5/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 92f55c91f9d5cd5ccf6eaeb1c2217983369247cd",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-eq-review-48ab/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 48aba640d4f4aef8cb90c3cef4efcee3ff36af2a",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-eq-review-9389/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 9389c10b569a1abcd9c620b8e13298e1c242d8bb",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-eq-status-c7a8/source",
+    "exists": false,
+    "metadata": [
+      "HEAD c7a8b2ece1916186d1ffe75d98ef8c68751ccbcb",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-eq-variants-acff/source",
+    "exists": false,
+    "metadata": [
+      "HEAD acff1d1f4ea2e0a7e9174401ce8b796f6ad77ee0",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-fade-2aac/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 2aac6a5965afff6bd9875dd98a5b3aaba97878b1",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-fades-1229/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 12293514a96c097f01594ac8ed7cf4c0288632a6",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-families-909f/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 909f1cc255daab5a0a58d3437b82c65de49d3274",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-filter-ab13/source",
+    "exists": false,
+    "metadata": [
+      "HEAD ab13c7026b459a7221b93eaa671956e7d80e8565",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-gain-e35/source",
+    "exists": false,
+    "metadata": [
+      "HEAD e35c22b2e239a56cb68dd77d5ad38f7e44284aa3",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-graph-1fae/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 1fae91129e557fbef4e81209b18e673f72ff9969",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-group-drag-22bc/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 22bc20a94cf9d22e4d25684dfc7613baab193ef4",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-guarded-8151/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 8151bf2e454ab40dba03049b8244fe7aa469ead6",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-guards-3572/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 3572653be9e6dd78c30da4f3ccb2e9abe5bfeb8d",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-guards-898e/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 898e1714ed53713c94ccdc49eeebc5eb8bb0ca9b",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-handoff-9744/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 97441ba930d61146e2530eed44cad765540495e8",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-header-c027/source",
+    "exists": false,
+    "metadata": [
+      "HEAD c027c0181b4f028414d4f8a269390eb9a9a2b8ed",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-history-d8eb/source",
+    "exists": false,
+    "metadata": [
+      "HEAD d8ebc97ae93436e9ed2415da6855fc69372c7cc5",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-host-0d750/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 0d750e4c69ccad294f1b0ab078a35f526f4e0e1e",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-install-77e8/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 77e8d4257d13c7ab3f43b6268e15e958a9200d41",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-installer-b101/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 37e00828e4bfae74bf06d99251dd1c9654ded66c",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-instrument-11cd/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 11cd88384dbc56b6a6d68115afbfade64491b583",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-inventory-ad96/source",
+    "exists": false,
+    "metadata": [
+      "HEAD ad96fee3d12f0bb187b03c47d2faad741b0c4dc9",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-job-d695/source",
+    "exists": false,
+    "metadata": [
+      "HEAD d695e9a215c1310f6c89c3b82e7121db882a9079",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-keyboard-bd3a/source",
+    "exists": false,
+    "metadata": [
+      "HEAD bd3a52becc40f2514ab3df0cfa6477f9de4c5c9a",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-keys-ff3b/source",
+    "exists": false,
+    "metadata": [
+      "HEAD ff3babf568d9d18dae49ce38425caf09f8441944",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-lfo-95a6/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 95a6e27bda310bae569a95c1204b6ab1bf42fab3",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-loop-fe90/source",
+    "exists": false,
+    "metadata": [
+      "HEAD fe902faa8b422d604075c3e94596934d9d927cee",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-loop-review-abd8/source",
+    "exists": false,
+    "metadata": [
+      "HEAD abd84dfb9ff40c48760ab4b2c7ed72cff3b4e5d0",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-loop-review-e89d/source",
+    "exists": false,
+    "metadata": [
+      "HEAD e89d8f2d667d9c7dd5cd43004c0ff8b75c3756d4",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-maps-de92/source",
+    "exists": false,
+    "metadata": [
+      "HEAD de927bcfaafa415cfd6b02ec5a0c33e22db057de",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-metadata-f96b/source",
+    "exists": false,
+    "metadata": [
+      "HEAD f96bce95423237801231990d44a91e09883d6993",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-meter-61cd/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 61cd2a86fe32e05774f445b468a710b25ec95d5c",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-midi-b828/source",
+    "exists": false,
+    "metadata": [
+      "HEAD b82826f2e5570a92e17cff0a22c3a9ace46a71be",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-nested-085d/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 085d2b0d7ab0d91770bbc05838fa54faf72c5554",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-open-acfc/source",
+    "exists": false,
+    "metadata": [
+      "HEAD acfc97667cc1452e8da04e2b8bd60e9c561cda2f",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-open-afcd/source",
+    "exists": false,
+    "metadata": [
+      "HEAD afcd2d717e6ede155ab8d0594d1d4fe1c85a67e2",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-order-b107/source",
+    "exists": false,
+    "metadata": [
+      "HEAD b10752bf41dc6db3be338d4760414d1fbd2d5196",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-original-e9d5/source",
+    "exists": false,
+    "metadata": [
+      "HEAD e9d5911cd02459dc60a971f4f061473804f952d1",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-paint-5148/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 51488f8fdb02fd25d2eae1a7abde5fc081709919",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-paired-613f/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 613fbdeb65fe4da14d41916ae745e55be26242ae",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-pan-review-917d/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 917d156e42c8d4cb6c672046cec48c9a7606eaca",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-panel-f3f5/source",
+    "exists": false,
+    "metadata": [
+      "HEAD f3f5ef42236462311956e4b8cf3ebb9cb4333043",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-parented-51bc/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 51bcc35bbb7fd48134ba80adbc23594ab7beb343",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-pending-a891/source",
+    "exists": false,
+    "metadata": [
+      "HEAD a891d5a7f66ca0b3082329b51acbb6c8c0590643",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-pending-wave-4e04/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 4e04e4b333a8d91ee2c54203419a83bfcfad91fc",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-pending-waveform-4ace/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 4ace6b141588cc7103ce300f9d1487476860817c",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-phaseA-327/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 327ebe98d575061f4d16f3db894aea5b624b86b4",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-phaseA-dfa/source",
+    "exists": false,
+    "metadata": [
+      "HEAD dfa21f5aed2186781e6aa985a053f85d9e51b75d",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-phaseA2-394/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 394f6c130bb87fe5c8c49cfd82f4c52cb6049533",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-prealloc-aeaa/source",
+    "exists": false,
+    "metadata": [
+      "HEAD aeaaffdb7b2e76e632b58b01792154e27725383a",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-preview-1538/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 153847ebf311c6404cab07c42aabcfde5cebdd7a",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-producer-96e8/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 96e84ce0bd3ff59e57f8a5b6b18e8102bdfe7e6c",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-project-9eb/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 9eb3f31b25533280c11526aa02ea2a32ffbb50f4",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-project-context-4049/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 404929ea049850c0659edcbdda3a02e7d44ed3b9",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-projection-2faf/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 2fafc606dc52fbd9816562711e0b2eae059cf2dd",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-record-c661/source",
+    "exists": false,
+    "metadata": [
+      "HEAD c661c3e9e852cf121cb15f58dbe15f317fe9dd41",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-resize-988f/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 988f290db1129d56e8ffec611d9b002cf3101b96",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-resize-ef58/source",
+    "exists": false,
+    "metadata": [
+      "HEAD ef5838d252240be1cad642aecbdcb3d95de517f6",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-resize-release-36cd/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 36cdec81428f00dcaed92354434c4e7139729107",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-resource-37e/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 37e00828e4bfae74bf06d99251dd1c9654ded66c",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-resource-901/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 90145547372f74d87606bd67e5b2caa9e6134912",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-retained-d5e8/source",
+    "exists": false,
+    "metadata": [
+      "HEAD d5e817b806946c88e6047e260da78e92d0e83842",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-retire-a688/source",
+    "exists": false,
+    "metadata": [
+      "HEAD a6889ab6f4a07457c2f35ef46d7f4752935773d0",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-return-0bf3/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 0bf33ed5a49a310b502221accfa35d0ab0a6bd8b",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-return-2bb3/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 2bb3e84395ce3ad3a4976101a2bcbe11aff33cdf",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-review-d84/source",
+    "exists": false,
+    "metadata": [
+      "HEAD d84f197c9c3d2742bb34eac60a1c843349077afc",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-revision-8422/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 8422a7c38808ebb4ae734bae99e81ff86b60947f",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-ring-817e/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 817e32f3f50b29305c4fbdb48f7789fadaa40419",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-roots-7b85/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 7b85f70ed302b546a3b21a80f3dd1472b57d7ed5",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-route-4938/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 4938e57b856fb95ecc10962d8663a2538226254f",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-routed-aca2/source",
+    "exists": false,
+    "metadata": [
+      "HEAD aca207a3dd963297a7e4b7a4bb302371b6cd7077",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-routing-daf5/source",
+    "exists": false,
+    "metadata": [
+      "HEAD daf55e5c2ed0c3a2933172a872689d28462c2b83",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-rows-a7cc/source",
+    "exists": false,
+    "metadata": [
+      "HEAD a7cc316ff51e60b45351af94afd2f3b8824c98c6",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-runtime-box-47c/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 47c1bddeac81b301fac78c0707a3080da7ea8746",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-sampler-63b0/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 63b0e30b1ec2256cc62ffc97d81cd40b516fab26",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-sampler-b1/source",
+    "exists": false,
+    "metadata": [
+      "HEAD b1f7f55ac49558a8d68fdce77dbd1d2626933c00",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-sampler-retire-0a68-native/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 0a68185980fe0e196a65c0ea033ee487d5345755",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-save-7db5/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 7db599ac197849a4460ed8544d4ce3c4fe9272fd",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-scope-empty-49db/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 49db4ddb09cf72215c2e8fd07f2b60c5ba5f9f12",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-scope-empty-607f/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 607fe07bab704e98574e99c857ba28f5b4a0b357",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-session-d8ee/source",
+    "exists": false,
+    "metadata": [
+      "HEAD d8ee95e9d82ed5dcf3778b50a1407f38a93345c3",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-session-family-23a/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 23a01b2ef7bb76511308a9c552d665c4f2fa5b67",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-sidecar-0a65/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 0a651f082595c2f874be349f8b7ecc0accdad6f7",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-sine-dba2/source",
+    "exists": false,
+    "metadata": [
+      "HEAD dba2f77e9143d7ce31e6852ce503a0cdaadce724",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-slice-factory-2e6b/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 2e6b187a37fa6e53f65bdf3dd35d96d8f1d852fd",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-source-23ce/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 23ce10c667d2c6659ff37dc727b0caa29d36c882",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-source-c68/source",
+    "exists": false,
+    "metadata": [
+      "HEAD c68c093d6febed6c3bf3823928332e8aab6d36bd",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-source-cc63/source",
+    "exists": false,
+    "metadata": [
+      "HEAD cc638939db969dda5d8d9f6b6d09a3f577abc3be",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-spectrum-e6a0/source",
+    "exists": false,
+    "metadata": [
+      "HEAD e6a0bc97fae81df55fc0b2869a4800c415cbb51a",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-spinner-368/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 8c03679060c3798f77d0bf60e3cb3885e2bab920",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-split-4d14/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 4d14b5827ede2385e276b10ef57732ec79928e0a",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-stage-0bec/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 0becbedfffb70084c87d2fbd1f4a9d0fb1354151",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-startup-6fb7/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 6fb7c3d4e242c9ad6f8f517c5dccc7cbe87aae09",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-state-005c/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 005c242d0f01ea456bd151b64f8acb0538f85a6e",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-state-45fc/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 45fc6f23f837cc5de8760fad32706efe2eff7890",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-status-1168/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 1168efd543d24e7c41a50e082dcf0ef476f0dd98",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-tempo-5bd4/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 5bd4220d08f37f422eb17561bc4a350620e0c4ef",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-topology-fd5a/source",
+    "exists": false,
+    "metadata": [
+      "HEAD fd5a2572529bdbf7add411cfaed62b467438dd08",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-track-09c1/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 09c1877a82b8c47ce0502078c049ff6f6060e6a8",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-track-action-65f7/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 65f75acfd1f8b88f50a9e01d2c66b1c0650de052",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-transport-78a8/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 78a80ee898e78229bddc39e8626b4f10f8d5e031",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-tuning-cd33/source",
+    "exists": false,
+    "metadata": [
+      "HEAD cd3376b647723798dc207fac2b7844d642061926",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-ui-3005/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 3005188ccf72f849b68b3d7ddb6933bb30d98e02",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-ui-asset-a1f9/source",
+    "exists": false,
+    "metadata": [
+      "HEAD a1f9b6a66ba1d89ee8af93879ba3a811f563f9c8",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-ui-e422/source",
+    "exists": false,
+    "metadata": [
+      "HEAD e42259d8435fef1e9b7f350d66b1d20aa5142d7c",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-ui-probe-97c6/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 97c6e41af85409e47564de7f9e7b57f2223355bc",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-union-20e8/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 20e84bb9b1bfb7c40eed30f5d50f48b914fce8a1",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-waveform-0455/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 04554fb225cc83312a576bdb8cd76a37d8bf4664",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-waveform-6d97/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 6d97f82e1a0ba61ed77951c18b4bab83a837aa87",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-waveform-98dd/source",
+    "exists": false,
+    "metadata": [
+      "HEAD 98ddb54950619681973935589300269e10fbda54",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-worker-c9e7/source",
+    "exists": false,
+    "metadata": [
+      "HEAD c9e7a4c229c1cd8b3487a52c6a70ff53c81b2074",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  },
+  {
+    "path": "/Users/portalsurfer/Documents/Codex/2026-10-17/yield-serial-mac-verification/work/hex-workspace-d035/source",
+    "exists": false,
+    "metadata": [
+      "HEAD d035b55f678c2bf782f6a9754f1b9867337673d6",
+      "detached",
+      "prunable gitdir file points to non-existent location"
+    ]
+  }
+]
