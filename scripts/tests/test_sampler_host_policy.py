@@ -11,6 +11,27 @@ violations = policy.violations
 
 
 class SamplerHostPolicyTests(unittest.TestCase):
+    def test_preclaim_keeps_exact_source_and_same_pending_receiver(self):
+        root = Path(__file__).resolve().parents[2]
+        path = 'crates/hex-session/src/snapshot_exports/transport/preclaim.rs'
+        source = (root / path).read_text()
+        self.assertEqual(violations(path, source), [])
+        for step in ['std::ptr::eq(self.reads, previous.operations)', '&delivery.canonical']:
+            self.assertTrue(violations(path, source.replace(step, 'omitted()')))
+        self.assertTrue(violations(path, source + '\nfn bypass() { x.try_derive(); }'))
+        path = 'crates/hex-session/src/snapshot_exports/source_event.rs'
+        source = (root / path).read_text()
+        self.assertEqual(violations(path, source), [])
+        for step in ['previous.project == current.project', 'old.shares_owner_with(source)',
+                     'source.context().project_generation == generation']:
+            self.assertTrue(violations(path, source.replace(step, 'true')))
+        self.assertTrue(violations('crates/hex-ui/src/foreign.rs',
+                                   'x.read_source_event_following_on_control()'))
+        self.assertTrue(violations('crates/hex-ui/src/foreign.rs',
+                                   'x.with_preclaim_comparison(arbitrary)'))
+        self.assertTrue(violations('crates/hex-ui/src/foreign.rs',
+                                   'impl SourceEventHeadRelationContinuation for Foreign {}'))
+
     def test_file_wrapper_keeps_actual_element_containment_and_continuation(self):
         root = Path(__file__).resolve().parents[2]
         path = 'crates/hex-desktop/src/native_audio/main_files.rs'

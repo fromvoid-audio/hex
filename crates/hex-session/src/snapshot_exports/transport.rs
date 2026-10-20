@@ -139,8 +139,13 @@ type SourceEnqueue = fn(
 ) -> Result<(), SnapshotTransportError>;
 /// Static audited Desktop routing only. No owning capture, constructor quote
 /// or admission is carried across the worker/UI boundary.
+mod preclaim;
+pub use preclaim::SourceEventHeadRelationContinuation;
+use preclaim::SourceHeadPreviousRead;
+
 pub struct SnapshotSourceEventOperations {
     inspect: SourceHeadRead,
+    preclaim: Option<SourceHeadPreviousRead>,
     claim: SourceClaim,
     worker: Option<(SourcePrepare, SourceEnqueue)>,
 }
@@ -148,9 +153,14 @@ impl SnapshotSourceEventOperations {
     pub const fn new_unqualified(inspect: SourceHeadRead, claim: SourceClaim) -> Self {
         Self {
             inspect,
+            preclaim: None,
             claim,
             worker: None,
         }
+    }
+    pub const fn with_preclaim_comparison(mut self, inspect: SourceHeadPreviousRead) -> Self {
+        self.preclaim = Some(inspect);
+        self
     }
     pub const fn with_worker_transport(
         mut self,

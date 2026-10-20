@@ -24,6 +24,7 @@ static SOURCE_EVENT_OPERATIONS: hex_session::snapshot_exports::SnapshotSourceEve
         inspect_source_head,
         claim_source_head,
     )
+    .with_preclaim_comparison(inspect_source_head_following)
     .with_worker_transport(prepare_source_events, enqueue_source_event);
 fn prepare_source_events(route: RetainedControlJobRoute) -> Result<(), Error> {
     hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
@@ -54,6 +55,29 @@ fn inspect_source_head(
     hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
         family
             .read_source_event_head_on_control(|head, snapshot| read.read(head, snapshot))
+            .map(|result| result.is_some())
+            .map_err(record_error)
+    })
+    .map_err(family_error)?
+}
+fn inspect_source_head_following(
+    route: RetainedControlJobRoute,
+    pending: Option<(
+        hex_session::snapshot_exports::SourceEventHead,
+        &SnapshotReadStamp,
+    )>,
+    previous: &SnapshotReadStamp,
+    generation: u64,
+    read: &mut dyn hex_session::snapshot_exports::SourceEventHeadRelationContinuation,
+) -> Result<bool, Error> {
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family
+            .read_source_event_following_on_control(
+                pending,
+                previous,
+                generation,
+                |head, relation, snapshot| read.read(head, relation, snapshot),
+            )
             .map(|result| result.is_some())
             .map_err(record_error)
     })

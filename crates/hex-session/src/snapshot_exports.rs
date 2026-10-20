@@ -14,8 +14,8 @@ mod source_queue;
 pub use native_editor_profile::NATIVE_PLAYBACK_CANDIDATE_CAPACITY;
 pub use source_event::{
     SourceBatchFailureRead, SourceEventFacts, SourceEventMetadata, SourceEventRead,
-    SourceGestureAckRead, SourceTuningGestureAckRead, SourceTuningLibraryRead,
-    SourceTuningSlotRead,
+    SourceEventSourceRelation, SourceGestureAckRead, SourceTuningGestureAckRead,
+    SourceTuningLibraryRead, SourceTuningSlotRead,
 };
 pub use source_queue::{SourceEventDelivery, SourceEventHead};
 mod family;
@@ -49,8 +49,9 @@ pub use family::{
 pub(crate) use transport::SnapshotSourceEventSender;
 pub use transport::{
     SnapshotEventReads, SnapshotReadCapability, SnapshotReadContinuation, SnapshotReadOperations,
-    SnapshotSourceEventOperations, SnapshotSourceEventReceiver, SnapshotSourceKey, SnapshotTransportError,
-    SourceEventHeadContinuation, SourceEventReadDelivery,
+    SnapshotSourceEventOperations, SnapshotSourceEventReceiver, SnapshotSourceKey,
+    SnapshotTransportError, SourceEventHeadContinuation, SourceEventHeadRelationContinuation,
+    SourceEventReadDelivery,
 };
 pub use worker_control::{SnapshotWorkerControl, SnapshotWorkerOperations, SnapshotWorkerStop};
 pub(crate) use worker_export_results::SnapshotExportResultEndpoint;

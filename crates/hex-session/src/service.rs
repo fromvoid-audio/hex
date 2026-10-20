@@ -1146,6 +1146,25 @@ pub(crate) fn view_state_owned(
         None,
     )
 }
+#[cfg(test)]
+pub(crate) fn source_comparison_view_fixture(
+    session: &Session,
+    revision: u64,
+    generation: u64,
+    previous: &ViewState,
+) -> ViewState {
+    // Owning control fixture only, never a nominal read query or production
+    // constructor/admission entry. The actual private producer stays private.
+    view_state_owned_bound(
+        session,
+        hex_engine::empty_midi_preview_on_control(),
+        revision,
+        generation,
+        true,
+        None,
+        Some(previous),
+    )
+}
 // Same worker constructor only. The closed caller quotes the actual old/new
 // pair and all view children before entry; this helper grants no admission.
 fn view_state_owned_bound(

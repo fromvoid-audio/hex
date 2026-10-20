@@ -649,6 +649,24 @@ impl SessionExportFamily {
         }
         records.read_source_event_head(read)
     }
+    /// Inspect the actual queue head (or receiver-owned pending claim) and
+    /// previous source under one existing inner-family guard. No read is born.
+    pub fn read_source_event_following_on_control<R>(
+        &self,
+        pending: Option<(SourceEventHead, &SnapshotReadStamp)>,
+        previous: &SnapshotReadStamp,
+        generation: u64,
+        read: impl for<'a> FnOnce(SourceEventHead, SourceEventSourceRelation, SnapshotRead<'a>) -> R,
+    ) -> Result<Option<R>, ExportRecordError> {
+        let records = self
+            .records
+            .try_read()
+            .map_err(|_| ExportRecordError::Busy)?;
+        if self.abandoned.load(Ordering::Acquire) {
+            return Err(ExportRecordError::Closed);
+        }
+        records.read_source_event_following(pending, previous, generation, read)
+    }
     /// Reserve the requested extra canonical role BEFORE removing the head.
     /// Refusal retains it, including when durable ACKs have not yet collected.
     pub fn receive_source_event_on_control(

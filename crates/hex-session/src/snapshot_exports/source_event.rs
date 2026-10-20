@@ -270,3 +270,48 @@ impl<'a> SnapshotRead<'a> {
 
 #[cfg(test)]
 mod tests;
+
+/// Copy observations of the inherited UI receive law. These facts convey no
+/// read lifetime, native admission, publication or storage authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SourceEventSourceRelation {
+    comparison_present: bool,
+    follows: bool,
+    same_source_duplicate: bool,
+}
+impl SourceEventSourceRelation {
+    pub fn comparison_present(self) -> bool {
+        self.comparison_present
+    }
+    pub fn follows(self) -> bool {
+        self.follows
+    }
+    pub fn same_source_duplicate(self) -> bool {
+        self.same_source_duplicate
+    }
+    pub(super) fn between(
+        previous: &crate::service::ViewState,
+        current: &crate::service::ViewState,
+        generation: u64,
+    ) -> Self {
+        Self {
+            comparison_present: current.comparison_audio.is_some(),
+            follows: current
+                .comparison_audio
+                .as_ref()
+                .is_some_and(|binding| binding.follows(previous, current, generation)),
+            same_source_duplicate: previous.revision == current.revision
+                && previous.project == current.project
+                && previous
+                    .canonical_audio_source
+                    .as_ref()
+                    .zip(current.canonical_audio_source.as_ref())
+                    .is_some_and(|(old, source)| {
+                        old.shares_owner_with(source)
+                            && source.context().project_generation == generation
+                            && current.audio_authoring_revision(source.context())
+                                == Some(current.revision)
+                    }),
+        }
+    }
+}

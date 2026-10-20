@@ -165,6 +165,36 @@ def violations(path: str, source: str) -> list[str]:
         production = re.sub(r'///[^\n]*', '', source)
         if re.search(r'\bunsafe\b|\.expect\(|\.unwrap\(|Arc::|mem::take|force_unlock', production):
             return [f'{path}: no runtime panic, raw adoption, owner extraction or forced unlock']
+    if re.search(r'\.with_preclaim_comparison\s*\(', source) and path not in {
+            'crates/hex-desktop/src/snapshot_transport.rs',
+            'crates/hex-session/src/snapshot_exports/transport/source_tests.rs'}:
+        return [f'{path}: only the audited Desktop adapter constructs the preclaim operation']
+    if re.search(r'impl(?:<[^\n]*>)?\s+SourceEventHeadRelationContinuation\s+for', source) and path != 'crates/hex-session/src/snapshot_exports/transport/preclaim.rs':
+        return [f'{path}: paired continuation is confined to the receiver stack']
+    pair_owners = {
+        'crates/hex-session/src/snapshot_exports/family.rs',
+        'crates/hex-session/src/snapshot_exports/source_queue.rs',
+        'crates/hex-session/src/snapshot_exports/transport/source_tests.rs',
+        'crates/hex-desktop/src/snapshot_transport.rs',
+    }
+    if re.search(r'\.(?:read_source_event_following_on_control|read_source_event_following)\s*\(', source) and path not in pair_owners:
+        return [f'{path}: paired head observations use only actual receiver/registered family route']
+    if path == 'crates/hex-session/src/snapshot_exports/transport/preclaim.rs':
+        production = re.sub(r'///[^\n]*', '', source)
+        required = ['self.route != previous.route', 'std::ptr::eq(self.reads, previous.operations)',
+                    '(Some(delivery), Some((head, _)))', '&delivery.canonical',
+                    'SnapshotTransportError::Protocol', 'previous.stamp']
+        compact = re.sub(r'\s+', '', source)
+        if any(re.sub(r'\s+', '', step) not in compact for step in required):
+            return [f'{path}: preclaim must preserve actual route/operations/stamp and retained pending head']
+        if re.search(r'\.(?:try_derive|try_receive|clone|take_pending|release_read)\s*\(|Arc::|Vec::|Box::|unsafe', production):
+            return [f'{path}: preclaim observes only; no claim/derived role/owner birth']
+    if path == 'crates/hex-session/src/snapshot_exports/source_event.rs':
+        for step in ['previous.project == current.project', 'previous.revision == current.revision',
+                     'old.shares_owner_with(source)', 'source.context().project_generation == generation',
+                     'current.audio_authoring_revision(source.context())', 'binding.follows(previous, current, generation)']:
+            if step not in source:
+                return [f'{path}: inherited ordered relation and saturated duplicate actual source law are mandatory']
     if 'ComparisonAudioBinding::advance' in source and path not in {
             'crates/hex-session/src/service.rs',
             'crates/hex-session/src/service/comparison_audio.rs'}:

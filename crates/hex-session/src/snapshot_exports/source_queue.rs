@@ -161,6 +161,41 @@ impl SnapshotExportRecords {
         self.read_with(&entry.canonical, |snapshot| read(head, snapshot))
             .map(Some)
     }
+    pub(super) fn read_source_event_following<R>(
+        &self,
+        pending: Option<(SourceEventHead, &SnapshotReadStamp)>,
+        previous: &SnapshotReadStamp,
+        generation: u64,
+        read: impl for<'a> FnOnce(SourceEventHead, SourceEventSourceRelation, SnapshotRead<'a>) -> R,
+    ) -> Result<Option<R>, ExportRecordError> {
+        let (head, current) = if let Some((head, current)) = pending {
+            // Only the actual receiver supplies its still-owned claim pair.
+            // It may precede the current queue head after a Busy bind.
+            if head.family != self.family
+                || head.sequence == 0
+                || head.sequence > self.source_events.sequence
+                || self.record(current.snapshot)?.event_metadata.is_none()
+            {
+                return Err(ExportRecordError::Stale);
+            }
+            (head, current)
+        } else {
+            let Some(head) = self.source_event_head()? else {
+                return Ok(None);
+            };
+            let entry = self.source_events.entries[0]
+                .as_ref()
+                .ok_or(ExportRecordError::Stale)?;
+            (head, &entry.canonical)
+        };
+        let current_view = self.snapshot_for_read(current)?;
+        let previous_view = self.snapshot_for_read(previous)?;
+        let relation = SourceEventSourceRelation::between(previous_view, current_view, generation);
+        // Both actual views and the queue/claim remain borrowed under the SAME
+        // existing record guard. No claim/derive/ACK or allocation occurs.
+        self.read_with(current, |snapshot| read(head, relation, snapshot))
+            .map(Some)
+    }
     pub(super) fn receive_source_event(
         &mut self,
         head: SourceEventHead,

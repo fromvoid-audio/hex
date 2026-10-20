@@ -211,6 +211,23 @@ fn actual_registered_event_transport_releases_discarded_queued_preview_and_unpai
     });
     assert_eq!(allocation.count_total, 0);
     assert_eq!(allocation.count_current, 0);
+    // Real registered adapter dispatch with no queued event: no fabricated
+    // metadata or callback, no claim/read role, and no allocation/free.
+    // Nonempty/pending relation semantics are covered by the Session owner test.
+    let receiver = bind_source_event_receiver_on_control(id).unwrap();
+    let allocation = allocation_counter::measure(|| {
+        assert_eq!(
+            receiver.inspect_head_following_with(&base, 1, |_, _, _| ()),
+            Ok(None)
+        );
+        assert_eq!(
+            receiver.inspect_head_following_with(&foreign_cap, 1, |_, _, _| ()),
+            Err(Error::Stale)
+        );
+    });
+    assert_eq!(allocation.count_total, 0);
+    assert_eq!(allocation.count_current, 0);
+    drop(receiver);
     drop(same);
     drop(foreign_cap);
     with_family(foreign_id, |family| family.abandon_on_control(&foreign_key)).unwrap();

@@ -118,6 +118,31 @@ impl Service {
             .ok_or(SnapshotTransportError::Protocol)?
             .inspect_head_with(read)
     }
+    /// Before ANY receive effects, compare the retained head to the actual
+    /// previous capability under one family acquisition. Busy keeps the head.
+    pub fn inspect_event_head_following_with<R>(
+        &self,
+        previous: &crate::snapshot_exports::SnapshotReadCapability,
+        generation: u64,
+        read: impl for<'a> FnOnce(
+            crate::snapshot_exports::SourceEventHead,
+            crate::snapshot_exports::SourceEventSourceRelation,
+            crate::snapshot_exports::SnapshotRead<'a>,
+        ) -> R,
+    ) -> Result<Option<R>, SnapshotTransportError> {
+        if self.events.unqualified.is_some() {
+            return Err(SnapshotTransportError::Protocol);
+        }
+        let receiver = self
+            .events
+            .registered
+            .try_borrow()
+            .map_err(|_| SnapshotTransportError::Busy)?;
+        receiver
+            .as_ref()
+            .ok_or(SnapshotTransportError::Protocol)?
+            .inspect_head_following_with(previous, generation, read)
+    }
     /// Claim only the inspected head, reserving the actual extra canonical role
     /// before its removal. This replaces the existing receiver, not a UI cache.
     pub fn receive_event_head(
