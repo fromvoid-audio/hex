@@ -349,3 +349,9 @@ History restoration waits for the provider actually used by the source/query,
 not unrelated catalog work. Top-row capture uses the existing fixed 22px,
 zero-padding browser list geometry and actual painted offset, with pending scroll
 intent taking precedence; restoration uses strict top alignment after layout.
+
+When root projection changes during reconciliation, the existing render loop
+schedules one follow-up reconciliation even if no expanded-folder worker starts.
+History therefore restores the saved highlight on the initiating mouse-down,
+without waiting for mouse-up or an unrelated redraw. Stable roots quiesce; real
+listing/tree/catalog work still fences restoration until its provider is ready.

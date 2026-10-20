@@ -598,6 +598,12 @@ impl EditorView {
             return;
         }
         let entries = self.browser_visible_entries(cx);
+        if self.browser.tree.dirty.get() {
+            // Computing a changed root projection can re-dirty the tree even
+            // when no folder worker starts. Finish reconciliation next frame;
+            // identical roots stay clean, so this does not become a poll loop.
+            cx.notify();
+        }
         let needed: Vec<_> = entries
             .iter()
             .filter(|entry| {

@@ -6141,3 +6141,9 @@ acceptance remain separate; prior fixture-only baseline failure is not a product
   query round trips, wait only the used provider, remove the runtime expect and
   capture/strictly restore actual fixed-row geometry. Current validation pending;
   original eight and six hidden-source cases remain, no native claim.
+
+- PR286 seventh return: complete clicks already restored and quiesced; actual
+  held Back mouse-down exposed a pending highlight after one notification.
+  Schedule only root-projection re-dirtiness through existing reconciliation,
+  preserving real worker waits and all prior history/hidden-source controls.
+  Current focused checks and final qualification remain pending.
