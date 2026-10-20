@@ -3,7 +3,7 @@
 //! These wrappers keep every model borrow tied to the enclosing snapshot read.
 //! They expose copyable values and iterators over purpose-specific wrappers;
 //! no project, source, edit root, asset owner, or mutable runtime state escapes.
-use super::{SnapshotClipRead, SnapshotProjectRead, SnapshotTrackRead};
+use super::{SnapshotClipRead, SnapshotProjectRead, SnapshotRead, SnapshotTrackRead};
 use hex_project::{
     AssetId, BeatTime, ClipFade, ClipFlavor, ClipId, GainTouchStep, Meter, MeterPoint,
     MeterPosition, MidiNote, NoteId, SceneId, Tempo, TempoPoint, TrackId,
@@ -23,6 +23,12 @@ pub struct SnapshotMidiNoteRead<'a> {
 #[derive(Clone, Copy)]
 pub struct SnapshotMidiSourceRead<'a> {
     source: &'a hex_project::MidiSource,
+}
+
+/// Drawing facts from this exact retained prepared preview, never its owner.
+#[derive(Clone, Copy)]
+pub struct SnapshotMidiClipPreviewRead<'a> {
+    preview: &'a hex_engine::MidiClipPreview,
 }
 
 #[derive(Clone, Copy)]
@@ -78,7 +84,94 @@ pub struct SnapshotGainSpanRead<'a> {
     span: &'a hex_project::GainTouchSpan,
 }
 
+impl<'a> SnapshotRead<'a> {
+    pub fn midi_clip_frame_bounds(self, id: ClipId) -> Option<(u64, u64)> {
+        self.midi_clip_preview(id)
+            .map(|preview| preview.frame_bounds())
+    }
+
+    pub fn midi_clip_preview(self, id: ClipId) -> Option<SnapshotMidiClipPreviewRead<'a>> {
+        self.snapshot
+            .midi_preview
+            .get(id)
+            .map(|preview| SnapshotMidiClipPreviewRead { preview })
+    }
+
+    /// The existing canonical gain-preview law, scoped to the same snapshot.
+    pub fn gain_preview_at(self, track: TrackId, frame: u64) -> Option<f32> {
+        let source = self.snapshot.project.track(track)?;
+        if source.gain_envelope().is_empty() && source.gain_lane().spans().is_empty() {
+            Some(source.gain())
+        } else {
+            self.snapshot
+                .gain_preview
+                .as_ref()
+                .ok()?
+                .value_at(track, frame)
+        }
+    }
+
+    pub fn gain_preview_error(self) -> Option<&'static str> {
+        self.snapshot
+            .gain_preview
+            .as_ref()
+            .err()
+            .map(|error| error.0)
+    }
+
+    /// `None` means preparation failed; `Some(false)` means no prepared
+    /// automation for this track, preserving the authored static-gain fallback.
+    /// The visitor receives only Copy facts; finish this read before GPUI work.
+    pub fn visit_gain_preview_segments(
+        self,
+        track: TrackId,
+        start: u64,
+        end: u64,
+        visit: impl FnMut(hex_engine::GainPreviewSegment),
+    ) -> Option<bool> {
+        self.snapshot
+            .gain_preview
+            .as_ref()
+            .ok()
+            .map(|preview| preview.visit_segments(track, start, end, visit))
+    }
+}
+
+impl<'a> SnapshotMidiClipPreviewRead<'a> {
+    pub fn frame_bounds(self) -> (u64, u64) {
+        (self.preview.frame_start, self.preview.frame_end)
+    }
+
+    pub fn authored_note_count(self) -> usize {
+        self.preview.authored_note_count
+    }
+
+    pub fn occurrence_count(self) -> usize {
+        self.preview.occurrence_count
+    }
+
+    pub fn samples(self) -> impl ExactSizeIterator<Item = hex_engine::MidiPreviewSample> + 'a {
+        self.preview.samples.iter().copied()
+    }
+}
+
 impl<'a> SnapshotProjectRead<'a> {
+    pub fn clip_flavor(self, id: ClipId) -> Option<ClipFlavor> {
+        self.project.clip_flavor(id)
+    }
+
+    pub fn authored_routing(self) -> impl ExactSizeIterator<Item = hex_project::ReturnFeed> + 'a {
+        self.project.authored_routing().iter().copied()
+    }
+
+    pub fn audio_feeds(self) -> impl ExactSizeIterator<Item = hex_project::AudioFeed> + 'a {
+        self.project.audio_feeds().iter().copied()
+    }
+
+    pub fn midi_routes(self) -> impl ExactSizeIterator<Item = hex_project::MidiRoute> + 'a {
+        self.project.midi_routes().iter().copied()
+    }
+
     /// MIDI Arrangement clip lookup. Session clips are exposed by `session_cell`.
     pub fn midi_clip(self, id: ClipId) -> Option<SnapshotMidiClipRead<'a>> {
         self.project.tracks().iter().find_map(|track| {
@@ -178,6 +271,10 @@ impl<'a> SnapshotProjectRead<'a> {
 }
 
 impl<'a> SnapshotTrackRead<'a> {
+    pub fn sends(self) -> impl ExactSizeIterator<Item = hex_project::SendLevel> + 'a {
+        self.track.sends().iter().copied()
+    }
+
     pub fn color(self) -> hex_project::ElementColor {
         self.track.color()
     }
@@ -203,6 +300,10 @@ impl<'a> SnapshotTrackRead<'a> {
 }
 
 impl<'a> SnapshotClipRead<'a> {
+    pub fn flavor(self) -> ClipFlavor {
+        self.clip.flavor()
+    }
+
     /// Original source phase, including looped clip starts.
     pub fn source_phase(self) -> u64 {
         self.clip.source_phase()
@@ -491,6 +592,94 @@ impl<'a> SnapshotGainSpanRead<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prepared_midi_and_gain_facts_stay_with_the_retained_snapshot_after_tempo_edit() {
+        use crate::snapshot_exports::{SessionExportFamily, SnapshotExportReservation};
+        use hex_project::{Command, Created};
+
+        let mut session = crate::Session::new(48_000, 8, 1024).unwrap();
+        let Created::Track(track) = session
+            .editor
+            .execute(Command::AddMidiTrack {
+                name: "keys".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected track");
+        };
+        let Created::Clip(clip) = session
+            .editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(4).unwrap(),
+                length: BeatTime::from_quarters(4).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("expected clip");
+        };
+        session
+            .editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 100,
+            })
+            .unwrap();
+        let capture = |session: &crate::Session, revision| {
+            let (_, midi) = session.compile_with_midi_preview().unwrap();
+            Some(crate::service::view_state_owned(
+                session, midi, revision, 1, false, None,
+            ))
+        };
+        let (family, producer) =
+            SessionExportFamily::try_new_on_control(SnapshotExportReservation {
+                snapshot_records: 2,
+                read_records: 4,
+                max_bookkeeping_bytes: 16_384,
+            })
+            .unwrap();
+        let old = family
+            .insert_event_read_on_control(&producer, &mut capture(&session, 7))
+            .unwrap();
+        session
+            .editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(60_000_000).unwrap(),
+            })
+            .unwrap();
+        session
+            .editor
+            .execute(Command::Gain { track, gain: 0.5 })
+            .unwrap();
+        let current = family
+            .insert_event_read_on_control(&producer, &mut capture(&session, 8))
+            .unwrap();
+        for (read, bounds, gate_end, gain) in [
+            (&old, (96_000, 192_000), 120_000, 1.0),
+            (&current, (192_000, 384_000), 240_000, 0.5),
+        ] {
+            family
+                .read_with(read, |snapshot| {
+                    assert_eq!(snapshot.midi_clip_frame_bounds(clip), Some(bounds));
+                    let preview = snapshot.midi_clip_preview(clip).unwrap();
+                    assert_eq!(preview.authored_note_count(), 1);
+                    assert_eq!(preview.occurrence_count(), 1);
+                    let sample = preview.samples().next().unwrap();
+                    assert_eq!(
+                        (sample.frame_start, sample.frame_gate_end, sample.pitch),
+                        (bounds.0, gate_end, 60)
+                    );
+                    assert_eq!(snapshot.gain_preview_at(track, bounds.0), Some(gain));
+                })
+                .unwrap();
+        }
+    }
 
     #[test]
     fn tempo_and_meter_queries_keep_exact_project_conversions() {
