@@ -58,6 +58,8 @@ fn fixture(
     s.tracks[0].gain = 0.6;
     s.tracks[0].balance = 0.25;
     s.tracks[0].soloed = solo;
+    // Independent ownership fixtures compare full snapshots, not random color draws.
+    s.tracks[1].color = hex_project::ElementColor::Cyan;
     s.tracks[1].gain = 0.8;
     s.tracks[1].balance = -0.5;
     s.tracks[1].muted = !solo;
@@ -1174,7 +1176,12 @@ fn compiler_track_child_fixture(
     let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
     for name in ["first", "second"] {
         let Created::Track(track) = editor
-            .execute(Command::AddTrack { name: name.into() })
+            .execute(Command::InsertTrackWithDevice {
+                name: name.into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
+            })
             .unwrap()
         else {
             panic!("track");
@@ -1205,7 +1212,7 @@ fn compiler_track_child_fixture(
     snapshot.tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
-                comparison: None,
+            comparison: None,
             id: snapshot.next_id,
             bypassed,
             state,
@@ -1533,8 +1540,12 @@ fn selected_track_children_loaded_sampler_uses_actual_context_and_survives_resto
                 .state()
                 .clone();
             let Created::Track(destination) = editor
-                .execute(Command::AddMidiTrack {
+                .execute(Command::InsertTrackWithDevice {
                     name: "destination".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state()
+                        .expect("fixture instrument state"),
                 })
                 .unwrap()
             else {

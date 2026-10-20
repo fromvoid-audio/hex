@@ -852,7 +852,7 @@ fn main_effects_process_once_after_sum_in_order_and_session_matches() {
         PreparedRevision::prepare(
             &model,
             &media,
-            Arc::new(hex_devices::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

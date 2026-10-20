@@ -182,7 +182,7 @@ fn prepare(project: &Project, previous: Option<&PreparedRevision>) -> Arc<Prepar
         PreparedRevision::prepare(
             project,
             &BTreeMap::new(),
-            Arc::new(hex_devices::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             previous.map(|old| old.session().as_ref()),
         )
         .unwrap(),
@@ -466,7 +466,7 @@ fn native_tuning_held_and_released_live_voices_retarget_unequal_maps_without_res
                 PreparedRevision::prepare_tuning_from(
                     &target,
                     &BTreeMap::new(),
-                    Arc::new(hex_devices::SineTable::new()),
+                    hex_engine::SharedSineTable::new_on_control(),
                     &project,
                     &first,
                 )
@@ -571,7 +571,7 @@ fn native_tuning_fresh_or_ordinary_edit_sources_cannot_rebind_a_keyboard_family(
             PreparedRevision::prepare_tuning_from(
                 editor.project(),
                 &BTreeMap::new(),
-                Arc::new(hex_devices::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 &project,
                 &revision
             )

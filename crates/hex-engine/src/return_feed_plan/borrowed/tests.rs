@@ -2,8 +2,11 @@ use super::*;
 use hex_project::{Command, Created, Editor, ReturnId, TrackId};
 fn track(editor: &mut Editor, midi: bool) -> TrackId {
     let command = if midi {
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "midi".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }
     } else {
         Command::AddTrack {
@@ -46,21 +49,45 @@ fn borrowed_routing_rejects_actual_prepared_batch_combined_audio_cycle() {
         .unwrap();
     validate(editor.project()).unwrap();
     Project::validate_return_feed_snapshot(&editor.project().snapshot()).unwrap();
-    editor
+    let before = editor.project().snapshot();
+    let history = (editor.can_undo(), editor.can_redo());
+    let mut prepared = false;
+    let error = editor
         .execute_many_prepared(
             vec![Command::SetReturnSend {
                 track: t,
                 return_track: a,
                 gain: 0.5,
             }],
-            |_, _| Ok::<_, hex_project::Invalid>(()),
+            |_, _| {
+                prepared = true;
+                Ok::<_, hex_project::Invalid>(())
+            },
         )
-        .unwrap();
+        .unwrap_err();
     assert_eq!(
-        validate(editor.project()),
-        Err(Invalid("routing cycles are unsupported"))
+        error,
+        hex_project::Invalid("routing cycles are unsupported")
     );
-    assert!(Project::validate_return_feed_snapshot(&editor.project().snapshot()).is_err());
+    assert!(!prepared);
+    assert_eq!(editor.project().snapshot(), before);
+    assert_eq!((editor.can_undo(), editor.can_redo()), history);
+    validate(editor.project()).unwrap();
+    let mut invalid = before;
+    invalid
+        .tracks
+        .iter_mut()
+        .find(|row| row.id == t.value())
+        .unwrap()
+        .sends
+        .push(hex_project::SendLevelSnapshot {
+            return_track: a.value(),
+            gain: 0.5,
+        });
+    assert_eq!(
+        Project::validate_return_feed_snapshot(&invalid),
+        Err(hex_project::Invalid("routing cycles are unsupported"))
+    );
 }
 #[test]
 fn borrowed_routing_rejects_actual_prepared_batch_missing_midi_instrument() {
@@ -74,17 +101,40 @@ fn borrowed_routing_rejects_actual_prepared_batch_missing_midi_instrument() {
         })
         .unwrap();
     validate(editor.project()).unwrap();
-    editor
+    let before = editor.project().snapshot();
+    let history = (editor.can_undo(), editor.can_redo());
+    let mut prepared = false;
+    let error = editor
         .execute_many_prepared(
             vec![Command::RemoveInstrument { track: destination }],
-            |_, _| Ok::<_, hex_project::Invalid>(()),
+            |_, _| {
+                prepared = true;
+                Ok::<_, hex_project::Invalid>(())
+            },
         )
-        .unwrap();
+        .unwrap_err();
     assert_eq!(
-        validate(editor.project()),
-        Err(Invalid("midi destination requires an instrument"))
+        error,
+        hex_project::Invalid("midi destination requires an instrument")
     );
-    assert!(Project::validate_return_feed_snapshot(&editor.project().snapshot()).is_err());
+    assert!(!prepared);
+    assert_eq!(editor.project().snapshot(), before);
+    assert_eq!((editor.can_undo(), editor.can_redo()), history);
+    validate(editor.project()).unwrap();
+    let mut invalid = before;
+    let row = invalid
+        .tracks
+        .iter_mut()
+        .find(|row| row.id == destination.value())
+        .unwrap();
+    row.instrument = None;
+    row.instrument_position = None;
+    assert_eq!(
+        Project::validate_return_feed_snapshot(&invalid),
+        Err(hex_project::Invalid(
+            "midi destination requires an instrument"
+        ))
+    );
 }
 #[test]
 fn borrowed_routing_scratch_refuses_before_construction_and_counts_actual_capacities() {

@@ -139,8 +139,11 @@ mod tests {
     fn prepared() -> AudioCandidatePreparation {
         let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
         let Created::Track(track) = editor
-            .execute(Command::AddTrack {
+            .execute(Command::InsertTrackWithDevice {
                 name: "actual owned".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         else {

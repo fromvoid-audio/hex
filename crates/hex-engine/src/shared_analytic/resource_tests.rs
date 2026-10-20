@@ -133,8 +133,11 @@ fn actual_inline_bank_voices_retain_their_scope_without_enlarging_coefficient_en
     .unwrap();
     let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let hex_project::Created::Track(track) = editor
-        .execute(hex_project::Command::AddMidiTrack {
+        .execute(hex_project::Command::InsertTrackWithDevice {
             name: "inline resources".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -253,8 +256,11 @@ fn carried_shared_host_reads_its_retained_scope_after_slot_reuse_and_control_rel
     let new_lease = source.prepare_lease_on_control(&new_state, 4096).unwrap();
     let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let hex_project::Created::Track(track) = editor
-        .execute(hex_project::Command::AddMidiTrack {
+        .execute(hex_project::Command::InsertTrackWithDevice {
             name: "resource proof".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -344,8 +350,11 @@ fn unchanged_authored_state_cannot_reuse_a_context_from_another_actual_source_ro
     let ids = fixtures::ids();
     let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let hex_project::Created::Track(track) = editor
-        .execute(hex_project::Command::AddMidiTrack {
+        .execute(hex_project::Command::InsertTrackWithDevice {
             name: "root identity".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -417,8 +426,11 @@ fn fresh_inline_owner_inventory_separates_canonical_metadata_and_requires_every_
     .unwrap();
     let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let hex_project::Created::Track(track) = editor
-        .execute(hex_project::Command::AddMidiTrack {
+        .execute(hex_project::Command::InsertTrackWithDevice {
             name: "metadata owner".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -535,8 +547,11 @@ fn raw_outer_arc_and_opaque_provider_context_cannot_gain_native_inline_metadata_
     .unwrap();
     let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let hex_project::Created::Track(track) = editor
-        .execute(hex_project::Command::AddMidiTrack {
+        .execute(hex_project::Command::InsertTrackWithDevice {
             name: "refused metadata".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -642,8 +657,11 @@ fn actual_prepared_context_and_mutable_host_share_one_configuration_body_until_c
     .unwrap();
     let mut editor = hex_project::Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let hex_project::Created::Track(track) = editor
-        .execute(hex_project::Command::AddMidiTrack {
+        .execute(hex_project::Command::InsertTrackWithDevice {
             name: "prepared resource anchor".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {

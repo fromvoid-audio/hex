@@ -172,8 +172,12 @@ mod tests {
                 let mut editor =
                     Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
                 let Created::Track(id) = editor
-                    .execute(Command::AddMidiTrack {
+                    .execute(Command::InsertTrackWithDevice {
                         name: "sampler".into(),
+                        before_track: None,
+                        slot: hex_project::TrackDeviceSlot::Instrument,
+                        state: hex_project::default_instrument_state()
+                            .expect("fixture instrument state"),
                     })
                     .unwrap()
                 else {
