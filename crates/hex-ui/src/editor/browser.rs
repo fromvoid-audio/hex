@@ -1397,12 +1397,34 @@ impl EditorView {
 
     pub(super) fn browser_activate(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         if self.browser.section == BrowserSection::Instruments {
+            let Some(BrowserItemKey::Device(hex_engine::NativeDeviceClass::Instrument, type_id)) =
+                self.browser_selected_item(cx)
+            else {
+                self.error =
+                    Some("select an available browser instrument before pressing enter".into());
+                cx.notify();
+                return;
+            };
+            let state = match hex_engine::default_native_device_state_for_class(
+                hex_engine::NativeDeviceClass::Instrument,
+                type_id,
+            ) {
+                Ok(state) => state,
+                Err(error) => {
+                    self.error = Some(format!("instrument unavailable · {error}").into());
+                    cx.notify();
+                    return;
+                }
+            };
             let count = self
                 .state
                 .as_ref()
                 .map_or(0, |state| state.project.tracks().len());
-            self.enqueue(Request::Edit(Command::AddMidiTrack {
+            self.enqueue(Request::Edit(Command::InsertTrackWithDevice {
                 name: format!("track {}", count + 1),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state,
             }));
             cx.notify();
             return;

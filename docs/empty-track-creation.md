@@ -32,10 +32,23 @@ track's existing add button, native-device menu and drop region. Its private
 startup uses one precreated test Environment for the view and actual catalog-job
 leases. A held catalog-save control proves the root and four preference paths
 survive view/caller retirement until the real job finishes and cleanup completes.
-Text-focus protection is retained. No production header, shell, keyboard binding
-or panel edit is needed.
+Text-focus protection is retained. The Command-T binding, header and shell remain
+unchanged.
 Current-format encode/decode tests preserve both empty and explicitly authored
 tracks, with no autoload during repeated reopen.
+
+Enter on a selected, registered browser instrument is an explicit device choice:
+it appends a track with that exact instrument's registry default state using one
+InsertTrackWithDevice command. Naming, created-track selection and one-step
+Undo/Redo follow the existing new-track path. Missing, stale, unavailable or
+non-instrument selections refuse before queuing; there is no generic empty-track
+or Sine fallback.
+
+MoveMidiClipToNewTrack and CopyMidiClipToNewTrack transfer a clip, not a track's
+device chain. Their destinations deliberately remain empty and MIDI there is
+silent until an instrument is explicitly added. Source instruments and effects
+remain on the source track; clip content and one-step Undo/Redo are preserved.
+Duplicating a whole track is a separate operation.
 
 The existing Engine MIDI rendering fixture first exposed an implicit Sine
 assumption (12000 instead of 14400 tail frames). After Source4's no-overlap

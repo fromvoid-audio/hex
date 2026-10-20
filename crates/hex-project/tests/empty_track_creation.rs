@@ -152,3 +152,113 @@ fn ordinary_creation_allocates_only_track_identity_and_later_instrument_is_expli
         device
     );
 }
+
+#[test]
+fn midi_clip_transfer_to_new_track_keeps_destination_empty_and_source_devices_owned() {
+    use hex_project::BeatTime;
+    for copy in [false, true] {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+        let source = track(
+            editor
+                .execute(Command::InsertTrackWithDevice {
+                    name: "authored source".into(),
+                    before_track: None,
+                    slot: TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap(),
+        );
+        editor
+            .execute(Command::InsertDevice {
+                track: source,
+                before: None,
+                state: hex_lattice_contract::NativeDeviceState::new(
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                    1,
+                    Vec::new(),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track: source,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let Created::Note(note) = editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 64,
+                channel: 2,
+                velocity: 91,
+            })
+            .unwrap()
+        else {
+            panic!("note")
+        };
+        let before = editor.project().clone();
+        let start = BeatTime::from_quarters(2).unwrap();
+        let destination = track(
+            editor
+                .execute(if copy {
+                    Command::CopyMidiClipToNewTrack {
+                        clip,
+                        name: "copied clip".into(),
+                        before_track: None,
+                        start,
+                    }
+                } else {
+                    Command::MoveMidiClipToNewTrack {
+                        clip,
+                        name: "moved clip".into(),
+                        before_track: None,
+                        start,
+                    }
+                })
+                .unwrap(),
+        );
+        empty(editor.project(), destination);
+        let retained = editor.project().track(source).unwrap();
+        let original = before.track(source).unwrap();
+        assert_eq!(retained.instrument(), original.instrument());
+        assert_eq!(retained.devices(), original.devices());
+        assert_eq!(retained.midi_clips().len(), usize::from(copy));
+        let transferred = &editor.project().track(destination).unwrap().midi_clips()[0];
+        assert_eq!(transferred.start(), start);
+        assert_eq!(transferred.length(), BeatTime::ONE);
+        assert_eq!(transferred.notes().len(), 1);
+        let copied_note = &transferred.notes()[0];
+        assert_eq!(
+            (
+                copied_note.start(),
+                copied_note.duration(),
+                copied_note.pitch(),
+                copied_note.channel(),
+                copied_note.velocity()
+            ),
+            (BeatTime::ZERO, BeatTime::ONE, 64, 2, 91)
+        );
+        if copy {
+            assert_ne!(transferred.id(), clip);
+            assert_ne!(copied_note.id(), note);
+            assert_eq!(retained.midi_clips(), original.midi_clips());
+        } else {
+            assert_eq!(transferred.id(), clip);
+            assert_eq!(copied_note.id(), note);
+        }
+        let after = editor.project().snapshot();
+        assert!(editor.undo());
+        let mut expected = before.snapshot();
+        expected.next_id = after.next_id;
+        assert_eq!(editor.project().snapshot(), expected);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
+    }
+}
