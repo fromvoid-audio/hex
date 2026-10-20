@@ -10,6 +10,9 @@ use hex_project::AssetId;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod ingress;
+pub use ingress::ResidentAudioIngressRefusal;
+
 /// Expected original decoded source facts, captured by the media owner on control.
 #[derive(Clone, Copy, Debug)]
 pub struct OriginalResourceSource {

@@ -6493,3 +6493,14 @@ Exact source/check evidence is retained with the focused PR. Mono native ingress
 retained graph/context owners, union accounting and all host publication/export
 retirement remain under2783. Loading/registration and actual musical playback
 remain2789/2902/2903; no usable-sampler or native deadline acceptance is claimed.
+
+## original-rate decoded source ingress — pulse2930 / PR515
+
+The existing normalized-stereo WAV producer can consume original decoded Audio
+into native source custody while moving the same PCM Vec. Refusal returns the
+original owner/path/metadata; bank construction remains separately bounded.
+Real mono/stereo file tests connect this producer to the sealed bank, exact scope
+and actual sampler PCM, retaining a separate project-rate derivative as a negative
+discriminator. Native mono storage is not a prerequisite for this truthful path.
+Host current/outgoing/checkpoint/export union and deferred retirement remain open;
+no native admission, app loading or optimized delivery is established here.

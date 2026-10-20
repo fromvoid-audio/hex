@@ -91,3 +91,30 @@ work; preserve296 as historical kernel evidence.
 Current format31/strict current validation and alpha feature-first policy apply.
 No compatibility readers/migrations, shared-chain2756 implementation, neutral2773
 implementation, hosted CI or app replacement is included.
+
+## original decoded-source producer — pulse2930 / PR515
+
+The existing `decode_wav_file` path normalizes mono to duplicate stereo channels
+and retains original rate/frame metadata and path spelling. The consuming
+`DecodedAudio::into_native_source_on_control` adapter passes that original Audio
+into `OwnedAudioSource::try_from_decoded_audio_on_control`. The constructor checks
+bounded work, cancellation, finite PCM and exclusive non-derived input before
+consuming the old Arc wrapper and wrapping its same Vec in the existing native
+constructor family. Strong/weak counts only refuse aliases; they do not establish
+provenance. No PCM is copied, no cache is created, and original files are unchanged.
+
+Reported scan/cancel/alias/derived/unsupported refusals return the exact old Audio;
+the media adapter also returns path and metadata. Successful source output exposes
+its original rate and frames, then moves into the existing sealed bank/catalog.
+A separately prepared project-rate derivative cannot replace this original.
+This deliberately uses the documented normalized-stereo contract; native mono
+storage is deferred, not silently claimed.
+
+Owning tests prove Vec address/capacity conservation, refusal custody and derived
+reservation preservation. Real mono/stereo WAV files pass through decode, ingress,
+sealed bank, exact source scope and the actual Sampler runtime pair to literal PCM.
+They also exercise bank-budget refusal then retry with the returned source.
+The qualifying producer tests require supported native construction; unsupported
+constructors fail rather than silently qualify. These are producer tests, not
+runtime/checkpoint/export ownership-union or native publication/retirement proof.
+Those contracts, real device loading and the playable app remain open.
