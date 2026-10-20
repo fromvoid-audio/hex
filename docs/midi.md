@@ -468,12 +468,18 @@ required. Existing finite Arrangement render/export stays unchanged.
 
 `TrimMidiClipEdge` is a beat-anchored, atomic edit;
 `MidiClip::preview_edge_trim` returns O(1) metadata through `MidiClipTrim`,
-without copying or expanding notes. IDs, authored notes, source length and
-loop markers remain unchanged. Right resizing preserves the timeline start
-and source marker and clamps to a positive length; one-shot extension beyond
+without copying or expanding notes during pointer updates. Right resizing
+preserves the timeline start and source marker and clamps to a positive length; one-shot extension beyond
 the source exposes silence, retaining notes for later editing. Left resizing
 preserves the exclusive timeline end and changes the source start marker.
-One-shots clamp to available source data and allow reversing a prior trim.
+One-shots rewind existing source data first. Extending further left prepends
+blank source time, including for a freshly created clip with source start zero.
+On the single canonical commit, note starts and source/loop bounds translate by
+the prefix; note IDs, duration, pitch, channel and velocity remain unchanged.
+Existing notes retain their absolute musical placement, the old right boundary
+stays anchored, and no negative source offset is introduced. The preview carries
+only the prefix scalar; bounded note painting projects those same coordinates
+without cloning the note list. Checked source/timeline bounds still apply.
 Loop intro positions can rewind to source zero; forward edits pass through
 the intro then wrap the loop. Once starting inside the loop, left edits advance
 or rewind modulo the loop interval. This original policy does not persist an
@@ -482,10 +488,20 @@ playback does not chase notes beginning before the source start.
 
 No-op edits preserve source identity and redo. Source marker changes copy the
 shared source only on canonical commit, not every preview frame. Existing
-schema-12 fields persist the result without a schema change. Audio trim and
+current-format fields persist the result without a schema change. Audio trim and
 MIDI resize preserve their current neighboring-overlap behavior; overwrite
 editing remains specific to drop commands. Native resize acceptance is pending;
 see clip-resizing.md. Exact Live source-boundary parity remains unverified.
+
+Pulse2862 source checks include fresh real Service creation, rendered left-edge
+preview/release, real worker acceptance, stable note paint and compiled note-on/
+off frames, Undo/Redo and actual save/reopen; grid/free modifiers, cancellation,
+project replacement and held edge-pan reversal are separate controls. Existing
+loop phase/intro, edited-source shrink/reveal and real audio-source bounds retain
+their policies. Native follow-up: create an empty MIDI clip, extend left to zero,
+add notes and extend again; check fixed right edge and stationary notes, grid/
+Command modifiers, edge-pan stopping in the interior, release over other panels,
+Escape, Undo/Redo and save/reopen. This is not native interaction acceptance.
 
 ## computer midi keyboard — #2642 / PR257
 

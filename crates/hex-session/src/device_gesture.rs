@@ -22,6 +22,12 @@ pub enum GestureTarget {
     TrackGain {
         track: TrackId,
     },
+    TrackBalance {
+        track: TrackId,
+    },
+    ReturnGain {
+        return_track: ReturnId,
+    },
     DeviceParameter {
         device: DeviceId,
         parameter: ParameterId,
@@ -821,6 +827,8 @@ struct Active {
 #[derive(Clone, Copy)]
 enum ActiveKind {
     TrackGain,
+    TrackBalance,
+    ReturnGain,
     Device {
         class: NativeDeviceClass,
         type_id: DeviceTypeId,
@@ -1095,6 +1103,16 @@ impl GestureMachine {
                             Some(second_value),
                         )
                     }
+                    GestureTarget::TrackBalance { track } => (
+                        ActiveKind::TrackBalance,
+                        ParameterValue::Float(static_track_balance(session, track)?),
+                        None,
+                    ),
+                    GestureTarget::ReturnGain { return_track } => (
+                        ActiveKind::ReturnGain,
+                        ParameterValue::Float(static_return_gain(session, return_track)?),
+                        None,
+                    ),
                     GestureTarget::TrackGain { track } => (
                         ActiveKind::TrackGain,
                         ParameterValue::Float(static_track_gain(session, track)?),
@@ -1225,6 +1243,12 @@ impl GestureMachine {
             .as_ref()
             .ok_or(SessionError::Invalid("device gesture is no longer active"))?;
         match (snapshot.target, active.kind) {
+            (GestureTarget::TrackBalance { track }, ActiveKind::TrackBalance) => {
+                static_track_balance(session, track)?;
+            }
+            (GestureTarget::ReturnGain { return_track }, ActiveKind::ReturnGain) => {
+                static_return_gain(session, return_track)?;
+            }
             (GestureTarget::TrackGain { track }, ActiveKind::TrackGain) => {
                 static_track_gain(session, track)?;
             }
@@ -1424,6 +1448,12 @@ fn preview_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
     match target {
+        GestureTarget::TrackBalance { track } => {
+            session.preview_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
+        }
+        GestureTarget::ReturnGain { return_track } => {
+            session.preview_return_gain(return_track, mix_value(value, 0.0, 2.0)?, previous)
+        }
         GestureTarget::TrackGain { track } => {
             session.preview_track_gain(track, track_gain_value(value)?, previous)
         }
@@ -1448,6 +1478,12 @@ fn commit_target(
     previous: Option<&PreparedRevision>,
 ) -> Result<Arc<PreparedRevision>, SessionError> {
     match target {
+        GestureTarget::TrackBalance { track } => {
+            session.commit_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
+        }
+        GestureTarget::ReturnGain { return_track } => {
+            session.commit_return_gain(return_track, mix_value(value, 0.0, 2.0)?, previous)
+        }
         GestureTarget::TrackGain { track } => {
             session.commit_track_gain(track, track_gain_value(value)?, previous)
         }
@@ -1507,6 +1543,48 @@ fn commit_pair_target(
         ),
         _ => Err(SessionError::Invalid(
             "paired values require a paired device gesture",
+        )),
+    }
+}
+
+fn static_track_balance(session: &Session, track: TrackId) -> Result<f32, SessionError> {
+    require_resident_mix(session)?;
+    session
+        .project()
+        .track(track)
+        .map(hex_project::Track::balance)
+        .ok_or(SessionError::Invalid(
+            "track balance target no longer exists",
+        ))
+}
+
+fn static_return_gain(session: &Session, id: ReturnId) -> Result<f32, SessionError> {
+    require_resident_mix(session)?;
+    session
+        .project()
+        .return_tracks()
+        .iter()
+        .find(|track| track.id() == id)
+        .map(hex_project::ReturnTrack::gain)
+        .ok_or(SessionError::Invalid("return gain target no longer exists"))
+}
+
+fn require_resident_mix(session: &Session) -> Result<(), SessionError> {
+    if session.audio_mode() != crate::DocumentAudioMode::Resident {
+        return Err(SessionError::Invalid(
+            "held mixer controls require resident audio mode",
+        ));
+    }
+    Ok(())
+}
+
+fn mix_value(value: ParameterValue, min: f32, max: f32) -> Result<f32, SessionError> {
+    match value {
+        ParameterValue::Float(value) if value.is_finite() && (min..=max).contains(&value) => {
+            Ok(value)
+        }
+        _ => Err(SessionError::Invalid(
+            "mixer value must be finite and within its range",
         )),
     }
 }

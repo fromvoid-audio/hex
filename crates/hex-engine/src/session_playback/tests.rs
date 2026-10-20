@@ -936,6 +936,7 @@ fn legacy_project_from_snapshot(mut snapshot: Snapshot) -> Result<Project, hex_p
                 .checked_add(1)
                 .ok_or(hex_project::Invalid("fixture id capacity"))?;
             track.instrument = Some(DeviceSnapshot {
+                comparison: None,
                 id,
                 bypassed: false,
                 state: state.clone(),
@@ -1264,6 +1265,7 @@ fn post_node_observation_preserves_pcm_and_exact_loop_render_offsets() {
         )
         .unwrap();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            comparison: None,
             id: 7,
             bypassed: false,
             state,
@@ -1382,6 +1384,7 @@ fn post_node_observation_covers_return_chains_bypass_and_session_rendering() {
             gain: 1.0,
             muted: false,
             devices: vec![DeviceSnapshot {
+                comparison: None,
                 id: 80,
                 bypassed,
                 state: eq8.clone(),
@@ -1508,6 +1511,7 @@ fn removed_track_release_retains_its_original_device_matrix() {
         )
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id: 9,
         bypassed: false,
         state,
@@ -1555,6 +1559,7 @@ fn ongoing_track_release_keeps_its_original_device_matrix_across_revision() {
         )
         .unwrap();
     old_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id: 9,
         bypassed: false,
         state,
@@ -1615,11 +1620,13 @@ fn removed_track_release_runs_only_the_captured_instrument_suffix() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            comparison: None,
             id: 9,
             bypassed: false,
             state: prefix,
         },
         DeviceSnapshot {
+            comparison: None,
             id: 10,
             bypassed: false,
             state: suffix,
@@ -1681,11 +1688,13 @@ fn same_revision_session_release_enters_at_the_instrument_gap() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            comparison: None,
             id: 9,
             bypassed: false,
             state: prefix,
         },
         DeviceSnapshot {
+            comparison: None,
             id: 10,
             bypassed: false,
             state: suffix,
@@ -1739,11 +1748,13 @@ fn outgoing_session_release_keeps_the_old_stateful_filter_settings() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
             state,
@@ -1805,11 +1816,13 @@ fn outgoing_arrangement_release_keeps_the_old_stateful_suffix() {
         .unwrap();
     snapshot.tracks[0].devices = vec![
         DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: neutral,
         },
         DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
             state: dc_state,
@@ -2014,6 +2027,7 @@ fn eq8_parameter_edits_inherit_arrangement_effect_history_without_retaining_old_
             state = crate::patch_native_device_parameter(&state, parameter, value).unwrap();
         }
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            comparison: None,
             id: 7,
             bypassed: false,
             state: state.clone(),
@@ -2180,6 +2194,7 @@ fn utility_mute_handoff_silences_warmed_filter_without_retaining_an_audible_tail
                 .unwrap();
         }
         let device = DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: state.clone(),
@@ -2289,11 +2304,13 @@ fn compatible_stateful_history_survives_crossing_the_instrument_gap() {
         )
         .unwrap();
     snapshot.tracks[0].instrument = Some(DeviceSnapshot {
+        comparison: None,
         id: instrument_id,
         bypassed: false,
         state: instrument_state,
     });
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        comparison: None,
         id: device_id,
         bypassed: false,
         state: dc_state,
@@ -2378,11 +2395,13 @@ fn stateful_prefix_and_suffix_match_the_finite_arrangement_across_session_blocks
         .unwrap();
     snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id,
             bypassed: false,
             state: state.clone(),
         },
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: snapshot.next_id + 1,
             bypassed: false,
             state,
@@ -2630,6 +2649,7 @@ fn session_render_failure_after_stateful_prefix_rolls_back_filter_history_and_cl
         let id = snapshot.next_id;
         snapshot.next_id += 1;
         devices.push(hex_project::DeviceSnapshot {
+            comparison: None,
             id,
             bypassed: false,
             state: state.clone(),
@@ -3084,8 +3104,11 @@ fn shared_context_table_admits_the_full_track_bound_without_duplicate_owners() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 128).unwrap();
     for index in 0..hex_project::MAX_TRACKS {
         let track = match editor
-            .execute(Command::AddMidiTrack {
+            .execute(Command::InsertTrackWithDevice {
                 name: format!("context {index}"),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         {
@@ -3240,6 +3263,7 @@ fn prepared_revision_budget_counts_return_effects_with_mutable_instruments_trans
         let mut devices = Vec::new();
         for _ in 0..devices_in_chain {
             devices.push(DeviceSnapshot {
+                comparison: None,
                 id: next_id,
                 bypassed: false,
                 state: filter_state.clone(),
@@ -3452,8 +3476,11 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "short source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3461,8 +3488,11 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
         _ => panic!("expected first MIDI track"),
     };
     let second_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "held source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3627,8 +3657,11 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "removed mutable track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3636,8 +3669,11 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
         _ => panic!("expected first MIDI track"),
     };
     let retained_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "retained mutable track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3863,6 +3899,7 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
         )
         .unwrap();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        comparison: None,
         id: effect,
         bypassed: false,
         state: gain_state,
@@ -4594,6 +4631,7 @@ fn held_eq8_audition_transfers_from_mutable_release_suffix_without_transferring_
     let eq8_id = source_snapshot.next_id;
     source_snapshot.next_id += 1;
     source_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id: eq8_id,
         bypassed: false,
         state: eq8_state,
@@ -4977,11 +5015,13 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     let first_id = source.next_id;
     source.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: first_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: first_id + 1,
             bypassed: false,
             state: dc_remove,
@@ -5167,11 +5207,13 @@ fn mutable_handoff_keeps_old_suffix_and_refusal_is_retryable_after_tail_processi
     let first_id = old_snapshot.next_id;
     old_snapshot.tracks[0].devices = vec![
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: first_id,
             bypassed: false,
             state: neutral,
         },
         hex_project::DeviceSnapshot {
+            comparison: None,
             id: first_id + 1,
             bypassed: false,
             state: dc_remove,
@@ -6482,6 +6524,7 @@ fn mutable_handoff_refuses_pre_cut_note_on_new_track_then_allows_cleared_retry()
             soloed: false,
             devices: Vec::new(),
             instrument: Some(DeviceSnapshot {
+                comparison: None,
                 id: instrument_id,
                 bypassed: false,
                 state: hex_lattice_contract::NativeDeviceState::new(
@@ -6898,8 +6941,11 @@ fn instrument_edit_captures_only_the_changed_session_track() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "first".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -6907,8 +6953,11 @@ fn instrument_edit_captures_only_the_changed_session_track() {
         _ => panic!("first MIDI track"),
     };
     let second = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "second".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -7148,6 +7197,7 @@ fn with_utility_filter_state(project: &Project, dc_remove: bool, bass_mono: bool
         snapshot.tracks[0]
             .devices
             .push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: snapshot.next_id,
                 bypassed: false,
                 state,
@@ -9892,6 +9942,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
         .unwrap();
     let mut track_snapshot = project(1.0, 0, 8 << 32).snapshot();
     track_snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id: track_snapshot.next_id,
         bypassed: false,
         state: filter_state.clone(),
@@ -9921,6 +9972,7 @@ fn arrangement_seek_history_query_preserves_analytic_fast_path() {
             gain: 0.75,
             muted: false,
             devices: vec![DeviceSnapshot {
+                comparison: None,
                 id: return_device_id,
                 bypassed: false,
                 state: filter_state,
@@ -10468,6 +10520,7 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
         )
         .unwrap();
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id: track_effect_id,
         bypassed: false,
         state: filter_state.clone(),
@@ -10486,6 +10539,7 @@ fn mutable_feedback_with_stateful_track_and_return_edited(
             gain: 0.75,
             muted: false,
             devices: vec![DeviceSnapshot {
+                comparison: None,
                 id: return_effect_id,
                 bypassed: false,
                 state: filter_state,

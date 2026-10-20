@@ -129,7 +129,9 @@ impl EditorView {
     pub(super) fn tick_edit_cursor(&mut self, now: Instant) -> bool {
         if self.context_menu.is_some()
             || self.close_prompt_open
-            || self.mode != EditorMode::Arrangement
+            || (self.mode != EditorMode::Arrangement
+                && (self.time_selection_gesture.is_some()
+                    || self.time_range_move_gesture.is_some()))
             || self.save_dialog_open
             || self.export_dialog_open
         {
@@ -193,7 +195,9 @@ impl EditorView {
         {
             return false;
         }
-        cursor.pulse(now)
+        // A completed range belongs to Arrangement even while Console is shown.
+        // Its stale-source checks above still run; hidden point cursors need no pulse.
+        self.mode == EditorMode::Arrangement && cursor.pulse(now)
     }
 
     pub(super) fn edit_cursor_layer(&self, viewport: super::viewport::Viewport) -> Option<Div> {

@@ -83,12 +83,36 @@ fn install(v: &mut EditorView, clip: ClipId) -> Request {
         edge: TrimEdge::Right,
         frame: 104_000,
     });
+    let state = v.state.as_ref().unwrap();
+    let original = state.project.clip(clip).unwrap().clone();
+    let asset_frames = state
+        .project
+        .asset(original.asset())
+        .unwrap()
+        .playback_frames();
+    let prospective = original
+        .preview_edge_trim_with_tempo(
+            TrimEdge::Right,
+            104_000,
+            asset_frames,
+            state.project.tempo_map(),
+        )
+        .unwrap();
+    let revision = state.revision;
+    let track = state.project.tracks()[0].id();
     v.viewport = Some(OWNED);
     v.pending_trim = Some(PendingTrim {
         generation: v.project_generation,
+        revision,
+        track,
         command: ResizeCommand::from_request(&request).unwrap(),
         remaining: None,
         scroll_viewport: Some(OWNED),
+        display: super::PendingTrimDisplay::Audio {
+            original,
+            prospective: Box::new(prospective),
+            asset_frames,
+        },
     });
     request
 }

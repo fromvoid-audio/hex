@@ -2,10 +2,15 @@
 use crate::{PreparedImport, ResidentAsset, Session, SessionError};
 use hex_project::{Command, Created, MAX_ASSETS, Project, TrackId};
 use std::{mem, sync::Arc};
+pub(crate) mod console;
+pub use console::ConsoleDestination;
+pub(crate) use console::{ResolvedCell, normalize as normalize_imports};
 
 /// Captured Arrangement destination; paths and members retain input order.
 #[derive(Clone, Copy, Debug)]
 pub enum AudioBatchDestination {
+    /// Import one audio source into a Console cell or a new scene atomically.
+    Console(ConsoleDestination),
     /// Concatenate full-length clips, applying the existing overwrite laws.
     Track { track: TrackId, start: u64 },
     /// Insert ordered hybrid tracks at one anchor, all at the same frame.
@@ -51,6 +56,9 @@ impl Session {
             return Err(SessionError::Invalid("resident asset limit reached"));
         }
         match destination {
+            AudioBatchDestination::Console(target) => {
+                console::validate(self.project(), target, count)?
+            }
             AudioBatchDestination::Track { track, .. } => {
                 self.project()
                     .track(track)
@@ -73,7 +81,7 @@ impl Session {
                 }
             }
         }
-        let mut commands = Vec::new();
+        let (mut commands, console_cell) = console::prefix(self.project(), destination, count)?;
         let mut residents: Vec<ResidentAsset> = Vec::new();
         commands
             .try_reserve_exact(count)
@@ -88,6 +96,7 @@ impl Session {
         let mut total_bins = self.resident_waveform_bins;
         let mut total_bytes = self.resident_waveform_bytes;
         let mut cursor = match destination {
+            AudioBatchDestination::Console(_) => 0,
             AudioBatchDestination::Track { start, .. }
             | AudioBatchDestination::NewTracks { start, .. } => start,
         };
@@ -124,6 +133,26 @@ impl Session {
                 .checked_add(frames)
                 .ok_or(SessionError::Invalid("timeline end overflow"))?;
             commands.push(match destination {
+                AudioBatchDestination::Console(_) => {
+                    let cell = console_cell
+                        .ok_or(SessionError::Invalid("console import target missing"))?;
+                    Command::ImportPreparedSessionAudioClip {
+                        track: cell.track,
+                        scene: cell.scene,
+                        name: member
+                            .path
+                            .file_stem()
+                            .map(|s| s.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "imported audio".into()),
+                        path: member.path,
+                        source_sample_rate: member.source_sample_rate,
+                        source_frames: member.source_frames,
+                        playback_frames: frames,
+                        conversion_version: member.conversion_version,
+                        source_start: 0,
+                        source_end: frames,
+                    }
+                }
                 AudioBatchDestination::Track { track, .. } => {
                     Command::ImportPreparedAudioClipWithOverwrite {
                         track,
@@ -160,10 +189,12 @@ impl Session {
         }
         let mut candidate_media = self.media_bank();
         let sine_table = self.sine_table();
-        let (created, revision) =
+        let (_, (created, revision)) =
             self.editor
                 .execute_many_prepared(commands, |candidate, results| {
-                    for (result, resident) in results.iter().zip(&residents) {
+                    let created =
+                        console::normalize(candidate, results, console_cell, residents.len())?;
+                    for (result, resident) in created.iter().zip(&residents) {
                         let Created::Imported { asset, .. } = result else {
                             return Err(SessionError::Invalid(
                                 "audio batch did not create its asset",
@@ -184,7 +215,7 @@ impl Session {
                         previous.map(|artifact| artifact.session().as_ref()),
                     )?);
                     admit()?;
-                    Ok::<_, SessionError>(revision)
+                    Ok::<_, SessionError>((created, revision))
                 })?;
         // All fallible work is complete. Created/results correspond one-for-one.
         for (result, resident) in created.iter().zip(residents) {

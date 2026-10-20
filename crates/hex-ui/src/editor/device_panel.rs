@@ -39,9 +39,13 @@ mod chain_window;
 mod compressor_panel;
 mod eq8_panel;
 mod eq_panel;
+pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
+pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
 mod gain_meters;
 mod gate_panel;
+mod keyboard;
 mod navigation;
+pub(super) use keyboard::{bind_keys as bind_keyboard_keys, key_up as selection_key_up};
 mod numeric_display;
 pub(super) use navigation::{bottom_bar, capture_pointer_down as capture_navigation_pointer_down};
 mod operator_panel;
@@ -103,7 +107,7 @@ pub(super) struct DevicePanelState {
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
     pub(super) navigation: navigation::Navigation,
     generation: u64,
-    selected_device: Option<DeviceId>,
+    pub(super) selected_device: Option<DeviceId>,
     controls: HashMap<ParameterKey, ParameterControl>,
     meter_states: HashMap<DeviceId, gain_meters::MeterState>,
     send_controls: HashMap<SendControlKey, SendControl>,
@@ -132,11 +136,13 @@ pub(super) struct DevicePanelState {
     operator_envelope_gestures:
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
     eq_panels: HashMap<DeviceId, eq_panel::Panel>,
+    eq_spectrum: eq_panel::SpectrumSelection,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
     saturator_previews: HashMap<DeviceId, saturator_panel::PreviewCache>,
     compressor_previews: HashMap<DeviceId, compressor_panel::PreviewCache>,
+    auto_pan_previews: HashMap<DeviceId, auto_pan_panel::PreviewCache>,
     eq8_graph_gestures: HashMap<DeviceId, eq8_panel::GraphGestureState>,
     eq8_audition_toggles: HashMap<DeviceId, Eq8AuditionToggle>,
     pub(super) spectrum_result: Option<hex_audio::spectrum_worker::PublishedSpectra>,
@@ -157,6 +163,26 @@ pub(super) enum DevicePanelOwner {
 }
 
 impl DevicePanelState {
+    pub(super) fn add_menu_is_open(&self, state: Option<&ViewState>) -> bool {
+        self.add_menu_open
+            && self
+                .owner
+                .is_some_and(|owner| state.is_some_and(|state| owner_exists(state, owner)))
+    }
+
+    /// A menu selecting another card restores that card only when a card owned
+    /// focus. Nested numeric/text/graph and browser focus remain untouched.
+    pub(super) fn comparison_return_focus(
+        &mut self,
+        device: DeviceId,
+        window: &Window,
+        cx: &App,
+    ) -> Option<gpui::FocusHandle> {
+        let previous = self.selected_device?;
+        self.chain_window
+            .device_is_focused(previous, window)
+            .then(|| self.chain_window.focus(device, cx))
+    }
     #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn has_control_for(&self, device: DeviceId) -> bool {
         self.controls.keys().any(|key| key.device == device)
@@ -228,6 +254,11 @@ fn title_label(title: String, warning: bool) -> Div {
 
 pub(super) fn control_style() -> ControlStyle {
     theme::device_style(theme::DeviceStyleRole::Control)
+}
+
+// Reuse the canonical device-side balance display/parser for track mixer fields.
+pub(super) fn balance_spec(spec: NumericSpec) -> NumericSpec {
+    numeric_display::NumericDisplayCodec::Balance.apply(spec)
 }
 
 pub(super) fn device_layout_style() -> ControlStyle {
@@ -433,6 +464,7 @@ pub(super) fn view(
         view.device_panel.eq8_responses.clear();
         view.device_panel.saturator_previews.clear();
         view.device_panel.compressor_previews.clear();
+        view.device_panel.auto_pan_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         if let Some(audio) = view.audio.as_mut() {
@@ -445,6 +477,7 @@ pub(super) fn view(
         view.device_panel.selected_device = None;
         view.device_panel.generation = view.project_generation;
     }
+    reconcile_eq_spectrum(view);
     let Some(state) = view.state.as_ref().cloned() else {
         return empty_panel("project is still loading");
     };
@@ -538,6 +571,7 @@ pub(super) fn view(
         view.device_panel.eq8_responses.clear();
         view.device_panel.saturator_previews.clear();
         view.device_panel.compressor_previews.clear();
+        view.device_panel.auto_pan_previews.clear();
         view.device_panel.eq8_graph_gestures.clear();
         view.device_panel.spectrum_result = None;
         view.device_panel.chain_window = Default::default();
@@ -754,7 +788,10 @@ fn render_track(
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
-        GestureTarget::ReturnSend { .. } | GestureTarget::TrackGain { .. } => false,
+        GestureTarget::ReturnSend { .. }
+        | GestureTarget::TrackGain { .. }
+        | GestureTarget::TrackBalance { .. }
+        | GestureTarget::ReturnGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
             view.device_panel.controls.get(key),
@@ -967,23 +1004,24 @@ fn render_track(
             NativeDeviceClass::Effect => render_effect(view, window, cx, track_id, device),
         };
         let focus = view.device_panel.chain_window.focus(device.id(), cx);
-        chain = chain.child(
-            render_device_card_target(
-                view,
-                cx,
-                DeviceCardDropGeometry {
-                    track: track_id,
-                    device: device.id(),
-                    class,
-                    width: device_card_width(class, device.state().type_id()),
-                    next: device_ids.get(index + 1).copied(),
-                    first: first_device,
-                    visible_chain_bounds: visible_chain_bounds.clone(),
-                },
-                rendered,
-            )
-            .track_focus(&focus),
-        );
+        let card = render_device_card_target(
+            view,
+            cx,
+            DeviceCardDropGeometry {
+                track: track_id,
+                device: device.id(),
+                class,
+                width: device_card_width(class, device.state().type_id()),
+                next: device_ids.get(index + 1).copied(),
+                first: first_device,
+                visible_chain_bounds: visible_chain_bounds.clone(),
+            },
+            rendered,
+        )
+        .track_focus(&focus);
+        let card = keyboard::card(view, cx, device.id(), focus.clone(), card);
+        let card = super::device_comparison::card(view, cx, device.id(), class, focus, card);
+        chain = chain.child(card);
     }
     chain = chain.child(render_device_end_target(
         view,
@@ -1074,6 +1112,9 @@ fn retire_transfer_previews(
     });
     panel.compressor_previews.retain(|device, _| {
         type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.compressor"))
+    });
+    panel.auto_pan_previews.retain(|device, _| {
+        type_of(*device).is_some_and(|type_id| type_id.as_str() == Ok("hex.auto-pan"))
     });
 }
 
@@ -1355,6 +1396,7 @@ fn device_drag_title(
     title: gpui::SharedString,
 ) -> Stateful<Div> {
     let id = device.id();
+    let generation = view.project_generation;
     let payload = drag::NativeDeviceDrag {
         project_generation: view.project_generation,
         revision: view.state.as_ref().map_or(0, |state| state.revision),
@@ -1383,6 +1425,16 @@ fn device_drag_title(
             .into()
         })
         .child(theme::text(title))
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, _, window, cx| {
+                if view.project_generation == generation
+                    && view.device_panel.selected_device == Some(id)
+                {
+                    view.device_panel.chain_window.focus(id, cx).focus(window);
+                }
+            }),
+        )
         .on_drag(payload, move |payload, _, window, cx| {
             cx.set_active_drag_cursor_style(gpui::CursorStyle::ClosedHand, window);
             entity.update(cx, |view, cx| {
@@ -1429,7 +1481,7 @@ fn render_effect(
                 .map_err(|error| error.to_string().to_lowercase())
         });
     let leading = bypass_action(device, NativeDeviceClass::Effect, selected, cx);
-    let header_actions = device_actions(device, selected, device_view.is_ok(), cx);
+    let header_actions = device_actions(view, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
         Ok(device_view) => {
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
@@ -1937,7 +1989,7 @@ fn render_instrument(
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
     let leading = bypass_action(device, NativeDeviceClass::Instrument, selected, cx);
-    let header_actions = instrument_actions(track, device, selected, device_view.is_ok(), cx);
+    let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
     let rendered = match &device_view {
         Ok(device_view) => {
             if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
@@ -2045,6 +2097,7 @@ fn render_instrument(
 }
 
 fn instrument_actions(
+    view: &EditorView,
     track: TrackId,
     device: &hex_project::Device,
     selected: bool,
@@ -2067,12 +2120,20 @@ fn instrument_actions(
         })),
     );
     let actions = if presets_available {
-        actions.child(super::device_preset::actions(
-            id,
-            NativeDeviceClass::Instrument,
-            selected,
-            cx,
-        ))
+        actions
+            .child(super::device_preset::actions(
+                id,
+                NativeDeviceClass::Instrument,
+                selected,
+                cx,
+            ))
+            .child(super::device_comparison::actions(
+                view,
+                device,
+                NativeDeviceClass::Instrument,
+                selected,
+                cx,
+            ))
     } else {
         actions
     };
@@ -2084,9 +2145,11 @@ fn instrument_actions(
             theme::DeviceActionRole::Destructive,
             selected,
         )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            if finalize_controls(view, cx) {
-                view.enqueue_device_barrier(Request::Edit(Command::RemoveInstrument { track }));
+        .on_click(cx.listener(move |view, _, window, cx| {
+            if finalize_controls(view, cx)
+                && view.enqueue_device_barrier(Request::Edit(Command::RemoveInstrument { track }))
+            {
+                keyboard::after_pointer_removal(view, id, window, cx);
             }
             cx.notify();
         })),
@@ -2219,6 +2282,7 @@ fn bypass_action(
 }
 
 fn device_actions(
+    view: &EditorView,
     device: &hex_project::Device,
     selected: bool,
     presets_available: bool,
@@ -2227,12 +2291,20 @@ fn device_actions(
     let id = device.id();
     let mut actions = div().flex().items_center().gap(px(2.0));
     if presets_available {
-        actions = actions.child(super::device_preset::actions(
-            id,
-            NativeDeviceClass::Effect,
-            selected,
-            cx,
-        ));
+        actions = actions
+            .child(super::device_preset::actions(
+                id,
+                NativeDeviceClass::Effect,
+                selected,
+                cx,
+            ))
+            .child(super::device_comparison::actions(
+                view,
+                device,
+                NativeDeviceClass::Effect,
+                selected,
+                cx,
+            ));
     }
     actions.child(
         action_button(
@@ -2242,9 +2314,11 @@ fn device_actions(
             theme::DeviceActionRole::Destructive,
             selected,
         )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            if finalize_controls(view, cx) {
-                view.enqueue_device_barrier(Request::Edit(Command::RemoveDevice(id)));
+        .on_click(cx.listener(move |view, _, window, cx| {
+            if finalize_controls(view, cx)
+                && view.enqueue_device_barrier(Request::Edit(Command::RemoveDevice(id)))
+            {
+                keyboard::after_pointer_removal(view, id, window, cx);
             }
             cx.notify();
         })),

@@ -63,7 +63,10 @@ pub(super) fn render(
         GestureTarget::DeviceParameter { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterPair { device, .. } => !alive.contains(&device),
         GestureTarget::DeviceParameterSnapshot { device } => !alive.contains(&device),
-        GestureTarget::ReturnSend { .. } | GestureTarget::TrackGain { .. } => false,
+        GestureTarget::ReturnSend { .. }
+        | GestureTarget::TrackGain { .. }
+        | GestureTarget::TrackBalance { .. }
+        | GestureTarget::ReturnGain { .. } => false,
     }) || stale_keys.iter().any(|key| {
         matches!(
             view.device_panel.controls.get(key),
@@ -247,12 +250,20 @@ pub(super) fn render_return_effect(
     let leading = bypass_action(device, NativeDeviceClass::Effect, selected, cx);
     let mut actions = div().flex().items_center().gap(px(2.0));
     if device_view.is_ok() {
-        actions = actions.child(super::super::device_preset::actions(
-            id,
-            NativeDeviceClass::Effect,
-            selected,
-            cx,
-        ));
+        actions = actions
+            .child(super::super::device_preset::actions(
+                id,
+                NativeDeviceClass::Effect,
+                selected,
+                cx,
+            ))
+            .child(super::super::device_comparison::actions(
+                view,
+                device,
+                NativeDeviceClass::Effect,
+                selected,
+                cx,
+            ));
     }
     actions = actions.child(
         action_button(
@@ -262,9 +273,11 @@ pub(super) fn render_return_effect(
             theme::DeviceActionRole::Destructive,
             selected,
         )
-        .on_click(cx.listener(move |view, _, _, cx| {
-            if finalize_controls(view, cx) {
-                view.enqueue_device_barrier(Request::Edit(Command::RemoveDevice(id)));
+        .on_click(cx.listener(move |view, _, window, cx| {
+            if finalize_controls(view, cx)
+                && view.enqueue_device_barrier(Request::Edit(Command::RemoveDevice(id)))
+            {
+                keyboard::after_pointer_removal(view, id, window, cx);
             }
             cx.notify();
         })),

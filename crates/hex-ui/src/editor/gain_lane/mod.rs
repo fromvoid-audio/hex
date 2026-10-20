@@ -34,6 +34,10 @@ pub(super) struct GainLane {
     pub(super) error: Option<String>,
 }
 impl GainLane {
+    pub(super) fn pointer_is_active(&self) -> bool {
+        self.draft.is_some_and(|draft| draft.pointer.is_some())
+    }
+
     pub(super) fn change_owner(&mut self, track: TrackId, project: &hex_project::Project) {
         if self.track.is_none() || self.track == Some(track) {
             return;
