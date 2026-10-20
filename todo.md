@@ -5837,3 +5837,23 @@ User rejected device-local automation editing. Remove its button, graph mode and
   distinct original/fixture negatives are retained in Pulse. No model, worker,
   schema, DSP, new owner or native/app operation is added; merger qualification
   and installed user acceptance remain separate.
+
+## 20 october 2026 — pulse2880 / pr482 delayed-ack selection intent
+
+- Reproduced keyboard and Option-drag A→B→A selection before ACK: coordinate
+  equality incorrectly let the old copy select its destination. Capture a checked
+  view-local selection-intent epoch with pending range copies/moves and require
+  it on ACK, preserving generation/range/scope guards and the committed copy.
+- Actual range/cursor, track/clip selection and range cancellation invalidate
+  older intent. Accepted Console clicks/navigation invalidate at user-input
+  boundaries; shared helpers/internal ACKs, Tab-only changes, refused clicks and
+  navigation without a target retain intent. Exhaustion
+  invalidates permanently for this editor and refuses new range move/copy commands
+  before admission, without wrapping. No canonical command/Undo protocol changes.
+- Rendered input/Service tests add keyboard/Option-drag ABA and observable epoch
+  exhaustion, Console navigation after both copy styles, and unchanged-intent
+  Tab/refused-click/no-target/repeated-destination controls. Two inherited Main
+  ACK fixture setups now provide the valid source scope/cursor already required
+  by the original guard; no production guard was weakened.
+  Source checks remain separate from merger qualification, installed native
+  interaction and user acceptance.

@@ -310,14 +310,32 @@ Unselected point cursors, explicit whole-clip creation/selection and generic
 stale-track fallback keep their existing behavior.
 
 The pending copy's selection intent applies only while its original source range,
-project scope and cursor generation still own the current selection. A newer
-pointer range or Escape supersedes that view intent. An already accepted copy
+project scope, cursor generation and captured selection-intent epoch still own
+that selection. Actual pointer range/cursor choices, deliberate track/clip
+selection and range cancellation advance a checked view-local epoch. Successful
+Console cell/scene clicks and keyboard navigation advance it at their accepted
+user-input boundary; shared selection helpers and internal worker ACKs do not.
+Tab alone, refused pending-edit clicks and navigation without a target keep it.
+Returning A→B→A to identical coordinates cannot revive an old ACK's selection side effect.
+Worker acknowledgements and late paint/cursor ticks do not advance the epoch,
+so unchanged-intent copies continue chaining from each destination. Exhaustion
+permanently invalidates the epoch for that editor instance and refuses new range
+move/copy commands before admission; it never wraps. A newer pointer range or
+Escape supersedes that view intent. An already accepted copy
 still commits normally and remains one Undo operation; this does not cancel or
 roll back the canonical command. Escape before submitting an Option-drag preview
 queues no edit and preserves the previous selection.
 
 Actual input/Service regressions reproduce both original primary-clip reselection
-and a late copy acknowledgement stealing a newer range on another track. Coverage
+and a late copy acknowledgement stealing a newer range on another track.
+Additional delayed-ACK keyboard and Option-drag regressions return via actual
+pointer input to the identical source rectangle before consuming the real Service
+ACK, and verify the committed destination survives while the later A stays
+selected. Delayed Arrange keyboard/Option-drag copies also preserve a newer
+Console MIDI choice made by actual arrow navigation; Tab-only, refused-click
+and no-navigation-target controls retain unchanged intent. A near-exhaustion
+fixture exercises actual later selection, ACK invalidation and subsequent copy
+refusal without wrapping. Coverage
 includes three consecutive Command-D copies, Option-drag followed by Command-D,
 single/multiple rows, partial audio and MIDI with a trailing gap, exact asset/
 source-offset preservation, fresh IDs, rendered destination bounds, later frames,
@@ -329,7 +347,9 @@ not a guessed pixel-to-frame equality.
 Finite coordinator/user follow-up in a qualified build: repeat Command-D three
 times over a partial mixed-track range with gaps; Option-drag it and immediately
 duplicate again; inspect the stable destination range after worker completion,
-then Undo/Redo. Select another range while a copy is pending, and verify Escape
-before/after submission preserves the documented distinction. Native paint,
+then Undo/Redo. Select another range and return to the original range while a
+copy is pending; verify Escape before/after submission preserves the documented
+distinction. While a copy is pending, Tab to Console and use arrows to select a
+MIDI cell; its selection should survive the copy ACK. Native paint,
 installed-build and physical interaction acceptance remain separate from headless
 source checks. Existing historical PR367 and its evidence are preserved.

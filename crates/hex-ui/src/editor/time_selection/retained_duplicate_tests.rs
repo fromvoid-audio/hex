@@ -230,8 +230,15 @@ fn real_command_d_three_times_retains_destination_range_after_worker_and_late_ti
         for iteration in 0..3 {
             let start = expected.end();
             let end = start + expected.duration();
+            let epoch = editor.read_with(&visual, |view, _| view.selection_intent_epoch);
             visual.simulate_keystrokes("cmd-d");
+            editor.read_with(&visual, |view, _| {
+                assert!(view.pending_time_range_move.is_some())
+            });
             pump(&editor, &mut visual);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.selection_intent_epoch, epoch)
+            });
             expected = editor.read_with(&visual, |view, _| {
                 let actual = view
                     .normalized_time_selection()
@@ -310,8 +317,15 @@ fn real_option_drag_then_command_d_retains_range_after_worker_and_late_ticks(
         assert!(preview.copy_modifier);
         (preview.destination_start, preview.destination_end)
     });
+    let epoch = editor.read_with(&visual, |view, _| view.selection_intent_epoch);
     visual.simulate_mouse_up(b, MouseButton::Left, option);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.pending_time_range_move.is_some())
+    });
     pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.selection_intent_epoch, epoch)
+    });
     editor.read_with(&visual, |view, _| {
         let range = view
             .normalized_time_selection()
@@ -427,6 +441,315 @@ fn real_audio_midi_partial_gap_copies_preserve_scope_media_and_one_undo(cx: &mut
     }
     editor.read_with(&visual, |view, _| {
         assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
+    });
+}
+
+fn submit_range_copy(
+    visual: &mut VisualTestContext,
+    editor: &Entity<EditorView>,
+    source: &hex_project::TimeRange,
+    option_drag: bool,
+) -> u64 {
+    let destination = if option_drag {
+        let row = lane(visual, source.tracks()[0]);
+        let grab = source.start() + source.duration() / 2;
+        let a = point(
+            row.origin.x + row.size.width * (grab as f32 / 384_000.0),
+            row.origin.y + row.size.height * 0.15,
+        );
+        let b = point(
+            a.x + row.size.width * (source.duration() as f32 / 384_000.0),
+            a.y,
+        );
+        let option = Modifiers {
+            alt: true,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(a, MouseButton::Left, option);
+        visual.simulate_mouse_move(b, Some(MouseButton::Left), option);
+        let destination = editor.read_with(&*visual, |view, _| {
+            view.time_range_move_display()
+                .expect("actual copy preview")
+                .destination_start
+        });
+        visual.simulate_mouse_up(b, MouseButton::Left, option);
+        destination
+    } else {
+        visual.simulate_keystrokes("cmd-d");
+        source.end()
+    };
+    editor.read_with(&*visual, |view, _| {
+        assert!(view.pending_time_range_move.is_some())
+    });
+    destination
+}
+
+#[gpui::test]
+fn delayed_keyboard_copy_ack_respects_pointer_selection_aba(cx: &mut TestAppContext) {
+    delayed_copy_selection_aba(cx, false, false);
+}
+
+#[gpui::test]
+fn delayed_option_copy_ack_respects_pointer_selection_aba(cx: &mut TestAppContext) {
+    delayed_copy_selection_aba(cx, true, false);
+}
+
+#[gpui::test]
+fn exhausted_selection_epoch_invalidates_old_ack_and_refuses_new_copy(cx: &mut TestAppContext) {
+    delayed_copy_selection_aba(cx, false, true);
+}
+
+fn delayed_copy_selection_aba(cx: &mut TestAppContext, option_drag: bool, exhaust: bool) {
+    let (mut visual, editor, _environment, tracks, _) = fixture(cx);
+    let source = pointer_range(&mut visual, &editor, &tracks[..1]);
+    if exhaust {
+        editor.update(&mut visual, |view, _| {
+            view.selection_intent_epoch = Some(u64::MAX - 1)
+        });
+    }
+    let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+    let destination = submit_range_copy(&mut visual, &editor, &source, option_drag);
+    let other = pointer_range(&mut visual, &editor, &tracks[1..]);
+    assert_ne!(source, other);
+    let returned = pointer_range(&mut visual, &editor, &tracks[..1]);
+    assert_eq!(
+        returned, source,
+        "actual pointer returns to identical range A"
+    );
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.pending_time_range_move.is_some(),
+            "ACK remains unconsumed across A→B→A"
+        );
+        assert_eq!(view.state.as_ref().unwrap().revision, revision);
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let state = view.state.as_ref().unwrap();
+        assert_eq!(
+            state.revision,
+            revision + 1,
+            "accepted copy still commits exactly once"
+        );
+        assert!(
+            state
+                .project
+                .track(tracks[0])
+                .unwrap()
+                .midi_clips()
+                .iter()
+                .any(|clip| {
+                    state
+                        .project
+                        .tempo_map()
+                        .beat_to_frame(clip.start())
+                        .unwrap()
+                        == destination
+                }),
+            "canonical destination copy survives selection cancellation"
+        );
+        assert_eq!(
+            view.normalized_time_selection().as_ref(),
+            Some(&source),
+            "later actual A selection owns intent, option_drag={option_drag}"
+        );
+        assert_eq!(view.selected_track, Some(tracks[0]));
+        assert!(view.selected_clip.is_none());
+    });
+    if exhaust {
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selection_intent_epoch, None)
+        });
+        visual.simulate_keystrokes("cmd-d");
+        editor.read_with(&visual, |view, _| {
+            assert!(
+                !view.edit_pending(),
+                "exhausted epoch refuses before command admission"
+            );
+            assert!(view.pending_time_range_move.is_none());
+            assert!(
+                view.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("selection intent exhausted")
+            );
+        });
+        // Further actual selection cannot restore a spent epoch or admit a copy.
+        pointer_range(&mut visual, &editor, &tracks[1..]);
+        visual.simulate_keystrokes("cmd-d");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selection_intent_epoch, None);
+            assert_eq!(view.state.as_ref().unwrap().revision, revision + 1);
+        });
+    }
+}
+
+#[gpui::test]
+fn delayed_keyboard_copy_ack_respects_console_navigation(cx: &mut TestAppContext) {
+    delayed_copy_console_selection(cx, false);
+}
+
+#[gpui::test]
+fn delayed_option_copy_ack_respects_console_navigation(cx: &mut TestAppContext) {
+    delayed_copy_console_selection(cx, true);
+}
+
+fn delayed_copy_console_selection(cx: &mut TestAppContext, option_drag: bool) {
+    for navigate in [false, true] {
+        let (mut visual, editor, _environment, tracks, _) = fixture(cx);
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::AddScene {
+                name: "console".into()
+            })));
+        });
+        pump(&editor, &mut visual);
+        let scene = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.scenes()[0].id()
+        });
+        editor.update(&mut visual, |view, _| {
+            assert!(view.enqueue(Request::Edit(Command::CreateSessionMidiClip {
+                track: tracks[1],
+                scene,
+                name: "console midi".into(),
+                source_length: BeatTime::from_raw(4 << 32),
+            })));
+        });
+        pump(&editor, &mut visual);
+        let session_clip = editor.read_with(&visual, |view, _| {
+            let hex_project::SessionCellContent::Midi(clip) = view
+                .state
+                .as_ref()
+                .unwrap()
+                .project
+                .session_cell(tracks[1], scene)
+                .unwrap()
+            else {
+                panic!("session midi")
+            };
+            clip.id()
+        });
+        visual.update(|window, cx| {
+            editor.update(cx, |view, cx| {
+                view.set_mode(EditorMode::Arrangement);
+                view.selected_cell = None;
+                view.selected_scene = None;
+                view.focus.focus(window);
+                cx.notify();
+            })
+        });
+        visual.run_until_parked();
+        let source = pointer_range(&mut visual, &editor, &tracks[..1]);
+        let revision = editor.read_with(&visual, |view, _| view.state.as_ref().unwrap().revision);
+        let destination = submit_range_copy(&mut visual, &editor, &source, option_drag);
+        let epoch = editor.read_with(&visual, |view, _| view.selection_intent_epoch);
+        visual.simulate_keystrokes("tab");
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.mode, EditorMode::Session);
+            assert_eq!(view.selection_intent_epoch, epoch, "Tab alone keeps intent");
+            assert!(view.pending_time_range_move.is_some());
+        });
+        // Clicks are deliberately refused by the existing pending-edit guard.
+        let bounds = visual
+            .debug_bounds(Box::leak(
+                format!("console-cell-{}-{}", tracks[1].value(), scene.value()).into_boxed_str(),
+            ))
+            .expect("rendered console midi cell");
+        let click = point(bounds.origin.x + bounds.size.width * 0.4, bounds.center().y);
+        visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.selection_intent_epoch, epoch,
+                "refused click keeps intent"
+            );
+            assert!(view.selected_cell.is_none());
+        });
+        if navigate {
+            visual.simulate_keystrokes("right right");
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.selected_cell, Some((tracks[1], scene)));
+                assert_eq!(view.selected_clip, Some(session_clip));
+            });
+        }
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(
+                state.revision,
+                revision + 1,
+                "accepted Arrange copy commits"
+            );
+            assert!(
+                state
+                    .project
+                    .track(tracks[0])
+                    .unwrap()
+                    .midi_clips()
+                    .iter()
+                    .any(|clip| state
+                        .project
+                        .tempo_map()
+                        .beat_to_frame(clip.start())
+                        .unwrap()
+                        == destination)
+            );
+            let range = view.normalized_time_selection().unwrap();
+            if navigate {
+                assert_eq!(view.selected_cell, Some((tracks[1], scene)));
+                assert_eq!(view.selected_track, Some(tracks[1]));
+                assert_eq!(
+                    view.selected_clip,
+                    Some(session_clip),
+                    "actual Console choice owns selection after Arrange ACK"
+                );
+                assert_eq!(range, source);
+            } else {
+                assert_eq!(
+                    (range.start(), range.end()),
+                    (destination, destination + source.duration())
+                );
+                assert_eq!(view.selection_intent_epoch, epoch);
+            }
+        });
+        if !navigate {
+            visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(view.selected_clip, Some(session_clip));
+                assert_ne!(
+                    view.selection_intent_epoch, epoch,
+                    "accepted actual Console click advances intent"
+                );
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn console_navigation_without_target_keeps_pending_copy_intent(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, tracks, _) = fixture(cx);
+    let source = pointer_range(&mut visual, &editor, &tracks[..1]);
+    let destination = submit_range_copy(&mut visual, &editor, &source, false);
+    let epoch = editor.read_with(&visual, |view, _| view.selection_intent_epoch);
+    visual.simulate_keystrokes("tab right");
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.mode, EditorMode::Session);
+        assert!(view.selected_cell.is_none() && view.selected_scene.is_none());
+        assert_eq!(
+            view.selection_intent_epoch, epoch,
+            "no target cannot consume selection intent"
+        );
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        let range = view.normalized_time_selection().unwrap();
+        assert_eq!(
+            (range.start(), range.end()),
+            (destination, destination + source.duration())
+        );
+        assert_eq!(view.selection_intent_epoch, epoch);
     });
 }
 

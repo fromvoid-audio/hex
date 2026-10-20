@@ -205,6 +205,7 @@ impl EditorView {
         match selection {
             Some(super::session_navigation::Selection::Scene(scene)) => {
                 if self.focus_empty_details(window, cx) {
+                    self.advance_selection_intent();
                     self.select_session_scene(scene);
                 }
             }
@@ -221,16 +222,19 @@ impl EditorView {
                 match content {
                     Some(Some(clip)) => {
                         if self.focus_clip_details(window, cx) {
+                            self.advance_selection_intent();
                             self.select_session_midi(track, scene, clip);
                         }
                     }
                     Some(None) => {
                         if self.focus_clip_details(window, cx) {
+                            self.advance_selection_intent();
                             self.select_session_cell(track, scene);
                         }
                     }
                     None => {
                         self.focus_track_details(window);
+                        self.advance_selection_intent();
                         self.select_session_cell(track, scene);
                     }
                 }
@@ -1016,6 +1020,7 @@ impl EditorView {
                                         && view.focus_clip_details(window, cx)
                                     {
                                         view.focus.focus(window);
+                                        view.advance_selection_intent();
                                         view.select_session_cell(track_id, scene_id);
                                         view.selected_track = Some(track_id);
                                         view.selected_clip = Some(clip_id);
@@ -1048,6 +1053,7 @@ impl EditorView {
                                 && view.focus_clip_details(window, cx)
                             {
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_midi(track_id, scene_id, clip_id);
                             }
                             cx.notify();
@@ -1107,6 +1113,7 @@ impl EditorView {
                                         && view.focus_clip_details(window, cx)
                                     {
                                         view.focus.focus(window);
+                                        view.advance_selection_intent();
                                         view.select_session_cell(track_id, scene_id);
                                         view.launch_clip(
                                             track_id,
@@ -1137,6 +1144,7 @@ impl EditorView {
                                 && view.focus_clip_details(window, cx)
                             {
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_cell(track_id, scene_id);
                             }
                             cx.notify();
@@ -1157,6 +1165,7 @@ impl EditorView {
                             {
                                 view.focus_track_details(window);
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_cell(track_id, scene_id);
                                 view.queue_session_command(
                                     with_quantization(
@@ -1186,6 +1195,7 @@ impl EditorView {
                             {
                                 view.focus_track_details(window);
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_cell(track_id, scene_id);
                             }
                             cx.notify();
@@ -1247,6 +1257,7 @@ impl EditorView {
                             && view.focus_empty_details(window, cx)
                         {
                             view.focus.focus(window);
+                            view.advance_selection_intent();
                             view.select_session_scene(scene_id);
                         }
                         cx.notify();
@@ -1261,6 +1272,7 @@ impl EditorView {
                         && view.focus_empty_details(window, cx)
                     {
                         view.focus.focus(window);
+                        view.advance_selection_intent();
                         view.select_session_scene(scene_id);
                         view.launch_scene(scene_id, revision, view.session_quantization);
                     }

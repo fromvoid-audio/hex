@@ -727,6 +727,7 @@ pub(super) struct EditorView {
     clip_paint_gesture: Option<clip_paint::ClipPaintGesture>,
     time_selection: Option<time_selection::TimeSelection>,
     time_selection_project_scope: bool,
+    selection_intent_epoch: Option<u64>,
     time_selection_gesture: Option<time_selection::TimeSelectionGesture>,
     time_range_move_gesture: Option<time_selection::TimeRangeMoveGesture>,
     pending_time_range_move: Option<time_selection::PendingTimeRangeMove>,
@@ -1278,6 +1279,7 @@ impl EditorView {
             clip_paint_gesture: None,
             time_selection: None,
             time_selection_project_scope: false,
+            selection_intent_epoch: Some(0),
             time_selection_gesture: None,
             time_range_move_gesture: None,
             pending_time_range_move: None,
@@ -1327,6 +1329,7 @@ impl EditorView {
     }
 
     pub(super) fn focus_selected_track(&mut self, track: TrackId, window: &mut Window) {
+        self.advance_selection_intent();
         let header_focused = self.track_header_focused(window);
         self.duplicate_intent.cancel_chain();
         self.midi_note_gesture = None;
@@ -1515,6 +1518,7 @@ impl EditorView {
         if !self.focus_clip_details(window, cx) {
             return false;
         }
+        self.advance_selection_intent();
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {
             self.midi_note_gesture = None;
