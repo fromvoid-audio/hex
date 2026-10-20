@@ -4128,7 +4128,7 @@ fn place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks(
             view.browser.playback_generation, generation,
             "old waveform callback admitted stale preview"
         );
-        view.import_browser_audio(path.clone());
+        view.insert_browser_audio(path.clone(), cx);
         assert!(
             view.last_enqueued_import_to_track.is_none(),
             "old result callback admitted stale import"
@@ -4865,6 +4865,9 @@ fn browser_place_icon_grid_uses_clicked_row_reset_and_reopens(cx: &mut TestAppCo
 
 #[path = "browser_focus_ui_test.rs"]
 mod explicit_focus;
+
+#[path = "browser_insert_ui_test.rs"]
+mod insertion;
 #[gpui::test]
 fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
     cx: &mut TestAppContext,

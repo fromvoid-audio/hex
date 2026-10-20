@@ -5956,6 +5956,14 @@ workers/window resize, composition and empty text. Frozen426+returned7c4d is a
 material input dependency, not new main integration. Sole merger owns final
 prospective full CI/integration; native physical mouse/IME acceptance stays open.
 
+- 18 October 2026 — Pulse2821 / PR427: browser sample Enter captures a valid selected
+  Arrangement TrackId/native path/cursor/document context and uses existing atomic
+  batch overwrite; no new-track fallback. Compact session-local quantized-input
+  toggle resolves nearest active Arrangement grid, preserving ordinary unquantized
+  input; text/IME sample Enter is isolated. Original real-worker no-target regression
+  reproduced two tracks becoming three; targeted input/worker/refusal/nearest-grid/
+  overwrite/Undo tests added. Source6 owns broader2822 global occupancy planner;
+  final integration/full local CI belongs to sole merger and native acceptance is open.
 ### 2026-10-19 — PR423 invalidated first-click review return
 
 - Preserve canonical b017 and its declared426/416 history. Actual helper and
@@ -6076,3 +6084,14 @@ unchanged missing-guard source (one executed RED). Add existing scrub_active
 predicate beside the pan guard, preserving held/released final seek target
 through existing admission/refusal. L/CmdL and post-retirement Undo/Redo
 controls added; no seek/controller policy change. Current checks/review pending.
+
+## selected-track sample input integration — PR427 / pulse2821
+
+Composed canonical source onto current qualified main, preserving worker-owned
+instrument Enter and all other browser behavior. Reuse the existing is_off grid
+predicate so remembered disabled densities visibly refuse quantized insertion.
+Actual Enter reproduced Off passing refusal then OffDensity(Fine) failing it;
+later variants were not executed after that failure. The private sample fixture
+now precreates one shared Environment before WAV/Service startup and checks its
+identity and four preference paths; original six behavior/helper bodies remain.
+Current-head required qualification/review and native acceptance remain separate.

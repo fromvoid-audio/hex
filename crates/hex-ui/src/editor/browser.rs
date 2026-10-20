@@ -1,5 +1,6 @@
 //! Compact, bounded left-side media and project browser.
 mod audition;
+mod insertion;
 mod place_icons;
 mod samples;
 mod tree;
@@ -185,6 +186,7 @@ pub(super) struct BrowserState {
     playback_in_flight: bool,
     playback_pending: Option<PlaybackPreviewRequest>,
     auto_audition: bool,
+    insert_quantized: bool,
     playback_phase: Phase,
     playback_output: Option<(u64, u64)>,
     playback_path: Option<PathBuf>,
@@ -268,6 +270,7 @@ impl BrowserState {
             _search_observer: observer,
             playback_generation: 0,
             auto_audition: true,
+            insert_quantized: false,
             playback_phase: Phase::Idle,
             playback_output: None,
             playback_path: None,
@@ -1394,7 +1397,7 @@ impl EditorView {
         cx.notify();
     }
 
-    pub(super) fn browser_activate(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn browser_activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.browser.section == BrowserSection::Instruments {
             let Some(BrowserItemKey::Device(hex_engine::NativeDeviceClass::Instrument, type_id)) =
                 self.browser_selected_item(cx)
@@ -1436,7 +1439,19 @@ impl EditorView {
         };
         match entry.kind {
             EntryKind::Directory => self.toggle_browser_folder(entry.path, false, cx),
-            EntryKind::WaveAudio => self.import_browser_audio(entry.path),
+            EntryKind::WaveAudio => {
+                // Text/IME Enter must not import a sample. Non-file device activation
+                // keeps its existing informational action, independent of this guard.
+                if !self
+                    .browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+                {
+                    self.insert_browser_audio(entry.path, cx);
+                }
+            }
             EntryKind::Project => self.open_browser_project(entry.path, cx),
         }
         cx.notify();
@@ -2508,50 +2523,6 @@ impl EditorView {
             });
         })
         .detach();
-    }
-
-    fn import_browser_audio(&mut self, path: PathBuf) {
-        if self.browser_place_unavailable() {
-            return;
-        }
-        if self.mode == EditorMode::Session {
-            let target = self.selected_cell.filter(|(track, scene)| {
-                self.state.as_ref().is_some_and(|state| {
-                    state.project.track(*track).is_some()
-                        && state
-                            .project
-                            .scenes()
-                            .iter()
-                            .any(|item| item.id() == *scene)
-                        && state.project.session_cell(*track, *scene).is_none()
-                })
-            });
-            if let Some((track, scene)) = target {
-                self.enqueue(Request::ImportToSession { path, track, scene });
-                self.status = "importing sample into selected session cell".into();
-                return;
-            }
-            self.set_mode(EditorMode::Arrangement);
-            self.error = Some(
-                "no empty audio session cell selected · imported sample shown in arrangement"
-                    .into(),
-            );
-        }
-        let target = self.selected_track.filter(|track| {
-            self.state
-                .as_ref()
-                .is_some_and(|state| state.project.track(*track).is_some())
-        });
-        if let Some(track) = target {
-            self.enqueue(Request::ImportToTrack {
-                path,
-                track,
-                start: self.cursor_position(),
-            });
-            self.status = "importing sample to selected track".into();
-        } else {
-            self.enqueue(Request::Import(path));
-        }
     }
 
     fn open_browser_project(&mut self, path: PathBuf, cx: &mut Context<Self>) {
