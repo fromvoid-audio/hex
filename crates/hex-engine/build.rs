@@ -1,4 +1,6 @@
 //! Build-only declared-layout evidence; unsupported observations remain Unknown.
+#[path = "build_support/pcm_clippy.rs"]
+mod pcm_clippy;
 #[path = "build_support/pcm_gate.rs"]
 mod pcm_gate;
 use std::{
@@ -66,6 +68,7 @@ fn ordinary_install(root: &Path, target: &str, evidence: &mut String) -> bool {
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=build_support/pcm_gate.rs");
+    println!("cargo:rerun-if-changed=build_support/pcm_clippy.rs");
     let host = env::var("HOST").unwrap_or_default();
     let target = env::var("TARGET").unwrap_or_default();
     let target_flags = format!(
@@ -89,11 +92,13 @@ fn main() {
         "RUST_SYSROOT",
         "RUSTC_SYSROOT",
         "CARGO_BUILD_TARGET",
+        "SYSROOT",
         "RUSTC_STAGE",
         "CARGO_UNSTABLE_BUILD_STD",
         "CARGO_UNSTABLE_BUILD_STD_FEATURES",
         "CARGO_BUILD_RUSTC_WRAPPER",
         "CARGO_BUILD_RUSTC_WORKSPACE_WRAPPER",
+        "CLIPPY_ARGS",
     ];
     for input in inputs
         .iter()
@@ -104,13 +109,13 @@ fn main() {
     }
     let unsupported = [
         "RUSTC_WRAPPER",
-        "RUSTC_WORKSPACE_WRAPPER",
         "RUSTFLAGS",
         "CARGO_ENCODED_RUSTFLAGS",
         "CARGO_BUILD_RUSTFLAGS",
         "RUSTC_BOOTSTRAP",
         "RUST_SYSROOT",
         "RUSTC_SYSROOT",
+        "SYSROOT",
         "RUSTC_STAGE",
         "CARGO_UNSTABLE_BUILD_STD",
         "CARGO_UNSTABLE_BUILD_STD_FEATURES",
@@ -119,7 +124,8 @@ fn main() {
     ]
     .into_iter()
     .chain(std::iter::once(target_flags.as_str()))
-    .any(nonempty);
+    .any(nonempty)
+        || !pcm_clippy::benign_args(env::var_os("CLIPPY_ARGS").as_deref());
     let compiler = env::var_os("RUSTC").map(PathBuf::from);
     let mut evidence = format!(
         "contract: pinned-std-arc-audiodata-retained-vec-v1\nhost: {host}\ntarget: {target}\n"
@@ -140,7 +146,34 @@ fn main() {
                 target: &target,
                 ordinary_install: installed,
                 unsupported_inputs: unsupported,
-            })
+            })?;
+            if let Some(wrapper) = env::var_os("RUSTC_WORKSPACE_WRAPPER").filter(|s| !s.is_empty()) {
+                let wrapper = PathBuf::from(wrapper);
+                // Watch missing/repaired installation entries too, before qualification.
+                for path in [root.join("bin/clippy-driver"), root.join("lib/rustlib").join(format!("manifest-clippy-preview-{target}"))] {
+                    println!("cargo:rerun-if-changed={}", path.display());
+                }
+                let files = pcm_clippy::InstalledFiles::capture(root, compiler, &wrapper, &target)
+                    .ok_or("unqualified_workspace_wrapper_installation")?;
+                for path in files.paths() {
+                    println!("cargo:rerun-if-changed={}", path.display());
+                }
+                evidence.push_str(&format!("installed Clippy files before probes: {files:?}\n"));
+                let driver_verbose = invoke(&wrapper, &["-Vv"], &mut evidence)
+                    .ok_or("clippy_metadata_command_failed")?;
+                let driver_sysroot = invoke(&wrapper, &["--print", "sysroot"], &mut evidence)
+                    .ok_or("clippy_sysroot_command_failed")?;
+                let driver_version = invoke(&wrapper, &["--version"], &mut evidence)
+                    .ok_or("clippy_version_command_failed")?;
+                if !pcm_clippy::matching_driver(&verbose, &driver_verbose, &driver_sysroot, root, &driver_version) {
+                    return Err("clippy_compiler_or_sysroot_mismatch");
+                }
+                if !files.unchanged() {
+                    return Err("clippy_installation_changed_during_probes");
+                }
+                evidence.push_str("installed Clippy files unchanged after probes; separately validated benign CLIPPY_ARGS; declared storage layout only\n");
+            }
+            Ok(())
         });
     evidence.push_str(&format!("decision: {decision:?}\nrequested layout declaration only; no security/RSS/physical allocator claim\n"));
     let saved = env::var_os("OUT_DIR")

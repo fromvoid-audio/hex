@@ -62,7 +62,7 @@ impl EditorView {
             .place_icons
             .get(&path)
             .and_then(|id| ICONS.iter().position(|(candidate, _, _)| candidate == id))
-            .unwrap_or(0);
+            .map_or(0, |index| index + 1);
         let previous_focus = self
             .context_menu
             .take()
@@ -72,22 +72,34 @@ impl EditorView {
         focus.focus(window);
         self.context_menu = Some(PopupMenu {
             position,
+            icon_grid: Some(ICONS.iter().map(|(_, glyph, _)| *glyph).collect()),
             selected,
             focus,
             previous_focus,
-            items: ICONS
-                .iter()
-                .enumerate()
-                .map(|(index, (id, _, label))| MenuItem {
-                    label,
-                    swatch: None,
-                    checked: selected == index,
-                    action: EditorContextAction::PlaceIcon {
-                        path: path.clone(),
-                        id: (index != 0).then_some(*id),
-                    },
-                })
-                .collect(),
+            items: std::iter::once(MenuItem {
+                label: "default icon",
+                swatch: None,
+                checked: selected == 0,
+                action: EditorContextAction::PlaceIcon {
+                    path: path.clone(),
+                    id: None,
+                },
+            })
+            .chain(
+                ICONS
+                    .iter()
+                    .enumerate()
+                    .map(|(index, (id, _, label))| MenuItem {
+                        label,
+                        swatch: None,
+                        checked: selected == index + 1,
+                        action: EditorContextAction::PlaceIcon {
+                            path: path.clone(),
+                            id: Some(*id),
+                        },
+                    }),
+            )
+            .collect(),
         });
         cx.notify();
     }

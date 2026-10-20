@@ -1,4 +1,5 @@
 //! Pure control-side stereo preparation. No I/O, threads, callback work or project model.
+mod beats;
 pub mod fft;
 mod granular;
 mod resample;
@@ -11,7 +12,7 @@ pub const MAX_SCRATCH_BYTES: usize = 32 * 1024 * 1024;
 pub const MAX_MAP_SEGMENTS: usize = 8_192;
 pub const MAX_POINTS: usize = 1_024;
 pub const MAX_WORK_UNITS: u64 = 1_000_000_000;
-pub const ALGORITHM_VERSION: u32 = 1;
+pub const ALGORITHM_VERSION: u32 = 11;
 const Q32: i128 = 1_i128 << 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -183,6 +184,32 @@ impl TimeMap {
             return Err(Error::Invalid("audio map segments must be contiguous"));
         }
         Ok(Self { segments })
+    }
+    /// Validate the renderer's exact per-segment stretch and pitch capability.
+    /// Metadata only; the existing map constructor owns extent/segment validity.
+    /// This does not admit PCM, algorithm settings, scratch or render work.
+    pub fn validate_stretch(&self, mode: Mode, pitch_cents: i16) -> Result<(), Error> {
+        if !(-4_800..=4_800).contains(&pitch_cents) {
+            return Err(Error::Invalid("invalid audio transform extent or pitch"));
+        }
+        let pitch = 2.0_f64.powf(f64::from(pitch_cents) / 1_200.0);
+        if !matches!(mode, Mode::Resample) {
+            for segment in self.segments() {
+                let ratio = (segment.output_end - segment.output_start) as f64 * Q32 as f64
+                    / (segment.source_end_q32 - segment.source_start_q32) as f64;
+                let compensated = if matches!(mode, Mode::RePitch) {
+                    ratio
+                } else {
+                    ratio * pitch
+                };
+                if !(0.125 - 1e-9..=8.0 + 1e-9).contains(&compensated) {
+                    return Err(Error::Invalid(
+                        "warp stretch including pitch compensation must be within 1/8..8",
+                    ));
+                }
+            }
+        }
+        Ok(())
     }
     pub fn segments(&self) -> &[MapSegment] {
         &self.segments
@@ -377,23 +404,10 @@ pub fn render(request: &Request<'_>, cancel: &mut dyn FnMut() -> bool) -> Result
     {
         return Err(Error::Invalid("invalid audio transform extent or pitch"));
     }
+    request
+        .map
+        .validate_stretch(request.mode, request.pitch_cents)?;
     let pitch = 2.0_f64.powf(f64::from(request.pitch_cents) / 1_200.0);
-    if !matches!(request.mode, Mode::Resample) {
-        for segment in request.map.segments() {
-            let ratio = (segment.output_end - segment.output_start) as f64 * Q32 as f64
-                / (segment.source_end_q32 - segment.source_start_q32) as f64;
-            let compensated = if matches!(request.mode, Mode::RePitch) {
-                ratio
-            } else {
-                ratio * pitch
-            };
-            if !(0.125 - 1e-9..=8.0 + 1e-9).contains(&compensated) {
-                return Err(Error::Invalid(
-                    "warp stretch including pitch compensation must be within 1/8..8",
-                ));
-            }
-        }
-    }
     let base_scratch = request.map.segments.len() * std::mem::size_of::<MapSegment>()
         + std::mem::size_of_val(request.input.envelope)
         + std::mem::size_of_val(request.attacks);
@@ -406,7 +420,7 @@ pub fn render(request: &Request<'_>, cancel: &mut dyn FnMut() -> bool) -> Result
     work.check(0)?;
     let frames = match request.mode {
         Mode::Resample | Mode::RePitch => resample::render(request, pitch, &mut work)?,
-        Mode::Beats { .. } => granular::beats(request, pitch, &mut work)?,
+        Mode::Beats { .. } => beats::render(request, pitch, &mut work)?,
         Mode::Tones { .. } | Mode::Texture { .. } => granular::grains(request, pitch, &mut work)?,
         Mode::Complex | Mode::ComplexPro { .. } => spectral::render(request, pitch, &mut work)?,
     };
@@ -425,6 +439,75 @@ struct Accumulator {
     cursor: usize,
 }
 impl Accumulator {
+    // Read-only already-finalized context for a continuation's overlap search.
+    // It borrows the same output storage; it neither rewrites past audio nor
+    // allocates another history/PCM buffer.
+    fn reference(&self, frame: i128) -> Option<[f64; 2]> {
+        let frame = usize::try_from(frame).ok()?;
+        if frame < self.cursor {
+            self.output.get(frame).map(|x| x.map(f64::from))
+        } else {
+            self.preview(frame as i128)
+        }
+    }
+    fn previous(&self) -> [f64; 2] {
+        self.cursor
+            .checked_sub(1)
+            .and_then(|i| self.output.get(i))
+            .map_or([0.0; 2], |x| x.map(f64::from))
+    }
+    fn preview(&self, frame: i128) -> Option<[f64; 2]> {
+        let frame = usize::try_from(frame).ok()?;
+        if frame < self.cursor
+            || frame >= self.output.len()
+            || frame - self.cursor >= self.samples.len()
+        {
+            return None;
+        }
+        let i = frame % self.samples.len();
+        (self.weights[i] > 1e-12).then(|| self.samples[i].map(|x| x / self.weights[i]))
+    }
+    fn add_correlated(
+        &mut self,
+        frame: i128,
+        sample: [f64; 2],
+        weight: f64,
+        correlation: f64,
+        previous_mean: [f64; 2],
+        next_mean: [f64; 2],
+    ) -> Result<(), Error> {
+        let Ok(at) = usize::try_from(frame) else {
+            return Ok(());
+        };
+        if at >= self.output.len() {
+            return Ok(());
+        }
+        if at < self.cursor || at - self.cursor >= self.samples.len() {
+            return Err(Error::Invalid(
+                "audio overlap exceeds bounded normalization ring",
+            ));
+        }
+        let i = at % self.samples.len();
+        let a = self.weights[i];
+        let b = weight;
+        let gain = if a > 1e-12 && b > 1e-12 {
+            ((a + b) / (a * a + b * b + 2.0 * correlation.clamp(0.0, 1.0) * a * b).sqrt())
+                .clamp(1.0, std::f64::consts::SQRT_2)
+        } else {
+            1.0
+        };
+        for c in 0..2 {
+            let sum = self.samples[i][c] + sample[c] * b;
+            let mean = previous_mean[c] * a + next_mean[c] * b;
+            self.samples[i][c] = if gain == 1.0 {
+                sum
+            } else {
+                (sum - mean) * gain + mean
+            };
+        }
+        self.weights[i] += b;
+        Ok(())
+    }
     fn new(frames: usize, ring: usize, work: &mut Work<'_>, extra: usize) -> Result<Self, Error> {
         let bytes = ring
             .checked_mul(24)

@@ -10,6 +10,44 @@ fn git(arguments: &[&str]) -> Option<String> {
 }
 
 fn main() {
+    let dataset = std::path::Path::new("../../changelog/generated.json");
+    let bytes = match std::fs::read(dataset) {
+        Ok(bytes) if bytes.len() <= 1024 * 1024 => bytes,
+        Ok(_) => panic!("changelog exceeds the validated dataset limit"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Vec::new(),
+        Err(error) => panic!("cannot embed changelog: {error}"),
+    };
+    let output =
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("cargo output directory"));
+    let embedded = output.join("changelog.json");
+    if std::fs::read(&embedded).ok().as_deref() != Some(bytes.as_slice()) {
+        std::fs::write(embedded, bytes).expect("embed changelog");
+    }
+    println!("cargo:rerun-if-env-changed=HEX_GUARDED_BUILD_SOURCE");
+    // Supported entrypoints freeze this display input before invoking Cargo.
+    // Raw Cargo retains conservative refresh rather than claiming a stale
+    // identity after untracked or unrelated workspace edits.
+    if let Ok(source) = std::env::var("HEX_GUARDED_BUILD_SOURCE") {
+        let parts: Vec<_> = source.split(':').collect();
+        if parts.len() == 3
+            && parts[0].len() == 40
+            && parts[1].len() == 64
+            && parts[..2]
+                .iter()
+                .all(|part| part.bytes().all(|byte| byte.is_ascii_hexdigit()))
+            && matches!(parts[2], "clean" | "dirty")
+        {
+            if dataset.exists() {
+                println!("cargo:rerun-if-changed={}", dataset.display());
+            }
+            let suffix = if parts[2] == "dirty" { " dirty" } else { "" };
+            println!(
+                "cargo:rustc-env=HEX_BUILD_IDENTITY={}{suffix}",
+                &parts[0][..8]
+            );
+            return;
+        }
+    }
     // Intentionally absent: refresh identity on every Cargo invocation, including
     // commits that change only another workspace crate or an untracked source.
     println!("cargo:rerun-if-changed=.hex-build-identity-refresh");

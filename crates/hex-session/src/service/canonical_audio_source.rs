@@ -24,6 +24,29 @@ impl CanonicalAudioSourceSnapshot {
             },
         }
     }
+    /// Control-side identity check for retaining this exact preparation source.
+    /// File facts and PCM handles are compared, never read/copied/adopted here.
+    pub(super) fn matches_session_sources(&self, session: &Session) -> bool {
+        if self.mode != session.audio_mode() {
+            return false;
+        }
+        let current = session.source_bindings();
+        self.sources.len() == current.len()
+            && self
+                .sources
+                .iter()
+                .all(|(id, source)| match (source, current.get(id)) {
+                    (
+                        crate::AudioSourceBinding::Resident(old),
+                        Some(crate::AudioSourceBinding::Resident(new)),
+                    ) => old.sample_rate() == new.sample_rate() && old.shares_pcm_with(new),
+                    (
+                        crate::AudioSourceBinding::VerifiedFile(old),
+                        Some(crate::AudioSourceBinding::VerifiedFile(new)),
+                    ) => old == new,
+                    _ => false,
+                })
+    }
     pub fn audio_mode(&self) -> crate::DocumentAudioMode {
         self.mode
     }
@@ -141,8 +164,11 @@ mod tests {
             }
         );
         service
-            .submit(Request::Edit(Command::AddTrack {
+            .submit(Request::Edit(Command::InsertTrackWithDevice {
                 name: "audio".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             }))
             .unwrap();
         let added = next(&service);

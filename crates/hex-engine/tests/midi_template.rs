@@ -31,8 +31,11 @@ fn fixture(
 ) -> Fixture {
     let mut editor = Editor::new(Project::new(sample_rate).unwrap(), 32).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {

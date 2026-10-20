@@ -134,6 +134,36 @@ impl EditorView {
         }
         cx.notify();
     }
+    /// Match the existing Enter/blur commit law, but keep a refused draft
+    /// visible when a project replacement is requested.
+    pub(super) fn finalize_clip_name_for_open(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let Some(edit) = &self.clip_name_edit else {
+            return true;
+        };
+        let name = &edit.input.read(cx).content;
+        if self.edit_pending()
+            || self.project_open.busy()
+            || self.pending_open_path.is_some()
+            || edit.generation != self.project_generation
+            || !self.state.as_ref().is_some_and(|state| {
+                state.revision == edit.revision
+                    && state.project.clip_name(edit.clip) == Some(edit.original.as_str())
+            })
+            || name.trim().is_empty()
+            || name.len() > hex_project::MAX_NAME_BYTES
+            || name.chars().any(char::is_control)
+        {
+            self.error =
+                Some("finish or cancel the current name edit before opening a project".into());
+            return false;
+        }
+        self.finish_clip_name(true, window, cx);
+        true
+    }
     pub(super) fn finish_clip_name(
         &mut self,
         commit: bool,
@@ -176,6 +206,28 @@ impl EditorView {
         fill: u32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        self.clip_name_strip(track, clip, name, fill, true, cx)
+    }
+    pub(super) fn clip_name_preview_header(
+        &self,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        name: &str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        self.clip_name_strip(
+            track, clip, name, theme::color(theme::PaletteRole::Raised), false, cx,
+        )
+    }
+    fn clip_name_strip(
+        &self,
+        track: hex_project::TrackId,
+        clip: ClipId,
+        name: &str,
+        fill: u32,
+        interactive: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let text = theme::readable_text(fill, theme::color(theme::PaletteRole::Text));
         div()
             .id(("clip-name", clip.value()))
@@ -191,26 +243,27 @@ impl EditorView {
             .line_height(px(14.0))
             .bg(rgb(fill))
             .text_color(rgb(text))
-            .cursor_pointer()
-            .on_click(
-                cx.listener(move |view, event: &gpui::ClickEvent, window, cx| {
-                    cx.stop_propagation();
-                    if view
-                        .clip_name_edit
-                        .as_ref()
-                        .is_some_and(|edit| edit.clip == clip)
-                    {
+            .when(interactive, |header| {
+                header.cursor_pointer().on_click(cx.listener(
+                    move |view, event: &gpui::ClickEvent, window, cx| {
                         cx.stop_propagation();
-                        return;
-                    }
-                    if view.clip_name_edit.is_some() {
-                        view.finish_clip_name(true, window, cx);
-                    }
-                    view.select_clip_header(track, clip, event.modifiers(), window, cx);
-                    view.focus.focus(window);
-                    cx.notify();
-                }),
-            )
+                        if view
+                            .clip_name_edit
+                            .as_ref()
+                            .is_some_and(|edit| edit.clip == clip)
+                        {
+                            cx.stop_propagation();
+                            return;
+                        }
+                        if view.clip_name_edit.is_some() {
+                            view.finish_clip_name(true, window, cx);
+                        }
+                        view.select_clip_header(track, clip, event.modifiers(), window, cx);
+                        view.focus.focus(window);
+                        cx.notify();
+                    },
+                ))
+            })
             .child(self.clip_name_label(clip, name))
     }
 }
@@ -350,6 +403,7 @@ mod tests {
                 editor.update(cx, |v, cx| {
                     v.state = Some(Arc::new(hex_session::service::ViewState {
                         canonical_audio_source: None,
+                        comparison_audio: None,
                         project: Arc::new(canonical.project().clone()),
                         waveforms: Default::default(),
                         audio_clip_waveforms: Default::default(),

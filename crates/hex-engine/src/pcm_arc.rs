@@ -60,6 +60,9 @@ pub(crate) fn native_layout_known() -> bool {
 }
 
 #[cfg(test)]
+#[path = "../build_support/pcm_clippy.rs"]
+mod build_clippy_tests;
+#[cfg(test)]
 #[path = "../build_support/pcm_gate.rs"]
 mod build_gate_tests;
 #[cfg(test)]

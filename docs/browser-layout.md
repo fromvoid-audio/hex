@@ -14,8 +14,10 @@ The picker has an independent 4 px drag divider. Its session-only width starts a
 124 px, leaves at least 120 px for results, and resizes continuously to a 23 px
 minimum: the existing 22 px browser-control hit/centering slot plus the sidebar's
 existing 1 px right border. Collection, Library and Place glyphs share that fixed
-leading slot at every width. Labels hide below 64 px without moving the icon column;
-drag right to restore them. Full-row hit targets remain at least 22 px wide/high.
+leading slot at every width. Single-line labels progressively clip to the remaining
+space beside the icon, reaching zero width without ellipsis. Group headings and
+open section settings retain their line/row space during resizing, so source rows
+and icons do not jump vertically. Full-row hit targets remain at least 22 px wide/high.
 In icon mode, collections, sections and folder places retain name tooltips; folder
 save/error status remains available by hover.
 Section settings expand the picker when opened. All paint uses the existing semantic
@@ -222,3 +224,57 @@ inspection; their physical native display and optical glyph appearance remain
 coordinator-owned optimized acceptance, alongside smooth native divider dragging.
 No tree indentation, results, preview, persisted preferences or divider feedback
 behavior is implemented by this follow-up.
+
+## Active resize feedback — Pulse2708 / PR324
+
+Picker and outer browser dividers keep the theme's secondary/cyan color for the
+whole active gesture, independently of hover over their moving rectangles. Only
+the active divider latches that color; idle hover still uses the same highlight.
+Down, release and lost-Left-button transitions publish their current state, so
+release outside returns to idle and release over the handle retains normal hover.
+A movement without Left held ends either gesture at its latest width; a later
+unrelated drag cannot resume it. Existing close-browser cancellation is unchanged.
+Widths, cursor affordances, capture callbacks and resize/snap laws are retained.
+The separate thin-line/hit-area request remains Pulse2707.
+
+Actual GPUI input/paint regressions reproduce hover-only color loss and the
+outer divider's stale lost-button latch, then verify outside/return crossings,
+release inside/outside, cancellation, ordinary/23px picker and open/closed editor.
+These checks establish deterministic rendered feedback, not temporal native GPU
+or physical macOS capture/hover acceptance; that remains in the root's serial lane.
+
+## Stationary tag-editor toggles — Pulse2709 / PR325
+
+The rail and original browser body share one fixed base-width column. The optional
+editor is a sibling to that whole column, beginning at the rail's top and spanning
+the browser height. It borrows space to the right using the existing editor-width
+and outer-resize law; it neither overlays the base browser nor stretches the rail.
+Top and mini-strip controls both toggle, so a second click at the same coordinates
+closes the editor. Its dedicated close control remains available.
+
+Rendered input regressions reproduce the original rail expanding from480to624px
+and the mini-strip's open-only callback. They verify repeated stationary clicks at
+124px and23px picker widths, all rail/control bounds, results/preview/waveform and
+source geometry, top/right/bottom column alignment and return of the outer edge.
+An actually selected private WAV retains its loaded metadata owner without new
+preparation/audition requests. Existing browser source menus, heading/minimum snap,
+selection, drag/import, audition and history contracts remain separate and intact.
+This is layout/toggle behavior only; persistent tag editing remains Pulse2667.
+Optimized native pointer/GPU/tooltip acceptance remains root-owned and open.
+
+## Thin divider paint with unchanged capture — Pulse2707 / PR323
+
+Both browser resize gutters retain their existing4px width, layout allocation,
+resize cursor and capture callbacks. Their backgrounds are transparent. A separate
+1px themed line paints at each gutter's leading edge, adjoining the existing1px
+panel border without adding layout width. Hover from anywhere in the gutter colors
+only that line; PR324's active-drag color and cancellation remain on the same line.
+The remaining transparent gutter is fully usable for grabbing and dragging.
+
+Actual GPUI scene checks reproduce the original full4px filled quad and verify a
+1px line with no broad gutter fill. Real input starts drags on the painted line
+and the opposite transparent edge, checks horizontal resize cursor routing and
+actual resizing, and keeps paint thin through hover/active/release at normal/23px
+picker widths with the editor closed/open. All original PR324 gesture/color cases
+are retained, targeting the line's paint instead of the now-transparent container.
+Physical native pixels/hover/cursor acceptance remains root-owned and open.
