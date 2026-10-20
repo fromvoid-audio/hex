@@ -6121,3 +6121,15 @@ browser Enter/density/capture behavior. Local owning fixtures bind their origina
 paths and catalog jobs to one Environment, with pointer/four-path assertions;
 original test bodies remain. Current focused/required/review and native acceptance
 remain separate; old source receipts do not qualify this combined candidate.
+
+## hidden-source browser history integration — pulse2669 / PR286
+
+Actual composed custom-source Remove then Back restored an invisible retained
+Place. Reuse existing browser_place_visible in history availability, preserving
+existing All fallback/entry replacement and Samples/layout policy. Current source
+visibility, sample/instrument Enter, compact layout and unhighlighted-row guards
+remain intact. Original eight history cases are retained; owning fixtures use one
+Environment before their files/Service and actual identity/path assertions. New
+combined hidden custom/Home/Music Back/Forward controls keep branch/no-autoplay/
+no-authoring/media oracles. Required current-head checks/review and native/manual
+acceptance remain separate; prior fixture-only baseline failure is not a product RED.

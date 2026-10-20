@@ -194,7 +194,8 @@ impl EditorView {
         };
         self.accept_browser_sample_phase(Phase::Idle);
         self.cancel_browser_sample_playback();
-        let removed = matches!(&entry.location.section, BrowserSection::Place(path) if !self.browser.places.contains(path));
+        let removed = matches!(&entry.location.section, BrowserSection::Place(path)
+            if !self.browser.places.contains(path) || !self.browser_place_visible(path));
         if removed
             || !self
                 .browser

@@ -332,3 +332,11 @@ actual resizing, and keeps paint thin through hover/active/release at normal/23p
 picker widths with the editor closed/open. All original PR324 gesture/color cases
 are retained, targeting the line's paint instead of the now-transparent container.
 Physical native pixels/hover/cursor acceptance remains root-owned and open.
+
+History availability also checks the existing source visibility preference for
+custom, Home and Music Places. Back/Forward never resurrects a hidden source:
+the existing fallback replaces that history entry with All without adding a new
+step or discarding the forward branch. This does not reveal hidden sources or
+change Samples/layout availability. Actual row-menu removal and toolbar-arrow
+controls cover both directions, unchanged query/media/project history and no
+automatic preview; native physical navigation remains separate acceptance.
