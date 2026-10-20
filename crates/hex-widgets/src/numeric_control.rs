@@ -69,6 +69,15 @@ pub enum NumericControlKind {
     VerticalSlider,
 }
 
+/// Per-instance pointer direction, independent of visual slider geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NumericDragAxis {
+    /// Moving right increases the value.
+    Horizontal,
+    /// Moving upward increases the value.
+    Vertical,
+}
+
 /// Presentation-only geometry that keeps the same shared edit entity and events.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum NumericControlAppearance {
@@ -81,7 +90,7 @@ pub enum NumericControlAppearance {
     InlineValue,
     /// A rail and editable readout for a compact mixer/header row.
     CompactSlider,
-    /// One filled mixer field with centered editable text and horizontal scrubbing.
+    /// One filled mixer field with centered editable text and default horizontal scrubbing.
     /// Bipolar specs fill from the marked center; other scales fill from the left.
     FilledSlider,
     DeviceMeters,
@@ -125,6 +134,7 @@ pub struct NumericControlConfig {
     style: ControlStyle,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
+    drag_axis: Option<NumericDragAxis>,
 }
 
 impl NumericControlConfig {
@@ -149,6 +159,7 @@ impl NumericControlConfig {
             style,
             appearance: NumericControlAppearance::Standard,
             dial_layout: DialLayout::ReadoutGap,
+            drag_axis: None,
         })
     }
 
@@ -160,6 +171,13 @@ impl NumericControlConfig {
 
     pub fn with_appearance(mut self, appearance: NumericControlAppearance) -> Self {
         self.appearance = appearance;
+        self
+    }
+
+    /// Override pointer scrubbing only; keyboard, capture and geometry stay shared.
+    /// Without an override the existing kind/readout convention is preserved.
+    pub fn with_drag_axis(mut self, axis: NumericDragAxis) -> Self {
+        self.drag_axis = Some(axis);
         self
     }
 }
@@ -216,6 +234,7 @@ pub struct NumericControl {
     inline_value_width: Option<f32>,
     appearance: NumericControlAppearance,
     dial_layout: DialLayout,
+    drag_axis: Option<NumericDragAxis>,
     tab_navigation: bool,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
@@ -281,6 +300,7 @@ impl NumericControl {
             style,
             appearance,
             dial_layout,
+            drag_axis,
         } = config;
         Self {
             accessibility_binding: None,
@@ -309,6 +329,7 @@ impl NumericControl {
             style,
             appearance,
             dial_layout,
+            drag_axis,
             meter_readout: Default::default(),
             inline_value_width: None,
             tab_navigation: false,
@@ -716,16 +737,20 @@ impl NumericControl {
         press.last_position = event.position;
         self.press = Some(press);
         let shift = event.modifiers.shift;
-        let primary_delta = match (press.target, self.kind) {
-            (PressTarget::Control, NumericControlKind::HorizontalSlider) => delta_x,
-            (PressTarget::Value, NumericControlKind::HorizontalSlider)
-                if self.appearance == NumericControlAppearance::FilledSlider =>
-            {
-                delta_x
-            }
-            // Other rectangular readouts scrub vertically, independent of the
-            // track/dial presentation their owner uses.
-            _ => -delta_y,
+        let primary_delta = match self.drag_axis {
+            Some(NumericDragAxis::Horizontal) => delta_x,
+            Some(NumericDragAxis::Vertical) => -delta_y,
+            None => match (press.target, self.kind) {
+                (PressTarget::Control, NumericControlKind::HorizontalSlider) => delta_x,
+                (PressTarget::Value, NumericControlKind::HorizontalSlider)
+                    if self.appearance == NumericControlAppearance::FilledSlider =>
+                {
+                    delta_x
+                }
+                // Other rectangular readouts scrub vertically, independent of the
+                // track/dial presentation their owner uses.
+                _ => -delta_y,
+            },
         };
         if primary_delta == 0.0 {
             return (true, false);

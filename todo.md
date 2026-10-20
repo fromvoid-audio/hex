@@ -6172,3 +6172,13 @@ acceptance remain separate; prior fixture-only baseline failure is not a product
   supplied, and no production repair/cause is claimed. The reproduction blocker
   is removed without another native probe. Regression-source checks and canonical
   merge remain separate from that user confirmation and installed-build identity.
+
+
+### 2026-10-20 — pulse2889 / pr491 Arrange pan drag direction
+
+- Real upward-header-drag regression failed on unchanged production (value0
+  instead of0.4); per-instance shared numeric drag axis fixes that consumer.
+- Keep gain/Console/device defaults and existing canonical pan/Undo/capture/text
+  semantics; test both directions, horizontal-only, fine motion and bounds.
+- Source component checks/evidence are separate from sole-merger qualification
+  and coordinator-owned optimized physical input/audio acceptance.

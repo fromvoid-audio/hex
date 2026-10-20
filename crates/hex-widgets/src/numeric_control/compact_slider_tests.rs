@@ -367,3 +367,99 @@ fn filled_slider_drag_click_entry_invalid_cancel_and_disabled_use_shared_lifecyc
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     assert!(events.borrow().is_empty());
 }
+
+#[gpui::test]
+fn filled_slider_instance_drag_axis_preserves_geometry_and_other_instances(
+    cx: &mut TestAppContext,
+) {
+    cx.update(bind_numeric_control_keys);
+    for axis in [
+        None,
+        Some(NumericDragAxis::Horizontal),
+        Some(NumericDragAxis::Vertical),
+    ] {
+        let handle = *cx.add_window(|_, _| Empty);
+        let control = cx
+            .update_window(handle, |_, window, cx| {
+                let config = NumericControlConfig::new(
+                    "axis-pan",
+                    "pan",
+                    NumericControlKind::HorizontalSlider,
+                    NumericSpec::new(
+                        -1.0,
+                        1.0,
+                        0.0,
+                        crate::NumericScale::Bipolar,
+                        2,
+                        None::<&str>,
+                    )
+                    .unwrap(),
+                    0.0,
+                    STYLE,
+                )
+                .unwrap()
+                .with_appearance(NumericControlAppearance::FilledSlider);
+                let config = match axis {
+                    Some(axis) => config.with_drag_axis(axis),
+                    None => config,
+                };
+                let control = cx.new(|cx| NumericControl::from_config(cx, config));
+                window.replace_root(cx, |_, _| Root {
+                    control: control.clone(),
+                    width: 86.0,
+                });
+                control
+            })
+            .unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let captured = events.clone();
+        let _subscription = cx.update(|app| {
+            app.subscribe(&control, move |_, event, _| {
+                captured.borrow_mut().push(*event)
+            })
+        });
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.simulate_resize(size(px(400.0), px(140.0)));
+        visual.run_until_parked();
+        let field = visual.debug_bounds("axis-pan-value").unwrap();
+        assert_eq!(field, visual.debug_bounds("axis-pan-slider").unwrap());
+        let start = field.center();
+        for (dx, dy) in [(24.0, 0.0), (0.0, -24.0)] {
+            control.update(cx, |control, cx| {
+                control.set_external_value(0.0, cx).unwrap()
+            });
+            events.borrow_mut().clear();
+            let end = point(start.x + px(dx), start.y + px(dy));
+            visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+            visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            let expected = if axis == Some(NumericDragAxis::Vertical) {
+                -dy / 60.0
+            } else {
+                dx / 60.0
+            };
+            assert!(
+                (control.read_with(cx, |control, _| control.value()) - f64::from(expected)).abs()
+                    < 1e-6,
+                "axis={axis:?} dx={dx} dy={dy}"
+            );
+            let events = events.borrow();
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.phase == NumericEventPhase::Begin)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|e| e.phase == NumericEventPhase::Commit)
+                    .count(),
+                1
+            );
+            assert_eq!(visual.debug_bounds("axis-pan-value").unwrap(), field);
+        }
+    }
+}
