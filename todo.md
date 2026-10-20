@@ -6428,3 +6428,12 @@ Undo under the same ten-second deadline. Other stretch-limit fixtures remain
 48khz worker; isolated success alone did not qualify the failed full UI run.
 The separate EQ capacity deadline remains under diagnosis; no production or
 queue-capacity change is included.
+
+## bounded EQ capacity replay fixture — pulse2924 / PR510
+
+The full 32-stream capacity oracle drains real worker edits without forcing a
+whole-window redraw on every poll, then paints the settled result. Actual mouse
+input, overflow refusal, terminal state, all six Undo checks and the five-second
+guard remain. A replay-specific sample showed redundant GPUI drawing dominating
+the polling window while the session worker mostly waited for requests. The
+shared device test pump and production behavior remain unchanged.
