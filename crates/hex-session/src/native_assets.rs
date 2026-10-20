@@ -1,0 +1,169 @@
+//! Opt-in owned-decoded admission. Encoded file buffers, decoder scratch and
+//! pre-admission decoding peaks retain their separate existing limits.
+use crate::*;
+use hex_engine::native_device_resources::ResourcePreparationError;
+use hex_engine::{AudioRootStorageSummary, AudioStorageLedgerReservation};
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// Explicit caller limits. No default, unlimited fallback, or reuse of the
+/// mutable-runtime/preroll budget. Future host/export custody must extend THIS
+/// reservation domain before any owning handle is exposed to those consumers.
+#[derive(Clone, Copy, Debug)]
+pub struct ResidentNativeReservation {
+    pub storage: AudioStorageLedgerReservation,
+    pub max_scan_frames: u64,
+}
+impl From<ResourcePreparationError> for SessionError {
+    fn from(reason: ResourcePreparationError) -> Self {
+        Self::NativeResource(reason)
+    }
+}
+fn pcm_bytes(frames: u64) -> Result<usize, SessionError> {
+    usize::try_from(frames)
+        .ok()
+        .and_then(|n| n.checked_mul(mem::size_of::<hex_engine::Frame>()))
+        .ok_or(SessionError::Invalid("resident pcm byte count overflow"))
+}
+impl Session {
+    pub fn with_native_reservation(
+        mut self,
+        reservation: ResidentNativeReservation,
+    ) -> Result<Self, SessionError> {
+        self.native_assets
+            .storage_on_control(pcm_bytes(self.resident_frames)?, reservation.storage)
+            .map_err(ResourcePreparationError::from)?;
+        self.native_reservation = Some(reservation);
+        Ok(self)
+    }
+    pub(crate) fn validate_native_legacy_budget(&self, frames: u64) -> Result<(), SessionError> {
+        if let Some(reservation) = self.native_reservation {
+            self.native_assets
+                .storage_on_control(pcm_bytes(frames)?, reservation.storage)
+                .map_err(ResourcePreparationError::from)?;
+        }
+        Ok(())
+    }
+    pub fn native_source(&self, asset: AssetId) -> Option<hex_engine::OwnedAudioSourceView<'_>> {
+        self.native_assets.source(asset)
+    }
+    pub fn native_storage_on_control(&self) -> Result<AudioRootStorageSummary, SessionError> {
+        let reservation = self.native_reservation.ok_or(SessionError::Invalid(
+            "native source import requires an explicit resident reservation",
+        ))?;
+        self.native_assets
+            .storage_on_control(pcm_bytes(self.resident_frames)?, reservation.storage)
+            .map_err(ResourcePreparationError::from)
+            .map_err(SessionError::from)
+    }
+    /// Real canonical transaction. Unassigned metadata and original native PCM
+    /// are committed together; no clip derivative or resource alias is made.
+    pub fn import_device_asset(
+        &mut self,
+        decoded: DecodedAudio,
+        cancel: &AtomicBool,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.import_device_asset_with_admission(decoded, cancel, previous, || Ok(()))
+    }
+    // Same transaction seam as prepared batch import: a final caller admission
+    // can refuse while both the editor and source container are still staged.
+    fn import_device_asset_with_admission(
+        &mut self,
+        decoded: DecodedAudio,
+        cancel: &AtomicBool,
+        previous: Option<&hex_engine::PreparedRevision>,
+        admit: impl FnOnce() -> Result<(), SessionError>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        let reservation = self.native_reservation.ok_or(SessionError::Invalid(
+            "native source import requires an explicit resident reservation",
+        ))?;
+        if self.audio_mode != DocumentAudioMode::Resident {
+            return Err(SessionError::Invalid(
+                "native source import requires resident document mode",
+            ));
+        }
+        if cancel.load(Ordering::Relaxed) || self.shutdown.load(Ordering::Relaxed) {
+            return Err(ResourcePreparationError::Cancelled.into());
+        }
+        let incoming = u64::try_from(decoded.audio().pcm_capacity_frames())
+            .map_err(|_| SessionError::Invalid("resident pcm capacity exceeds frame range"))?;
+        self.native_assets
+            .capacity_frames()
+            .ok()
+            .and_then(|n| n.checked_add(self.resident_frames))
+            .and_then(|n| n.checked_add(incoming))
+            .filter(|n| *n <= self.max_resident_frames)
+            .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
+        // Obvious PCM-only refusal precedes bank/catalog construction. The full
+        // ledger below measures actual metadata and simultaneous Vec storage.
+        let pcm_floor = pcm_bytes(
+            self.resident_frames
+                .checked_add(incoming)
+                .ok_or(SessionError::Invalid("resident frame count overflow"))?,
+        )?;
+        if pcm_floor > reservation.storage.max_retained_bytes
+            || pcm_floor > reservation.storage.max_construction_peak_bytes
+        {
+            return Err(ResourcePreparationError::Storage(
+                hex_engine::AudioStorageError::ReservationExceeded,
+            )
+            .into());
+        }
+        let source_rate = decoded.sample_rate();
+        let frames = u64::try_from(decoded.frames())
+            .map_err(|_| SessionError::Invalid("source frame count exceeds project range"))?;
+        let native = decoded
+            .into_native_source_on_control(reservation.max_scan_frames, cancel)
+            .map_err(|refused| SessionError::from(refused.reason))?;
+        let (path, source) = native.into_parts();
+        let media = self.media_bank();
+        let table = self.sine_table();
+        let legacy = pcm_bytes(self.resident_frames)?;
+        let native_assets = &mut self.native_assets;
+        let shutdown = &self.shutdown;
+        let transforms = &self.audio_transforms;
+        let waveforms = &self.audio_clip_waveforms;
+        let (created, (prepared, _summary)) = self.editor.execute_prepared_transition(
+            Command::ImportDeviceAsset {
+                path,
+                sample_rate: source_rate,
+                frames,
+            },
+            |old, candidate| {
+                let id = candidate
+                    .assets()
+                    .find(|a| old.asset(a.id()).is_none())
+                    .map(|a| a.id())
+                    .ok_or(SessionError::Invalid(
+                        "native import candidate has no asset",
+                    ))?;
+                native_assets.insert_on_control(
+                    (id, source),
+                    legacy,
+                    reservation.storage,
+                    reservation.max_scan_frames,
+                    cancel,
+                    || {
+                        let prepared = prepare_with_waveforms(
+                            candidate,
+                            &media,
+                            table,
+                            previous.map(|p| p.session().as_ref()),
+                            transforms,
+                            waveforms,
+                        )?;
+                        admit()?;
+                        if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
+                            return Err(ResourcePreparationError::Cancelled.into());
+                        }
+                        Ok::<_, SessionError>(Arc::new(prepared))
+                    },
+                )
+            },
+        )?;
+        Ok((created, prepared))
+    }
+}
+
+#[cfg(test)]
+mod tests;

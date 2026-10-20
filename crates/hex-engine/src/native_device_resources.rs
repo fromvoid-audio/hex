@@ -11,7 +11,9 @@ use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 mod ingress;
+mod resident;
 pub use ingress::ResidentAudioIngressRefusal;
+pub use resident::ResidentDeviceAssets;
 
 /// Expected original decoded source facts, captured by the media owner on control.
 #[derive(Clone, Copy, Debug)]

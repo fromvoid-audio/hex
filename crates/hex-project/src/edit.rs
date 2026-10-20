@@ -365,6 +365,13 @@ pub enum Command {
         sample_rate: u32,
         frames: u64,
     },
+    /// Original device source. Conversion metadata describes the expected clip
+    /// playback shape; this command does not materialize a converted derivative.
+    ImportDeviceAsset {
+        path: PathBuf,
+        sample_rate: u32,
+        frames: u64,
+    },
     RemoveAsset(AssetId),
     PlaceClip {
         track: TrackId,
@@ -2081,6 +2088,20 @@ impl Project {
                 }
                 let frames = converted_frame_count(frames, sample_rate, self.sample_rate)?;
                 self.add_prepared_asset(path, sample_rate, frames, frames, IDENTITY_CONVERSION)
+                    .map(Created::Asset)
+            }
+            Command::ImportDeviceAsset {
+                path,
+                sample_rate,
+                frames,
+            } => {
+                let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
+                let conversion = if sample_rate == self.sample_rate {
+                    IDENTITY_CONVERSION
+                } else {
+                    crate::SINC_CONVERSION_V1
+                };
+                self.add_prepared_asset(path, sample_rate, frames, playback, conversion)
                     .map(Created::Asset)
             }
             Command::RemoveAsset(id) => {

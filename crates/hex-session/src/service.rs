@@ -387,6 +387,11 @@ pub enum Request {
         value: hex_lattice_contract::ParameterValue,
     },
     Import(PathBuf),
+    /// Decode and atomically admit an unassigned original native source.
+    ImportDeviceAsset {
+        path: PathBuf,
+        cancel: Arc<AtomicBool>,
+    },
     ImportAudioBatch {
         paths: Vec<PathBuf>,
         destination: AudioBatchDestination,
@@ -702,6 +707,26 @@ impl Service {
         )
     }
 
+    pub fn with_native_reservation(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        reservation: crate::ResidentNativeReservation,
+    ) -> Result<Self, ServiceError> {
+        Self::start_configured(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            None,
+            Arc::new(|path, prepared, start, frames| {
+                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
+                    .map_err(|error| error.to_string().to_lowercase())
+            }),
+            None,
+            Some(reservation),
+        )
+    }
+
     fn start_with_audio(
         sample_rate: u32,
         history_capacity: usize,
@@ -710,10 +735,35 @@ impl Service {
         exporter: Exporter,
         audio: Option<Box<dyn WorkerAudioSink>>,
     ) -> Result<Self, ServiceError> {
+        Self::start_configured(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            recovery,
+            exporter,
+            audio,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)] // Internal composition; public constructors stay explicit.
+    fn start_configured(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: Option<PathBuf>,
+        exporter: Exporter,
+        audio: Option<Box<dyn WorkerAudioSink>>,
+        native: Option<crate::ResidentNativeReservation>,
+    ) -> Result<Self, ServiceError> {
         let shutdown = Arc::new(AtomicBool::new(false));
         let session = if audio.is_none() {
             Some(
                 Session::new(sample_rate, history_capacity, max_resident_frames)
+                    .and_then(|session| match native {
+                        Some(reservation) => session.with_native_reservation(reservation),
+                        None => Ok(session),
+                    })
                     .map_err(ServiceError::Session)?
                     .with_shutdown(Arc::clone(&shutdown)),
             )
@@ -1930,6 +1980,37 @@ fn run_worker(
                                 });
                             }
                         }
+                    }
+                }
+                Request::ImportDeviceAsset { path, cancel } => {
+                    let result = if cancel.load(Ordering::Relaxed) {
+                        Err("native source import canceled".to_owned())
+                    } else if session.native_reservation.is_none() {
+                        Err(
+                            "native source import requires an explicit resident reservation"
+                                .to_owned(),
+                        )
+                    } else {
+                        decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
+                            .map_err(|reason| reason.to_string())
+                            .and_then(|decoded| {
+                                session
+                                    .import_device_asset(
+                                        decoded,
+                                        &cancel,
+                                        compiled.as_ref().map(|(_, p)| p.as_ref()),
+                                    )
+                                    .map_err(|reason| reason.to_string())
+                            })
+                    };
+                    match result {
+                        Ok((asset, prepared)) => {
+                            created = Some(asset);
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("native device source imported".into());
+                        }
+                        Err(reason) => error = Some(reason),
                     }
                 }
                 Request::Import(path) => match import(
