@@ -1,5 +1,46 @@
 # Arrange and Console views
 
+## 20 october2026 — generation 2 runtime investigation
+
+The user reports that unmodified Tab does nothing in their running app; that
+build and its actual focused surface have not been identified. The earlier
+source/native receipts below remain historical and do not close this report.
+Generation 2 uses canonical PR489 and preserves the merged PR419 history.
+
+Two new routed-key regressions on qualified main `1d1797bb` have not reproduced
+the failure. One uses actual Arrange-lane and Console-cell clicks, then reciprocal
+KeyDown/KeyUp Tab with both `key_char=None` and the macOS-shaped `key_char="\t"`.
+It checks post-click selections, scroll/viewport, detail/device visibility, cursor,
+Project, revision and empty request queues across eight transitions. The other
+uses actual application input setup and constructor-owned startup focus/state,
+then the real browser search action and a real track-header click to return from
+search. Startup and header-owned Tab switch both ways; focused search retains its
+existing literal-Tab text behavior. Neither test calls the workspace handler
+directly or installs a global Tab interception.
+
+The test platform cannot attest bundled-font registration: a full-configuration
+attempt stopped at that mandatory check before reaching input. Its failure is
+retained; production font validation is unchanged. The corrected fixture invokes
+the actual key/menu/project-action setup calls and uses a private Environment
+before constructor workers start. An initial browser assertion expected no text
+change; its retained failure instead established local `"piano\t"` input, and the
+corrected oracle preserves that behavior. These are fixture limits, not product
+Tab failures.
+
+There is **no production repair or resolved runtime cause in this checkpoint**.
+Root needs the actual running source/build and last-click/focus context, followed
+by Arrange and Console workspace/header → Tab observations. If that still fails,
+the next discriminator is native event delivery versus an intentionally refusing
+focus/capture guard. No existing modal, text, nested-control or pending-final-target
+guard should be relaxed without that evidence. Physical keyboard/IME/native
+dispatch and user acceptance remain open; no app operation is dispatched here.
+
+The bounded new component selector is `workspace_generation2_`, expected **2
+unique tests, zero ignored**. It supplements, rather than relabels or replaces,
+the earlier workspace/Operator/capture evidence. Source investigation passing is
+not final merge qualification, native delivery or proof that the user's report
+is fixed.
+
 The main timeline is **arrange view**; the Session clip launcher is **console
 view**. The existing compact toolbar icons name their destination in their
 lowercase tooltip, and a small adjacent label names the visible view. Internal

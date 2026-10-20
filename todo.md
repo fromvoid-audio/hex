@@ -6111,3 +6111,17 @@ browser Enter/density/capture behavior. Local owning fixtures bind their origina
 paths and catalog jobs to one Environment, with pointer/four-path assertions;
 original test bodies remain. Current focused/required/review and native acceptance
 remain separate; old source receipts do not qualify this combined candidate.
+# 20 october2026 — Pulse2813 generation 2 Tab investigation (PR489)
+
+- Recovered the existing generation-2 canonical branch/PR; historical merged419
+  and all earlier evidence stay immutable. Pinned qualified main1d1797 once.
+- Real routed Tab after ordinary Arrange/Console clicks passes for both key-char
+  forms; constructor-owned startup and browser-search → header return also pass.
+  Two new cases exercise actual key dispatch, selection/scroll/rail/cursor and
+  canonical Project/revision preservation; no direct-handler-only substitute.
+- Retained the pre-Cargo unknown-cache ownership refusal and the font-test-platform
+  / browser-text fixture failures. Corrected fixtures preserve mandatory production
+  font checks and existing local text input. No production behavior changed.
+- User-reported running-build/focus/native-event failure remains unreproduced.
+  Root-owned runtime discriminator and physical acceptance remain open; this
+  investigation checkpoint must not be called a fix or merged/user accepted.
