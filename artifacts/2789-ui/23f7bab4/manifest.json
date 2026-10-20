@@ -1,0 +1,44 @@
+{
+  "source": "23f7bab4fc2c4b14418177fce61d838c624983b3",
+  "tree": "eae1f09d69a82ad0c97ce5917f6f133c571bcf66",
+  "scalar_accessor_parent": "2e7e54a8d57cdc33d2a03cda5679c0d74d33a066",
+  "previous_checkpoint": "387537e177c7dd0d7022beacc1bd4eedf207c313",
+  "qualification": "INCOMPLETE/UNQUALIFIED; no cleanUI/test/strict/merge/full/native/delivery result",
+  "diagnostic": {
+    "command": "cargo check -p hex-ui --locked --lib",
+    "exit": 101,
+    "actual_errors": 493,
+    "unchanged_source_sha256": "9345c4584340c1c9e91e9ce1c17428d96d544a37c98e24962431dbc4d45e7110",
+    "log_sha256": "ebf82d8f92ee95a504ee2694ec61f698ee5ab0afc134e098a045dc0afb2e1e5c"
+  },
+  "checks": [
+    "scopedrustfmtPASS",
+    "gitdiffcheckPASS",
+    "actualcheck-device-layout.pyPASS"
+  ],
+  "remaining": [
+    "owning group preview shared facade",
+    "other legacy UI/current backend consumer routes",
+    "real registered UI test fixtures and behavioral pressure regression",
+    "Native startup/admission/backend/meters/EQ accepted ACK",
+    "exact frozen fullqualification and optimizeddelivery"
+  ],
+  "archive": {
+    "bytes": 21829,
+    "sha256": "23e57fd04eff895f89010ced6e0728a422ba738afd01031bed40e45411889039"
+  },
+  "files": {
+    "artifacts/sampler-ui-migration/modern-operator-drag-comparison.log": {
+      "bytes": 199416,
+      "sha256": "ebf82d8f92ee95a504ee2694ec61f698ee5ab0afc134e098a045dc0afb2e1e5c"
+    },
+    "artifacts/sampler-ui-migration/modern-operator-drag-comparison.json": {
+      "bytes": 2466,
+      "sha256": "da6e2bf50523d67538ad7e8d04358acc80bbe2178e3fe80766f715bfd2be3908"
+    },
+    "artifacts/sampler-ui-migration/modern-drag-console-pointer.json": {
+      "bytes": 773,
+      "sha256": "358a6a8ff129fbc6357385a3fdbfab7d947fc3ef176c43253c0171320c4f1718"
+    }
+  }
+}
