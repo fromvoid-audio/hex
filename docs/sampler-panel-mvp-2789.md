@@ -66,6 +66,15 @@ The earlier three connection errors were absent. EQ, audible meters, remaining
 readers and controller/backend ownership still prevent a clean UI build. This
 failed check adds no UI test, native or merge qualification.
 
+A further frozen component ports Operator metadata, finite browser/Console drag
+reads and device comparison to the same nominal boundary. Comparison keeps its
+menu/focus on read or finalizer refusal; pointer-down/drop preflights retain the
+captured input. Its partial library check reports 493 actual compiler errors,
+with none primary in Operator, comparison or those newly ported hunks. Owning
+group previews, remaining editor consumers, actual registered UI fixtures and
+Native startup/backend closure remain explicit dependencies. No pressure/UI
+behavioral test, clean build or usable delivery is established by that diagnostic.
+
 The production device-composition source guard passes with the real instrument
 dispatch. Earlier staged leaf tests (UI2, Engine2, Session30) remain evidence for
 that earlier immutable component only. The earlier feature-only mount and its

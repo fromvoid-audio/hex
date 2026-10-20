@@ -10,6 +10,9 @@ use hex_session::{
     import_batch::{AudioBatchDestination, ConsoleDestination},
     import_batch_decode::AudioBatchContext,
     service::Request,
+    snapshot_exports::{
+        SnapshotProjectRead, SnapshotTransportError, ui_consumers::SnapshotSessionCellContentRead,
+    },
 };
 
 impl EditorView {
@@ -36,6 +39,12 @@ impl EditorView {
                     return;
                 };
                 entity.update(cx, |view, cx| {
+                    let Ok(current) = view.browser_audio_drag_current(drag) else {
+                        return;
+                    };
+                    let Ok(exists) = view.console_target_exists_checked(target) else {
+                        return;
+                    };
                     drag.last_pointer.set(Some((
                         f32::from(event.event.position.x),
                         f32::from(event.event.position.y),
@@ -43,10 +52,8 @@ impl EditorView {
                     drag.preview.set(None);
                     drag.lane_hovered.set(false);
                     drag.insertion_line_y.set(None);
-                    let destination = (view.mode == EditorMode::Session
-                        && view.browser_audio_drag_is_current(drag)
-                        && view.console_target_exists(target))
-                    .then_some(BrowserDropDestination::Console(target));
+                    let destination = (view.mode == EditorMode::Session && current && exists)
+                        .then_some(BrowserDropDestination::Console(target));
                     if drag.destination.replace(destination) != destination {
                         cx.notify();
                     }
@@ -60,17 +67,25 @@ impl EditorView {
             }))
     }
 
-    pub(super) fn console_target_exists(&self, target: ConsoleDestination) -> bool {
-        let Some(state) = self.state.as_ref() else {
-            return false;
-        };
+    fn console_target_exists_in(
+        project: SnapshotProjectRead<'_>,
+        target: ConsoleDestination,
+    ) -> bool {
         let (track, before) = match target {
             ConsoleDestination::Cell { track, scene } => (track, Some(scene)),
             ConsoleDestination::InsertScene { track, before } => (track, before),
         };
-        state.project.track(track).is_some()
-            && before
-                .is_none_or(|scene| state.project.scenes().iter().any(|item| item.id() == scene))
+        project.track(track).is_some() && before.is_none_or(|scene| project.scene(scene).is_some())
+    }
+
+    pub(super) fn console_target_exists_checked(
+        &self,
+        target: ConsoleDestination,
+    ) -> Result<bool, SnapshotTransportError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(false);
+        };
+        state.read_with(|snapshot| Self::console_target_exists_in(snapshot.model(), target))
     }
 
     fn drop_console_browser_audio(
@@ -79,9 +94,24 @@ impl EditorView {
         target: ConsoleDestination,
         cx: &mut Context<Self>,
     ) {
+        let Ok(drag_current) = self.browser_audio_drag_current(drag) else {
+            return;
+        };
+        let target_facts = match self.state.as_ref() {
+            Some(state) => match state.read_with(|snapshot| {
+                (
+                    Self::console_target_exists_in(snapshot.model(), target),
+                    snapshot.revision(),
+                )
+            }) {
+                Ok(facts) => Some(facts),
+                Err(_) => return,
+            },
+            None => None,
+        };
         let current = self.mode == EditorMode::Session
-            && self.browser_audio_drag_is_current(drag)
-            && self.console_target_exists(target)
+            && drag_current
+            && target_facts.is_some_and(|(exists, _)| exists)
             && !self.edit_pending()
             && !self.save_dialog_open
             && !self.export_dialog_open
@@ -99,13 +129,13 @@ impl EditorView {
             cx.notify();
             return;
         }
-        let Some(state) = self.state.as_ref() else {
+        let Some((_, revision)) = target_facts else {
             cx.notify();
             return;
         };
         let context = AudioBatchContext {
             project_generation: self.project_generation,
-            revision: state.revision,
+            revision,
             active_gesture: false,
         };
         let (request, control) = match Request::audio_batch(
@@ -135,9 +165,27 @@ impl EditorView {
         target: ConsoleDestination,
         cx: &mut Context<Self>,
     ) {
-        let current = self.mode == EditorMode::Session
-            && self.drag_start_is_current(drag)
-            && !self.edit_pending();
+        let Ok(drag_current) = self.drag_start_current(drag) else {
+            return;
+        };
+        let current = self.mode == EditorMode::Session && drag_current && !self.edit_pending();
+        let target_state = match self.state.as_ref() {
+            Some(state) => match state.read_with(|snapshot| {
+                let project = snapshot.model();
+                let empty = match target {
+                    ConsoleDestination::Cell { track, scene } => matches!(
+                        project.session_cell(track, scene),
+                        SnapshotSessionCellContentRead::Empty
+                    ),
+                    ConsoleDestination::InsertScene { .. } => false,
+                };
+                (Self::console_target_exists_in(project, target), empty)
+            }) {
+                Ok(facts) => facts,
+                Err(_) => return,
+            },
+            None => (false, false),
+        };
         // This receiver owns one Console clip, not a mapping of a selection.
         // Release the shared group borrow before retiring its exact UI payload.
         let multiple = drag.group.borrow().ids.len() > 1;
@@ -148,26 +196,20 @@ impl EditorView {
             return;
         }
         let command = if current
+            && target_state.0
+            && target_state.1
             && let ConsoleDestination::Cell { track, scene } = target
             && track == drag.source_track
-            && self.console_target_exists(target)
         {
-            self.state.as_ref().and_then(|state| match drag.position {
-                ClipPosition::Audio { .. }
-                    if state.project.session_cell(track, scene).is_none() =>
-                {
-                    Some(Command::CopyArrangementAudioClipToSession {
-                        source: drag.clip,
-                        scene,
-                    })
-                }
-                ClipPosition::Midi { .. } if state.project.session_cell(track, scene).is_none() => {
-                    Some(Command::CopyArrangementMidiToSession {
-                        source: drag.clip,
-                        scene,
-                    })
-                }
-                _ => None,
+            Some(match drag.position {
+                ClipPosition::Audio { .. } => Command::CopyArrangementAudioClipToSession {
+                    source: drag.clip,
+                    scene,
+                },
+                ClipPosition::Midi { .. } => Command::CopyArrangementMidiToSession {
+                    source: drag.clip,
+                    scene,
+                },
             })
         } else {
             None

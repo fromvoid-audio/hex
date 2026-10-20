@@ -219,6 +219,9 @@ impl<'a> SnapshotDeviceRead<'a> {
     pub fn bypassed(self) -> bool {
         self.device.bypassed()
     }
+    pub fn active_variant(self) -> hex_project::DeviceVariant {
+        self.device.active_variant()
+    }
 }
 impl<'a> SnapshotReturnRead<'a> {
     pub fn id(self) -> ReturnId {

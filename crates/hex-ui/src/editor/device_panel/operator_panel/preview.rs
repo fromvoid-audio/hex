@@ -399,11 +399,21 @@ pub(super) fn control(
             Ok(config) => config.with_appearance(NumericControlAppearance::MicroDial),
             Err(error) => return control_error(error),
         };
+        let owner = match super::context::Owner::capture_checked(view, device) {
+            Ok(Some(owner)) => Some(owner),
+            Ok(None) => return control_error("operator source is unavailable"),
+            Err(error) => {
+                super::context::ReadError::Transport(error).report(view);
+                return control_error("operator source is unavailable");
+            }
+        };
         let entity = cx.new(|control_cx| NumericControl::from_config(control_cx, config));
-        let owner = super::context::Owner::capture(view, device);
         let subscription =
             cx.subscribe(&entity, move |view, _, event: &NumericControlEvent, cx| {
-                if let Some(owner) = owner {
+                let Some(owner) = owner else {
+                    return;
+                };
+                {
                     let current = if event.phase == hex_widgets::NumericEventPhase::Cancel {
                         owner.is_alive(view)
                     } else {

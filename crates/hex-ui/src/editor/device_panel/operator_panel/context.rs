@@ -5,6 +5,67 @@ use super::super::{
 use super::{OperatorPage, OperatorPanelState};
 use gpui::{App, Bounds, Context, EntityId, FocusHandle, Focusable, Pixels, Window};
 use hex_project::{DeviceId, TrackId};
+use hex_session::snapshot_exports::{SnapshotDeviceRead, SnapshotRead, SnapshotTransportError};
+
+#[derive(Debug)]
+pub(super) enum ReadError {
+    Transport(SnapshotTransportError),
+    Invalid(hex_engine::Invalid),
+}
+impl From<SnapshotTransportError> for ReadError {
+    fn from(error: SnapshotTransportError) -> Self {
+        Self::Transport(error)
+    }
+}
+impl ReadError {
+    pub(super) fn report(self, view: &mut EditorView) {
+        match self {
+            Self::Transport(SnapshotTransportError::Busy) => {}
+            Self::Transport(_) => {
+                view.device_panel.message = Some("operator source is unavailable".into())
+            }
+            Self::Invalid(error) => view.device_panel.message = Some(error.0.into()),
+        }
+    }
+}
+fn instrument(
+    snapshot: SnapshotRead<'_>,
+    device: DeviceId,
+) -> Option<(TrackId, SnapshotDeviceRead<'_>)> {
+    snapshot.model().tracks().find_map(|track| {
+        let instrument = track.instrument()?;
+        (instrument.id() == device
+            && instrument.class() == hex_engine::NativeDeviceClass::Instrument
+            && instrument.type_id().as_str() == Ok("hex.instrument.operator"))
+        .then_some((track.id(), instrument))
+    })
+}
+
+/// Finite Copy values from the actual current instrument slot. No persistent
+/// metadata view, device-state owner, registry or model getter is reconstructed.
+pub(super) fn parameters<const N: usize>(
+    view: &EditorView,
+    device: DeviceId,
+    ids: [hex_lattice_contract::ParameterId; N],
+) -> Result<Option<[hex_lattice_contract::ParameterValue; N]>, ReadError> {
+    let Some(state) = view.state.as_ref() else {
+        return Ok(None);
+    };
+    state.source_key().ok_or(SnapshotTransportError::Stale)?;
+    state
+        .read_with(|snapshot| {
+            let Some((_, instrument)) = instrument(snapshot, device) else {
+                return Ok(None);
+            };
+            let controls = instrument.controls()?;
+            let mut values = [hex_lattice_contract::ParameterValue::Float(0.0); N];
+            for (value, id) in values.iter_mut().zip(ids) {
+                *value = controls.parameter(id)?.value;
+            }
+            Ok(Some(values))
+        })?
+        .map_err(ReadError::Invalid)
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(in crate::editor::device_panel) struct Owner {
@@ -14,37 +75,54 @@ pub(in crate::editor::device_panel) struct Owner {
 }
 
 impl Owner {
+    pub(super) fn capture_checked(
+        view: &EditorView,
+        device: DeviceId,
+    ) -> Result<Option<Self>, SnapshotTransportError> {
+        let Some(state) = view.state.as_ref() else {
+            return Ok(None);
+        };
+        state.source_key().ok_or(SnapshotTransportError::Stale)?;
+        state.read_with(|snapshot| {
+            instrument(snapshot, device).map(|(track, _)| Self {
+                generation: view.project_generation,
+                track,
+                device,
+            })
+        })
+    }
     pub(in crate::editor::device_panel) fn capture(
         view: &EditorView,
         device: DeviceId,
     ) -> Option<Self> {
-        let state = view.state.as_ref()?;
-        let track = state.project.tracks().iter().find(|track| {
-            track.instrument().is_some_and(|instrument| {
-                instrument.id() == device
-                    && instrument.state().type_id().as_str() == Ok("hex.instrument.operator")
-            })
-        })?;
-        Some(Self {
-            generation: view.project_generation,
-            track: track.id(),
-            device,
-        })
+        match Self::capture_checked(view, device) {
+            Ok(owner) => owner,
+            Err(_) => None, // Refusal never authorizes navigation or dispatch.
+        }
     }
-
-    pub(super) fn is_alive(self, view: &EditorView) -> bool {
-        self.generation == view.project_generation
-            && view
-                .state
-                .as_ref()
-                .and_then(|state| state.project.track(self.track))
-                .and_then(hex_project::Track::instrument)
+    fn is_alive_checked(self, view: &EditorView) -> Result<bool, SnapshotTransportError> {
+        if self.generation != view.project_generation {
+            return Ok(false);
+        }
+        let Some(state) = view.state.as_ref() else {
+            return Ok(false);
+        };
+        state.source_key().ok_or(SnapshotTransportError::Stale)?;
+        state.read_with(|snapshot| {
+            snapshot
+                .model()
+                .track(self.track)
+                .and_then(|track| track.instrument())
                 .is_some_and(|instrument| {
                     instrument.id() == self.device
-                        && instrument.state().type_id().as_str() == Ok("hex.instrument.operator")
+                        && instrument.class() == hex_engine::NativeDeviceClass::Instrument
+                        && instrument.type_id().as_str() == Ok("hex.instrument.operator")
                 })
+        })
     }
-
+    pub(super) fn is_alive(self, view: &EditorView) -> bool {
+        matches!(self.is_alive_checked(view), Ok(true))
+    }
     pub(super) fn is_current(self, view: &EditorView) -> bool {
         self.is_alive(view)
             && view.selected_track == Some(self.track)

@@ -1,9 +1,10 @@
-use super::musical_time::SnapGrid;
+use super::musical_time::{MusicalProject, SnapGrid};
 use super::viewport::Viewport;
 use gpui::{Context, Window};
 use hex_project::Command;
 use hex_project::{BeatTime, ClipId, Project, TrackId, TrimEdge};
 use hex_session::service::{AudioPreview, Request};
+use hex_session::snapshot_exports::{SnapshotProjectRead, SnapshotRead, SnapshotTransportError};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
@@ -278,7 +279,7 @@ pub(super) fn drop_start(
 }
 
 fn candidate_position(
-    project: &Project,
+    project: &dyn MusicalProject,
     drag: &ClipDrag,
     target_track: Option<TrackId>,
     pointer_x: f32,
@@ -325,7 +326,7 @@ fn candidate_position(
                 drag.viewport().length,
                 0,
             )?;
-            let pointer_beat = project.tempo_map().frame_to_beat(pointer_frame).ok()?;
+            let pointer_beat = project.frame_to_beat(pointer_frame).ok()?;
             let offset = drag.grab_offset.get()?;
             let start = BeatTime::from_raw(pointer_beat.raw().saturating_sub(offset));
             let start = drag
@@ -341,18 +342,15 @@ fn candidate_position(
                     lane.width,
                 )?;
             let end = start.raw().checked_add(length.raw())?;
-            project.tempo_map().beat_to_frame(start).ok()?;
-            project
-                .tempo_map()
-                .beat_to_frame(BeatTime::from_raw(end))
-                .ok()?;
+            project.beat_to_frame(start).ok()?;
+            project.beat_to_frame(BeatTime::from_raw(end)).ok()?;
             Some(ClipPosition::Midi { start, length })
         }
     }
 }
 
 pub(super) struct BrowserDropCandidate<'a> {
-    pub project: &'a Project,
+    pub project: &'a dyn MusicalProject,
     pub viewport_start: u64,
     pub viewport_length: u64,
     pub snap_grid: SnapGrid,
@@ -385,7 +383,7 @@ pub(super) fn browser_candidate(candidate: BrowserDropCandidate<'_>) -> Option<D
 }
 
 pub(super) fn browser_start(
-    project: &Project,
+    project: &dyn MusicalProject,
     viewport_start: u64,
     viewport_length: u64,
     snap_grid: SnapGrid,
@@ -405,7 +403,7 @@ pub(super) fn browser_start(
 }
 
 pub(super) fn preview_for(
-    project: &Project,
+    project: &dyn MusicalProject,
     target_track: TrackId,
     position: ClipPosition,
 ) -> Option<DropPreview> {
@@ -414,8 +412,8 @@ pub(super) fn preview_for(
         ClipPosition::Midi { start, length } => {
             let end = BeatTime::from_raw(start.raw().checked_add(length.raw())?);
             (
-                project.tempo_map().beat_to_frame(start).ok()?,
-                project.tempo_map().beat_to_frame(end).ok()?,
+                project.beat_to_frame(start).ok()?,
+                project.beat_to_frame(end).ok()?,
             )
         }
     };
@@ -439,19 +437,34 @@ pub(super) struct DropState<'a> {
     pub(super) snap_grid: SnapGrid,
 }
 
+fn drag_context_is_current(
+    drag: &ClipDrag,
+    generation: u64,
+    revision: u64,
+    viewport: Viewport,
+    snap_grid: SnapGrid,
+    target_exists: bool,
+) -> bool {
+    drag.project_generation == generation
+        && drag.revision == revision
+        && drag.viewport().start == viewport.start
+        && drag.viewport().length == viewport.length
+        && drag.snap_grid == snap_grid
+        && target_exists
+}
+
 fn context_is_current(drag: &ClipDrag, state: &DropState<'_>) -> bool {
-    if drag.project_generation != state.project_generation
-        || drag.revision != state.revision
-        || drag.viewport().start != state.viewport_start
-        || drag.viewport().length != state.viewport_length
-        || drag.snap_grid != state.snap_grid
-    {
-        return false;
-    }
-    if state.project.track(state.target_track).is_none() {
-        return false;
-    }
-    true
+    drag_context_is_current(
+        drag,
+        state.project_generation,
+        state.revision,
+        Viewport {
+            start: state.viewport_start,
+            length: state.viewport_length,
+        },
+        state.snap_grid,
+        state.project.track(state.target_track).is_some(),
+    )
 }
 
 pub(super) fn is_current(drag: &ClipDrag, state: DropState<'_>) -> bool {
@@ -600,42 +613,42 @@ impl super::EditorView {
         }
     }
 
-    pub(super) fn drag_start_is_current(&self, drag: &ClipDrag) -> bool {
-        let current = (|| {
-            if drag.group.borrow().ids.len() > 1
-                && drag.group.borrow().selection_epoch != Some(self.clip_selection.epoch)
-            {
-                return false;
-            }
-            if self.opening_project
-                || self.close_prompt_open
-                || self.worker_requests_pending != 0
-                || !self.pending_requests.is_empty()
-            {
-                return false;
-            }
-            let Some(state) = self.state.as_ref() else {
-                return false;
-            };
-            let viewport = self.visible_viewport(state.timeline_frames);
-            let drop_state = DropState {
-                project_generation: self.project_generation,
-                revision: state.revision,
-                project: &state.project,
-                target_track: drag.source_track,
-                position: drag.position,
-                viewport_start: viewport.start,
-                viewport_length: viewport.length,
-                snap_grid: self.snap_grid,
-            };
-            let group = drag.group.borrow();
-            if group.ids.len() > 1 {
-                let length = match drag.position {
-                    ClipPosition::Audio { duration, .. } => duration,
-                    ClipPosition::Midi { length, .. } => length.raw(),
-                };
-                context_is_current(drag, &drop_state)
-                    && group.capture.as_ref().is_some_and(|capture| {
+    pub(super) fn drag_start_current(
+        &self,
+        drag: &ClipDrag,
+    ) -> Result<bool, SnapshotTransportError> {
+        let current = if (drag.group.borrow().ids.len() > 1
+            && drag.group.borrow().selection_epoch != Some(self.clip_selection.epoch))
+            || self.opening_project
+            || self.close_prompt_open
+            || self.worker_requests_pending != 0
+            || !self.pending_requests.is_empty()
+        {
+            false
+        } else if let Some(state) = self.state.as_ref() {
+            state.read_with(|snapshot| {
+                let project = snapshot.model();
+                let viewport = self.visible_viewport(snapshot, snapshot.timeline_frames());
+                let context = drag_context_is_current(
+                    drag,
+                    self.project_generation,
+                    snapshot.revision(),
+                    viewport,
+                    self.snap_grid,
+                    project.track(drag.source_track).is_some(),
+                );
+                if !context {
+                    return false;
+                }
+                let group = drag.group.borrow();
+                if group.ids.len() > 1 {
+                    let length = match drag.position {
+                        ClipPosition::Audio { duration, .. } => duration,
+                        ClipPosition::Midi { length, .. } => length.raw(),
+                    };
+                    // Pending model-owned scalar group facade: retain the actual
+                    // existing anchor law; never manufacture an Arc from this read.
+                    group.capture.as_ref().is_some_and(|capture| {
                         capture.anchor_matches(
                             &state.project,
                             drag.clip,
@@ -644,16 +657,44 @@ impl super::EditorView {
                             length,
                         )
                     })
-            } else {
-                is_current(drag, drop_state)
+                } else {
+                    let Some(track) = project.track(drag.source_track) else {
+                        return false;
+                    };
+                    match drag.position {
+                        ClipPosition::Audio { start, duration } => track
+                            .clips()
+                            .find(|clip| clip.id() == drag.clip)
+                            .is_some_and(|clip| {
+                                clip.start() == start && clip.duration() == duration
+                            }),
+                        ClipPosition::Midi { start, length } => track
+                            .midi_clips()
+                            .find(|clip| clip.id() == drag.clip)
+                            .is_some_and(|clip| {
+                                clip.start() == start && clip.arrangement_length() == length
+                            }),
+                    }
+                }
+            })?
+        } else {
+            false
+        };
+        Ok(current)
+    }
+
+    pub(super) fn drag_start_is_current(&self, drag: &ClipDrag) -> bool {
+        match self.drag_start_current(drag) {
+            Ok(false) => {
+                // Legacy display/currentness retirement follows a successful
+                // stale check. Checked admission remains pure so later read
+                // pressure cannot consume its captured source prematurely.
+                drag.group.borrow_mut().capture = None;
+                false
             }
-        })();
-        if !current {
-            // Context retirement happens inside the shared payload owner; a
-            // GPUI payload clone cannot keep a usable source capture alive.
-            drag.group.borrow_mut().capture = None;
+            Ok(true) => true,
+            Err(_) => false,
         }
-        current
     }
 
     pub(super) fn drag_candidate(
@@ -982,7 +1023,11 @@ impl super::EditorView {
         true
     }
 
-    pub(super) fn browser_audio_drag_is_current(&self, drag: &BrowserAudioDrag) -> bool {
+    fn browser_audio_drag_current_in(
+        &self,
+        drag: &BrowserAudioDrag,
+        snapshot: SnapshotRead<'_>,
+    ) -> bool {
         if !self
             .active_browser_audio_drag
             .as_ref()
@@ -995,19 +1040,33 @@ impl super::EditorView {
         {
             return false;
         }
-        self.state.as_ref().is_some_and(|state| {
-            let viewport = self.visible_viewport(state.timeline_frames);
-            self.project_generation == drag.project_generation
-                && state.revision == drag.revision
-                && state.project.sample_rate() == drag.sample_rate
-                && viewport.start == drag.viewport().start
-                && viewport.length == drag.viewport().length
-                && self.snap_grid == drag.snap_grid
-        })
+        let viewport = self.visible_viewport(snapshot, snapshot.timeline_frames());
+        self.project_generation == drag.project_generation
+            && snapshot.revision() == drag.revision
+            && snapshot.sample_rate() == drag.sample_rate
+            && viewport.start == drag.viewport().start
+            && viewport.length == drag.viewport().length
+            && self.snap_grid == drag.snap_grid
     }
 
-    pub(super) fn painted_track_insertion_target(
+    pub(super) fn browser_audio_drag_current(
         &self,
+        drag: &BrowserAudioDrag,
+    ) -> Result<bool, SnapshotTransportError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(false);
+        };
+        state.read_with(|snapshot| self.browser_audio_drag_current_in(drag, snapshot))
+    }
+
+    /// Display-only callers may hide a refused preview, without retiring it.
+    pub(super) fn browser_audio_drag_is_current(&self, drag: &BrowserAudioDrag) -> bool {
+        self.browser_audio_drag_current(drag).unwrap_or(false)
+    }
+
+    fn painted_track_insertion_target_in(
+        &self,
+        project: SnapshotProjectRead<'_>,
         pointer_x: f32,
         pointer_y: f32,
     ) -> Option<(Option<TrackId>, LaneBounds, f32)> {
@@ -1023,13 +1082,10 @@ impl super::EditorView {
         if !lane_contains_pointer(pointer_x, pointer_y, timeline) {
             return None;
         }
-        let state = self.state.as_ref()?;
-        let tracks = state.project.tracks();
-        if tracks.is_empty() {
+        let mut tracks = project.tracks();
+        let Some(first) = tracks.next() else {
             return Some((None, timeline, pointer_y));
-        }
-
-        let first = tracks.first()?;
+        };
         if self.drag_lane_epochs.get(&first.id()) == Some(&self.drag_layout_generation) {
             let first_lane = *self.drag_lanes.get(&first.id())?;
             // Reserve the same narrow insertion band at the first row's top,
@@ -1039,9 +1095,10 @@ impl super::EditorView {
             }
         }
 
-        for index in 1..tracks.len() {
-            let previous = tracks.get(index - 1)?;
-            let next = tracks.get(index)?;
+        let mut last = first;
+        for next in tracks {
+            let previous = last;
+            last = next;
             if self.drag_lane_epochs.get(&previous.id()) != Some(&self.drag_layout_generation)
                 || self.drag_lane_epochs.get(&next.id()) != Some(&self.drag_layout_generation)
             {
@@ -1054,8 +1111,6 @@ impl super::EditorView {
                 return Some((Some(next.id()), timeline, boundary));
             }
         }
-
-        let last = tracks.last()?;
         if self.drag_lane_epochs.get(&last.id()) != Some(&self.drag_layout_generation) {
             return None;
         }
@@ -1067,98 +1122,142 @@ impl super::EditorView {
         None
     }
 
+    pub(super) fn painted_track_insertion_target_checked(
+        &self,
+        pointer_x: f32,
+        pointer_y: f32,
+    ) -> Result<Option<(Option<TrackId>, LaneBounds, f32)>, SnapshotTransportError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| {
+            self.painted_track_insertion_target_in(snapshot.model(), pointer_x, pointer_y)
+        })
+    }
+
+    pub(super) fn painted_track_insertion_target(
+        &self,
+        pointer_x: f32,
+        pointer_y: f32,
+    ) -> Option<(Option<TrackId>, LaneBounds, f32)> {
+        self.painted_track_insertion_target_checked(pointer_x, pointer_y)
+            .ok()
+            .flatten()
+    }
+
+    fn browser_audio_drop_position_checked(
+        &self,
+        drag: &BrowserAudioDrag,
+        pointer_x: f32,
+        pointer_y: f32,
+        snap_modifier: bool,
+    ) -> Result<(Option<DropPreview>, bool), SnapshotTransportError> {
+        let Some(state) = self.state.as_ref() else {
+            drag.destination.set(None);
+            drag.insertion_line_y.set(None);
+            return Ok((None, false));
+        };
+        let metadata = drag
+            .metadata
+            .borrow()
+            .as_ref()
+            .map(|metadata| (metadata.sample_rate, metadata.playback_frames));
+        let (preview, hovered, destination, line) = state.read_with(|snapshot| {
+            if !self.browser_audio_drag_current_in(drag, snapshot) {
+                return (None, false, Some(None), None);
+            }
+            if self.mode == super::EditorMode::Session {
+                // Console receivers own the cell destination; leave it intact.
+                return (None, false, None, None);
+            }
+            let project = snapshot.model();
+            if let Some((before_track, timeline, line_y)) =
+                self.painted_track_insertion_target_in(project, pointer_x, pointer_y)
+            {
+                let start = browser_start(
+                    &project,
+                    drag.viewport().start,
+                    drag.viewport().length,
+                    drag.snap_grid.with_platform_modifier(snap_modifier),
+                    pointer_x,
+                    timeline,
+                );
+                return (
+                    None,
+                    true,
+                    Some(start.map(|start| BrowserDropDestination::NewTrack {
+                        before_track,
+                        start,
+                    })),
+                    start.map(|_| line_y),
+                );
+            }
+            if let Some((target, lane)) = self.hovered_drag_target(pointer_x, pointer_y) {
+                let Some(start) = browser_start(
+                    &project,
+                    drag.viewport().start,
+                    drag.viewport().length,
+                    drag.snap_grid.with_platform_modifier(snap_modifier),
+                    pointer_x,
+                    lane,
+                ) else {
+                    return (None, true, Some(None), None);
+                };
+                let preview = metadata
+                    .filter(|(rate, _)| *rate == snapshot.sample_rate())
+                    .and_then(|(_, duration)| {
+                        browser_candidate(BrowserDropCandidate {
+                            project: &project,
+                            viewport_start: drag.viewport().start,
+                            viewport_length: drag.viewport().length,
+                            snap_grid: drag.snap_grid,
+                            snap_modifier,
+                            pointer_x,
+                            lane,
+                            duration,
+                            target_track: target,
+                        })
+                    });
+                return (
+                    preview,
+                    true,
+                    Some(Some(BrowserDropDestination::ExistingTrack {
+                        track: target,
+                        start,
+                    })),
+                    None,
+                );
+            }
+            (None, false, Some(None), None)
+        })?;
+        // No captured destination is changed until the complete read succeeds.
+        if let Some(destination) = destination {
+            drag.destination.set(destination);
+        }
+        drag.insertion_line_y.set(line);
+        Ok((preview, hovered))
+    }
+
     pub(super) fn browser_audio_drop_position(
         &self,
         drag: &BrowserAudioDrag,
         pointer_x: f32,
         pointer_y: f32,
     ) -> (Option<DropPreview>, bool) {
-        if !self.browser_audio_drag_is_current(drag) {
-            drag.destination.set(None);
-            drag.insertion_line_y.set(None);
-            return (None, false);
-        }
-        if self.mode == super::EditorMode::Session {
-            // Console receivers own their stable cell/scene target. Browser
-            // row moves must not project into retained Arrangement geometry.
-            drag.insertion_line_y.set(None);
-            return (None, false);
-        }
-        let Some(state) = self.state.as_ref() else {
-            drag.destination.set(None);
-            drag.insertion_line_y.set(None);
-            return (None, true);
-        };
-        if let Some((before_track, timeline, line_y)) =
-            self.painted_track_insertion_target(pointer_x, pointer_y)
-        {
-            let Some(start) = browser_start(
-                &state.project,
-                drag.viewport().start,
-                drag.viewport().length,
-                drag.snap_grid
-                    .with_platform_modifier(drag.snap_modifier.get()),
-                pointer_x,
-                timeline,
-            ) else {
-                drag.destination.set(None);
-                drag.insertion_line_y.set(None);
-                return (None, true);
-            };
-            drag.destination.set(Some(BrowserDropDestination::NewTrack {
-                before_track,
-                start,
-            }));
-            drag.insertion_line_y.set(Some(line_y));
-            return (None, true);
-        }
-        if let Some((target, lane)) = self.hovered_drag_target(pointer_x, pointer_y) {
-            let Some(start) = browser_start(
-                &state.project,
-                drag.viewport().start,
-                drag.viewport().length,
-                drag.snap_grid
-                    .with_platform_modifier(drag.snap_modifier.get()),
-                pointer_x,
-                lane,
-            ) else {
-                drag.destination.set(None);
-                drag.insertion_line_y.set(None);
-                return (None, true);
-            };
-            drag.destination
-                .set(Some(BrowserDropDestination::ExistingTrack {
-                    track: target,
-                    start,
-                }));
-            drag.insertion_line_y.set(None);
-            let preview = drag
-                .metadata
-                .borrow()
-                .clone()
-                .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
-                .and_then(|metadata| {
-                    browser_candidate(BrowserDropCandidate {
-                        project: &state.project,
-                        viewport_start: drag.viewport().start,
-                        viewport_length: drag.viewport().length,
-                        snap_grid: drag.snap_grid,
-                        snap_modifier: drag.snap_modifier.get(),
-                        pointer_x,
-                        lane,
-                        duration: metadata.playback_frames,
-                        target_track: target,
-                    })
-                });
-            return (preview, true);
-        }
-        drag.destination.set(None);
-        drag.insertion_line_y.set(None);
-        (None, false)
+        self.browser_audio_drop_position_checked(
+            drag,
+            pointer_x,
+            pointer_y,
+            drag.snap_modifier.get(),
+        )
+        .unwrap_or_else(|_| (drag.preview.get(), drag.lane_hovered.get()))
     }
 
     pub(super) fn refresh_browser_audio_drag(&mut self, drag: &BrowserAudioDrag) {
-        if !self.browser_audio_drag_is_current(drag) {
+        let Ok(current) = self.browser_audio_drag_current(drag) else {
+            return;
+        };
+        if !current {
             drag.preview.set(None);
             drag.destination.set(None);
             drag.insertion_line_y.set(None);
@@ -1166,10 +1265,13 @@ impl super::EditorView {
             return;
         }
         if self.mode == super::EditorMode::Session {
-            if let Some(BrowserDropDestination::Console(target)) = drag.destination.get()
-                && !self.console_target_exists(target)
-            {
-                drag.destination.set(None);
+            if let Some(BrowserDropDestination::Console(target)) = drag.destination.get() {
+                let Ok(exists) = self.console_target_exists_checked(target) else {
+                    return;
+                };
+                if !exists {
+                    drag.destination.set(None);
+                }
             }
             return;
         }
@@ -1211,14 +1313,19 @@ impl super::EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        drag.snap_modifier.set(window.modifiers().platform);
-        drag.copy_modifier.set(window.modifiers().alt);
-        let current = self.browser_audio_drag_is_current(drag);
-        let (preview, lane_hovered) = self.browser_audio_drop_position(
+        let Ok(current) = self.browser_audio_drag_current(drag) else {
+            return;
+        };
+        let Ok((preview, lane_hovered)) = self.browser_audio_drop_position_checked(
             drag,
             f32::from(window.mouse_position().x),
             f32::from(window.mouse_position().y),
-        );
+            window.modifiers().platform,
+        ) else {
+            return;
+        };
+        drag.snap_modifier.set(window.modifiers().platform);
+        drag.copy_modifier.set(window.modifiers().alt);
         drag.preview.set(preview);
         drag.lane_hovered.set(lane_hovered);
         if !current {

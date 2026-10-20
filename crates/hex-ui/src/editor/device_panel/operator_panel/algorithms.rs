@@ -136,24 +136,25 @@ pub(in crate::editor::device_panel) fn select(
     device: DeviceId,
     choice: u32,
 ) {
-    if !(1..=11).contains(&choice) || !finalize_controls(view, cx) {
+    if !(1..=11).contains(&choice) {
         return;
     }
     let key = ParameterKey {
         device,
         parameter: id(600),
     };
-    let canonical = view
-        .device_panel
-        .views
-        .get(&device)
-        .and_then(|(_, _, view)| view.as_ref().ok())
-        .and_then(|view| {
-            view.parameters
-                .iter()
-                .find(|parameter| parameter.descriptor.id == key.parameter)
-        })
-        .map(|parameter| parameter.value);
+    let [canonical, canonical_mode] =
+        match context::parameters(view, device, [key.parameter, id(608)]) {
+            Ok(Some(values)) => values,
+            Ok(None) => return,
+            Err(error) => {
+                error.report(view);
+                return;
+            }
+        };
+    if !finalize_controls(view, cx) {
+        return;
+    }
     let previous = view.device_panel.pending_values.get(&key).copied();
     let value = ParameterValue::Choice(choice);
     let mode_key = ParameterKey {
@@ -165,23 +166,9 @@ pub(in crate::editor::device_panel) fn select(
         .pending_values
         .get(&mode_key)
         .copied()
-        .or_else(|| {
-            view.device_panel
-                .views
-                .get(&device)
-                .and_then(|(_, _, view)| view.as_ref().ok())
-                .and_then(|view| {
-                    view.parameters
-                        .iter()
-                        .find(|parameter| parameter.descriptor.id == mode_key.parameter)
-                })
-                .map(|parameter| parameter.value)
-        })
-        == Some(ParameterValue::Choice(0));
-    if canonical.is_none()
-        || previous == Some(value)
-        || (!legacy && previous.or(canonical) == Some(value))
-    {
+        .unwrap_or(canonical_mode)
+        == ParameterValue::Choice(0);
+    if previous == Some(value) || (!legacy && previous.or(Some(canonical)) == Some(value)) {
         return;
     }
     view.device_panel.pending_values.insert(key, value);
