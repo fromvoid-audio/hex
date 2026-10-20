@@ -38,11 +38,15 @@ Current-format encode/decode tests preserve both empty and explicitly authored
 tracks, with no autoload during repeated reopen.
 
 Enter on a selected, registered browser instrument is an explicit device choice:
-it appends a track with that exact instrument's registry default state using one
-InsertTrackWithDevice command. Naming, created-track selection and one-step
+the UI sends only selected class/type metadata and project stamps. Service
+constructs that instrument's registry default on its worker, then uses the
+existing prepared InsertTrackWithDevice transaction (including keyboard/tuning
+publication) to append it atomically. Naming, created-track selection and one-step
 Undo/Redo follow the existing new-track path. Missing, stale, unavailable or
 non-instrument selections refuse before queuing; there is no generic empty-track
-or Sine fallback.
+or Sine fallback. A stale worker request, invalid registry identity or active
+device/tuning gesture refuses without committing unrelated gesture history.
+Factory/preparation refusal on the worker leaves project and history unchanged.
 
 MoveMidiClipToNewTrack and CopyMidiClipToNewTrack transfer a clip, not a track's
 device chain. Their destinations deliberately remain empty and MIDI there is

@@ -2485,6 +2485,7 @@ impl EditorView {
             Request::DeviceGesture(_)
                 | Request::DropNativeDevice { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
+                | Request::InsertBrowserInstrumentTrack { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
                 | Request::CompareDevice { .. }

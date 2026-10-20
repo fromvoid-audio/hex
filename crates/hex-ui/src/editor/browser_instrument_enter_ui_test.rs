@@ -119,23 +119,14 @@ fn browser_instrument_enter_uses_selected_registered_state_and_single_worker_und
         )
         .unwrap();
         editor.read_with(&visual, |view, _| {
-            match view
-                .last_enqueued_edit
-                .as_ref()
-                .expect("actual key dispatched edit")
-            {
-                Command::InsertTrackWithDevice {
-                    before_track,
-                    slot,
-                    state,
-                    ..
-                } => {
-                    assert_eq!(*before_track, None);
-                    assert_eq!(*slot, hex_project::TrackDeviceSlot::Instrument);
-                    assert_eq!(state, &expected);
-                }
-                other => panic!("selected instrument must be explicit, got {other:?}"),
-            }
+            assert!(
+                view.last_enqueued_edit.is_none(),
+                "UI must send identity, not construct a device edit"
+            );
+            assert_eq!(
+                view.worker_requests_pending, 1,
+                "actual key queued one typed worker request"
+            );
         });
         pump_instrument_enter(&editor, &mut visual, 2);
         let after = editor.read_with(&visual, |view, _| {

@@ -308,6 +308,13 @@ pub enum Request {
         owner: preset::Owner,
         path: PathBuf,
     },
+    /// Browser Enter: worker-owned default construction and created-track selection.
+    InsertBrowserInstrumentTrack {
+        project_generation: u64,
+        revision: u64,
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+    },
     /// Catalog device on a captured Arrangement lane or before-track anchor.
     DropBrowserDeviceOnArrangement {
         project_generation: u64,
@@ -1340,10 +1347,49 @@ fn run_worker(
         let mut gesture_request = false;
         let mut preview_prepared = None;
         let mut preview_project = None;
+        // Resolve Enter on the worker before any gesture barrier. Invalid identities
+        // and requests during a live draft cannot commit unrelated gesture history.
+        // A valid request then uses the exact generic Edit publication path below,
+        // including Created::Track selection and keyboard/tuning preparation.
+        let browser_insert = match &request {
+            Request::InsertBrowserInstrumentTrack {
+                project_generation: expected_generation,
+                revision: expected_revision,
+                class,
+                type_id,
+            } => Some(
+                if *expected_generation != project_generation || *expected_revision != revision {
+                    Err("instrument insertion canceled · project changed".to_owned())
+                } else if device_gesture.snapshot().is_some() || tuning_gesture.snapshot().is_some()
+                {
+                    Err(
+                        "finish or cancel the active device edit before inserting an instrument"
+                            .into(),
+                    )
+                } else if *class != hex_engine::NativeDeviceClass::Instrument {
+                    Err("browser selection is not an instrument".into())
+                } else {
+                    hex_engine::default_native_device_state_for_class(*class, *type_id)
+                        .map(|state| Command::InsertTrackWithDevice {
+                            name: format!("track {}", session.project().tracks().len() + 1),
+                            before_track: None,
+                            slot: hex_project::TrackDeviceSlot::Instrument,
+                            state,
+                        })
+                        .map_err(|reason| reason.to_string().to_lowercase())
+                },
+            ),
+            _ => None,
+        };
+        let (request, browser_failure) = match browser_insert {
+            Some(Ok(command)) => (Request::Edit(command), None),
+            Some(Err(reason)) => (request, Some(reason)),
+            None => (request, None),
+        };
         let barrier = request.finalizes_parameter_gesture();
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
-        let mut barrier_failure = match &request {
+        let mut barrier_failure = browser_failure.or_else(|| match &request {
             Request::CompareDevice {
                 owner, expected, ..
             } => device_comparison::preflight(
@@ -1355,7 +1401,7 @@ fn run_worker(
             )
             .err(),
             _ => None,
-        };
+        });
         if barrier && barrier_failure.is_none() {
             if let Some(outcome) = device_gesture.finish(
                 &mut session,
@@ -1612,6 +1658,11 @@ fn run_worker(
                         unsaved = true;
                         replacement_revision = Some(prepared);
                     }
+                }
+                Request::InsertBrowserInstrumentTrack { .. } => {
+                    unreachable!(
+                        "browser instrument request is normalized or refused before dispatch"
+                    )
                 }
                 Request::DropBrowserDeviceOnArrangement {
                     project_generation: expected_generation,
@@ -3506,6 +3557,10 @@ fn arrangement_device_command(
         }
     }
 }
+
+#[cfg(test)]
+#[path = "service/browser_instrument_tests.rs"]
+mod browser_instrument_tests;
 
 #[cfg(test)]
 mod service_tests {

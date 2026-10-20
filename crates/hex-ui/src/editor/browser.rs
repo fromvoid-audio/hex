@@ -1405,27 +1405,22 @@ impl EditorView {
                 cx.notify();
                 return;
             };
-            let state = match hex_engine::default_native_device_state_for_class(
+            // Selection is metadata only; native defaults are constructed by Service.
+            let registered = hex_engine::native_device_catalog_for_class(
                 hex_engine::NativeDeviceClass::Instrument,
-                type_id,
-            ) {
-                Ok(state) => state,
-                Err(error) => {
-                    self.error = Some(format!("instrument unavailable · {error}").into());
-                    cx.notify();
-                    return;
-                }
+            )
+            .is_ok_and(|entries| entries.iter().any(|entry| entry.type_id == type_id));
+            let Some(state) = self.state.as_ref().filter(|_| registered) else {
+                self.error = Some("selected browser instrument is unavailable".into());
+                cx.notify();
+                return;
             };
-            let count = self
-                .state
-                .as_ref()
-                .map_or(0, |state| state.project.tracks().len());
-            self.enqueue(Request::Edit(Command::InsertTrackWithDevice {
-                name: format!("track {}", count + 1),
-                before_track: None,
-                slot: hex_project::TrackDeviceSlot::Instrument,
-                state,
-            }));
+            self.enqueue(Request::InsertBrowserInstrumentTrack {
+                project_generation: self.project_generation,
+                revision: state.revision,
+                class: hex_engine::NativeDeviceClass::Instrument,
+                type_id,
+            });
             cx.notify();
             return;
         }
