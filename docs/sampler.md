@@ -60,7 +60,7 @@ The kernel implements these original laws, pending reference measurement:
 | Envelope | Original linear attack/decay/sustain/release, rounded output-frame durations; release starts from the level at note-off, including during attack/decay. Default is immediate unity with immediate release. Trigger ignores note-off but retains the authored attack/decay/sustain. |
 | Level | Linear gain0–4; velocity depth0–1; original linear stereo balance−1–1 preserving both channels at center. Finite f64 interpolation/gain avoids intermediate f32 overflow. Values beyond finite f32 saturate only at its representation boundary. No normal-range clipping or normalization. |
 | Rendering | Arbitrary age queries or caller-owned block fills; no mutable cursor or block-size-dependent result. Overflowed block ages emit silence rather than wrapping. |
-| Lifetime | A nonlooping voice reports its natural output-frame length; a looping voice reports no natural end. Gate release and Trigger natural-end retention must be handled separately by the future host adapter. |
+| Lifetime | A nonlooping voice reports its natural output-frame length; a looping voice reports no natural end. Gate release and Trigger natural-end retention are handled separately by the runtime below; actual host custody remains required. |
 
 Kernel limits: 8–192kHz input/output; 16,777,216 source frames maximum
 (128MiB stereo f32); seven-bit MIDI; at most128 nonempty slices fitting above
@@ -90,6 +90,34 @@ Loop release, Trigger slices after short notes, irregular partitions and u64
 boundary refusal are covered. Strict device all-target Clippy passes. Final
 exact-source full CI remains required; these are kernel tests, not host callback
 or native/listening evidence.
+
+## bounded event-driven runtime prerequisite
+
+`BoundSamplerPlan::prepare_runtime_on_control` prepares all 128 key coefficients
+against project tuning and the exact borrowed source identity. Slice keys retain
+their region-selection law. `PreparedSamplerRuntime` implements the existing
+Lattice mutable-instrument factory: at most 32 fixed voice slots and 1,024 events
+per block, further restricted by the caller's voice/event/byte/tail ceilings.
+The prepared factory and its two runtime twins retain scalar data only, without
+owning PCM or marker storage. Fixed buffering latency is zero.
+
+Actual NoteOn/NoteOff processing uses occurrence identity, output-frame event
+ordering, the existing velocity law and Gate release. Trigger voices survive
+note-off until natural source exhaustion. Event preflight simulates capacity and
+lifetime changes in fixed scratch data before output or history changes; the
+ordinary runtime pair supplies speculative commit/rollback. Reset clears both
+histories, and exact compatible scalar configurations may copy active history.
+Changed source identity refuses before rendering, preserving the prior state.
+Valid expression events are currently ignored; modulation is not implemented.
+
+Owning tests process original mono/stereo PCM through the actual
+`NativeInstrumentRuntimePair`, including short-note Trigger retirement,
+partitions, capacity refusal/rollback, source/slice refusal, tuning, velocity,
+gated release, reset/quiescence and caller-budget refusal. Allocation-free
+processing is checked by source inspection of fixed arrays and borrowed views;
+this is not an instrumented callback or physical deadline result. No new native
+audio allocation fixture, host publication, registration or UI is added here.
+The existing standalone kernel profile above does not measure this runtime pair.
 
 ## host integration contract still required
 

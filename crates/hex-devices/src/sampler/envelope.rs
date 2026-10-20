@@ -39,7 +39,7 @@ impl Envelope {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct PreparedEnvelope {
     attack: u64,
     decay: u64,

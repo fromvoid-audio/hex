@@ -6449,3 +6449,14 @@ input, overflow refusal, terminal state, all six Undo checks and the five-second
 guard remain. A replay-specific sample showed redundant GPUI drawing dominating
 the polling window while the session worker mostly waited for requests. The
 shared device test pump and production behavior remain unchanged.
+
+## bounded sampler runtime pair — pulse2927 / PR513
+
+The device-only mutable runtime prepares tuned key coefficients on control and
+processes borrowed mono/stereo PCM through the existing Lattice runtime pair.
+Fixed voices/events, caller ceilings, Trigger natural end, Gate release, exact
+source checks and transactional history stay explicit. Owning tests cover actual
+pair PCM, refusal/rollback, tuning/velocity, reset and quiescence. Exact source,
+required core qualification and inspection-only allocation limits are recorded
+with the canonical PR. Host resource admission, registry/loading and all three
+app playback paths remain open; this does not complete the usable sampler MVP.

@@ -42,7 +42,7 @@ impl SampleShape {
 #[derive(Clone, Copy, Debug)]
 pub struct PreparedSamplerPlan<'a> {
     pub(super) sample: SampleShape,
-    settings: Settings<'a>,
+    pub(super) settings: Settings<'a>,
     output_rate: u32,
     envelope: envelope::PreparedEnvelope,
 }
@@ -106,6 +106,33 @@ impl<'a> PreparedSamplerPlan<'a> {
         note: u8,
         velocity: u8,
     ) -> Result<Option<VoiceCoefficients>, Invalid> {
+        self.prepare_voice_with_transpose(note, velocity, None)
+    }
+
+    /// Project tuning changes the pitch ratio relative to the authored root
+    /// note. Slice keys continue selecting source regions rather than pitches.
+    pub fn prepare_tuned_voice_coefficients(
+        self,
+        note: u8,
+        velocity: u8,
+        tuning: &hex_lattice::TuningTable,
+    ) -> Result<Option<VoiceCoefficients>, Invalid> {
+        let frequency = tuning
+            .frequency(note)
+            .map_err(|_| Invalid("sampler tuning note unavailable"))?;
+        let root = tuning
+            .frequency(self.settings.root_note)
+            .map_err(|_| Invalid("sampler tuning root unavailable"))?;
+        let transpose = 12.0 * (frequency / root).log2();
+        self.prepare_voice_with_transpose(note, velocity, Some(transpose))
+    }
+
+    fn prepare_voice_with_transpose(
+        self,
+        note: u8,
+        velocity: u8,
+        tuned_transpose: Option<f64>,
+    ) -> Result<Option<VoiceCoefficients>, Invalid> {
         if note > 127 || velocity > 127 {
             return Err(Invalid("sample note and velocity must be seven-bit midi"));
         }
@@ -118,13 +145,13 @@ impl<'a> PreparedSamplerPlan<'a> {
                 settings.region,
                 loop_region,
                 GateMode::Gate,
-                f64::from(note) - f64::from(settings.root_note),
+                tuned_transpose.unwrap_or(f64::from(note) - f64::from(settings.root_note)),
             ),
             Mode::OneShot { gate } => (
                 settings.region,
                 None,
                 gate,
-                f64::from(note) - f64::from(settings.root_note),
+                tuned_transpose.unwrap_or(f64::from(note) - f64::from(settings.root_note)),
             ),
             Mode::Slice {
                 starts,
