@@ -59,7 +59,9 @@ echo "completed $tool $*"
 class LocalCiRunnerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
-        self.base = Path(self.temp.name)
+        # Ordinary fixtures use the same physical identity as the runner.
+        # Tests for unsafe lexical aliases construct those paths explicitly.
+        self.base = Path(self.temp.name).resolve()
         self.repo = self.base / "repo"
         self.repo.mkdir()
         self.bin = self.base / "bin"

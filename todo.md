@@ -6376,3 +6376,13 @@ or full required rerun while those current findings remain unresolved.
   by the original guard; no production guard was weakened.
   Source checks remain separate from merger qualification, installed native
   interaction and user acceptance.
+## canonical test fixture roots — pulse2911 / PR503
+
+Ordinary runner, compiler-PATH and real UI-build fixtures resolve their owned
+temporary roots before deriving paths, matching the runner's physical target
+identity on macOS. Deliberate symlink controls remain explicit and production
+guards are unchanged. The pre-fix compiler-PATH suite failed on `/var` versus
+`/private/var`; exact-candidate tooling results are retained in the PR and Pulse.
+Standalone UI-root correction is included here so each split step can pass the
+complete tooling plan; explicit marker lookups and alias regressions follow in
+2912/2913. No native application or audio acceptance is implied.
