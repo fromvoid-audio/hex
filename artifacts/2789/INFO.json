@@ -1,0 +1,13 @@
+{
+  "bytes": 153864,
+  "sha256": "8ed1ee277059aafbd84592f0373182797203507c70fb37c0c049d2aa1cd18584",
+  "payloads": 59,
+  "source": {
+    "commit": "493d348ec20d490de9310080d04963ddcb552437",
+    "tree": "5a7a2b9fc9b2c55cc4f4a37ef7fa8567e45daf6e",
+    "parent": "49948ed0a35e1343374dc4b8d5c4813df0af46ca",
+    "canonical_base": "b94b0e2f6fbec0932d422c00d4584739c192cb9a",
+    "source_count": 191,
+    "ref": "refs/heads/evidence/hex395-source-events-335-source"
+  }
+}
