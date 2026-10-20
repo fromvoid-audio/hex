@@ -1,0 +1,18 @@
+{
+  "source": "7bdcaccf17fee38ece678228eaff49f3764c27b5",
+  "tree": "99299b17e237f6add88978e1696b7619e0814f51",
+  "base": "695ba5d8d46972717272700ac82d3b4df0161f13",
+  "archive": "artifacts/2789-trim/7bdcaccf/trim-facades-evidence.tar.gz",
+  "bytes": 158416,
+  "sha256": "814c9c44719183b33ce6b16eff5e059e7529a35ef2c23b1cb02b166b6f904e81",
+  "safe_regular_members": 28,
+  "payloads": 27,
+  "scope": "partial Trim core component; exact content and canonical prospective warp scratch; no UI registered guard/full/native qualification",
+  "checks": {
+    "focused_v2": "3stagesPASS52.524s",
+    "focused_v3": "4stagesPASS39.780s",
+    "strict_v1": "4stagesPASS64.918s default+feature alltargets, HRTB doctest, fmt/diff"
+  },
+  "history": "v1 Project4PASS then test-only E0308 compile failure preserved; v2 correction and final v3 separate epochs, not additive full certificate",
+  "gaps": "registered snapshot/UI pressure and guard instrumentation unexecuted; exact delegated HRTB allocation scope measured zero alloc/free; UI/Native closure remains open"
+}
