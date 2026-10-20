@@ -36,10 +36,21 @@ impl EditorView {
         if self.time_selection_gesture.is_none() && self.time_range_move_gesture.is_none() {
             return false;
         }
-        let Some(horizon) = self.state.as_ref().map(|state| state.timeline_frames) else {
+        let Some((horizon, viewport, current)) = self.state.as_ref().and_then(|state| {
+            state
+                .read_with(|snapshot| {
+                    let horizon = snapshot.timeline_frames();
+                    (
+                        horizon,
+                        self.visible_viewport(snapshot, horizon),
+                        self.time_gesture_is_current(snapshot.revision()),
+                    )
+                })
+                .ok()
+        }) else {
             return false;
         };
-        if !self.time_gesture_is_current() {
+        if !current {
             self.cancel_time_selection_gesture();
             return false;
         }
@@ -63,7 +74,6 @@ impl EditorView {
             );
             return false;
         };
-        let viewport = self.visible_viewport(horizon);
         let edge = edge_direction(x, lane);
         let elapsed = now
             .saturating_duration_since(last_tick)
@@ -110,7 +120,12 @@ impl EditorView {
         if !y.is_finite() || self.main_track_lane_epoch != self.drag_layout_generation {
             return None;
         }
-        let track = self.state.as_ref()?.project.tracks().last()?.id();
+        let track = self
+            .state
+            .as_ref()?
+            .read_with(|snapshot| snapshot.model().tracks().last().map(|track| track.id()))
+            .ok()
+            .flatten()?;
         let lane = self.main_track_lane_bounds.filter(|lane| {
             lane.left.is_finite()
                 && lane.width.is_finite()
@@ -127,39 +142,42 @@ impl EditorView {
             return None;
         }
         let state = self.state.as_ref()?;
-        self.drag_lanes
-            .iter()
-            .filter(|(track, lane)| {
-                self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
-                    && state.project.track(**track).is_some()
-                    && lane.top.is_finite()
-                    && lane.height.is_finite()
-                    && lane.height > 0.0
-                    && lane.left.is_finite()
-                    && lane.width.is_finite()
-                    && lane.width > 0.0
+        state
+            .read_with(|snapshot| {
+                let project = snapshot.model();
+                self.drag_lanes
+                    .iter()
+                    .filter(|(track, lane)| {
+                        self.drag_lane_epochs.get(track) == Some(&self.drag_layout_generation)
+                            && project.track(**track).is_some()
+                            && lane.top.is_finite()
+                            && lane.height.is_finite()
+                            && lane.height > 0.0
+                            && lane.left.is_finite()
+                            && lane.width.is_finite()
+                            && lane.width > 0.0
+                    })
+                    .min_by(|(track_a, a), (track_b, b)| {
+                        vertical_distance(y, **a)
+                            .total_cmp(&vertical_distance(y, **b))
+                            .then_with(|| lane_contains_y(y, **b).cmp(&lane_contains_y(y, **a)))
+                            .then_with(|| a.top.total_cmp(&b.top))
+                            .then_with(|| track_a.value().cmp(&track_b.value()))
+                    })
+                    .map(|(track, lane)| (*track, *lane))
             })
-            .min_by(|(track_a, a), (track_b, b)| {
-                vertical_distance(y, **a)
-                    .total_cmp(&vertical_distance(y, **b))
-                    .then_with(|| lane_contains_y(y, **b).cmp(&lane_contains_y(y, **a)))
-                    .then_with(|| a.top.total_cmp(&b.top))
-                    .then_with(|| track_a.value().cmp(&track_b.value()))
-            })
-            .map(|(track, lane)| (*track, *lane))
+            .ok()
+            .flatten()
     }
 
-    fn time_gesture_is_current(&self) -> bool {
-        let Some(state) = self.state.as_ref() else {
-            return false;
-        };
+    fn time_gesture_is_current(&self, revision: u64) -> bool {
         let has_gesture =
             self.time_selection_gesture.is_some() || self.time_range_move_gesture.is_some();
         let selection_current = self.time_selection_gesture.as_ref().is_none_or(|gesture| {
-            gesture.generation == self.project_generation && gesture.revision == state.revision
+            gesture.generation == self.project_generation && gesture.revision == revision
         });
         let range_current = self.time_range_move_gesture.as_ref().is_none_or(|gesture| {
-            gesture.generation == self.project_generation && gesture.revision == state.revision
+            gesture.generation == self.project_generation && gesture.revision == revision
         });
         let current = has_gesture && selection_current && range_current;
         current

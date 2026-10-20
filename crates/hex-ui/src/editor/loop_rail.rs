@@ -1,5 +1,5 @@
 //! Compact Arrangement loop-range rail with a control-side preview gesture.
-use super::{EditorMode, EditorView, ViewState, musical_time::GridLine, viewport::Viewport};
+use super::{EditorMode, EditorView, musical_time::GridLine, viewport::Viewport};
 use crate::theme;
 use gpui::{
     Bounds, Context, CursorStyle, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
@@ -7,6 +7,7 @@ use gpui::{
 };
 use hex_project::{Command, LoopRegion};
 use hex_session::service::Request;
+use hex_session::snapshot_exports::SnapshotTransportError;
 
 const RAIL_HEIGHT: f32 = 18.0;
 const BAR_INSET: f32 = 4.0;
@@ -70,6 +71,14 @@ impl EditorView {
         {
             return false;
         }
+        let Ok((revision, current_region)) =
+            state.read_with(|snapshot| (snapshot.revision(), snapshot.model().loop_region()))
+        else {
+            return false;
+        };
+        if region != current_region {
+            return false;
+        }
         let timeline_left = f32::from(bounds.origin.x);
         let timeline_width = f32::from(bounds.size.width);
         let Some(frame) = super::seek::pointer_to_frame(x, timeline_left, timeline_width, viewport)
@@ -118,7 +127,7 @@ impl EditorView {
             if let Some(mode) = mode {
                 self.loop_rail_gesture = Some(LoopRailGesture {
                     generation: self.project_generation,
-                    revision: state.revision,
+                    revision,
                     loop_region: Some(region),
                     viewport,
                     timeline_left,
@@ -130,13 +139,21 @@ impl EditorView {
             }
         }
 
-        let Some(anchor) = snap_frame(self, &state.project, frame, viewport, timeline_width, free)
-        else {
+        let Ok(Some(anchor)) = state.read_with(|snapshot| {
+            snap_frame(
+                self,
+                &snapshot.model(),
+                frame,
+                viewport,
+                timeline_width,
+                free,
+            )
+        }) else {
             return false;
         };
         self.loop_rail_gesture = Some(LoopRailGesture {
             generation: self.project_generation,
-            revision: state.revision,
+            revision,
             loop_region: region,
             viewport,
             timeline_left,
@@ -147,84 +164,87 @@ impl EditorView {
         true
     }
 
+    fn project_loop_rail_gesture(
+        &self,
+        mut gesture: LoopRailGesture,
+        x: f32,
+        free: bool,
+    ) -> Result<Option<LoopRailGesture>, SnapshotTransportError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| {
+            let project = snapshot.model();
+            if self.mode != EditorMode::Arrangement
+                || gesture.generation != self.project_generation
+                || gesture.revision != snapshot.revision()
+                || gesture.loop_region != project.loop_region()
+                || self.context_menu.is_some()
+                || self.opening_project
+                || self.close_prompt_open
+                || !x.is_finite()
+            {
+                return None;
+            }
+            let Some(frame) = super::seek::pointer_to_frame(
+                x,
+                gesture.timeline_left,
+                gesture.timeline_width,
+                gesture.viewport,
+            )
+            .and_then(|frame| {
+                snap_frame(
+                    self,
+                    &project,
+                    frame,
+                    gesture.viewport,
+                    gesture.timeline_width,
+                    free,
+                )
+            }) else {
+                return Some(gesture);
+            };
+            gesture.preview = match gesture.mode {
+                EditMode::Paint { anchor } => {
+                    LoopRegion::new(anchor.min(frame), anchor.max(frame), false).ok()
+                }
+                EditMode::ResizeStart { fixed_end, enabled } => {
+                    LoopRegion::new(frame.min(fixed_end.saturating_sub(1)), fixed_end, enabled).ok()
+                }
+                EditMode::ResizeEnd {
+                    fixed_start,
+                    enabled,
+                } => LoopRegion::new(
+                    fixed_start,
+                    frame.max(fixed_start.saturating_add(1)),
+                    enabled,
+                )
+                .ok(),
+            };
+            Some(gesture)
+        })
+    }
     fn update_loop_rail_gesture(&mut self, x: f32, free: bool) -> bool {
-        let Some(mut gesture) = self.loop_rail_gesture.take() else {
+        let Some(gesture) = self.loop_rail_gesture else {
             return false;
         };
-        let Some(state) = self.state.as_ref() else {
-            return true;
+        let Ok(gesture) = self.project_loop_rail_gesture(gesture, x, free) else {
+            return false;
         };
-        if self.mode != EditorMode::Arrangement
-            || gesture.generation != self.project_generation
-            || gesture.revision != state.revision
-            || gesture.loop_region != state.project.loop_region()
-            || self.context_menu.is_some()
-            || self.opening_project
-            || self.close_prompt_open
-            || !x.is_finite()
-        {
-            return true;
-        }
-        let Some(frame) = super::seek::pointer_to_frame(
-            x,
-            gesture.timeline_left,
-            gesture.timeline_width,
-            gesture.viewport,
-        ) else {
-            self.loop_rail_gesture = Some(gesture);
-            return true;
-        };
-        let Some(frame) = snap_frame(
-            self,
-            &state.project,
-            frame,
-            gesture.viewport,
-            gesture.timeline_width,
-            free,
-        ) else {
-            self.loop_rail_gesture = Some(gesture);
-            return true;
-        };
-        gesture.preview = match gesture.mode {
-            EditMode::Paint { anchor } => {
-                let start = anchor.min(frame);
-                let end = anchor.max(frame);
-                LoopRegion::new(start, end, false).ok()
-            }
-            EditMode::ResizeStart { fixed_end, enabled } => {
-                let candidate = frame.min(fixed_end.saturating_sub(1));
-                LoopRegion::new(candidate, fixed_end, enabled).ok()
-            }
-            EditMode::ResizeEnd {
-                fixed_start,
-                enabled,
-            } => {
-                let candidate = frame.max(fixed_start.saturating_add(1));
-                LoopRegion::new(fixed_start, candidate, enabled).ok()
-            }
-        };
-        self.loop_rail_gesture = Some(gesture);
+        self.loop_rail_gesture = gesture;
         true
     }
-
     fn finish_loop_rail_gesture(&mut self, x: f32, free: bool) -> bool {
-        if self.loop_rail_gesture.is_none() {
+        let Some(gesture) = self.loop_rail_gesture else {
             return false;
-        }
-        self.update_loop_rail_gesture(x, free);
-        let Some(gesture) = self.loop_rail_gesture.take() else {
+        };
+        let Ok(gesture) = self.project_loop_rail_gesture(gesture, x, free) else {
+            return false;
+        };
+        self.loop_rail_gesture = None;
+        let Some(gesture) = gesture else {
             return true;
         };
-        let Some(state) = self.state.as_ref() else {
-            return true;
-        };
-        if gesture.generation != self.project_generation
-            || gesture.revision != state.revision
-            || gesture.loop_region != state.project.loop_region()
-            || self.mode != EditorMode::Arrangement
-        {
-            return true;
-        }
         let Some(region) = gesture.preview else {
             self.error = Some("loop region needs a non-empty time range".into());
             return true;
@@ -242,11 +262,12 @@ impl EditorView {
     }
 
     fn loop_rail_hover(&self, x: f32, viewport: Viewport, bounds: Bounds<gpui::Pixels>) -> Hover {
-        let Some(region) = self
-            .state
-            .as_ref()
-            .and_then(|state| state.project.loop_region())
-        else {
+        let Some(region) = self.state.as_ref().and_then(|state| {
+            state
+                .read_with(|snapshot| snapshot.model().loop_region())
+                .ok()
+                .flatten()
+        }) else {
             return Hover::Paint;
         };
         let left = f32::from(bounds.origin.x);
@@ -271,16 +292,16 @@ impl EditorView {
 
 pub(super) fn view(
     view: &EditorView,
-    state: &ViewState,
+    revision: u64,
+    current_region: Option<LoopRegion>,
     viewport: Viewport,
     grid: &[GridLine],
     cx: &mut Context<EditorView>,
 ) -> Div {
-    let current_region = state.project.loop_region();
     let gesture = view.loop_rail_gesture.filter(|gesture| {
         gesture.generation == view.project_generation
-            && gesture.revision == state.revision
-            && gesture.loop_region == state.project.loop_region()
+            && gesture.revision == revision
+            && gesture.loop_region == current_region
             && view.mode == EditorMode::Arrangement
     });
     let shown_region = gesture
@@ -420,7 +441,7 @@ pub(super) fn view(
 
 fn snap_frame(
     view: &EditorView,
-    project: &hex_project::Project,
+    project: &(impl super::musical_time::MusicalProject + ?Sized),
     frame: u64,
     viewport: Viewport,
     width: f32,

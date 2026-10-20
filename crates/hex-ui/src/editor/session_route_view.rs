@@ -1,9 +1,9 @@
 //! Read-only, revision-bound view of accepted Session routes from the audio callback.
+use super::session_navigation::{CellContent, SessionProject};
 use hex_audio::prepared::{
     SESSION_ROUTE_CAPACITY, SessionRouteEntry, SessionRouteOwner, SessionRouteSnapshot,
     SessionRouteTarget, Status,
 };
-use hex_project::Project;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct CellRouteMarker {
@@ -124,7 +124,7 @@ impl RouteView {
     pub fn routes_available(
         &mut self,
         snapshot: SessionRouteSnapshot,
-        project: &Project,
+        project: &(impl SessionProject + ?Sized),
         project_revision: u64,
         project_generation: u64,
     ) -> bool {
@@ -197,15 +197,17 @@ fn cache_read_result(
     changed
 }
 
-fn route_entries_match_project(entries: &[SessionRouteEntry], project: &Project) -> bool {
-    if entries.len() != project.tracks().len() {
+fn route_entries_match_project(
+    entries: &[SessionRouteEntry],
+    project: &(impl SessionProject + ?Sized),
+) -> bool {
+    if entries.len() != project.track_ids().len() {
         return false;
     }
     for (index, entry) in entries.iter().enumerate() {
         let Some(track) = project
-            .tracks()
-            .iter()
-            .find(|track| track.id().value() == entry.track_id)
+            .track_ids()
+            .find(|track| track.value() == entry.track_id)
         else {
             return false;
         };
@@ -216,10 +218,10 @@ fn route_entries_match_project(entries: &[SessionRouteEntry], project: &Project)
             return false;
         }
         let clip_belongs_to_track = |clip_id| {
-            project.session_cells().iter().any(|cell| {
-                cell.track() == track.id()
-                    && (matches!(cell.content(), hex_project::SessionCellContent::Midi(clip) if clip.id().value() == clip_id)
-                        || matches!(cell.content(), hex_project::SessionCellContent::Audio(clip) if clip.id().value() == clip_id))
+            project.cells().any(|(owner, content)| {
+                owner == track
+                    && (matches!(content, CellContent::Midi(clip) if clip.value() == clip_id)
+                        || matches!(content, CellContent::Audio(clip) if clip.value() == clip_id))
             })
         };
         if let SessionRouteOwner::Session { clip_id } = entry.owner

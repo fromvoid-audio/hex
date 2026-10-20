@@ -5,13 +5,27 @@ use hex_session::service::Request;
 
 impl EditorView {
     pub(super) fn set_loop_from_clip(&mut self) {
-        if self.selected_midi_clip_data().is_some() {
-            self.error = Some("looping a midi clip is not supported yet".into());
-            return;
+        match self.selected_midi_clip_data() {
+            Ok(Some(_)) => {
+                self.error = Some("looping a midi clip is not supported yet".into());
+                return;
+            }
+            Ok(None) => {}
+            Err(_) => {
+                self.error = Some("project read is unavailable · cannot set loop region".into());
+                return;
+            }
         }
-        let Some((_, _, start, duration, ..)) = self.selected_clip_data() else {
-            self.error = Some("select a clip to set the loop region".into());
-            return;
+        let (start, duration) = match self.selected_clip_data() {
+            Ok(Some((_, _, start, duration, ..))) => (start, duration),
+            Ok(None) => {
+                self.error = Some("select a clip to set the loop region".into());
+                return;
+            }
+            Err(_) => {
+                self.error = Some("project read is unavailable · cannot set loop region".into());
+                return;
+            }
         };
         let Some(end) = start.checked_add(duration) else {
             self.error = Some("loop region exceeds the timeline".into());

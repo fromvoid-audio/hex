@@ -737,7 +737,7 @@ impl EditorView {
             .truncate()
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(self.track_name_label(track, cx))
+            .child(self.track_name_label(track.id(), track.name(), cx))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
                     name: track_name.clone(),
@@ -1380,7 +1380,7 @@ impl EditorView {
                         content = content.child(super::waveform::timeline_waveform_view_cached(
                             waveform.clone(),
                             super::waveform_geometry::WaveformMapping::Clip {
-                                clip: clip.clone(),
+                                clip: super::waveform_geometry::ClipMapping::from(clip),
                                 timeline_origin: clip.start(),
                             },
                             visible_start,

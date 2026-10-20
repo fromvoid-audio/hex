@@ -3,8 +3,64 @@
 use super::viewport::Viewport;
 use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
-use hex_project::{BeatTime, Command, Meter, MeterPosition, Project, Tempo};
+#[cfg(test)]
+use hex_project::Project;
+use hex_project::{BeatTime, Command, Meter, MeterPoint, MeterPosition, Tempo};
 use hex_session::service::Request;
+
+/// Finite queries for the existing bounded musical-grid algorithms. Production
+/// borrows the actual retained model; direct Project fixtures exist only in tests.
+pub(super) trait MusicalProject {
+    fn sample_rate(&self) -> u32;
+    fn tempo_at(&self, beat: BeatTime) -> Tempo;
+    fn frame_to_beat(&self, frame: u64) -> Result<BeatTime, hex_project::Invalid>;
+    fn beat_to_frame(&self, beat: BeatTime) -> Result<u64, hex_project::Invalid>;
+    fn points(&self) -> &[MeterPoint];
+    fn position(&self, beat: BeatTime) -> Result<MeterPosition, hex_project::Invalid>;
+}
+
+impl MusicalProject for hex_session::snapshot_exports::SnapshotProjectRead<'_> {
+    fn sample_rate(&self) -> u32 {
+        (*self).sample_rate()
+    }
+    fn tempo_at(&self, beat: BeatTime) -> Tempo {
+        self.tempo().tempo_at(beat)
+    }
+    fn frame_to_beat(&self, frame: u64) -> Result<BeatTime, hex_project::Invalid> {
+        self.tempo().frame_to_beat(frame)
+    }
+    fn beat_to_frame(&self, beat: BeatTime) -> Result<u64, hex_project::Invalid> {
+        self.tempo().beat_to_frame(beat)
+    }
+    fn points(&self) -> &[MeterPoint] {
+        self.meter().points_slice()
+    }
+    fn position(&self, beat: BeatTime) -> Result<MeterPosition, hex_project::Invalid> {
+        self.meter().position(beat)
+    }
+}
+
+#[cfg(test)]
+impl MusicalProject for Project {
+    fn sample_rate(&self) -> u32 {
+        self.sample_rate()
+    }
+    fn tempo_at(&self, beat: BeatTime) -> Tempo {
+        self.tempo_map().tempo_at(beat)
+    }
+    fn frame_to_beat(&self, frame: u64) -> Result<BeatTime, hex_project::Invalid> {
+        self.tempo_map().frame_to_beat(frame)
+    }
+    fn beat_to_frame(&self, beat: BeatTime) -> Result<u64, hex_project::Invalid> {
+        self.tempo_map().beat_to_frame(beat)
+    }
+    fn points(&self) -> &[MeterPoint] {
+        self.meter_map().points()
+    }
+    fn position(&self, beat: BeatTime) -> Result<MeterPosition, hex_project::Invalid> {
+        self.meter_map().position(beat)
+    }
+}
 
 const MAX_RULER_TICKS: usize = 64;
 const MAX_METER_MAP_POINTS: usize = 1_024;
@@ -44,7 +100,7 @@ pub(super) struct GridBand {
 /// Band indices are anchored to each meter segment's musical origin, so panning
 /// changes the visible subset without moving the pattern.
 pub(super) fn adaptive_grid_bands(
-    project: &Project,
+    project: &(impl MusicalProject + ?Sized),
     viewport: Viewport,
     pixel_width: f32,
 ) -> Vec<GridBand> {
@@ -54,14 +110,14 @@ pub(super) fn adaptive_grid_bands(
     let Some(viewport_end) = viewport.end() else {
         return Vec::new();
     };
-    let tempo = project.tempo_map();
+    let tempo = project;
     let Ok(first_visible_beat) = tempo.frame_to_beat(viewport.start) else {
         return Vec::new();
     };
     let last_visible_beat = tempo
         .frame_to_beat(viewport_end.saturating_sub(1))
         .unwrap_or_else(|_| BeatTime::from_raw(u64::MAX));
-    let points = project.meter_map().points();
+    let points = project.points();
     let first_segment = points.partition_point(|point| point.beat() <= first_visible_beat);
     let first_segment = first_segment.saturating_sub(1);
     let mut bands = Vec::with_capacity(32);
@@ -144,7 +200,7 @@ fn bounded_band_indices(first: u64, last: u64, budget: usize) -> impl Iterator<I
 }
 
 pub(super) fn grid_lines(
-    project: &Project,
+    project: &(impl MusicalProject + ?Sized),
     viewport: Viewport,
     pixel_width: f32,
     grid: SnapGrid,
@@ -158,7 +214,7 @@ pub(super) fn grid_lines(
     let Some(viewport_end) = viewport.end() else {
         return Vec::new();
     };
-    let tempo = project.tempo_map();
+    let tempo = project;
     let Ok(start_beat) = tempo.frame_to_beat(viewport.start) else {
         return Vec::new();
     };
@@ -204,7 +260,7 @@ pub(super) fn grid_lines(
 }
 
 pub(super) fn ruler_ticks(
-    project: &Project,
+    project: &(impl MusicalProject + ?Sized),
     viewport: Viewport,
     pixel_width: f32,
 ) -> Vec<RulerTick> {
@@ -215,7 +271,7 @@ pub(super) fn ruler_ticks(
         return Vec::new();
     };
     let last_frame = viewport_end.saturating_sub(1);
-    let tempo = project.tempo_map();
+    let tempo = project;
     let Ok(start_beat) = tempo.frame_to_beat(viewport.start) else {
         return Vec::new();
     };
@@ -310,7 +366,7 @@ enum LandmarkDensity {
 }
 
 fn ruler_candidates(
-    project: &Project,
+    project: &(impl MusicalProject + ?Sized),
     viewport: Viewport,
     viewport_end: u64,
     start_beat: BeatTime,
@@ -318,8 +374,8 @@ fn ruler_candidates(
     target_count: usize,
     target_grid: LandmarkDensity,
 ) -> RulerCandidates {
-    let tempo = project.tempo_map();
-    let meters = project.meter_map();
+    let tempo = project;
+    let meters = project;
     let points = meters.points();
     let mut sections = Vec::with_capacity(points.len().min(MAX_METER_MAP_POINTS));
     let mut ticks = Vec::with_capacity(target_count.saturating_add(points.len()));
@@ -464,7 +520,7 @@ fn ruler_candidates(
 }
 
 fn adaptive_grid_step(
-    project: &Project,
+    project: &(impl MusicalProject + ?Sized),
     viewport: Viewport,
     beat: BeatTime,
     meter_beat_length: u64,
@@ -479,7 +535,7 @@ fn adaptive_grid_step(
     {
         return meter_beat_length.max(1);
     }
-    let tempo = project.tempo_map().tempo_at(beat).micro_bpm();
+    let tempo = project.tempo_at(beat).micro_bpm();
     let frames_per_quarter = f64::from(project.sample_rate()) * 60_000_000.0 / f64::from(tempo);
     let pixels_per_quarter = f64::from(pixel_width) * frames_per_quarter / viewport.length as f64;
     let mut step = meter_beat_length;
@@ -501,7 +557,7 @@ fn adaptive_grid_step(
 }
 
 fn snap_to_meter_landmark(
-    project: &Project,
+    project: &(impl MusicalProject + ?Sized),
     beat: BeatTime,
     viewport: Viewport,
     pixel_width: f32,
@@ -510,7 +566,7 @@ fn snap_to_meter_landmark(
     if grid == SnapGrid::Off {
         return Some(beat);
     }
-    let points = project.meter_map().points();
+    let points = project.points();
     let insertion = points.partition_point(|point| point.beat() <= beat);
     if insertion == 0 {
         return None;
@@ -563,7 +619,7 @@ fn snap_to_meter_landmark(
 /// Directional grid lookup shares the painted meter origins and adaptive density.
 /// Audio compares converted frames, so rounded landmarks must still be distinct.
 fn adjacent_landmark(
-    project: &Project,
+    project: &(impl MusicalProject + ?Sized),
     beat: BeatTime,
     frame: Option<u64>,
     viewport: Viewport,
@@ -575,7 +631,7 @@ fn adjacent_landmark(
         return None;
     }
     let mut best: Option<(u64, BeatTime)> = None;
-    let points = project.meter_map().points();
+    let points = project.points();
     for (index, point) in points.iter().take(MAX_METER_MAP_POINTS).enumerate() {
         let origin = point.beat().raw();
         let end = points.get(index + 1).map(|point| point.beat().raw());
@@ -612,7 +668,7 @@ fn adjacent_landmark(
             }
             let candidate = BeatTime::from_raw(raw);
             let value = if frame.is_some() {
-                let Ok(value) = project.tempo_map().beat_to_frame(candidate) else {
+                let Ok(value) = project.beat_to_frame(candidate) else {
                     continue;
                 };
                 value
@@ -713,7 +769,7 @@ impl SnapGrid {
 
     pub(super) fn adjacent_beat(
         self,
-        project: &Project,
+        project: &(impl MusicalProject + ?Sized),
         beat: BeatTime,
         viewport: Viewport,
         width: f32,
@@ -723,20 +779,20 @@ impl SnapGrid {
     }
     pub(super) fn adjacent_frame(
         self,
-        project: &Project,
+        project: &(impl MusicalProject + ?Sized),
         frame: u64,
         viewport: Viewport,
         width: f32,
         right: bool,
     ) -> Option<u64> {
-        let beat = project.tempo_map().frame_to_beat(frame).ok()?;
+        let beat = project.frame_to_beat(frame).ok()?;
         let next = adjacent_landmark(project, beat, Some(frame), viewport, width, self, right)?;
-        project.tempo_map().beat_to_frame(next).ok()
+        project.beat_to_frame(next).ok()
     }
 
     pub(super) fn snap_frame(
         self,
-        project: &Project,
+        project: &(impl MusicalProject + ?Sized),
         candidate_frame: u64,
         viewport: Viewport,
         pixel_width: f32,
@@ -744,14 +800,14 @@ impl SnapGrid {
         if self == Self::Off {
             return Some(candidate_frame);
         }
-        let beat = project.tempo_map().frame_to_beat(candidate_frame).ok()?;
+        let beat = project.frame_to_beat(candidate_frame).ok()?;
         let snapped = self.snap_beat(project, beat, viewport, pixel_width)?;
-        project.tempo_map().beat_to_frame(snapped).ok()
+        project.beat_to_frame(snapped).ok()
     }
 
     pub(super) fn snap_beat(
         self,
-        project: &Project,
+        project: &(impl MusicalProject + ?Sized),
         beat: BeatTime,
         viewport: Viewport,
         pixel_width: f32,
@@ -769,14 +825,26 @@ impl super::EditorView {
         self.status = format!("arranger · snap {}", self.snap_grid.label());
     }
 
-    fn cursor_beat(&self) -> Option<BeatTime> {
-        let state = self.state.as_ref()?;
-        let beat = state
-            .project
-            .tempo_map()
-            .frame_to_beat(self.cursor_position())
-            .ok()?;
-        beat.snap_to(BeatTime::ONE).ok()
+    fn cursor_musical_facts(&self) -> Option<(BeatTime, Tempo, Meter)> {
+        let frame = self.cursor_position();
+        self.state
+            .as_ref()?
+            .read_with(|snapshot| {
+                let project = snapshot.model();
+                let beat = project
+                    .tempo()
+                    .frame_to_beat(frame)
+                    .ok()?
+                    .snap_to(BeatTime::ONE)
+                    .ok()?;
+                Some((
+                    beat,
+                    project.tempo().tempo_at(beat),
+                    project.meter().meter_at(beat),
+                ))
+            })
+            .ok()
+            .flatten()
     }
 
     fn time_edit_admitted(&self) -> bool {
@@ -791,14 +859,10 @@ impl super::EditorView {
             self.error = Some("tempo edit waits for pending project work".into());
             return;
         }
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
-        let Some(beat) = self.cursor_beat() else {
+        let Some((beat, current, _)) = self.cursor_musical_facts() else {
             self.error = Some("tempo point unavailable at this cursor position".into());
             return;
         };
-        let current = state.project.tempo_map().tempo_at(beat);
         let adjusted = i64::from(current.micro_bpm()) + i64::from(direction) * 1_000_000;
         let Ok(micro_bpm) = u32::try_from(adjusted) else {
             self.error = Some("tempo must stay within 1–1000 bpm".into());
@@ -816,14 +880,10 @@ impl super::EditorView {
             self.error = Some("meter edit waits for pending project work".into());
             return;
         }
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
-        let Some(beat) = self.cursor_beat() else {
+        let Some((beat, _, current)) = self.cursor_musical_facts() else {
             self.error = Some("meter point unavailable at this cursor position".into());
             return;
         };
-        let current = state.project.meter_map().meter_at(beat);
         let signature = match (current.numerator(), current.denominator()) {
             (4, 4) => (3, 4),
             (3, 4) => (6, 8),
@@ -838,26 +898,23 @@ impl super::EditorView {
     }
 
     pub(super) fn time_controls(&self, cx: &mut Context<Self>) -> Div {
-        let Some(state) = self.state.as_ref() else {
+        if self.state.is_none() {
             return div().w(px(self.track_header_width())).flex_shrink_0();
-        };
-        let beat = self.cursor_beat();
-        let tempo_label = beat.map_or_else(
+        }
+        let facts = self.cursor_musical_facts();
+        let tempo_label = facts.map_or_else(
             || "—".into(),
-            |beat| {
-                let micro = state.project.tempo_map().tempo_at(beat).micro_bpm();
+            |(_, tempo, _)| {
+                let micro = tempo.micro_bpm();
                 let tenths = (micro + 50_000) / 100_000;
                 format!("{}.{:01}", tenths / 10, tenths % 10)
             },
         );
-        let meter_label = beat.map_or_else(
+        let meter_label = facts.map_or_else(
             || "—".into(),
-            |beat| {
-                let meter = state.project.meter_map().meter_at(beat);
-                format!("{}/{}", meter.numerator(), meter.denominator())
-            },
+            |(_, _, meter)| format!("{}/{}", meter.numerator(), meter.denominator()),
         );
-        let enabled = self.time_edit_admitted() && beat.is_some();
+        let enabled = self.time_edit_admitted() && facts.is_some();
         div()
             .w(px(self.track_header_width()))
             .h_full()

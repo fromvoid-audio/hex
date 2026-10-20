@@ -1,9 +1,11 @@
-use super::{EditorView, ViewState, device_panel};
+use super::{EditorView, device_panel};
 use crate::context_menu::{MenuItem, PopupMenu};
 use gpui::{Context, Div, Pixels, Point, Window};
 use hex_lattice_contract::{ParameterId, ParameterValue};
 use hex_project::{ClipFlavor, ClipId, Command, DeviceId, ElementColor, TrackId};
 use hex_session::service::Request;
+use hex_session::snapshot_exports::SnapshotProjectRead;
+use hex_session::snapshot_exports::ui_consumers::SnapshotSessionCellContentRead;
 
 #[derive(Clone)]
 pub(super) struct InsertTrackAction {
@@ -44,11 +46,24 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.cancel_time_selection_gesture();
         let Some(state) = &self.state else {
             return;
         };
-        let before_track = insertion_anchor(state, after_track);
+        let Ok(before_track) =
+            state.read_with(|snapshot| insertion_anchor(snapshot.model(), after_track))
+        else {
+            return;
+        };
+        self.open_track_context_menu_at(position, before_track, window, cx);
+    }
+    fn open_track_context_menu_at(
+        &mut self,
+        position: Point<Pixels>,
+        before_track: Option<TrackId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_time_selection_gesture();
         let previous_focus = self
             .context_menu
             .take()
@@ -81,18 +96,22 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let Ok(Some((color, before_track))) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            Some((
+                project.track(track)?.color(),
+                insertion_anchor(project, Some(track)),
+            ))
+        }) else {
+            return;
+        };
         if !device_panel::finalize_controls(self, cx) {
             return;
         }
-        let Some(color) = self
-            .state
-            .as_ref()
-            .and_then(|s| s.project.track(track))
-            .map(|t| t.color())
-        else {
-            return;
-        };
-        self.open_track_context_menu(position, Some(track), window, cx);
+        self.open_track_context_menu_at(position, before_track, window, cx);
         if let Some(menu) = &mut self.context_menu {
             menu.items
                 .extend(ElementColor::ALL.into_iter().map(|choice| MenuItem {
@@ -116,18 +135,22 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Ok(Some((flavor, color))) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            if !clip_belongs_to_track(project, track, clip) {
+                return None;
+            }
+            Some((project.clip_flavor(clip)?, project.track(track)?.color()))
+        }) else {
+            return;
+        };
         if !device_panel::finalize_controls(self, cx) {
             return;
         }
         self.cancel_time_selection_gesture();
-        let Some(flavor) = self
-            .state
-            .as_ref()
-            .filter(|s| clip_belongs_to_track(&s.project, track, clip))
-            .and_then(|s| s.project.clip_flavor(clip))
-        else {
-            return;
-        };
         let previous_focus = self
             .context_menu
             .take()
@@ -147,11 +170,7 @@ impl EditorView {
                 } else {
                     "use muted flavor"
                 },
-                swatch: self
-                    .state
-                    .as_ref()
-                    .and_then(|s| s.project.track(track))
-                    .map(|t| crate::theme::clip_fill(t.color(), target, false)),
+                swatch: Some(crate::theme::clip_fill(color, target, false)),
                 checked: false,
                 action: EditorContextAction::ClipFlavor {
                     generation: self.project_generation,
@@ -224,6 +243,37 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let Ok((valid, track_count)) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let valid = match &action {
+                EditorContextAction::TrackColor {
+                    generation, track, ..
+                } => *generation == self.project_generation && project.track(*track).is_some(),
+                EditorContextAction::ClipFlavor {
+                    generation,
+                    track,
+                    clip,
+                    ..
+                } => {
+                    *generation == self.project_generation
+                        && clip_belongs_to_track(project, *track, *clip)
+                }
+                EditorContextAction::InsertTrack(action) => action
+                    .before_track
+                    .is_none_or(|track| project.track(track).is_some()),
+                EditorContextAction::UtilityMode(action) => {
+                    action.generation == self.project_generation
+                        && self.device_panel.owner == Some(action.owner)
+                        && utility_device_exists(project, action.device)
+                }
+            };
+            (valid, project.tracks().len())
+        }) else {
+            return;
+        };
         self.dismiss_context_menu(window, cx);
         match action {
             EditorContextAction::TrackColor {
@@ -231,28 +281,18 @@ impl EditorView {
                 track,
                 color,
             } => {
-                if generation == self.project_generation
-                    && self
-                        .state
-                        .as_ref()
-                        .is_some_and(|s| s.project.track(track).is_some())
-                {
+                if generation == self.project_generation && valid {
                     self.enqueue(Request::Edit(Command::SetTrackColor { track, color }));
                     cx.notify();
                 }
             }
             EditorContextAction::ClipFlavor {
                 generation,
-                track,
+                track: _,
                 clip,
                 flavor,
             } => {
-                if generation == self.project_generation
-                    && self
-                        .state
-                        .as_ref()
-                        .is_some_and(|s| clip_belongs_to_track(&s.project, track, clip))
-                {
+                if generation == self.project_generation && valid {
                     self.enqueue(Request::Edit(Command::SetClipFlavor { clip, flavor }));
                     cx.notify();
                 }
@@ -261,18 +301,12 @@ impl EditorView {
                 if action.generation != self.project_generation {
                     return;
                 }
-                let Some(state) = &self.state else {
-                    return;
-                };
-                if action
-                    .before_track
-                    .is_some_and(|track| state.project.track(track).is_none())
-                {
+                if !valid {
                     self.error = Some("track insertion anchor no longer exists".into());
                     cx.notify();
                     return;
                 }
-                let name = format!("track {}", state.project.tracks().len() + 1);
+                let name = format!("track {}", track_count + 1);
                 self.enqueue(Request::Edit(Command::InsertTrack {
                     name,
                     before_track: action.before_track,
@@ -285,11 +319,7 @@ impl EditorView {
                 {
                     return;
                 }
-                let available = self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| utility_device_exists(&state.project, action.device));
-                if !available {
+                if !valid {
                     return;
                 }
                 let key = device_panel::ParameterKey {
@@ -330,42 +360,40 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
-        if self.context_menu.as_ref().is_some_and(|menu| {
-            menu.items.iter().any(|item| match &item.action {
-                EditorContextAction::InsertTrack(_) => false,
-                EditorContextAction::TrackColor {
-                    generation, track, ..
-                } => {
-                    *generation != self.project_generation
-                        || self
-                            .state
-                            .as_ref()
-                            .is_none_or(|s| s.project.track(*track).is_none())
-                }
-                EditorContextAction::ClipFlavor {
-                    generation,
-                    track,
-                    clip,
-                    ..
-                } => {
-                    *generation != self.project_generation
-                        || !self
-                            .state
-                            .as_ref()
-                            .is_some_and(|s| clip_belongs_to_track(&s.project, *track, *clip))
-                }
-                EditorContextAction::UtilityMode(action) => {
-                    let owner_matches = self.device_panel.owner == Some(action.owner);
-                    let device_exists = self
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| utility_device_exists(&state.project, action.device));
-                    !owner_matches || !device_exists || action.generation != self.project_generation
-                }
-            })
-        }) {
-            self.dismiss_context_menu(window, cx);
-            return None;
+        if let Some(menu) = self.context_menu.as_ref() {
+            let invalid = match self.state.as_ref() {
+                Some(state) => state.read_with(|snapshot| {
+                    let project = snapshot.model();
+                    menu.items.iter().any(|item| match &item.action {
+                        EditorContextAction::InsertTrack(_) => false,
+                        EditorContextAction::TrackColor {
+                            generation, track, ..
+                        } => {
+                            *generation != self.project_generation
+                                || project.track(*track).is_none()
+                        }
+                        EditorContextAction::ClipFlavor {
+                            generation,
+                            track,
+                            clip,
+                            ..
+                        } => {
+                            *generation != self.project_generation
+                                || !clip_belongs_to_track(project, *track, *clip)
+                        }
+                        EditorContextAction::UtilityMode(action) => {
+                            self.device_panel.owner != Some(action.owner)
+                                || !utility_device_exists(project, action.device)
+                                || action.generation != self.project_generation
+                        }
+                    })
+                }),
+                None => Ok(true),
+            };
+            if matches!(invalid, Ok(true)) {
+                self.dismiss_context_menu(window, cx);
+                return None;
+            }
         }
         self.context_menu.as_ref().map(|menu| {
             crate::context_menu::popup(
@@ -380,46 +408,30 @@ impl EditorView {
     }
 }
 
-fn clip_belongs_to_track(project: &hex_project::Project, track: TrackId, clip: ClipId) -> bool {
-    project.track(track).is_some_and(|t| {
-        t.clips().iter().any(|c| c.id() == clip) || t.midi_clips().iter().any(|c| c.id() == clip)
-    }) || project.session_cells().iter().any(|cell| {
+fn clip_belongs_to_track(project: SnapshotProjectRead<'_>, track: TrackId, clip: ClipId) -> bool {
+    project.track(track).is_some_and(|track| {
+        track.clips().any(|item| item.id() == clip)
+            || track.midi_clips().any(|item| item.id() == clip)
+    }) || project.session_cells().any(|cell| {
         cell.track() == track
             && match cell.content() {
-                hex_project::SessionCellContent::Audio(c) => c.id() == clip,
-                hex_project::SessionCellContent::Midi(c) => c.id() == clip,
+                SnapshotSessionCellContentRead::Audio(item) => item.id() == clip,
+                SnapshotSessionCellContentRead::Midi(item) => item.id() == clip,
                 _ => false,
             }
     })
 }
-
-fn utility_device_exists(project: &hex_project::Project, id: DeviceId) -> bool {
-    project.tracks().iter().any(|track| {
-        track.ordered_device_chain().any(|node| {
-            let device = match node {
-                hex_project::TrackDeviceRef::Instrument(device)
-                | hex_project::TrackDeviceRef::Effect(device) => device,
-            };
-            device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
-        })
-    }) || project.return_tracks().iter().any(|track| {
-        track.devices().iter().any(|device| {
-            device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
-        })
-    })
+fn utility_device_exists(project: SnapshotProjectRead<'_>, id: DeviceId) -> bool {
+    project
+        .device(id)
+        .is_some_and(|device| device.type_id().as_str() == Ok("hex.utility"))
 }
-
-fn insertion_anchor(state: &ViewState, after_track: Option<TrackId>) -> Option<TrackId> {
-    after_track
-        .and_then(|track| {
-            state
-                .project
-                .tracks()
-                .iter()
-                .position(|candidate| candidate.id() == track)
-        })
-        .and_then(|index| state.project.tracks().get(index + 1))
-        .map(|track| track.id())
+fn insertion_anchor(
+    project: SnapshotProjectRead<'_>,
+    after_track: Option<TrackId>,
+) -> Option<TrackId> {
+    let index = after_track.and_then(|id| project.tracks().position(|track| track.id() == id))?;
+    project.tracks().nth(index + 1).map(|track| track.id())
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]

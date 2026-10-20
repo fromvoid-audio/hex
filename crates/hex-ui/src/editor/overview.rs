@@ -1,11 +1,13 @@
 //! Compact, revision-cached Arrangement overview raster and viewport navigation.
-use super::{EditorView, ViewState, viewport::Viewport};
+use super::{EditorView, viewport::Viewport};
 use crate::theme;
 use gpui::{
     Bounds, Div, MouseButton, MouseDownEvent, Window, canvas, div, fill, point, prelude::*, px,
     rgb, size,
 };
+#[cfg(test)]
 use hex_project::Project;
+use hex_session::snapshot_exports::{SnapshotProjectRead, SnapshotRead};
 use std::{cell::RefCell, rc::Rc};
 
 const OVERVIEW_COLUMNS: usize = 128;
@@ -27,7 +29,23 @@ pub(super) struct OverviewCache {
 }
 
 impl OverviewCache {
-    pub(super) fn for_state(generation: u64, state: &ViewState) -> Self {
+    pub(super) fn for_read(generation: u64, snapshot: SnapshotRead<'_>) -> Self {
+        Self {
+            generation,
+            revision: snapshot.revision(),
+            horizon: snapshot.timeline_frames().max(1),
+            track_count: snapshot.model().tracks().len(),
+            cells: overview_cells_read(snapshot.model(), snapshot.timeline_frames().max(1)),
+        }
+    }
+    fn matches_facts(&self, generation: u64, revision: u64, horizon: u64, tracks: usize) -> bool {
+        self.generation == generation
+            && self.revision == revision
+            && self.horizon == horizon.max(1)
+            && self.track_count == tracks
+    }
+    #[cfg(test)]
+    fn for_state(generation: u64, state: &hex_session::service::ViewState) -> Self {
         Self {
             generation,
             revision: state.revision,
@@ -36,12 +54,14 @@ impl OverviewCache {
             cells: overview_cells(&state.project, state.timeline_frames.max(1)),
         }
     }
-
-    pub(super) fn matches(&self, generation: u64, state: &ViewState) -> bool {
-        self.generation == generation
-            && self.revision == state.revision
-            && self.horizon == state.timeline_frames.max(1)
-            && self.track_count == state.project.tracks().len()
+    #[cfg(test)]
+    fn matches(&self, generation: u64, state: &hex_session::service::ViewState) -> bool {
+        self.matches_facts(
+            generation,
+            state.revision,
+            state.timeline_frames,
+            state.project.tracks().len(),
+        )
     }
 
     pub(super) fn horizon(&self) -> u64 {
@@ -56,39 +76,87 @@ impl OverviewCache {
     }
 }
 
-fn overview_cells(project: &Project, horizon: u64) -> Vec<u8> {
+fn raster(
+    track_count: usize,
+    horizon: u64,
+    intervals: impl Iterator<Item = (usize, u64, u64, u8)>,
+) -> Vec<u8> {
     let mut cells = vec![0; OVERVIEW_CELLS];
-    let track_count = project.tracks().len();
     if track_count == 0 || horizon == 0 {
         return cells;
     }
-    for (track_index, track) in project.tracks().iter().enumerate() {
+    for (track_index, start, end, kind) in intervals {
         let row = track_index
             .saturating_mul(OVERVIEW_ROWS)
             .checked_div(track_count)
             .unwrap_or(0)
             .min(OVERVIEW_ROWS - 1);
-        for clip in track.clips() {
-            if let Some(end) = clip.start().checked_add(clip.duration()) {
-                mark_interval(&mut cells, row, horizon, clip.start(), end, AUDIO_CELL);
-            }
-        }
-        for clip in track.midi_clips() {
-            let Some(end_beat) = clip.start().raw().checked_add(clip.length().raw()) else {
-                continue;
-            };
-            let (Ok(start), Ok(end)) = (
-                project.tempo_map().beat_to_frame(clip.start()),
-                project
-                    .tempo_map()
-                    .beat_to_frame(hex_project::BeatTime::from_raw(end_beat)),
-            ) else {
-                continue;
-            };
-            mark_interval(&mut cells, row, horizon, start, end, MIDI_CELL);
-        }
+        mark_interval(&mut cells, row, horizon, start, end, kind);
     }
     cells
+}
+fn overview_cells_read(project: SnapshotProjectRead<'_>, horizon: u64) -> Vec<u8> {
+    raster(
+        project.tracks().len(),
+        horizon,
+        project.tracks().enumerate().flat_map(|(index, track)| {
+            track
+                .clips()
+                .filter_map(move |clip| {
+                    clip.start()
+                        .checked_add(clip.duration())
+                        .map(|end| (index, clip.start(), end, AUDIO_CELL))
+                })
+                .chain(track.midi_clips().filter_map(move |clip| {
+                    let end = clip
+                        .start()
+                        .raw()
+                        .checked_add(clip.arrangement_length().raw())?;
+                    let tempo = project.tempo();
+                    Some((
+                        index,
+                        tempo.beat_to_frame(clip.start()).ok()?,
+                        tempo
+                            .beat_to_frame(hex_project::BeatTime::from_raw(end))
+                            .ok()?,
+                        MIDI_CELL,
+                    ))
+                }))
+        }),
+    )
+}
+#[cfg(test)]
+fn overview_cells(project: &Project, horizon: u64) -> Vec<u8> {
+    raster(
+        project.tracks().len(),
+        horizon,
+        project
+            .tracks()
+            .iter()
+            .enumerate()
+            .flat_map(|(index, track)| {
+                track
+                    .clips()
+                    .iter()
+                    .filter_map(move |clip| {
+                        clip.start()
+                            .checked_add(clip.duration())
+                            .map(|end| (index, clip.start(), end, AUDIO_CELL))
+                    })
+                    .chain(track.midi_clips().iter().filter_map(move |clip| {
+                        let end = clip.start().raw().checked_add(clip.length().raw())?;
+                        let tempo = project.tempo_map();
+                        Some((
+                            index,
+                            tempo.beat_to_frame(clip.start()).ok()?,
+                            tempo
+                                .beat_to_frame(hex_project::BeatTime::from_raw(end))
+                                .ok()?,
+                            MIDI_CELL,
+                        ))
+                    }))
+            }),
+    )
 }
 
 fn mark_interval(cells: &mut [u8], row: usize, horizon: u64, start: u64, end: u64, kind: u8) {
@@ -240,11 +308,17 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        if !fraction.is_finite() || state.timeline_frames == 0 {
+        let Ok((horizon, current)) = state.read_with(|snapshot| {
+            (
+                snapshot.timeline_frames(),
+                self.visible_viewport(snapshot, snapshot.timeline_frames()),
+            )
+        }) else {
+            return;
+        };
+        if !fraction.is_finite() || horizon == 0 {
             return;
         }
-        let horizon = state.timeline_frames;
-        let current = self.visible_viewport(horizon);
         let length = current.length.max(1).min(horizon);
         let center = (f64::from(fraction.clamp(0.0, 1.0)) * horizon as f64)
             .round()
@@ -261,18 +335,50 @@ impl EditorView {
 pub(super) fn cached(
     cache: &RefCell<Option<Rc<OverviewCache>>>,
     generation: u64,
-    state: &ViewState,
+    snapshot: SnapshotRead<'_>,
+) -> Rc<OverviewCache> {
+    cached_facts(
+        cache,
+        generation,
+        snapshot.revision(),
+        snapshot.timeline_frames(),
+        snapshot.model().tracks().len(),
+        || OverviewCache::for_read(generation, snapshot),
+    )
+}
+fn cached_facts(
+    cache: &RefCell<Option<Rc<OverviewCache>>>,
+    generation: u64,
+    revision: u64,
+    horizon: u64,
+    tracks: usize,
+    build: impl FnOnce() -> OverviewCache,
 ) -> Rc<OverviewCache> {
     let mut cache = cache.borrow_mut();
     if let Some(current) = cache
         .as_ref()
-        .filter(|current| current.matches(generation, state))
+        .filter(|current| current.matches_facts(generation, revision, horizon, tracks))
     {
         return Rc::clone(current);
     }
-    let next = Rc::new(OverviewCache::for_state(generation, state));
+    let next = Rc::new(build());
     *cache = Some(Rc::clone(&next));
     next
+}
+#[cfg(test)]
+fn cached_state(
+    cache: &RefCell<Option<Rc<OverviewCache>>>,
+    generation: u64,
+    state: &hex_session::service::ViewState,
+) -> Rc<OverviewCache> {
+    cached_facts(
+        cache,
+        generation,
+        state.revision,
+        state.timeline_frames,
+        state.project.tracks().len(),
+        || OverviewCache::for_state(generation, state),
+    )
 }
 
 #[cfg(test)]
@@ -387,14 +493,14 @@ mod tests {
         );
         // Viewport state is deliberately not part of the cache key.
         let unchanged = view_state(project.clone(), 7, 192_000);
-        let first_read = super::cached(&cache, 3, &first);
-        let after_pan = super::cached(&cache, 3, &unchanged);
+        let first_read = super::cached_state(&cache, 3, &first);
+        let after_pan = super::cached_state(&cache, 3, &unchanged);
         assert!(Rc::ptr_eq(&first_read, &after_pan));
         let changed_revision = view_state(project.clone(), 8, 192_000);
-        let next_revision = super::cached(&cache, 3, &changed_revision);
+        let next_revision = super::cached_state(&cache, 3, &changed_revision);
         assert!(!Rc::ptr_eq(&first_read, &next_revision));
         let changed_generation = view_state(project, 7, 192_000);
-        let next_generation = super::cached(&cache, 4, &changed_generation);
+        let next_generation = super::cached_state(&cache, 4, &changed_generation);
         assert!(!Rc::ptr_eq(&next_revision, &next_generation));
     }
 }

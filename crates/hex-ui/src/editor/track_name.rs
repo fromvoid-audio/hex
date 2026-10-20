@@ -5,7 +5,7 @@ use gpui::{
     App, AppContext, Context, Entity, FocusHandle, KeyBinding, Subscription, Window, div,
     prelude::*,
 };
-use hex_project::{Command, Track, TrackId};
+use hex_project::{Command, TrackId};
 use hex_session::service::Request;
 use std::collections::BTreeMap;
 
@@ -70,10 +70,37 @@ impl EditorView {
             .focus(window);
     }
     pub(super) fn reconcile_track_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let current = self
-            .state
+        // Preflight one read before changing drafts, scope or focus. Pressure
+        // leaves this exact edit pending; it does not mean the track vanished.
+        let facts = match self.state.as_ref() {
+            Some(state) => match state.read_with(|snapshot| {
+                (
+                    snapshot.revision(),
+                    (self.track_name.scope != Some((self.project_generation, snapshot.revision())))
+                        .then(|| {
+                            snapshot
+                                .model()
+                                .tracks()
+                                .map(|track| track.id())
+                                .collect::<Vec<_>>()
+                        }),
+                    self.track_name.edit.as_ref().is_none_or(|edit| {
+                        snapshot.revision() == edit.revision
+                            && snapshot
+                                .model()
+                                .track(edit.track)
+                                .is_some_and(|track| track.name() == edit.original)
+                    }),
+                )
+            }) {
+                Ok(facts) => Some(facts),
+                Err(_) => return,
+            },
+            None => None,
+        };
+        let current = facts
             .as_ref()
-            .map(|state| (self.project_generation, state.revision));
+            .map(|(revision, _, _)| (self.project_generation, *revision));
         if self.track_name.scope != current {
             let old_focus = self
                 .track_name
@@ -87,10 +114,8 @@ impl EditorView {
                 .is_some_and(|old| current.is_none_or(|new| old.0 != new.0));
             if generation_changed {
                 self.track_name.focuses.clear();
-            } else if let Some(state) = &self.state {
-                self.track_name
-                    .focuses
-                    .retain(|id, _| state.project.track(*id).is_some());
+            } else if let Some((_, Some(alive), _)) = &facts {
+                self.track_name.focuses.retain(|id, _| alive.contains(id));
             }
             if old_focus.is_some_and(|id| !self.track_name.focuses.contains_key(&id)) {
                 self.focus.focus(window);
@@ -100,13 +125,7 @@ impl EditorView {
         if let Some(edit) = &self.track_name.edit
             && (self.mode != super::EditorMode::Arrangement
                 || edit.generation != self.project_generation
-                || !self.state.as_ref().is_some_and(|state| {
-                    state.revision == edit.revision
-                        && state
-                            .project
-                            .track(edit.track)
-                            .is_some_and(|t| t.name() == edit.original)
-                }))
+                || !facts.as_ref().is_some_and(|(_, _, current)| *current))
         {
             let focused = edit.input.read(cx).focus_handle().is_focused(window);
             self.track_name.edit = None;
@@ -136,14 +155,19 @@ impl EditorView {
         else {
             return;
         };
-        let Some(state) = &self.state else {
+        let Some((original, revision)) = self.state.as_ref().and_then(|state| {
+            state
+                .read_with(|snapshot| {
+                    snapshot
+                        .model()
+                        .track(track)
+                        .map(|source| (source.name().to_owned(), snapshot.revision()))
+                })
+                .ok()
+                .flatten()
+        }) else {
             return;
         };
-        let Some(source) = state.project.track(track) else {
-            return;
-        };
-        let original = source.name().to_owned();
-        let revision = state.revision;
         // This existing name-input mode preserves case/Unicode and selects all.
         let input = cx.new(|cx| BrowserSearch::for_clip_name(original.clone(), cx));
         let focus = input.read(cx).focus_handle().clone();
@@ -160,19 +184,33 @@ impl EditorView {
         cx.notify();
     }
     fn commit_track_name(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.track_name.edit.as_ref() else {
+            return;
+        };
+        let source_current = match self.state.as_ref() {
+            Some(state) => match state.read_with(|snapshot| {
+                snapshot.revision() == edit.revision
+                    && snapshot
+                        .model()
+                        .track(edit.track)
+                        .is_some_and(|track| track.name() == edit.original)
+            }) {
+                Ok(current) => current,
+                Err(_) => {
+                    self.error =
+                        Some("project read is unavailable · track name remains pending".into());
+                    return;
+                }
+            },
+            None => false,
+        };
         let Some(edit) = self.track_name.edit.take() else {
             return;
         };
         let name = edit.input.read(cx).content.clone();
         if edit.generation == self.project_generation
             && !self.edit_pending()
-            && self.state.as_ref().is_some_and(|state| {
-                state.revision == edit.revision
-                    && state
-                        .project
-                        .track(edit.track)
-                        .is_some_and(|t| t.name() == edit.original)
-            })
+            && source_current
             && name != edit.original
         {
             if name.trim().is_empty() {
@@ -195,6 +233,9 @@ impl EditorView {
         let track = self.track_name.edit.as_ref().map(|edit| edit.track);
         if commit {
             self.commit_track_name(cx);
+            if self.track_name.edit.is_some() {
+                return;
+            }
         } else {
             self.track_name.edit = None;
         }
@@ -219,10 +260,10 @@ impl EditorView {
 
     pub(super) fn track_name_label(
         &mut self,
-        track: &Track,
+        id: TrackId,
+        name: &str,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
-        let id = track.id();
         let click_focus = self.track_header_focus(id, cx);
         let content = if let Some(edit) = &self.track_name.edit
             && edit.track == id
@@ -231,7 +272,7 @@ impl EditorView {
                 .debug_selector(|| "track-name-input".into())
                 .child(edit.input.clone())
         } else {
-            div().child(theme::text(track.name()))
+            div().child(theme::text(name))
         };
         div()
             .id(("track-name-focus", id.value()))

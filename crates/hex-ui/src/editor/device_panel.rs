@@ -12,6 +12,8 @@ use hex_lattice_contract::{
 use hex_project::{Command, DeviceId, TrackId};
 use hex_session::device_gesture::GestureTarget;
 use hex_session::service::{NativeDeviceDropSource, Request, ViewState};
+use hex_session::snapshot_exports::SnapshotProjectRead;
+use hex_session::snapshot_exports::ui_consumers::SnapshotTrackDeviceRead;
 use hex_widgets::{
     ControlStyle, DialLayout, DiscreteControlAppearance, NumericControl, NumericControlAppearance,
     NumericControlConfig, NumericControlEvent, NumericControlKind, NumericEventPhase, NumericScale,
@@ -1577,25 +1579,51 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<EditorView>,
     ) {
-        cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+        let Ok(current_drag) = self.native_device_drag_current(drag) else {
+            return;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Ok((target_current, owns_device, unchanged)) = state.read_with(|snapshot| {
+            let owner = snapshot
+                .model()
+                .returns()
+                .find(|owner| owner.id() == return_track);
+            let target_current = snapshot.revision() == drag.revision
+                && owner.is_some_and(|owner| {
+                    before.is_none_or(|anchor| owner.devices().any(|device| device.id() == anchor))
+                });
+            let position = match drag.source {
+                drag::NativeDeviceDragSource::Existing { device, .. } => owner.and_then(|owner| {
+                    owner
+                        .devices()
+                        .position(|candidate| candidate.id() == device)
+                }),
+                _ => None,
+            };
+            let unchanged = match drag.source {
+                drag::NativeDeviceDragSource::Existing { device, .. } => {
+                    before == Some(device)
+                        || position.is_some_and(|index| {
+                            owner
+                                .and_then(|owner| owner.devices().nth(index + 1))
+                                .map(|next| next.id())
+                                == before
+                        })
+                }
+                _ => false,
+            };
+            (target_current, position.is_some(), unchanged)
+        }) else {
+            return;
+        };
         let owns_drag = self
             .active_native_device_drag
             .as_ref()
             .is_some_and(|active| std::rc::Rc::ptr_eq(&active.destination, &drag.destination));
-        let current = owns_drag
-            && self.native_device_drag_is_current(drag)
-            && self.state.as_ref().is_some_and(|state| {
-                state.revision == drag.revision
-                    && state.project.return_tracks().iter().any(|candidate| {
-                        candidate.id() == return_track
-                            && before.is_none_or(|anchor| {
-                                candidate
-                                    .devices()
-                                    .iter()
-                                    .any(|device| device.id() == anchor)
-                            })
-                    })
-            });
+        let current = owns_drag && current_drag && target_current;
+        cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
         if !current {
             self.error = Some("device drag canceled · project or source changed".into());
             self.clear_native_device_drag(drag);
@@ -1639,34 +1667,7 @@ impl EditorView {
                 ..
             } => Err("return tracks accept effects only".to_owned()),
             drag::NativeDeviceDragSource::Existing { device, .. } => {
-                let owns_device = self.state.as_ref().is_some_and(|state| {
-                    state.project.return_tracks().iter().any(|candidate| {
-                        candidate.id() == return_track
-                            && candidate
-                                .devices()
-                                .iter()
-                                .any(|effect| effect.id() == device)
-                    })
-                });
                 if owns_device {
-                    let unchanged = self.state.as_ref().is_some_and(|state| {
-                        state
-                            .project
-                            .return_tracks()
-                            .iter()
-                            .find(|owner| owner.id() == return_track)
-                            .is_some_and(|owner| {
-                                let position = owner
-                                    .devices()
-                                    .iter()
-                                    .position(|candidate| candidate.id() == device);
-                                before == Some(device)
-                                    || position.is_some_and(|index| {
-                                        owner.devices().get(index + 1).map(|next| next.id())
-                                            == before
-                                    })
-                            })
-                    });
                     if unchanged {
                         self.status = "device order unchanged".into();
                         self.clear_native_device_drag(drag);
@@ -1703,7 +1704,87 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<EditorView>,
     ) {
-        cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
+        let Ok(current_drag) = self.native_device_drag_current(drag) else {
+            return;
+        };
+
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Ok(target) = state.read_with(
+            |snapshot| -> Result<(TrackId, Option<DeviceId>, bool), &'static str> {
+                let project = snapshot.model();
+                if snapshot.revision() != drag.revision
+                    || project.track(drop_target.track).is_none()
+                {
+                    return Err("device drag canceled · project or source changed");
+                }
+                let track = self
+                    .selected_track
+                    .ok_or("select a track before dropping a device")?;
+                let target_track = project
+                    .track(track)
+                    .ok_or("device drop target is no longer available")?;
+                let node_id = |node| match node {
+                    SnapshotTrackDeviceRead::Instrument(device)
+                    | SnapshotTrackDeviceRead::Effect(device) => device.id(),
+                };
+                if let Some(anchor) = drop_target.before
+                    && !target_track
+                        .ordered_device_chain()
+                        .any(|node| node_id(node) == anchor)
+                {
+                    return Err("device drop target changed; drag again");
+                }
+                let before = match drag.source {
+                    drag::NativeDeviceDragSource::Browser {
+                        class: NativeDeviceClass::Instrument,
+                        ..
+                    } if drop_target.replace.is_none() => {
+                        target_track.ordered_device_chain().next().map(node_id)
+                    }
+                    _ => drop_target.before,
+                };
+                if matches!(
+                    drag.source,
+                    drag::NativeDeviceDragSource::Browser {
+                        class: NativeDeviceClass::Instrument,
+                        ..
+                    }
+                ) && target_track.instrument().is_some()
+                    && drop_target.replace.is_none()
+                {
+                    return Err("instrument slot is already occupied");
+                }
+                if let Some(replacement) = drop_target.replace {
+                    let source_is_browser_instrument = matches!(
+                        drag.source,
+                        drag::NativeDeviceDragSource::Browser {
+                            class: NativeDeviceClass::Instrument,
+                            ..
+                        }
+                    );
+                    let target_is_current_instrument = target_track
+                        .instrument()
+                        .is_some_and(|instrument| instrument.id() == replacement);
+                    if !source_is_browser_instrument
+                        || !target_is_current_instrument
+                        || drop_target.before.is_some()
+                    {
+                        return Err("instrument replacement target changed; drag again");
+                    }
+                }
+                let noop = match drag.source {
+                    drag::NativeDeviceDragSource::Existing { device, .. } => {
+                        device_move_would_be_noop(project, device, track, before)
+                    }
+                    _ => false,
+                };
+                Ok((track, before, noop))
+            },
+        ) else {
+            return;
+        };
         let owns_drag = self
             .active_native_device_drag
             .as_ref()
@@ -1713,7 +1794,8 @@ impl EditorView {
                     && active.source == drag.source
                     && std::rc::Rc::ptr_eq(&active.destination, &drag.destination)
             });
-        let stale = !owns_drag || !self.native_device_drag_is_current(drag);
+        let stale = !owns_drag || !current_drag;
+        cx.set_active_drag_cursor_style(gpui::CursorStyle::Arrow, window);
         if stale {
             self.error = Some("device drag canceled · project or source changed".into());
             self.device_panel.message =
@@ -1746,102 +1828,17 @@ impl EditorView {
             return;
         }
 
-        let still_current = self.native_device_drag_is_current(drag)
-            && self.state.as_ref().is_some_and(|state| {
-                state.revision == drag.revision && state.project.track(drop_target.track).is_some()
-            });
-        if !still_current {
-            self.error = Some("device drag canceled · project or source changed".into());
-            self.device_panel.message =
-                Some("device drag canceled · project or source changed".into());
-            self.clear_native_device_drag(drag);
-            cx.notify();
-            return;
-        }
-
-        let Some(track) = self.selected_track else {
-            self.error = Some("select a track before dropping a device".into());
-            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
-            self.clear_native_device_drag(drag);
-            cx.notify();
-            return;
-        };
-        let Some(state) = self.state.as_ref() else {
-            self.clear_native_device_drag(drag);
-            return;
-        };
-        let Some(target_track) = state.project.track(track) else {
-            self.error = Some("device drop target is no longer available".into());
-            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
-            self.clear_native_device_drag(drag);
-            cx.notify();
-            return;
-        };
-        if let Some(anchor) = drop_target.before
-            && !target_track.ordered_device_chain().any(|node| match node {
-                hex_project::TrackDeviceRef::Instrument(device)
-                | hex_project::TrackDeviceRef::Effect(device) => device.id() == anchor,
-            })
-        {
-            self.error = Some("device drop target changed; drag again".into());
-            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
-            self.clear_native_device_drag(drag);
-            cx.notify();
-            return;
-        }
-
-        let before =
-            match drag.source {
-                drag::NativeDeviceDragSource::Browser {
-                    class: NativeDeviceClass::Instrument,
-                    ..
-                } if drop_target.replace.is_none() => target_track
-                    .ordered_device_chain()
-                    .next()
-                    .map(|node| match node {
-                        hex_project::TrackDeviceRef::Instrument(device)
-                        | hex_project::TrackDeviceRef::Effect(device) => device.id(),
-                    }),
-                _ => drop_target.before,
-            };
-        if let drag::NativeDeviceDragSource::Browser {
-            class: NativeDeviceClass::Instrument,
-            ..
-        } = drag.source
-            && target_track.instrument().is_some()
-            && drop_target.replace.is_none()
-        {
-            self.error = Some("instrument slot is already occupied".into());
-            self.device_panel.message = self.error.as_ref().map(ToString::to_string);
-            self.clear_native_device_drag(drag);
-            cx.notify();
-            return;
-        }
-        if let Some(replacement) = drop_target.replace {
-            let source_is_browser_instrument = matches!(
-                drag.source,
-                drag::NativeDeviceDragSource::Browser {
-                    class: NativeDeviceClass::Instrument,
-                    ..
-                }
-            );
-            let target_is_current_instrument = target_track
-                .instrument()
-                .is_some_and(|instrument| instrument.id() == replacement);
-            if !source_is_browser_instrument
-                || !target_is_current_instrument
-                || drop_target.before.is_some()
-            {
-                self.error = Some("instrument replacement target changed; drag again".into());
-                self.device_panel.message = self.error.as_ref().map(ToString::to_string);
+        let (track, before, noop) = match target {
+            Ok(target) => target,
+            Err(message) => {
+                self.error = Some(message.into());
+                self.device_panel.message = Some(message.into());
                 self.clear_native_device_drag(drag);
                 cx.notify();
                 return;
             }
-        }
-        if let drag::NativeDeviceDragSource::Existing { device, .. } = drag.source
-            && device_move_would_be_noop(&state.project, device, track, before)
-        {
+        };
+        if noop {
             self.status = "device order unchanged".into();
             self.clear_native_device_drag(drag);
             cx.notify();
@@ -1887,15 +1884,15 @@ impl EditorView {
 }
 
 fn device_move_would_be_noop(
-    project: &hex_project::Project,
+    project: SnapshotProjectRead<'_>,
     device: DeviceId,
     target_track: TrackId,
     before: Option<DeviceId>,
 ) -> bool {
-    let Some(source_track) = project.tracks().iter().find(|track| {
+    let Some(source_track) = project.tracks().find(|track| {
         track.ordered_device_chain().any(|node| match node {
-            hex_project::TrackDeviceRef::Instrument(candidate)
-            | hex_project::TrackDeviceRef::Effect(candidate) => candidate.id() == device,
+            SnapshotTrackDeviceRead::Instrument(candidate)
+            | SnapshotTrackDeviceRead::Effect(candidate) => candidate.id() == device,
         })
     }) else {
         return false;
@@ -1909,8 +1906,8 @@ fn device_move_would_be_noop(
     let current: Vec<_> = source_track
         .ordered_device_chain()
         .map(|node| match node {
-            hex_project::TrackDeviceRef::Instrument(candidate)
-            | hex_project::TrackDeviceRef::Effect(candidate) => candidate.id(),
+            SnapshotTrackDeviceRead::Instrument(candidate)
+            | SnapshotTrackDeviceRead::Effect(candidate) => candidate.id(),
         })
         .collect();
     let mut moved: Vec<_> = current

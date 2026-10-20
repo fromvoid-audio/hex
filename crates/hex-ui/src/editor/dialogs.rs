@@ -2,6 +2,8 @@ use super::EditorView;
 use gpui::{Context, PathPromptOptions};
 use hex_project::TrackId;
 use hex_session::service::Request;
+use hex_session::snapshot_exports::SnapshotTransportError;
+use hex_session::snapshot_exports::ui_consumers::SnapshotSessionCellContentRead;
 
 #[derive(Clone, Copy)]
 struct ImportPromptTarget {
@@ -22,6 +24,10 @@ impl EditorView {
         mode: hex_session::DocumentAudioMode,
         cx: &mut Context<Self>,
     ) {
+        if self.project_replace_confirmation().is_err() {
+            self.error = Some("project read unavailable · cannot open project".into());
+            return;
+        }
         if !super::device_panel::finalize_controls(self, cx) {
             return;
         }
@@ -50,8 +56,18 @@ impl EditorView {
                 match picked {
                     Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
                         if let Some(path) = paths.pop() {
-                            if super::device_panel::finalize_controls(view, cx) {
-                                view.choose_project(path, mode);
+                            match view.project_replace_confirmation() {
+                                Ok(Some(needs_confirmation))
+                                    if super::device_panel::finalize_controls(view, cx) =>
+                                {
+                                    view.choose_project_prepared(path, mode, needs_confirmation)
+                                }
+                                Err(_) => {
+                                    view.error = Some(
+                                        "project read unavailable · cannot open project".into(),
+                                    )
+                                }
+                                _ => {}
                             }
                         }
                     }
@@ -73,17 +89,44 @@ impl EditorView {
             self.error = Some("project path exceeds the 4096-byte limit".into());
             return;
         }
-        let Some(state) = self.state.as_ref() else {
-            self.error = Some("project is still loading".into());
-            return;
+        let needs_confirmation = match self.project_replace_confirmation() {
+            Ok(Some(needs_confirmation)) => needs_confirmation,
+            Ok(None) => {
+                self.error = Some("project is still loading".into());
+                return;
+            }
+            Err(_) => {
+                self.error = Some("project read unavailable · cannot open project".into());
+                return;
+            }
         };
-        let project = &state.project;
-        let has_content = !project.tracks().is_empty() || project.assets().next().is_some();
-        if has_content
-            || state.can_undo
-            || state.can_redo
-            || self.tuning.client.snapshot().is_some()
-        {
+        self.choose_project_prepared(path, mode, needs_confirmation);
+    }
+    fn project_replace_confirmation(&self) -> Result<Option<bool>, SnapshotTransportError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| {
+            Some(
+                snapshot.model().tracks().len() != 0
+                    || snapshot.model().has_assets()
+                    || snapshot.can_undo()
+                    || snapshot.can_redo()
+                    || self.tuning.client.snapshot().is_some(),
+            )
+        })
+    }
+    fn choose_project_prepared(
+        &mut self,
+        path: std::path::PathBuf,
+        mode: hex_session::DocumentAudioMode,
+        needs_confirmation: bool,
+    ) {
+        if path.as_os_str().len() > 4_096 {
+            self.error = Some("project path exceeds the 4096-byte limit".into());
+            return;
+        }
+        if needs_confirmation {
             if self.pending_open_path.as_ref() == Some(&path)
                 && self.pending_open_mode == Some(mode)
             {
@@ -122,11 +165,20 @@ impl EditorView {
         if self.opening_project {
             return;
         }
-        let has_content = self.state.as_ref().is_some_and(|state| {
-            state.unsaved
-                || !state.project.tracks().is_empty()
-                || state.project.assets().next().is_some()
-        });
+        let has_content = match self.state.as_ref() {
+            Some(state) => match state.read_with(|snapshot| {
+                snapshot.unsaved()
+                    || snapshot.model().tracks().len() != 0
+                    || snapshot.model().has_assets()
+            }) {
+                Ok(content) => content,
+                Err(_) => {
+                    self.error = Some("project read unavailable · cannot replace project".into());
+                    return;
+                }
+            },
+            None => false,
+        };
         let has_content = has_content || self.tuning.client.snapshot().is_some();
         if has_content && self.pending_new_mode != Some(mode) {
             self.pending_new_mode = Some(mode);
@@ -175,15 +227,25 @@ impl EditorView {
     }
 
     pub(super) fn import_dialog(&mut self, cx: &mut Context<Self>) {
+        let track = if self.mode == super::EditorMode::Arrangement {
+            match (self.selected_track, self.state.as_ref()) {
+                (Some(track), Some(state)) => match state
+                    .read_with(|snapshot| snapshot.model().track(track).map(|_| track))
+                {
+                    Ok(track) => track,
+                    Err(_) => {
+                        self.error =
+                            Some("project read unavailable · cannot choose import target".into());
+                        return;
+                    }
+                },
+                _ => None,
+            }
+        } else {
+            None
+        };
         let destination = ImportPromptTarget {
-            track: (self.mode == super::EditorMode::Arrangement)
-                .then_some(self.selected_track)
-                .flatten()
-                .filter(|track| {
-                    self.state
-                        .as_ref()
-                        .is_some_and(|state| state.project.track(*track).is_some())
-                }),
+            track,
             start: self.cursor_position(),
             project_generation: self.project_generation,
         };
@@ -243,16 +305,17 @@ impl EditorView {
                 match picked {
                     Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
                         if let Some(path) = paths.pop() {
-                            let target_valid = view.project_generation == project_generation
-                                && view.state.as_ref().is_some_and(|state| {
-                                    state.project.track(track).is_some()
-                                        && state
-                                            .project
-                                            .scenes()
-                                            .iter()
-                                            .any(|item| item.id() == scene)
-                                        && state.project.session_cell(track, scene).is_none()
-                                });
+                            let target_valid = match view.state.as_ref() {
+                                Some(state) => match state.read_with(|snapshot| {
+                                    let project = snapshot.model();
+                                    view.project_generation == project_generation && project.track(track).is_some() && project.scene(scene).is_some()
+                                        && matches!(project.session_cell(track, scene), SnapshotSessionCellContentRead::Empty)
+                                }) {
+                                    Ok(valid) => valid,
+                                    Err(_) => { view.error = Some("project read unavailable · cannot import to session".into()); cx.notify(); return; }
+                                },
+                                None => false,
+                            };
                             if !target_valid {
                                 view.error = Some(
                                     "select an empty audio session cell before importing".into(),

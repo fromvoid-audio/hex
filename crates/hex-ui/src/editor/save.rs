@@ -43,15 +43,15 @@ fn prepare_save_path(mut path: PathBuf) -> Result<PathBuf, &'static str> {
 
 impl EditorView {
     pub(super) fn save_project(&mut self, cx: &mut Context<Self>) {
-        if !super::device_panel::finalize_controls(self, cx) {
-            return;
-        }
         if self.state.is_none() {
             self.error = Some("project is still loading".into());
             return;
         }
         match self.save_admission() {
             SaveAdmission::Current => {
+                if !super::device_panel::finalize_controls(self, cx) {
+                    return;
+                }
                 if self.enqueue_device_barrier(Request::SaveCurrent) {
                     self.saving_project = true;
                     self.status = "saving project".into();
@@ -64,9 +64,6 @@ impl EditorView {
     }
 
     pub(super) fn save_as_dialog(&mut self, cx: &mut Context<Self>) {
-        if !super::device_panel::finalize_controls(self, cx) {
-            return;
-        }
         if self.state.is_none() {
             self.error = Some("project is still loading".into());
             return;
@@ -79,13 +76,25 @@ impl EditorView {
             }
         }
 
-        let directory = self
-            .state
-            .as_ref()
-            .and_then(|state| state.document_path.as_deref())
-            .and_then(Path::parent)
-            .unwrap_or_else(|| Path::new("."))
-            .to_path_buf();
+        let directory = match self.state.as_ref() {
+            Some(state) => match state.read_with(|snapshot| {
+                snapshot
+                    .document_path()
+                    .and_then(Path::parent)
+                    .map(Path::to_path_buf)
+            }) {
+                Ok(directory) => directory.unwrap_or_else(|| PathBuf::from(".")),
+                Err(_) => {
+                    self.error =
+                        Some("project read is unavailable · cannot choose save path".into());
+                    return;
+                }
+            },
+            None => PathBuf::from("."),
+        };
+        if !super::device_panel::finalize_controls(self, cx) {
+            return;
+        }
         self.save_dialog_open = true;
         let response = cx.prompt_for_new_path(&directory, Some("untitled.hex"));
         cx.spawn(async move |this, cx| {
@@ -108,11 +117,17 @@ impl EditorView {
     }
 
     fn save_admission(&self) -> SaveAdmission {
+        let has_document = match self.state.as_ref() {
+            Some(state) => match state.read_with(|snapshot| snapshot.document_path().is_some()) {
+                Ok(has_document) => has_document,
+                Err(_) => {
+                    return SaveAdmission::Reject("project read is unavailable · cannot save");
+                }
+            },
+            None => false,
+        };
         save_admission(
-            self.state
-                .as_ref()
-                .and_then(|state| state.document_path.as_ref())
-                .is_some(),
+            has_document,
             self.saving_project,
             self.save_dialog_open,
             self.close_prompt_open || self.opening_project,

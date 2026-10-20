@@ -66,6 +66,7 @@ enum WaveformMappingKey {
         source_length: u64,
         source_phase: u64,
         looping: bool,
+        transformed: bool,
         timeline_origin: u64,
         gain: i32,
     },
@@ -193,6 +194,77 @@ impl WaveformGeometryCache {
     }
 }
 
+/// The ordinary source sampler needs scalar placement only. A canvas/cache
+/// must never retain the clip's optional authored audio domain.
+#[derive(Clone, Copy)]
+pub(super) struct ClipMapping {
+    id: hex_project::ClipId,
+    start: u64,
+    duration: u64,
+    source_offset: u64,
+    source_length: u64,
+    source_phase: u64,
+    looping: bool,
+    gain: hex_project::ClipGain,
+    pub(super) transformed: bool,
+}
+impl From<&Clip> for ClipMapping {
+    fn from(clip: &Clip) -> Self {
+        Self {
+            id: clip.id(),
+            start: clip.start(),
+            duration: clip.duration(),
+            source_offset: clip.source_offset(),
+            source_length: clip.source_length(),
+            source_phase: clip.source_phase(),
+            looping: clip.looping(),
+            gain: clip.gain(),
+            transformed: clip.audio_edit().is_some(),
+        }
+    }
+}
+impl From<hex_session::snapshot_exports::SnapshotClipRead<'_>> for ClipMapping {
+    fn from(clip: hex_session::snapshot_exports::SnapshotClipRead<'_>) -> Self {
+        Self {
+            id: clip.id(),
+            start: clip.start(),
+            duration: clip.duration(),
+            source_offset: clip.source_offset(),
+            source_length: clip.source_length(),
+            source_phase: clip.source_phase(),
+            looping: clip.looping(),
+            gain: clip.gain(),
+            transformed: clip.audio_edit().is_some(),
+        }
+    }
+}
+impl ClipMapping {
+    pub(super) fn id(self) -> hex_project::ClipId {
+        self.id
+    }
+    pub(super) fn start(self) -> u64 {
+        self.start
+    }
+    pub(super) fn duration(self) -> u64 {
+        self.duration
+    }
+    pub(super) fn source_offset(self) -> u64 {
+        self.source_offset
+    }
+    pub(super) fn source_length(self) -> u64 {
+        self.source_length
+    }
+    pub(super) fn source_phase(self) -> u64 {
+        self.source_phase
+    }
+    pub(super) fn looping(self) -> bool {
+        self.looping
+    }
+    pub(super) fn gain(self) -> hex_project::ClipGain {
+        self.gain
+    }
+}
+
 #[derive(Clone)]
 pub(super) enum WaveformMapping {
     Stretch(Arc<super::waveform_stretch::StretchProjection>),
@@ -206,7 +278,7 @@ pub(super) enum WaveformMapping {
         gain: hex_project::ClipGain,
     },
     Clip {
-        clip: Clip,
+        clip: ClipMapping,
         timeline_origin: u64,
     },
     Source {
@@ -324,6 +396,7 @@ fn waveform_geometry_key(
             source_length: clip.source_length(),
             source_phase: clip.source_phase(),
             looping: clip.looping(),
+            transformed: clip.transformed,
             timeline_origin: *timeline_origin,
         },
         WaveformMapping::Source { timeline_origin } => WaveformMappingKey::Source {
@@ -755,7 +828,7 @@ mod tests {
                 prepare_waveform_geometry(
                     source.read(),
                     &WaveformMapping::Clip {
-                        clip: clip.clone(),
+                        clip: ClipMapping::from(clip),
                         timeline_origin: start,
                     },
                     start,

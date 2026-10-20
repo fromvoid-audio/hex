@@ -2,7 +2,26 @@
 use super::{EditorView, device_panel};
 use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
-use hex_project::{Command, RoutingOwner};
+use hex_project::{Command, ReturnId, RoutingOwner, TrackId};
+
+struct TrackRoutingFacts {
+    id: TrackId,
+    name: String,
+    page: usize,
+    last_page: usize,
+    inputs: Vec<(RoutingOwner, String, f32)>,
+    midi: Option<(Option<TrackId>, String, Vec<(Option<TrackId>, String)>)>,
+}
+enum RoutingFacts {
+    Return {
+        id: ReturnId,
+        name: String,
+        inputs: Vec<(ReturnId, String, f32)>,
+    },
+    Track(TrackRoutingFacts),
+    NoTrack,
+    NoReturn,
+}
 
 impl EditorView {
     pub(super) fn routing_controls(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
@@ -12,6 +31,89 @@ impl EditorView {
         }
         let Some(state) = self.state.as_ref() else {
             return panel;
+        };
+        let Ok(facts) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            if let Some(destination) = self.focused_return {
+                let Some(bus) = project.returns().find(|bus| bus.id() == destination) else {
+                    return RoutingFacts::NoReturn;
+                };
+                let inputs = project
+                    .returns()
+                    .filter(|bus| bus.id() != destination)
+                    .map(|source| {
+                        let gain = project
+                            .authored_routing()
+                            .find(|feed| {
+                                feed.source() == source.id() && feed.destination() == destination
+                            })
+                            .map_or(0.0, |feed| feed.gain());
+                        (source.id(), source.name().to_owned(), gain)
+                    })
+                    .collect();
+                return RoutingFacts::Return {
+                    id: destination,
+                    name: bus.name().to_owned(),
+                    inputs,
+                };
+            }
+            let Some(destination) = self.selected_track.and_then(|id| project.track(id)) else {
+                return RoutingFacts::NoTrack;
+            };
+            let destination_id = destination.id();
+            let count = project.tracks().len().saturating_sub(1) + project.returns().len();
+            let last_page = count.saturating_sub(1) / 16;
+            let page = self.routing_page.min(last_page);
+            let inputs = project
+                .tracks()
+                .filter(|track| track.id() != destination_id)
+                .map(|track| (RoutingOwner::Track(track.id()), track.name()))
+                .chain(
+                    project
+                        .returns()
+                        .map(|bus| (RoutingOwner::Return(bus.id()), bus.name())),
+                )
+                .skip(page * 16)
+                .take(16)
+                .map(|(owner, name)| {
+                    let gain = project
+                        .audio_feeds()
+                        .find(|feed| feed.source() == owner && feed.destination() == destination_id)
+                        .map_or(0.0, |feed| feed.gain());
+                    (owner, name.to_owned(), gain)
+                })
+                .collect();
+            let midi = destination.instrument().map(|_| {
+                let selected = project
+                    .midi_routes()
+                    .find(|route| route.destination() == destination_id)
+                    .map(|route| route.source());
+                let name = selected
+                    .and_then(|id| project.track(id))
+                    .map_or("local", |track| track.name())
+                    .to_owned();
+                let sources = std::iter::once((None, "local".to_owned()))
+                    .chain(
+                        project
+                            .tracks()
+                            .filter(|track| track.id() != destination_id)
+                            .skip(page * 16)
+                            .take(16)
+                            .map(|track| (Some(track.id()), track.name().to_owned())),
+                    )
+                    .collect();
+                (selected, name, sources)
+            });
+            RoutingFacts::Track(TrackRoutingFacts {
+                id: destination_id,
+                name: destination.name().to_owned(),
+                page,
+                last_page,
+                inputs,
+                midi,
+            })
+        }) else {
+            return panel.child(theme::text("routing read unavailable"));
         };
         panel = panel
             .max_h(px(130.0))
@@ -25,50 +127,37 @@ impl EditorView {
             .bg(rgb(theme::color(theme::PaletteRole::Surface)))
             .border_t_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border)));
-        if let Some(destination) = self.focused_return {
-            if let Some(bus) = state
-                .project
-                .return_tracks()
-                .iter()
-                .find(|bus| bus.id() == destination)
-            {
-                panel = panel.child(theme::text(format!("{} · return inputs", bus.name())));
-                for source in state
-                    .project
-                    .return_tracks()
-                    .iter()
-                    .filter(|bus| bus.id() != destination)
-                {
-                    let id = source.id();
-                    let gain = state
-                        .project
-                        .authored_routing()
-                        .iter()
-                        .find(|feed| feed.source() == id && feed.destination() == destination)
-                        .map_or(0.0, |feed| feed.gain());
+        let facts = match facts {
+            RoutingFacts::Return {
+                id: destination,
+                name,
+                inputs,
+            } => {
+                panel = panel.child(theme::text(format!("{name} · return inputs")));
+                for (source, name, gain) in inputs {
                     panel = panel.child(gain_row(
-                        source.name(),
+                        &name,
                         gain,
-                        format!("return-feed-{}-{}", id.value(), destination.value()),
+                        format!("return-feed-{}-{}", source.value(), destination.value()),
                         move |gain| Command::SetReturnFeed {
-                            source: id,
+                            source,
                             destination,
                             gain,
                         },
                         cx,
                     ));
                 }
+                return panel;
             }
-            return panel;
-        }
-        let Some(destination) = self.selected_track.and_then(|id| state.project.track(id)) else {
-            return panel.child(theme::text("select a track to edit routing"));
+            RoutingFacts::NoTrack => {
+                return panel.child(theme::text("select a track to edit routing"));
+            }
+            RoutingFacts::NoReturn => return panel,
+            RoutingFacts::Track(facts) => facts,
         };
-        let destination_id = destination.id();
-        let count =
-            state.project.tracks().len().saturating_sub(1) + state.project.return_tracks().len();
-        let last_page = count.saturating_sub(1) / 16;
-        let page = self.routing_page.min(last_page);
+        let destination_id = facts.id;
+        let page = facts.page;
+        let last_page = facts.last_page;
         if last_page != 0 {
             panel = panel.child(
                 div()
@@ -100,38 +189,16 @@ impl EditorView {
 
         panel = panel.child(theme::text(format!(
             "{} · additive stereo inputs before effects",
-            destination.name()
+            facts.name
         )));
-        for source in state
-            .project
-            .tracks()
-            .iter()
-            .filter(|track| track.id() != destination_id)
-            .map(|track| (RoutingOwner::Track(track.id()), track.name()))
-            .chain(
-                state
-                    .project
-                    .return_tracks()
-                    .iter()
-                    .map(|bus| (RoutingOwner::Return(bus.id()), bus.name())),
-            )
-            .skip(page * 16)
-            .take(16)
-        {
-            let (owner, name) = source;
-            let gain = state
-                .project
-                .audio_feeds()
-                .iter()
-                .find(|feed| feed.source() == owner && feed.destination() == destination_id)
-                .map_or(0.0, |feed| feed.gain());
+        for (owner, name, gain) in facts.inputs {
             let key = match owner {
                 RoutingOwner::Track(id) => format!("track-{}", id.value()),
                 RoutingOwner::Return(id) => format!("return-{}", id.value()),
                 RoutingOwner::Main => continue,
             };
             panel = panel.child(gain_row(
-                name,
+                &name,
                 gain,
                 format!("audio-feed-{key}-{}", destination_id.value()),
                 move |gain| Command::SetAudioFeed {
@@ -142,31 +209,13 @@ impl EditorView {
                 cx,
             ));
         }
-        if destination.instrument().is_some() {
+        if let Some((selected, source_name, source_options)) = facts.midi {
             panel = panel.child(theme::text(
                 "midi source · replaces local notes; upstream routes follow their source",
             ));
-            let selected = state
-                .project
-                .midi_routes()
-                .iter()
-                .find(|route| route.destination() == destination_id)
-                .map(|route| route.source());
-            let source_name = selected
-                .and_then(|id| state.project.track(id))
-                .map_or("local", |track| track.name());
             panel = panel.child(theme::text(format!("selected midi source · {source_name}")));
             let mut sources = div().flex().flex_wrap().gap_1();
-            for (source, name) in std::iter::once((None, "local")).chain(
-                state
-                    .project
-                    .tracks()
-                    .iter()
-                    .filter(|track| track.id() != destination_id)
-                    .map(|track| (Some(track.id()), track.name()))
-                    .skip(page * 16)
-                    .take(16),
-            ) {
+            for (source, name) in source_options {
                 let key = source.map_or(0, |id| id.value());
                 let label = format!("{} {}", if selected == source { "●" } else { "○" }, name);
                 sources = sources.child(

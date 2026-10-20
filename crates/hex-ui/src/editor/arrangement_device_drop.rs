@@ -6,6 +6,7 @@ use super::{
 use crate::theme;
 use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
 use hex_session::service::{ArrangementDeviceDestination, Request};
+use hex_session::snapshot_exports::SnapshotTransportError;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ArrangementDropTarget {
@@ -30,16 +31,36 @@ impl EditorView {
         x: f32,
         y: f32,
     ) -> Option<ArrangementDropTarget> {
-        if let Some((before_track, lane, line)) = self.painted_track_insertion_target(x, y) {
-            return Some(ArrangementDropTarget::NewTrack {
+        self.painted_arrangement_drop_target_checked(x, y)
+            .ok()
+            .flatten()
+    }
+    fn painted_arrangement_drop_target_checked(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Result<Option<ArrangementDropTarget>, SnapshotTransportError> {
+        if let Some((before_track, lane, line)) =
+            self.painted_track_insertion_target_checked(x, y)?
+        {
+            return Ok(Some(ArrangementDropTarget::NewTrack {
                 before_track,
                 lane,
                 line,
-            });
+            }));
         }
-        let (track, lane) = self.hovered_drag_target(x, y)?;
-        self.state.as_ref()?.project.track(track)?;
-        Some(ArrangementDropTarget::ExistingTrack { track, lane })
+        let Some((track, lane)) = self.hovered_drag_target(x, y) else {
+            return Ok(None);
+        };
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| {
+            snapshot
+                .model()
+                .track(track)
+                .map(|_| ArrangementDropTarget::ExistingTrack { track, lane })
+        })
     }
     pub(super) fn update_arrangement_device_drop(
         &mut self,
@@ -47,49 +68,68 @@ impl EditorView {
         x: f32,
         y: f32,
     ) {
-        let owns = self
-            .active_native_device_drag
+        if !self.arrangement_device_drag_owned(drag) {
+            return;
+        }
+        let Ok(preview) = self.arrangement_device_drop_candidate(drag, x, y) else {
+            return;
+        };
+        self.arrangement_device_preview = preview;
+        if preview.is_some() {
+            drag.destination.set(None);
+        }
+    }
+    fn arrangement_device_drag_owned(&self, drag: &NativeDeviceDrag) -> bool {
+        self.active_native_device_drag
             .as_ref()
             .is_some_and(|active| {
                 std::rc::Rc::ptr_eq(&active.destination, &drag.destination)
                     && active.source == drag.source
                     && active.revision == drag.revision
                     && active.project_generation == drag.project_generation
-            });
-        if !owns {
-            return;
-        }
-        self.arrangement_device_preview = None;
-        // Existing-device moves retain their rail/card contract.
-        if !matches!(drag.source, NativeDeviceDragSource::Browser { .. })
-            || !self.native_device_drag_is_current(drag)
+            })
+    }
+    fn arrangement_device_drop_candidate(
+        &self,
+        drag: &NativeDeviceDrag,
+        x: f32,
+        y: f32,
+    ) -> Result<Option<ArrangementDevicePreview>, SnapshotTransportError> {
+        let owns = self.arrangement_device_drag_owned(drag);
+        if !owns
+            || !matches!(drag.source, NativeDeviceDragSource::Browser { .. })
             || self.mode != EditorMode::Arrangement
         {
-            return;
+            return Ok(None);
         }
-        let Some(target) = self.painted_arrangement_drop_target(x, y) else {
-            return;
+        if !self.native_device_drag_current(drag)? {
+            return Ok(None);
+        }
+        let Some(target) = self.painted_arrangement_drop_target_checked(x, y)? else {
+            return Ok(None);
         };
         let destination = match target {
             ArrangementDropTarget::NewTrack { before_track, .. } => {
                 ArrangementDeviceDestination::NewTrack { before_track }
             }
             ArrangementDropTarget::ExistingTrack { track, .. } => {
-                let instrument = self
-                    .state
-                    .as_ref()
-                    .and_then(|state| state.project.track(track))
-                    .and_then(|track| track.instrument())
-                    .map(hex_project::Device::id);
+                let Some(state) = self.state.as_ref() else {
+                    return Ok(None);
+                };
+                let instrument = state.read_with(|snapshot| {
+                    snapshot
+                        .model()
+                        .track(track)
+                        .and_then(|track| track.instrument())
+                        .map(|device| device.id())
+                })?;
                 ArrangementDeviceDestination::ExistingTrack { track, instrument }
             }
         };
-        self.arrangement_device_preview = Some(ArrangementDevicePreview {
+        Ok(Some(ArrangementDevicePreview {
             destination,
             target,
-        });
-        // Rail/card destinations are distinct from captured Arrangement intent.
-        drag.destination.set(None);
+        }))
     }
     pub(super) fn drop_arrangement_device(
         &mut self,
@@ -97,27 +137,24 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let owns = self
-            .active_native_device_drag
-            .as_ref()
-            .is_some_and(|active| {
-                std::rc::Rc::ptr_eq(&active.destination, &drag.destination)
-                    && active.source == drag.source
-                    && active.revision == drag.revision
-                    && active.project_generation == drag.project_generation
-            });
+        if !self.arrangement_device_drag_owned(drag) {
+            return;
+        }
         let captured = self.arrangement_device_preview;
         let pointer = window.mouse_position();
-        self.update_arrangement_device_drop(drag, f32::from(pointer.x), f32::from(pointer.y));
-        let current = self.arrangement_device_preview;
-        let valid = owns
-            && self.native_device_drag_is_current(drag)
-            && captured.is_some_and(|preview| {
-                current.is_some_and(|current| {
-                    current.destination == preview.destination && current.target == preview.target
-                })
+        let Ok(current) = self.arrangement_device_drop_candidate(
+            drag,
+            f32::from(pointer.x),
+            f32::from(pointer.y),
+        ) else {
+            return;
+        };
+        self.arrangement_device_preview = current;
+        let valid = captured.is_some_and(|preview| {
+            current.is_some_and(|current| {
+                current.destination == preview.destination && current.target == preview.target
             })
-            && !self.save_dialog_open
+        }) && !self.save_dialog_open
             && !self.export_dialog_open
             && !self.export_pending
             && self.worker_requests_pending == 0
@@ -158,7 +195,11 @@ impl EditorView {
             ArrangementDropTarget::ExistingTrack { lane, .. } => (lane, None),
             ArrangementDropTarget::NewTrack { lane, line, .. } => (lane, Some(line)),
         };
-        let empty = self.state.as_ref()?.project.tracks().is_empty();
+        let empty = self
+            .state
+            .as_ref()?
+            .read_with(|snapshot| snapshot.model().tracks().len() == 0)
+            .ok()?;
         if let Some(line) = line.filter(|_| !empty) {
             return Some(
                 div()

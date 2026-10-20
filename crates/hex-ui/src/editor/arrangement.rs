@@ -33,9 +33,12 @@ impl EditorView {
         if timeline_width <= 0.0 {
             return false;
         }
+        let Ok(revision) = state.read_with(|snapshot| snapshot.revision()) else {
+            return false;
+        };
         self.arrangement_pan = Some(super::ArrangementPan {
             generation: self.project_generation,
-            revision: state.revision,
+            revision,
             last_x: x,
             last_y: y,
             timeline_width,
@@ -51,9 +54,18 @@ impl EditorView {
             self.arrangement_pan = None;
             return false;
         };
+        let Ok((revision, horizon, current)) = state.read_with(|snapshot| {
+            (
+                snapshot.revision(),
+                snapshot.timeline_frames(),
+                self.visible_viewport(snapshot, snapshot.timeline_frames()),
+            )
+        }) else {
+            return false;
+        };
         if self.mode != super::EditorMode::Arrangement
             || self.project_generation != pan.generation
-            || state.revision != pan.revision
+            || revision != pan.revision
         {
             self.arrangement_pan = None;
             return false;
@@ -74,14 +86,13 @@ impl EditorView {
         }
         self.arrangement_pan = Some(pan);
 
-        let current = self.visible_viewport(state.timeline_frames);
         let frame_delta = -f64::from(dx) * current.length as f64 / f64::from(pan.timeline_width);
         if frame_delta.is_finite() && frame_delta != 0.0 {
             let frame_delta = frame_delta
                 .round()
                 .clamp(i128::MIN as f64, i128::MAX as f64) as i128;
-            let next = current.pan_by_frames(state.timeline_frames, frame_delta);
-            self.viewport = (next != Viewport::fit(state.timeline_frames)).then_some(next);
+            let next = current.pan_by_frames(horizon, frame_delta);
+            self.viewport = (next != Viewport::fit(horizon)).then_some(next);
         }
         if dy != 0.0 {
             let base_handle = self.track_scroll.clone();
@@ -122,7 +133,7 @@ impl EditorView {
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         };
-        self.sync_track_layout(state.project.tracks());
+        self.sync_track_layout();
         let ruler_width = (f32::from(window.bounds().size.width)
             - self.browser_content_width(window)
             - self.track_header_width())
@@ -277,13 +288,7 @@ impl EditorView {
             .child(self.ruler(&state, ruler_width, cx))
             .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
             .children([self.arrangement_body(content, cx)])
-            .children(super::gain_lane::view(
-                self,
-                &state,
-                viewport,
-                ruler_width,
-                cx,
-            ));
+            .children(super::gain_lane::view(self, viewport, ruler_width, cx));
         let main = self.main_track_row(viewport, &bands, &grid, cx);
         let returns = self.return_tracks_view(cx);
         self.arrangement_surface(upper, returns, main, cx)

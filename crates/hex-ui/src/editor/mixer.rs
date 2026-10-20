@@ -21,15 +21,17 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return strip;
         };
-        if let Some(track) = self.selected_track.and_then(|id| state.project.track(id)) {
-            let id = track.id();
+        let selected = match state.read_with(|snapshot| {
+            self.selected_track
+                .and_then(|id| snapshot.model().track(id))
+                .map(|track| (track.id(), track.name().to_owned(), track.balance()))
+        }) {
+            Ok(selected) => selected,
+            Err(_) => return strip,
+        };
+        if let Some((id, name, balance)) = selected {
             strip = strip
-                .child(
-                    div()
-                        .max_w(px(140.0))
-                        .truncate()
-                        .child(theme::text(track.name())),
-                )
+                .child(div().max_w(px(140.0)).truncate().child(theme::text(name)))
                 .child(
                     button("◀", "balance left", ("balance-left", id.value())).on_click(
                         cx.listener(move |view, _, _, cx| {
@@ -70,10 +72,10 @@ impl EditorView {
                     div()
                         .w(px(100.0))
                         .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-                        .child(theme::text(balance_label(track.balance()))),
+                        .child(theme::text(balance_label(balance))),
                 );
         }
-        if let Some(fades) = self.selected_fade_controls(state, cx) {
+        if let Some(fades) = self.selected_fade_controls(cx) {
             strip = strip.children([
                 div()
                     .w(px(1.0))
@@ -104,7 +106,11 @@ impl EditorView {
     }
 
     pub(super) fn main_track_controls(&self, cx: &mut Context<Self>) -> Div {
-        let Some(state) = self.state.as_ref() else {
+        let Some(gain) = self.state.as_ref().and_then(|state| {
+            state
+                .read_with(|snapshot| snapshot.model().master_gain())
+                .ok()
+        }) else {
             return div();
         };
         div()
@@ -140,10 +146,7 @@ impl EditorView {
                 div()
                     .w(px(42.0))
                     .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-                    .child(theme::text(format!(
-                        "{:.0}%",
-                        state.project.master_gain() * 100.0
-                    ))),
+                    .child(theme::text(format!("{:.0}%", gain * 100.0))),
             )
     }
 }

@@ -16,10 +16,11 @@ use hex_session::service::Request as SessionRequest;
 use std::sync::atomic::Ordering::Relaxed;
 
 impl EditorView {
-    pub(super) fn step_frames(&self) -> u64 {
+    pub(super) fn step_frames(&self) -> Option<u64> {
         self.state
-            .as_ref()
-            .map_or(12_000, |state| u64::from(state.project.sample_rate()) / 4)
+            .as_ref()?
+            .read_with(|snapshot| u64::from(snapshot.sample_rate()) / 4)
+            .ok()
     }
 
     pub(super) fn nudge_grid_context(
@@ -31,8 +32,11 @@ impl EditorView {
         f32,
     )> {
         let grid = self.snap_grid.with_platform_modifier(platform);
-        let state = self.state.as_ref()?;
-        let viewport = self.visible_viewport(state.timeline_frames);
+        let viewport = self
+            .state
+            .as_ref()?
+            .read_with(|snapshot| self.visible_viewport(snapshot, snapshot.timeline_frames()))
+            .ok()?;
         if grid == super::musical_time::SnapGrid::Off {
             return Some((grid, viewport, 1.0));
         }
@@ -56,7 +60,10 @@ impl EditorView {
             return;
         };
         if grid == super::musical_time::SnapGrid::Off {
-            let step = self.step_frames() as i64;
+            let Some(step) = self.step_frames() else {
+                return;
+            };
+            let step = step as i64;
             self.enqueue(SessionRequest::Edit(Command::NudgeClip {
                 clip,
                 frames: if right { step } else { -step },
@@ -66,26 +73,20 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let Some(item) = state.project.clip(clip) else {
+        let Ok(Some((track, duration, start))) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let (track, item) = project
+                .tracks()
+                .find_map(|track| track.clip(clip).map(|clip| (track.id(), clip)))?;
+            let start = grid.adjacent_frame(&project, item.start(), viewport, width, right)?;
+            Some((track, item.duration(), start))
+        }) else {
             return;
         };
-        let Some(start) = grid.adjacent_frame(&state.project, item.start(), viewport, width, right)
-        else {
-            return;
-        };
-        if start.checked_add(item.duration()).is_none() {
+        if start.checked_add(duration).is_none() {
             self.error = Some("clip nudge exceeds the timeline range".into());
             return;
         }
-        let Some(track) = state
-            .project
-            .tracks()
-            .iter()
-            .find(|track| track.clips().iter().any(|item| item.id() == clip))
-            .map(|track| track.id())
-        else {
-            return;
-        };
         self.enqueue(SessionRequest::Edit(Command::MoveClip {
             clip,
             track,
@@ -161,7 +162,16 @@ impl EditorView {
                     })),
             );
         }
-        let unsaved = self.state.as_ref().is_some_and(|state| state.unsaved);
+        let unsaved = self
+            .state
+            .as_ref()
+            .map(|state| state.read_with(|snapshot| snapshot.unsaved()))
+            .transpose();
+        let (unsaved_label, unsaved_description) = match unsaved {
+            Ok(Some(true)) => ("unsaved *", "unsaved changes"),
+            Ok(_) => ("", ""),
+            Err(_) => ("read ?", "project read unavailable · unsaved state unknown"),
+        };
         let revision_label = self.audio_admission.label();
         let pending_commands = self
             .worker_requests_pending
@@ -226,12 +236,8 @@ impl EditorView {
                 "editor-unsaved-status",
                 54.0,
                 theme::color(theme::PaletteRole::Primary),
-                if unsaved { "unsaved *" } else { "" }.to_owned(),
-                if unsaved {
-                    "unsaved changes".to_owned()
-                } else {
-                    String::new()
-                },
+                unsaved_label.to_owned(),
+                unsaved_description.to_owned(),
             ));
         let meter_input = self.output_meter_frame.map_or(
             crate::output_meter::MeterInput::Offline,
@@ -345,8 +351,15 @@ impl Render for EditorView {
             self.gain_lane.track = None;
         }
         if let Some(state) = self.state.as_ref() {
-            if let Some(track) = self.selected_track {
-                self.gain_lane.change_owner(track, &state.project);
+            if let Some(track) = self.selected_track
+                && let Ok(Some(first)) = state.read_with(|snapshot| {
+                    snapshot
+                        .model()
+                        .track(track)
+                        .map(|track| track.gain_points().first().map(|point| point.beat))
+                })
+            {
+                self.gain_lane.change_owner_facts(track, first);
             }
         }
         self.clip_content_cache
@@ -774,9 +787,9 @@ impl Render for EditorView {
                         );
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
-                        if let Some(clip) = view.selected_arrangement_midi_clip_data() {
+                        if let Ok(Some(clip)) = view.selected_arrangement_midi_clip_data() {
                             view.nudge_midi_clip(clip, false, window.modifiers().platform);
-                        } else if let Some((_, clip, ..)) = view.selected_clip_data() {
+                        } else if let Ok(Some((_, clip, ..))) = view.selected_clip_data() {
                             view.nudge_audio_clip(clip, false, window.modifiers().platform);
                         }
                     }
@@ -800,9 +813,9 @@ impl Render for EditorView {
                         );
                     }
                     super::session_navigation::ArrowTarget::Arrangement => {
-                        if let Some(clip) = view.selected_arrangement_midi_clip_data() {
+                        if let Ok(Some(clip)) = view.selected_arrangement_midi_clip_data() {
                             view.nudge_midi_clip(clip, true, window.modifiers().platform);
-                        } else if let Some((_, clip, ..)) = view.selected_clip_data() {
+                        } else if let Ok(Some((_, clip, ..))) = view.selected_clip_data() {
                             view.nudge_audio_clip(clip, true, window.modifiers().platform);
                         }
                     }
@@ -814,10 +827,12 @@ impl Render for EditorView {
                 if view.midi_focus.is_focused(window) {
                     if view.midi_selection.len() == 1 {
                         if let Some(note) = view.midi_selection.primary() {
-                            if let Some(state) = view.state.as_ref() {
+                            if let Some(revision) = view.state.as_ref().and_then(|state| {
+                                state.read_with(|snapshot| snapshot.revision()).ok()
+                            }) {
                                 view.update_note_field(
                                     note,
-                                    state.revision,
+                                    revision,
                                     view.project_generation,
                                     super::midi::NoteField::Duration(-1),
                                 );
@@ -828,12 +843,14 @@ impl Render for EditorView {
                             super::midi_group_drag::GroupParameter::Duration(-1),
                         );
                     }
-                } else if view.selected_midi_clip_data().is_some() {
+                } else if matches!(view.selected_midi_clip_data(), Ok(Some(_))) {
                     view.error = Some("midi clip trimming is not supported yet".into());
-                } else if let Some((_, clip, ..)) = view.selected_clip_data() {
+                } else if let Ok(Some((_, clip, ..))) = view.selected_clip_data()
+                    && let Some(step) = view.step_frames()
+                {
                     view.enqueue(SessionRequest::Edit(Command::TrimClipEndBy {
                         clip,
-                        frames: -(view.step_frames() as i64),
+                        frames: -(step as i64),
                     }));
                 }
                 cx.notify();
@@ -843,10 +860,12 @@ impl Render for EditorView {
                 if view.midi_focus.is_focused(window) {
                     if view.midi_selection.len() == 1 {
                         if let Some(note) = view.midi_selection.primary() {
-                            if let Some(state) = view.state.as_ref() {
+                            if let Some(revision) = view.state.as_ref().and_then(|state| {
+                                state.read_with(|snapshot| snapshot.revision()).ok()
+                            }) {
                                 view.update_note_field(
                                     note,
-                                    state.revision,
+                                    revision,
                                     view.project_generation,
                                     super::midi::NoteField::Duration(1),
                                 );
@@ -857,12 +876,14 @@ impl Render for EditorView {
                             super::midi_group_drag::GroupParameter::Duration(1),
                         );
                     }
-                } else if view.selected_midi_clip_data().is_some() {
+                } else if matches!(view.selected_midi_clip_data(), Ok(Some(_))) {
                     view.error = Some("midi clip trimming is not supported yet".into());
-                } else if let Some((_, clip, ..)) = view.selected_clip_data() {
+                } else if let Ok(Some((_, clip, ..))) = view.selected_clip_data()
+                    && let Some(step) = view.step_frames()
+                {
                     view.enqueue(SessionRequest::Edit(Command::TrimClipEndBy {
                         clip,
-                        frames: view.step_frames() as i64,
+                        frames: step as i64,
                     }));
                 }
                 cx.notify();
@@ -930,10 +951,10 @@ impl Render for EditorView {
                         }
                     }
                     Some(super::session_grid::DeleteTarget::ArrangementClip(clip)) => {
-                        let command = if view.selected_midi_clip_data().is_some() {
-                            Command::RemoveMidiClip(clip)
-                        } else {
-                            Command::RemoveClip(clip)
+                        let command = match view.selected_midi_clip_data() {
+                            Ok(Some(_)) => Command::RemoveMidiClip(clip),
+                            Ok(None) => Command::RemoveClip(clip),
+                            Err(_) => return,
                         };
                         if view.enqueue(SessionRequest::Edit(command)) {
                             view.cancel_duplicate_chain();
@@ -957,13 +978,17 @@ impl Render for EditorView {
                 }),
             )
             .on_action(cx.listener(|view, _: &DuplicateClip, window, cx| {
+                let selected_midi = match view.selected_arrangement_midi_clip_data() {
+                    Ok(selected) => selected,
+                    Err(_) => return,
+                };
                 if view.mode == super::EditorMode::Session
                     && !view.midi_focus.is_focused(window)
                     && view.selected_cell.is_none()
                     && view.selected_scene.is_some()
                 {
                     view.duplicate_selected_scene();
-                } else if let Some(clip) = view.selected_arrangement_midi_clip_data() {
+                } else if let Some(clip) = selected_midi {
                     view.duplicate_midi_clip(clip);
                 } else if view.mode == super::EditorMode::Session {
                     view.error = Some("session cell duplication is not available yet".into());
