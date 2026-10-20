@@ -704,9 +704,30 @@ mod tests {
                 .collect();
             assert_eq!(choices, ElementColor::ALL[1..]);
             assert!(!choices.contains(&ElementColor::Gray));
-            assert_eq!(menu.items.iter().filter(|item| item.checked).count(), 1);
+            // Color and density are independent checkmark groups in one popup.
+            let checked_colors: Vec<_> = menu
+                .items
+                .iter()
+                .filter(|item| {
+                    item.checked && matches!(item.action, EditorContextAction::TrackColor { .. })
+                })
+                .collect();
+            assert_eq!(checked_colors.len(), 1);
+            let checked_densities: Vec<_> = menu
+                .items
+                .iter()
+                .filter_map(|item| {
+                    if let EditorContextAction::AdaptiveGrid { density, .. } = item.action {
+                        item.checked.then_some(density)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(checked_densities, vec![view.snap_grid.density()]);
+            assert_eq!(menu.items.iter().filter(|item| item.checked).count(), 2);
             assert!(
-                menu.items.iter().find(|item| item.checked).unwrap().label
+                checked_colors[0].label
                     == view
                         .state
                         .as_ref()
