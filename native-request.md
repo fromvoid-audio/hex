@@ -1,0 +1,9 @@
+# finite changed-Main component request, Root-only
+
+Exactsource d81cdd38ef140f94343fbbea2daf7c8f8acd2f0a/tree9d3af9ff4d21f5c68e98e2af0b37402d661ec676. No native job dispatched. If needed use existing configured private guarded runner, not app/OSaudio.
+
+1. `cargo test -p hex-engine --lib --locked signal_graph::tests::main_review_ -- --nocapture` EXPECT5unique0ignored. Actual registry-backed delay processors: serial/upstream final arrival+Renderer/Session partitionedPCM+preMain captures; unknown/refusal+bypass; cumulative limit; Main-only fastpath+emptyconstructor; warmMainhistory/refusedincompatiblehandoff. Printed Projectlayout measured peractualnativebuild, no fixedsize claim. No backend.
+2. `cargo test -p hex-session --test device_comparison --locked main_comparison -- --nocapture` EXPECT3unique0ignored. Malformed command/history; actual unique-owned create-new savedfile/load/open refusal+unchangedbytes; validbothcopydirections/globaltrims/currentcodec/UndoRedo. Tempdirectoryownedatomicallybeforecleanup; no userproject/HOME mutation.
+3. `cargo test -p hex-session --lib --locked device_comparison::metadata_tests::main_comparison -- --nocapture` EXPECT1unique0ignored. ActualtypedSwitch/Copy/historyedge proof, honestinitialCopyNoop, bypassnotstripped.
+
+Total9unique changed cases, not a fullCI suite. Existing unchanged Main callback1+Return2 controls passedcloud; Root may select nativeallocationonlyforactualchangedcombinedsource reason, no count-inflation reruns. Existing optimized UI Main checklist docs/main-track.md remains physical/GUI/listening acceptance OPEN. No app build/install/launch/quit/permissions, no claim sourcehandoffdelivers Main. Native395/e555 composition requires ownactualbudget/constructor checks; preserve exactscalar/default/getter+root3bookkeeping hunks, no wholefilecopy.

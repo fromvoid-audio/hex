@@ -1,0 +1,77 @@
+{
+  "source": "d81cdd38ef140f94343fbbea2daf7c8f8acd2f0a",
+  "tree": "9d3af9ff4d21f5c68e98e2af0b37402d661ec676",
+  "direct_parent": "26300395343e74ad19fb09247167b4fa44ae4b49",
+  "files": [
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+      "before_sha256": "d716a8ac4facc393aec02116c293b925fc6f9db191ba3b5a96909535af7030c7",
+      "after_sha256": "ea4d92c277dc57c2e5e2a313528976045ce952a8ffad8f2168328513e45c5a42",
+      "before_blob": "d3912df602bdce77480fce18938ddd5ff0b6ad1a",
+      "after_blob": "c600b0c4350ae09d5ff905be3ea334714fa3cdc2"
+    },
+    {
+      "path": "crates/hex-engine/src/compile.rs",
+      "before_sha256": "d2593a2223a7eeb3e54868d0b547fd0c9df297b72fdc7605c326df008b750920",
+      "after_sha256": "96b7e94eb7183baa419ab27de6cde58070b8612948d693867e6ad71bd057c42b",
+      "before_blob": "1605f4ed142ef7b6958eecbc7ccc1a1d1d54c3f3",
+      "after_blob": "84ca58a164ace5604ab33b6ed240e6b21752bd22"
+    },
+    {
+      "path": "crates/hex-engine/src/lib.rs",
+      "before_sha256": "7a8cc4ab34cf5601169126f56b0744159a8f1c10683c2003b5426edfd8e68fd0",
+      "after_sha256": "eb4a6990d0e02350053605e041dbcdab39de4c53d9388f721365aec3d985ed14",
+      "before_blob": "2b3d5b041643ca24bdf1e2fe88a74140675d6f17",
+      "after_blob": "6e92c7234e23d512894c8e33428524354868bd2e"
+    },
+    {
+      "path": "crates/hex-engine/src/main_chain.rs",
+      "before_sha256": "0b8b052184ad378c9f8bb7c534e45b0d1362c84af05ca21d9c9eca9276ff7a74",
+      "after_sha256": "8252c417a802399fed6314c3ef7feb8b70ca824aacc19b474e4efd4d7f6420af",
+      "before_blob": "5ed6662203c92093028647f6da171771daa57724",
+      "after_blob": "3c8f34b100a67c8288c955400c3e00fbefbd743d"
+    },
+    {
+      "path": "crates/hex-engine/src/signal_graph/tests.rs",
+      "before_sha256": "1c8ed2eb009befe846262472ab6c192a3dd63e4becbf849fda49368fe059757a",
+      "after_sha256": "b5b8b8251459809c27ff8adbdbe531ec2cabf5bfa8bac7c87bdff44ea881eb44",
+      "before_blob": "d96644badb2d7e6e8bca55326250f495dc867fb6",
+      "after_blob": "2587d21b9d82a20d1573d5ccc63b693218209d05"
+    },
+    {
+      "path": "crates/hex-session/src/device_comparison.rs",
+      "before_sha256": "b19e82d1e5a54cfdfbd07ae317709cf76c1cbcf1b0ed613ff2ee2c0d4a2fc73a",
+      "after_sha256": "6db90662252710708c5b8c34603e196efc6f9d67d237160b9a9d917f9566fcaa",
+      "before_blob": "856f1497eef2ade1baf27ed97915406e50a8fce0",
+      "after_blob": "20e009d8eab5dbf8a34e685005cb5e3f21b011f3"
+    },
+    {
+      "path": "crates/hex-session/tests/device_comparison.rs",
+      "before_sha256": "f1b769a7fdfb5ba328919dba8b5b53249dac0bc075c66aa377aff8dc0d071378",
+      "after_sha256": "b6a672f18681afbe7ba72d9a4807beacb46be073827ed219d85be02688ab7027",
+      "before_blob": "e4e86b21b4cab1065b7df213dbd01fe2347f2bc9",
+      "after_blob": "ffc3675345c8cb5234be6fa642b63d8e12b9c54d"
+    },
+    {
+      "path": "docs/latency.md",
+      "before_sha256": "306b95d57f18c6e01f2e5bf6ba21c5e411cc18e9b472fd255ac3e40452b802a0",
+      "after_sha256": "0fcb213374bf60062e49d42306b6e320ad2e3671fbd2fb05bbf651e47bebcd4e",
+      "before_blob": "b18bbfd7c00c391ebce93fbf27a69351276035de",
+      "after_blob": "9931057841f53e0112110c9137daa0beb7847805"
+    },
+    {
+      "path": "docs/main-track.md",
+      "before_sha256": "2a908376a1d44d762bfd1339d84883debdd7097d389fa3b4f846be2c05b91637",
+      "after_sha256": "a16d08848861d035c4bf69187ad6c5526a14db004bbce7ffedae40bf3911f7d1",
+      "before_blob": "2cec543c1932fcdfb67250075d61b58a03893a11",
+      "after_blob": "cfa2b0402974261ed08aad013c00b416740bfd53"
+    },
+    {
+      "path": "todo.md",
+      "before_sha256": "9e404994e07f7d3035f66e15e9cc255047ec5343bfbadf0dfa474553f3806d80",
+      "after_sha256": "a74074fe3d854ce7874d74a47e7ec4283bb46de53b51b95e85f1118d6f5fd6ef",
+      "before_blob": "023fd7f52e4d2977cb49d3e793faeae58fa09fd8",
+      "after_blob": "52392d523b72cbaa1c2a5e84a2d415be79be7fd2"
+    }
+  ]
+}

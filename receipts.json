@@ -1,0 +1,381 @@
+[
+  {
+    "run_id": "20261020T070235Z-c1b0b8c1",
+    "exit_code": 1,
+    "duration_seconds": 0.305,
+    "source": {
+      "commit": "26300395343e74ad19fb09247167b4fa44ae4b49",
+      "content_sha256": "abcfa5675dd53683034e0bb790cf2e081396ff0b8dee0ed492767a6329fae66c",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-session/src/device_comparison.rs",
+        " M crates/hex-session/tests/device_comparison.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "c2cfe5ced0f61960b007bbade77efd10748866ebb2c41330ef2321d67a93b1d2",
+    "counts": [],
+    "partial": "failed"
+  },
+  {
+    "run_id": "20261020T070347Z-c8af65ea",
+    "exit_code": 1,
+    "duration_seconds": 14.479,
+    "source": {
+      "commit": "26300395343e74ad19fb09247167b4fa44ae4b49",
+      "content_sha256": "293facffd6d40498d31183433eaf64bb692f99d3eac1e3f7bd1619825ad7dd54",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-session/src/device_comparison.rs",
+        " M crates/hex-session/tests/device_comparison.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "df9ae1774abda310c1ab5548bf2514c901cef9edb63ad4016e0c15c6bb100364",
+    "counts": [
+      {
+        "log": "01-main-comparison-before-supported-owner.log",
+        "passed": 0,
+        "failed": 2,
+        "ignored": 0
+      }
+    ],
+    "partial": "failed"
+  },
+  {
+    "run_id": "20261020T070502Z-64715ed9",
+    "exit_code": 1,
+    "duration_seconds": 9.112,
+    "source": {
+      "commit": "26300395343e74ad19fb09247167b4fa44ae4b49",
+      "content_sha256": "fde1ce9b6ce0b9abc031590a5b140730d450e2a0c23b2217bb17b2ac9455da95",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-session/src/device_comparison.rs",
+        " M crates/hex-session/tests/device_comparison.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "e8fb035f73235f332cee6457975ae2dc713aa2b7e1169df92cefa4ef3bc0701b",
+    "counts": [
+      {
+        "log": "01-main-comparison-after.log",
+        "passed": 0,
+        "failed": 1,
+        "ignored": 0
+      }
+    ],
+    "partial": "failed"
+  },
+  {
+    "run_id": "20261020T070608Z-73d5365b",
+    "exit_code": 0,
+    "duration_seconds": 10.68,
+    "source": {
+      "commit": "26300395343e74ad19fb09247167b4fa44ae4b49",
+      "content_sha256": "5d0191b1e95c107893b5d3d0b515d2bc001e2bbd39208b55769763ed99b7aaf5",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-session/src/device_comparison.rs",
+        " M crates/hex-session/tests/device_comparison.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "b94f02c202af81eff01cd7116af93c8ede4acb5609b127750fbc25a98214633d",
+    "counts": [
+      {
+        "log": "01-comparison-metadata.log",
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "02-comparison-session-open.log",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "partial": "partial"
+  },
+  {
+    "run_id": "20261020T070805Z-c74ff1f9",
+    "exit_code": 1,
+    "duration_seconds": 10.892,
+    "source": {
+      "commit": "26300395343e74ad19fb09247167b4fa44ae4b49",
+      "content_sha256": "2e8f6372d2a3c2b129dce6363a89b5af64d5bbb7c9f7dd331f4a1beb44de50bf",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-engine/src/signal_graph/tests.rs",
+        " M crates/hex-session/src/device_comparison.rs",
+        " M crates/hex-session/tests/device_comparison.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "d2d69b677cd0fb62bb1eb607429e66fa82e7c3329aa601c4f80e253781183390",
+    "counts": [],
+    "partial": "failed"
+  },
+  {
+    "run_id": "20261020T070857Z-13e3a4fe",
+    "exit_code": 1,
+    "duration_seconds": 14.572,
+    "source": {
+      "commit": "26300395343e74ad19fb09247167b4fa44ae4b49",
+      "content_sha256": "2d5541e7ba006d99f41b81e44f6b2a687cf9c95ead46fc5095b1207337b06cfb",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-engine/src/signal_graph/tests.rs",
+        " M crates/hex-session/src/device_comparison.rs",
+        " M crates/hex-session/tests/device_comparison.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "b8553771fb6c88f2272deb67650868b0420c75264245de39accfcc9c2a7cffa1",
+    "counts": [
+      {
+        "log": "01-main-latency-before-fixture-api.log",
+        "passed": 0,
+        "failed": 4,
+        "ignored": 0
+      }
+    ],
+    "partial": "failed"
+  },
+  {
+    "run_id": "20261020T071252Z-eef109fb",
+    "exit_code": 1,
+    "duration_seconds": 7.563,
+    "source": {
+      "commit": "26300395343e74ad19fb09247167b4fa44ae4b49",
+      "content_sha256": "a2b9197221e14de902a6bea747c31337dc2303c958f3f27cdf74a95751220f2d",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+        " M crates/hex-engine/src/compile.rs",
+        " M crates/hex-engine/src/lib.rs",
+        " M crates/hex-engine/src/main_chain.rs",
+        " M crates/hex-engine/src/signal_graph/tests.rs",
+        " M crates/hex-session/src/device_comparison.rs",
+        " M crates/hex-session/tests/device_comparison.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "528b855f74e4ec89fede944d43a9955a8c1f9a09b81768c795476d5f1a78a644",
+    "counts": [],
+    "partial": "failed"
+  },
+  {
+    "run_id": "20261020T071339Z-c6bb5e39",
+    "exit_code": 0,
+    "duration_seconds": 14.859,
+    "source": {
+      "commit": "26300395343e74ad19fb09247167b4fa44ae4b49",
+      "content_sha256": "f6ea4b3a005ca7bb74f6c9e0c4b0cfbe7ff60af2fda22bb497d16653caca9426",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+        " M crates/hex-engine/src/compile.rs",
+        " M crates/hex-engine/src/lib.rs",
+        " M crates/hex-engine/src/main_chain.rs",
+        " M crates/hex-engine/src/signal_graph/tests.rs",
+        " M crates/hex-session/src/device_comparison.rs",
+        " M crates/hex-session/tests/device_comparison.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "7924d76463c8759a1ede09daf7bbcf18045c942f3e809e6f99e32fab41daf679",
+    "counts": [
+      {
+        "log": "01-main-latency-after-pattern.log",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "partial": "partial"
+  },
+  {
+    "run_id": "20261020T071508Z-c165de25",
+    "exit_code": 0,
+    "duration_seconds": 21.014,
+    "source": {
+      "commit": "26300395343e74ad19fb09247167b4fa44ae4b49",
+      "content_sha256": "f6ea4b3a005ca7bb74f6c9e0c4b0cfbe7ff60af2fda22bb497d16653caca9426",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+        " M crates/hex-engine/src/compile.rs",
+        " M crates/hex-engine/src/lib.rs",
+        " M crates/hex-engine/src/main_chain.rs",
+        " M crates/hex-engine/src/signal_graph/tests.rs",
+        " M crates/hex-session/src/device_comparison.rs",
+        " M crates/hex-session/tests/device_comparison.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "9712c72d2fc94a0076479940148d6db28f23ca00a31bffca0117f8a02254a6c7",
+    "counts": [
+      {
+        "log": "01-comparison-metadata.log",
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "02-comparison-session-open.log",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "partial": "partial"
+  },
+  {
+    "run_id": "20261020T071844Z-ab818f52",
+    "exit_code": 0,
+    "duration_seconds": 15.008,
+    "source": {
+      "commit": "26300395343e74ad19fb09247167b4fa44ae4b49",
+      "content_sha256": "56067247dea8b58243d6b3299d747a27779955cd6aa2dfb0a9706b308b18c94c",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+        " M crates/hex-engine/src/compile.rs",
+        " M crates/hex-engine/src/lib.rs",
+        " M crates/hex-engine/src/main_chain.rs",
+        " M crates/hex-engine/src/signal_graph/tests.rs",
+        " M crates/hex-session/src/device_comparison.rs",
+        " M crates/hex-session/tests/device_comparison.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "352a3793a5121f6f7ddfef6eda523f65ccfc93f39ef7286fb1e18da80daf6585",
+    "counts": [
+      {
+        "log": "01-main-latency-and-handoff.log",
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "partial": "partial"
+  },
+  {
+    "run_id": "20261020T072217Z-3c4f91e9",
+    "exit_code": 0,
+    "duration_seconds": 149.68,
+    "source": {
+      "commit": "d81cdd38ef140f94343fbbea2daf7c8f8acd2f0a",
+      "content_sha256": "bc6bfdcc57ef1c8feab02532ff8056bbb68ddd4d0bce32a60bcc863d53754693",
+      "dirty": false,
+      "dirty_files": [],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "cf0ad886b4272cfaa6f7a02f8db6190f1116f9aeb4be4f77f24f04731c703518",
+    "counts": [
+      {
+        "log": "08-latency-and-pre-main-controls.log",
+        "passed": 22,
+        "failed": 0,
+        "ignored": 1
+      },
+      {
+        "log": "09-comparison-saved-open.log",
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "10-original-main-1.log",
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "10-original-main-1.log",
+        "passed": 19,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "10-original-main-1.log",
+        "passed": 32,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "11-original-main-2.log",
+        "passed": 26,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "12-original-main-3.log",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "12-original-main-3.log",
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "13-original-main-4.log",
+        "passed": 57,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "14-original-main-5.log",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "14-original-main-5.log",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "partial": "partial"
+  },
+  {
+    "run_id": "20261020T072800Z-0d2e3d4e",
+    "exit_code": 0,
+    "duration_seconds": 4.219,
+    "source": {
+      "commit": "d81cdd38ef140f94343fbbea2daf7c8f8acd2f0a",
+      "content_sha256": "bc6bfdcc57ef1c8feab02532ff8056bbb68ddd4d0bce32a60bcc863d53754693",
+      "dirty": false,
+      "dirty_files": [],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "55a4dd772ef3e3a288b98641deef63a345439a78cafe9134a9046d40cc011f9e",
+    "counts": [
+      {
+        "log": "01-allocation-probe-calibration.log",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "partial": "partial"
+  }
+]
