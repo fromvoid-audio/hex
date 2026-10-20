@@ -1,0 +1,17 @@
+{
+  "source_commit": "add0ee5e4dc69b93e5a03e2abd5d31a95c53ff35",
+  "source_tree": "dfee4283283adcb4ec61ca41f7d9164dfe4448a3",
+  "source_branch": "codex/sampler-panel-mvp-2789",
+  "scope": "three-file browser + Arrangement grid/overview/ruler/loop scalar read WIP",
+  "checks": {
+    "scoped_rustfmt": "passed",
+    "git_diff_check": "passed",
+    "ui_style": "passed",
+    "cargo_check_hex_ui_locked_lib": "failed exit101;374 actual errors /375 headings"
+  },
+  "new_port_diagnostics": "none primary at new browser/audition/Arrangement geometry paths",
+  "remaining_arrangement_diagnostics": "4 in old unported track-row closure: capability Clone, raw project, inferred Track, ViewState argument",
+  "qualification": "incomplete and unqualified; no tests/strict/merge/full-CI/native acceptance; actual owner-cache rows/controller/backend/generic model APIs remain",
+  "raw_log_sha256": "b514d1af16754140289a8dd40efbd21ccaa03856037dac49a80a7e5408d3d403",
+  "source_patch_sha256": "47d90128f4b7b347940fc7ebbd6784b7de0374ea099cc225a87309b704117b80"
+}

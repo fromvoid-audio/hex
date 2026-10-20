@@ -1,0 +1,20 @@
+{
+  "head": "add0ee5e4dc69b93e5a03e2abd5d31a95c53ff35",
+  "tree": "dfee4283283adcb4ec61ca41f7d9164dfe4448a3",
+  "status_before": "",
+  "command": "cargo check -p hex-ui --locked --lib",
+  "env": {
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0"
+  },
+  "started": "2026-10-20T13:36:54.059966+00:00",
+  "qualification": "partial diagnostic only; migration has unported owning readers and unavailable integration APIs",
+  "exit_code": 101,
+  "finished": "2026-10-20T13:36:58.249199+00:00",
+  "head_after": "add0ee5e4dc69b93e5a03e2abd5d31a95c53ff35",
+  "status_after": "",
+  "log_sha256": "b514d1af16754140289a8dd40efbd21ccaa03856037dac49a80a7e5408d3d403",
+  "error_headings": 375,
+  "direct_ui_errors": 374
+}

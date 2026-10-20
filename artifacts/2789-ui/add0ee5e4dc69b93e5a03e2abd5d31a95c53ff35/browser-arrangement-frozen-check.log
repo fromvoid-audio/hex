@@ -1,0 +1,3654 @@
+warning: `extern` declarations without an explicit ABI are deprecated
+  --> third_party/block/src/lib.rs:66:1
+   |
+66 | extern {
+   | ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+   |
+   = note: `#[warn(missing_abi)]` on by default
+
+warning: `extern` declarations without an explicit ABI are deprecated
+  --> third_party/block/src/lib.rs:86:36
+   |
+86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+   |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+97 | block_args_impl!();
+   | ------------------ in this macro invocation
+   |
+   = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+  --> third_party/block/src/lib.rs:86:36
+   |
+86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+   |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+98 | block_args_impl!(a: A);
+   | ---------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+  --> third_party/block/src/lib.rs:86:36
+   |
+86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+   |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+99 | block_args_impl!(a: A, b: B);
+   | ---------------------------- in this macro invocation
+   |
+   = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+100 | block_args_impl!(a: A, b: B, c: C);
+    | ---------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+101 | block_args_impl!(a: A, b: B, c: C, d: D);
+    | ---------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+102 | block_args_impl!(a: A, b: B, c: C, d: D, e: E);
+    | ---------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+103 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F);
+    | ---------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+104 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G);
+    | ---------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+105 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H);
+    | ---------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+106 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I);
+    | ---------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+107 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J);
+    | ---------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+108 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K);
+    | ---------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:86:36
+    |
+ 86 |                 let invoke: unsafe extern fn(*mut Block<Self, R> $(, $t)*) -> R = {
+    |                                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+109 | block_args_impl!(a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L);
+    | ---------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `block_args_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:116:20
+    |
+116 |     invoke: unsafe extern fn(*mut Block<A, R>, ...) -> R,
+    |                    ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+223 | concrete_block_impl!(concrete_block_invoke_args0);
+    | ------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+223 | concrete_block_impl!(concrete_block_invoke_args0);
+    | ------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+224 | concrete_block_impl!(concrete_block_invoke_args1, a: A);
+    | ------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+224 | concrete_block_impl!(concrete_block_invoke_args1, a: A);
+    | ------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+225 | concrete_block_impl!(concrete_block_invoke_args2, a: A, b: B);
+    | ------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+225 | concrete_block_impl!(concrete_block_invoke_args2, a: A, b: B);
+    | ------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+226 | concrete_block_impl!(concrete_block_invoke_args3, a: A, b: B, c: C);
+    | ------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+226 | concrete_block_impl!(concrete_block_invoke_args3, a: A, b: B, c: C);
+    | ------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+227 | concrete_block_impl!(concrete_block_invoke_args4, a: A, b: B, c: C, d: D);
+    | ------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+227 | concrete_block_impl!(concrete_block_invoke_args4, a: A, b: B, c: C, d: D);
+    | ------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+228 | concrete_block_impl!(concrete_block_invoke_args5, a: A, b: B, c: C, d: D, e: E);
+    | ------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+228 | concrete_block_impl!(concrete_block_invoke_args5, a: A, b: B, c: C, d: D, e: E);
+    | ------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+229 | concrete_block_impl!(concrete_block_invoke_args6, a: A, b: B, c: C, d: D, e: E, f: F);
+    | ------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+229 | concrete_block_impl!(concrete_block_invoke_args6, a: A, b: B, c: C, d: D, e: E, f: F);
+    | ------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+230 | concrete_block_impl!(concrete_block_invoke_args7, a: A, b: B, c: C, d: D, e: E, f: F, g: G);
+    | ------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+230 | concrete_block_impl!(concrete_block_invoke_args7, a: A, b: B, c: C, d: D, e: E, f: F, g: G);
+    | ------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+231 | concrete_block_impl!(concrete_block_invoke_args8, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H);
+    | ------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+231 | concrete_block_impl!(concrete_block_invoke_args8, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H);
+    | ------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+232 | concrete_block_impl!(concrete_block_invoke_args9, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I);
+    | ------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+232 | concrete_block_impl!(concrete_block_invoke_args9, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I);
+    | ------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+233 | concrete_block_impl!(concrete_block_invoke_args10, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J);
+    | -------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+233 | concrete_block_impl!(concrete_block_invoke_args10, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J);
+    | -------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+234 | concrete_block_impl!(concrete_block_invoke_args11, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K);
+    | -------------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+234 | concrete_block_impl!(concrete_block_invoke_args11, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K);
+    | -------------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:206:24
+    |
+206 |                 unsafe extern fn $f<$($t,)* R, X>(
+    |                        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+235 | concrete_block_impl!(concrete_block_invoke_args12, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L);
+    | -------------------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:214:31
+    |
+214 |                 let f: unsafe extern fn(*mut ConcreteBlock<($($t,)*), R, X> $(, $a: $t)*) -> R = $f;
+    |                               ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+...
+235 | concrete_block_impl!(concrete_block_invoke_args12, a: A, b: B, c: C, d: D, e: E, f: F, g: G, h: H, i: I, j: J, k: K, l: L);
+    | -------------------------------------------------------------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `concrete_block_impl` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:260:42
+    |
+260 |     unsafe fn with_invoke(invoke: unsafe extern fn(*mut Self, ...) -> R,
+    |                                          ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:314:8
+    |
+314 | unsafe extern fn block_context_dispose<B>(block: &mut B) {
+    |        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:319:8
+    |
+319 | unsafe extern fn block_context_copy<B>(_dst: &mut B, _src: &B) {
+    |        ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:327:25
+    |
+327 |     copy_helper: unsafe extern fn(&mut B, &B),
+    |                         ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: `extern` declarations without an explicit ABI are deprecated
+   --> third_party/block/src/lib.rs:328:28
+    |
+328 |     dispose_helper: unsafe extern fn(&mut B),
+    |                            ^^^^^^ help: explicitly specify the "C" ABI: `extern "C"`
+
+warning: `block` (lib) generated 46 warnings (run `cargo fix --lib -p block` to apply 46 suggestions)
+warning: use of deprecated type alias `libc::uint32_t`: Use u32 instead.
+ --> third_party/xattr/src/sys/linux_macos/macos.rs:1:52
+  |
+1 | use libc::{c_char, c_int, c_void, size_t, ssize_t, uint32_t};
+  |                                                    ^^^^^^^^
+  |
+  = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated type alias `libc::uint32_t`: Use u32 instead.
+  --> third_party/xattr/src/sys/linux_macos/macos.rs:26:23
+   |
+26 |             position: uint32_t,
+   |                       ^^^^^^^^
+
+warning: use of deprecated type alias `libc::uint32_t`: Use u32 instead.
+  --> third_party/xattr/src/sys/linux_macos/macos.rs:46:23
+   |
+46 |             position: uint32_t,
+   |                       ^^^^^^^^
+
+warning: use of deprecated type alias `libc::uint32_t`: Use u32 instead.
+  --> third_party/xattr/src/sys/linux_macos/macos.rs:82:23
+   |
+82 |             position: uint32_t,
+   |                       ^^^^^^^^
+
+warning: use of deprecated type alias `libc::uint32_t`: Use u32 instead.
+   --> third_party/xattr/src/sys/linux_macos/macos.rs:102:23
+    |
+102 |             position: uint32_t,
+    |                       ^^^^^^^^
+
+warning: `xattr` (lib) generated 5 warnings
+   Compiling hex-stream v0.1.0 (/Users/portalsurfer/.codex/worktrees/hex-general-local/hex/crates/hex-stream)
+    Checking hex-session v0.1.0 (/Users/portalsurfer/.codex/worktrees/hex-general-local/hex/crates/hex-session)
+   Compiling hex-ui v0.1.0 (/Users/portalsurfer/.codex/worktrees/hex-general-local/hex/crates/hex-ui)
+    Checking hex-audio v0.1.0 (/Users/portalsurfer/.codex/worktrees/hex-general-local/hex/crates/hex-audio)
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/clip_content_cache.rs:104:58
+    |
+104 |                         .is_some_and(|state| Arc::ptr_eq(state, &self.snapshot))
+    |                                              ----------- ^^^^^ expected `&Arc<ViewState>`, found `&SnapshotReadCapability`
+    |                                              |
+    |                                              arguments to this function are incorrect
+    |
+    = note: expected reference `&std::sync::Arc<hex_session::service::ViewState>`
+               found reference `&SnapshotReadCapability`
+note: associated function defined here
+   --> /rustc/4a4ef493e3a1488c6e321570238084b38948f6db/library/alloc/src/sync.rs:2143:11
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/render.rs:366:49
+    |
+366 |             .reconcile(self.project_generation, self.state.as_ref(), cx);
+    |              ---------                          ^^^^^^^^^^^^^^^^^^^ expected `Option<&Arc<ViewState>>`, found `Option<&SnapshotReadCapability>`
+    |              |
+    |              arguments to this method are incorrect
+    |
+    = note: expected enum `std::option::Option<&std::sync::Arc<hex_session::service::ViewState>>`
+               found enum `std::option::Option<&SnapshotReadCapability>`
+note: method defined here
+   --> crates/hex-ui/src/editor/clip_content_cache.rs:41:19
+    |
+ 41 |     pub(super) fn reconcile(
+    |                   ^^^^^^^^^
+...
+ 44 |         snapshot: Option<&Arc<ViewState>>,
+    |         ---------------------------------
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/render.rs:921:59
+    |
+921 |                     view.state.as_ref().map(|state| state.project.as_ref()),
+    |                                                           ^^^^^^^ unknown field
+
+error[E0277]: the trait bound `SnapshotReadCapability: Clone` is not satisfied
+   --> crates/hex-ui/src/editor/arrangement.rs:235:59
+    |
+235 |                     let Some(state) = this.state.as_ref().cloned() else {
+    |                                                           ^^^^^^ the trait `Clone` is not implemented for `SnapshotReadCapability`
+    |
+note: required by a bound in `std::option::Option::<&T>::cloned`
+   --> /rustc/4a4ef493e3a1488c6e321570238084b38948f6db/library/core/src/option.rs:2102:4
+
+error[E0609]: no field `project` on type `SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement.rs:238:45
+    |
+238 |                     let Some(track) = state.project.tracks().get(index) else {
+    |                                             ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/arrangement.rs:241:66
+    |
+241 |                     let selected = this.selected_track() == Some(track.id());
+    |                                                                  ^^^^^ cannot infer type
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/arrangement.rs:243:25
+    |
+242 |                     this.track_row(
+    |                          --------- arguments to this method are incorrect
+243 |                         &state,
+    |                         ^^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: method defined here
+   --> crates/hex-ui/src/editor/tracks.rs:248:19
+    |
+248 |     pub(super) fn track_row(
+    |                   ^^^^^^^^^
+249 |         &mut self,
+250 |         state: &ViewState,
+    |         -----------------
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:45:22
+   |
+45 |     let clip = state.project.clip(clip_id)?;
+   |                      ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:46:23
+   |
+46 |     let asset = state.project.asset(clip.asset())?;
+   |                       ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:61:28
+   |
+61 |         sample_rate: state.project.sample_rate(),
+   |                            ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:62:25
+   |
+62 |         revision: state.revision,
+   |                         ^^^^^^^^ unknown field
+
+error[E0609]: no field `waveforms` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:66:26
+   |
+66 |     let waveform = state.waveforms.get(&window.asset).cloned();
+   |                          ^^^^^^^^^ unknown field
+
+error[E0609]: no field `audio_clip_waveforms` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:207:35
+    |
+207 |     if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
+    |                                   ^^^^^^^^^^^^^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:643:15
+    |
+643 |         state.revision == captured.revision
+    |               ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:644:22
+    |
+644 |             && state.project.clip(captured.clip).is_some_and(|clip| {
+    |                      ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:644:63
+    |
+644 |             && state.project.clip(captured.clip).is_some_and(|clip| {
+    |                                                               ^^^^
+645 |                 clip.asset() == captured.asset
+    |                 ---- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+644 |             && state.project.clip(captured.clip).is_some_and(|clip: /* Type */| {
+    |                                                                   ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:655:18
+    |
+655 |                 .project
+    |                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/arrangement_audio_panel.rs:657:31
+    |
+657 |                 .is_some_and(|asset| asset.playback_frames() == captured.asset_frames)
+    |                               ^^^^^  ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+657 |                 .is_some_and(|asset: /* Type */| asset.playback_frames() == captured.asset_frames)
+    |                                    ++++++++++++
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_seek.rs:281:61
+    |
+281 |                 candidate_project_revision: candidate.state.revision,
+    |                                                             ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_seek.rs:282:49
+    |
+282 |                 current_project_revision: state.revision,
+    |                                                 ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_seek.rs:305:23
+    |
+305 |                 state.revision,
+    |                       ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_seek.rs:431:22
+    |
+431 |             || state.revision != intent.project_revision
+    |                      ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_seek.rs:437:30
+    |
+437 |             || audible.state.revision != intent.project_revision
+    |                              ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_seek.rs:456:20
+    |
+456 |             &state.project,
+    |                    ^^^^^^^ unknown field
+
+error[E0631]: type mismatch in function arguments
+   --> crates/hex-ui/src/editor/arrangement_seek.rs:517:51
+    |
+517 |         let Some(state) = self.state.as_ref().map(Arc::clone) else {
+    |                                               --- ^^^^^^^^^^
+    |                                               |   |
+    |                                               |   expected due to this
+    |                                               |   found signature defined here
+    |                                               required by a bound introduced by this call
+    |
+    = note: expected function signature `fn(&SnapshotReadCapability) -> _`
+               found function signature `fn(&std::sync::Arc<_, _>) -> _`
+note: required by a bound in `std::option::Option::<T>::map`
+   --> /rustc/4a4ef493e3a1488c6e321570238084b38948f6db/library/core/src/option.rs:1160:4
+help: consider wrapping the function in a closure
+    |
+517 |         let Some(state) = self.state.as_ref().map(|arg0: &SnapshotReadCapability| Arc::clone(/* &std::sync::Arc<_, _> */)) else {
+    |                                                   +++++++++++++++++++++++++++++++           +++++++++++++++++++++++++++++
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_seek.rs:602:22
+    |
+602 |             && state.revision == pending.project_revision
+    |                      ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_seek.rs:608:30
+    |
+608 |             && audible.state.revision == pending.project_revision
+    |                              ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_seek.rs:616:38
+    |
+616 |             && routes.count == state.project.tracks().len()
+    |                                      ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/arrangement_seek.rs:618:93
+    |
+618 |             && super::arrangement_seek::routes_are_current(&entries[..routes.count], &state.project)
+    |                                                                                             ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/audio_event_editor/view.rs:36:22
+   |
+36 |     let clip = state.project.clip(clip_id)?.clone();
+   |                      ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/audio_event_editor/view.rs:67:47
+   |
+67 |         .root_frame_at(root.view_start, state.project.tempo_map())
+   |                                               ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/audio_event_editor/view.rs:69:71
+   |
+69 |     let frame_at = |position: u64| root.root_frame_at(position, state.project.tempo_map()).ok();
+   |                                                                       ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/audio_event_editor/view.rs:87:16
+   |
+87 |         &state.project,
+   |                ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/view.rs:113:64
+    |
+113 |     for tick in super::super::musical_time::ruler_ticks(&state.project, viewport, width) {
+    |                                                                ^^^^^^^ unknown field
+
+error[E0609]: no field `audio_clip_waveforms` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/view.rs:172:43
+    |
+172 |             if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
+    |                                           ^^^^^^^^^^^^^^^^^^^^ unknown field
+
+error[E0609]: no field `waveforms` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/view.rs:181:46
+    |
+181 |             } else if let Some(wave) = state.waveforms.get(&clip.asset()) {
+    |                                              ^^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/view.rs:314:40
+    |
+314 |                 let Some(clip) = state.project.clip(clip_id) else {
+    |                                        ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/audio_event_editor/view.rs:321:34
+    |
+321 |                 let Ok(events) = clip.editable_audio_events() else {
+    |                                  ^^^^ cannot infer type
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/view.rs:347:63
+    |
+347 |                         .root_frame_at(root.view_start, state.project.tempo_map())
+    |                                                               ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/view.rs:354:55
+    |
+354 |                         root.root_frame_at(raw, state.project.tempo_map())
+    |                                                       ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/view.rs:362:61
+    |
+362 | ...                   .root_frame_at(hit.start, state.project.tempo_map())
+    |                                                       ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/view.rs:369:59
+    |
+369 | ...                   .root_frame_at(hit.end, state.project.tempo_map())
+    |                                                     ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:52:28
+   |
+52 |         let source = state.project.clip(clip)?;
+   |                            ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:53:54
+   |
+53 |         Some((clip, source.audio_event_root(), state.revision))
+   |                                                      ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:78:26
+   |
+78 |         let clip = state.project.clip(self.selected_clip?)?;
+   |                          ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:97:34
+   |
+97 |         let Some(source) = state.project.clip(clip) else {
+   |                                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:104:27
+    |
+104 |             events: match source.editable_audio_events() {
+    |                           ^^^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:105:31
+    |
+105 |                 Ok(events) => events.copy_range(start, end),
+    |                               ^^^^^^ cannot infer type
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:192:51
+    |
+192 |             .root_frame_at(root.view_start, state.project.tempo_map())
+    |                                                   ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:195:49
+    |
+195 |             .root_frame_at(root.view_end, state.project.tempo_map())
+    |                                                 ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:206:41
+    |
+206 |         let clip = self.state.as_ref()?.project.clip(self.selected_clip?)?;
+    |                                         ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:230:32
+    |
+230 |             .snap_frame(&state.project, candidate, viewport, width)?;
+    |                                ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:235:26
+    |
+235 |         let clip = state.project.clip(self.selected_clip?)?;
+    |                          ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:237:51
+    |
+237 |             .root_frame_at(root.view_start, state.project.tempo_map())
+    |                                                   ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:240:64
+    |
+240 |         root.root_position_at(first.checked_add(local)?, state.project.tempo_map())
+    |                                                                ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:246:26
+    |
+246 |         let clip = state.project.clip(self.selected_clip?)?;
+    |                          ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:248:51
+    |
+248 |             .root_frame_at(root.view_start, state.project.tempo_map())
+    |                                                   ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:251:48
+    |
+251 |             root.root_frame_at(position, state.project.tempo_map())
+    |                                                ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:261:32
+    |
+261 |             .snap_frame(&state.project, frame, viewport, width)?;
+    |                                ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:371:32
+    |
+371 |         let Some(clip) = state.project.clip(clip_id) else {
+    |                                ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:374:26
+    |
+374 |         let Ok(events) = clip.editable_audio_events() else {
+    |                          ^^^^ cannot infer type
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:387:51
+    |
+387 |             .root_frame_at(root.view_start, state.project.tempo_map())
+    |                                                   ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:390:48
+    |
+390 |             root.root_frame_at(position, state.project.tempo_map())
+    |                                                ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:412:40
+    |
+412 |             grid.adjacent_frame(&state.project, frame, viewport, width, right)
+    |                                        ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:460:32
+    |
+460 |         let Some(clip) = state.project.clip(clip) else {
+    |                                ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:463:28
+    |
+463 |         let events = match clip.editable_audio_events() {
+    |                            ^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:464:27
+    |
+464 |             Ok(events) => events.copy_range(start, end),
+    |                           ^^^^^^ cannot infer type
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:496:51
+    |
+496 |             .root_frame_at(root.view_start, state.project.tempo_map())
+    |                                                   ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:499:49
+    |
+499 |             .root_frame_at(root.view_end, state.project.tempo_map())
+    |                                                 ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:503:66
+    |
+503 |             .root_frame_at(self.audio_event_editor.cursor, state.project.tempo_map())
+    |                                                                  ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:518:51
+    |
+518 |             .root_frame_at(root.view_start, state.project.tempo_map())
+    |                                                   ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/audio_event_editor/mod.rs:521:49
+    |
+521 |             .root_frame_at(root.view_end, state.project.tempo_map())
+    |                                                 ^^^^^^^ unknown field
+
+error[E0599]: the method `as_ref` exists for reference `&&SnapshotReadCapability`, but its trait bounds were not satisfied
+   --> crates/hex-ui/src/editor/clip_content_cache.rs:169:54
+    |
+169 |             .filter(|snapshot| std::ptr::eq(snapshot.as_ref(), state))
+    |                                                      ^^^^^^ method cannot be called on `&&SnapshotReadCapability` due to unsatisfied trait bounds
+    |
+   ::: crates/hex-session/src/snapshot_exports/transport.rs:88:1
+    |
+ 88 | pub struct SnapshotReadCapability {
+    | --------------------------------- doesn't satisfy `SnapshotReadCapability: AsRef<_>`
+    |
+    = note: the following trait bounds were not satisfied:
+            `SnapshotReadCapability: AsRef<_>`
+            which is required by `&SnapshotReadCapability: AsRef<_>`
+            `&SnapshotReadCapability: AsRef<_>`
+            which is required by `&&SnapshotReadCapability: AsRef<_>`
+
+error[E0277]: the trait bound `SnapshotReadCapability: Clone` is not satisfied
+   --> crates/hex-ui/src/editor/clip_content_cache.rs:170:14
+    |
+170 |             .cloned();
+    |              ^^^^^^ the trait `Clone` is not implemented for `SnapshotReadCapability`
+    |
+note: required by a bound in `std::option::Option::<&T>::cloned`
+   --> /rustc/4a4ef493e3a1488c6e321570238084b38948f6db/library/core/src/option.rs:2102:4
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/clip_content_cache.rs:214:17
+    |
+214 |                 snapshot,
+    |                 ^^^^^^^^ expected `Arc<ViewState>`, found `SnapshotReadCapability`
+    |
+    = note: expected struct `std::sync::Arc<hex_session::service::ViewState>`
+               found struct `SnapshotReadCapability`
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/clip_view.rs:134:20
+    |
+114 |       ) -> Div {
+    |            --- expected `gpui::Div` because of return type
+...
+134 |               return div()
+    |  ____________________^
+135 | |                 .id("clip-detail-read-unavailable")
+136 | |                 .child(theme::text("clip read unavailable"));
+    | |____________________________________________________________^ expected `Div`, found `Stateful<Div>`
+    |
+    = note: expected struct `gpui::Div`
+               found struct `gpui::Stateful<gpui::Div>`
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/computer_keyboard.rs:180:62
+    |
+180 |                 .map(|track| (self.project_generation, state.revision, track))
+    |                                                              ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/computer_keyboard.rs:216:37
+    |
+216 |             .and_then(|state| state.project.track(track))
+    |                                     ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/computer_keyboard.rs:217:26
+    |
+217 |             .is_none_or(|track| track.instrument().is_none_or(|device| device.bypassed()))
+    |                          ^^^^^  ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+217 |             .is_none_or(|track: /* Type */| track.instrument().is_none_or(|device| device.bypassed()))
+    |                               ++++++++++++
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/computer_keyboard.rs:217:64
+    |
+217 |             .is_none_or(|track| track.instrument().is_none_or(|device| device.bypassed()))
+    |                                                                ^^^^^^  ------ type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+217 |             .is_none_or(|track| track.instrument().is_none_or(|device: /* Type */| device.bypassed()))
+    |                                                                      ++++++++++++
+
+error[E0609]: no field `canonical_audio_source` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:208:37
+    |
+208 |             .and_then(|state| state.canonical_audio_source.as_ref())
+    |                                     ^^^^^^^^^^^^^^^^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/controller.rs:209:19
+    |
+209 |             .map(|snapshot| snapshot.context());
+    |                   ^^^^^^^^  -------- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+209 |             .map(|snapshot: /* Type */| snapshot.context());
+    |                           ++++++++++++
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:212:51
+    |
+212 |             self.state.as_ref().map(|state| state.revision),
+    |                                                   ^^^^^^^^ unknown field
+
+error[E0609]: no field `canonical_audio_source` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:245:37
+    |
+245 |             .and_then(|state| state.canonical_audio_source.as_ref())
+    |                                     ^^^^^^^^^^^^^^^^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/controller.rs:246:19
+    |
+246 |             .map(|snapshot| snapshot.context());
+    |                   ^^^^^^^^  -------- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+246 |             .map(|snapshot: /* Type */| snapshot.context());
+    |                           ++++++++++++
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:249:51
+    |
+249 |             self.state.as_ref().map(|state| state.revision),
+    |                                                   ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:288:43
+    |
+288 |                     .filter(|state| state.revision == context.editor_revision)
+    |                                           ^^^^^^^^ unknown field
+
+error[E0277]: the trait bound `SnapshotReadCapability: Clone` is not satisfied
+   --> crates/hex-ui/src/editor/controller.rs:289:22
+    |
+289 |                     .cloned()
+    |                      ^^^^^^ the trait `Clone` is not implemented for `SnapshotReadCapability`
+    |
+note: required by a bound in `std::option::Option::<&T>::cloned`
+   --> /rustc/4a4ef493e3a1488c6e321570238084b38948f6db/library/core/src/option.rs:2102:4
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:884:55
+    |
+884 |                 self.state.as_ref().map(|state| state.revision),
+    |                                                       ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:890:47
+    |
+890 |                 self.state.as_ref().map(|s| s.revision),
+    |                                               ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:910:51
+    |
+910 |             self.state.as_ref().map(|state| state.revision),
+    |                                                   ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:934:47
+    |
+934 |                 self.state.as_ref().map(|s| s.revision),
+    |                                               ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:941:59
+    |
+941 |                     self.state.as_ref().map(|state| state.revision),
+    |                                                           ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:949:41
+    |
+949 |                         candidate.state.revision,
+    |                                         ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:950:41
+    |
+950 |                         candidate.state.project.tuning(),
+    |                                         ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:956:74
+    |
+956 |                     self.applied_project_revision = Some(candidate.state.revision);
+    |                                                                          ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller.rs:984:39
+    |
+984 |                 .filter(|state| state.revision == source.context.editor_revision)
+    |                                       ^^^^^^^^ unknown field
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/controller.rs:994:43
+    |
+994 |                         state: Arc::clone(state),
+    |                                ---------- ^^^^^ expected `&Arc<_, _>`, found `&SnapshotReadCapability`
+    |                                |
+    |                                arguments to this function are incorrect
+    |
+    = note: expected reference `&std::sync::Arc<_, _>`
+               found reference `&SnapshotReadCapability`
+note: method defined here
+   --> /rustc/4a4ef493e3a1488c6e321570238084b38948f6db/library/core/src/clone.rs:236:7
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/controller.rs:994:32
+    |
+994 |                         state: Arc::clone(state),
+    |                                ^^^^^^^^^^^^^^^^^ expected `SnapshotReadCapability`, found `Arc<_, _>`
+    |
+    = note: expected struct `SnapshotReadCapability`
+               found struct `std::sync::Arc<_, _>`
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1020:55
+     |
+1020 |                 self.state.as_ref().map(|state| state.project.as_ref()),
+     |                                                       ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1021:55
+     |
+1021 |                 self.state.as_ref().map(|state| state.revision),
+     |                                                       ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1207:22
+     |
+1207 |                     .project
+     |                      ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1210:27
+     |
+1210 |                     .any(|track| track.id() == *id)
+     |                           ^^^^^  ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1210 |                     .any(|track: /* Type */| track.id() == *id)
+     |                                ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1223:23
+     |
+1223 |                 state.project.track(track_id).is_some_and(|track| {
+     |                       ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1223:60
+     |
+1223 |                 state.project.track(track_id).is_some_and(|track| {
+     |                                                            ^^^^^
+1224 |                     track.devices().iter().any(|device| {
+     |                     ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1223 |                 state.project.track(track_id).is_some_and(|track: /* Type */| {
+     |                                                                 ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1224:49
+     |
+1224 |                     track.devices().iter().any(|device| {
+     |                                                 ^^^^^^
+1225 |                         device.id().value() == target.identity.device_id
+     |                         ------ type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1224 |                     track.devices().iter().any(|device: /* Type */| {
+     |                                                       ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1234:18
+     |
+1234 |                 .project
+     |                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1237:24
+     |
+1237 |                 .find(|track| track.id() == return_id)
+     |                        ^^^^^  ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1237 |                 .find(|track: /* Type */| track.id() == return_id)
+     |                             ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1238:31
+     |
+1238 |                 .is_some_and(|track| {
+     |                               ^^^^^
+1239 |                     track.devices().iter().any(|device| {
+     |                     ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1238 |                 .is_some_and(|track: /* Type */| {
+     |                                    ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1239:49
+     |
+1239 |                     track.devices().iter().any(|device| {
+     |                                                 ^^^^^^
+1240 |                         device.id().value() == target.identity.device_id
+     |                         ------ type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1239 |                     track.devices().iter().any(|device: /* Type */| {
+     |                                                       ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1287:22
+     |
+1287 |                     .project
+     |                      ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1290:27
+     |
+1290 |                     .any(|track| track.id() == *id)
+     |                           ^^^^^  ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1290 |                     .any(|track: /* Type */| track.id() == *id)
+     |                                ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1302:23
+     |
+1302 |                 state.project.track(track_id).is_some_and(|track| {
+     |                       ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1302:60
+     |
+1302 |                 state.project.track(track_id).is_some_and(|track| {
+     |                                                            ^^^^^
+1303 |                     track.devices().iter().any(|device| {
+     |                     ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1302 |                 state.project.track(track_id).is_some_and(|track: /* Type */| {
+     |                                                                 ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1303:49
+     |
+1303 |                     track.devices().iter().any(|device| {
+     |                                                 ^^^^^^
+1304 |                         device.id().value() == target.identity.device_id
+     |                         ------ type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1303 |                     track.devices().iter().any(|device: /* Type */| {
+     |                                                       ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1313:18
+     |
+1313 |                 .project
+     |                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1316:24
+     |
+1316 |                 .find(|track| track.id() == return_id)
+     |                        ^^^^^  ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1316 |                 .find(|track: /* Type */| track.id() == return_id)
+     |                             ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1317:31
+     |
+1317 |                 .is_some_and(|track| {
+     |                               ^^^^^
+1318 |                     track.devices().iter().any(|device| {
+     |                     ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1317 |                 .is_some_and(|track: /* Type */| {
+     |                                    ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1318:49
+     |
+1318 |                     track.devices().iter().any(|device| {
+     |                                                 ^^^^^^
+1319 |                         device.id().value() == target.identity.device_id
+     |                         ------ type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1318 |                     track.devices().iter().any(|device: /* Type */| {
+     |                                                       ++++++++++++
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1419:44
+     |
+1419 |                 .is_some_and(|state| state.revision == event.state.revision)
+     |                                            ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1455:48
+     |
+1455 |                     .is_some_and(|state| state.revision == event.state.revision);
+     |                                                ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1486:48
+     |
+1486 |                     .is_some_and(|state| state.revision == event.state.revision);
+     |                                                ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1536:50
+     |
+1536 |                 .is_some_and(|previous| previous.revision != revision)
+     |                                                  ^^^^^^^^ unknown field
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1542:83
+     |
+1542 |             && let Some(previous_horizon) = self.state.as_ref().map(|state| state.timeline_frames)
+     |                                                                                   ^^^^^^^^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1568:40
+     |
+1568 |             .is_some_and(|state| state.revision != revision)
+     |                                        ^^^^^^^^ unknown field
+
+error[E0599]: no method named `reconcile` found for struct `gain_lane::GainLane` in the current scope
+    --> crates/hex-ui/src/editor/controller.rs:1576:24
+     |
+1576 |         self.gain_lane.reconcile(
+     |         ---------------^^^^^^^^^
+     |
+    ::: crates/hex-ui/src/editor/gain_lane/mod.rs:32:1
+     |
+  32 | pub(super) struct GainLane {
+     | -------------------------- method `reconcile` not found for this struct
+     |
+help: there is a method `reconcile_read` with a similar name
+     |
+1576 |         self.gain_lane.reconcile_read(
+     |                                 +++++
+
+error[E0308]: mismatched types
+    --> crates/hex-ui/src/editor/controller.rs:1582:27
+     |
+1582 |         self.state = Some(event.state);
+     |                      ---- ^^^^^^^^^^^ expected `SnapshotReadCapability`, found `Arc<ViewState>`
+     |                      |
+     |                      arguments to this enum variant are incorrect
+     |
+     = note: expected struct `SnapshotReadCapability`
+                found struct `std::sync::Arc<hex_session::service::ViewState>`
+help: the type constructed contains `std::sync::Arc<hex_session::service::ViewState>` due to the type of the argument passed
+    --> crates/hex-ui/src/editor/controller.rs:1582:22
+     |
+1582 |         self.state = Some(event.state);
+     |                      ^^^^^-----------^
+     |                           |
+     |                           this argument influences the type of `Some`
+note: tuple variant defined here
+    --> /rustc/4a4ef493e3a1488c6e321570238084b38948f6db/library/core/src/option.rs:608:4
+
+error[E0609]: no field `canonical_audio_source` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1601:49
+     |
+1601 |                         .and_then(|state| state.canonical_audio_source.as_ref())
+     |                                                 ^^^^^^^^^^^^^^^^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1602:31
+     |
+1602 |                         .map(|snapshot| snapshot.audio_mode())
+     |                               ^^^^^^^^  -------- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1602 |                         .map(|snapshot: /* Type */| snapshot.audio_mode())
+     |                                       ++++++++++++
+
+error[E0599]: the method `clone` exists for enum `std::option::Option<SnapshotReadCapability>`, but its trait bounds were not satisfied
+    --> crates/hex-ui/src/editor/controller.rs:1684:48
+     |
+1684 |         } else if let Some(state) = self.state.clone() {
+     |                                                ^^^^^ method cannot be called on `std::option::Option<SnapshotReadCapability>` due to unsatisfied trait bounds
+     |
+    ::: crates/hex-session/src/snapshot_exports/transport.rs:88:1
+     |
+  88 | pub struct SnapshotReadCapability {
+     | --------------------------------- doesn't satisfy `SnapshotReadCapability: Clone`
+     |
+     = note: the following trait bounds were not satisfied:
+             `SnapshotReadCapability: Clone`
+             which is required by `std::option::Option<SnapshotReadCapability>: Clone`
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1692:31
+     |
+1692 |                         .any(|track| track.clips().iter().any(|item| item.id() == clip))
+     |                               ^^^^^  ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1692 |                         .any(|track: /* Type */| track.clips().iter().any(|item| item.id() == clip))
+     |                                    ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1692:64
+     |
+1692 |                         .any(|track| track.clips().iter().any(|item| item.id() == clip))
+     |                                                                ^^^^  ---- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1692 |                         .any(|track| track.clips().iter().any(|item: /* Type */| item.id() == clip))
+     |                                                                    ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1701:80
+     |
+1701 |                 && let Some(cell) = state.project.session_cells().iter().find(|cell| {
+     |                                                                                ^^^^
+1702 |                     matches!(cell.content(), hex_project::SessionCellContent::Midi(item) if item.id() == clip)
+     |                              ---- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1701 |                 && let Some(cell) = state.project.session_cells().iter().find(|cell: /* Type */| {
+     |                                                                                    ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1705:44
+     |
+1705 |                 self.selected_track = Some(cell.track());
+     |                                            ^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1711:74
+     |
+1711 |                 .is_some_and(|scene| !state.project.scenes().iter().any(|item| item.id() == scene))
+     |                                                                          ^^^^  ---- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1711 |                 .is_some_and(|scene| !state.project.scenes().iter().any(|item: /* Type */| item.id() == scene))
+     |                                                                              ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1717:60
+     |
+1717 |                     || !state.project.scenes().iter().any(|item| item.id() == scene)
+     |                                                            ^^^^  ---- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1717 |                     || !state.project.scenes().iter().any(|item: /* Type */| item.id() == scene)
+     |                                                                ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1729:27
+     |
+1729 |                     .map(|source| source.source_length().raw())
+     |                           ^^^^^^  ------ type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1729 |                     .map(|source: /* Type */| source.source_length().raw())
+     |                                 ++++++++++++
+
+error[E0282]: type annotations needed for `std::option::Option<_>`
+    --> crates/hex-ui/src/editor/controller.rs:1738:27
+     |
+1738 |                 .and_then(|clip| state.project.midi_source(clip))
+     |                           ^^^^^^
+...
+1742 |                 let source_length = clip.source_length().raw();
+     |                                     ---- type must be known at this point
+     |
+help: try giving this closure an explicit return type
+     |
+1738 |                 .and_then(|clip| -> std::option::Option<U> { state.project.midi_source(clip) })
+     |                                  +++++++++++++++++++++++++++                                 +
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1752:54
+     |
+1752 |                 let valid = clip.notes().iter().map(|note| note.id());
+     |                                                      ^^^^  ---- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1752 |                 let valid = clip.notes().iter().map(|note: /* Type */| note.id());
+     |                                                          ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1786:26
+     |
+1786 |                         .project
+     |                          ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1789:32
+     |
+1789 |                         .find(|track| track.clips().iter().any(|item| item.id() == clip))
+     |                                ^^^^^  ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1789 |                         .find(|track: /* Type */| track.clips().iter().any(|item| item.id() == clip))
+     |                                     ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1789:65
+     |
+1789 |                         .find(|track| track.clips().iter().any(|item| item.id() == clip))
+     |                                                                 ^^^^  ---- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1789 |                         .find(|track| track.clips().iter().any(|item: /* Type */| item.id() == clip))
+     |                                                                     ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1790:31
+     |
+1790 |                         .map(|track| track.id())
+     |                               ^^^^^  ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1790 |                         .map(|track: /* Type */| track.id())
+     |                                    ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1834:41
+     |
+1834 |                 .and_then(|state| state.project.midi_source(clip))
+     |                                         ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed for `std::option::Option<_>`
+    --> crates/hex-ui/src/editor/controller.rs:1834:27
+     |
+1834 |                 .and_then(|state| state.project.midi_source(clip))
+     |                           ^^^^^^^
+...
+1839 |                     current.notes(),
+     |                     ------- type must be known at this point
+     |
+help: try giving this closure an explicit return type
+     |
+1834 |                 .and_then(|state| -> std::option::Option<U> { state.project.midi_source(clip) })
+     |                                   +++++++++++++++++++++++++++                                 +
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1855:22
+     |
+1855 |                     .project
+     |                      ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1858:28
+     |
+1858 |                     .find(|track| {
+     |                            ^^^^^
+1859 |                         track.clips().iter().any(|item| item.id() == clip)
+     |                         ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1858 |                     .find(|track: /* Type */| {
+     |                                 ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1859:51
+     |
+1859 |                         track.clips().iter().any(|item| item.id() == clip)
+     |                                                   ^^^^  ---- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1859 |                         track.clips().iter().any(|item: /* Type */| item.id() == clip)
+     |                                                       ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1860:63
+     |
+1860 | ...                   || track.midi_clips().iter().any(|item| item.id() == clip)
+     |                                                         ^^^^  ---- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1860 |                             || track.midi_clips().iter().any(|item: /* Type */| item.id() == clip)
+     |                                                                   ++++++++++++
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1862:27
+     |
+1862 |                     .map(|track| track.id())
+     |                           ^^^^^  ----- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1862 |                     .map(|track: /* Type */| track.id())
+     |                                ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:1875:23
+     |
+1875 |                 state.project.session_cells().iter().find_map(|cell| {
+     |                       ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/controller.rs:1875:64
+     |
+1875 |                 state.project.session_cells().iter().find_map(|cell| {
+     |                                                                ^^^^
+1876 |                     let is_midi = matches!(
+1877 |                         cell.content(),
+     |                         ---- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1875 |                 state.project.session_cells().iter().find_map(|cell: /* Type */| {
+     |                                                                    ++++++++++++
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:2462:29
+     |
+2462 |         let horizon = state.timeline_frames;
+     |                             ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/controller.rs:2465:14
+     |
+2465 |             .visible_viewport(horizon)
+     |              ^^^^^^^^^^^^^^^^--------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+2465 |             .visible_viewport(horizon, /* u64 */)
+     |                                      +++++++++++
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:2497:29
+     |
+2497 |         let horizon = state.timeline_frames;
+     |                             ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/controller.rs:2498:28
+     |
+2498 |         let current = self.visible_viewport(horizon);
+     |                            ^^^^^^^^^^^^^^^^--------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+2498 |         let current = self.visible_viewport(horizon, /* u64 */);
+     |                                                    +++++++++++
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:2526:29
+     |
+2526 |         let horizon = state.timeline_frames;
+     |                             ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/controller.rs:2527:28
+     |
+2527 |         let current = self.visible_viewport(horizon);
+     |                            ^^^^^^^^^^^^^^^^--------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+2527 |         let current = self.visible_viewport(horizon, /* u64 */);
+     |                                                    +++++++++++
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:2843:65
+     |
+2843 |                     self.applied_project_revision != Some(state.revision)
+     |                                                                 ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:2966:47
+     |
+2966 |                     revision: candidate.state.revision,
+     |                                               ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:2987:39
+     |
+2987 |             revision: candidate.state.revision,
+     |                                       ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:3004:37
+     |
+3004 |                     candidate.state.revision,
+     |                                     ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:3055:25
+     |
+3055 |         candidate.state.revision,
+     |                         ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:3097:33
+     |
+3097 |                 candidate.state.revision,
+     |                                 ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/controller.rs:3122:37
+     |
+3122 |                     candidate.state.revision,
+     |                                     ^^^^^^^^ unknown field
+
+error[E0308]: mismatched types
+    --> crates/hex-ui/src/editor/controller.rs:3139:9
+     |
+3139 |         state,
+     |         ^^^^^ expected `SnapshotReadCapability`, found `Arc<ViewState>`
+     |
+     = note: expected struct `SnapshotReadCapability`
+                found struct `std::sync::Arc<hex_session::service::ViewState>`
+
+error[E0277]: the trait bound `hex_project::Project: SessionProject` is not satisfied
+    --> crates/hex-ui/src/editor/controller.rs:3187:25
+     |
+3186 |                     super::session_grid::action_is_current(
+     |                     -------------------------------------- required by a bound introduced by this call
+3187 |                         project,
+     |                         ^^^^^^^ the trait `SessionProject` is not implemented for `hex_project::Project`
+     |
+help: the trait `SessionProject` is implemented for `SnapshotProjectRead<'_>`
+    --> crates/hex-ui/src/editor/session_navigation.rs:27:1
+     |
+  27 | impl SessionProject for SnapshotProjectRead<'_> {
+     | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `action_is_current`
+    --> crates/hex-ui/src/editor/session_grid.rs:178:28
+     |
+ 177 | pub(super) fn action_is_current(
+     |               ----------------- required by a bound in this function
+ 178 |     project: Option<&(impl SessionProject + ?Sized)>,
+     |                            ^^^^^^^^^^^^^^ required by this bound in `action_is_current`
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller_input.rs:224:18
+    |
+224 |                 .project
+    |                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/controller_input.rs:227:26
+    |
+227 |                 .filter(|instrument| !instrument.bypassed())?;
+    |                          ^^^^^^^^^^   ---------- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+227 |                 .filter(|instrument: /* Type */| !instrument.bypassed())?;
+    |                                    ++++++++++++
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller_input.rs:240:72
+    |
+240 |             let revision = self.state.as_ref().map_or(0, |state| state.revision);
+    |                                                                        ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/controller_input.rs:263:18
+    |
+263 |                 .project
+    |                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/controller_input.rs:266:26
+    |
+266 |                 .filter(|instrument| !instrument.bypassed())?;
+    |                          ^^^^^^^^^^   ---------- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+266 |                 .filter(|instrument: /* Type */| !instrument.bypassed())?;
+    |                                    ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/device_panel/bindings.rs:53:18
+   |
+53 |                 .project
+   |                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/device_panel/bindings.rs:55:28
+   |
+55 |                 .and_then(|track| track.instrument())
+   |                            ^^^^^  ----- type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+55 |                 .and_then(|track: /* Type */| track.instrument())
+   |                                 ++++++++++++
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/device_panel/bindings.rs:56:26
+   |
+56 |                 .filter(|device| device.id() == self.key.device),
+   |                          ^^^^^^  ------ type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+56 |                 .filter(|device: /* Type */| device.id() == self.key.device),
+   |                                ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/device_panel/bindings.rs:58:23
+   |
+58 |                 state.project.track(id).and_then(|track| {
+   |                       ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/device_panel/bindings.rs:58:51
+   |
+58 |                 state.project.track(id).and_then(|track| {
+   |                                                   ^^^^^
+59 |                     track
+   |                     ----- type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+58 |                 state.project.track(id).and_then(|track: /* Type */| {
+   |                                                        ++++++++++++
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/device_panel/bindings.rs:62:32
+   |
+62 |                         .find(|device| device.id() == self.key.device)
+   |                                ^^^^^^  ------ type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+62 |                         .find(|device: /* Type */| device.id() == self.key.device)
+   |                                      ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/device_panel/bindings.rs:66:18
+   |
+66 |                 .project
+   |                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/device_panel/bindings.rs:69:24
+   |
+69 |                 .find(|track| track.id() == id)
+   |                        ^^^^^  ----- type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+69 |                 .find(|track: /* Type */| track.id() == id)
+   |                             ++++++++++++
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/device_panel/bindings.rs:70:28
+   |
+70 |                 .and_then(|track| {
+   |                            ^^^^^
+71 |                     track
+   |                     ----- type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+70 |                 .and_then(|track: /* Type */| {
+   |                                 ++++++++++++
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/device_panel/bindings.rs:74:32
+   |
+74 |                         .find(|device| device.id() == self.key.device)
+   |                                ^^^^^^  ------ type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+74 |                         .find(|device: /* Type */| device.id() == self.key.device)
+   |                                      ++++++++++++
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/device_panel/bindings.rs:81:12
+   |
+81 |         if device.state().type_id() != self.identity.type_id {
+   |            ^^^^^^ cannot infer type
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/bindings.rs:313:64
+    |
+313 |     let revision = view.state.as_ref().map_or(0, |state| state.revision);
+    |                                                                ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/bindings.rs:327:52
+    |
+327 |                         .is_some_and(|state| state.revision == revision)
+    |                                                    ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq8_panel/graph.rs:255:47
+    |
+255 |                 .map_or(48_000, |state| state.project.sample_rate()),
+    |                                               ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq8_panel/graph.rs:329:72
+    |
+329 |     let project_revision = view.state.as_ref().map_or(0, |state| state.revision);
+    |                                                                        ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq8_panel.rs:345:72
+    |
+345 |     let project_revision = view.state.as_ref().map_or(0, |state| state.revision);
+    |                                                                        ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq8_panel.rs:397:54
+    |
+397 |             || view.state.as_ref().map(|state| state.revision) != Some(project_revision)
+    |                                                      ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:157:49
+    |
+157 |     let next_id = view.state.as_ref().map(|s| s.project.next_identity());
+    |                                                 ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:546:18
+    |
+546 |                 .project
+    |                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:551:15
+    |
+551 |         .map(|beat| beat.raw());
+    |               ^^^^  ---- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+551 |         .map(|beat: /* Type */| beat.raw());
+    |                   ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:636:31
+    |
+636 |     Some(view.state.as_ref()?.project.device(device)?.state().clone())
+    |                               ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:663:56
+    |
+663 |     let Some(project) = view.state.as_ref().map(|s| &s.project) else {
+    |                                                        ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:698:52
+    |
+698 |     let Some(next) = view.state.as_ref().map(|s| s.project.next_identity()) else {
+    |                                                    ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:723:52
+    |
+723 |     let Some(next) = view.state.as_ref().map(|s| s.project.next_identity()) else {
+    |                                                    ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:729:30
+    |
+729 |         .map_or(48000, |s| s.project.sample_rate());
+    |                              ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:942:10
+    |
+942 |         .project
+    |          ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:945:16
+    |
+945 |         .find(|track| track.devices().iter().any(|d| d.id() == device))
+    |                ^^^^^  ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+945 |         .find(|track: /* Type */| track.devices().iter().any(|d| d.id() == device))
+    |                     ++++++++++++
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:945:51
+    |
+945 |         .find(|track| track.devices().iter().any(|d| d.id() == device))
+    |                                                   ^  - type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+945 |         .find(|track| track.devices().iter().any(|d: /* Type */| d.id() == device))
+    |                                                    ++++++++++++
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:946:15
+    |
+946 |         .map(|track| hex_engine::ProcessorChainOwner::Track(track.id().value()))
+    |               ^^^^^                                         ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+946 |         .map(|track: /* Type */| hex_engine::ProcessorChainOwner::Track(track.id().value()))
+    |                    ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:949:18
+    |
+949 |                 .project
+    |                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:952:24
+    |
+952 |                 .find(|track| track.devices().iter().any(|d| d.id() == device))
+    |                        ^^^^^  ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+952 |                 .find(|track: /* Type */| track.devices().iter().any(|d| d.id() == device))
+    |                             ++++++++++++
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:952:59
+    |
+952 |                 .find(|track| track.devices().iter().any(|d| d.id() == device))
+    |                                                           ^  - type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+952 |                 .find(|track| track.devices().iter().any(|d: /* Type */| d.id() == device))
+    |                                                            ++++++++++++
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:953:23
+    |
+953 |                 .map(|track| hex_engine::ProcessorChainOwner::Return(track.id().value()))
+    |                       ^^^^^                                          ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+953 |                 .map(|track: /* Type */| hex_engine::ProcessorChainOwner::Return(track.id().value()))
+    |                            ++++++++++++
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:960:66
+    |
+960 |         .published_audio_revision(view.project_generation, state.revision)
+    |                                                                  ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:1025:56
+     |
+1025 |     let Some(project) = view.state.as_ref().map(|s| &s.project) else {
+     |                                                        ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:1084:32
+     |
+1084 |             .is_some_and(|s| s.project.next_identity() == creation.next_id)
+     |                                ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/device_panel/eq_panel.rs:1358:38
+     |
+1358 |                 .map_or(48000, |s| s.project.sample_rate());
+     |                                      ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/device_panel/gain_meters.rs:55:18
+   |
+55 |                 .project
+   |                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/device_panel/gain_meters.rs:57:31
+   |
+57 |                 .is_some_and(|audible| audible.state().type_id() == device.state().type_id())
+   |                               ^^^^^^^  ------- type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+57 |                 .is_some_and(|audible: /* Type */| audible.state().type_id() == device.state().type_id())
+   |                                      ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/navigation.rs:102:44
+    |
+102 |                 if let Some(track) = state.project.track(id) {
+    |                                            ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel/navigation.rs:103:33
+    |
+103 |                     for node in track.ordered_device_chain() {
+    |                                 ^^^^^ cannot infer type
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/navigation.rs:121:22
+    |
+121 |                     .project
+    |                      ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel/navigation.rs:124:28
+    |
+124 |                     .find(|track| track.id() == id)
+    |                            ^^^^^  ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+124 |                     .find(|track: /* Type */| track.id() == id)
+    |                                 ++++++++++++
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel/navigation.rs:126:34
+    |
+126 |                     cards.extend(track.devices().iter().map(|device| {
+    |                                  ^^^^^ cannot infer type
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel/navigation.rs:126:62
+    |
+126 |                     cards.extend(track.devices().iter().map(|device| {
+    |                                                              ^^^^^^
+127 |                         (
+128 |                             device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+    |                                                                          ------ type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+126 |                     cards.extend(track.devices().iter().map(|device: /* Type */| {
+    |                                                                    ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/device_panel/operator_panel/context.rs:22:27
+   |
+22 |         let track = state.project.tracks().iter().find(|track| {
+   |                           ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/device_panel/operator_panel/context.rs:22:57
+   |
+22 |         let track = state.project.tracks().iter().find(|track| {
+   |                                                         ^^^^^
+23 |             track.instrument().is_some_and(|instrument| {
+   |             ----- type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+22 |         let track = state.project.tracks().iter().find(|track: /* Type */| {
+   |                                                              ++++++++++++
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/device_panel/operator_panel/context.rs:23:45
+   |
+23 |             track.instrument().is_some_and(|instrument| {
+   |                                             ^^^^^^^^^^
+24 |                 instrument.id() == device
+   |                 ---------- type must be known at this point
+   |
+help: consider giving this closure parameter an explicit type
+   |
+23 |             track.instrument().is_some_and(|instrument: /* Type */| {
+   |                                                       ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/device_panel/operator_panel/context.rs:40:41
+   |
+40 |                 .and_then(|state| state.project.track(self.track))
+   |                                         ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel.rs:360:10
+    |
+360 |         .project
+    |          ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel.rs:366:10
+    |
+366 |         .project
+    |          ^^^^^^^ unknown field
+
+error[E0277]: the trait bound `SnapshotReadCapability: Clone` is not satisfied
+   --> crates/hex-ui/src/editor/device_panel.rs:444:43
+    |
+444 |     let Some(state) = view.state.as_ref().cloned() else {
+    |                                           ^^^^^^ the trait `Clone` is not implemented for `SnapshotReadCapability`
+    |
+note: required by a bound in `std::option::Option::<&T>::cloned`
+   --> /rustc/4a4ef493e3a1488c6e321570238084b38948f6db/library/core/src/option.rs:2102:4
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel.rs:452:92
+    |
+452 |             inventory.generation == view.project_generation && inventory.revision == state.revision
+    |                                                                                            ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel.rs:456:14
+    |
+456 |             .project
+    |              ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel.rs:459:24
+    |
+459 |             .flat_map(|track| track.ordered_device_chain())
+    |                        ^^^^^  ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+459 |             .flat_map(|track: /* Type */| track.ordered_device_chain())
+    |                             ++++++++++++
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel.rs:472:29
+    |
+472 |             revision: state.revision,
+    |                             ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel.rs:489:18
+    |
+489 |                 .project
+    |                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/device_panel.rs:492:23
+    |
+492 |                 .any(|track| track.id() == *id)
+    |                       ^^^^^  ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+492 |                 .any(|track: /* Type */| track.id() == *id)
+    |                            ++++++++++++
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/device_panel.rs:502:30
+    |
+502 |             if !owner_exists(&state, previous) {
+    |                 ------------ ^^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |                 |
+    |                 arguments to this function are incorrect
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: function defined here
+   --> crates/hex-ui/src/editor/device_panel.rs:560:4
+    |
+560 | fn owner_exists(state: &ViewState, owner: DevicePanelOwner) -> bool {
+    |    ^^^^^^^^^^^^ -----------------
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/device_panel.rs:514:55
+    |
+514 |                 return render_owner(view, window, cx, &state, previous);
+    |                        ------------                   ^^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |                        |
+    |                        arguments to this function are incorrect
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: function defined here
+   --> crates/hex-ui/src/editor/device_panel.rs:571:4
+    |
+571 | fn render_owner(
+    |    ^^^^^^^^^^^^
+...
+575 |     state: &ViewState,
+    |     -----------------
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/device_panel.rs:517:55
+    |
+517 |                 return render_owner(view, window, cx, &state, previous);
+    |                        ------------                   ^^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |                        |
+    |                        arguments to this function are incorrect
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: function defined here
+   --> crates/hex-ui/src/editor/device_panel.rs:571:4
+    |
+571 | fn render_owner(
+    |    ^^^^^^^^^^^^
+...
+575 |     state: &ViewState,
+    |     -----------------
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/device_panel.rs:546:80
+    |
+546 |         Some(DevicePanelOwner::Track(track)) => render_track(view, window, cx, &state, track),
+    |                                                 ------------                   ^^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |                                                 |
+    |                                                 arguments to this function are incorrect
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: function defined here
+   --> crates/hex-ui/src/editor/device_panel.rs:676:4
+    |
+676 | fn render_track(
+    |    ^^^^^^^^^^^^
+...
+680 |     state: &ViewState,
+    |     -----------------
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/device_panel.rs:548:51
+    |
+548 |             return_view::render(view, window, cx, &state, return_track)
+    |             -------------------                   ^^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |             |
+    |             arguments to this function are incorrect
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: function defined here
+   --> crates/hex-ui/src/editor/device_panel/return_view.rs:4:15
+    |
+  4 | pub(super) fn render(
+    |               ^^^^^^
+...
+  8 |     state: &ViewState,
+    |     -----------------
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/device_panel.rs:1366:63
+     |
+1366 |         revision: view.state.as_ref().map_or(0, |state| state.revision),
+     |                                                               ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/device_panel.rs:1464:50
+     |
+1464 |                     .map_or(48000, |state| state.project.sample_rate());
+     |                                                  ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/device_panel.rs:1478:51
+     |
+1478 |                     .map_or(48_000, |state| state.project.sample_rate());
+     |                                                   ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/return_view.rs:355:50
+    |
+355 |                     .map_or(48000, |state| state.project.sample_rate());
+    |                                                  ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_panel/return_view.rs:375:55
+    |
+375 |                         .map_or(48_000, |state| state.project.sample_rate()),
+    |                                                       ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/device_preset.rs:68:29
+   |
+68 |             revision: state.revision,
+   |                             ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/device_preset.rs:71:28
+   |
+71 |             type_id: state.project.device(device)?.state().type_id(),
+   |                            ^^^^^^^ unknown field
+
+error[E0609]: no field `document_path` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/device_preset.rs:108:41
+    |
+108 |                 .and_then(|state| state.document_path.as_deref())
+    |                                         ^^^^^^^^^^^^^ unknown field
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/external_audio_drop.rs:48:52
+   |
+48 |         let viewport = self.visible_viewport(state.timeline_frames);
+   |                                                    ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/external_audio_drop.rs:48:29
+     |
+  48 |         let viewport = self.visible_viewport(state.timeline_frames);
+     |                             ^^^^^^^^^^^^^^^^----------------------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+  48 |         let viewport = self.visible_viewport(state.timeline_frames, /* u64 */);
+     |                                                                   +++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/external_audio_drop.rs:58:24
+   |
+58 |                 &state.project,
+   |                        ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/external_audio_drop.rs:73:24
+   |
+73 |                 &state.project,
+   |                        ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/external_audio_drop.rs:92:29
+   |
+92 |             revision: state.revision,
+   |                             ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/fade_handles.rs:185:30
+    |
+185 |                     && state.revision == drag.revision
+    |                              ^^^^^^^^ unknown field
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/fade_handles.rs:186:52
+    |
+186 |                     && self.visible_viewport(state.timeline_frames) == drag.viewport
+    |                                                    ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/fade_handles.rs:186:29
+     |
+ 186 |                     && self.visible_viewport(state.timeline_frames) == drag.viewport
+     |                             ^^^^^^^^^^^^^^^^----------------------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+ 186 |                     && self.visible_viewport(state.timeline_frames, /* u64 */) == drag.viewport
+     |                                                                   +++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/fade_handles.rs:193:30
+    |
+193 |                     && state.project.clip(drag.clip.id()) == Some(drag.clip.as_ref())
+    |                              ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/fade_handles.rs:236:37
+    |
+236 |             let Some(asset) = state.project.asset(drag.clip.asset()) else {
+    |                                     ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/fade_handles.rs:266:44
+    |
+266 |                     grid.snap_frame(&state.project, frame, drag.viewport, drag.lane.width)
+    |                                            ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/fade_handles.rs:273:21
+    |
+273 |                     asset.playback_frames(),
+    |                     ^^^^^ cannot infer type
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/fade_handles.rs:274:27
+    |
+274 |                     state.project.tempo_map(),
+    |                           ^^^^^^^ unknown field
+
+error[E0599]: the method `clone` exists for enum `std::option::Option<SnapshotReadCapability>`, but its trait bounds were not satisfied
+  --> crates/hex-ui/src/editor/gain_recording.rs:87:38
+   |
+87 |         let Some(state) = self.state.clone() else {
+   |                                      ^^^^^ method cannot be called on `std::option::Option<SnapshotReadCapability>` due to unsatisfied trait bounds
+   |
+  ::: crates/hex-session/src/snapshot_exports/transport.rs:88:1
+   |
+88 | pub struct SnapshotReadCapability {
+   | --------------------------------- doesn't satisfy `SnapshotReadCapability: Clone`
+   |
+   = note: the following trait bounds were not satisfied:
+           `SnapshotReadCapability: Clone`
+           which is required by `std::option::Option<SnapshotReadCapability>: Clone`
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/gain_recording.rs:135:34
+    |
+135 |             .and_then(|id| state.project.track(id))
+    |                                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed for `std::option::Option<_>`
+   --> crates/hex-ui/src/editor/gain_recording.rs:132:13
+    |
+132 |         let Some(track) = self
+    |             ^^^^^^^^^^^
+...
+154 |         let Some(epoch) = track.gain_lane().recording_epoch().checked_add(1) else {
+    |                           ----- type must be known at this point
+    |
+help: consider giving this pattern a type, where the placeholders `_` are specified
+    |
+132 |         let Some(track): std::option::Option<U> = self
+    |                        ++++++++++++++++++++++++
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/gain_recording.rs:176:39
+    |
+176 |             canonical_revision: state.revision,
+    |                                       ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/gain_recording.rs:181:32
+    |
+181 |             sample_rate: state.project.sample_rate(),
+    |                                ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/gain_recording.rs:255:22
+    |
+255 |             || state.revision != self.gain_recorder.revision
+    |                      ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/gain_recording.rs:377:36
+    |
+377 | ...                   &state.project,
+    |                              ^^^^^^^ unknown field
+
+error[E0609]: no field `gain_preview` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/gain_recording.rs:444:22
+    |
+444 |                     .gain_preview
+    |                      ^^^^^^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/gain_recording.rs:447:32
+    |
+447 |                     .and_then(|preview| preview.value_at(track, view.cursor_position()))
+    |                                ^^^^^^^  ------- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+447 |                     .and_then(|preview: /* Type */| preview.value_at(track, view.cursor_position()))
+    |                                       ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/gain_recording.rs:448:39
+    |
+448 |                     .or_else(|| state.project.track(track).map(|owner| owner.gain()))
+    |                                       ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/gain_recording.rs:448:65
+    |
+448 |                     .or_else(|| state.project.track(track).map(|owner| owner.gain()))
+    |                                                                 ^^^^^  ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+448 |                     .or_else(|| state.project.track(track).map(|owner: /* Type */| owner.gain()))
+    |                                                                      ++++++++++++
+
+error[E0609]: no field `gain_preview` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/gain_recording.rs:506:41
+    |
+506 |                 .and_then(|state| state.gain_preview.as_ref().ok())
+    |                                         ^^^^^^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/gain_recording.rs:507:28
+    |
+507 |                 .and_then(|preview| preview.value_at(track, view.cursor_position()));
+    |                            ^^^^^^^  ------- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+507 |                 .and_then(|preview: /* Type */| preview.value_at(track, view.cursor_position()));
+    |                                   ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/musical_audio_controls.rs:468:34
+    |
+468 |             match command(&state.project, capture.clip, action) {
+    |                                  ^^^^^^^ unknown field
+
+error[E0609]: no field `unsaved` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/project_recovery.rs:36:37
+   |
+36 |         let confirmation = if state.unsaved
+   |                                     ^^^^^^^ unknown field
+
+error[E0609]: no field `can_undo` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/project_recovery.rs:40:22
+   |
+40 |             || state.can_undo
+   |                      ^^^^^^^^ unknown field
+
+error[E0609]: no field `can_redo` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/project_recovery.rs:41:22
+   |
+41 |             || state.can_redo
+   |                      ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/project_recovery.rs:42:23
+   |
+42 |             || !state.project.tracks().is_empty()
+   |                       ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/project_recovery.rs:43:22
+   |
+43 |             || state.project.assets().next().is_some()
+   |                      ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/project_spectrum.rs:66:30
+   |
+66 |             .map_or(0, |s| s.project.return_tracks().len());
+   |                              ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/project_spectrum.rs:127:61
+    |
+127 |                 .published_audio_revision(generation, state.revision)
+    |                                                             ^^^^^^^^ unknown field
+
+error[E0599]: no method named `project_spectrum_latest` found for struct `hex_audio::prepared::Client` in the current scope
+   --> crates/hex-ui/src/editor/project_spectrum.rs:155:40
+    |
+155 |                 result = audio.control.project_spectrum_latest().filter(|r| {
+    |                                        ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: there is a method `spectrum_latest` with a similar name
+    |
+155 -                 result = audio.control.project_spectrum_latest().filter(|r| {
+155 +                 result = audio.control.spectrum_latest().filter(|r| {
+    |
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/project_spectrum.rs:291:53
+    |
+291 |         if result.selection.sample_rate_hz != state.project.sample_rate() {
+    |                                                     ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/project_spectrum.rs:304:40
+    |
+304 |             && cache.revision == state.revision
+    |                                        ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/project_spectrum.rs:312:28
+    |
+312 |         for track in state.project.tracks() {
+    |                            ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/project_spectrum.rs:313:51
+    |
+313 |             if let Ok(index) = ids.binary_search(&track.id().value()) {
+    |                                                   ^^^^^ cannot infer type
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/project_spectrum.rs:331:36
+    |
+331 |             cache.revision = state.revision;
+    |                                    ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/project_spectrum.rs:367:29
+    |
+367 |             revision: state.revision,
+    |                             ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/recovery.rs:58:78
+   |
+58 |             .is_some_and(|state| self.applied_project_revision == Some(state.revision));
+   |                                                                              ^^^^^^^^ unknown field
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/scrub.rs:78:44
+   |
+78 |             && self.visible_viewport(state.timeline_frames) == viewport
+   |                                            ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/scrub.rs:78:21
+     |
+  78 |             && self.visible_viewport(state.timeline_frames) == viewport
+     |                     ^^^^^^^^^^^^^^^^----------------------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+  78 |             && self.visible_viewport(state.timeline_frames, /* u64 */) == viewport
+     |                                                           +++++++++++
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/scrub.rs:82:29
+   |
+82 |             revision: state.revision,
+   |                             ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/session_audio_panel.rs:19:49
+   |
+19 |     let SessionCellContent::Audio(clip) = state.project.session_cell(track, scene)? else {
+   |                                                 ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/session_audio_panel.rs:26:30
+   |
+26 |     let asset_frames = state.project.asset(asset_id)?.playback_frames();
+   |                              ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/session_audio_panel.rs:27:26
+   |
+27 |     let revision = state.revision;
+   |                          ^^^^^^^^ unknown field
+
+error[E0609]: no field `waveforms` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/session_audio_panel.rs:43:10
+   |
+43 |         .waveforms
+   |          ^^^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/session_audio_panel.rs:184:30
+    |
+184 | ...                   ((amplitude * linear_gain).clamp(0.0, 1.0) * 20.0).max(1.0)
+    |                        ^^^^^^^^^^^^^^^^^^^^^^^^^ cannot infer type
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/session_audio_panel.rs:225:27
+    |
+225 |                     state.revision,
+    |                           ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/session_audio_panel.rs:226:28
+    |
+226 |                     &state.project,
+    |                            ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/session_audio_panel.rs:326:27
+    |
+326 |                     state.revision,
+    |                           ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/session_audio_panel.rs:327:28
+    |
+327 |                     &state.project,
+    |                            ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/session_audio_panel.rs:333:42
+    |
+333 |                 .map_or(0, |state| state.project.sample_rate());
+    |                                          ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/time_selection.rs:937:33
+    |
+937 |         let Some(track) = state.project.track(track) else {
+    |                                 ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/time_selection.rs:940:47
+    |
+940 |         let Some(lane) = self.drag_lanes.get(&track.id()) else {
+    |                                               ^^^^^ cannot infer type
+
+error[E0609]: no field `midi_preview` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/time_selection.rs:974:37
+    |
+974 |                 let preview = state.midi_preview.get(clip.id())?;
+    |                                     ^^^^^^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/time_selection.rs:973:24
+    |
+973 |             .find_map(|clip| {
+    |                        ^^^^
+974 |                 let preview = state.midi_preview.get(clip.id())?;
+    |                                                      ---- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+973 |             .find_map(|clip: /* Type */| {
+    |                            ++++++++++++
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/time_selection.rs:979:54
+    |
+979 |                 track.clips().iter().rev().find_map(|clip| {
+    |                                                      ^^^^
+980 |                     let end = clip.start().checked_add(clip.duration())?;
+    |                               ---- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+979 |                 track.clips().iter().rev().find_map(|clip: /* Type */| {
+    |                                                          ++++++++++++
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/time_selection.rs:984:50
+    |
+984 | ...                   self.fade_handle_hit(state, track.id(), clip, x, y, viewport),
+    |                            --------------- ^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |                            |
+    |                            arguments to this method are incorrect
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: method defined here
+   --> crates/hex-ui/src/editor/fade_handles.rs:432:19
+    |
+432 |     pub(super) fn fade_handle_hit(
+    |                   ^^^^^^^^^^^^^^^
+433 |         &self,
+434 |         state: &ViewState,
+    |         -----------------
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/time_selection_profile.rs:261:27
+    |
+261 |                     state.project.sample_rate() == 48_000
+    |                           ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/time_selection_profile.rs:262:34
+    |
+262 |                         && state.project.tracks().len() == tracks
+    |                                  ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/time_selection_profile.rs:263:34
+    |
+263 |                         && state.project.tracks().iter().all(|track| {
+    |                                  ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/time_selection_profile.rs:263:63
+    |
+263 |                         && state.project.tracks().iter().all(|track| {
+    |                                                               ^^^^^
+264 |                             track.clips().len() == 50
+    |                             ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+263 |                         && state.project.tracks().iter().all(|track: /* Type */| {
+    |                                                                    ++++++++++++
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/time_selection_profile.rs:269:43
+    |
+269 | ...                   .all(|clip| clip.notes().len() == 8)
+    |                             ^^^^  ---- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+269 |                                     .all(|clip: /* Type */| clip.notes().len() == 8)
+    |                                               ++++++++++++
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/time_selection_profile.rs:277:83
+    |
+277 |                         view.viewport = Some(super::viewport::Viewport::fit(state.timeline_frames));
+    |                                                                                   ^^^^^^^^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/time_selection_profile.rs:328:26
+    |
+328 |                         .project
+    |                          ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/time_selection_profile.rs:331:31
+    |
+331 |                         .map(|track| track.id()))
+    |                               ^^^^^  ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+331 |                         .map(|track: /* Type */| track.id()))
+    |                                    ++++++++++++
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/time_selection_profile.rs:340:54
+    |
+340 |                 self.sample.project_revision = state.revision;
+    |                                                      ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/time_selection_profile.rs:560:48
+    |
+560 |                     .is_some_and(|state| state.revision == probe.revision)
+    |                                                ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/tracks.rs:771:53
+    |
+771 | ...                   .and_then(|state| state.project.track(track_id))
+    |                                               ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/tracks.rs:772:43
+    |
+772 | ...                   .is_some_and(|track| {
+    |                                     ^^^^^
+773 | ...                       !track.gain_envelope().is_empty()
+    |                            ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+772 |                             .is_some_and(|track: /* Type */| {
+    |                                                ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/tracks.rs:790:53
+    |
+790 | ...                   .and_then(|state| state.project.track(track_id))
+    |                                               ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+   --> crates/hex-ui/src/editor/tracks.rs:791:43
+    |
+791 | ...                   .is_some_and(|track| {
+    |                                     ^^^^^
+792 | ...                       !track.gain_envelope().is_empty()
+    |                            ----- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+791 |                             .is_some_and(|track: /* Type */| {
+    |                                                ++++++++++++
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/tracks.rs:1546:56
+     |
+1546 |             let viewport = self.visible_viewport(state.timeline_frames);
+     |                                                        ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/tracks.rs:1546:33
+     |
+1546 |             let viewport = self.visible_viewport(state.timeline_frames);
+     |                                 ^^^^^^^^^^^^^^^^----------------------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+1546 |             let viewport = self.visible_viewport(state.timeline_frames, /* u64 */);
+     |                                                                       +++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/tracks.rs:1547:52
+     |
+1547 |             let preview = drag::preview_for(&state.project, payload.source_track, position)?;
+     |                                                    ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/tracks.rs:1562:32
+     |
+1562 |             let top = if state.project.tracks().is_empty() {
+     |                                ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/tracks.rs:1587:31
+     |
+1587 |                         state.project.clip_flavor(payload.clip).unwrap_or_default(),
+     |                               ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/tracks.rs:1593:36
+     |
+1593 | ...                   &state.project,
+     |                              ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/tracks.rs:1603:35
+     |
+1603 | ...                   state.project.clip(payload.clip).and_then(|clip| {
+     |                             ^^^^^^^ unknown field
+
+error[E0609]: no field `waveforms` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/tracks.rs:1604:39
+     |
+1604 | ...                   state.waveforms.get(&clip.asset()).map(|waveform| {
+     |                             ^^^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/tracks.rs:1603:72
+     |
+1603 | ...                   state.project.clip(payload.clip).and_then(|clip| {
+     |                                                                  ^^^^
+1604 | ...                       state.waveforms.get(&clip.asset()).map(|waveform| {
+     |                                                ---- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1603 |                             state.project.clip(payload.clip).and_then(|clip: /* Type */| {
+     |                                                                            ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/tracks.rs:1644:41
+     |
+1644 |                         .and_then(|s| s.project.track(payload.source_track))
+     |                                         ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/tracks.rs:1645:72
+     |
+1645 |                         .map_or(hex_project::ElementColor::default(), |t| t.color()),
+     |                                                                        ^  - type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1645 |                         .map_or(hex_project::ElementColor::default(), |t: /* Type */| t.color()),
+     |                                                                         ++++++++++++
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/tracks.rs:1648:41
+     |
+1648 |                         .and_then(|s| s.project.clip_flavor(payload.clip))
+     |                                         ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+    --> crates/hex-ui/src/editor/tracks.rs:1806:42
+     |
+1806 | ...                   .project
+     |                        ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+    --> crates/hex-ui/src/editor/tracks.rs:1812:35
+     |
+1812 | ...                   .map(|beat| beat.raw().saturating_sub(start_beat.raw()))
+     |                             ^^^^  ---- type must be known at this point
+     |
+help: consider giving this closure parameter an explicit type
+     |
+1812 |                             .map(|beat: /* Type */| beat.raw().saturating_sub(start_beat.raw()))
+     |                                       ++++++++++++
+
+error[E0277]: the trait bound `hex_project::Project: musical_time::MusicalProject` is not satisfied
+   --> crates/hex-ui/src/editor/trim.rs:227:21
+    |
+227 |         .snap_frame(project, edge, viewport, lane.width)
+    |          ---------- ^^^^^^^ the trait `musical_time::MusicalProject` is not implemented for `hex_project::Project`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the trait `musical_time::MusicalProject` is implemented for `SnapshotProjectRead<'_>`
+   --> crates/hex-ui/src/editor/musical_time.rs:22:1
+    |
+ 22 | impl MusicalProject for hex_session::snapshot_exports::SnapshotProjectRead<'_> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `musical_time::SnapGrid::snap_frame`
+   --> crates/hex-ui/src/editor/musical_time.rs:795:25
+    |
+793 |     pub(super) fn snap_frame(
+    |                   ---------- required by a bound in this associated function
+794 |         self,
+795 |         project: &(impl MusicalProject + ?Sized),
+    |                         ^^^^^^^^^^^^^^ required by this bound in `SnapGrid::snap_frame`
+
+error[E0277]: the trait bound `hex_project::Project: musical_time::MusicalProject` is not satisfied
+   --> crates/hex-ui/src/editor/trim.rs:300:20
+    |
+300 |         .snap_beat(project, candidate, viewport, lane.width)
+    |          --------- ^^^^^^^ the trait `musical_time::MusicalProject` is not implemented for `hex_project::Project`
+    |          |
+    |          required by a bound introduced by this call
+    |
+help: the trait `musical_time::MusicalProject` is implemented for `SnapshotProjectRead<'_>`
+   --> crates/hex-ui/src/editor/musical_time.rs:22:1
+    |
+ 22 | impl MusicalProject for hex_session::snapshot_exports::SnapshotProjectRead<'_> {
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+note: required by a bound in `musical_time::SnapGrid::snap_beat`
+   --> crates/hex-ui/src/editor/musical_time.rs:810:25
+    |
+808 |     pub(super) fn snap_beat(
+    |                   --------- required by a bound in this associated function
+809 |         self,
+810 |         project: &(impl MusicalProject + ?Sized),
+    |                         ^^^^^^^^^^^^^^ required by this bound in `SnapGrid::snap_beat`
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/trim.rs:730:52
+    |
+730 |         let viewport = self.visible_viewport(state.timeline_frames);
+    |                                                    ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/trim.rs:730:29
+     |
+ 730 |         let viewport = self.visible_viewport(state.timeline_frames);
+     |                             ^^^^^^^^^^^^^^^^----------------------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+ 730 |         let viewport = self.visible_viewport(state.timeline_frames, /* u64 */);
+     |                                                                   +++++++++++
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/trim.rs:734:63
+    |
+734 |         if !payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
+    |             ------------------                                ^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |             |
+    |             arguments to this function are incorrect
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: function defined here
+   --> crates/hex-ui/src/editor/trim.rs:132:4
+    |
+132 | fn payload_is_current(
+    |    ^^^^^^^^^^^^^^^^^^
+...
+135 |     state: &ViewState,
+    |     -----------------
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/trim.rs:740:46
+    |
+740 |             preview_for_pointer(drag, &state.project, pointer_x, lane, viewport),
+    |                                              ^^^^^^^ unknown field
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/trim.rs:794:52
+    |
+794 |         let viewport = self.visible_viewport(state.timeline_frames);
+    |                                                    ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/trim.rs:794:29
+     |
+ 794 |         let viewport = self.visible_viewport(state.timeline_frames);
+     |                             ^^^^^^^^^^^^^^^^----------------------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+ 794 |         let viewport = self.visible_viewport(state.timeline_frames, /* u64 */);
+     |                                                                   +++++++++++
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/trim.rs:798:68
+    |
+798 |         if !midi_payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
+    |             -----------------------                                ^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |             |
+    |             arguments to this function are incorrect
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: function defined here
+   --> crates/hex-ui/src/editor/trim.rs:163:4
+    |
+163 | fn midi_payload_is_current(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+...
+166 |     state: &ViewState,
+    |     -----------------
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/trim.rs:804:51
+    |
+804 |             midi_preview_for_pointer(drag, &state.project, pointer_x, lane, viewport),
+    |                                                   ^^^^^^^ unknown field
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/trim.rs:833:41
+    |
+833 |             self.visible_viewport(state.timeline_frames),
+    |                                         ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/trim.rs:833:18
+     |
+ 833 |             self.visible_viewport(state.timeline_frames),
+     |                  ^^^^^^^^^^^^^^^^----------------------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+ 833 |             self.visible_viewport(state.timeline_frames, /* u64 */),
+     |                                                        +++++++++++
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/trim.rs:832:13
+    |
+829 |         midi_payload_is_current(
+    |         ----------------------- arguments to this function are incorrect
+...
+832 |             state,
+    |             ^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: function defined here
+   --> crates/hex-ui/src/editor/trim.rs:163:4
+    |
+163 | fn midi_payload_is_current(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+...
+166 |     state: &ViewState,
+    |     -----------------
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/trim.rs:850:52
+    |
+850 |         let viewport = self.visible_viewport(state.timeline_frames);
+    |                                                    ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/trim.rs:850:29
+     |
+ 850 |         let viewport = self.visible_viewport(state.timeline_frames);
+     |                             ^^^^^^^^^^^^^^^^----------------------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+ 850 |         let viewport = self.visible_viewport(state.timeline_frames, /* u64 */);
+     |                                                                   +++++++++++
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/trim.rs:854:68
+    |
+854 |         if !midi_payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
+    |             -----------------------                                ^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |             |
+    |             arguments to this function are incorrect
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: function defined here
+   --> crates/hex-ui/src/editor/trim.rs:163:4
+    |
+163 | fn midi_payload_is_current(
+    |    ^^^^^^^^^^^^^^^^^^^^^^^
+...
+166 |     state: &ViewState,
+    |     -----------------
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/trim.rs:862:62
+    |
+862 |         let Some(beat) = snapped_midi_edge_beat(drag, &state.project, pointer_x, lane, viewport)
+    |                                                              ^^^^^^^ unknown field
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/trim.rs:897:41
+    |
+897 |             self.visible_viewport(state.timeline_frames),
+    |                                         ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/trim.rs:897:18
+     |
+ 897 |             self.visible_viewport(state.timeline_frames),
+     |                  ^^^^^^^^^^^^^^^^----------------------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+ 897 |             self.visible_viewport(state.timeline_frames, /* u64 */),
+     |                                                        +++++++++++
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/trim.rs:896:13
+    |
+893 |         payload_is_current(
+    |         ------------------ arguments to this function are incorrect
+...
+896 |             state,
+    |             ^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: function defined here
+   --> crates/hex-ui/src/editor/trim.rs:132:4
+    |
+132 | fn payload_is_current(
+    |    ^^^^^^^^^^^^^^^^^^
+...
+135 |     state: &ViewState,
+    |     -----------------
+
+error[E0609]: no field `timeline_frames` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/trim.rs:920:52
+    |
+920 |         let viewport = self.visible_viewport(state.timeline_frames);
+    |                                                    ^^^^^^^^^^^^^^^ unknown field
+
+error[E0061]: this method takes 2 arguments but 1 argument was supplied
+    --> crates/hex-ui/src/editor/trim.rs:920:29
+     |
+ 920 |         let viewport = self.visible_viewport(state.timeline_frames);
+     |                             ^^^^^^^^^^^^^^^^----------------------- argument #2 of type `u64` is missing
+     |
+note: method defined here
+    --> crates/hex-ui/src/editor/mod.rs:1347:8
+     |
+1347 |     fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
+     |        ^^^^^^^^^^^^^^^^                                    ------------
+help: provide the argument
+     |
+ 920 |         let viewport = self.visible_viewport(state.timeline_frames, /* u64 */);
+     |                                                                   +++++++++++
+
+error[E0308]: mismatched types
+   --> crates/hex-ui/src/editor/trim.rs:924:63
+    |
+924 |         if !payload_is_current(drag, self.project_generation, state, viewport, Some(lane)) {
+    |             ------------------                                ^^^^^ expected `&ViewState`, found `&SnapshotReadCapability`
+    |             |
+    |             arguments to this function are incorrect
+    |
+    = note: expected reference `&hex_session::service::ViewState`
+               found reference `&SnapshotReadCapability`
+note: function defined here
+   --> crates/hex-ui/src/editor/trim.rs:132:4
+    |
+132 | fn payload_is_current(
+    |    ^^^^^^^^^^^^^^^^^^
+...
+135 |     state: &ViewState,
+    |     -----------------
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/trim.rs:940:59
+    |
+940 |         let Some(frame) = snapped_edge_frame(drag, &state.project, pointer_x, lane, viewport)
+    |                                                           ^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/trim.rs:945:53
+    |
+945 |         let Ok(preview) = preview_clip(drag, &state.project, frame) else {
+    |                                                     ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/tuning/audition.rs:73:72
+   |
+73 |             let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
+   |                                                                        ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/tuning/broadcast.rs:185:39
+    |
+185 | ...                   state.revision,
+    |                             ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/tuning/broadcast.rs:186:39
+    |
+186 | ...                   state.project.tuning(),
+    |                             ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/tuning/library.rs:60:39
+   |
+60 |                     *revision = state.revision;
+   |                                       ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/tuning/library.rs:102:86
+    |
+102 |         let (generation, revision) = owner.unwrap_or((self.project_generation, state.revision));
+    |                                                                                      ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/tuning/library.rs:232:53
+    |
+232 |         let owner = (self.project_generation, state.revision);
+    |                                                     ^^^^^^^^ unknown field
+
+error[E0609]: no field `document_path` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/tuning/library.rs:237:18
+    |
+237 |                 .document_path
+    |                  ^^^^^^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/tuning/midi_activity.rs:44:35
+   |
+44 |                     audible.state.revision,
+   |                                   ^^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/tuning/midi_activity.rs:47:31
+   |
+47 |                 audible.state.revision,
+   |                               ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/tuning/midi_activity.rs:52:32
+   |
+52 |                 &audible.state.project,
+   |                                ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/tuning/midi_activity.rs:53:31
+   |
+53 |                 audible.state.revision,
+   |                               ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `SnapshotReadCapability`
+  --> crates/hex-ui/src/editor/tuning/midi_activity.rs:62:40
+   |
+62 |             for track in audible.state.project.tracks() {
+   |                                        ^^^^^^^ unknown field
+
+error[E0282]: type annotations needed
+  --> crates/hex-ui/src/editor/tuning/midi_activity.rs:63:70
+   |
+63 |                 let route_track = prepared.midi_activity_route_track(track.id()).ok()?;
+   |                                                                      ^^^^^ cannot infer type
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/tuning/mod.rs:335:69
+    |
+335 |         let Some(canonical) = self.state.as_ref().map(|state| state.project.tuning()) else {
+    |                                                                     ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/tuning/mod.rs:452:30
+    |
+452 |         let revision = state.revision;
+    |                              ^^^^^^^^ unknown field
+
+error[E0609]: no field `project` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/tuning/mod.rs:454:34
+    |
+454 |         let acknowledged = state.project.tuning();
+    |                                  ^^^^^^^ unknown field
+
+error[E0609]: no field `revision` on type `&SnapshotReadCapability`
+   --> crates/hex-ui/src/editor/tuning/mod.rs:461:66
+    |
+461 |                         && view.state.as_ref().is_some_and(|s| s.revision == revision)
+    |                                                                  ^^^^^^^^ unknown field
+
+Some errors have detailed explanations: E0061, E0277, E0282, E0308, E0599, E0609, E0631.
+For more information about an error, try `rustc --explain E0061`.
+error: could not compile `hex-ui` (lib) due to 374 previous errors
