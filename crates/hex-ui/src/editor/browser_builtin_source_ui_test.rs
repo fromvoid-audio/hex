@@ -1,5 +1,69 @@
 use super::*;
 
+// This owning fixture binds its actual caller files and catalog jobs to one root.
+struct PreferencesTestDirectory(
+    std::path::PathBuf,
+    std::sync::Arc<crate::editor::test_environment::Environment>,
+);
+impl PreferencesTestDirectory {
+    fn new() -> Self {
+        let environment = crate::editor::test_environment::Environment::new().unwrap();
+        Self(environment.root().to_owned(), environment)
+    }
+}
+
+fn place_icon_preferences_window(
+    cx: &mut TestAppContext,
+    directory: &PreferencesTestDirectory,
+    config: &std::path::Path,
+    recent: &std::path::Path,
+) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
+    let home = directory.0.join("icon-home");
+    let music = home.join("Music");
+    std::fs::create_dir_all(&music).unwrap();
+    std::fs::write(music.join("fixture.wav"), mono_pcm_wav(24)).unwrap();
+    let handle = *cx.add_window(|_, _| Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.replace_root(cx, |window, cx| {
+                EditorView::new_with_browser_paths(
+                    window,
+                    cx,
+                    Service::new(48_000, 32, 8_000_000).unwrap(),
+                    Err("offline icon test".into()),
+                    (
+                        config.to_owned(),
+                        recent.to_owned(),
+                        directory.0.join("icon-theme.json"),
+                        directory.0.join("project-directory.json"),
+                    ),
+                    crate::editor::test_environment::Inputs {
+                        existing_environment: Some(std::sync::Arc::clone(&directory.1)),
+                        home: Some(home),
+                        ..Default::default()
+                    },
+                )
+            })
+        })
+        .unwrap();
+    editor.read_with(cx, |view, _| {
+        assert!(std::sync::Arc::ptr_eq(&directory.1, &view.test_environment));
+        assert_eq!(view.browser.test_preferences_path(), config);
+        assert_eq!(view.recent_projects.test_path(), recent);
+        assert_eq!(
+            view.theme_settings.test_path(),
+            directory.0.join("icon-theme.json")
+        );
+        assert_eq!(
+            view.project_directory.test_path(),
+            directory.0.join("project-directory.json")
+        );
+        assert_eq!(view.browser.home, directory.0.join("icon-home"));
+        assert_eq!(view.browser.music, music);
+    });
+    (handle, editor)
+}
+
 #[gpui::test]
 fn browser_builtin_source_actual_right_click_has_icon_grid(cx: &mut TestAppContext) {
     let directory = PreferencesTestDirectory::new();
