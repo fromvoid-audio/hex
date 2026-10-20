@@ -373,3 +373,12 @@ it creates no owning PCM handle or temporary dedup heap buffer. The regression
 reproduces a 4-frame captured export plus a 4-frame original and 8-frame
 converted import incorrectly fitting a 15-frame ceiling. Exact/one-under track,
 clip and whole-batch cases now preserve canonical/media/history state on refusal.
+
+
+Private sampler Edit uses the same media-creation guard as public Session Edit.
+AddAsset, ImportDeviceAsset and ordinary prepared-media/conversion commands
+require their real prepared import/bounce transaction; metadata-only Edit cannot
+invent unverified source custody. The owning regression records both AddAsset
+and ImportDeviceAsset accepting nonexistent files before the fix and refusing
+after it, with identical project/history/revision and independently checked
+subsequent sampler export PCM.

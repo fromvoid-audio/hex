@@ -193,6 +193,28 @@ pub struct Session {
     resident_waveform_bytes: usize,
 }
 
+/// Public and private editing paths share the same media-custody boundary.
+/// These commands require an owned prepared import/bounce transaction instead.
+fn validate_command_media(command: &Command) -> Result<(), SessionError> {
+    if matches!(
+        command,
+        Command::AddAsset { .. }
+            | Command::ImportDeviceAsset { .. }
+            | Command::ImportAudioTrack { .. }
+            | Command::ImportPreparedAudioTrack { .. }
+            | Command::ImportPreparedAudioTrackAt { .. }
+            | Command::ImportPreparedAudioClip { .. }
+            | Command::ImportPreparedAudioClipWithOverwrite { .. }
+            | Command::ImportPreparedSessionAudioClip { .. }
+            | Command::ConvertMidiClipToAudio { .. }
+    ) {
+        return Err(SessionError::Invalid(
+            "audio media must be committed through a prepared import",
+        ));
+    }
+    Ok(())
+}
+
 impl Session {
     pub fn new(
         sample_rate: u32,
@@ -577,21 +599,6 @@ impl Session {
         &mut self,
         command: Command,
     ) -> Result<(Created, PlaybackProject), SessionError> {
-        if matches!(
-            &command,
-            Command::AddAsset { .. }
-                | Command::ImportDeviceAsset { .. }
-                | Command::ImportAudioTrack { .. }
-                | Command::ImportPreparedAudioTrack { .. }
-                | Command::ImportPreparedAudioTrackAt { .. }
-                | Command::ImportPreparedAudioClip { .. }
-                | Command::ImportPreparedAudioClipWithOverwrite { .. }
-                | Command::ImportPreparedSessionAudioClip { .. }
-        ) {
-            return Err(SessionError::Invalid(
-                "audio media must be committed through a prepared import",
-            ));
-        }
         let (created, prepared) = self.command_prepared_revision(command, None)?;
         Ok((created, prepared.arrangement().as_ref().clone()))
     }
@@ -609,20 +616,6 @@ impl Session {
         ),
         SessionError,
     > {
-        if matches!(
-            &command,
-            Command::AddAsset { .. }
-                | Command::ImportDeviceAsset { .. }
-                | Command::ImportAudioTrack { .. }
-                | Command::ImportPreparedAudioTrack { .. }
-                | Command::ImportPreparedAudioTrackAt { .. }
-                | Command::ImportPreparedAudioClip { .. }
-                | Command::ImportPreparedAudioClipWithOverwrite { .. }
-        ) {
-            return Err(SessionError::Invalid(
-                "audio media must be committed through a prepared import",
-            ));
-        }
         let (created, prepared) = self.command_prepared_revision(command, None)?;
         Ok((
             created,
@@ -651,20 +644,7 @@ impl Session {
             &Arc<hex_engine::PreparedRevision>,
         ) -> Result<T, SessionError>,
     ) -> Result<(Created, (Arc<hex_engine::PreparedRevision>, T)), SessionError> {
-        if matches!(
-            &command,
-            Command::AddAsset { .. }
-                | Command::ImportDeviceAsset { .. }
-                | Command::ImportAudioTrack { .. }
-                | Command::ImportPreparedAudioTrack { .. }
-                | Command::ImportPreparedAudioTrackAt { .. }
-                | Command::ImportPreparedAudioClip { .. }
-                | Command::ImportPreparedAudioClipWithOverwrite { .. }
-        ) {
-            return Err(SessionError::Invalid(
-                "audio media must be committed through a prepared import",
-            ));
-        }
+        validate_command_media(&command)?;
         if let Command::PlaceClip { asset, .. } = &command
             && self.native_assets.contains(*asset)
         {

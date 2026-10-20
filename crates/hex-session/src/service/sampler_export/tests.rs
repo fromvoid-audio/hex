@@ -837,3 +837,48 @@ fn legacy_staged_owner_union_has_independent_exact_byte_limits_before_commit() {
     assert_eq!(fresh.project().assets().count(), 1);
     assert!(fresh.can_undo());
 }
+
+#[test]
+fn private_sampler_edit_refuses_unverified_media_metadata_before_history_commit() {
+    let mut results = Vec::new();
+    for native in [false, true] {
+        let files = Files::new(false);
+        let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
+        event(&service);
+        let before = assign(&service, files.source.clone());
+        let path = files.source.parent().unwrap().join("never-decoded.wav");
+        let command = if native {
+            Command::ImportDeviceAsset {
+                path,
+                sample_rate: 16000,
+                frames: 4,
+            }
+        } else {
+            Command::AddAsset {
+                path,
+                sample_rate: 16000,
+                frames: 4,
+            }
+        };
+        service.submit(Request::Edit(command)).unwrap();
+        let result = event(&service);
+        results.push(result.error.is_some());
+        if result.error.is_some() {
+            assert_eq!(result.state.project, before.state.project);
+            assert_eq!(result.state.revision, before.state.revision);
+            assert_eq!(result.state.can_undo, before.state.can_undo);
+            assert_eq!(result.state.can_redo, before.state.can_redo);
+            queue_export(&service, &files, hex_export::ExportControl::default());
+            assert!(export_event(&service).result.is_ok());
+            assert_eq!(
+                &fs::read(&files.output).unwrap()[44..52],
+                &[0, 16, 0, 16, 0, 40, 0, 40]
+            );
+        }
+    }
+    assert_eq!(
+        results,
+        [true, true],
+        "generic Edit must not invent decoded media custody"
+    );
+}

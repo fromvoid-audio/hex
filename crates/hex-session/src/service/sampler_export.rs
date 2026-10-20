@@ -212,6 +212,7 @@ impl Session {
         command: Command,
         admission: Admission<'_>,
     ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
+        crate::validate_command_media(&command)?;
         // Prepare against a separate immutable view of Session-owned media while
         // Editor controls the sole canonical candidate/history transaction.
         let media = self.media_bank();
