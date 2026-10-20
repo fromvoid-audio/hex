@@ -106,6 +106,7 @@ fn browser_drag_fixture_with_tracks(
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(model.project().clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -606,6 +607,7 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
                     .clone();
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -664,6 +666,7 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                 let project = Project::new(48_000).expect("project");
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -798,7 +801,9 @@ fn browser_device_drag_reveals_devices_and_preserves_clip_selection_on_cancel(
 }
 
 #[gpui::test]
-fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &mut TestAppContext) {
+fn browser_project_open_queues_selected_path_without_second_click_confirmation(
+    cx: &mut TestAppContext,
+) {
     let bootstrap = cx.add_window(|_, _| Empty);
     let handle = *bootstrap;
     let editor = cx
@@ -814,6 +819,7 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
                     .clone();
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -835,30 +841,50 @@ fn browser_project_open_preserves_dirty_work_until_same_item_is_confirmed(cx: &m
     let second = std::path::PathBuf::from("/tmp/second.hex");
 
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(first.clone(), cx));
+        editor.update(cx, |view, cx| {
+            view.open_browser_project(first.clone(), cx);
+            assert_eq!(view.pending_open_path.as_ref(), Some(&first));
+            assert!(view.pending_requests.is_empty());
+        });
     })
     .expect("editor window");
-    editor.read_with(cx, |view, _| {
-        assert_eq!(view.pending_open_path.as_ref(), Some(&first));
-        assert!(view.pending_requests.is_empty());
-    });
-
+    assert!(
+        cx.has_pending_prompt(),
+        "the first selection reaches confirmation"
+    );
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(second.clone(), cx));
+        editor.update(cx, |view, cx| {
+            view.open_browser_project(second.clone(), cx);
+            assert!(!view.opening_project);
+            assert!(view.pending_requests.is_empty());
+            assert!(
+                view.error.is_some(),
+                "another path cannot replace an active intent"
+            );
+        });
     })
     .expect("editor window");
-    editor.read_with(cx, |view, _| {
-        assert_eq!(view.pending_open_path.as_ref(), Some(&second));
-        assert!(view.pending_requests.is_empty());
-    });
-
+    cx.simulate_prompt_answer("cancel");
+    cx.run_until_parked();
     cx.update_window(handle, |_, _, cx| {
-        editor.update(cx, |view, cx| view.open_browser_project(second.clone(), cx));
+        editor.update(cx, |view, cx| {
+            assert!(!view.project_open.busy());
+            assert!(view.pending_open_path.is_none());
+            view.open_browser_project(second.clone(), cx);
+            assert_eq!(view.pending_open_path.as_ref(), Some(&second));
+            assert!(view.pending_requests.is_empty());
+        });
     })
     .expect("editor window");
+    assert!(cx.has_pending_prompt());
+    cx.simulate_prompt_answer("cancel");
+    cx.run_until_parked();
     editor.read_with(cx, |view, _| {
-        assert!(view.opening_project);
+        assert!(!view.opening_project);
+        assert!(!view.project_open.busy());
         assert!(view.pending_open_path.is_none());
+        assert!(view.state.as_ref().unwrap().unsaved);
+        assert!(view.pending_requests.is_empty());
     });
 }
 
@@ -2148,6 +2174,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
         let clip = project.project().midi_clip(clip_id).expect("clip");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(project.project().clone()),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -2199,6 +2226,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             last_pointer: Rc::new(Cell::new(None)),
         };
         let clip_drag = ClipDrag {
+            group: Default::default(),
             project_generation: view.project_generation,
             revision: current.revision.saturating_add(1),
             source_track: track,
@@ -3658,6 +3686,81 @@ fn browser_picker_glyph_alignment_and_continuous_minimum_geometry(cx: &mut TestA
 }
 
 #[gpui::test]
+fn browser_picker_resize_retains_rows_and_clips_long_names(cx: &mut TestAppContext) {
+    let (handle, editor, _, directory, _) = browser_drag_fixture(cx);
+    editor.update(cx, |view, cx| {
+        view.browser.places[0] = directory.0.join("a very long custom place name");
+        cx.notify();
+    });
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selectors = [
+        "browser-collection-0",
+        "browser-collection-2",
+        "browser-section-samples",
+        "browser-section-all",
+        "browser-control-⚙",
+        "browser-place-0",
+    ];
+    // Repeat with the real section-settings controls open: narrowing must not
+    // remove that block and move Places either.
+    for settings_open in [false, true] {
+        if settings_open {
+            let gear = visual.debug_bounds("browser-control-⚙").unwrap();
+            visual.simulate_click(gear.center(), Modifiers::default());
+            visual.run_until_parked();
+        }
+        let baseline = selectors.map(|selector| visual.debug_bounds(selector).unwrap());
+        for width in [124.0, 110.0, 80.0, 64.0, 63.0, 48.0, 27.0, 23.0, 124.0] {
+            let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
+            let divider = visual.debug_bounds("browser-sidebar-resize").unwrap();
+            let target = divider.center() + point(px(width) - sidebar.size.width, px(0.0));
+            visual.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+            visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+            visual.run_until_parked();
+            for (selector, before) in selectors.into_iter().zip(baseline) {
+                let after = visual.debug_bounds(selector).unwrap();
+                assert_eq!(
+                    after.origin, before.origin,
+                    "{selector} must not reflow at width {width}"
+                );
+                assert_eq!(
+                    after.size.height, before.size.height,
+                    "{selector} row height at {width}"
+                );
+            }
+            for (label, row) in [
+                ("browser-picker-label-collection-0", "browser-collection-0"),
+                ("browser-picker-label-section-0", "browser-section-samples"),
+                ("browser-picker-label-place-0", "browser-place-0"),
+            ] {
+                let label = visual
+                    .debug_bounds(label)
+                    .expect("label remains mounted at zero width");
+                let row = visual.debug_bounds(row).unwrap();
+                let available = (row.right() - label.left()).max(px(0.0));
+                assert_eq!(
+                    label.size.width, available,
+                    "label uses only remaining row width"
+                );
+                assert!(
+                    label.size.height <= row.size.height,
+                    "label must stay one line"
+                );
+                if width <= 27.0 {
+                    assert_eq!(
+                        label.size.width,
+                        px(0.0),
+                        "no label space beside icon/gap/border"
+                    );
+                }
+            }
+        }
+    }
+}
+
+#[gpui::test]
 fn browser_folder_double_click_expands_inline_without_replacing_surrounding_rows(
     cx: &mut TestAppContext,
 ) {
@@ -4231,9 +4334,12 @@ fn place_icon_preferences_window(
                         config.to_owned(),
                         recent.to_owned(),
                         directory.0.join("icon-theme.json"),
+                        directory.0.join("project-directory.json"),
                     ),
-                    None,
-                    Some(home),
+                    crate::editor::test_environment::Inputs {
+                        home: Some(home),
+                        ..Default::default()
+                    },
                 )
             })
         })
@@ -4280,7 +4386,7 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
         assert!(popup.right() <= window.bounds().size.width);
         assert!(popup.bottom() <= window.bounds().size.height);
     });
-    visual.simulate_keystrokes("space cmd-shift-t down enter");
+    visual.simulate_keystrokes("space cmd-shift-t right right enter");
     visual.run_until_parked();
     visual.update(|window, cx| {
         editor.read_with(cx, |view, cx| {
@@ -4303,11 +4409,8 @@ fn browser_place_icons_input_persistence_identity_fallback_and_geometry(cx: &mut
     let row = visual.debug_bounds("browser-place-3").unwrap();
     visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
-    let panel = visual.debug_bounds("context-menu-panel").unwrap();
-    visual.simulate_click(
-        point(panel.center().x, panel.top() + px(3.0 + 24.0 + 12.0)),
-        Modifiers::default(),
-    );
+    let sample = visual.debug_bounds("context-menu-choice-2").unwrap();
+    visual.simulate_click(sample.center(), Modifiers::default());
     visual.run_until_parked();
     let saved = hex_preferences::load(&config).unwrap();
     assert_eq!(saved.icon(&first), Some("samples"));
@@ -4406,7 +4509,7 @@ fn browser_place_icons_coalesced_save_errors_and_stale_menu_are_bounded(cx: &mut
     let row = visual.debug_bounds("browser-place-2").unwrap();
     visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
-    visual.simulate_keystrokes("down enter");
+    visual.simulate_keystrokes("right enter");
     visual.run_until_parked();
     editor.read_with(visual, |view, _| {
         assert!(
@@ -4543,13 +4646,13 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
             let row = visual.debug_bounds("browser-place-0").unwrap();
             visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
             visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
-            let selected = editor.read_with(visual, |view, _| {
-                view.context_menu.as_ref().unwrap().selected
-            });
-            for _ in 0..(index + 7 - selected) % 7 {
-                visual.simulate_keystrokes("down");
-            }
-            visual.simulate_keystrokes("enter");
+            let choice_index = if index == 0 { 0 } else { index + 1 };
+            let cell = visual
+                .debug_bounds(Box::leak(
+                    format!("context-menu-choice-{choice_index}").into_boxed_str(),
+                ))
+                .unwrap();
+            visual.simulate_click(cell.center(), Modifiers::default());
             visual.run_until_parked();
             let bounds = visual.debug_bounds("browser-picker-glyph-place-0").unwrap();
             let control = visual.debug_bounds("browser-control-⚙").unwrap();
@@ -4620,8 +4723,401 @@ fn browser_place_icons_preference_fixture_bounds_startup_before_workers(cx: &mut
 #[path = "browser_search_selection_ui_test.rs"]
 mod search_selection;
 
+#[gpui::test]
+fn browser_place_icon_grid_uses_clicked_row_reset_and_reopens(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    let directory = PreferencesTestDirectory::new();
+    let config = directory.0.join("grid-browser.json");
+    let recent = directory.0.join("recent.json");
+    let first = directory.0.join("one/same");
+    let second = directory.0.join("two/same");
+    hex_preferences::save(
+        &config,
+        &hex_preferences::BrowserPlaces::new([first.clone(), second.clone()]).unwrap(),
+    )
+    .unwrap();
+    let (handle, editor) = place_icon_preferences_window(cx, &directory, &config, &recent);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-f");
+    for (row_index, choice, expected, width) in [
+        (2, 2, Some("samples"), 124.0),
+        (3, 6, Some("waveform"), 23.0),
+        (2, 0, None, 23.0),
+    ] {
+        let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
+        let divider = visual.debug_bounds("browser-sidebar-resize").unwrap();
+        let target = divider.center() + point(px(width) - sidebar.size.width, px(0.0));
+        visual.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        let (source, generation) = editor.read_with(visual, |view, _| {
+            (
+                view.browser.section.clone(),
+                view.browser.playback_generation,
+            )
+        });
+        let row = visual
+            .debug_bounds(Box::leak(
+                format!("browser-place-{row_index}").into_boxed_str(),
+            ))
+            .unwrap();
+        // Two positions inside the same row must produce the same row anchor.
+        for fraction in [0.2, 0.8] {
+            let hit = point(row.left() + row.size.width * fraction, row.center().y);
+            visual.simulate_mouse_down(hit, MouseButton::Right, Modifiers::default());
+            visual.simulate_mouse_up(hit, MouseButton::Right, Modifiers::default());
+            let grid = visual
+                .debug_bounds("context-menu-icon-grid")
+                .expect("actual row context menu must contain a compact icon grid");
+            let first_cell = visual.debug_bounds("context-menu-choice-1").unwrap();
+            let second_cell = visual.debug_bounds("context-menu-choice-2").unwrap();
+            let next_row = visual.debug_bounds("context-menu-choice-5").unwrap();
+            assert_eq!(first_cell.top(), second_cell.top());
+            assert_eq!(first_cell.left(), next_row.left());
+            assert!(next_row.top() > first_cell.top());
+            assert!(grid.size.width <= px(120.0));
+            let panel = visual.debug_bounds("context-menu-panel").unwrap();
+            assert_eq!(panel.left(), row.left().max(px(4.0)));
+            assert_eq!(panel.top(), row.bottom());
+            visual.simulate_keystrokes("escape");
+        }
+        visual.simulate_keystrokes("cmd-f");
+        visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+        let current = editor.read_with(visual, |view, _| {
+            view.context_menu
+                .as_ref()
+                .unwrap()
+                .items
+                .iter()
+                .position(|item| item.checked)
+                .unwrap()
+        });
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("context-menu-current-{current}").into_boxed_str()
+                ))
+                .is_some()
+        );
+        let cell = visual
+            .debug_bounds(Box::leak(
+                format!("context-menu-choice-{choice}").into_boxed_str(),
+            ))
+            .unwrap();
+        if row_index == 3 {
+            visual.simulate_keystrokes("right right down enter");
+        } else {
+            visual.simulate_click(cell.center(), Modifiers::default());
+        }
+        visual.run_until_parked();
+        let path = if row_index == 2 { &first } else { &second };
+        assert_eq!(hex_preferences::load(&config).unwrap().icon(path), expected);
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, cx| {
+                assert!(view.context_menu.is_none());
+                assert_eq!(view.browser.section, source);
+                assert_eq!(view.browser.playback_generation, generation);
+                assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+                assert!(
+                    view.browser
+                        .search
+                        .read(cx)
+                        .focus_handle()
+                        .is_focused(window),
+                    "restore actual previous search focus, do not invent entry"
+                );
+            })
+        });
+    }
+    // A menu entered from non-text context restores that owner, not search.
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    let row = visual.debug_bounds("browser-place-3").unwrap();
+    visual.simulate_mouse_down(row.center(), MouseButton::Right, Modifiers::default());
+    visual.simulate_mouse_up(row.center(), MouseButton::Right, Modifiers::default());
+    visual.simulate_keystrokes("left up escape");
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| {
+            assert!(view.focus.is_focused(window));
+            assert!(
+                !view
+                    .browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+            );
+        })
+    });
+    assert_eq!(
+        hex_preferences::load(&config).unwrap().icon(&second),
+        Some("waveform")
+    );
+    let (handle, reopened) = place_icon_preferences_window(cx, &directory, &config, &recent);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    reopened.read_with(visual, |view, _| {
+        assert_eq!(view.browser_place_glyph(&first), "□");
+        assert_eq!(view.browser_place_glyph(&second), "≋");
+    });
+}
+
 #[path = "browser_focus_ui_test.rs"]
 mod explicit_focus;
 
 #[path = "browser_insert_ui_test.rs"]
 mod insertion;
+#[gpui::test]
+fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _, _directory, _) = browser_drag_fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let closed_top = visual.debug_bounds("browser-place-0").unwrap().top();
+    let gear = visual.debug_bounds("browser-control-⚙").unwrap();
+    visual.simulate_click(gear.center(), Modifiers::default());
+    let open_top = visual.debug_bounds("browser-place-0").unwrap().top();
+    assert!(
+        open_top > closed_top,
+        "actual settings rows must be present"
+    );
+    let sidebar = visual.debug_bounds("browser-sidebar").unwrap();
+    let divider = visual.debug_bounds("browser-sidebar-resize").unwrap();
+    let target = divider.center() + point(px(23.0) - sidebar.size.width, px(0.0));
+    visual.simulate_mouse_down(divider.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert_eq!(
+        visual.debug_bounds("browser-place-0").unwrap().top(),
+        open_top
+    );
+    let gear = visual.debug_bounds("browser-control-⚙").unwrap();
+    visual.simulate_click(gear.center(), Modifiers::default());
+    assert_eq!(
+        visual.debug_bounds("browser-sidebar").unwrap().size.width,
+        px(23.0),
+        "closing compact settings must not widen the picker"
+    );
+    assert_eq!(
+        visual.debug_bounds("browser-place-0").unwrap().top(),
+        closed_top,
+        "gear must remove the actual open settings rows"
+    );
+    // The existing deliberate compact-open behavior still expands usable settings.
+    let gear = visual.debug_bounds("browser-control-⚙").unwrap();
+    visual.simulate_click(gear.center(), Modifiers::default());
+    assert_eq!(
+        visual.debug_bounds("browser-sidebar").unwrap().size.width,
+        px(124.0)
+    );
+    assert_eq!(
+        visual.debug_bounds("browser-place-0").unwrap().top(),
+        open_top
+    );
+    let gear = visual.debug_bounds("browser-control-⚙").unwrap();
+    visual.simulate_click(gear.center(), Modifiers::default());
+    assert_eq!(
+        visual.debug_bounds("browser-place-0").unwrap().top(),
+        closed_top
+    );
+    editor.read_with(visual, |view, _| {
+        assert!(view.pending_requests.is_empty());
+        assert!(view.pending_audio_commands.is_empty());
+    });
+}
+
+#[path = "browser_resize_feedback_ui_test.rs"]
+mod resize_feedback;
+
+#[path = "browser_tag_editor_geometry_ui_test.rs"]
+mod tag_editor_geometry;
+
+#[path = "editor_test_environment_ui_test.rs"]
+mod test_environment;
+
+#[path = "browser_picker_compact_ui_test.rs"]
+mod compact_picker;
+
+#[path = "browser_arrow_fixture_ui_test.rs"]
+mod arrow_fixture;
+use arrow_fixture::arrow_row_fixture;
+
+fn unhighlighted_arrow_action(cx: &mut TestAppContext, sample: bool, escape: bool, left: bool) {
+    let (handle, editor, _directory, samples) = arrow_row_fixture(cx, sample);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let category = if sample {
+        "browser-place-0"
+    } else {
+        "browser-section-projects"
+    };
+    let point = visual.debug_bounds(category).unwrap().center();
+    visual.simulate_click(point, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, cx| {
+        let entries = v.browser_visible_entries(cx);
+        assert!(!entries.is_empty(), "actual async entries available");
+        assert_eq!(
+            entries[0].path,
+            if sample {
+                samples.join("loop.wav")
+            } else {
+                samples.join("a")
+            }
+        );
+    });
+    if escape || left {
+        let row = visual.debug_bounds("browser-entry-0").unwrap().center();
+        visual.simulate_click(row, Modifiers::default());
+        editor.read_with(&visual, |v, _| assert!(v.browser.results_focused));
+        if left {
+            visual.simulate_keystrokes("right");
+            visual.run_until_parked();
+            editor.read_with(&visual, |v, _| {
+                assert!((v.browser.tree.icon(&samples.join("a")) == "▾"))
+            });
+        }
+        visual.simulate_keystrokes("escape");
+    }
+    visual.update(|window, cx| {
+        editor.read_with(cx, |v, cx| {
+            assert!(!v.browser.results_focused);
+            assert!(v.browser.results_focus.is_focused(window));
+            assert_eq!(v.browser_key_context(window, cx), "hex_browser");
+        })
+    });
+    let canonical = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().clone());
+    let before = editor.read_with(&visual, |v, _| {
+        (
+            v.browser.playback_generation,
+            v.browser.tree.icon(&samples.join("a")),
+            v.browser.tree.requests_started,
+        )
+    });
+    visual.simulate_keystrokes(if left { "left" } else { "right" });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        let after = (v.browser.playback_generation, v.browser.tree.icon(&samples.join("a")), v.browser.tree.requests_started);
+        eprintln!("ACTUAL_UNHIGHLIGHTED_ROW sample={sample} escape={escape} left={left} before={before:?} after={after:?}");
+        assert_eq!(after, before, "unhighlighted navigation must not dispatch a row action");
+        assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
+        let state = v.state.as_ref().unwrap();
+        assert_eq!(state.project, canonical.project);
+        assert_eq!((state.revision, state.can_undo, state.can_redo, state.unsaved),
+                   (canonical.revision, canonical.can_undo, canonical.can_redo, canonical.unsaved));
+        assert_eq!(v.worker_requests_pending, 0);
+    });
+}
+
+#[gpui::test]
+fn browser_arrows_source_sample_right(cx: &mut TestAppContext) {
+    unhighlighted_arrow_action(cx, true, false, false);
+}
+#[gpui::test]
+fn browser_arrows_escape_sample_right(cx: &mut TestAppContext) {
+    unhighlighted_arrow_action(cx, true, true, false);
+}
+#[gpui::test]
+fn browser_arrows_source_folder_right(cx: &mut TestAppContext) {
+    unhighlighted_arrow_action(cx, false, false, false);
+}
+#[gpui::test]
+fn browser_arrows_escape_folder_right(cx: &mut TestAppContext) {
+    unhighlighted_arrow_action(cx, false, true, false);
+}
+#[gpui::test]
+fn browser_arrows_escape_folder_left(cx: &mut TestAppContext) {
+    unhighlighted_arrow_action(cx, false, true, true);
+}
+
+#[gpui::test]
+fn browser_arrows_selected_controls(cx: &mut TestAppContext) {
+    for sample in [false, true] {
+        let (handle, editor, _directory, samples) = arrow_row_fixture(cx, sample);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        let category = if sample {
+            "browser-place-0"
+        } else {
+            "browser-section-projects"
+        };
+        let category = visual.debug_bounds(category).unwrap().center();
+        visual.simulate_click(category, Modifiers::default());
+        visual.run_until_parked();
+        let row = visual.debug_bounds("browser-entry-0").unwrap().center();
+        visual.simulate_click(row, Modifiers::default());
+        let before = editor.read_with(&visual, |v, _| {
+            assert!(v.browser.results_focused);
+            v.browser.playback_generation
+        });
+        visual.simulate_keystrokes("right");
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            if sample {
+                assert!(v.browser.playback_generation > before);
+            } else {
+                assert_eq!(v.browser.tree.icon(&samples.join("a")), "▾");
+            }
+        });
+        if !sample {
+            visual.simulate_keystrokes("left");
+            editor.read_with(&visual, |v, _| {
+                assert_ne!(v.browser.tree.icon(&samples.join("a")), "▾")
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn browser_arrows_up_down_enter_results_and_command_f_keeps_text_input(cx: &mut TestAppContext) {
+    use gpui::EntityInputHandler;
+    let (handle, editor, _directory, _samples) = arrow_row_fixture(cx, true);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let place = visual.debug_bounds("browser-place-0").unwrap().center();
+    visual.simulate_click(place, Modifiers::default());
+    visual.run_until_parked();
+    for key in ["down", "up"] {
+        editor.read_with(&visual, |v, _| assert!(!v.browser.results_focused));
+        visual.simulate_keystrokes(key);
+        let before = editor.read_with(&visual, |v, _| {
+            assert!(v.browser.results_focused);
+            assert_eq!(v.browser.selected_index, 0);
+            v.browser.playback_generation
+        });
+        visual.simulate_keystrokes("right");
+        editor.read_with(&visual, |v, _| {
+            assert!(v.browser.playback_generation > before)
+        });
+        visual.simulate_keystrokes("escape");
+    }
+    visual.simulate_keystrokes("cmd-f");
+    visual.simulate_input("loop");
+    visual.simulate_keystrokes("cmd-f");
+    let before = editor.read_with(&visual, |v, _| v.browser.playback_generation);
+    visual.update(|window, cx| {
+        let input = editor.read(cx).browser.search.clone();
+        input.update(cx, |input, cx| {
+            assert_eq!(
+                input.selected_text_range(false, window, cx).unwrap().range,
+                0..4
+            )
+        });
+    });
+    visual.simulate_keystrokes("right");
+    visual.simulate_input("x");
+    editor.read_with(&visual, |v, cx| {
+        assert_eq!(v.browser.search.read(cx).content, "loopx");
+        assert_eq!(v.browser.playback_generation, before);
+        assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
+    });
+}
+
+#[path = "browser_divider_paint_ui_test.rs"]
+mod divider_paint;
+
+#[path = "browser_instrument_enter_ui_test.rs"]
+mod instrument_enter;

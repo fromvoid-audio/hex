@@ -1,5 +1,6 @@
 use super::EditorView;
-use gpui::{Context, PathPromptOptions};
+use gpui::{AppContext, Context, PathPromptOptions, Window};
+pub(super) mod project_open;
 use hex_project::TrackId;
 use hex_session::service::Request;
 
@@ -16,52 +17,139 @@ impl ImportPromptTarget {
     }
 }
 
+struct ProjectActionsInstalled;
+impl gpui::Global for ProjectActionsInstalled {}
+
+/// Focused editor handlers run first. These four File menu fallbacks resolve the
+/// active window at dispatch time, including when its element focus was lost.
+pub(super) fn install_project_actions(cx: &mut gpui::App) {
+    if cx.has_global::<ProjectActionsInstalled>() {
+        return;
+    }
+    cx.set_global(ProjectActionsInstalled);
+    fn register<A: gpui::Action>(
+        cx: &mut gpui::App,
+        handler: fn(&mut EditorView, &mut Window, &mut Context<EditorView>),
+    ) {
+        cx.on_action(move |_: &A, cx| {
+            let Some(window) = cx.active_window() else {
+                cx.propagate();
+                return;
+            };
+            // The dispatching window is currently borrowed by GPUI. Resolve its
+            // root once that dispatch completes, keeping this exact window ID.
+            cx.defer(move |cx| {
+                let _ = window.update(cx, |_, window, cx| {
+                    if let Some(Some(view)) = window.root::<EditorView>() {
+                        view.update(cx, |view, cx| handler(view, window, cx));
+                    }
+                });
+            });
+            cx.stop_propagation();
+        });
+    }
+    register::<super::NewProject>(cx, |view, _, cx| {
+        view.new_project(hex_session::DocumentAudioMode::Resident);
+        cx.notify();
+    });
+    register::<super::NewStreamingProject>(cx, |view, _, cx| {
+        view.new_project(hex_session::DocumentAudioMode::VerifiedStreaming);
+        cx.notify();
+    });
+    register::<super::OpenProject>(cx, |view, window, cx| {
+        view.open_dialog(hex_session::DocumentAudioMode::Resident, window, cx);
+    });
+    register::<super::OpenStreamingProject>(cx, |view, window, cx| {
+        view.open_dialog(
+            hex_session::DocumentAudioMode::VerifiedStreaming,
+            window,
+            cx,
+        );
+    });
+}
+
 impl EditorView {
     pub(super) fn open_dialog(
         &mut self,
         mode: hex_session::DocumentAudioMode,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         if !super::device_panel::finalize_controls(self, cx) {
             return;
         }
-        if self.opening_project {
-            return;
-        }
-        if let Some(path) = self.pending_open_path.take() {
-            self.begin_open(path, mode);
+        if mode == hex_session::DocumentAudioMode::VerifiedStreaming
+            && self.source_reservation.is_none()
+        {
+            self.error = Some("verified streaming is unavailable".into());
             cx.notify();
             return;
         }
-        let response = cx.prompt_for_paths(PathPromptOptions {
-            files: true,
-            directories: false,
-            multiple: false,
-            prompt: Some(match mode {
-                hex_session::DocumentAudioMode::Resident => "open project".into(),
-                hex_session::DocumentAudioMode::VerifiedStreaming => {
-                    "open project as verified streaming".into()
-                }
-            }),
-        });
-        cx.spawn(async move |this, cx| {
-            let picked = response.await;
-            let _ = this.update(cx, |view, cx| {
-                match picked {
-                    Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
-                        if let Some(path) = paths.pop() {
-                            if super::device_panel::finalize_controls(view, cx) {
-                                view.choose_project(path, mode);
-                            }
+        // Native pickers retain logical text focus. Finish the existing
+        // blur/Enter rename before Open admission blocks ordinary edits; the
+        // selected-path reconciliation already waits for its canonical worker.
+        if !self.finalize_track_name_for_open(window, cx)
+            || !self.finalize_clip_name_for_open(window, cx)
+        {
+            cx.notify();
+            return;
+        }
+        let Some((generation, serial)) = self.start_open_picker() else {
+            cx.notify();
+            return;
+        };
+        let handle = window.window_handle();
+        self.with_project_picker_directory(cx, move |view, directory, cx| {
+            if !view.open_picker_is_current(generation, serial) {
+                return;
+            }
+            if !cx.windows().contains(&handle) {
+                view.finish_open_picker(generation, serial);
+                return;
+            }
+            let response = cx.prompt_for_paths_with_directory(
+                PathPromptOptions {
+                    files: true,
+                    directories: false,
+                    multiple: false,
+                    prompt: Some(match mode {
+                        hex_session::DocumentAudioMode::Resident => "open project".into(),
+                        hex_session::DocumentAudioMode::VerifiedStreaming => {
+                            "open project as verified streaming".into()
                         }
-                    }
-                    Ok(Err(error)) => view.error = Some(error.to_string().to_lowercase().into()),
-                    _ => {}
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+                    }),
+                },
+                directory.as_deref(),
+            );
+            cx.spawn(async move |this, cx| {
+                let picked = response.await;
+                let _ = cx.update_window(handle, |_, window, cx| {
+                    let _ = this.update(cx, |view, cx| {
+                        if !view.finish_open_picker(generation, serial) {
+                            return;
+                        }
+                        if window.focused(cx).is_none() {
+                            view.focus.focus(window);
+                        }
+                        match picked {
+                            Ok(Ok(Some(mut paths))) if !paths.is_empty() => {
+                                if let Some(path) = paths.pop() {
+                                    if super::device_panel::finalize_controls(view, cx) {
+                                        view.choose_project(path, mode);
+                                    }
+                                }
+                            }
+                            Ok(Err(error)) => {
+                                view.error = Some(error.to_string().to_lowercase().into())
+                            }
+                            _ => view.status = "open cancelled".into(),
+                        }
+                        cx.notify();
+                    });
+                });
+            })
+            .detach();
+        });
     }
 
     pub(super) fn choose_project(
@@ -73,30 +161,25 @@ impl EditorView {
             self.error = Some("project path exceeds the 4096-byte limit".into());
             return;
         }
-        let Some(state) = self.state.as_ref() else {
-            self.error = Some("project is still loading".into());
-            return;
-        };
-        let project = &state.project;
-        let has_content = !project.tracks().is_empty() || project.assets().next().is_some();
-        if has_content
-            || state.can_undo
-            || state.can_redo
-            || self.tuning.client.snapshot().is_some()
+        if self.opening_project
+            || self.project_open.busy()
+            || self.close_prompt_open
+            || self.saving_project
+            || self.save_dialog_open
+            || self.gain_recorder.blocks_edits()
         {
-            if self.pending_open_path.as_ref() == Some(&path)
-                && self.pending_open_mode == Some(mode)
-            {
-                self.begin_open(path, mode);
-                return;
-            }
-            self.pending_open_path = Some(path);
-            self.pending_open_mode = Some(mode);
-            self.status = "replace project · open again to confirm".into();
-            self.error = None;
+            self.error =
+                Some("finish the current project action before opening another project".into());
             return;
         }
-        self.begin_open(path, mode);
+        if self.state.is_none() {
+            self.error = Some("project is still loading".into());
+            return;
+        }
+        self.pending_open_path = Some(path);
+        self.pending_open_mode = Some(mode);
+        self.status = "opening selected project".into();
+        self.error = None;
     }
 
     fn begin_open(&mut self, path: std::path::PathBuf, mode: hex_session::DocumentAudioMode) {
@@ -119,7 +202,7 @@ impl EditorView {
     }
 
     pub(super) fn new_project(&mut self, mode: hex_session::DocumentAudioMode) {
-        if self.opening_project {
+        if self.opening_project || self.project_open.busy() || self.pending_open_path.is_some() {
             return;
         }
         let has_content = self.state.as_ref().is_some_and(|state| {
@@ -154,6 +237,11 @@ impl EditorView {
     }
 
     pub(super) fn begin_open_request(&mut self, request: Request) {
+        if self.project_open.busy() {
+            self.error =
+                Some("finish the current project action before replacing the project".into());
+            return;
+        }
         let requested_mode = match &request {
             Request::NewWithAudioMode { mode, .. } | Request::OpenWithAudioMode { mode, .. } => {
                 Some(*mode)
@@ -312,3 +400,6 @@ mod tests {
         assert_eq!(pending.start, 128);
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod ui_tests;

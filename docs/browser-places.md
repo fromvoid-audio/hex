@@ -110,9 +110,10 @@ Right-click an added Place to choose folder, samples, devices, projects,
 collection, waveform or search from Hex's existing browser glyph collection.
 The same Ioskeley Mono glyphs and shared 22 px picker slot are used expanded and
 icon-only; original folder-name hover tooltips and left-click source selection
-remain. Icons may be reused. The folder choice clears the assignment. Home and
+remain. Icons may be reused. Default Icon clears the assignment; folder is also
+an explicit bundled choice. Home and
 Music retain their default folder icons. The existing editor context menu owns
-focus, pointer occlusion, Up/Down, Enter, Escape and outside-click dismissal;
+focus, pointer occlusion, arrow navigation, Enter, Escape and outside-click dismissal;
 choosing an icon does not select/import/audition a sample or create project history.
 
 The bundled font's existing provenance is in
@@ -170,6 +171,28 @@ new source selection behavior, not proof of resolution or native acceptance for
 separate mouse-focus issue #2794 / draft PR #400. Native mouse/clipboard/IME and
 shortcut checks remain coordinator-owned; no app replacement occurs in cloud.
 
+## row-anchored icon menu — pulse2826 / PR430
+
+The added Place row's right-click menu anchors to the row's lower-left corner
+(clamped inside the window), regardless of the pointer's position in the row.
+Default Icon resets the assignment above a compact four-column grid of the seven
+existing bundled glyphs. Current choice has a persistent theme accent outline;
+hover and keyboard selection have separate feedback, and each glyph has its
+original named tooltip. Left/Right move one choice, Up/Down move grid rows (or
+Default), Enter chooses, Escape/outside-click dismiss and restore prior focus.
+Assignments still capture the clicked native path, never the active row index or
+previously selected source. No preview/import/query requests are emitted.
+
+This follows the supplied screenshot's reset/grid composition using Hex's own
+assets. Additional Places are customizable; built-in Home/Music, Library categories
+and Collections do not have a persisted custom-icon identity in the current
+model. No new all-source identity/persistence format is claimed here. Existing
+Place context actions are icon choices; no Rename/Remove/Show in Finder commands
+are invented. Source input tests cover two same-named paths, reset, expanded/compact
+rows, anchor geometry, actual mouse and keyboard choices, focus/dismissal and
+actual preference-save/editor-reopen. Physical native appearance, accessibility
+announcement and app close/reopen acceptance remain coordinator-owned and open.
+
 ## explicit search entry — pulse2820 / PR426
 
 Only the search field itself and Command-F enter query editing. Sources, Places,
@@ -182,6 +205,27 @@ handlers run in their local browser scope; painting/workers never restore focus.
 Close returns focus to the editor. This is separate from the unresolved native
 field-click focus-loss report2794 and the future double-click refinement2817.
 Optimized native pointer/IME/keyboard acceptance remains coordinator-owned.
+
+## compact picker headings and resize capture — pulse2841 / PR444
+
+At the exact 23 px picker minimum, the section headings show small themed line
+marks centered on the existing icon column. Their original single-line text boxes
+remain reserved but do not paint; separators overlay those boxes. Collections,
+Library, Places and open-settings rows therefore keep every source icon's existing
+x/y position and row height. Expanded headings return in the same slots, and full
+heading names remain available through hover tooltips. Item names keep progressive
+single-line clipping; selectable Place icons and native path identities are unchanged.
+
+Pointer resizing captures the minimum within one existing 4 px divider width.
+Once captured, the same drag stays locked until it exceeds two divider widths
+above minimum, preventing chatter near the threshold. A new drag starting at
+minimum also uses this release band. Outside the band, ordinary pointer widths
+remain continuous (subject to GPUI's existing device-pixel paint rounding). Mouse
+release retains the captured minimum. The settings gear still expands deliberately
+when opening settings, and closing already-open compact settings does not widen it.
+This state is transient editor layout; no new persisted format or global width
+quantization is introduced. Native physical drag/hover and accessibility inspection
+remain coordinator-owned acceptance, separate from headless scene/input tests.
 
 ## repeated text double-click selection — pulse2817 / PR423
 
@@ -229,3 +273,43 @@ the preceding clip content (ID allocation remains monotonic). This Enter route
 reuses the canonical overwrite entrypoint; global no-overlap coverage across other
 entrypoints remains issue2822/PR428. Optimized native input/audio acceptance remains
 separate from headless input and real-worker checks.
+### invalidated text double-click pairs
+
+A text/keyboard/IME update, Shift selection or drag invalidates the saved first
+click. If the platform subsequently sends an even click count, the shared policy
+returns no toggle and the field uses its normal caret/selection path. It never
+substitutes current selection for the discarded snapshot. Fresh rapid1/2 and3/4
+pairs still toggle from their own pre-gesture state. No text/query/value event,
+formatter, numeric knob reset or geometry policy changes.
+
+New bounded actual-caller regressions cover keyboard, text, IME, Shift and drag
+invalidation followed by click2, then a fresh3/4 pair. The shared pure policy
+covers both prior/current full-selection states. Original browser/name/numeric
+and physical input evidence remains source-bound; native click-count/IME and
+clipboard acceptance is separate from headless source checks.
+
+The new PR423 toggle fixture now precreates one existing test Environment and
+its samples/WAV before Service/browser startup, then injects that same Arc into
+the editor. Actual browser/home/root, all four preference paths and the catalog
+path correlate with that owner. A real catalog-save gate proves the same root
+survives view/caller retirement, saves successfully, then cleans up without
+recreation. No import or new PendingSetup is needed for this browser-only fixture;
+no production input policy changes. Original query/IME/double-pair/value-event
+assertions remain byte-identical. Older fixtures are not converted by this fix.
+
+### keyboard row-action eligibility
+
+Left/Right operate only on a highlighted browser result. Clicking a source/Place
+or pressing Escape retains navigation focus but clears the highlight; subsequent
+Right cannot audition an implicit first sample or expand an implicit folder, and
+Left cannot collapse one. Up/Down still enter and navigate results through the
+existing selection path. A highlighted sample's Right audition and highlighted
+folder Left/Right remain available, as do explicit row clicks and manual preview.
+The browser key context and search/Command-F text ownership are unchanged.
+
+Pulse2858/PR460 promotes the verified five failures from both main2683942b and
+original423 into normal rendered regressions. They use actual routed keys,
+private filesystem workers and canonical Service Init; refused row actions leave
+canonical metadata/history and project requests unchanged. Selected-row controls
+and Up/Down-to-Right plus Command-F typing remain positive cases. This is source
+coverage, not physical keyboard/audio-output or native delivery acceptance.

@@ -428,12 +428,18 @@ impl EditorView {
         let Some(request) = self.browser.tree.next() else {
             return;
         };
+        #[cfg(test)]
+        let test_environment = std::sync::Arc::clone(&self.test_environment);
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let path = request.path.clone();
             let result = cx
                 .background_executor()
-                .spawn(async move { scan_directory(path) })
+                .spawn(async move {
+                    #[cfg(test)]
+                    let _test_environment = test_environment;
+                    scan_directory(path)
+                })
                 .await;
             let _ = this.update(cx, |view, cx| {
                 let selection = view.browser_selected_item(cx);
@@ -521,6 +527,9 @@ impl EditorView {
         _: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        if !self.browser.results_focused {
+            return;
+        }
         let entries = self.browser_visible_entries(cx);
         let Some(entry) = entries.get(self.browser.selected_index) else {
             return;

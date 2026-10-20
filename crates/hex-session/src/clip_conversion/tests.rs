@@ -25,8 +25,11 @@ fn beat(n: u64) -> BeatTime {
 fn fixture() -> (Session, hex_project::TrackId, ClipId) {
     let mut session = Session::new(48_000, 32, 1_000_000).unwrap();
     let Created::Track(track) = session
-        .command(Command::AddTrack {
+        .command(Command::InsertTrackWithDevice {
             name: "bounce".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {

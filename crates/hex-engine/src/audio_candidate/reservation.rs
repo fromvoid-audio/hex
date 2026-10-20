@@ -197,8 +197,12 @@ mod tests {
                 let asset = editor.project().assets().next().unwrap().id();
                 for index in 1..count {
                     let hex_project::Created::Track(track) = editor
-                        .execute(hex_project::Command::AddTrack {
+                        .execute(hex_project::Command::InsertTrackWithDevice {
                             name: format!("audio {index}"),
+                            before_track: None,
+                            slot: hex_project::TrackDeviceSlot::Instrument,
+                            state: hex_project::default_instrument_state()
+                                .expect("fixture instrument state"),
                         })
                         .unwrap()
                     else {
@@ -252,6 +256,7 @@ mod tests {
             let mut snapshot = editor.project().snapshot();
             for track in &mut snapshot.tracks {
                 track.devices.push(hex_project::DeviceSnapshot {
+                    comparison: None,
                     id: snapshot.next_id,
                     bypassed: false,
                     state: hex_devices::utility::UTILITY_DEFINITION
@@ -312,8 +317,11 @@ mod tests {
         let mut editor =
             hex_project::Editor::new(hex_project::Project::new(48000).unwrap(), 8).unwrap();
         editor
-            .execute(hex_project::Command::AddTrack {
+            .execute(hex_project::Command::InsertTrackWithDevice {
                 name: "instrument".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap();
         assert!(matches!(

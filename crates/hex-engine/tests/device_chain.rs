@@ -128,8 +128,11 @@ fn arrangement_utility_instances_process_audio_in_serial_order_and_honor_bypass_
 fn arrangement_midi_receives_the_same_fused_device_transform() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "midi".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {

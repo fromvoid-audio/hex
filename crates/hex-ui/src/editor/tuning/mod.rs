@@ -505,6 +505,7 @@ impl EditorView {
             super::device_gesture::retire_failed_finalize_barriers(&mut self.pending_requests);
         if effects.save_refused {
             self.saving_project = false;
+            self.cancel_open_after_save();
         }
         if effects.export_refused {
             self.export_pending = false;

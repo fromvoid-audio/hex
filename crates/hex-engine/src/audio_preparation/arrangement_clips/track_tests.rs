@@ -24,8 +24,11 @@ fn fixture(
     let first = p.tracks()[0].id();
     let mut e = Editor::new(p, 32).unwrap();
     let Created::Track(second) = e
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "second".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
