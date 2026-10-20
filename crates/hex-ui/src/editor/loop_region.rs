@@ -83,10 +83,26 @@ impl EditorView {
         let Some(state) = &self.state else {
             return Ok(None);
         };
-        let mut remaining = self
-            .selected_clip_ids()
+        let mut selected = self.selected_clip_ids();
+        selected.sort_unstable();
+        selected.dedup();
+        // Allocate selection scratch before the read. Marking Copy flags below
+        // must not free collection nodes while holding the snapshot loan.
+        let mut remaining = selected
             .into_iter()
-            .collect::<std::collections::BTreeSet<_>>();
+            .map(|id| (id, true))
+            .collect::<Vec<_>>();
+        let take = |remaining: &mut [(hex_project::ClipId, bool)], id| {
+            let Ok(index) = remaining.binary_search_by_key(&id, |entry| entry.0) else {
+                return false;
+            };
+            let Some((_, unseen)) = remaining.get_mut(index) else {
+                return false;
+            };
+            let present = *unseen;
+            *unseen = false;
+            present
+        };
         state
             .read_with(|snapshot| {
                 let project = snapshot.model();
@@ -96,15 +112,15 @@ impl EditorView {
                 for cell in project.session_cells() {
                     match cell.content() {
                         CellContent::Audio(clip) => {
-                            remaining.remove(&clip.id());
+                            take(&mut remaining, clip.id());
                         }
                         CellContent::Midi(clip) => {
-                            remaining.remove(&clip.id());
+                            take(&mut remaining, clip.id());
                         }
                         CellContent::Stop | CellContent::Empty => {}
                     }
                 }
-                if remaining.is_empty() {
+                if remaining.iter().all(|(_, unseen)| !*unseen) {
                     return Ok(None);
                 }
                 let mut start = u64::MAX;
@@ -121,12 +137,12 @@ impl EditorView {
                 // Visit the bounded clip collection once, rather than rescanning it per selection.
                 for track in project.tracks() {
                     for clip in track.clips() {
-                        if remaining.remove(&clip.id()) {
+                        if take(&mut remaining, clip.id()) {
                             include(clip.start(), clip.start().checked_add(clip.duration()))?;
                         }
                     }
                     for clip in track.midi_clips() {
-                        if remaining.remove(&clip.id()) {
+                        if take(&mut remaining, clip.id()) {
                             let error = "selected midi clip exceeds the timeline";
                             let beat_end = clip
                                 .start()
@@ -142,7 +158,7 @@ impl EditorView {
                         }
                     }
                 }
-                if !remaining.is_empty() {
+                if remaining.iter().any(|(_, unseen)| *unseen) {
                     return Err("selected clip no longer belongs to the arrangement");
                 }
                 Ok(Some((start, end)))
