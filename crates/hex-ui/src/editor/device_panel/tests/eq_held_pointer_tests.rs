@@ -691,3 +691,271 @@ fn eq_held_node_seek_sequence_terminal_and_project_races_preserve_actual_callbac
         }
     }
 }
+
+#[gpui::test]
+fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::arrangement_seek::{LAST_SEEK_RETIREMENT, SeekStage};
+    use hex_audio::prepared::PublicationPolicy;
+    let _output_guard = graph_layout_tests::status_fixture_guard();
+    let (handle, editor, _environment, device) = held_node_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let (mut output, mut backend) = attach_actual_output(&editor, cx, &mut visual);
+    let start = plot(&mut visual, device, 0.5, 0.5);
+    let first = plot(&mut visual, device, 0.62, 0.7);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(first, Some(MouseButton::Left), Modifiers::default());
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        preview_is_applied,
+    );
+    visual.simulate_keystrokes("space");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if editor.update(cx, |view, _| {
+            view.tick_prepared_arrangement_seek();
+            view.prepared_seek
+                .as_ref()
+                .is_some_and(|seek| seek.stage == SeekStage::CandidateReady)
+        }) {
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    let (id, root, previous_identity, blocker) = editor.update(cx, |view, cx| {
+        let pending = view.pending_playback.as_ref().unwrap();
+        let seek = view.prepared_seek.as_ref().unwrap();
+        let id = seek.request_id;
+        let root = Arc::as_ptr(&seek.prepared_revision) as usize;
+        let identity = seek.device_preview_identity.unwrap();
+        assert_eq!(pending.seek_request_id, Some(id));
+        // Occupy the REAL forwarding cell, without polling its worker. A second
+        // publication must return the exact seek Playback with actual Busy.
+        let blocker =
+            hex_engine::playback::Playback::from_prepared(Arc::clone(&seek.prepared_revision));
+        let token = view
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .forward_resident_publication(
+                blocker,
+                PublicationPolicy::InheritRuntime,
+                view.project_generation,
+            )
+            .unwrap();
+        view.tick(cx);
+        assert_eq!(
+            view.prepared_seek.as_ref().unwrap().stage,
+            SeekStage::CandidateReady
+        );
+        assert_eq!(
+            view.pending_playback.as_ref().unwrap().seek_request_id,
+            Some(id)
+        );
+        assert!(view.pending_resident_publication.is_none());
+        (id, root, identity, token)
+    });
+    LAST_SEEK_RETIREMENT.set(None);
+    let next = plot(&mut visual, device, 0.71, 0.6);
+    visual.simulate_mouse_move(next, Some(MouseButton::Left), Modifiers::default());
+    editor.update(cx, |view, _| {
+        view.pump_device_gesture();
+    });
+    // Consume the ACTUAL Session preview event directly to observe receive's
+    // replacement cutpoint before the later timer invalidation can mask it.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let replaced = editor.update(cx, |view, _| {
+            let Ok(event) = view.service.try_event() else {
+                return false;
+            };
+            let replacement = event.device_preview.as_ref().is_some_and(|preview| {
+                preview.identity.key == previous_identity.key
+                    && preview.identity.sequence > previous_identity.sequence
+            }) && event.playback.is_some();
+            view.receive(event);
+            replacement
+        });
+        if replaced {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "actual newer preview event missing"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        LAST_SEEK_RETIREMENT.get(),
+        Some((id, root, true)),
+        "exact CandidateReady must cross actual seek-worker retirement BEFORE preview replacement"
+    );
+    editor.read_with(cx, |view, _| {
+        assert!(view.prepared_seek.is_none());
+        let pending = view.pending_playback.as_ref().unwrap();
+        assert!(pending.seek_request_id.is_none());
+        let current = pending.device_preview_identity.unwrap();
+        assert_eq!(current.key, previous_identity.key);
+        assert!(current.sequence > previous_identity.sequence);
+        assert!(view.latched_seek_intent.is_some());
+    });
+    // Finish the deliberately occupied real publication before pumping normal
+    // input/callback reconciliation; no fabricated ACK/status or owner drop.
+    output
+        .publication
+        .control()
+        .unwrap()
+        .poll_resident_publication();
+    editor.update(cx, |view, _| {
+        let response = view
+            .audio
+            .as_mut()
+            .unwrap()
+            .control
+            .try_resident_publication_response()
+            .unwrap();
+        assert_eq!(response.token, blocker);
+        assert!(response.result.is_ok());
+    });
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        |view| {
+            view.prepared_seek.is_none()
+                && view.latched_seek_intent.is_none()
+                && view
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .control
+                    .status()
+                    .unwrap()
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+        },
+    );
+    visual.simulate_keystrokes("space");
+    visual.simulate_keystrokes("escape");
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        |view| settled(view) && view.prepared_seek.is_none() && view.latched_seek_intent.is_none(),
+    );
+    editor.update(cx, |view, _| {
+        view.audio.take();
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
+    cx: &mut TestAppContext,
+) {
+    use crate::editor::arrangement_seek::{LAST_SEEK_RETIREMENT, SeekStage};
+    let _output_guard = graph_layout_tests::status_fixture_guard();
+    let (handle, editor, _environment, device) = held_node_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let (mut output, mut backend) = attach_actual_output(&editor, cx, &mut visual);
+    let start = plot(&mut visual, device, 0.5, 0.5);
+    let first = plot(&mut visual, device, 0.62, 0.7);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(first, Some(MouseButton::Left), Modifiers::default());
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        preview_is_applied,
+    );
+    visual.simulate_keystrokes("space");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !editor.update(cx, |view, _| {
+        view.tick_prepared_arrangement_seek();
+        view.prepared_seek
+            .as_ref()
+            .is_some_and(|seek| seek.stage == SeekStage::CandidateReady)
+    }) {
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    // Seed the existing UI fallback with the REAL completed runtime. This is
+    // a component test of fallback ownership/admission, not fabricated worker
+    // contention. Actual worker-full/shutdown/drop-thread tests live in Session.
+    let (id, root) = editor.update(cx, |view, _| {
+        let seek = view.prepared_seek.take().unwrap();
+        let playback = view.pending_playback.take().unwrap();
+        assert_eq!(playback.seek_request_id, Some(seek.request_id));
+        let id = seek.request_id;
+        let root = Arc::as_ptr(&seek.prepared_revision) as usize;
+        view.retired_seek_result = Some(hex_session::arrangement_seek::ArrangementSeekResult {
+            request_id: id,
+            mode: seek.mode,
+            generation: seek.project_generation,
+            revision: seek.project_revision,
+            prepared_revision: seek.prepared_revision,
+            destination_frame: seek.destination_frame,
+            work_budget_frames: seek.work_budget_frames,
+            start_playing: seek.start_playing,
+            result: Ok(playback.playback),
+        });
+        for destination in [16, 32, 64] {
+            view.request_prepared_seek(destination, false);
+            assert!(
+                view.prepared_seek.is_none(),
+                "fallback must block a second runtime owner"
+            );
+            let retained = view.retired_seek_result.as_ref().unwrap();
+            assert_eq!(retained.request_id, id);
+            assert_eq!(Arc::as_ptr(&retained.prepared_revision) as usize, root);
+            assert!(retained.result.is_ok());
+            assert_eq!(
+                view.latched_seek_intent.as_ref().unwrap().destination_frame,
+                destination
+            );
+        }
+        (id, root)
+    });
+    LAST_SEEK_RETIREMENT.set(None);
+    editor.update(cx, |view, _| {
+        view.tick_prepared_arrangement_seek();
+    });
+    assert_eq!(
+        LAST_SEEK_RETIREMENT.get(),
+        Some((id, root, true)),
+        "fallback retry must transfer the exact runtime to the actual worker"
+    );
+    visual.simulate_keystrokes("escape");
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        |view| {
+            settled(view)
+                && view.prepared_seek.is_none()
+                && view.latched_seek_intent.is_none()
+                && view.retired_seek_result.is_none()
+        },
+    );
+    editor.update(cx, |view, _| {
+        view.audio.take();
+    });
+    backend.close();
+    drop(output);
+}

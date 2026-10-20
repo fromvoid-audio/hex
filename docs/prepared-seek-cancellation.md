@@ -118,8 +118,8 @@ sequence replacement before and after publication, cancel/commit, replacement,
 device removal, retained preview metadata and ordinary canonical seeking. The
 node-position test additionally checks 48 tick/repaint cycles and actual Undo/
 Redo. These are not a native framebuffer flicker disproof or physical audio
-qualification. The original report's node-versus-held-keyboard-note meaning
-remains subject to user clarification.
+qualification. The user confirmed that the reported hold is an EQ band node held with the
+mouse; MIDI keyboard-note holding is not the reproduction.
 
 Finite native follow-up, owned by the coordinator: in a qualified build with a
 real output, hold and drag an EQ node while pressing Space to play/pause, move
@@ -129,3 +129,30 @@ stability during sustained drag. Check the originally reported flicker separatel
 and retain its actual source/build and interpretation rather than declaring it
 fixed from these headless receipts. No app operation is performed by this source
 unit.
+
+### busy resident publication and seek retirement (20 october 2026)
+
+A prepared seek can remain `CandidateReady` in `pending_playback` when the real
+resident forwarding cell is busy. Before a later worker preview replaces that
+slot, receive now returns the exact matching candidate through the existing
+Service seek-worker retirement path. It retains only the latest intent for the
+same live held gesture, generation and canonical revision. Terminal, project or
+foreign-owner replacement does not restart it. In-flight publication keeps its
+existing token, response and conditional-cancellation protocol.
+
+The single fallback result is the existing retirement backpressure owner. New
+seek requests latch only scalar intent while it is occupied; tick retries it
+before admitting preparation or consuming another result. Thus a UI-held retired
+result and a new `CandidateReady` cannot coexist in the admitted path. A test-only
+assertion checks this precondition at each handback; no runtime panic, queue or
+owner slot was introduced.
+
+The regression first failed on unchanged production at the actual
+Busy-to-newer-preview receive cutpoint, then passed after the repair. Its scalar
+witness records exact request/prepared-root identity and the real Service
+handback result; it does not claim native destruction timing. A second component
+case places a real completed runtime in the existing fallback and checks repeated
+request admission and exact-owner retry. That seed is explicitly not a simulated
+worker-Busy result. Existing Session worker tests independently cover occupied
+retirement, shutdown handback and worker-thread destruction. Native visible
+flicker, physical input/audio and optimized combined-build acceptance remain open.

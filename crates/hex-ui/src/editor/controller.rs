@@ -2282,6 +2282,7 @@ impl EditorView {
                         && preview.identity.canonical_revision == revision
                 })
                 .map(|preview| preview.identity);
+            self.retire_seek_before_playback_replacement(preview_identity);
             // Retain the immutable source identity before Playback ownership can
             // move into the audio publication queue.
             let prepared_revision = playback.prepared_revision().cloned();

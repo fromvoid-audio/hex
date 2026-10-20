@@ -17,6 +17,13 @@ use hex_session::arrangement_seek::{
 use hex_session::service::DevicePreviewIdentity;
 use std::sync::Arc;
 
+// Scalar-only test witness at the real Service handback boundary. This does
+// not retain a graph, replace the worker or assert a native destruction time.
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static LAST_SEEK_RETIREMENT: std::cell::Cell<Option<(u64, usize, bool)>> = const { std::cell::Cell::new(None) };
+}
+
 pub(super) trait SeekAudioControl {
     fn status_view(&self) -> Option<&hex_audio::prepared::Status>;
     fn capture_fence(&self) -> Option<FreshRuntimeFence>;
@@ -626,10 +633,7 @@ impl EditorView {
             }
         }
         if let Some(result) = self.retired_seek_result.take() {
-            match self.service.retire_arrangement_seek_result(result) {
-                Ok(()) => changed = true,
-                Err(result) => self.retired_seek_result = Some(result),
-            }
+            changed |= self.retire_seek_result(result);
         }
         if self.retired_seek_result.is_some() {
             return changed;
@@ -795,9 +799,62 @@ impl EditorView {
                     && self.playback_candidates.is_empty()))
     }
 
-    fn retire_seek_result(&mut self, result: ArrangementSeekResult) {
-        if let Err(result) = self.service.retire_arrangement_seek_result(result) {
+    pub(super) fn retire_seek_before_playback_replacement(
+        &mut self,
+        incoming_preview: Option<DevicePreviewIdentity>,
+    ) {
+        let Some(pending) = self.prepared_seek.as_ref().filter(|pending| {
+            pending.stage == SeekStage::CandidateReady
+                && self
+                    .pending_playback
+                    .as_ref()
+                    .is_some_and(|playback| playback.seek_request_id == Some(pending.request_id))
+        }) else {
+            return;
+        };
+        // Busy forwarding still leaves the exact runtime in PendingPlayback.
+        // Retire it BEFORE receive replaces that slot, not on the later tick.
+        // Only the same live held owner can carry the user's intent forward.
+        let retry = pending
+            .device_preview_identity
+            .zip(incoming_preview)
+            .and_then(|(previous, incoming)| {
+                (incoming.key == previous.key
+                    && incoming.project_generation == previous.project_generation
+                    && incoming.canonical_revision == previous.canonical_revision
+                    && incoming.sequence >= previous.sequence
+                    && self.active_seek_preview() == Some(incoming))
+                .then(|| pending.intent())
+            });
+        let latest = self.latched_seek_intent.take();
+        self.invalidate_prepared_seek();
+        if retry.is_some() {
+            self.latched_seek_intent = latest.or(retry);
+        }
+    }
+
+    fn retire_seek_result(&mut self, result: ArrangementSeekResult) -> bool {
+        // One seek is admitted at a time. Both request admission and result
+        // consumption stop while the UI retirement fallback owns a result;
+        // CandidateReady can therefore never coexist with that fallback.
+        #[cfg(test)]
+        assert!(
+            self.retired_seek_result.is_none(),
+            "occupied seek retirement owner"
+        );
+        #[cfg(test)]
+        let identity = (
+            result.request_id,
+            Arc::as_ptr(&result.prepared_revision) as usize,
+        );
+        let handback = self.service.retire_arrangement_seek_result(result);
+        #[cfg(test)]
+        LAST_SEEK_RETIREMENT.set(Some((identity.0, identity.1, handback.is_ok())));
+        if let Err(result) = handback {
             self.retired_seek_result = Some(result);
+            false
+        } else {
+            true
         }
     }
 

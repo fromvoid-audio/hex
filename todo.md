@@ -6127,3 +6127,15 @@ browser Enter/density/capture behavior. Local owning fixtures bind their origina
 paths and catalog jobs to one Environment, with pointer/four-path assertions;
 original test bodies remain. Current focused/required/review and native acceptance
 remain separate; old source receipts do not qualify this combined candidate.
+
+
+### 2026-10-20 — pulse2881 / pr483 busy seek retirement return
+
+- Reproduced the real resident-publication Busy → newer held-preview replacement
+  gap: the exact CandidateReady runtime did not reach seek-worker retirement.
+- Retire that owner before replacing pending playback; retain only same-live-key
+  play intent. Existing publication tokens/cancellation and bounded fallback stay.
+- Added exact real-Service handback and real-runtime fallback/admission controls;
+  retain original EQ/seek/A-B/text tests and negative receipts. Source component
+  evidence is separate from sole-merger prospective qualification and native
+  framebuffer/physical audio acceptance.
