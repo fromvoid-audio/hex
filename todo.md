@@ -6059,6 +6059,6 @@ candidate checks/review/merge belong to the sole merger.
 
 PR432 integration: preserve title/body inherited fill reuse and current passive
 preview interaction. Private fixture uses one Environment before sample/UI
-startup with actual held catalog save/cleanup control; original paint/selection/
+startup; central Environment tests retain catalog lifecycle coverage. Original paint/selection/
 rename/geometry test body unchanged. Current owning/required checks and review
 pending; native readability/input acceptance remains open.

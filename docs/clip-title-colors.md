@@ -42,5 +42,6 @@ their existing neutral fill and remain noninteractive. No new project lookup
 is added. The private scene fixture now precreates one Environment before
 sample/import/UI startup, sharing its root with all four preferences and
 catalog jobs. Its original color/selection/rename/geometry assertions remain
-unchanged; a held real catalog save checks root retention and cleanup.
+unchanged. The existing central Environment regression owns real catalog
+save/root-retention/cleanup coverage; no duplicate lifecycle test is added here.
 Native readability, physical input and user acceptance remain open.
