@@ -330,3 +330,44 @@ fn launched_session_audio_passes_through_main_effect_and_master_once() {
     }
     assert_eq!(original.sample_rate(), 48_000);
 }
+
+#[test]
+fn main_renderer_metering_tracks_public_enable_disable_and_reenable_without_pcm_changes() {
+    for compensated in [false, true] {
+        let (edit, media) = fixture(compensated);
+        let device = edit.project().main_devices()[0].id();
+        let prepared = revision(&edit, &media);
+        let project = prepared.arrangement();
+        let meter = project
+            .device_meter(device.value())
+            .expect("actual Main tap");
+        let mut renderer = hex_engine::Renderer::new(project);
+        let mut unmetered = hex_engine::Renderer::new(project);
+        renderer.play();
+        unmetered.play();
+        for enabled in [false, true, false, true] {
+            assert_eq!(meter.take_peaks(), [0.0; 2]);
+            renderer.set_effect_metering(enabled);
+            let mut actual = [[0.0; 2]; 64];
+            let mut expected = actual;
+            renderer.render(&mut actual).unwrap();
+            unmetered.render(&mut expected).unwrap();
+            assert_eq!(actual, expected, "telemetry changes PCM, enabled={enabled}");
+            assert!(actual.iter().any(|f| f[0].abs() > 0.01));
+            let peaks = meter.take_peaks();
+            eprintln!(
+                "MAIN_RENDERER_METER compensated={compensated} enabled={enabled} peaks={peaks:?}"
+            );
+            if enabled {
+                assert!(
+                    peaks[0] > 0.01 && peaks[1] > 0.01,
+                    "public Renderer enable must meter nonzero Main PCM: {peaks:?}"
+                );
+            } else {
+                assert_eq!(peaks, [0.0; 2], "disabled Main telemetry must stay silent");
+            }
+            assert_eq!(meter.take_peaks(), [0.0; 2]);
+            assert_eq!(renderer.position(), unmetered.position());
+        }
+    }
+}

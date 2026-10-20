@@ -2897,6 +2897,7 @@ impl<'a> Renderer<'a> {
             .device_chains
             .iter_mut()
             .chain(self.runtime.return_chains.iter_mut())
+            .chain(std::iter::once(&mut self.runtime.main_chain))
         {
             chain.set_metering(enabled);
         }

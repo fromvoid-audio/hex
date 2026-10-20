@@ -1,3 +1,13 @@
+## Main Renderer metering return — pulse2882 / PR484, 20 october2026
+
+The public headless Renderer metering toggle now includes its existing prepared
+Main chain. Actual nonzero-PCM enable/read failed before the repair. The owning
+case covers disabled/enable/disable/reenable in ordinary/routed projects with
+bitwise unchanged PCM. Source-bound targeted/strict and callback allocation
+controls are recorded in Pulse, not final prospective qualification or native
+meter/display acceptance. Prior d81 latency/A-B repairs and evidence remain
+preserved; no new meter owner/API, callback work or Main DSP pass is introduced.
+
 ## group batch capacity, copied selection and victim accent — pulse2803 / PR409
 
 The accepted review repair plans the complete final Arrangement state before

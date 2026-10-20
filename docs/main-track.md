@@ -184,3 +184,16 @@ partitions, Renderer, pre-Main captures and warm Main history/refused incompatib
 handoff. Component qualification and exact evidence are recorded in Pulse2882;
 sole-merger prospective validation, actual merge and native optimized acceptance
 remain separate. No device/app/native operations are performed by this source lane.
+
+### public headless Main metering (20 october 2026)
+
+`Renderer::set_effect_metering` enables/disables the existing prepared Main
+chain along with Track and Return chains. The public Main `device_meter` uses
+the actual device tap; no new owner, observation API or extra DSP pass is added.
+The regression first showed zero Main peaks with nonzero rendered PCM after
+enabling metering. It checks default-disabled, enabled, disabled and reenabled
+telemetry in ordinary and routed projects, with bitwise PCM equality to an
+unmetered renderer throughout. Targeted exact-source component/strict/allocation
+receipts are in Pulse2882; earlier d81 latency/A-B evidence remains separate.
+Final prospective qualification belongs to the sole merger; physical meters,
+listening and optimized delivery remain unverified here.
