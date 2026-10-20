@@ -1951,12 +1951,13 @@ impl EditorView {
             .w(px(4.0))
             .flex_shrink_0()
             .cursor_col_resize()
-            .bg(rgb(theme::color(if self.browser.resizing {
-                theme::PaletteRole::Secondary
-            } else {
-                theme::PaletteRole::Border
-            })))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Secondary))));
+            .relative()
+            .group("browser-resize-handle")
+            .child(layout::resize_divider_line(
+                "browser-resize-handle",
+                "browser-resize-line",
+                self.browser.resizing,
+            ));
         resize = resize.child(
             canvas(
                 |_, _, _| (),
