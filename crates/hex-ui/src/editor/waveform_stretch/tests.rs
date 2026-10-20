@@ -63,7 +63,8 @@ fn raw_peak_location_uses_source_markers_across_tempo_points() {
     ];
     let source = CachedWaveform::from_peaks(88_200, peaks).unwrap();
     let ranges = p.ranges(22_050..22_136, 88_200);
-    let actual = super::super::waveform::aggregate_ranges(&source, ranges.as_slice()).unwrap();
+    let actual =
+        super::super::waveform::aggregate_ranges(source.read(), ranges.as_slice()).unwrap();
     assert_eq!(actual[0].min, -0.75);
     assert_eq!(actual[1].max, 0.875);
     let full = p.ranges(0..132_300, 88_200);
@@ -168,7 +169,7 @@ fn geometry_cache_replaces_preview_snapshot_and_distinguishes_source_and_map() {
     use crate::editor::waveform_geometry::{WaveformGeometryRequest, cached_waveform_geometry};
     use gpui::{Bounds, point, px, size};
     let (editor, id) = fixture();
-    let source = Arc::new(
+    let source = hex_session::SharedWaveform::new_on_control(
         CachedWaveform::from_peaks(
             88_200,
             (0..128)
@@ -196,10 +197,13 @@ fn geometry_cache_replaces_preview_snapshot_and_distinguishes_source_and_map() {
             columns: 200,
             grid: None,
         };
-        let geometry = cached_waveform_geometry(&cache, &source, &request).unwrap();
+        let geometry =
+            cached_waveform_geometry(&cache, hex_session::read_shared_waveform(&source), &request)
+                .unwrap();
         assert!(Arc::ptr_eq(
             &geometry,
-            &cached_waveform_geometry(&cache, &source, &request).unwrap()
+            &cached_waveform_geometry(&cache, hex_session::read_shared_waveform(&source), &request)
+                .unwrap()
         ));
         if let Some(old) = previous {
             assert!(!Arc::ptr_eq(&geometry, &old));

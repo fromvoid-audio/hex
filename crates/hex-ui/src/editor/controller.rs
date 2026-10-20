@@ -4113,7 +4113,8 @@ mod tests {
     }
 
     fn candidate(audio_revision: u64, project_revision: u64, generation: u64) -> PlaybackCandidate {
-        let project = Arc::new(Project::new(48_000).expect("project"));
+        let project =
+            hex_session::SharedProject::new_on_control(Project::new(48_000).expect("project"));
         PlaybackCandidate {
             audio_revision,
             project_generation: generation,
@@ -4122,9 +4123,11 @@ mod tests {
                 comparison_audio: None,
                 project,
                 waveforms: Default::default(),
-                audio_clip_waveforms: std::collections::BTreeMap::new(),
-                midi_preview: Arc::new(hex_engine::MidiArrangementPreview::default()),
-                gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                audio_clip_waveforms: Default::default(),
+                midi_preview: hex_engine::empty_midi_preview_on_control(),
+                gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                    hex_engine::GainAutomationPreview::default(),
+                )),
                 timeline_frames: 0,
                 can_undo: false,
                 can_redo: false,

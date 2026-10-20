@@ -3,6 +3,7 @@ use super::{EditorMode, EditorView};
 use gpui::Window;
 use hex_project::Command;
 use hex_session::service::Request;
+use hex_session::snapshot_exports::ui_consumers::SnapshotSessionCellContentRead as CellContent;
 
 impl EditorView {
     /// Existing Command-L action now owns the complete Arrangement selection.
@@ -86,62 +87,67 @@ impl EditorView {
             .selected_clip_ids()
             .into_iter()
             .collect::<std::collections::BTreeSet<_>>();
-        // Mode switches preserve the primary selection. Session-owned clips
-        // have no Arrangement extent and are not deleted/stale Arrangement IDs.
-        // Remove them in one bounded pass; unknown IDs must still refuse below.
-        for cell in state.project.session_cells() {
-            match cell.content() {
-                hex_project::SessionCellContent::Audio(clip) => {
-                    remaining.remove(&clip.id());
+        state
+            .read_with(|snapshot| {
+                let project = snapshot.model();
+                // Mode switches preserve the primary selection. Session-owned clips
+                // have no Arrangement extent and are not deleted/stale Arrangement IDs.
+                // Remove them in one bounded pass; unknown IDs must still refuse below.
+                for cell in project.session_cells() {
+                    match cell.content() {
+                        CellContent::Audio(clip) => {
+                            remaining.remove(&clip.id());
+                        }
+                        CellContent::Midi(clip) => {
+                            remaining.remove(&clip.id());
+                        }
+                        CellContent::Stop | CellContent::Empty => {}
+                    }
                 }
-                hex_project::SessionCellContent::Midi(clip) => {
-                    remaining.remove(&clip.id());
+                if remaining.is_empty() {
+                    return Ok(None);
                 }
-                hex_project::SessionCellContent::Stop => {}
-            }
-        }
-        if remaining.is_empty() {
-            return Ok(None);
-        }
-        let mut start = u64::MAX;
-        let mut end = 0;
-        let mut include = |clip_start: u64, clip_end: Option<u64>| {
-            let clip_end = clip_end.ok_or("selected clip exceeds the timeline")?;
-            if clip_start >= clip_end {
-                return Err("selected clip has an empty loop range");
-            }
-            start = start.min(clip_start);
-            end = end.max(clip_end);
-            Ok(())
-        };
-        // Visit the bounded clip collection once, rather than rescanning it per selection.
-        for track in state.project.tracks() {
-            for clip in track.clips() {
-                if remaining.remove(&clip.id()) {
-                    include(clip.start(), clip.start().checked_add(clip.duration()))?;
+                let mut start = u64::MAX;
+                let mut end = 0;
+                let mut include = |clip_start: u64, clip_end: Option<u64>| {
+                    let clip_end = clip_end.ok_or("selected clip exceeds the timeline")?;
+                    if clip_start >= clip_end {
+                        return Err("selected clip has an empty loop range");
+                    }
+                    start = start.min(clip_start);
+                    end = end.max(clip_end);
+                    Ok(())
+                };
+                // Visit the bounded clip collection once, rather than rescanning it per selection.
+                for track in project.tracks() {
+                    for clip in track.clips() {
+                        if remaining.remove(&clip.id()) {
+                            include(clip.start(), clip.start().checked_add(clip.duration()))?;
+                        }
+                    }
+                    for clip in track.midi_clips() {
+                        if remaining.remove(&clip.id()) {
+                            let error = "selected midi clip exceeds the timeline";
+                            let beat_end = clip
+                                .start()
+                                .raw()
+                                .checked_add(clip.arrangement_length().raw())
+                                .ok_or(error)?;
+                            let map = project.tempo();
+                            let clip_start = map.beat_to_frame(clip.start()).map_err(|_| error)?;
+                            let clip_end = map
+                                .beat_to_frame(hex_project::BeatTime::from_raw(beat_end))
+                                .ok();
+                            include(clip_start, clip_end)?;
+                        }
+                    }
                 }
-            }
-            for clip in track.midi_clips() {
-                if remaining.remove(&clip.id()) {
-                    let error = "selected midi clip exceeds the timeline";
-                    let beat_end = clip
-                        .start()
-                        .raw()
-                        .checked_add(clip.length().raw())
-                        .ok_or(error)?;
-                    let map = state.project.tempo_map();
-                    let clip_start = map.beat_to_frame(clip.start()).map_err(|_| error)?;
-                    let clip_end = map
-                        .beat_to_frame(hex_project::BeatTime::from_raw(beat_end))
-                        .ok();
-                    include(clip_start, clip_end)?;
+                if !remaining.is_empty() {
+                    return Err("selected clip no longer belongs to the arrangement");
                 }
-            }
-        }
-        if !remaining.is_empty() {
-            return Err("selected clip no longer belongs to the arrangement");
-        }
-        Ok(Some((start, end)))
+                Ok(Some((start, end)))
+            })
+            .map_err(|_| "project read is unavailable · cannot set loop region")?
     }
 
     pub(super) fn toggle_loop(&mut self) {

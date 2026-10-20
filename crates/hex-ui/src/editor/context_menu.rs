@@ -1,12 +1,16 @@
 #[path = "adaptive_grid_menu.rs"]
 mod adaptive_grid_menu;
 
-use super::{EditorView, ViewState, device_panel};
+#[cfg(all(test, feature = "ui-test-support"))]
+use super::ViewState;
+use super::{EditorView, device_panel};
 use crate::context_menu::{MenuItem, PopupMenu};
 use gpui::{Context, Div, Pixels, Point, Window};
 use hex_lattice_contract::{ParameterId, ParameterValue};
 use hex_project::{ClipFlavor, ClipId, Command, DeviceId, ElementColor, SceneId, TrackId};
 use hex_session::service::Request;
+use hex_session::snapshot_exports::SnapshotProjectRead;
+use hex_session::snapshot_exports::ui_consumers::SnapshotSessionCellContentRead;
 
 #[derive(Clone)]
 pub(super) struct InsertTrackAction {
@@ -71,10 +75,14 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        if before.is_some_and(|id| !state.project.scenes().iter().any(|scene| scene.id() == id)) {
+        let Ok(Some(revision)) = state.read_with(|snapshot| {
+            if before.is_some_and(|id| snapshot.model().scene(id).is_none()) {
+                return None;
+            }
+            Some(snapshot.revision())
+        }) else {
             return;
-        }
-        let revision = state.revision;
+        };
         let previous_focus = self
             .context_menu
             .take()
@@ -108,11 +116,24 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.cancel_time_selection_gesture();
         let Some(state) = &self.state else {
             return;
         };
-        let before_track = insertion_anchor(state, after_track);
+        let Ok(before_track) =
+            state.read_with(|snapshot| insertion_anchor(snapshot.model(), after_track))
+        else {
+            return;
+        };
+        self.open_track_context_menu_at(position, before_track, window, cx);
+    }
+    fn open_track_context_menu_at(
+        &mut self,
+        position: Point<Pixels>,
+        before_track: Option<TrackId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.cancel_time_selection_gesture();
         let previous_focus = self
             .context_menu
             .take()
@@ -147,18 +168,22 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let Ok(Some((color, before_track))) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            Some((
+                project.track(track)?.color(),
+                insertion_anchor(project, Some(track)),
+            ))
+        }) else {
+            return;
+        };
         if !device_panel::finalize_controls(self, cx) {
             return;
         }
-        let Some(color) = self
-            .state
-            .as_ref()
-            .and_then(|s| s.project.track(track))
-            .map(|t| t.color())
-        else {
-            return;
-        };
-        self.open_track_context_menu(position, Some(track), window, cx);
+        self.open_track_context_menu_at(position, before_track, window, cx);
         if let Some(menu) = &mut self.context_menu {
             menu.items.extend(
                 ElementColor::TRACK_CHOICES
@@ -186,18 +211,22 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Ok(Some((flavor, color))) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            if !clip_belongs_to_track(project, track, clip) {
+                return None;
+            }
+            Some((project.clip_flavor(clip)?, project.track(track)?.color()))
+        }) else {
+            return;
+        };
         if !device_panel::finalize_controls(self, cx) {
             return;
         }
         self.cancel_time_selection_gesture();
-        let Some(flavor) = self
-            .state
-            .as_ref()
-            .filter(|s| clip_belongs_to_track(&s.project, track, clip))
-            .and_then(|s| s.project.clip_flavor(clip))
-        else {
-            return;
-        };
         let previous_focus = self
             .context_menu
             .take()
@@ -218,11 +247,7 @@ impl EditorView {
                 } else {
                     "use muted flavor"
                 },
-                swatch: self
-                    .state
-                    .as_ref()
-                    .and_then(|s| s.project.track(track))
-                    .map(|t| crate::theme::clip_fill(t.color(), target, false)),
+                swatch: Some(crate::theme::clip_fill(color, target, false)),
                 checked: false,
                 action: EditorContextAction::ClipFlavor {
                     generation: self.project_generation,
@@ -299,6 +324,51 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let Ok((valid, track_count)) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let valid = match &action {
+                EditorContextAction::DeviceComparison(_)
+                | EditorContextAction::PlaceIcon { .. }
+                | EditorContextAction::RemoveBrowserSource(_)
+                | EditorContextAction::AdaptiveGrid { .. } => true,
+                EditorContextAction::InsertScene {
+                    generation,
+                    revision,
+                    before,
+                } => {
+                    self.mode == super::EditorMode::Session
+                        && *generation == self.project_generation
+                        && *revision == snapshot.revision()
+                        && before.is_none_or(|id| project.scene(id).is_some())
+                }
+                EditorContextAction::TrackColor {
+                    generation, track, ..
+                } => *generation == self.project_generation && project.track(*track).is_some(),
+                EditorContextAction::ClipFlavor {
+                    generation,
+                    track,
+                    clip,
+                    ..
+                } => {
+                    *generation == self.project_generation
+                        && clip_belongs_to_track(project, *track, *clip)
+                }
+                EditorContextAction::InsertTrack(action) => action
+                    .before_track
+                    .is_none_or(|track| project.track(track).is_some()),
+                EditorContextAction::UtilityMode(action) => {
+                    action.generation == self.project_generation
+                        && self.device_panel.owner == Some(action.owner)
+                        && utility_device_exists(project, action.device)
+                }
+            };
+            (valid, project.tracks().len())
+        }) else {
+            return;
+        };
         // A refused comparison keeps the same menu and focus for retry.
         if !matches!(&action, EditorContextAction::DeviceComparison(_)) {
             self.dismiss_context_menu(window, cx);
@@ -330,28 +400,18 @@ impl EditorView {
                 track,
                 color,
             } => {
-                if generation == self.project_generation
-                    && self
-                        .state
-                        .as_ref()
-                        .is_some_and(|s| s.project.track(track).is_some())
-                {
+                if generation == self.project_generation && valid {
                     self.enqueue(Request::Edit(Command::SetTrackColor { track, color }));
                     cx.notify();
                 }
             }
             EditorContextAction::ClipFlavor {
                 generation,
-                track,
+                track: _,
                 clip,
                 flavor,
             } => {
-                if generation == self.project_generation
-                    && self
-                        .state
-                        .as_ref()
-                        .is_some_and(|s| clip_belongs_to_track(&s.project, track, clip))
-                {
+                if generation == self.project_generation && valid {
                     self.enqueue(Request::Edit(Command::SetClipFlavor { clip, flavor }));
                     cx.notify();
                 }
@@ -367,18 +427,12 @@ impl EditorView {
                 if action.generation != self.project_generation {
                     return;
                 }
-                let Some(state) = &self.state else {
-                    return;
-                };
-                if action
-                    .before_track
-                    .is_some_and(|track| state.project.track(track).is_none())
-                {
+                if !valid {
                     self.error = Some("track insertion anchor no longer exists".into());
                     cx.notify();
                     return;
                 }
-                let name = format!("track {}", state.project.tracks().len() + 1);
+                let name = format!("track {}", track_count + 1);
                 self.enqueue(Request::Edit(Command::InsertTrack {
                     name,
                     before_track: action.before_track,
@@ -391,11 +445,7 @@ impl EditorView {
                 {
                     return;
                 }
-                let available = self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| utility_device_exists(&state.project, action.device));
-                if !available {
+                if !valid {
                     return;
                 }
                 let key = device_panel::ParameterKey {
@@ -451,49 +501,51 @@ impl EditorView {
                 EditorContextAction::AdaptiveGrid { generation, .. } => {
                     *generation != self.project_generation
                 }
-                EditorContextAction::InsertScene {
-                    generation,
-                    revision,
-                    before,
-                } => {
-                    self.mode != super::EditorMode::Session
-                        || *generation != self.project_generation
-                        || self.state.as_ref().is_none_or(|state| {
-                            state.revision != *revision
-                                || before.is_some_and(|id| {
-                                    !state.project.scenes().iter().any(|scene| scene.id() == id)
-                                })
-                        })
-                }
-                EditorContextAction::TrackColor {
-                    generation, track, ..
-                } => {
-                    *generation != self.project_generation
-                        || self
-                            .state
-                            .as_ref()
-                            .is_none_or(|s| s.project.track(*track).is_none())
-                }
-                EditorContextAction::ClipFlavor {
-                    generation,
-                    track,
-                    clip,
-                    ..
-                } => {
-                    *generation != self.project_generation
-                        || !self
-                            .state
-                            .as_ref()
-                            .is_some_and(|s| clip_belongs_to_track(&s.project, *track, *clip))
-                }
-                EditorContextAction::UtilityMode(action) => {
-                    let owner_matches = self.device_panel.owner == Some(action.owner);
-                    let device_exists = self
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| utility_device_exists(&state.project, action.device));
-                    !owner_matches || !device_exists || action.generation != self.project_generation
-                }
+                action => self.state.as_ref().is_none_or(|state| {
+                    matches!(
+                        state.read_with(|snapshot| {
+                            let project = snapshot.model();
+                            match action {
+                                EditorContextAction::InsertScene {
+                                    generation,
+                                    revision,
+                                    before,
+                                } => {
+                                    self.mode != super::EditorMode::Session
+                                        || *generation != self.project_generation
+                                        || snapshot.revision() != *revision
+                                        || before.is_some_and(|id| project.scene(id).is_none())
+                                }
+                                EditorContextAction::TrackColor {
+                                    generation, track, ..
+                                } => {
+                                    *generation != self.project_generation
+                                        || project.track(*track).is_none()
+                                }
+                                EditorContextAction::ClipFlavor {
+                                    generation,
+                                    track,
+                                    clip,
+                                    ..
+                                } => {
+                                    *generation != self.project_generation
+                                        || !clip_belongs_to_track(project, *track, *clip)
+                                }
+                                EditorContextAction::UtilityMode(action) => {
+                                    self.device_panel.owner != Some(action.owner)
+                                        || !utility_device_exists(project, action.device)
+                                        || action.generation != self.project_generation
+                                }
+                                EditorContextAction::DeviceComparison(_)
+                                | EditorContextAction::PlaceIcon { .. }
+                                | EditorContextAction::RemoveBrowserSource(_)
+                                | EditorContextAction::InsertTrack(_)
+                                | EditorContextAction::AdaptiveGrid { .. } => false,
+                            }
+                        }),
+                        Ok(true)
+                    )
+                }),
             })
         }) {
             self.dismiss_context_menu(window, cx);
@@ -512,51 +564,30 @@ impl EditorView {
     }
 }
 
-fn clip_belongs_to_track(project: &hex_project::Project, track: TrackId, clip: ClipId) -> bool {
-    project.track(track).is_some_and(|t| {
-        t.clips().iter().any(|c| c.id() == clip) || t.midi_clips().iter().any(|c| c.id() == clip)
-    }) || project.session_cells().iter().any(|cell| {
+fn clip_belongs_to_track(project: SnapshotProjectRead<'_>, track: TrackId, clip: ClipId) -> bool {
+    project.track(track).is_some_and(|track| {
+        track.clips().any(|item| item.id() == clip)
+            || track.midi_clips().any(|item| item.id() == clip)
+    }) || project.session_cells().any(|cell| {
         cell.track() == track
             && match cell.content() {
-                hex_project::SessionCellContent::Audio(c) => c.id() == clip,
-                hex_project::SessionCellContent::Midi(c) => c.id() == clip,
+                SnapshotSessionCellContentRead::Audio(item) => item.id() == clip,
+                SnapshotSessionCellContentRead::Midi(item) => item.id() == clip,
                 _ => false,
             }
     })
 }
-
-fn utility_device_exists(project: &hex_project::Project, id: DeviceId) -> bool {
+fn utility_device_exists(project: SnapshotProjectRead<'_>, id: DeviceId) -> bool {
     project
-        .main_devices()
-        .iter()
-        .any(|device| device.id() == id && device.state().type_id().as_str() == Ok("hex.utility"))
-        || project.tracks().iter().any(|track| {
-            track.ordered_device_chain().any(|node| {
-                let device = match node {
-                    hex_project::TrackDeviceRef::Instrument(device)
-                    | hex_project::TrackDeviceRef::Effect(device) => device,
-                };
-                device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
-            })
-        })
-        || project.return_tracks().iter().any(|track| {
-            track.devices().iter().any(|device| {
-                device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
-            })
-        })
+        .device(id)
+        .is_some_and(|device| device.type_id().as_str() == Ok("hex.utility"))
 }
-
-fn insertion_anchor(state: &ViewState, after_track: Option<TrackId>) -> Option<TrackId> {
-    after_track
-        .and_then(|track| {
-            state
-                .project
-                .tracks()
-                .iter()
-                .position(|candidate| candidate.id() == track)
-        })
-        .and_then(|index| state.project.tracks().get(index + 1))
-        .map(|track| track.id())
+fn insertion_anchor(
+    project: SnapshotProjectRead<'_>,
+    after_track: Option<TrackId>,
+) -> Option<TrackId> {
+    let index = after_track.and_then(|id| project.tracks().position(|track| track.id() == id))?;
+    project.tracks().nth(index + 1).map(|track| track.id())
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -577,9 +608,12 @@ mod tests {
             let original_color = project.track(track).unwrap().color();
             let preview = if midi {
                 Arc::new(
-                    hex_engine::compile::project_with_midi_preview(&project, &Default::default())
-                        .expect("midi preview")
-                        .1,
+                    hex_engine::compile::project_with_midi_preview(
+                        &project,
+                        &hex_project::SortedEntries::new(),
+                    )
+                    .expect("midi preview")
+                    .1,
                 )
             } else {
                 Arc::default()

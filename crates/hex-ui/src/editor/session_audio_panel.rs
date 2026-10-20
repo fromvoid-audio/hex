@@ -686,11 +686,13 @@ mod tests {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
-                    project: Arc::new(project.project().clone()),
+                    project: hex_session::SharedProject::new_on_control(project.project().clone()),
                     waveforms: Default::default(),
-                    audio_clip_waveforms: std::collections::BTreeMap::new(),
-                    midi_preview: Arc::new(Default::default()),
-                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                    audio_clip_waveforms: Default::default(),
+                    midi_preview: hex_engine::empty_midi_preview_on_control(),
+                    gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                        hex_engine::GainAutomationPreview::default(),
+                    )),
                     timeline_frames: 384_000,
                     can_undo: false,
                     can_redo: false,

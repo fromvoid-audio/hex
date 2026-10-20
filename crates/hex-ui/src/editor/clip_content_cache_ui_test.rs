@@ -7,7 +7,7 @@ fn cached_scene_bulk_replay_matches_legacy_painter_and_refusal_state(cx: &mut Te
         .expect("private GPUI replay oracle");
 }
 
-fn publish_snapshot(view: &mut EditorView, project: Arc<hex_project::Project>, revision: u64) {
+fn publish_snapshot(view: &mut EditorView, project: hex_session::SharedProject, revision: u64) {
     let old = view.state.as_ref().expect("current state");
     view.state = Some(Arc::new(ViewState {
         canonical_audio_source: None,
@@ -15,7 +15,7 @@ fn publish_snapshot(view: &mut EditorView, project: Arc<hex_project::Project>, r
         project,
         waveforms: old.waveforms.clone(),
         audio_clip_waveforms: old.audio_clip_waveforms.clone(),
-        midi_preview: Arc::clone(&old.midi_preview),
+        midi_preview: old.midi_preview.clone(),
         gain_preview: old.gain_preview.clone(),
         timeline_frames: old.timeline_frames,
         can_undo: old.can_undo,
@@ -212,7 +212,7 @@ fn same_revision_snapshot_refresh_preserves_pending_clip_drag(cx: &mut TestAppCo
             assert!(view.pointer_down.is_some());
             let state = view.state.as_ref().expect("state");
             let revision = state.revision;
-            let project = Arc::clone(&state.project);
+            let project = state.project.clone();
             publish_snapshot(view, project, revision);
             cx.notify();
         });
@@ -246,7 +246,7 @@ fn snapshot_history_and_project_removal_release_cached_ownership(cx: &mut TestAp
     // Metadata may replace the immutable Arc without changing the project revision.
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
-            let project = Arc::clone(&view.state.as_ref().expect("state").project);
+            let project = view.state.as_ref().expect("state").project.clone();
             publish_snapshot(view, project, 1);
             cx.notify();
         });
@@ -279,7 +279,11 @@ fn snapshot_history_and_project_removal_release_cached_ownership(cx: &mut TestAp
         let expected_start = project.clip(clip).expect("clip").start();
         visual.update(|window, cx| {
             editor.update(cx, |view, cx| {
-                publish_snapshot(view, Arc::new(project), index as u64 + 2);
+                publish_snapshot(
+                    view,
+                    hex_session::SharedProject::new_on_control(project),
+                    index as u64 + 2,
+                );
                 cx.notify();
             });
             window.draw(cx).clear();
@@ -298,7 +302,11 @@ fn snapshot_history_and_project_removal_release_cached_ownership(cx: &mut TestAp
         .expect("remove source");
     visual.update(|window, cx| {
         editor.update(cx, |view, cx| {
-            publish_snapshot(view, Arc::new(history.project().clone()), 5);
+            publish_snapshot(
+                view,
+                hex_session::SharedProject::new_on_control(history.project().clone()),
+                5,
+            );
             cx.notify();
         });
         window.draw(cx).clear();
@@ -794,7 +802,11 @@ fn track_color_repaints_inherited_clips_while_flavor_stays_independent(cx: &mut 
         model.execute(command).unwrap();
         visual.update(|window, cx| {
             editor.update(cx, |view, cx| {
-                publish_snapshot(view, Arc::new(model.project().clone()), index as u64 + 2);
+                publish_snapshot(
+                    view,
+                    hex_session::SharedProject::new_on_control(model.project().clone()),
+                    index as u64 + 2,
+                );
                 cx.notify();
             });
             window.draw(cx).clear();

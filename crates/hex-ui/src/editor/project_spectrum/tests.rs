@@ -13,10 +13,10 @@ fn publish(view: &mut EditorView, project: Project) {
     view.state = Some(Arc::new(ViewState {
         canonical_audio_source: None,
         comparison_audio: None,
-        project: Arc::new(project),
+        project: hex_session::SharedProject::new_on_control(project),
         waveforms: old.waveforms.clone(),
         audio_clip_waveforms: old.audio_clip_waveforms.clone(),
-        midi_preview: Arc::clone(&old.midi_preview),
+        midi_preview: old.midi_preview.clone(),
         gain_preview: old.gain_preview.clone(),
         timeline_frames: old.timeline_frames,
         can_undo: old.can_undo,

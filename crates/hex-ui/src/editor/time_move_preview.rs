@@ -100,7 +100,7 @@ pub(super) fn clip_intersection(clip: &Clip, interval: (u64, u64)) -> Option<(u6
 pub(super) fn passive_audio_fragment(
     fill: u32,
     clip: &Clip,
-    waveform: Option<&std::sync::Arc<hex_session::CachedWaveform>>,
+    waveform: Option<&hex_session::SharedWaveform>,
     viewport: Viewport,
     viewport_end: u64,
     grid: &[super::musical_time::GridLine],

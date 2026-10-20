@@ -107,11 +107,13 @@ fn browser_drag_fixture_with_tracks(
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
-                    project: Arc::new(model.project().clone()),
+                    project: hex_session::SharedProject::new_on_control(model.project().clone()),
                     waveforms: Default::default(),
-                    audio_clip_waveforms: std::collections::BTreeMap::new(),
-                    midi_preview: Arc::new(Default::default()),
-                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                    audio_clip_waveforms: Default::default(),
+                    midi_preview: hex_engine::empty_midi_preview_on_control(),
+                    gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                        hex_engine::GainAutomationPreview::default(),
+                    )),
                     timeline_frames: 384_000,
                     can_undo: false,
                     can_redo: false,
@@ -608,11 +610,13 @@ fn browser_search_owns_typing_and_blocks_editor_shortcuts(cx: &mut TestAppContex
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
-                    project: Arc::new(project),
+                    project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
-                    audio_clip_waveforms: std::collections::BTreeMap::new(),
-                    midi_preview: Arc::new(Default::default()),
-                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                    audio_clip_waveforms: Default::default(),
+                    midi_preview: hex_engine::empty_midi_preview_on_control(),
+                    gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                        hex_engine::GainAutomationPreview::default(),
+                    )),
                     timeline_frames: 0,
                     can_undo: false,
                     can_redo: false,
@@ -667,11 +671,13 @@ fn device_browser_lists_registered_devices_and_drag_starts_without_track_focus(
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
-                    project: Arc::new(project),
+                    project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
-                    audio_clip_waveforms: std::collections::BTreeMap::new(),
-                    midi_preview: Arc::new(Default::default()),
-                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                    audio_clip_waveforms: Default::default(),
+                    midi_preview: hex_engine::empty_midi_preview_on_control(),
+                    gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                        hex_engine::GainAutomationPreview::default(),
+                    )),
                     timeline_frames: 0,
                     can_undo: false,
                     can_redo: false,
@@ -820,11 +826,13 @@ fn browser_project_open_queues_selected_path_without_second_click_confirmation(
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
                     comparison_audio: None,
-                    project: Arc::new(project),
+                    project: hex_session::SharedProject::new_on_control(project),
                     waveforms: Default::default(),
-                    audio_clip_waveforms: std::collections::BTreeMap::new(),
-                    midi_preview: Arc::new(Default::default()),
-                    gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+                    audio_clip_waveforms: Default::default(),
+                    midi_preview: hex_engine::empty_midi_preview_on_control(),
+                    gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                        hex_engine::GainAutomationPreview::default(),
+                    )),
                     timeline_frames: 0,
                     can_undo: true,
                     can_redo: false,
@@ -2175,11 +2183,13 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
             comparison_audio: None,
-            project: Arc::new(project.project().clone()),
+            project: hex_session::SharedProject::new_on_control(project.project().clone()),
             waveforms: current.waveforms.clone(),
-            audio_clip_waveforms: std::collections::BTreeMap::new(),
+            audio_clip_waveforms: Default::default(),
             midi_preview: current.midi_preview.clone(),
-            gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
+            gain_preview: Ok(hex_engine::SharedGainAutomationPreview::new_on_control(
+                hex_engine::GainAutomationPreview::default(),
+            )),
             timeline_frames: current.timeline_frames,
             can_undo: current.can_undo,
             can_redo: current.can_redo,
@@ -2204,7 +2214,7 @@ fn clip_and_sample_drags_clear_their_target_over_pinned_returns(cx: &mut TestApp
             metadata: Rc::new(RefCell::new(Some(Rc::new(AudioPreview {
                 playback_frames: 480,
                 sample_rate: current.project.sample_rate(),
-                waveform: Arc::new(
+                waveform: hex_media::waveform::SharedWaveform::new_on_control(
                     Waveform::from_peaks(
                         480,
                         vec![
