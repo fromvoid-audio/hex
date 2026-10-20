@@ -655,6 +655,13 @@ fn compile_project_inner<'a>(
         .collect();
     project.midi_routing.sort_unstable();
     project.signal_graph = crate::signal_graph::SignalGraph::prepare(&project, &feeds, snapshot)?;
+    project.main_output_latency_frames = crate::main_chain::output_latency(
+        project
+            .signal_graph
+            .as_ref()
+            .map_or(0, |graph| graph.main_latency()),
+        &project.main_device_chain,
+    )?;
     if project.signal_graph.is_some() {
         for track in &mut project.tracks {
             track.source_mix = crate::PreparedTrackMix::identity();

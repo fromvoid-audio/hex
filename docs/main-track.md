@@ -143,3 +143,44 @@ and preset, and verify ordinary Track/Return selection. Try an instrument and a
 sample on Main: neither may create a Main instrument or clip. Check focused EQ
 and metering against the selected Main device, plus dense/minimum-width layout.
 This task does not claim native output deadlines, listening or user acceptance.
+
+
+## Main review repairs — source continuation, 20 October 2026
+
+The pre-Main summing graph retains its original Track/Return arrival, alignment,
+clock and tap/stem contract. Compilation separately validates the actual enabled
+serial Main processors' known algorithmic latency, adds it with checked arithmetic
+under the existing cumulative compensation limit, and stores the final output
+arrival in the existing prepared Project. The existing public latency report now
+includes Main. Bypass and memoryless matrices contribute zero; unknown or excessive
+latency refuses the candidate before publication. No artificial delay, new graph
+node, queue, owner, runtime API or additional Main DSP pass is introduced.
+
+Synthetic/empty constructors initialize final latency to zero. The restricted
+assembly constructor still refuses authored Main effects and initializes the same
+zero scalar; its exhaustive restore and inventory patterns acknowledge the scalar
+without changing resource custody or claims. Actual Project layout measured2360
+bytes both before and after this change on the checked cloud toolchain; no fixed
+four-byte budget increment is assumed. Existing accounting uses actual layout and
+retains the same limits. Native's separate prepared-carrier fields must compose by
+hunk; no whole Native overlay is included here.
+
+Session validation now includes Main's inactive comparison payloads in the same
+Effect provider validation as Track/Return. The metadata-only classifier includes
+Main in both comparison stripping and proof of a real typed Switch/Copy edge;
+active provider bytes, host trims, bypass and other audible fields remain intact.
+A saved project with valid active Main state and malformed inactive state now
+refuses at Session open, preserving original file bytes. Valid comparison states,
+both directional copies without switching, current-format round trips and atomic
+Undo/Redo retain the existing format33 and global trim semantics. Absent B still
+means an identical bank: Copy is a genuine no-op, not invented bank creation.
+
+Red-first checks observed four actual Main latency failures (final15 reported7,
+Main-only3 reported0, unknown admitted, cumulative65537 admitted) and two actual
+Main comparison failures (invalid command accepted, malformed saved bank opened).
+Separate fixture-API, exhaustive-pattern and initial-copy test-assumption failures
+are retained as such. The repaired latency cases include actual PCM at multiple
+partitions, Renderer, pre-Main captures and warm Main history/refused incompatible
+handoff. Component qualification and exact evidence are recorded in Pulse2882;
+sole-merger prospective validation, actual merge and native optimized acceptance
+remain separate. No device/app/native operations are performed by this source lane.

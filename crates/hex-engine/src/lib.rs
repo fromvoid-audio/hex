@@ -1843,6 +1843,8 @@ pub struct Project {
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
     main_device_chain: Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    // Final causal arrival after Main, separate from the pre-Main summing graph.
+    main_output_latency_frames: u32,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
     shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
@@ -1953,6 +1955,7 @@ impl Project {
             loop_region,
             master_gain,
             main_device_chain: Arc::from([]),
+            main_output_latency_frames: 0,
             has_streamed_sources,
             shared_contexts: owned_shared::OwnedShared::new_owned(
                 shared_analytic::SharedAnalyticContextTable::default(),
@@ -2012,9 +2015,7 @@ impl Project {
     }
     /// Known causal startup delay; compensation does not remove physical latency.
     pub fn main_latency_frames(&self) -> u32 {
-        self.signal_graph
-            .as_ref()
-            .map_or(0, |graph| graph.main_latency())
+        self.main_output_latency_frames
     }
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate

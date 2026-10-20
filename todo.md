@@ -5840,3 +5840,16 @@ User rejected device-local automation editing. Remove its button, graph mode and
   native geometry/control/output/listening checks; no physical acceptance is
   claimed. Future395 overlay must preserve Main accounting on modern combined
   source, without importing the unfinished old overlay into this task.
+
+
+## Main latency and inactive-bank review — pulse2882 / PR484
+
+Continue canonical263003 history: final causal output arrival includes actual
+serial Main latency under the existing checked limit while pre-Main alignment and
+stems stay intact. Main joins Session comparison validation and typed metadata
+classification; malformed saved inactive payload refuses open. Actual latency and
+saved-project/command reds are retained, along with distinct fixture/compile
+failures. Actual Project layout is measured, not assumed to grow four bytes.
+Original owning cases remain; focused/strict/source-bound handoff in progress.
+Sole merger owns prospective required checks/review/merge, and Root owns optimized
+native acceptance. No app delivery, hosted CI or Native395 overlay is claimed.
