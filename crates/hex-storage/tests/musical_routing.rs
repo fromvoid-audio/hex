@@ -83,9 +83,17 @@ fn fixture(transformed: bool) -> Project {
 fn schema25_combines_roots_session_gain_routes_lanes_provenance_and_host_trims() {
     let mut e = Editor::new(fixture(true), 32).unwrap();
     let source = e.project().tracks()[0].id();
+    e.execute(Command::InsertInstrument {
+        track: source,
+        state: hex_project::default_instrument_state().unwrap(),
+    })
+    .unwrap();
     let Created::Track(target) = e
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "target".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -274,9 +282,19 @@ fn development(version: u32) -> Value {
 #[test]
 fn private20_21_dispatch_is_explicit_strict_and_migrates_both_audio_kinds() {
     for version in [20, 21] {
+        // These private envelopes omit track colors; their authored expected
+        // project is neutral while the current-format fixtures stay colored.
+        let mut expected = Editor::new(fixture(version == 21), 8).unwrap();
+        let track = expected.project().tracks()[0].id();
+        expected
+            .execute(Command::SetTrackColor {
+                track,
+                color: hex_project::ElementColor::Gray,
+            })
+            .unwrap();
         let doc = development(version);
         let restored = decode(&serde_json::to_vec(&doc).unwrap()).unwrap();
-        assert_eq!(restored, fixture(version == 21));
+        assert_eq!(restored, *expected.project());
         for edit in 0..5 {
             let mut bad = doc.clone();
             match edit {

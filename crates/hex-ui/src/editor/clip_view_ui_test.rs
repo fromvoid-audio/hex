@@ -122,6 +122,7 @@ pub(super) fn audio_detail_fixture(
         waveforms.insert(asset, peaks);
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(project),
             waveforms,
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -303,6 +304,12 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
     let device_state =
         hex_engine::default_native_device_state(entry.type_id).expect("valid default state");
     let mut editor = hex_project::Editor::new(base, 16).expect("project editor");
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .expect("explicit instrument card fixture");
     editor
         .execute(Command::InsertDevice {
             track,
@@ -605,6 +612,7 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         let previous = view.state.as_ref().expect("initial view state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::clone(&project_after_remove),
             waveforms: previous.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -722,6 +730,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
         let old = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -743,6 +752,7 @@ fn audio_detail_dispatches_canonical_edits_and_rejects_stale_or_pending_clicks(
         let old = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -781,6 +791,7 @@ fn audio_gain_dispatches_real_clip_edit_and_rejects_stale_revision(cx: &mut Test
         let old = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -847,6 +858,7 @@ fn conversion_control_dispatches_selected_clip_and_blocks_pending_edits(cx: &mut
             .unwrap();
         let state = ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(model.project().clone()),
             waveforms: old.waveforms.clone(),
             audio_clip_waveforms: old.audio_clip_waveforms.clone(),

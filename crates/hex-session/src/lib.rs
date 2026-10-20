@@ -26,6 +26,8 @@ use audio_sources::MediaBank;
 pub use audio_sources::{
     AudioSourceBinding, DocumentAudioMode, SourcePlanReservation, VerifiedAudioFile,
 };
+mod comparison_transition;
+mod device_comparison;
 pub mod device_gesture;
 mod device_snapshot;
 pub mod import_batch;
@@ -293,6 +295,7 @@ impl Session {
         prepared_assets: Vec<(AssetId, PreparedImport)>,
         sine_table: Arc<hex_engine::SineTable>,
     ) -> Result<Self, SessionError> {
+        device_comparison::validate_project(&project)?;
         let asset_count = project.assets().count();
         let editor = Editor::new(project, history_capacity)?;
         if asset_count != prepared_assets.len() {
@@ -804,6 +807,90 @@ impl Session {
         let state =
             hex_engine::patch_native_device_parameter_for_class(class, &state, second.0, second.1)?;
         self.command_prepared_revision(Command::ReplaceDeviceState { device, state }, previous)
+            .map(|(_, prepared)| prepared)
+    }
+
+    /// Prepare a static track-gain overlay through the existing resident preview
+    /// path. Only accepted coalesced changes prepare; canonical history is untouched.
+    pub fn preview_track_gain(
+        &self,
+        track: hex_project::TrackId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.preview_mix_command(Command::Gain { track, gain }, previous)
+    }
+
+    // Finite mixer callers only. This does not admit arbitrary UI commands.
+    fn preview_mix_command(
+        &self,
+        command: Command,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        let mut preview = Editor::new(self.project().clone(), 1)?;
+        let media = self.media_bank();
+        let sine_table = self.sine_table();
+        let (_, prepared) = preview.execute_prepared(command, |candidate| {
+            prepare_with_waveforms(
+                candidate,
+                &media,
+                Arc::clone(&sine_table),
+                previous.map(|artifact| artifact.session().as_ref()),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
+            )
+            .map(Arc::new)
+            .map_err(SessionError::from)
+        })?;
+        Ok((Arc::new(preview.project().clone()), prepared))
+    }
+
+    /// Publish the final absolute value as one ordinary canonical gain command.
+    pub fn commit_track_gain(
+        &mut self,
+        track: hex_project::TrackId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        self.command_prepared_revision(Command::Gain { track, gain }, previous)
+            .map(|(_, prepared)| prepared)
+    }
+
+    fn preview_track_balance(
+        &self,
+        track: hex_project::TrackId,
+        balance: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.preview_mix_command(Command::Balance { track, balance }, previous)
+    }
+
+    fn commit_track_balance(
+        &mut self,
+        track: hex_project::TrackId,
+        balance: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        self.command_prepared_revision(Command::Balance { track, balance }, previous)
+            .map(|(_, prepared)| prepared)
+    }
+
+    fn preview_return_gain(
+        &self,
+        return_track: hex_project::ReturnId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.preview_mix_command(Command::ReturnGain { return_track, gain }, previous)
+    }
+
+    fn commit_return_gain(
+        &mut self,
+        return_track: hex_project::ReturnId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        self.command_prepared_revision(Command::ReturnGain { return_track, gain }, previous)
             .map(|(_, prepared)| prepared)
     }
 
@@ -1473,6 +1560,7 @@ fn prepare_with_waveforms(
     transforms: &hex_engine::audio_transform::AudioTransformPreparation,
     retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
 ) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
+    device_comparison::validate_project(project)?;
     let mut old = retained
         .try_borrow_mut()
         .map_err(|_| hex_engine::Invalid("audio waveform state is already borrowed"))?;

@@ -154,6 +154,7 @@ fn fixture_with_options(feeds: bool, automation: bool) -> Fixture {
     let id = snapshot.next_id;
     snapshot.next_id += 1;
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id,
         bypassed: false,
         state: hex_engine::default_native_device_state_for_class(

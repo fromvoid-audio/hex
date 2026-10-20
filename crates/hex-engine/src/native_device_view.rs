@@ -368,7 +368,12 @@ mod tests {
         let state = crate::default_native_device_state(auto_pan.type_id).unwrap();
         let view = native_device_view(&state).unwrap();
         assert_eq!(view.name, "auto pan");
-        assert_eq!(view.parameters.len(), 3);
+        assert_eq!(view.parameters.len(), 4);
+        assert_eq!(
+            view.parameters[3].descriptor.id,
+            hex_lattice_contract::ParameterId::from_static(4)
+        );
+        assert_eq!(view.parameters[3].value, ParameterValue::Choice(0));
     }
 
     #[test]

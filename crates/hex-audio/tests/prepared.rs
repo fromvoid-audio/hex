@@ -30,8 +30,11 @@ fn publish(control: &mut prepared::Control, playback: Playback) -> u64 {
 fn session_project() -> (CanonicalProject, hex_project::TrackId, hex_project::ClipId) {
     let mut editor = Editor::new(CanonicalProject::new(48_000).unwrap(), 8).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -93,8 +96,11 @@ fn session_project() -> (CanonicalProject, hex_project::TrackId, hex_project::Cl
     // This track has no Session cell, so scene launches must retain its
     // Arrangement source while the first track plays independent Session MIDI.
     let companion = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "arrangement bass".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {

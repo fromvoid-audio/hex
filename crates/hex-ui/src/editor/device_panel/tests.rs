@@ -11,6 +11,7 @@ mod auto_pan_ui_tests;
 mod bindings_tests;
 mod chain_window_tests;
 mod compressor_ui_tests;
+mod device_comparison_tests;
 mod device_preset_ui_tests;
 mod device_reorder_tests;
 mod device_theme_tests;
@@ -18,6 +19,7 @@ mod eq_ui_tests;
 mod gate_ui_tests;
 mod header_actions_tests;
 mod header_style_tests;
+mod keyboard_delete_tests;
 mod navigation_ui_tests;
 mod operator_algorithm_ui_tests;
 mod operator_enable_ui_tests;
@@ -57,8 +59,11 @@ fn actor_utility_fixture() -> (
     let service = Service::new(48_000, 8, 8_000_000).expect("service");
     let _initial = receive_service_event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "device track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .expect("add track request");
     let track_event = receive_service_event(&service);
@@ -3587,6 +3592,7 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
         let current = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -3901,6 +3907,7 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
         let current = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -4192,6 +4199,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(initial_project.clone()),
                     waveforms: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -4333,6 +4341,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         let current = view.state.as_ref().expect("view state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(next_project.clone()),
             waveforms: current.waveforms.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
@@ -5227,6 +5236,7 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
         .expect("first acknowledged edit");
     let changed_state = Arc::new(ViewState {
         canonical_audio_source: None,
+        comparison_audio: None,
         project: Arc::new(project_editor.project().clone()),
         waveforms: state.waveforms.clone(),
         audio_clip_waveforms: state.audio_clip_waveforms.clone(),

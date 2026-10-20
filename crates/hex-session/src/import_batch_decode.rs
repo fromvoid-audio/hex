@@ -259,6 +259,9 @@ impl AudioBatchImport {
             );
         }
         match destination {
+            AudioBatchDestination::Console(target) => {
+                super::import_batch::console::validate(session.project(), target, count)?
+            }
             AudioBatchDestination::Track { track, .. } => {
                 session
                     .project()

@@ -74,13 +74,23 @@ layout_review --features ui-test-support --locked`; normal workspace example
 compilation alone does not execute that rendered harness. These GPUI scene/input
 fixtures do not establish native GPU pixels or physical interaction acceptance.
 
-## continuous integration and merge policy
+## scoped checks and continuous integration policy
+
+Use [development-workflow.md](development-workflow.md) for the scope matrix,
+explicit base/source commands, partial edit feedback, metadata-only continuation
+and compact handoff format. No-flag invocation still runs all 21 audit stages.
+The merge profile resolves its complete required configuration list from actual
+Git inputs and Cargo dependencies; unknown/high-risk input falls back to full.
+It cannot turn an old quick or custom component report into required evidence.
 
 As requested on 10 October 2026, agents merge a completed, focused PR immediately
-once its final diff has been reviewed and full local CI is green on its exact
+once its final diff has been reviewed and the resolved required merge plan or
+full local CI is green on its exact
 final commit and unchanged source digest. The user gives standing merge
 authorization; no additional approval is needed. Merge dependencies first and
-revalidate source changes or conflict resolutions. Quick, stale, partial,
+revalidate executable source changes or conflict resolutions. Prose-only
+continuations may use the explicit runtime-certificate path described above.
+Quick, stale, partial,
 interrupted or failed runs never authorize a merge. Preserve branch protections
 and use local checks only; no hosted CI or background merge service is configured
 by this policy.
@@ -162,7 +172,24 @@ The packaging CLI exposes `--adopt-release-target` for that assertion; it does
 not imply dev adoption or loosen any disk/profile/source checks. Direct Cargo
 builds still do not participate in this cooperative lock.
 
+The launcher additionally exposes the narrower `--recover-release-target` path
+for an explicitly inspected **same-repository recreated directory**. Its optional
+replacement identity is valid only with exact old-owner SHA256, the same full
+workspace/common repository, ancestor clean source and unchanged retained package
+specifications. Under the target lock the guard checks those facts again, along
+with a required packaging inactivity check immediately before mutation. No
+replacement identity means the existing automatic expected-owner guard still
+requires the retained old target identity. This adds no owner format or general
+adoption permission. Exact own PENDING state may retry at the same current
+identity; unchanged READY state cannot use this exception. Recovery plus --test
+uses a fresh invocation-owned verification target with ordinary no-adopt CI,
+leaving the old dev marker and original release packaging target independent.
+See `docs/test-builds.md` for refusal and race limits.
+
 Before incompatible release cleanup, the guard durably writes a pending marker.
+The same known ready checkout/target/toolchain/configuration may retain build
+cache across ordinary source commits; Cargo always runs and the current artifact
+and source are identified anew. This never reuses an earlier artifact certificate.
 It invokes `cargo clean --profile release` for current workspace package IDs
 only; it never clears the whole target. Failed cleanup, interrupted builds,
 source changes, unidentified/changed artifacts and consumer exceptions leave

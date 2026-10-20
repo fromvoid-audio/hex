@@ -102,6 +102,7 @@ impl EditorView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
+                    view.browser.results_focus.focus(window);
                     window.prevent_default();
                     cx.stop_propagation();
                     action(view, cx);
@@ -187,6 +188,7 @@ impl EditorView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    view.browser.results_focus.focus(window);
                     window.prevent_default();
                     cx.stop_propagation();
                     if let (Some(path), Some(bounds)) = (&click_path, bounds.get())
