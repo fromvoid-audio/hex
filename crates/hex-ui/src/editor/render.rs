@@ -1,8 +1,8 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
-    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight,
-    NewProject, NewStreamingProject, NextTrack, OpenProject, OpenRecentProject,
+    ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft,
+    MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject, OpenRecentProject,
     OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft, PanTimelineRight,
     PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave, RecoverSavedProject,
     RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
@@ -1103,8 +1103,12 @@ impl Render for EditorView {
                 view.export_dialog(window, cx);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &SetLoopFromClip, _, cx| {
-                view.set_loop_from_clip();
+            .on_action(cx.listener(|view, _: &LoopSelection, window, cx| {
+                view.loop_selection_key(window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &SetLoopFromClip, window, cx| {
+                view.set_loop_from_clip(window);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ToggleLoop, _, cx| {

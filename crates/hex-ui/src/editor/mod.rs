@@ -65,6 +65,8 @@ mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;
 mod loop_region;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod loop_selection_ui_test;
 mod menus;
 mod midi;
 mod midi_canvas;
@@ -308,6 +310,7 @@ actions!(
         DuplicateClip,
         SplitClip,
         SetLoopFromClip,
+        LoopSelection,
         ToggleLoop,
         ZoomIn,
         ZoomOut,
@@ -470,7 +473,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
-        KeyBinding::new("l", ToggleLoop, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd-+", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd--", ZoomOut, Some("hex_editor")),
