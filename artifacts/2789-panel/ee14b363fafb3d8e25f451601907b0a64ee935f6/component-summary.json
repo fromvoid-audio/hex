@@ -1,0 +1,225 @@
+{
+  "source": "ee14b363fafb3d8e25f451601907b0a64ee935f6",
+  "tree": "ac8f87882de139af8c0d928bffa526f6b3351374",
+  "branch": "codex/sampler-panel-mvp-2789",
+  "base": "b94b0e2f6fbec0932d422c00d4584739c192cb9a",
+  "imported_bridge": "5705c48280135fdeed84d0c8baf06cb3d152a5fe",
+  "original_bridge": "1d5b89a2f658a22cb9c1f76c5bfc1631326e192d",
+  "initial_status": "",
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)\nbinary: rustc\ncommit-hash: 4a4ef493e3a1488c6e321570238084b38948f6db\ncommit-date: 2026-03-02\nhost: aarch64-apple-darwin\nrelease: 1.94.0\nLLVM version: 21.1.8\n",
+  "python": "Python 3.13.16",
+  "environment": {
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0"
+  },
+  "steps": [
+    {
+      "name": "final-leaf",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--lib",
+        "sampler_ui_tests",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 13.952,
+      "log": "final-leaf.log",
+      "results": [
+        "ok. 2 passed; 0 failed; 0 ignored; 0 measured; 711 filtered out; finished in 0.08s"
+      ]
+    },
+    {
+      "name": "final-engine-bridge",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-engine",
+        "--locked",
+        "--lib",
+        "sampler_parameters",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 6.895,
+      "log": "final-engine-bridge.log",
+      "results": [
+        "ok. 2 passed; 0 failed; 0 ignored; 0 measured; 792 filtered out; finished in 0.01s"
+      ]
+    },
+    {
+      "name": "final-session-retained",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-session",
+        "--locked",
+        "--lib",
+        "snapshot_exports::",
+        "--",
+        "--nocapture"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 4.962,
+      "log": "final-session-retained.log",
+      "results": [
+        "ok. 30 passed; 0 failed; 0 ignored; 0 measured; 174 filtered out; finished in 0.01s"
+      ]
+    },
+    {
+      "name": "final-strict-default",
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 101,
+      "elapsed_s": 7.794,
+      "log": "final-strict-default.log",
+      "results": []
+    },
+    {
+      "name": "final-strict-feature",
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "exit_code": 101,
+      "elapsed_s": 7.22,
+      "log": "final-strict-feature.log",
+      "results": []
+    },
+    {
+      "name": "final-quick",
+      "argv": [
+        "python3",
+        "scripts/local-ci.py",
+        "--quick"
+      ],
+      "exit_code": 1,
+      "elapsed_s": 1.255,
+      "log": "final-quick.log",
+      "results": []
+    },
+    {
+      "name": "final-format",
+      "argv": [
+        "cargo",
+        "fmt",
+        "--all",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 3.062,
+      "log": "final-format.log",
+      "results": []
+    },
+    {
+      "name": "final-diff",
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "elapsed_s": 0.012,
+      "log": "final-diff.log",
+      "results": []
+    }
+  ],
+  "font": {
+    "path": "assets/fonts/ioskeley-mono/ioskeley-mono-regular.ttf",
+    "sha256": "754a1a04f5a192c9a6bf97742ee06a793629e5e8a46e57d289c8b30b385454f9",
+    "measurement": "headless CoreText actual bundled family Ioskeley Mono at9pt,16777216 advance43.2px; compactdial field64px leaves58px. See coretext-font-measure.log."
+  },
+  "status": "explicitly unintegrated component; Native retained UI capability and binding migration required",
+  "merge_qualified": false,
+  "native_acceptance": false,
+  "final_source": "ee14b363fafb3d8e25f451601907b0a64ee935f6",
+  "final_tree": "ac8f87882de139af8c0d928bffa526f6b3351374",
+  "final_status": "",
+  "unchanged_clean_source": true,
+  "all_checks_passed": false,
+  "limitations": [
+    "No actual UI SnapshotRead/stamp/adapter entry exists on this component; no parent dispatch, registry/load/source/current fallback or invented stamp.",
+    "Feature-only module mount leaves strict dead_code failures in default and feature configurations.",
+    "Device-layout guard deliberately requires the missing real instrument dispatch; quick remains failed, not merge evidence.",
+    "Leaf fixtures use real widgets from production section recipes plus actual metadata descriptors; scalar display facts are test data, not canonical playback/admission.",
+    "GPUI mock font registration probe failed; retained as setup evidence. Font advance is independently measured with headless CoreText on the actual bundled file, no physical paint/user acceptance.",
+    "No app stop/launch/install/rebuild-in-place, hosted CI or merge."
+  ],
+  "failure_history": [
+    {
+      "log": "leaf-first.log",
+      "kind": "fixture compile setup",
+      "detail": "Incorrect existing GPUI window/control constructor APIs; repaired. Not product RED."
+    },
+    {
+      "log": "leaf-second.log",
+      "kind": "fixture pointer target",
+      "detail": "Layout passed; numeric event assertion failed because pointer hit label. Corrected actual slider selector. Not canonical binding evidence."
+    },
+    {
+      "log": "leaf-font-measured.log",
+      "kind": "mock font registration refusal",
+      "detail": "Both tests failed normal bundled-family registration in GPUI TestAppContext. Preserved, no fallback claim. Product family requested by final fixture; actual metrics separately measured by CoreText."
+    },
+    {
+      "log": "quick-staged.log",
+      "kind": "local interpreter mismatch",
+      "detail": "/usr/bin/python3 3.9 lacks tomllib required by existing custody policy. Retried with existing Homebrew Python3.13 via command-local PATH, no install or source-policy change."
+    },
+    {
+      "log": "quick-python313-staged.log",
+      "kind": "typed child source guard",
+      "detail": "Architecture/GPUI/dependency guards passed; UI-style rejected newly composed typed Div child forms. Re-expressed bound Div groups with typed children arrays; final UI-style passes."
+    },
+    {
+      "log": "coretext-font-measure.log",
+      "kind": "readout width observation",
+      "detail": "8-digit Number advance43.2 exceeds old40px text content. Final source flags use existing64px CompactDial/Number in source-frames group, measured content58px."
+    },
+    {
+      "log": "final-strict-default.log",
+      "kind": "remaining integration dependency",
+      "detail": "Only5 unconnected shared composition dead_code errors; no suppression."
+    },
+    {
+      "log": "final-strict-feature.log",
+      "kind": "remaining integration dependency",
+      "detail": "Unconnected normal-lib leaf tree29 dead_code errors, test body/type2; no suppression."
+    },
+    {
+      "log": "final-quick.log",
+      "kind": "remaining integration dependency",
+      "detail": "First4 guards passed; device-layout requires missing actual Sampler parent dispatch. Format separately passed. Failed quick is not merge qualification."
+    }
+  ],
+  "terminal_jobs": "All recorded command sessions terminal; no cargo/rustc build jobs observed after final receipt."
+}
