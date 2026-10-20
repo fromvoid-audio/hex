@@ -92,6 +92,28 @@ drag-currentness method. The three earlier connection repairs were also absent
 from diagnostics. This remains a failed partial library check, not a passed
 UI test, strict check, complete migration or native/merge qualification.
 
+The next frozen component ports Operator metadata/actions through finite Copy
+parameter queries against the actual current instrument slot. Owner validation
+precedes page insertion, hidden-graph retirement, candidate consumption and
+preview subscriptions. Browser drag projection reuses the existing musical law;
+Console drop preflights and the clip pointer-down handler preserve captured
+input on transport refusal. Device comparison uses nominal Track/Return/Main
+membership, type, revision and active A/B facts; read/finalizer refusal keeps its
+menu and focus until a retry is accepted. Its existing revision identity policy
+is preserved, with no new saturation/ABA claim or status-only invalidation.
+
+The frozen `modern-operator-drag-comparison` library check at HEAD `387537e1`
+completed with exit 101 and 493 actual errors (494 headings), unchanged tracked
+source SHA-256 `9345c4584340c1c9e91e9ce1c17428d96d544a37c98e24962431dbc4d45e7110`.
+There were no primary diagnostics in Operator, device comparison, the new
+browser drag queries, checked Console preflights or pointer-down hunks. Other
+parts of those files still fail. Group drag preview capture/update still require
+owning model APIs and are an explicit shared-model facade dependency; remaining
+clip drag/scene insertion paths are not pressure qualified. Actual registered UI
+test fixtures, behavioral pressure tests, controller/backend/startup integration,
+full qualification and optimized delivery remain open. This is a partial compiler
+diagnostic, not a test or clean-build pass.
+
 The sections below preserve the older b94-based component's source history;
 their unconnected-dispatch and unavailable-query descriptions are historical.
 

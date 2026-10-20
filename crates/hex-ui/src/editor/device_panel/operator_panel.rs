@@ -1,7 +1,8 @@
 //! Compact Operator composition backed by the shared device control entities.
 use super::{
     ControlPresentation, DeviceControlIdentity, EditorView, ParameterKey,
-    effective_parameter_value, finalize_controls, parameter_control_with_presentation,
+    effective_parameter_value_readonly as effective_parameter_value, finalize_controls,
+    parameter_control_with_presentation,
 };
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
@@ -96,8 +97,17 @@ pub(super) fn render_body(
     device: DeviceId,
     device_view: &NativeDeviceView,
 ) -> Stateful<Div> {
+    // A refused read must precede page insertion, hidden-graph retirement and
+    // widget finalization. No draft or gesture is retired on read pressure.
+    let owner = match context::Owner::capture_checked(view, device) {
+        Ok(Some(owner)) => Some(owner),
+        Ok(None) => return div().id("operator-source-unavailable"),
+        Err(error) => {
+            context::ReadError::Transport(error).report(view);
+            return div().id("operator-source-unavailable");
+        }
+    };
     let state = *view.device_panel.operator_pages.entry(device).or_default();
-    let owner = context::Owner::capture(view, device);
     let parameters = &device_view.parameters;
     let identity = DeviceControlIdentity {
         class: NativeDeviceClass::Instrument,
@@ -375,10 +385,22 @@ fn operator_label(
     .key_context("hex_operator_section")
     .cursor(gpui::CursorStyle::PointingHand)
     .on_click(cx.listener(move |view, _, window, cx| {
-        if owner.is_some_and(|owner| owner.is_current(view))
-            && finalize_controls(view, cx)
-            && toggle_enable(view, device, operator)
-        {
+        if !owner.is_some_and(|owner| owner.is_current(view)) {
+            return;
+        }
+        let key = ParameterKey {
+            device,
+            parameter: id(513 + operator as u32),
+        };
+        let canonical = match context::parameters(view, device, [key.parameter]) {
+            Ok(Some([value])) => value,
+            Ok(None) => return,
+            Err(error) => {
+                error.report(view);
+                return;
+            }
+        };
+        if finalize_controls(view, cx) && toggle_enable_value(view, key, canonical) {
             focus.focus(window);
             let state = view.device_panel.operator_pages.entry(device).or_default();
             state.selected_operator = operator;
@@ -406,6 +428,7 @@ fn operator_label(
 /// One ordinary canonical Boolean edit, with pending state retained on queue
 /// refusal. Rapid clicks read the latest queued value rather than a render's
 /// captured flag. Project history and audio publication remain session-owned.
+#[cfg(all(test, feature = "ui-test-support"))]
 pub(super) fn toggle_enable(view: &mut EditorView, device: DeviceId, operator: usize) -> bool {
     if operator >= 4 {
         return false;
@@ -414,20 +437,28 @@ pub(super) fn toggle_enable(view: &mut EditorView, device: DeviceId, operator: u
         device,
         parameter: id(513 + operator as u32),
     };
-    let canonical = view
-        .device_panel
-        .views
-        .get(&device)
-        .and_then(|(_, _, device_view)| device_view.as_ref().ok())
-        .and_then(|device_view| {
-            device_view
-                .parameters
-                .iter()
-                .find(|parameter| parameter.descriptor.id == key.parameter)
-        })
-        .map(|parameter| parameter.value);
+    let canonical = match context::parameters(view, device, [key.parameter]) {
+        Ok(Some([value])) => value,
+        Ok(None) => {
+            view.error = Some("oscillator enable control is unavailable".into());
+            return false;
+        }
+        Err(error) => {
+            error.report(view);
+            return false;
+        }
+    };
+    toggle_enable_value(view, key, canonical)
+}
+
+fn toggle_enable_value(
+    view: &mut EditorView,
+    key: ParameterKey,
+    canonical: ParameterValue,
+) -> bool {
+    let device = key.device;
     let previous_pending = view.device_panel.pending_values.get(&key).copied();
-    let Some(ParameterValue::Bool(previous)) = previous_pending.or(canonical) else {
+    let ParameterValue::Bool(previous) = previous_pending.unwrap_or(canonical) else {
         view.error = Some("oscillator enable control is unavailable".into());
         return false;
     };

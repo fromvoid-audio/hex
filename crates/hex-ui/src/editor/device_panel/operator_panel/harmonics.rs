@@ -148,20 +148,30 @@ fn read_overview_input(
         waveform: waveform?,
     })
 }
-fn overview_input(view: &mut EditorView, key: Key) -> Option<OverviewInput> {
-    let parameters = &view
-        .device_panel
-        .views
-        .get(&key.0)?
-        .2
-        .as_ref()
-        .ok()?
-        .parameters;
-    let input = read_overview_input(parameters, key.1)?;
-    effective_overview_input(view, key, input)
+fn canonical_overview_input(
+    view: &EditorView,
+    key: Key,
+) -> Result<Option<CanonicalOverviewInput>, super::context::ReadError> {
+    if key.1 >= 4 {
+        return Ok(None);
+    }
+    let ids = std::array::from_fn::<_, 67, _>(|index| match index {
+        0..64 => partial(key.1, index),
+        64 => id(349 + key.1 as u32),
+        65 => id(353 + key.1 as u32),
+        _ => id(57 + key.1 as u32),
+    });
+    super::context::parameters(view, key.0, ids).map(|input| {
+        input.map(|values| CanonicalOverviewInput {
+            amplitudes: std::array::from_fn(|index| values[index]),
+            count: values[64],
+            repeat: values[65],
+            waveform: values[66],
+        })
+    })
 }
 fn effective_overview_input(
-    view: &mut EditorView,
+    view: &EditorView,
     key: Key,
     input: CanonicalOverviewInput,
 ) -> Option<OverviewInput> {
@@ -268,8 +278,12 @@ fn overview_points(input: OverviewInput) -> Result<OverviewPoints, hex_engine::I
         builtin: false,
     })
 }
-fn values(view: &mut EditorView, key: Key) -> Option<([f32; 64], usize)> {
-    let input = overview_input(view, key)?;
+fn values(
+    view: &EditorView,
+    key: Key,
+    canonical: CanonicalOverviewInput,
+) -> Option<([f32; 64], usize)> {
+    let input = effective_overview_input(view, key, canonical)?;
     Some((input.amplitudes, input.count))
 }
 pub(super) fn graph(
@@ -280,6 +294,14 @@ pub(super) fn graph(
     parameters: &[NativeDeviceParameterView],
 ) -> (Div, Div) {
     let key = (device, operator);
+    let owner = match super::context::Owner::capture_checked(view, device) {
+        Ok(Some(owner)) => owner,
+        Ok(None) => return (div(), div()),
+        Err(error) => {
+            super::context::ReadError::Transport(error).report(view);
+            return (div(), div());
+        }
+    };
     view.device_panel
         .operator_harmonics
         .entry(key)
@@ -292,7 +314,9 @@ pub(super) fn graph(
                 )
             });
             let subscription = cx.subscribe(&entity, move |view, _, event: &BarEditorEvent, cx| {
-                handle(view, key, *event, cx)
+                if owner.is_alive(view) {
+                    handle(view, key, *event, cx);
+                }
             });
             Control {
                 entity,
@@ -304,8 +328,8 @@ pub(super) fn graph(
                 overview: OverviewCache::default(),
             }
         });
-    // The owning renderer temporarily removes this device from the view cache.
-    // Render from its borrowed parameters; event handling uses the restored cache.
+    // Rendering receives the same source's ephemeral Copy metadata recipe;
+    // event handling separately queries the actual retained instrument slot.
     let input = read_overview_input(parameters, operator)
         .and_then(|input| effective_overview_input(view, key, input));
     if let Some(input) = input {
@@ -400,8 +424,8 @@ fn range_action(
     operator: usize,
     choice: u32,
 ) {
-    if !super::context::Owner::capture(view, device).is_some_and(|owner| owner.is_current(view))
-        || !finalize_controls(view, cx)
+    if operator >= 4
+        || !super::context::Owner::capture(view, device).is_some_and(|owner| owner.is_current(view))
     {
         return;
     }
@@ -409,19 +433,18 @@ fn range_action(
         device,
         parameter: id(349 + operator as u32),
     };
+    let canonical = match super::context::parameters(view, device, [key.parameter]) {
+        Ok(Some([value])) => Some(value),
+        Ok(None) => return,
+        Err(error) => {
+            error.report(view);
+            return;
+        }
+    };
+    if !finalize_controls(view, cx) {
+        return;
+    }
     let previous_pending = view.device_panel.pending_values.get(&key).copied();
-    let canonical = view
-        .device_panel
-        .views
-        .get(&device)
-        .and_then(|(_, _, device_view)| device_view.as_ref().ok())
-        .and_then(|device_view| {
-            device_view
-                .parameters
-                .iter()
-                .find(|parameter| parameter.descriptor.id == key.parameter)
-        })
-        .map(|parameter| parameter.value);
     let value = ParameterValue::Choice(choice);
     if previous_pending.or(canonical) == Some(value) {
         return;
@@ -496,9 +519,22 @@ pub(super) fn tools(
     row
 }
 fn tool_action(view: &mut EditorView, key: Key, index: usize, cx: &mut Context<EditorView>) {
-    if !super::context::Owner::capture(view, key.0).is_some_and(|o| o.is_current(view))
-        || !finalize_controls(view, cx)
-    {
+    if !super::context::Owner::capture(view, key.0).is_some_and(|o| o.is_current(view)) {
+        return;
+    }
+    let canonical = if index >= 3 {
+        match canonical_overview_input(view, key) {
+            Ok(Some(input)) => Some(input),
+            Ok(None) => return,
+            Err(error) => {
+                error.report(view);
+                return;
+            }
+        }
+    } else {
+        None
+    };
+    if !finalize_controls(view, cx) {
         return;
     }
     if index < 3 {
@@ -511,7 +547,7 @@ fn tool_action(view: &mut EditorView, key: Key, index: usize, cx: &mut Context<E
     if view.device_gesture.snapshot().is_some() {
         return;
     }
-    let Some((mut values, count)) = values(view, key) else {
+    let Some((mut values, count)) = canonical.and_then(|input| values(view, key, input)) else {
         return;
     };
     let peak = values[..count].iter().copied().fold(0.0_f32, f32::max);
@@ -560,13 +596,21 @@ fn paint(stroke: &mut Stroke, position: [f32; 2]) {
 }
 fn handle(view: &mut EditorView, key: Key, event: BarEditorEvent, cx: &mut Context<EditorView>) {
     if event.phase == BarEditorPhase::Begin {
-        if !super::context::Owner::capture(view, key.0).is_some_and(|o| o.is_current(view))
-            || !finalize_controls(view, cx)
-            || view.device_gesture.snapshot().is_some()
-        {
+        if !super::context::Owner::capture(view, key.0).is_some_and(|o| o.is_current(view)) {
             return;
         }
-        let Some((values, count)) = values(view, key) else {
+        let canonical = match canonical_overview_input(view, key) {
+            Ok(Some(input)) => input,
+            Ok(None) => return,
+            Err(error) => {
+                error.report(view);
+                return;
+            }
+        };
+        if !finalize_controls(view, cx) || view.device_gesture.snapshot().is_some() {
+            return;
+        }
+        let Some((values, count)) = values(view, key, canonical) else {
             return;
         };
         let Ok(snapshot) = snapshot(key.1, values) else {

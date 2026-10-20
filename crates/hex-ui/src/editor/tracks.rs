@@ -2288,19 +2288,19 @@ impl EditorView {
             )
             .on_mouse_down(MouseButton::Left, move |event, _, cx| {
                 mouse_down_entity.update(cx, |view, _| {
-                    if view.drag_start_is_current(&mouse_down_payload) {
-                        view.remember_pointer_down(
+                    match view.drag_start_current(&mouse_down_payload) {
+                        Ok(true) => view.remember_pointer_down(
                             mouse_down_payload.project_generation,
                             mouse_down_payload.clip,
                             None,
                             f32::from(event.position.x),
-                        );
-                    } else {
-                        view.clear_pointer_down(
+                        ),
+                        Ok(false) => view.clear_pointer_down(
                             mouse_down_payload.project_generation,
                             mouse_down_payload.clip,
                             None,
-                        );
+                        ),
+                        Err(_) => {}
                     }
                 });
             })
@@ -2318,44 +2318,55 @@ impl EditorView {
                 });
             })
             .on_drag(payload, move |payload, _, window, cx| {
-                let original_down_x = drag_entity.update(cx, |view, _| {
-                    if view.drag_start_is_current(payload) {
-                        view.take_pointer_down(payload.project_generation, payload.clip, None)
-                    } else {
+                let prepared = drag_entity.update(cx, |view, _| {
+                    if !view.drag_start_current(payload)? {
                         view.clear_pointer_down(payload.project_generation, payload.clip, None);
-                        None
+                        return Ok::<_, hex_session::snapshot_exports::SnapshotTransportError>((
+                            None, None,
+                        ));
                     }
+                    let original_down_x = view
+                        .pointer_down
+                        .filter(|down| {
+                            down.generation == payload.project_generation
+                                && down.clip == payload.clip
+                                && down.edge.is_none()
+                        })
+                        .map(|down| down.x);
+                    let frame_offset = original_down_x.and_then(|x| {
+                        drag::grab_offset_from_pointer(
+                            x,
+                            element_left,
+                            element_width,
+                            visible_start,
+                            visible_end,
+                            source_start_frame,
+                        )
+                    });
+                    let offset = match (payload.position, frame_offset, source_start_beat) {
+                        (ClipPosition::Audio { .. }, Some(offset), _) => Some(offset),
+                        (ClipPosition::Midi { .. }, Some(offset), Some(start_beat)) => {
+                            match (source_start_frame.checked_add(offset), view.state.as_ref()) {
+                                (Some(frame), Some(state)) => state
+                                    .read_with(|snapshot| {
+                                        snapshot.model().tempo().frame_to_beat(frame).ok()
+                                    })?
+                                    .map(|beat| beat.raw().saturating_sub(start_beat.raw())),
+                                _ => None,
+                            }
+                        }
+                        _ => None,
+                    };
+                    // Every source read succeeded before consuming the original
+                    // press. Refusal preserves it and all captured drag fields.
+                    let down =
+                        view.take_pointer_down(payload.project_generation, payload.clip, None);
+                    Ok((down, offset))
                 });
-                let frame_offset = original_down_x.and_then(|x| {
-                    drag::grab_offset_from_pointer(
-                        x,
-                        element_left,
-                        element_width,
-                        visible_start,
-                        visible_end,
-                        source_start_frame,
-                    )
-                });
-                payload.origin_pointer_x.set(original_down_x);
-                let offset = match (payload.position, frame_offset, source_start_beat) {
-                    (ClipPosition::Audio { .. }, Some(offset), _) => Some(offset),
-                    (ClipPosition::Midi { .. }, Some(offset), Some(start_beat)) => {
-                        source_start_frame
-                            .checked_add(offset)
-                            .and_then(|grabbed_frame| {
-                                drag_entity.update(cx, |view, _| {
-                                    view.state
-                                        .as_ref()?
-                                        .project
-                                        .tempo_map()
-                                        .frame_to_beat(grabbed_frame)
-                                        .ok()
-                                })
-                            })
-                            .map(|beat| beat.raw().saturating_sub(start_beat.raw()))
-                    }
-                    _ => None,
+                let Ok((original_down_x, offset)) = prepared else {
+                    return cx.new(|_| ClipDragGhost);
                 };
+                payload.origin_pointer_x.set(original_down_x);
                 payload.grab_offset.set(offset);
                 payload.snap_modifier.set(window.modifiers().platform);
                 payload.copy_modifier.set(window.modifiers().alt);

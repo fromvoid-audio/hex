@@ -299,7 +299,10 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.dismiss_context_menu(window, cx);
+        // A refused comparison keeps the same menu and focus for retry.
+        if !matches!(&action, EditorContextAction::DeviceComparison(_)) {
+            self.dismiss_context_menu(window, cx);
+        }
         match action {
             EditorContextAction::RemoveBrowserSource(source) => {
                 self.remove_browser_source(source, window, cx);
@@ -315,7 +318,9 @@ impl EditorView {
                 }
             }
             EditorContextAction::DeviceComparison(target) => {
-                self.perform_device_comparison(target, cx)
+                if self.perform_device_comparison(target, cx) {
+                    self.dismiss_context_menu(window, cx);
+                }
             }
             EditorContextAction::PlaceIcon { path, id } => {
                 self.set_browser_place_icon(path, id, cx)
@@ -434,7 +439,7 @@ impl EditorView {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
                 EditorContextAction::DeviceComparison(target) => {
-                    !super::device_comparison::current(self, target)
+                    matches!(super::device_comparison::current(self, target), Ok(false))
                 }
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)

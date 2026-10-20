@@ -8,6 +8,7 @@ use gpui::{
 use hex_engine::NativeDeviceClass;
 use hex_project::{DeviceComparisonAction as Action, DeviceId, DeviceVariant as Slot};
 use hex_session::service::{Request, preset::Owner};
+use hex_session::snapshot_exports::SnapshotTransportError;
 
 #[derive(Clone, Copy)]
 pub(super) struct Intent {
@@ -22,69 +23,60 @@ fn intent(
     device: DeviceId,
     class: NativeDeviceClass,
     action: Action,
-) -> Option<Intent> {
-    let state = view.state.as_ref()?;
-    let entry = state.project.device(device)?;
-    let panel = view.device_panel.owner?;
-    let actual_class = match panel {
-        device_panel::DevicePanelOwner::Main => {
-            if !state
-                .project
-                .main_devices()
-                .iter()
-                .any(|entry| entry.id() == device)
-            {
-                return None;
-            }
-            NativeDeviceClass::Effect
-        }
-        device_panel::DevicePanelOwner::Track(track) => {
-            let track = state.project.track(track)?;
-            if track.instrument().is_some_and(|entry| entry.id() == device) {
-                NativeDeviceClass::Instrument
-            } else if track.devices().iter().any(|entry| entry.id() == device) {
-                NativeDeviceClass::Effect
-            } else {
-                return None;
-            }
-        }
-        device_panel::DevicePanelOwner::Return(bus) => {
-            let bus = state
-                .project
-                .return_tracks()
-                .iter()
-                .find(|entry| entry.id() == bus)?;
-            if !bus.devices().iter().any(|entry| entry.id() == device) {
-                return None;
-            }
-            NativeDeviceClass::Effect
-        }
+) -> Result<Option<Intent>, SnapshotTransportError> {
+    let Some(state) = view.state.as_ref() else {
+        return Ok(None);
     };
-    if actual_class != class {
-        return None;
-    }
-    Some(Intent {
-        owner: Owner {
-            project_generation: view.project_generation,
-            revision: state.revision,
-            device,
-            class,
-            type_id: entry.state().type_id(),
-        },
-        panel,
-        expected: entry.active_variant(),
-        action,
+    let Some(panel) = view.device_panel.owner else {
+        return Ok(None);
+    };
+    state.read_with(|snapshot| {
+        let project = snapshot.model();
+        let entry = match panel {
+            device_panel::DevicePanelOwner::Main => {
+                project.main_devices().find(|entry| entry.id() == device)
+            }
+            device_panel::DevicePanelOwner::Track(track) => {
+                let track = project.track(track)?;
+                track
+                    .instrument()
+                    .filter(|entry| entry.id() == device)
+                    .or_else(|| track.devices().find(|entry| entry.id() == device))
+            }
+            device_panel::DevicePanelOwner::Return(bus) => project
+                .returns()
+                .find(|entry| entry.id() == bus)?
+                .devices()
+                .find(|entry| entry.id() == device),
+        }?;
+        if entry.class() != class {
+            return None;
+        }
+        Some(Intent {
+            owner: Owner {
+                project_generation: view.project_generation,
+                revision: snapshot.revision(),
+                device,
+                class,
+                type_id: entry.type_id(),
+            },
+            panel,
+            expected: entry.active_variant(),
+            action,
+        })
     })
 }
 
-pub(super) fn current(view: &EditorView, target: &Intent) -> bool {
-    intent(view, target.owner.device, target.owner.class, target.action).is_some_and(|now| {
-        now.owner.project_generation == target.owner.project_generation
-            && now.owner.revision == target.owner.revision
-            && now.owner.type_id == target.owner.type_id
-            && now.panel == target.panel
-            && now.expected == target.expected
-    })
+pub(super) fn current(view: &EditorView, target: &Intent) -> Result<bool, SnapshotTransportError> {
+    Ok(
+        intent(view, target.owner.device, target.owner.class, target.action)?.is_some_and(|now| {
+            now.owner.project_generation == target.owner.project_generation
+                && now.owner.revision == target.owner.revision
+                && now.owner.type_id == target.owner.type_id
+                && now.panel == target.panel
+                && now.expected == target.expected
+        }),
+    )
 }
 
 pub(super) fn actions(
@@ -94,7 +86,7 @@ pub(super) fn actions(
     selected: bool,
     cx: &mut Context<EditorView>,
 ) -> Div {
-    let Some(target) = intent(view, device, class, Action::Switch) else {
+    let Ok(Some(target)) = intent(view, device, class, Action::Switch) else {
         return div();
     };
     let (label, tooltip) = match target.expected {
@@ -138,7 +130,7 @@ pub(super) fn card(
     focus: FocusHandle,
     card: Stateful<Div>,
 ) -> Stateful<Div> {
-    let Some(target) = intent(view, device, class, Action::Switch) else {
+    let Ok(Some(target)) = intent(view, device, class, Action::Switch) else {
         return card;
     };
     card.on_key_down(
@@ -171,7 +163,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) {
         let stale = self.context_menu.as_ref().is_some_and(|menu| menu.items.iter().any(|item| {
-            matches!(&item.action, EditorContextAction::DeviceComparison(target) if !current(self, target))
+            matches!(&item.action, EditorContextAction::DeviceComparison(target) if matches!(current(self, target), Ok(false)))
         }));
         if stale {
             if let Some(menu) = &mut self.context_menu {
@@ -181,10 +173,19 @@ impl EditorView {
         }
     }
     fn comparison_ready(&mut self, target: Intent, cx: &mut Context<Self>) -> bool {
-        if !current(self, &target) {
-            self.error = Some("device comparison changed · retry from the current device".into());
-            cx.notify();
-            return false;
+        match current(self, &target) {
+            Ok(true) => {}
+            Ok(false) => {
+                self.error =
+                    Some("device comparison changed · retry from the current device".into());
+                cx.notify();
+                return false;
+            }
+            Err(_) => {
+                self.error = Some("device comparison source is busy · retry the action".into());
+                cx.notify();
+                return false;
+            }
         }
         if self.opening_project
             || self.close_prompt_open
@@ -199,8 +200,14 @@ impl EditorView {
             cx.notify();
             return false;
         }
-        if !device_panel::finalize_controls(self, cx) {
-            return false;
+        match device_panel::finalize_controls_checked(self, cx) {
+            Ok(true) => {}
+            Ok(false) => return false,
+            Err(_) => {
+                self.error = Some("device controls are busy · retry comparison".into());
+                cx.notify();
+                return false;
+            }
         }
         if self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
@@ -217,15 +224,21 @@ impl EditorView {
         true
     }
 
-    pub(super) fn perform_device_comparison(&mut self, target: Intent, cx: &mut Context<Self>) {
-        if self.comparison_ready(target, cx) {
-            self.enqueue(Request::CompareDevice {
-                owner: target.owner,
-                expected: target.expected,
-                action: target.action,
-            });
-            cx.notify();
+    pub(super) fn perform_device_comparison(
+        &mut self,
+        target: Intent,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if !self.comparison_ready(target, cx) {
+            return false;
         }
+        let accepted = self.enqueue(Request::CompareDevice {
+            owner: target.owner,
+            expected: target.expected,
+            action: target.action,
+        });
+        cx.notify();
+        accepted
     }
 
     fn open_device_comparison_menu(

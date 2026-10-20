@@ -44,6 +44,14 @@ pub(super) fn graph(
     values: [f32; 6],
 ) -> Stateful<Div> {
     let key = GraphKey { device, operator };
+    let owner = match super::context::Owner::capture_checked(view, device) {
+        Ok(Some(owner)) => owner,
+        Ok(None) => return div().id("operator-envelope-graph-unavailable"),
+        Err(error) => {
+            super::context::ReadError::Transport(error).report(view);
+            return div().id("operator-envelope-graph-unavailable");
+        }
+    };
     view.device_panel
         .operator_envelope_graphs
         .entry(key)
@@ -61,7 +69,9 @@ pub(super) fn graph(
             });
             let subscription =
                 cx.subscribe(&entity, move |view, _, event: &ResponseGraphEvent, cx| {
-                    handle_event(view, key, *event, cx);
+                    if owner.is_alive(view) {
+                        handle_event(view, key, *event, cx);
+                    }
                 });
             GraphControl {
                 entity,
@@ -384,11 +394,28 @@ fn begin_gesture(
     event: ResponseGraphEvent,
     cx: &mut Context<EditorView>,
 ) {
-    if event.node_id > 3 || !finalize_controls(view, cx) || view.device_gesture.snapshot().is_some()
-    {
+    if event.node_id > 3 {
         return;
     }
-    let Some([initial, peak, sustain, attack, decay, release]) = envelope_values(view, key) else {
+    let base = 33 + key.operator as u32 * 6;
+    let canonical = match super::context::parameters(
+        view,
+        key.device,
+        std::array::from_fn::<_, 6, _>(|index| id(base + index as u32)),
+    ) {
+        Ok(Some(values)) => values,
+        Ok(None) => return,
+        Err(error) => {
+            error.report(view);
+            return;
+        }
+    };
+    if !finalize_controls(view, cx) || view.device_gesture.snapshot().is_some() {
+        return;
+    }
+    let Some([initial, peak, sustain, attack, decay, release]) =
+        envelope_values(view, key, canonical)
+    else {
         return;
     };
     let base = 33 + key.operator as u32 * 6;
@@ -562,18 +589,22 @@ fn clear_pending(view: &mut EditorView, key: GraphKey, node_id: u32) {
     }
 }
 
-fn envelope_values(view: &mut EditorView, key: GraphKey) -> Option<[f32; 6]> {
-    let parameters = view
-        .device_panel
-        .views
-        .get(&key.device)
-        .and_then(|(_, _, view)| view.as_ref().ok())?
-        .parameters
-        .clone();
+fn envelope_values(
+    view: &EditorView,
+    key: GraphKey,
+    canonical: [ParameterValue; 6],
+) -> Option<[f32; 6]> {
     let base = 33 + key.operator as u32 * 6;
     let mut values = [0.0; 6];
     for (index, value) in values.iter_mut().enumerate() {
-        *value = match super::value(view, key.device, &parameters, id(base + index as u32))? {
+        *value = match super::effective_parameter_value(
+            view,
+            ParameterKey {
+                device: key.device,
+                parameter: id(base + index as u32),
+            },
+            canonical[index],
+        ) {
             ParameterValue::Float(value) if value.is_finite() => value,
             _ => return None,
         };
