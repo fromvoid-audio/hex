@@ -1013,7 +1013,7 @@ fn review_readiness_indexed_expansion_waits_then_restores_native_top(cx: &mut Te
         let (handle, editor, directory) = fixture(cx);
         let folder = directory.0.join("samples/loop-folder");
         std::fs::create_dir_all(&folder).unwrap();
-        for index in 0..45 {
+        for index in 0..100 {
             std::fs::write(folder.join(format!("{index:03}-loop.hex")), b"").unwrap();
         }
         let visual = &mut VisualTestContext::from_window(handle, cx);
@@ -1048,6 +1048,13 @@ fn review_readiness_indexed_expansion_waits_then_restores_native_top(cx: &mut Te
         });
         visual.run_until_parked();
         let row = Box::leak(format!("browser-entry-{index}").into_boxed_str());
+        editor.read_with(visual, |view, _| {
+            assert_eq!(
+                view.browser.scroll.0.borrow().base_handle.offset().y,
+                -px(index as f32 * 22.0),
+                "fixture must realize the strict anchor without bottom clamping"
+            );
+        });
         let painted_top = visual.debug_bounds(row).unwrap().top();
         click(visual, "browser-section-devices");
         // Both insertion and removal change this current indexed augmentation.
