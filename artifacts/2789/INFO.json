@@ -1,8 +1,8 @@
 {
-  "source_sha": "e12e122fbd8ef969a93b6215c91eee761be05bb6",
-  "source_ref": "refs/heads/evidence/hex395-captured-main-340-source",
-  "archive_bytes": 546273,
-  "archive_sha256": "27423319d2bb164ca3510013142c4f98230bfb9e19ea1e3b0cde1c950ff4d9bf",
-  "payloads": 113,
-  "safe_members": 114
+  "source_sha": "0610c25c820ebb648df3df7698ea9d689e3a4d72",
+  "source_ref": "refs/heads/evidence/hex395-main-job-341-source",
+  "archive_bytes": 225031,
+  "archive_sha256": "9c7a4bfaca0613962cd2bd878fb307538dee57f53f942c05106bfcee96b9738d",
+  "payloads": 35,
+  "safe_members": 36
 }
