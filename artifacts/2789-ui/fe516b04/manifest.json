@@ -1,0 +1,65 @@
+{
+  "source": "fe516b041d6e42151b3f6ad358f22d7ede0aba6a",
+  "tree": "51af8591f9979a4527501845301c0671928fbfb7",
+  "parent": "294bcb15dad1aa7737590c9c603050fd88fe2bb2",
+  "qualification": "INCOMPLETE/UNQUALIFIED; no cleanUI/test/strict/merge/full/native/delivery result",
+  "diagnostic": {
+    "before": {
+      "head": "294bcb15dad1aa7737590c9c603050fd88fe2bb2",
+      "source_sha256": "7162b68994433330a1f28720fbce4e321b3980a6579506f5a91ebea0b8479f6b",
+      "status": " M crates/hex-ui/src/editor/controller.rs\n M crates/hex-ui/src/editor/device_gesture.rs\n M crates/hex-ui/src/editor/loop_rail.rs\n M crates/hex-ui/src/editor/loop_rail/pending.rs\n"
+    },
+    "after": {
+      "head": "294bcb15dad1aa7737590c9c603050fd88fe2bb2",
+      "source_sha256": "7162b68994433330a1f28720fbce4e321b3980a6579506f5a91ebea0b8479f6b",
+      "status": " M crates/hex-ui/src/editor/controller.rs\n M crates/hex-ui/src/editor/device_gesture.rs\n M crates/hex-ui/src/editor/loop_rail.rs\n M crates/hex-ui/src/editor/loop_rail/pending.rs\n"
+    },
+    "command": [
+      "cargo",
+      "check",
+      "-p",
+      "hex-ui",
+      "--locked",
+      "--lib"
+    ],
+    "env": {
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0"
+    },
+    "started": "2026-10-20T15:49:22.314180+00:00",
+    "elapsed_seconds": 13.30740175,
+    "exit_code": 101,
+    "qualification": "PARTIAL DIAGNOSTIC ONLY; migration/startup incomplete, no test/strict/merge/full/native qualification",
+    "fingerprint_method": "sorted tracked path NUL bytes NUL SHA256",
+    "patch_sha256": "0d162adba4ddeb99a2f00eb0608b6b9969699a69141d426defbf1379676628f5",
+    "log_sha256": "2064152d3f2513ae496363845f04c7953f778596b4d7622e61e6c8c6cff20d7e",
+    "actual_error_codes": 441,
+    "error_headings": 442
+  },
+  "checks": [
+    "scopedrustfmtPASS",
+    "gitdiffcheckPASS",
+    "actualcheck-device-layout.pyPASS"
+  ],
+  "remaining": [
+    "actual registered UI pressure/release/ACK tests unexecuted",
+    "other legacy UI consumers/shared Trim+group facades",
+    "Native paired head comparison/startup/backend/meters/EQ ACK",
+    "exact frozen fullqualification and optimizeddelivery"
+  ],
+  "archive": {
+    "bytes": 19582,
+    "sha256": "573f3b2000053b488a908f510569bd42da0aa4c71959f858df7db311796d6a40"
+  },
+  "files": {
+    "artifacts/sampler-ui-migration/modern-typed-admission.log": {
+      "bytes": 180422,
+      "sha256": "2064152d3f2513ae496363845f04c7953f778596b4d7622e61e6c8c6cff20d7e"
+    },
+    "artifacts/sampler-ui-migration/modern-typed-admission.json": {
+      "bytes": 1463,
+      "sha256": "ba652acb0f7050ba1072d89df0050419a92cd5f987a34e26d2a9a4aba7dbab21"
+    }
+  }
+}
