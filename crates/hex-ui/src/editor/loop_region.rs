@@ -131,7 +131,7 @@ impl EditorView {
                             let beat_end = clip
                                 .start()
                                 .raw()
-                                .checked_add(clip.length().raw())
+                                .checked_add(clip.arrangement_length().raw())
                                 .ok_or(error)?;
                             let map = project.tempo();
                             let clip_start = map.beat_to_frame(clip.start()).map_err(|_| error)?;
