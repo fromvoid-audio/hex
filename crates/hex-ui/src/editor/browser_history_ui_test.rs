@@ -923,8 +923,15 @@ fn review_history_root_projection_restores_both_directions_and_quiesces(cx: &mut
         ("browser-history-forward", all_root),
     ] {
         notifications.set(0);
-        // No manual notify/timer/extra input after the history click.
-        click(visual, selector);
+        // History navigates on MouseDown. Observe the held press BEFORE
+        // MouseUp can supply a second platform frame; no unrelated redraw.
+        let point = visual.debug_bounds(selector).unwrap().center();
+        visual.simulate_mouse_down(point, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        eprintln!(
+            "HISTORY_PROJECTION_HELD {selector} notifications={}",
+            notifications.get()
+        );
         editor.read_with(visual, |view, cx| {
             assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::File(path)) if path == expected), "history must settle the actual saved root after {selector}");
             assert!(!view.browser.tree.history_loading(), "projection must reach a clean fixed point");
@@ -949,5 +956,7 @@ fn review_history_root_projection_restores_both_directions_and_quiesces(cx: &mut
             settled,
             "stable provider roots must not keep notifying"
         );
+        visual.simulate_mouse_up(point, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
     }
 }
