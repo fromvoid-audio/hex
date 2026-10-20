@@ -1,0 +1,48 @@
+{
+  "source": "387537e177c7dd0d7022beacc1bd4eedf207c313",
+  "tree": "2c4c362ada255f5dafcba85eede555325346a4d6",
+  "parent": "372a933a7c3d49d86613f82dfb9287027e375ea0",
+  "qualification": "INCOMPLETE/UNQUALIFIED; no clean UI/test/strict/merge/full/native/delivery result",
+  "partial_check": {
+    "command": "cargo check -p hex-ui --locked --lib",
+    "exit": 101,
+    "actual_errors": 542,
+    "source_unchanged": true,
+    "log_sha256": "952e417b649b7521317c74b20e8dacc7480944adcf9445695b84b8c8264c6f9a"
+  },
+  "checks": [
+    "scoped rustfmt PASS",
+    "git diff --check PASS",
+    "device composition guard PASS"
+  ],
+  "changes": [
+    "actual borrowed Saturator/Compressor transfer queries",
+    "readonly effective value helper",
+    "checked native drag currentness",
+    "parent/return connection and documentation"
+  ],
+  "remaining": [
+    "legacy UI consumers and real registered backend receiver",
+    "native startup, audible meter and EQ accepted ACK routes",
+    "actual nominal UI fixtures",
+    "full exact-source qualification and optimized delivery"
+  ],
+  "archive": {
+    "bytes": 22558,
+    "sha256": "b111b0c78b1441fa981f3d1808151dc219a022631616deb5c77a15fa117689e3"
+  },
+  "files": {
+    "artifacts/sampler-ui-migration/modern-transfer-drag.log": {
+      "bytes": 215025,
+      "sha256": "952e417b649b7521317c74b20e8dacc7480944adcf9445695b84b8c8264c6f9a"
+    },
+    "artifacts/sampler-ui-migration/modern-transfer-drag.json": {
+      "bytes": 1628,
+      "sha256": "a139f1230343709dd5a221abcc31271f597129a3d93056b168a9eccb25163bb0"
+    },
+    "artifacts/sampler-ui-migration/modern-transfer-drag-final.json": {
+      "bytes": 1077,
+      "sha256": "5671d63b997c80de1fd3afe1ef901c4ea579b85762c4aa20826d736154d144d0"
+    }
+  }
+}
