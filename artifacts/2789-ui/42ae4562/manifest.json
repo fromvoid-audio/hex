@@ -1,0 +1,73 @@
+{
+  "source": "42ae45622b039d2fc71f1b253dea4f639dec1b12",
+  "tree": "0ca00e8242847288cdd45e808d280d0a9df888bd",
+  "parent": "fe516b041d6e42151b3f6ad358f22d7ede0aba6a",
+  "qualification": "INCOMPLETE/UNQUALIFIED; no cleanUI/test/strict/merge/full/native/delivery result",
+  "diagnostic": {
+    "before": {
+      "head": "fe516b041d6e42151b3f6ad358f22d7ede0aba6a",
+      "source_sha256": "a9c92a38ac5df2aa802a418be641d83ef491d488e0dbc081d07829fd45dd17af",
+      "status": " M crates/hex-ui/src/editor/controller.rs\nA  crates/hex-ui/src/editor/controller/source_notice.rs\n"
+    },
+    "after": {
+      "head": "fe516b041d6e42151b3f6ad358f22d7ede0aba6a",
+      "source_sha256": "a9c92a38ac5df2aa802a418be641d83ef491d488e0dbc081d07829fd45dd17af",
+      "status": " M crates/hex-ui/src/editor/controller.rs\nA  crates/hex-ui/src/editor/controller/source_notice.rs\n"
+    },
+    "command": [
+      "cargo",
+      "check",
+      "-p",
+      "hex-ui",
+      "--locked",
+      "--lib"
+    ],
+    "env": {
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0"
+    },
+    "started": "2026-10-20T15:55:24.584232+00:00",
+    "elapsed_seconds": 6.865248167,
+    "exit_code": 101,
+    "qualification": "PARTIAL DIAGNOSTIC ONLY; migration/startup incomplete, no test/strict/merge/full/native qualification",
+    "fingerprint_method": "sorted tracked and unignored untracked path NUL bytes NUL SHA256",
+    "patch_sha256": "8666552a4b27e05bc00a1ddcb551ce72a764d7f18b779cbc24ec96dff1f2a472",
+    "log_sha256": "65df2da627b36002b7f4eefcea0c4d1a47ffedcd588763d00e13992ec340ce22",
+    "actual_error_codes": 441,
+    "error_headings": 442
+  },
+  "checks": [
+    "scopedrustfmtPASS",
+    "gitdiffcheckPASS",
+    "actualcheck-device-layout.pyPASS"
+  ],
+  "remaining": [
+    "actual registered UI pressure/release/ACK tests unexecuted",
+    "other legacy UI consumers/shared Trim+group facades",
+    "Native paired head comparison/startup/backend/meters/EQ ACK",
+    "exact frozen fullqualification and optimizeddelivery"
+  ],
+  "archive": {
+    "bytes": 38200,
+    "sha256": "eab20686015766bb26d22cf60dfabf08eeb0b7be690354373fdfd7d224d72282"
+  },
+  "files": {
+    "artifacts/sampler-ui-migration/modern-event-notice-v2.log": {
+      "bytes": 180422,
+      "sha256": "65df2da627b36002b7f4eefcea0c4d1a47ffedcd588763d00e13992ec340ce22"
+    },
+    "artifacts/sampler-ui-migration/modern-event-notice-v2.json": {
+      "bytes": 1323,
+      "sha256": "e14997cff459f5f26095a621e756ae5b9494bd0994d2d74ad5d40b1cd496e349"
+    },
+    "artifacts/sampler-ui-migration/modern-event-notice.log": {
+      "bytes": 180422,
+      "sha256": "65df2da627b36002b7f4eefcea0c4d1a47ffedcd588763d00e13992ec340ce22"
+    },
+    "artifacts/sampler-ui-migration/modern-event-notice.json": {
+      "bytes": 1527,
+      "sha256": "f30e130c597b32b00cad121b1b2b42727330ff485402f95b87c863dd50a5b2f2"
+    }
+  }
+}
