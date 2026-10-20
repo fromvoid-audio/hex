@@ -1,0 +1,17 @@
+{
+  "source": "68bb7762bf1138819a1e15ded48898e9addaf3e1",
+  "tree": "b2a1ce38d490eab6ac9f580caf3b24579cd24e7d",
+  "base": "7762045d14d0f5f7a937056f772cebb3d62d15d9",
+  "archive": "artifacts/2789-eq-structural/68bb7762/eq-structural-evidence.tar.gz",
+  "bytes": 105377,
+  "sha256": "12d08251e11290b7994e6f2283998aa4128146821dc551408546d8df0e6466ec",
+  "safe_regular_members": 16,
+  "payloads": 15,
+  "scope": "partial pure worker helper only; no UI/transport/native or whole qualification",
+  "checks": {
+    "focused_v2": "6PASS0ignore28.256s",
+    "strict_v1": "3stagesPASS43.587s default+feature alltargets -Dwarnings andformat",
+    "diff": "pass"
+  },
+  "history": "v1 4PASS2fixtureFAIL preserved, not product RED; exactterminal group/lock proofs retained"
+}
