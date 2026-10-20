@@ -6396,3 +6396,14 @@ check stale-owner and external-cache preservation, dirty-build refusal, READY
 owner/artifact preservation and real compiled-consumer freshness. Required
 exact-source tooling results are retained in the PR and Pulse. No production
 runner, launch, packaging or ownership policy changes.
+
+## aliased temporary-parent regressions — pulse2913 / PR505
+
+A deterministic symlinked temporary parent exercises the shared fixture's actual
+owner lookup, same-target reuse and external-cache preservation. The original
+pre-2911 setup fails this regression; corrected fixtures pass. A separate real
+metadata-resolution control confirms recreated-target recovery still refuses an
+explicit lexical parent alias even when it resolves to the same physical target.
+Existing foreign-owner, stale-artifact, source-change, CAS and lock controls stay
+intact. Combined exact-source tooling qualification is recorded in PR505/Pulse;
+no global TMPDIR override or production safety change is used.
