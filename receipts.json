@@ -1,0 +1,152 @@
+[
+  {
+    "run_id": "20261020T062500Z-7a4a2258",
+    "exit_code": 1,
+    "duration_seconds": 49.787,
+    "source": {
+      "commit": "d11e4300b88dff8e4941ea2b6edd9e57cc60a5c5",
+      "content_sha256": "a75b4b55e00c08d0355d4924db614a2d24dc571f6f633aec602234a83e06bb13",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-ui/src/editor/tracks.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "9919ddf456bb38d4413b31668ae59a628c6d359cd4003669cb28dccbee6d2bbf",
+    "partial": "failed"
+  },
+  {
+    "run_id": "20261020T063045Z-93584c3c",
+    "exit_code": 1,
+    "duration_seconds": 62.983,
+    "source": {
+      "commit": "d11e4300b88dff8e4941ea2b6edd9e57cc60a5c5",
+      "content_sha256": "f886369eabe065cb8e3f802e0c829842ae6977c85cf2a2a5210978e0f4c428c4",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-ui/src/editor/clip_name.rs",
+        " M crates/hex-ui/src/editor/tracks.rs",
+        " M scripts/check-ui-style.py"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "e144e6d1bed0756621dcd5c148b79216a7ca9a8432c970282d952e4136872fbf",
+    "partial": "failed"
+  },
+  {
+    "run_id": "20261020T063345Z-30b54db1",
+    "exit_code": 0,
+    "duration_seconds": 62.977,
+    "source": {
+      "commit": "d11e4300b88dff8e4941ea2b6edd9e57cc60a5c5",
+      "content_sha256": "74b0227e5cdd327aef9151ac26f113d48225e1b5de912edaed9cbb65bf653ecd",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-ui/src/editor/clip_name.rs",
+        " M crates/hex-ui/src/editor/tracks.rs",
+        " M scripts/check-ui-style.py"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "8af94ac736edfc3df14dbc382393a2955ee82b2f6f0a9ba8f4336b563fd33c67",
+    "partial": "partial"
+  },
+  {
+    "run_id": "20261020T064136Z-c3400cf8",
+    "exit_code": 0,
+    "duration_seconds": 67.57,
+    "source": {
+      "commit": "d11e4300b88dff8e4941ea2b6edd9e57cc60a5c5",
+      "content_sha256": "090c19ed4575a97b65b308833e1bb9a1b0b3a954368d732662b3460aef614784",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-ui/src/editor/clip_name.rs",
+        " M crates/hex-ui/src/editor/tracks.rs",
+        " M crates/hex-ui/src/editor/waveform.rs",
+        " M scripts/check-ui-style.py"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "e32dfa5318a0f5167ef869f6a01bb11e3284e931ad7ca708dcb78c7750996bfd",
+    "partial": "partial"
+  },
+  {
+    "run_id": "20261020T064347Z-b105cef1",
+    "exit_code": 1,
+    "duration_seconds": 47.793,
+    "source": {
+      "commit": "d11e4300b88dff8e4941ea2b6edd9e57cc60a5c5",
+      "content_sha256": "bad03bd77026181d0eed6b851229acd02390385d1e10c40a1e2925d1449efba0",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-ui/src/editor/clip_name.rs",
+        " M crates/hex-ui/src/editor/tracks.rs",
+        " M crates/hex-ui/src/editor/waveform.rs",
+        " M scripts/check-ui-style.py"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "2ae34bb59f6bfb220ac58ef40ef1f2c34a46e9e7cdd9f4b9cdfec367406f35b4",
+    "partial": "failed"
+  },
+  {
+    "run_id": "20261020T064508Z-f70c8efd",
+    "exit_code": 0,
+    "duration_seconds": 65.505,
+    "source": {
+      "commit": "d11e4300b88dff8e4941ea2b6edd9e57cc60a5c5",
+      "content_sha256": "e2bbfe4d0f949d3f598181494cea8cdcbae95f5d0b2c529a4bf54922f1751b4b",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-ui/src/editor/clip_name.rs",
+        " M crates/hex-ui/src/editor/tracks.rs",
+        " M crates/hex-ui/src/editor/waveform.rs",
+        " M scripts/check-ui-style.py"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "990aa65d0014892022eb403fe876b384c5849cf849b7a7ce8484edf4e1007c62",
+    "partial": "partial"
+  },
+  {
+    "run_id": "20261020T064724Z-ac551506",
+    "exit_code": 0,
+    "duration_seconds": 49.849,
+    "source": {
+      "commit": "d11e4300b88dff8e4941ea2b6edd9e57cc60a5c5",
+      "content_sha256": "e4315a41c5c3b620c60a3ea4d2cf9c79b2eb6f12004e86d91667ef3a02295c13",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-ui/src/editor/clip_name.rs",
+        " M crates/hex-ui/src/editor/tracks.rs",
+        " M crates/hex-ui/src/editor/waveform.rs",
+        " M scripts/check-ui-style.py"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "ba5f61d1b54b61ec99f900c14e1125e0b050475a6fac4a0d5f701b56491c5131",
+    "partial": "partial"
+  },
+  {
+    "run_id": "20261020T065031Z-0f9e8e6d",
+    "exit_code": 0,
+    "duration_seconds": 127.179,
+    "source": {
+      "commit": "32b485c8279c8cb816f83ce02e583f7e8de8d46e",
+      "content_sha256": "538d96dd6bf91d6040b218c222990bee6fa65cc105a853965fcc31930410acb0",
+      "dirty": false,
+      "dirty_files": [],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "a0953cef6c46dc022692826c5e36cbbe15227af9c356d6675d87750b5b18bbf2",
+    "partial": "partial"
+  }
+]

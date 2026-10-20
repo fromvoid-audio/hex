@@ -1,0 +1,57 @@
+{
+  "source": "32b485c8279c8cb816f83ce02e583f7e8de8d46e",
+  "tree": "2605a28e0e29a7803545c7b1ccfc439345bc98cc",
+  "direct_parent": "d11e4300b88dff8e4941ea2b6edd9e57cc60a5c5",
+  "main_base": "1d1797bb0e22a9f3f7871f9782162ca1e5abcc34",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/clip_name.rs",
+      "before_sha256": "47bbeb5946e7c3c259578ee1a401ca0bed79d3e7da1c6db5e5fc107630d9d55f",
+      "after_sha256": "8ae9a001ff6291f941189b4e23d49d8a1c6b61c03db3a8467bc32875c00b1e1c",
+      "before_blob": "8d43574047f74affa35079b57aa852f3f23aa386",
+      "after_blob": "f6c1885c932bfaffa2046c1a1dda68fa300234d8"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/tracks.rs",
+      "before_sha256": "a736bf88082942cc309d5b6e69e2646509eee1b9e71be320712c57b2fcbb0e0f",
+      "after_sha256": "0105b746386d91fb351a1495a509826b19697a5086781e547a62108ed117601f",
+      "before_blob": "9fdfec64cc6eb656bcc17fa7a883ee3d594b5d0b",
+      "after_blob": "1073ca9f1b7e83a09685c2b6339fd79b5f3a1c0e"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/waveform.rs",
+      "before_sha256": "16d0a206c0361524c01cca9b5e0a53ff623a5b850b6fc3b7bfd6c6bf4cd596d1",
+      "after_sha256": "0bde342632d68a25a903259d9d487dba7ec9f2127749786b2f8915fb8079b2ec",
+      "before_blob": "d2d85b61a0ee9cd138903db90992388342d5dc4a",
+      "after_blob": "a8f2561db3a8d27b6fc6b31bd4b227ebf0888135"
+    },
+    {
+      "path": "docs/clip-drag.md",
+      "before_sha256": "46870aaa49ed099dcf033788551dca5e135eafc13cd389bf3a3474883ca000c9",
+      "after_sha256": "cf431b616a3b06312964f7c1ad8c249cf56223c525dfcf3cdd1ea0986979b2e2",
+      "before_blob": "75f1be02c2da73dbb3e0be4acd0a634c790605e2",
+      "after_blob": "12e333a5f6df4e70403674cfbeea43194daf8e86"
+    },
+    {
+      "path": "docs/clip-waveform-body.md",
+      "before_sha256": "432aaf411884a6509692b318dd95a575f28f41cad783de28e12fab8b1c413446",
+      "after_sha256": "9cc5c0022257e3f9f759232a68ae797eafc4b019e8e7be58b1bffdedbc7beacf",
+      "before_blob": "625197a32f9986daa9447a1b6ce080204584913b",
+      "after_blob": "3aadb6f9badedb75a842cf13aa6f24fc4150430c"
+    },
+    {
+      "path": "scripts/check-ui-style.py",
+      "before_sha256": "9d6f4247af676c7b29ae5c66f07704d9fcc4e09bc1adff032ada248089246b9a",
+      "after_sha256": "4cd22f1451a6e616e5fbea1465702713a98789351fda833fbd1fc3ad9bcc65d8",
+      "before_blob": "639f325ef48eed6e16c8a509c7837a08efe9ccd7",
+      "after_blob": "d5b6a911a54d710818bf2adf2dfede65ed79e035"
+    },
+    {
+      "path": "todo.md",
+      "before_sha256": "22dd68006635b4f9156a9279aa51d7ff023624565013d685dde242dc70ec8d33",
+      "after_sha256": "6fd3005eb5ed4f17372cc8f5763b824d26844dc829a596b7ec4149768d5e8795",
+      "before_blob": "1bb2c15d98fa5c1d9a7765f00eae25940fd1d9a1",
+      "after_blob": "5b2c1e32eff56e618fe6742e8cc30aebdc3b93c2"
+    }
+  ]
+}
