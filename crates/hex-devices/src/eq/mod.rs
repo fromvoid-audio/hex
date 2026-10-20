@@ -1,10 +1,15 @@
 //! Sparse, bounded parametric EQ with stable authored node identities.
 //! Editing and the codec run on control; the runtime owns bounded, control-allocated DSP histories.
 use super::*;
+mod response;
 mod runtime;
 mod state;
+pub use response::frequency_response_with_overrides;
 pub use runtime::EQ_RUNTIME_BYTES;
-pub use state::{AutomationLane, AutomationPoint, EqState, Node, NodeId, NodeKind, NodeParameter};
+pub use state::{
+    AutomationLane, AutomationPoint, EqAutomationLaneRead, EqState, EqStateRead, Node, NodeId,
+    NodeKind, NodeParameter,
+};
 
 pub const EQ_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.eq");
 pub const MAX_NODES: usize = 64;
@@ -44,9 +49,10 @@ impl NativeDeviceMetadata for EqDefinition {
         &self,
         state: &NativeDeviceState,
     ) -> Result<Vec<ParameterDescriptor>, DeviceContractError> {
-        let settings = EqState::decode(state)?;
+        let settings = EqStateRead::from_native(state)?;
         let mut result = self.descriptors().to_vec();
-        for node in settings.nodes {
+        for index in 0..settings.node_count() {
+            let node = settings.node_at(index)?;
             for field in NodeParameter::ALL {
                 result.push(descriptor(node.id, field)?);
             }
@@ -63,7 +69,7 @@ impl NativeDeviceMetadata for EqDefinition {
             ParameterModulation as M, ParameterNormalization as N, ParameterSemantics,
             ParameterSmoothing as S, ParameterStepping as T,
         };
-        let settings = EqState::decode(state)?;
+        let settings = EqStateRead::from_native(state)?;
         let (normalization, stepping, automation, smoothing) = if id == MODE {
             (N::Discrete, T::Choice, E::Unsupported, S::None)
         } else if id == OUTPUT_GAIN {
@@ -118,12 +124,12 @@ impl NativeDeviceMetadata for EqDefinition {
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
-        let settings = EqState::decode(state)?;
+        let settings = EqStateRead::from_native(state)?;
         if id == MODE {
-            return Ok(ParameterValue::Choice(settings.mode as u32));
+            return Ok(ParameterValue::Choice(u32::from(settings.mode())));
         }
         if id == OUTPUT_GAIN {
-            return Ok(ParameterValue::Float(settings.output_gain));
+            return Ok(ParameterValue::Float(settings.output_gain()));
         }
         let (node, field) = NodeId::from_parameter(id)?;
         Ok(settings.node(node)?.value(field))
@@ -159,7 +165,7 @@ impl NativeDeviceMetadata for EqDefinition {
         state: &NativeDeviceState,
         id: ParameterId,
     ) -> Result<bool, DeviceContractError> {
-        let settings = EqState::decode(state)?;
+        let settings = EqStateRead::from_native(state)?;
         if id == MODE || id == OUTPUT_GAIN {
             return Ok(true);
         }

@@ -10,6 +10,7 @@ pub use hex_devices::compressor::{
 };
 /// Control-side EQ node editing and its opaque versioned state contract.
 pub use hex_devices::eq;
+pub use hex_devices::eq8::EqFrequencyResponse;
 pub use hex_devices::operator_state::algorithms::CATALOG as native_operator_algorithms;
 pub use hex_devices::operator_waveform::builtin_waveform_preview as native_operator_waveform_preview;
 pub use hex_devices::saturator::{
@@ -119,10 +120,10 @@ pub use shared_metadata::{SharedMetadata, SharedMetadataCacheIdentity};
 mod pcm_arc;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
-    NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
-    native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
-    native_device_parameter_for_class, native_device_view, native_device_view_for_class,
-    native_effect_frequency_response, sampler_parameters_on_control,
+    NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceRead,
+    NativeDeviceView, native_device_catalog, native_device_catalog_for_class,
+    native_device_descriptors_for_class, native_device_parameter_for_class, native_device_view,
+    native_device_view_for_class, native_effect_frequency_response, sampler_parameters_on_control,
 };
 
 mod gain_envelope;

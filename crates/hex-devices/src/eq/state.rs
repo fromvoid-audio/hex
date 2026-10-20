@@ -1,4 +1,6 @@
 use super::*;
+mod borrowed;
+pub use borrowed::{EqAutomationLaneRead, EqStateRead};
 
 /// Project-allocated monotonic identity. Parameter slots never depend on order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -314,29 +316,15 @@ impl EqState {
         }
         for (i, lane) in self.lanes.iter().enumerate() {
             let node = self.node(lane.node)?;
-            if lane.points.is_empty()
-                || lane.points.len() > 64
-                || self.lanes[..i]
+            validate_lane_values(
+                node,
+                lane.parameter,
+                lane.points.len(),
+                self.lanes[..i]
                     .iter()
-                    .any(|l| l.node == lane.node && l.parameter == lane.parameter)
-                || lane.points.windows(2).any(|p| p[0].beat >= p[1].beat)
-                || lane
-                    .points
-                    .iter()
-                    .any(|p| !p.normalized.is_finite() || !(0.0..=1.0).contains(&p.normalized))
-            {
-                return Err(DeviceContractError::MalformedState);
-            }
-            // Legacy S shelves preserve their law only while unautomated. Editing
-            // Q/shape converts them explicitly to the new Q law before automation.
-            if node.legacy_shelf
-                && matches!(
-                    lane.parameter,
-                    NodeParameter::Kind | NodeParameter::Gain | NodeParameter::Q
-                )
-            {
-                return Err(DeviceContractError::InvalidParameterValue);
-            }
+                    .any(|l| l.node == lane.node && l.parameter == lane.parameter),
+                lane.points.iter().copied().map(Ok),
+            )?;
         }
         Ok(())
     }
@@ -437,25 +425,7 @@ impl EqState {
         }
         let mut nodes = Vec::with_capacity(count);
         for _ in 0..count {
-            let id = NodeId::new(u64::from(r.u32()?))?;
-            let flags = r.byte()?;
-            if flags > 3 {
-                return Err(DeviceContractError::MalformedState);
-            }
-            let kind = NodeKind::from_u8(r.byte()?)?;
-            let slope = r.byte()?;
-            let bank = r.byte()?;
-            nodes.push(Node {
-                id,
-                enabled: flags & 1 != 0,
-                legacy_shelf: flags & 2 != 0,
-                kind,
-                slope,
-                bank,
-                frequency_hz: r.float()?,
-                gain_db: r.float()?,
-                q: r.float()?,
-            });
+            nodes.push(r.node()?);
         }
         let mut lanes = Vec::with_capacity(lane_count);
         let mut total = 0;
@@ -496,11 +466,30 @@ impl EqState {
         Ok(result)
     }
 }
+#[derive(Clone, Copy)]
 struct Reader<'a> {
     bytes: &'a [u8],
     offset: usize,
 }
 impl Reader<'_> {
+    fn node(&mut self) -> Result<Node, DeviceContractError> {
+        let id = NodeId::new(u64::from(self.u32()?))?;
+        let flags = self.byte()?;
+        if flags > 3 {
+            return Err(DeviceContractError::MalformedState);
+        }
+        Ok(Node {
+            id,
+            enabled: flags & 1 != 0,
+            legacy_shelf: flags & 2 != 0,
+            kind: NodeKind::from_u8(self.byte()?)?,
+            slope: self.byte()?,
+            bank: self.byte()?,
+            frequency_hz: self.float()?,
+            gain_db: self.float()?,
+            q: self.float()?,
+        })
+    }
     fn array<const N: usize>(&mut self) -> Result<[u8; N], DeviceContractError> {
         let end = self
             .offset
@@ -524,4 +513,37 @@ impl Reader<'_> {
     fn float(&mut self) -> Result<f32, DeviceContractError> {
         Ok(f32::from_le_bytes(self.array()?))
     }
+}
+
+// One semantic law shared by owned editing validation and borrowed UI decoding.
+fn validate_lane_values(
+    node: &Node,
+    parameter: NodeParameter,
+    count: usize,
+    duplicate: bool,
+    points: impl Iterator<Item = Result<AutomationPoint, DeviceContractError>>,
+) -> Result<(), DeviceContractError> {
+    if count == 0 || count > 64 || duplicate {
+        return Err(DeviceContractError::MalformedState);
+    }
+    let mut prior = None;
+    for point in points {
+        let point = point?;
+        if prior.is_some_and(|beat| beat >= point.beat)
+            || !point.normalized.is_finite()
+            || !(0.0..=1.0).contains(&point.normalized)
+        {
+            return Err(DeviceContractError::MalformedState);
+        }
+        prior = Some(point.beat);
+    }
+    if node.legacy_shelf
+        && matches!(
+            parameter,
+            NodeParameter::Kind | NodeParameter::Gain | NodeParameter::Q
+        )
+    {
+        return Err(DeviceContractError::InvalidParameterValue);
+    }
+    Ok(())
 }

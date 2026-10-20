@@ -186,6 +186,28 @@ fn sampler_control_scalars_follow_retained_read_after_current_state_replacement(
         .read_with(&new, |read| read.sampler_parameters(device))
         .unwrap()
         .unwrap();
+    for (stamp, expected) in [(&old, &old_values), (&new, &next_values)] {
+        family
+            .read_with(stamp, |read| {
+                let device_read = read.model().device(device).unwrap();
+                assert_eq!(
+                    device_read.class(),
+                    hex_engine::NativeDeviceClass::Instrument
+                );
+                let controls = device_read.controls().unwrap();
+                assert_eq!(controls.parameter_count(), 43);
+                for (index, expected) in expected.iter().enumerate() {
+                    let actual = controls.parameter_at(index).unwrap();
+                    assert_eq!(
+                        (actual.value, actual.enabled),
+                        (expected.value, expected.enabled)
+                    );
+                }
+                let from_track = read.model().track(track).unwrap().instrument().unwrap();
+                assert_eq!(from_track.controls().unwrap().type_id(), controls.type_id());
+            })
+            .unwrap();
+    }
     assert_eq!(
         next_values
             .iter()

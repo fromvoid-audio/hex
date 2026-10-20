@@ -60,6 +60,25 @@ pub fn native_instrument_registry()
     hex_lattice::NativeInstrumentRegistry::new(&BUILTIN_NATIVE_INSTRUMENTS)
 }
 
+/// Borrow an existing built-in effect's STATIC metadata. No registry/default,
+/// state migration, descriptors Vec or processor is constructed.
+pub fn native_effect_metadata(type_id: DeviceTypeId) -> Option<&'static dyn NativeDeviceMetadata> {
+    BUILTIN_NATIVE_DEVICES
+        .iter()
+        .find(|definition| definition.type_id() == type_id)
+        .map(|definition| *definition as &dyn NativeDeviceMetadata)
+}
+/// Borrow an existing analytic instrument's STATIC metadata. Resource Sampler
+/// metadata remains separate; this does not register or prepare that resource.
+pub fn native_instrument_metadata(
+    type_id: DeviceTypeId,
+) -> Option<&'static dyn NativeDeviceMetadata> {
+    BUILTIN_NATIVE_INSTRUMENTS
+        .iter()
+        .find(|definition| definition.type_id() == type_id)
+        .map(|definition| *definition as &dyn NativeDeviceMetadata)
+}
+
 /// Prepare the original sine configuration for callers that still use the
 /// narrow legacy MIDI-template helper. New runtime compilation resolves the
 /// track's generic instrument state through `native_instrument_registry`.

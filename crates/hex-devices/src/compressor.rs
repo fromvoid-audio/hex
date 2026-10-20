@@ -296,33 +296,42 @@ impl NativeDeviceMetadata for CompressorDefinition {
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut settings = decode(state)?;
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(value)?;
-        if id == parameter::DETECTOR {
-            let ParameterValue::Choice(value) = value else {
-                return Err(DeviceContractError::InvalidParameterValue);
-            };
-            settings.detector = Detector::from_choice(value)?;
-            return encode(settings);
-        }
-        let ParameterValue::Float(value) = value else {
-            return Err(DeviceContractError::InvalidParameterValue);
-        };
-        match id {
-            parameter::THRESHOLD => settings.threshold_db = value,
-            parameter::RATIO => settings.ratio = value,
-            parameter::ATTACK => settings.attack_ms = value,
-            parameter::RELEASE => settings.release_ms = value,
-            parameter::KNEE => settings.knee_db = value,
-            parameter::MAKEUP => settings.makeup_db = value,
-            parameter::DRY_WET => settings.dry_wet = value,
-            _ => return Err(DeviceContractError::UnknownParameter),
-        }
+        patch_settings(&mut settings, id, value)?;
         encode(settings)
     }
+}
+
+fn patch_settings(
+    settings: &mut CompressorSettings,
+    id: ParameterId,
+    value: ParameterValue,
+) -> Result<(), DeviceContractError> {
+    let descriptor = DESCRIPTORS
+        .iter()
+        .find(|descriptor| descriptor.id == id)
+        .ok_or(DeviceContractError::UnknownParameter)?;
+    descriptor.validate(value)?;
+    if id == parameter::DETECTOR {
+        let ParameterValue::Choice(value) = value else {
+            return Err(DeviceContractError::InvalidParameterValue);
+        };
+        settings.detector = Detector::from_choice(value)?;
+        return Ok(());
+    }
+    let ParameterValue::Float(value) = value else {
+        return Err(DeviceContractError::InvalidParameterValue);
+    };
+    match id {
+        parameter::THRESHOLD => settings.threshold_db = value,
+        parameter::RATIO => settings.ratio = value,
+        parameter::ATTACK => settings.attack_ms = value,
+        parameter::RELEASE => settings.release_ms = value,
+        parameter::KNEE => settings.knee_db = value,
+        parameter::MAKEUP => settings.makeup_db = value,
+        parameter::DRY_WET => settings.dry_wet = value,
+        _ => return Err(DeviceContractError::UnknownParameter),
+    }
+    Ok(())
 }
 
 impl NativeDeviceDefinition for CompressorDefinition {
@@ -613,7 +622,25 @@ pub struct CompressorTransferCurve {
 pub fn transfer_curve(
     state: &NativeDeviceState,
 ) -> Result<CompressorTransferCurve, DeviceContractError> {
-    let settings = decode(state)?;
+    transfer_curve_with_overrides(state, &[])
+}
+
+/// Borrowed current state plus a distinct set bounded by the actual descriptors.
+/// The shared canonical patch law updates only Copy settings; no state owner is born.
+pub fn transfer_curve_with_overrides(
+    state: &NativeDeviceState,
+    overrides: &[(ParameterId, ParameterValue)],
+) -> Result<CompressorTransferCurve, DeviceContractError> {
+    if overrides.len() > DESCRIPTORS.len() {
+        return Err(DeviceContractError::InvalidParameterValue);
+    }
+    let mut settings = decode(state)?;
+    for (index, &(id, value)) in overrides.iter().enumerate() {
+        if overrides[..index].iter().any(|(prior, _)| *prior == id) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        patch_settings(&mut settings, id, value)?;
+    }
     let points = std::array::from_fn(|index| {
         let x = index as f64 / 128.0;
         let input_db = -60.0 + x * 60.0;
