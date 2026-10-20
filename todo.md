@@ -6331,3 +6331,11 @@ known constructor, empty/populated eligibility, Engine custody and Audio default
 and feature suites pass; exact prior 51-failure required receipt is retained.
 Four further current-head Main review findings remain open; no merge/full-pass
 claim is made by these owning checks.
+
+PR484 renderer rollback continuation: actual owned-Main transaction RED corrected
+by including Main in the existing failure rollback. Warmed nonzero PCM/history,
+output zeroing, unchanged failure position and immediate inheritance/retry pass.
+Existing default export receiver passes source-end/final-sample controls for
+upstream-only, Main-only and combined latency without changing export production.
+Clock/tail finite ownership plan is returned in Pulse2882; no allocation writes
+or full required rerun while those current findings remain unresolved.

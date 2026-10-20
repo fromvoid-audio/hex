@@ -2474,6 +2474,7 @@ impl RendererRuntime {
                 .device_chains
                 .iter_mut()
                 .chain(self.return_chains.iter_mut())
+                .chain(std::iter::once(&mut self.main_chain))
             {
                 chain.rollback_block();
             }
@@ -3202,3 +3203,6 @@ pub use session_playback::{
     SessionPendingRouteStatus, SessionPlayback, SessionPlaybackCommand, SessionPlaybackError,
     SessionPlaybackOwner, SessionRouteStatus, SessionRouteTarget,
 };
+
+#[cfg(test)]
+mod main_chain_review_tests;

@@ -241,3 +241,19 @@ Actual constructor and storage/custody controls pass after removing the duplicat
 group; the prior full required run's 51 Audio failures remain retained. Further
 Main clock, failure rollback, export-end and outgoing-tail review findings remain
 open; these focused positives are not final merge qualification.
+
+### recoverable renderer failure and export receiver evidence
+
+Renderer failure rollback now includes the actual Main transaction under the
+same existing began-block fence as Track/Return. A real compensated conversion
+error after warming an owned Main delay previously prevented immediate history
+inheritance; the corrected control retains zero output/error position and retries
+with the same nonzero PCM as uninterrupted rendering, without a reset.
+
+The ordinary Service and CLI export adapters use the existing latency-discarding
+public renderers. Actual Track-only, Main-only and combined latency controls keep
+the source-length default range and retain exact first/final source samples in
+both prepared and legacy WAVs. This does not establish the distinct untrimmed
+controlled-range default or finite-tail policy; that scope remains under review.
+Main content-origin clocks and outgoing-tail preservation remain open. No final
+required-plan pass, merge or native acceptance is implied by these owning checks.

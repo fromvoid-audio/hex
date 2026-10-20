@@ -16,6 +16,11 @@ use std::{
 };
 #[test]
 fn compensated_export_skips_startup_and_publishes_exact_first_and_final_source_frames() {
+    for (track_delay, main_delay) in [(true, false), (false, true), (true, true)] {
+        assert_default_export_final_frame(track_delay, main_delay);
+    }
+}
+fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
     let mut editor = Editor::new(Project::new(48000).unwrap(), 8).unwrap();
     let Created::Imported { track, asset, .. } = editor
         .execute(Command::ImportPreparedAudioTrack {
@@ -37,13 +42,23 @@ fn compensated_export_skips_startup_and_publishes_exact_first_and_final_source_f
         })
         .unwrap();
     editor.execute(Command::RemoveInstrument { track }).unwrap();
-    editor
-        .execute(Command::InsertDevice {
-            track,
-            before: None,
-            state: Definition.default_state().unwrap(),
-        })
-        .unwrap();
+    if track_delay {
+        editor
+            .execute(Command::InsertDevice {
+                track,
+                before: None,
+                state: Definition.default_state().unwrap(),
+            })
+            .unwrap();
+    }
+    if main_delay {
+        editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state: Definition.default_state().unwrap(),
+            })
+            .unwrap();
+    }
     let mut samples = vec![[0.0; 2]; 17];
     samples[0] = [0.25, -0.5];
     samples[16] = [-0.75, 0.125];
@@ -63,7 +78,19 @@ fn compensated_export_skips_startup_and_publishes_exact_first_and_final_source_f
         .unwrap(),
     );
     let compiled = compile::project_with_registry(editor.project(), &media, &effects).unwrap();
-    assert_eq!(compiled.main_latency_frames(), 7);
+    assert_eq!(
+        compiled.main_latency_frames(),
+        7 * (u32::from(track_delay) + u32::from(main_delay))
+    );
+    let default_end = compiled.audible_end_frame().unwrap();
+    assert_eq!(
+        default_end, 17,
+        "source range excludes discarded causal startup"
+    );
+    assert_eq!(
+        prepared.arrangement().audible_end_frame(),
+        Some(default_end)
+    );
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let directory = std::env::temp_dir().join(format!(
         "hex-compensated-export-{}-{}",
@@ -73,8 +100,8 @@ fn compensated_export_skips_startup_and_publishes_exact_first_and_final_source_f
     std::fs::create_dir(&directory).unwrap();
     let legacy = directory.join("legacy.wav");
     let shared = directory.join("prepared.wav");
-    let a = hex_export::render_new(&legacy, &compiled, 0, 17).unwrap();
-    let b = hex_export::render_prepared_new(&shared, prepared, 0, 17).unwrap();
+    let a = hex_export::render_new(&legacy, &compiled, 0, default_end).unwrap();
+    let b = hex_export::render_prepared_new(&shared, prepared, 0, default_end).unwrap();
     assert_eq!((a.frames, b.frames), (17, 17));
     let a = std::fs::read(&legacy).unwrap();
     let b = std::fs::read(&shared).unwrap();
