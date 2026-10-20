@@ -2129,29 +2129,9 @@ impl SessionPlayback {
         let mut old_track_tail_output_active = [false; MAX_TRACKS];
         let mut tail_processor_count = 0_usize;
         let mut tail_runtime_bytes = 0_usize;
-        // One aggregate current+retained processor/payload allowance.
-        for chain in self
-            .device_chains
-            .iter()
-            .chain(&self.return_chains)
-            .chain(std::iter::once(&self.main_chain))
-        {
-            tail_processor_count = tail_processor_count
-                .checked_add(chain.stateful_count())
-                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
-            tail_runtime_bytes = tail_runtime_bytes
-                .checked_add(chain.declared_pair_bytes())
-                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
-        }
-        for runtime in self.mutable_instruments.iter().flatten() {
-            tail_processor_count = tail_processor_count
-                .checked_add(1)
-                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
-            tail_runtime_bytes = tail_runtime_bytes
-                .checked_add(runtime.declared_pair_bytes())
-                .ok_or(SessionPlaybackError::ReleaseBankFull)?;
-        }
-
+        // The existing retained-tail pool is shared by Track, Return and Main.
+        // Current processors keep their constructor/admission allowance; the
+        // complete current+retained owners are separately charged below.
         let mut suffix_entry_count = 0_usize;
         let sample_rate = self.revision.arrangement().sample_rate();
         let mut return_tail_plan = ReturnEffectTailPlan::preflight(

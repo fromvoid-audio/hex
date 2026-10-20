@@ -100,3 +100,104 @@ fn main_render_error_closes_transaction_for_immediate_handoff_and_retry() {
     assert_eq!(output, expected);
     assert_eq!(retry_position, oracle.position());
 }
+
+#[test]
+fn global_main_audition_cancellation_preserves_normal_pcm_after_restart() {
+    use hex_lattice::{ProcessorAuditionSelection, ProcessorChainOwner};
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
+    use hex_project::{Command, Created, Editor};
+    let mut edit = Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Imported { asset, .. } = edit
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "signal".into(),
+            path: "memory/audition.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 2048,
+            playback_frames: 2048,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let mut state = hex_devices::eq8::EQ8_DEFINITION.default_state().unwrap();
+    for parameter in [1, 41] {
+        state = crate::patch_native_device_parameter(
+            &state,
+            ParameterId::from_static(parameter),
+            ParameterValue::Bool(true),
+        )
+        .unwrap();
+    }
+    state = crate::patch_native_device_parameter(
+        &state,
+        hex_devices::eq8::parameter::enabled(0, 1),
+        ParameterValue::Bool(true),
+    )
+    .unwrap();
+    state = crate::patch_native_device_parameter(
+        &state,
+        hex_devices::eq8::parameter::gain(0, 1),
+        ParameterValue::Float(12.0),
+    )
+    .unwrap();
+    let Created::Device(device) = edit
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state,
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let media = std::collections::BTreeMap::from([(
+        asset,
+        Audio::new(
+            48_000,
+            (0..2048)
+                .map(|n| {
+                    let sample = (n as f32 * 0.33).sin() * 0.3 + (n as f32 * 0.01).sin() * 0.2;
+                    [sample, -sample * 0.5]
+                })
+                .collect(),
+        )
+        .unwrap(),
+    )]);
+    let revision = Arc::new(
+        PreparedRevision::prepare(edit.project(), &media, Arc::new(SineTable::new()), None)
+            .unwrap(),
+    );
+    let identity = PostNodeIdentity::new(
+        ProcessorChainOwner::Main,
+        device.value(),
+        DeviceTypeId::from_static("hex.eq8"),
+    );
+    let selection = ProcessorAuditionSelection { index: 0, lane: 0 };
+    let mut audition = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    let mut normal = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    for runtime in [&mut audition, &mut normal] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    assert!(audition.select_processor_audition(identity, Some(selection)));
+    let mut actual = [[0.0; 2]; 256];
+    let mut expected = actual;
+    audition.render(&mut actual).unwrap();
+    normal.render(&mut expected).unwrap();
+    assert!(
+        actual.iter().zip(&expected).any(|(a, b)| a != b),
+        "real audition must alter PCM"
+    );
+    assert!(audition.processor_audition_is_active(identity, selection));
+    // This is the production hard-boundary operation shared by Stop/shutdown
+    // and stale-target rejection, rather than a private chain reset.
+    audition.cancel_all_processor_auditions();
+    assert!(!audition.processor_audition_is_active(identity, selection));
+    for runtime in [&mut audition, &mut normal] {
+        runtime.apply(SessionPlaybackCommand::Stop).unwrap();
+        runtime.apply(SessionPlaybackCommand::Seek(0)).unwrap();
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    }
+    audition.render(&mut actual).unwrap();
+    normal.render(&mut expected).unwrap();
+    assert_eq!(actual, expected);
+}

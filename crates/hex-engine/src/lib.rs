@@ -2580,12 +2580,6 @@ impl RendererRuntime {
                 output.fill([0.0; 2]);
                 return Err(error);
             }
-            for chain in &mut self.device_chains {
-                chain.commit_block();
-            }
-            for chain in &mut self.return_chains {
-                chain.commit_block();
-            }
             crate::main_chain::process(
                 &mut self.main_chain,
                 output,
@@ -2597,6 +2591,12 @@ impl RendererRuntime {
                 &mut None,
             )
             .map_err(|_| Invalid("main effect runtime failed"))?;
+            for chain in &mut self.device_chains {
+                chain.commit_block();
+            }
+            for chain in &mut self.return_chains {
+                chain.commit_block();
+            }
             self.main_chain.commit_block();
             project.master_gain.apply(output);
             *position = next;
@@ -2715,9 +2715,6 @@ impl RendererRuntime {
                 }
             }
         }
-        for chain in &mut self.device_chains {
-            chain.commit_block();
-        }
         // Neutral projects retain their original hot path. Non-neutral master
         // gain is deliberately post-sum rather than folded into track gains.
         crate::main_chain::process(
@@ -2731,6 +2728,9 @@ impl RendererRuntime {
             &mut None,
         )
         .map_err(|_| Invalid("main effect runtime failed"))?;
+        for chain in &mut self.device_chains {
+            chain.commit_block();
+        }
         self.main_chain.commit_block();
         project.master_gain.apply(output);
         *position = next;

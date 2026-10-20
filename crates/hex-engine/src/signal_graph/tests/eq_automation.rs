@@ -3,7 +3,10 @@ use super::*;
 use hex_devices::eq::{AutomationLane, AutomationPoint, EqState, Node, NodeId, NodeParameter};
 
 fn eq_fixture(delay: u32, automated: bool, looping: bool) -> Fixture {
-    let mut f = fixture(&[&[delay]], 8_192);
+    eq_fixture_at_rate(delay, automated, looping, 48_000)
+}
+fn eq_fixture_at_rate(delay: u32, automated: bool, looping: bool, rate: u32) -> Fixture {
+    let mut f = fixture_at_rate(&[&[delay]], 8_192, rate);
     f.samples = (0..8_192)
         .map(|i| {
             let sample = (std::f32::consts::TAU * i as f32 / 48.0).sin() * 0.08;
@@ -11,7 +14,7 @@ fn eq_fixture(delay: u32, automated: bool, looping: bool) -> Fixture {
         })
         .collect();
     for audio in f.media.values_mut() {
-        *audio = Audio::new(48_000, f.samples.clone()).unwrap();
+        *audio = Audio::new(rate, f.samples.clone()).unwrap();
     }
     let node = NodeId::new(100).unwrap();
     let mut eq = EqState::default();
@@ -255,5 +258,80 @@ fn main_eq_automation_follows_upstream_and_each_serial_input_origin() {
                 "Main EQ input origin drift at {mismatch:?}; upstream={upstream}, serial={serial:?}, partition={partition}"
             );
         }
+    }
+}
+
+#[test]
+fn serial_main_origins_follow_actual_tempo_loop_seek_and_sample_rate() {
+    for rate in [44_100, 48_000] {
+        let mut reference = eq_fixture_at_rate(0, true, true, rate);
+        reference
+            .editor
+            .execute(Command::SetTempoPoint {
+                beat: hex_project::BeatTime::from_raw(1 << 28),
+                tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+            })
+            .unwrap();
+        let expected_revision = prepare_eq(&reference);
+        let mut f = eq_fixture_at_rate(7, true, true, rate);
+        f.editor
+            .execute(Command::SetTempoPoint {
+                beat: hex_project::BeatTime::from_raw(1 << 28),
+                tempo: hex_project::Tempo::new(90_000_000).unwrap(),
+            })
+            .unwrap();
+        let device = f
+            .editor
+            .project()
+            .track(f.tracks[0])
+            .unwrap()
+            .devices()
+            .last()
+            .unwrap();
+        let id = device.id();
+        let state = device.state().clone();
+        f.editor.execute(Command::RemoveDevice(id)).unwrap();
+        for delay in [3, 5] {
+            f.editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: super::state(delay).unwrap(),
+                })
+                .unwrap();
+        }
+        f.editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state,
+            })
+            .unwrap();
+        let revision = prepare_eq(&f);
+        let expected = session(Arc::clone(&expected_revision), 4096, 127);
+        for partition in [1, 257] {
+            let actual = session(Arc::clone(&revision), 4096 + 15, partition);
+            assert_eq!(&actual[..15], &[[0.0; 2]; 15]);
+            assert_eq!(
+                &actual[15..],
+                &expected,
+                "actual loop/tempo origin at rate {rate}"
+            );
+        }
+        let mut old = SessionPlayback::new(revision).unwrap();
+        let mut oracle = SessionPlayback::new(expected_revision).unwrap();
+        for runtime in [&mut old, &mut oracle] {
+            runtime.apply(SessionPlaybackCommand::Play).unwrap();
+            runtime.render(&mut [[0.0; 2]; 511]).unwrap();
+            runtime.apply(SessionPlaybackCommand::Seek(1024)).unwrap();
+        }
+        let mut actual = [[0.0; 2]; 272];
+        let mut expected = [[0.0; 2]; 257];
+        old.render(&mut actual).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(&actual[..15], &[[0.0; 2]; 15]);
+        assert_eq!(
+            &actual[15..],
+            &expected,
+            "seek resets one shared clock epoch"
+        );
     }
 }

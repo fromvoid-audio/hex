@@ -834,6 +834,7 @@ impl SessionPlayback {
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.cancel_all_processor_auditions();
         }
+        self.main_chain.cancel_all_processor_auditions();
         self.return_effect_tails.cancel_all_processor_auditions();
     }
 

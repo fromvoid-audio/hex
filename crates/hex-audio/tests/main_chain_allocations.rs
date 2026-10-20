@@ -110,3 +110,97 @@ fn main_history_publication_render_and_shutdown_have_no_callback_allocations_or_
     assert!(Arc::strong_count(&revision) >= 1);
     assert!(Arc::strong_count(&next) >= 1);
 }
+
+#[path = "../../hex-engine/examples/support/latency_fixture.rs"]
+mod latency_fixture;
+
+#[test]
+fn shrinking_main_clock_and_detached_tail_publication_allocate_and_drop_nothing() {
+    use hex_lattice::{NativeDeviceDefinition, NativeDeviceRegistry, NativeInstrumentRegistry};
+    use hex_lattice_contract::NativeDeviceMetadata;
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let Created::Imported { asset, .. } = editor
+        .execute(Command::ImportPreparedAudioTrack {
+            name: "causal".into(),
+            path: "memory/main-clock.wav".into(),
+            source_sample_rate: 48_000,
+            source_frames: 256,
+            playback_frames: 256,
+            conversion_version: hex_project::IDENTITY_CONVERSION,
+        })
+        .unwrap()
+    else {
+        panic!("import")
+    };
+    let definition = latency_fixture::Definition;
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let effects = NativeDeviceRegistry::new(&definitions).unwrap();
+    let instruments = NativeInstrumentRegistry::new(&[]).unwrap();
+    let Created::Device(device) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: definition.default_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("main")
+    };
+    let mut samples = vec![[0.0; 2]; 256];
+    samples[0] = [0.25, -0.5];
+    let media = BTreeMap::from([(asset, Audio::new(48_000, samples).unwrap())]);
+    let table = Arc::new(SineTable::new());
+    let prepare = |editor: &Editor| {
+        Arc::new(
+            PreparedRevision::prepare_with_test_registries(
+                editor.project(),
+                &media,
+                Arc::clone(&table),
+                None,
+                &effects,
+                &instruments,
+            )
+            .unwrap(),
+        )
+    };
+    let revision = prepare(&editor);
+    let mut oracle = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    oracle.apply(SessionPlaybackCommand::Play).unwrap();
+    oracle.render(&mut [[0.0; 2]; 4]).unwrap();
+    let (mut control, mut callback) = prepared::channel(48_000).unwrap();
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(&revision)).unwrap())
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    let mut warm = [[0.0; 2]; 4];
+    zero(measure(|| {
+        callback.begin_block();
+        callback.render(&mut warm).unwrap();
+    }));
+    editor.execute(Command::RemoveDevice(device)).unwrap();
+    let next = prepare(&editor);
+    control
+        .publish(Playback::try_from_prepared_with_session(Arc::clone(&next)).unwrap())
+        .unwrap();
+    let mut expected = [[0.0; 2]; 16];
+    oracle.render(&mut expected).unwrap();
+    assert_eq!(expected[3], [0.25, -0.5]);
+    let mut actual = [[0.0; 2]; 16];
+    zero(measure(|| {
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+    }));
+    assert_eq!(
+        actual, expected,
+        "actual callback retains the old larger clock and old pending PCM"
+    );
+    assert!(control.status.rejected_action().is_none());
+    assert!(control.reclaim() > 0);
+    control.request_shutdown();
+    zero(measure(|| {
+        callback.begin_block();
+        callback.render(&mut actual).unwrap();
+    }));
+    control.reclaim();
+    assert!(Arc::strong_count(&revision) >= 1);
+    assert!(Arc::strong_count(&next) >= 1);
+}

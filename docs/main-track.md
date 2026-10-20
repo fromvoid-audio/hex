@@ -253,9 +253,8 @@ with the same nonzero PCM as uninterrupted rendering, without a reset.
 The ordinary Service and CLI export adapters use the existing latency-discarding
 public renderers. Actual Track-only, Main-only and combined latency controls keep
 the source-length default range and retain exact first/final source samples in
-both prepared and legacy WAVs. This does not establish the distinct untrimmed
-controlled-range default or finite-tail policy; that scope remains under review.
-Main content-origin clocks and outgoing-tail preservation remain open. No final
+both prepared and legacy WAVs. The distinct untrimmed controlled-range default
+and finite-tail policy are specified in the continuation below. No final
 required-plan pass, merge or native acceptance is implied by these owning checks.
 
 
@@ -295,3 +294,16 @@ including the final source sample and unchanged explicit/pre-Main ranges.
 This is a source/component checkpoint, not a final required-plan pass, merge,
 whole performance parity claim or native acceptance. Failed intermediate and
 zero-selector receipts remain preserved separately.
+
+
+The final boundary continuation includes Main in Session-wide hard audition
+cancellation; a real EQ8 audition must first change PCM, then cancel and restart
+with normal PCM. Noncompensated Renderer paths now defer upstream commits until
+Main completes. Compensated Main processing stays inside the existing graph
+transaction closure, so an error rolls back both delay histories and all chains.
+The existing recoverable render-error/immediate-handoff/retry oracle remains.
+Admitted processors are infallible, so no synthetic fallible-processor result is
+reported as a production failure. The shared retained-tail byte allowance keeps
+its original exact boundary; current processors retain their separate existing
+constructor allowance, with complete current and retained storage checked by the
+whole-runtime budget. The original boundary tests and assertion bodies remain.
