@@ -8,6 +8,7 @@ static NEXT_FAMILY: AtomicU64 = AtomicU64::new(1);
 
 mod event;
 mod model_read;
+pub use model_read::ui_consumers;
 pub use model_read::{
     SnapshotClipRead, SnapshotDeviceRead, SnapshotProjectRead, SnapshotReturnRead,
     SnapshotTrackRead,
