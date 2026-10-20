@@ -7,22 +7,76 @@ use crate::{
     AudioStorageReservation, AudioStorageRole, OwnedAudioInputs, OwnedAudioSource,
 };
 
-struct ResidentDeviceAsset {
-    bank: AudioInputStorageAndObligations,
-    catalog: DeviceResourceCatalog,
+pub(super) struct ResidentDeviceAsset {
+    pub(super) bank: AudioInputStorageAndObligations,
+    pub(super) catalog: DeviceResourceCatalog,
     capacity_frames: u64,
+    #[cfg(feature = "instrument-test-support")]
+    _dropped: super::control_drop_probe::SourceDropped,
+}
+pub(super) struct NativeBankLoan {
+    pub(super) owner: crate::owned_shared::OwnedShared<ResidentDeviceAsset>,
+    handle: u64,
+}
+impl std::ops::Deref for NativeBankLoan {
+    type Target = ResidentDeviceAsset;
+    fn deref(&self) -> &Self::Target {
+        &self.owner
+    }
+}
+impl NativeBankLoan {
+    pub(super) fn capture_on_control(&self) -> Result<Self, AudioStorageError> {
+        Ok(Self {
+            owner: self.owner.clone_on_control(),
+            handle: crate::audio_only_inputs::handle()?,
+        })
+    }
+    pub(super) fn visit<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<u64, AudioStorageError> {
+        ledger.shared(
+            self.owner.arc(),
+            self.owner.parts(),
+            Owner::exclusive(self),
+            self.handle,
+            None,
+        )?;
+        if ledger.native_payload_once(self.owner.as_ref())? {
+            self.bank.visit_owned_storage(ledger)?;
+            ledger.vec(&self.catalog.sources)?;
+            return Ok(self.capacity_frames);
+        }
+        Ok(0)
+    }
 }
 /// One source namespace's native arm. IDs must remain disjoint from clip media.
 /// Boxes keep root addresses stable; their payloads and actual Vec capacity are
 /// included in the ledger, without duplicate inline-header charges.
 #[derive(Default)]
 pub struct ResidentDeviceAssets {
-    assets: Vec<(AssetId, Box<ResidentDeviceAsset>)>,
+    pub(super) assets: Vec<(AssetId, NativeBankLoan)>,
 }
-struct StagedDeviceAsset {
-    destination: Vec<(AssetId, Box<ResidentDeviceAsset>)>,
-    asset: (AssetId, Box<ResidentDeviceAsset>),
+pub(super) struct StagedDeviceAsset {
+    pub(super) destination: Vec<(AssetId, NativeBankLoan)>,
+    pub(super) asset: (AssetId, NativeBankLoan),
     summary: AudioRootStorageSummary,
+}
+/// Lifetime-bound view of the actual uncommitted owner/container. No owner
+/// projection or clone is available, and it cannot outlive the transaction.
+pub struct StagedNativeAssetView<'a> {
+    pub(super) store: &'a ResidentDeviceAssets,
+    pub(super) staged: &'a StagedDeviceAsset,
+}
+impl StagedNativeAssetView<'_> {
+    pub fn inspect(
+        &self,
+        retained: &super::ControlSamplerPhase<'_>,
+        construction: &super::ControlSamplerPhase<'_>,
+        reservation: AudioStorageLedgerReservation,
+    ) -> Result<super::ControlSamplerInventory, ResourcePreparationError> {
+        super::admission::inspect_staged_union(retained, construction, reservation, self)
+    }
 }
 impl ResidentDeviceAssets {
     pub fn contains(&self, asset: AssetId) -> bool {
@@ -37,6 +91,31 @@ impl ResidentDeviceAssets {
                 .ok_or(AudioStorageError::Overflow)
         })
     }
+    /// Authored settings and exact canonical source reference only. This does
+    /// not prepare a runtime or grant publication/ownership capability.
+    pub fn sampler_state_on_control(
+        &self,
+        asset: AssetId,
+    ) -> Result<NativeDeviceState, ResourcePreparationError> {
+        let source = self
+            .source(asset)
+            .ok_or(ResourcePreparationError::InvalidSource)?;
+        let frames = source
+            .resident_frames()
+            .ok_or(ResourcePreparationError::InvalidSource)?
+            .len();
+        hex_devices::sampler::state::SamplerState::for_source_frames(frames)
+            .and_then(|s| s.to_native())
+            .and_then(|s| {
+                s.with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+                    slot: hex_lattice_contract::DeviceAssetSlot::new(
+                        hex_devices::sampler::state::SOURCE_SLOT,
+                    )?,
+                    asset: hex_lattice_contract::DeviceAssetKey::new(asset.value())?,
+                }])
+            })
+            .map_err(|_| ResourcePreparationError::InvalidScope)
+    }
     /// Borrow actual PCM; no source owner or alias escapes.
     pub fn source(&self, asset: AssetId) -> Option<crate::OwnedAudioSourceView<'_>> {
         let (_, a) = self.assets.iter().find(|(id, _)| *id == asset)?;
@@ -44,8 +123,8 @@ impl ResidentDeviceAssets {
     }
     fn inventory<'a>(
         &'a self,
-        candidate: Option<&'a ResidentDeviceAsset>,
-        destination: Option<&'a Vec<(AssetId, Box<ResidentDeviceAsset>)>>,
+        candidate: Option<&'a NativeBankLoan>,
+        destination: Option<&'a Vec<(AssetId, NativeBankLoan)>>,
         legacy_pcm_bytes: usize,
         reservation: AudioStorageLedgerReservation,
     ) -> Result<AudioRootStorageSummary, AudioStorageError> {
@@ -59,7 +138,7 @@ impl ResidentDeviceAssets {
                 ledger.growth(
                     self.assets
                         .capacity()
-                        .checked_mul(std::mem::size_of::<(AssetId, Box<ResidentDeviceAsset>)>())
+                        .checked_mul(std::mem::size_of::<(AssetId, NativeBankLoan)>())
                         .and_then(|n| n.checked_add(std::mem::size_of_val(destination)))
                         .ok_or(AudioStorageError::Overflow)?,
                 )?;
@@ -73,10 +152,8 @@ impl ResidentDeviceAssets {
                 Location("legacy-pcm-allowance", 0),
                 legacy_pcm_bytes,
             )?;
-            for asset in self.assets.iter().map(|(_, a)| a.as_ref()).chain(candidate) {
-                ledger.root(asset, AudioStorageRole::Current)?;
-                asset.bank.visit_owned_storage(ledger)?;
-                ledger.vec(&asset.catalog.sources)?;
+            for asset in self.assets.iter().map(|(_, a)| a).chain(candidate) {
+                asset.visit(ledger)?;
             }
             Ok(())
         })?;
@@ -154,13 +231,22 @@ impl ResidentDeviceAssets {
             },
             cancel,
         )?;
+        let owner = crate::owned_shared::OwnedShared::new_owned(ResidentDeviceAsset {
+            bank,
+            catalog,
+            capacity_frames,
+            #[cfg(feature = "instrument-test-support")]
+            _dropped: super::control_drop_probe::SourceDropped::new(),
+        });
+        if owner.parts().is_none() {
+            return Err(AudioStorageError::UnsupportedConstructor.into());
+        }
         let asset = (
             asset,
-            Box::new(ResidentDeviceAsset {
-                bank,
-                catalog,
-                capacity_frames,
-            }),
+            NativeBankLoan {
+                owner,
+                handle: crate::audio_only_inputs::handle()?,
+            },
         );
         let mut destination = Vec::new();
         destination
@@ -196,6 +282,24 @@ impl ResidentDeviceAssets {
         cancel: &AtomicBool,
         finish: impl FnOnce() -> Result<T, E>,
     ) -> Result<(T, AudioRootStorageSummary), E> {
+        self.insert_checked_on_control(
+            source,
+            legacy_pcm_bytes,
+            reservation,
+            max_scan_frames,
+            cancel,
+            |_| finish(),
+        )
+    }
+    pub fn insert_checked_on_control<T, E: From<ResourcePreparationError>>(
+        &mut self,
+        source: (AssetId, OwnedAudioSource),
+        legacy_pcm_bytes: usize,
+        reservation: AudioStorageLedgerReservation,
+        max_scan_frames: u64,
+        cancel: &AtomicBool,
+        finish: impl FnOnce(&StagedNativeAssetView<'_>) -> Result<T, E>,
+    ) -> Result<(T, AudioRootStorageSummary), E> {
         let mut staged = self
             .stage_on_control(
                 source.0,
@@ -207,7 +311,10 @@ impl ResidentDeviceAssets {
             )
             .map_err(E::from)?;
         cancellation(cancel).map_err(E::from)?;
-        let result = finish()?;
+        let result = finish(&StagedNativeAssetView {
+            store: self,
+            staged: &staged,
+        })?;
         staged.destination.append(&mut self.assets);
         staged.destination.push(staged.asset);
         self.assets = staged.destination;

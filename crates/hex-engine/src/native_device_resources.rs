@@ -10,10 +10,18 @@ use hex_project::AssetId;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod admission;
 mod ingress;
 mod resident;
+mod snapshot;
+pub use admission::{
+    ControlSamplerInventory, ControlSamplerOutbound, ControlSamplerPhase, ControlSamplerSelection,
+    inspect_control_sampler_union,
+};
 pub use ingress::ResidentAudioIngressRefusal;
-pub use resident::ResidentDeviceAssets;
+pub use resident::{ResidentDeviceAssets, StagedNativeAssetView};
+pub(crate) use snapshot::prepare_instrument;
+pub use snapshot::{ControlSamplerSources, DispatchedSourceObligation};
 
 /// Expected original decoded source facts, captured by the media owner on control.
 #[derive(Clone, Copy, Debug)]
@@ -260,3 +268,15 @@ impl DeviceResources for ScopedDeviceResources<'_> {
 
 #[cfg(test)]
 mod tests;
+
+/// Metadata classification for containment/refusal only; type identity alone
+/// never grants source preparation, native admission or a musical runtime.
+pub fn requires_private_sampler_sources(project: &hex_project::Project) -> bool {
+    project.tracks().iter().any(|track| {
+        track
+            .instrument()
+            .is_some_and(|device| device.state().type_id() == hex_devices::sampler::state::TYPE_ID)
+    })
+}
+#[cfg(feature = "instrument-test-support")]
+pub mod control_drop_probe;

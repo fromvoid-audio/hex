@@ -737,9 +737,19 @@ owner and atomic canonical metadata commit. Ordinary clip reuse refuses until
 an accounted derivative exists. Focused worker/PCM/budget/cancellation/ID-failure
 checks are recorded with PR546; required exact merge-plan evidence remains
 external. This is source admission, not a usable app sampler or native release.
-Next functional slice is sampler assignment → normal prepared revision → actual
-export worker and independent file PCM, retaining the same reservation domain.
-See [sampler contract](docs/sampler.md) for measured scope and exclusions.
+Canonical assignment and actual export-worker integration are implemented by the
+next focused candidate below. See [sampler contract](docs/sampler.md) for scope.
+
+## sampler canonical private export — #2963 / PR547
+
+The explicit-reservation service can assign an admitted original source to a
+canonical sampler and export frame-zero Main using normal prepared revision and
+SessionPlayback processing. Real mono/stereo file PCM, New/Open captured-source
+custody, finite union refusal and worker teardown have focused headless checks.
+Source owners remain in a private sidecar, outside public playback/native events.
+Required exact merge qualification is recorded externally; this entry does not
+establish native playback, UI controls, history/reopen, listening or optimized
+app delivery. Those remain the next functional dependencies toward the MVP.
 
 ## Sampler / Simpler request — #2679 / PR296, 17 october 2026
 

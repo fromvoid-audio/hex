@@ -23,7 +23,9 @@ pub use bounce::render_bounce_new;
 mod publication;
 mod stems;
 pub use controlled::{ExportControl, ExportProgress, ExportSignal, render_prepared_controlled};
-pub use controlled::{controlled_frame_count, render_prepared_with_policy};
+pub use controlled::{
+    controlled_frame_count, render_control_sampler_with_policy, render_prepared_with_policy,
+};
 pub use publication::{OverwriteConsent, Publication};
 pub use stems::{Stem, render_stems_new};
 

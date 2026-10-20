@@ -22,6 +22,15 @@ impl Session {
         directory: &Path,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
+        self.bounce_midi_clip_with_admission(clip, directory, previous, |_, _| Ok(()))
+    }
+    pub(crate) fn bounce_midi_clip_with_admission(
+        &mut self,
+        clip: ClipId,
+        directory: &Path,
+        previous: Option<&hex_engine::PreparedRevision>,
+        storage: impl FnOnce(&Session, &PreparedImport) -> Result<(), SessionError>,
+    ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), String> {
         if self.audio_mode != DocumentAudioMode::Resident {
             return Err("clip bounce is unavailable for verified streaming".into());
         }
@@ -76,6 +85,7 @@ impl Session {
             )
             .map_err(|e| e.to_string())?;
             let prepared = PreparedImport::new(decoded).map_err(|e| e.to_string())?;
+            storage(self, &prepared).map_err(|e| e.to_string())?;
             self.import_prepared_audio_clip_revision_mode(
                 prepared,
                 track,

@@ -285,8 +285,8 @@ cancellation before fixed source moves and the infallible canonical history
 commit. No callback owner is published. File decode, staging failure drops and
 Session teardown remain on the `hex-session` control worker by ownership and
 control-flow inspection; these checks do not instrument arbitrary destructors.
-New/Open keep their existing constructor policy; opt-in admission is currently
-for the explicitly constructed Session, without native source reopen support.
+At PR546, New/Open kept their existing constructor policy. PR547 below extends
+the explicit service reservation across replacement, without native source reopen.
 
 Focused tests cover the real worker result, literal decoded PCM/Vec identity,
 source metadata at a different project rate, exact/one-byte-under retained and
@@ -297,3 +297,79 @@ PreparedRevision and the actual export worker with an independent WAV PCM oracle
 extending this same reservation through captured export and Session custody.
 Native publication/checkpoints, app playback, native controls/history/reopen,
 full native qualification and optimized delivery remain outstanding.
+
+
+## private canonical assignment and offline export — pulse2963 / PR547
+
+`Service::with_native_reservation` now accepts `AssignSampler { track, asset }`
+for an admitted original-rate source. It creates or replaces canonical loaded
+sampler state and compiles a normal `PreparedRevision`. Its sampler factories
+contain scalar configuration only. A private service sidecar owns the exact
+constructor-paired source bank, catalog and per-device scope. Configuration,
+rate, effective tuning, source references and host gains must match that scope;
+the generic lattice registry remains asset-free.
+
+The existing export worker and `SessionPlayback` render frame-zero Main through
+that borrowed scope into the ordinary controlled WAV publication path. No second
+sampler scheduler or DSP renderer is introduced. Public Session preparation
+callbacks, canonical audio sources and `Event.playback` do not receive this
+source-bearing snapshot. Generic runtime constructors, native storage admission,
+mutable checkpoints and nonzero seeks refuse the private-source class. The
+service reports offline export support and unavailable native playback. History,
+save/reopen reconstruction, preview, recording and runtime gestures still refuse.
+CapturedMix/stems and nonzero-range export remain unsupported for this slice.
+
+The explicit resident reservation is a service capability carried into New/Open
+before admitted construction. Streaming documents refuse sampler operations.
+Opening loaded sampler metadata refuses before ordinary media decoding; it does
+not silently turn the original source into a clip derivative. A captured old
+export remains independent of the replacement document.
+
+Admission visits the actual union of current/staged native stores, sidecars,
+scalar factories, current and captured-export legacy PCM and the existing checked
+runtime construction allowance. Shared native DATA is charged once while each
+physical source wrapper/handle is charged separately. A sealed non-cloneable
+outbound obligation accompanies exactly one fresh job capture. Before dispatch,
+inspection visits the actual job owner; after dispatch, it visits the retained
+anchor and charges the absent job field using its constructor-paired identity.
+Actual owner plus token, duplicate token and wrong snapshot/job bindings refuse.
+The token does not traverse or clone source DATA. It and its fixed lane container
+stay charged until matching post-drop terminal or confirmed worker join; a
+changed Arc count, cancellation, UI poll, disconnected notification or timeout
+cannot discharge it. Generic ledger handle checks are unchanged.
+
+Private completion follows destruction of the actual renderer/runtime/job source.
+The Session worker drains it while idle, before admissions and during public-event
+backpressure. Failed queue transfer destroys the returned job before the anchor.
+Service Drop sets shutdown and remains nonjoining; the control worker closes the
+export input and joins the exporter while retaining its anchor. UI-result
+backpressure observes shutdown so it cannot deadlock that join.
+
+This domain starts at decoded-source admission. Original encoded buffers, decoder
+scratch/pre-admission decode peak, ordinary project/history/view/waveform and nonowning selection
+bookkeeping, allocator-private overhead, stack and total process RSS remain
+outside it. The existing mutable runtime/preroll 32MiB limit is independent and
+unchanged; immutable source PCM does not inflate that private-state limit.
+
+Focused evidence includes real mono and stereo 8kHz source import into a 16kHz
+project, canonical assignment and literal half-step PCM16 WAV comparison;
+actual scope survival and no public graph source ownership; token conservation
+and duplicate/foreign refusal; exact/one-byte-under retained and construction
+limits; failed queue transfer; a held export across New, ordinary media Open and
+new source assignment; cancellation and create-new file failure followed by a
+successful export. A feature-only final-field observer retains no source owner
+or weak alias and confirms source bank/catalog teardown on the control thread,
+without UI export polling, including prompt Service Drop during blocked export.
+These are headless control/export checks, not native UI, device deadlines,
+listening, full release qualification or optimized delivery. Exact required
+merge-run evidence belongs to the canonical PR receipt.
+
+
+Ordinary track/clip/Session import, whole prepared batches and MIDI bounce also
+check the actual staged original/derivative PCM against current plus captured
+export custody before their existing atomic commit. No reservation ceilings are
+mutated and no summary totals are subtracted. Legacy dedup borrows an iterator;
+it creates no owning PCM handle or temporary dedup heap buffer. The regression
+reproduces a 4-frame captured export plus a 4-frame original and 8-frame
+converted import incorrectly fitting a 15-frame ceiling. Exact/one-under track,
+clip and whole-batch cases now preserve canonical/media/history state on refusal.

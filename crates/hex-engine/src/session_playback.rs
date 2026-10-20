@@ -856,7 +856,62 @@ impl SessionPlayback {
         Self::new_with_policy(revision, true)
     }
 
+    /// Private-control export capability: the graph contains only scalar sampler
+    /// coefficients. Every block must borrow this exact sealed source sidecar.
+    pub fn new_control_sampler_export(
+        revision: Arc<PreparedRevision>,
+        sources: &crate::native_device_resources::ControlSamplerSources,
+    ) -> Result<Self, SessionPlaybackError> {
+        if revision.resource_scope != Some(sources.id()) {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler export source scope differs",
+            ));
+        }
+        let allowance = Self::control_sampler_export_runtime_allowance(&revision, sources)?;
+        let playback = Self::new_with_policy_scoped(revision, true)?;
+        if playback
+            .accounted_runtime_storage_bytes()
+            .is_none_or(|n| n > allowance)
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler export runtime exceeds its checked allowance",
+            ));
+        }
+        Ok(playback)
+    }
+    pub fn control_sampler_export_runtime_allowance(
+        revision: &PreparedRevision,
+        sources: &crate::native_device_resources::ControlSamplerSources,
+    ) -> Result<usize, SessionPlaybackError> {
+        if revision.resource_scope != Some(sources.id()) {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler export source scope differs",
+            ));
+        }
+        Self::linear_export_runtime_allowance(revision)
+    }
+    pub fn linear_export_runtime_allowance(
+        revision: &PreparedRevision,
+    ) -> Result<usize, SessionPlaybackError> {
+        let bytes = preroll::arrangement_runtime_storage_preflight_bytes(revision)
+            .filter(|n| *n <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+            .ok_or(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler export runtime exceeds its independent runtime limit",
+            ))?;
+        Ok(bytes)
+    }
     fn new_with_policy(
+        revision: Arc<PreparedRevision>,
+        linear_arrangement_export: bool,
+    ) -> Result<Self, SessionPlaybackError> {
+        if revision.requires_control_sampler_sources() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler requires private offline export resources",
+            ));
+        }
+        Self::new_with_policy_scoped(revision, linear_arrangement_export)
+    }
+    fn new_with_policy_scoped(
         revision: Arc<PreparedRevision>,
         linear_arrangement_export: bool,
     ) -> Result<Self, SessionPlaybackError> {

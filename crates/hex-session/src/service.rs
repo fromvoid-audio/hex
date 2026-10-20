@@ -22,9 +22,12 @@ mod audio_batch_tests;
 mod audio_sink;
 mod canonical_audio_source;
 mod comparison_audio;
+mod export_lane;
+pub(crate) mod sampler_export;
 pub use audio_sink::WorkerAudioSink;
 use audio_sink::WorkerEvents;
 pub use comparison_audio::ComparisonAudioBinding;
+use export_lane::ExportLane;
 mod device_comparison;
 mod effect_bus;
 #[cfg(test)]
@@ -392,6 +395,11 @@ pub enum Request {
         path: PathBuf,
         cancel: Arc<AtomicBool>,
     },
+    /// Canonical assignment for private frame-zero offline sampler export.
+    AssignSampler {
+        track: hex_project::TrackId,
+        asset: hex_project::AssetId,
+    },
     ImportAudioBatch {
         paths: Vec<PathBuf>,
         destination: AudioBatchDestination,
@@ -483,6 +491,7 @@ impl Request {
         matches!(
             self,
             Request::Undo
+                | Request::AssignSampler { .. }
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
@@ -576,8 +585,13 @@ impl std::error::Error for ServiceError {
     }
 }
 
+#[cfg(test)]
+type ExportTestHook = Arc<std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>>;
+
 /// UI-owned endpoints. Dropping both channels detaches the worker without joining it.
 pub struct Service {
+    #[cfg(test)]
+    export_test_hook: ExportTestHook,
     requests: SyncSender<Request>,
     events: Receiver<Event>,
     export_events: Receiver<ExportEvent>,
@@ -585,7 +599,6 @@ pub struct Service {
     shutdown: Arc<AtomicBool>,
     arrangement_seek: Option<ArrangementSeekWorker>,
     _worker: JoinHandle<()>,
-    _export_worker: JoinHandle<()>,
 }
 
 impl Drop for Service {
@@ -599,6 +612,8 @@ type Exporter = Arc<
 >;
 
 struct ExportJob {
+    job_id: u64,
+    sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
     revision: u64,
     path: PathBuf,
     prepared: Arc<PreparedRevision>,
@@ -776,11 +791,27 @@ impl Service {
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
         let actor_export_events = export_event_tx.clone();
+        let (finished_tx, finished_rx) = mpsc::sync_channel(1);
         let export_busy = Arc::new(AtomicBool::new(false));
+        #[cfg(test)]
+        let export_test_hook = Arc::new(std::sync::Mutex::new(None));
+        #[cfg(test)]
+        let worker_test_hook = Arc::clone(&export_test_hook);
+        let export_shutdown = Arc::clone(&shutdown);
         let export_worker = thread::Builder::new()
             .name("hex-export".into())
             .stack_size(8 * 1024 * 1024)
-            .spawn(move || run_export_worker(export_work_rx, export_event_tx, exporter))
+            .spawn(move || {
+                run_export_worker(
+                    export_work_rx,
+                    export_event_tx,
+                    exporter,
+                    finished_tx,
+                    export_shutdown,
+                    #[cfg(test)]
+                    worker_test_hook,
+                )
+            })
             .map_err(ServiceError::Worker)?;
         let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
@@ -809,13 +840,15 @@ impl Service {
                     history_capacity,
                     request_rx,
                     events,
-                    export_work_tx,
+                    ExportLane::new(export_work_tx, finished_rx, export_worker),
                     actor_export_events,
                     recovery,
                 )
             })
             .map_err(ServiceError::Worker)?;
         Ok(Self {
+            #[cfg(test)]
+            export_test_hook,
             requests: request_tx,
             events: event_rx,
             export_events: export_event_rx,
@@ -823,7 +856,6 @@ impl Service {
             shutdown,
             arrangement_seek: Some(arrangement_seek),
             _worker: worker,
-            _export_worker: export_worker,
         })
     }
 
@@ -972,15 +1004,26 @@ fn view_state_bound(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
-        comparison_audio: binding.as_ref().and_then(|(_, proof)| proof.clone()),
-        canonical_audio_source: binding.map(|(source, _)| source).or_else(|| {
-            Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
-                &project,
-                project_generation,
-                revision,
-                session,
-            )))
-        }),
+        comparison_audio: if hex_engine::native_device_resources::requires_private_sampler_sources(
+            &project,
+        ) {
+            None
+        } else {
+            binding.as_ref().and_then(|(_, proof)| proof.clone())
+        },
+        canonical_audio_source:
+            if hex_engine::native_device_resources::requires_private_sampler_sources(&project) {
+                None
+            } else {
+                binding.map(|(source, _)| source).or_else(|| {
+                    Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
+                        &project,
+                        project_generation,
+                        revision,
+                        session,
+                    )))
+                })
+            },
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),
@@ -1263,7 +1306,7 @@ fn run_worker(
     history_capacity: usize,
     requests: Receiver<Request>,
     mut events: WorkerEvents,
-    export_work: SyncSender<ExportWork>,
+    mut export_lane: ExportLane,
     export_events: SyncSender<ExportEvent>,
     recovery: Option<PathBuf>,
 ) {
@@ -1302,9 +1345,19 @@ fn run_worker(
         None;
     let mut live_expression: Option<Arc<hex_engine::live_expression::LiveExpressionInput>> = None;
     let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
+    let mut current_sources: Option<hex_engine::native_device_resources::ControlSamplerSources> =
+        None;
     let mut device_gesture = GestureMachine::default();
     let mut tuning_gesture = TuningGestureMachine::default();
-    let mut initial = match compile(&session, None) {
+    let initial_compile = if session.native_reservation.is_some() {
+        session
+            .prepare_service_snapshot(session.project(), sampler_export::Admission::default())
+            .map(|s| s.prepared)
+            .map_err(|e| e.to_string())
+    } else {
+        compile(&session, None)
+    };
+    let mut initial = match initial_compile {
         Ok(prepared) => {
             midi_preview = Arc::clone(prepared.midi_preview());
             state = view_state(
@@ -1380,11 +1433,15 @@ fn run_worker(
     if audio_error.is_some() && initial.error.is_none() {
         initial.error = audio_error;
     }
-    if !events.send(initial) {
+    if !events.send_with_control_poll(initial, || export_lane.poll()) {
         return;
     }
 
-    while let Some(request) = events.next_request(&requests) {
+    while let Some(request) = events.next_request_with_control_poll(
+        &requests,
+        session.native_reservation.is_some(),
+        || export_lane.poll(),
+    ) {
         let mut computer_keyboard_complete = None;
         let mut tuning_audition_complete = None;
         let mut live_expression_complete = None;
@@ -1396,6 +1453,9 @@ fn run_worker(
         let mut save_complete = false;
         let mut project_replaced = false;
         let mut replacement_revision = None;
+        let mut replacement_sources: Option<
+            Option<hex_engine::native_device_resources::ControlSamplerSources>,
+        > = None;
         let mut comparison_changed = false;
         let mut created = None;
         let revision_before_request = revision;
@@ -1579,7 +1639,37 @@ fn run_worker(
             }
             _ => None,
         };
-        if let Some(reason) = barrier_failure {
+        let private_sampler = hex_engine::native_device_resources::requires_private_sampler_sources(
+            session.project(),
+        );
+        let sampler_refusal = private_sampler
+            && !matches!(
+                &request,
+                Request::AssignSampler { .. }
+                    | Request::Edit(_)
+                    | Request::ImportDeviceAsset { .. }
+                    | Request::Export(_)
+                    | Request::ExportRange { .. }
+                    | Request::NewWithAudioMode { .. }
+                    | Request::Open(_)
+                    | Request::OpenWith { .. }
+                    | Request::OpenWithAudioMode { .. }
+            );
+        if sampler_refusal {
+            error=Some("sampler supports private offline export; native playback, history, save and runtime tools are unavailable".into());
+            if let Request::PrepareComputerKeyboard { request_id, .. } = &request {
+                computer_keyboard_complete = Some(*request_id);
+            }
+            if let Request::RestorePlayback { generation } = &request {
+                restore_complete = Some(*generation);
+            }
+            if matches!(&request, Request::RestoreStoppedPlayback) {
+                stopped_playback_restore_complete = true;
+            }
+            if matches!(&request, Request::SaveNew(_) | Request::SaveCurrent) {
+                save_complete = true;
+            }
+        } else if let Some(reason) = barrier_failure {
             open_complete = request.is_project_open();
             if let Request::TuningLibrary { operation_id, .. } = &request {
                 tuning_library = Some(TuningLibraryResult {
@@ -1951,10 +2041,11 @@ fn run_worker(
                             Arc::clone(&control),
                         )
                         .and_then(|job| {
-                            job.run(
+                            job.run_with_storage_admission(
                                 &mut session,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                                 || actual,
+                                |session, prepared| export_lane.admission(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) })).check_legacy_stage(session, prepared),
                             )
                         })
                     };
@@ -1982,6 +2073,77 @@ fn run_worker(
                         }
                     }
                 }
+                Request::AssignSampler { track, asset } => {
+                    let current = compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p.as_ref()),
+                        }
+                    });
+                    let admission = export_lane.admission(current);
+                    let assignment = if session.native_reservation.is_none() {
+                        Err(SessionError::Invalid(
+                            "sampler requires an explicit resident reservation",
+                        ))
+                    } else {
+                        session
+                            .native_assets
+                            .sampler_state_on_control(asset)
+                            .map_err(SessionError::from)
+                    };
+                    let result = assignment.and_then(|state| {
+                        let target = session
+                            .project()
+                            .track(track)
+                            .ok_or(SessionError::Invalid("sampler track no longer exists"))?;
+                        let command = target.instrument().map_or(
+                            Command::InsertInstrument {
+                                track,
+                                state: state.clone(),
+                            },
+                            |device| Command::ReplaceDeviceState {
+                                device: device.id(),
+                                state,
+                            },
+                        );
+                        session.command_service_snapshot(command, admission)
+                    });
+                    match result {
+                        Ok((new, snapshot)) => {
+                            created = Some(new);
+                            unsaved = true;
+                            replacement_revision = Some(snapshot.prepared);
+                            replacement_sources = Some(snapshot.sources);
+                            status = Some(
+                                "sampler offline export supported · native playback unavailable"
+                                    .into(),
+                            );
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
+                Request::Edit(command) if private_sampler => {
+                    let current = compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p.as_ref()),
+                        }
+                    });
+                    match session.command_service_snapshot(command, export_lane.admission(current))
+                    {
+                        Ok((new, snapshot)) => {
+                            created = Some(new);
+                            unsaved = true;
+                            replacement_revision = Some(snapshot.prepared);
+                            replacement_sources = Some(snapshot.sources);
+                            status = Some(
+                                "sampler offline export supported · native playback unavailable"
+                                    .into(),
+                            );
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
                 Request::ImportDeviceAsset { path, cancel } => {
                     let result = if cancel.load(Ordering::Relaxed) {
                         Err("native source import canceled".to_owned())
@@ -1991,23 +2153,27 @@ fn run_worker(
                                 .to_owned(),
                         )
                     } else {
+                        let current = compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p.as_ref()),
+                            }
+                        });
+                        let admission = export_lane.admission(current);
                         decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
                             .map_err(|reason| reason.to_string())
                             .and_then(|decoded| {
                                 session
-                                    .import_device_asset(
-                                        decoded,
-                                        &cancel,
-                                        compiled.as_ref().map(|(_, p)| p.as_ref()),
-                                    )
+                                    .import_service_snapshot(decoded, &cancel, admission)
                                     .map_err(|reason| reason.to_string())
                             })
                     };
                     match result {
-                        Ok((asset, prepared)) => {
+                        Ok((asset, snapshot)) => {
                             created = Some(asset);
                             unsaved = true;
-                            replacement_revision = Some(prepared);
+                            replacement_revision = Some(snapshot.prepared);
+                            replacement_sources = Some(snapshot.sources);
                             status = Some("native device source imported".into());
                         }
                         Err(reason) => error = Some(reason),
@@ -2017,6 +2183,12 @@ fn run_worker(
                     &mut session,
                     path,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    export_lane.admission(compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p),
+                        }
+                    })),
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -2032,6 +2204,12 @@ fn run_worker(
                     start,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                     false,
+                    export_lane.admission(compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p),
+                        }
+                    })),
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -2048,6 +2226,12 @@ fn run_worker(
                         start,
                         compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                         true,
+                        export_lane.admission(compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        })),
                     ) {
                         Ok(prepared) => {
                             unsaved = true;
@@ -2067,6 +2251,12 @@ fn run_worker(
                     before_track,
                     start,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    export_lane.admission(compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p),
+                        }
+                    })),
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -2081,6 +2271,12 @@ fn run_worker(
                     track,
                     scene,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                    export_lane.admission(compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p),
+                        }
+                    })),
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -2098,10 +2294,36 @@ fn run_worker(
                         mode,
                         reservation,
                     )
+                    .and_then(|candidate| match session.native_reservation {
+                        Some(limits) => candidate.with_native_reservation(limits),
+                        None => Ok(candidate),
+                    })
                     .map(|candidate| candidate.with_shutdown(Arc::clone(&session.shutdown)))
                     .map_err(|reason| reason.to_string());
+                    let current = compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p.as_ref()),
+                        }
+                    });
+                    let admission = export_lane.admission(current);
                     match candidate.and_then(|candidate| {
-                        compile(&candidate, None).map(|prepared| (candidate, prepared))
+                        let prepared = compile(&candidate, None)?;
+                        if session.native_reservation.is_some() {
+                            admission
+                                .check(
+                                    &session,
+                                    &candidate,
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: None,
+                                        prepared: Some(&prepared),
+                                    },
+                                    0,
+                                    None,
+                                )
+                                .map_err(|e| e.to_string())?;
+                        }
+                        Ok((candidate, prepared))
                     }) {
                         Ok((candidate, prepared)) => {
                             session = candidate;
@@ -2138,19 +2360,37 @@ fn run_worker(
                         } => (source, relinks, mode, reservation),
                         _ => continue,
                     };
-                    match recovery::open_source_with_mode(
-                        &session,
-                        history_capacity,
-                        &source,
-                        &relinks,
-                        mode,
-                        reservation,
-                    ) {
+                    let current = compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p.as_ref()),
+                        }
+                    });
+                    let admission = export_lane.admission(current);
+                    let candidate = admission
+                        .replacement_frame_allowance(&session)
+                        .map_err(|e| e.to_string())
+                        .and_then(|allowance| {
+                            recovery::open_source_with_limits(
+                                &session,
+                                history_capacity,
+                                &source,
+                                &relinks,
+                                mode,
+                                reservation,
+                                session.native_reservation,
+                                allowance,
+                            )
+                        });
+                    match candidate {
                         Ok((candidate, candidate_base, candidate_document, dirty)) => {
-                            match compile(
-                                &candidate,
-                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                            ) {
+                            let compiled_candidate=compile(&candidate,None).and_then(|prepared| {
+                                if session.native_reservation.is_some() {admission.check(&session,&candidate,
+                                    hex_engine::native_device_resources::ControlSamplerSelection {sources:None,prepared:Some(&prepared)},0,None)
+                                    .map_err(|e|e.to_string())?;}
+                                Ok(prepared)
+                            });
+                            match compiled_candidate {
                                 Ok(prepared) => {
                                     journal = None;
                                     session = candidate;
@@ -2567,10 +2807,11 @@ fn run_worker(
                                 .and_then(Path::parent)
                                 .ok_or("bounce media folder is unavailable")?
                                 .join("media/bounces");
-                            session.bounce_midi_clip(
+                            session.bounce_midi_clip_with_admission(
                                 clip,
                                 &root,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                |session, prepared| export_lane.admission(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) })).check_legacy_stage(session, std::slice::from_ref(prepared)),
                             )
                         })
                     } else {
@@ -2777,6 +3018,8 @@ fn run_worker(
                                 if *compiled_revision == revision =>
                             {
                                 Ok(ExportJob {
+                                    job_id: 0,
+                                    sources: None,
                                     revision,
                                     path: path.clone(),
                                     prepared: Arc::clone(prepared),
@@ -2821,6 +3064,8 @@ fn run_worker(
                                 )
                                 .map_err(|error| error.to_string())
                                 .map(|frames| ExportJob {
+                                    job_id: 0,
+                                    sources: None,
                                     revision,
                                     path: path.clone(),
                                     prepared: Arc::clone(prepared),
@@ -3108,6 +3353,11 @@ fn run_worker(
         }
         let canonical_changed = replacement_revision.is_some();
         let canonical_prepared = if let Some(prepared) = replacement_revision {
+            if let Some(sources) = replacement_sources {
+                current_sources = sources;
+            } else if !prepared.requires_control_sampler_sources() {
+                current_sources = None;
+            }
             revision = revision.saturating_add(1);
             midi_preview = Arc::clone(prepared.midi_preview());
             state = view_state(
@@ -3236,7 +3486,10 @@ fn run_worker(
         // Ordinary gesture publications already carry the prepared live-keyboard
         // input and tuning hint, so keep that specialized preview intact.
         let prefer_rebased_preview = canonical_changed && playback_uses_preview;
-        let mut playback = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+        let mut playback = if hex_engine::native_device_resources::requires_private_sampler_sources(
+            session.project(),
+        ) || session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+        {
             None
         } else if computer_keyboard_playback.is_some() && !prefer_rebased_preview {
             computer_keyboard_playback
@@ -3292,48 +3545,55 @@ fn run_worker(
                 }
             }
         }
-        if !events.send(Event {
-            state: Arc::clone(&state),
-            playback,
-            status,
-            error,
-            request_complete: true,
-            computer_keyboard_complete,
-            tuning_audition_complete,
-            live_expression_complete,
-            audio_batch_complete,
-            audio_batch_failure,
-            save_complete,
-            open_complete,
-            project_replaced,
-            stopped_playback_restore_complete,
-            created,
-            duplicate_complete,
-            restore_complete,
-            device_preview,
-            gesture_ack,
-            gesture_protocol_ack,
-            gesture_request,
-            active_device_gesture: device_gesture.snapshot(),
-            tuning_preview,
-            tuning_gesture_ack,
-            tuning_gesture_request,
-            active_tuning_gesture: tuning_gesture.snapshot(),
-            tuning_library,
-        }) {
+        if let Some(job) = export_job.as_mut() {
+            if let Err(reason) = export_lane.prepare_job(job, &session, current_sources.as_ref()) {
+                let failed = export_job.take();
+                if let Some(job) = failed {
+                    export_completion = Some(ExportEvent {
+                        revision: job.revision,
+                        path: job.path.clone(),
+                        result: Err(reason),
+                    });
+                }
+            }
+        }
+        if !events.send_with_control_poll(
+            Event {
+                state: Arc::clone(&state),
+                playback,
+                status,
+                error,
+                request_complete: true,
+                computer_keyboard_complete,
+                tuning_audition_complete,
+                live_expression_complete,
+                audio_batch_complete,
+                audio_batch_failure,
+                save_complete,
+                open_complete,
+                project_replaced,
+                stopped_playback_restore_complete,
+                created,
+                duplicate_complete,
+                restore_complete,
+                device_preview,
+                gesture_ack,
+                gesture_protocol_ack,
+                gesture_request,
+                active_device_gesture: device_gesture.snapshot(),
+                tuning_preview,
+                tuning_gesture_ack,
+                tuning_gesture_request,
+                active_tuning_gesture: tuning_gesture.snapshot(),
+                tuning_library,
+            },
+            || export_lane.poll(),
+        ) {
             return;
         }
         if let Some(job) = export_job {
-            match export_work.try_send(ExportWork::Render(job)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(ExportWork::Render(job)))
-                | Err(TrySendError::Disconnected(ExportWork::Render(job))) => {
-                    let _ = export_events.try_send(ExportEvent {
-                        revision: job.revision,
-                        path: job.path,
-                        result: Err("export worker is unavailable".into()),
-                    });
-                }
+            if let Err(event) = export_lane.submit(job) {
+                let _ = export_events.try_send(event);
             }
         }
         if let Some(event) = export_completion {
@@ -3370,37 +3630,96 @@ fn run_export_worker(
     work: Receiver<ExportWork>,
     events: SyncSender<ExportEvent>,
     exporter: Exporter,
+    finished: SyncSender<u64>,
+    shutdown: Arc<AtomicBool>,
+    #[cfg(test)] test_hook: ExportTestHook,
 ) {
     while let Ok(work) = work.recv() {
-        let event = match work {
-            ExportWork::Render(job) => ExportEvent {
-                revision: job.revision,
-                path: job.path.clone(),
-                result: if let Some((start, signal, control, overwrite)) = job.controlled {
-                    let policy = if overwrite {
-                        hex_export::Publication::confirmed_save(&job.path)
-                    } else {
-                        Ok(hex_export::Publication::CreateNew)
-                    };
-                    policy
-                        .and_then(|policy| {
-                            hex_export::render_prepared_with_policy(
-                                &job.path,
-                                job.prepared,
-                                start,
-                                job.frames,
-                                signal,
-                                &control,
-                                &policy,
-                            )
-                        })
-                        .map_err(|error| error.to_string())
+        #[cfg(test)]
+        if let Some(hook) = test_hook.lock().unwrap().take() {
+            hook();
+        }
+        let (id, mut event) = {
+            let ExportWork::Render(mut job) = work;
+            let result = if let Some(sources) = job.sources.take() {
+                let (start, signal, control, overwrite) =
+                    job.controlled.take().unwrap_or_else(|| {
+                        (
+                            0,
+                            hex_export::ExportSignal::Main,
+                            hex_export::ExportControl::default(),
+                            false,
+                        )
+                    });
+                let policy = if overwrite {
+                    hex_export::Publication::confirmed_save(&job.path)
                 } else {
-                    exporter(&job.path, &job.prepared, 0, job.frames)
+                    Ok(hex_export::Publication::CreateNew)
+                };
+                policy
+                    .and_then(|policy| {
+                        hex_export::render_control_sampler_with_policy(
+                            &job.path,
+                            job.prepared,
+                            sources,
+                            start,
+                            job.frames,
+                            signal,
+                            &control,
+                            &policy,
+                        )
+                    })
+                    .map_err(|e| e.to_string())
+            } else if let Some((start, signal, control, overwrite)) = job.controlled {
+                let policy = if overwrite {
+                    hex_export::Publication::confirmed_save(&job.path)
+                } else {
+                    Ok(hex_export::Publication::CreateNew)
+                };
+                policy
+                    .and_then(|policy| {
+                        hex_export::render_prepared_with_policy(
+                            &job.path,
+                            job.prepared,
+                            start,
+                            job.frames,
+                            signal,
+                            &control,
+                            &policy,
+                        )
+                    })
+                    .map_err(|e| e.to_string())
+            } else {
+                exporter(&job.path, &job.prepared, 0, job.frames)
+            };
+            (
+                job.job_id,
+                ExportEvent {
+                    revision: job.revision,
+                    path: job.path,
+                    result,
                 },
-            },
-        };
-        if events.send(event).is_err() {
+            )
+        }; // All renderer/runtime/job source handles have dropped before terminal.
+        let terminal_delivered = finished.try_send(id).is_ok();
+        if !terminal_delivered {
+            event.result = Err(
+                "export finished but control custody notification failed; export worker stopped"
+                    .into(),
+            );
+        }
+        loop {
+            if shutdown.load(Ordering::Acquire) {
+                return;
+            }
+            match events.try_send(event) {
+                Ok(()) => break,
+                Err(TrySendError::Disconnected(_)) => return,
+                Err(TrySendError::Full(returned)) => event = returned,
+            }
+            thread::sleep(std::time::Duration::from_millis(5));
+        }
+        if !terminal_delivered {
             return;
         }
     }
@@ -3410,6 +3729,7 @@ fn import(
     session: &mut Session,
     path: PathBuf,
     previous: Option<&PreparedRevision>,
+    admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
     if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
         let path = absolute_document_path(&path)?;
@@ -3453,6 +3773,9 @@ fn import(
         },
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    admission
+        .check_legacy_stage(session, std::slice::from_ref(&prepared))
+        .map_err(|e| e.to_string())?;
     session
         .import_prepared_revision(prepared, previous)
         .map(|(_, revision)| revision)
@@ -3466,6 +3789,7 @@ fn import_to_track(
     start: u64,
     previous: Option<&PreparedRevision>,
     overwrite: bool,
+    admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
     if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
         let path = absolute_document_path(&path)?;
@@ -3510,6 +3834,9 @@ fn import_to_track(
         },
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    admission
+        .check_legacy_stage(session, std::slice::from_ref(&prepared))
+        .map_err(|e| e.to_string())?;
     let imported = if overwrite {
         session.import_prepared_audio_clip_with_overwrite_revision(prepared, track, start, previous)
     } else {
@@ -3526,6 +3853,7 @@ fn import_to_new_track(
     before_track: Option<hex_project::TrackId>,
     start: u64,
     previous: Option<&PreparedRevision>,
+    admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
     if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
         let path = absolute_document_path(&path)?;
@@ -3579,6 +3907,9 @@ fn import_to_new_track(
         },
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    admission
+        .check_legacy_stage(session, std::slice::from_ref(&prepared))
+        .map_err(|e| e.to_string())?;
     session
         .import_prepared_audio_track_at_revision(prepared, before_track, start, previous)
         .map(|(_, revision)| revision)
@@ -3591,6 +3922,7 @@ fn import_to_session(
     track: hex_project::TrackId,
     scene: hex_project::SceneId,
     previous: Option<&PreparedRevision>,
+    admission: sampler_export::Admission<'_>,
 ) -> Result<Arc<PreparedRevision>, String> {
     if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
         let path = absolute_document_path(&path)?;
@@ -3631,6 +3963,9 @@ fn import_to_session(
         },
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    admission
+        .check_legacy_stage(session, std::slice::from_ref(&prepared))
+        .map_err(|e| e.to_string())?;
     session
         .import_session_audio_clip_revision(prepared, track, scene, previous)
         .map(|(_, revision)| revision)
@@ -6693,6 +7028,7 @@ mod service_tests {
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let service = Service {
+            export_test_hook: Arc::new(std::sync::Mutex::new(None)),
             requests,
             events,
             export_events,
@@ -6700,7 +7036,6 @@ mod service_tests {
             shutdown: Arc::new(AtomicBool::new(false)),
             arrangement_seek: None,
             _worker: thread::spawn(|| {}),
-            _export_worker: thread::spawn(|| {}),
         };
         assert!(matches!(
             service.submit(Request::Export(PathBuf::from("busy.wav"))),

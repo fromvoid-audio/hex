@@ -85,15 +85,21 @@ pub fn missing_assets(
     Ok(missing)
 }
 
-pub(super) fn open_source_with_mode(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn open_source_with_limits(
     current: &Session,
     history_capacity: usize,
     source: &ProjectSource,
     relinks: &BTreeMap<hex_project::AssetId, PathBuf>,
     mode: DocumentAudioMode,
     reservation: Option<SourcePlanReservation>,
+    native: Option<crate::ResidentNativeReservation>,
+    frame_allowance: u64,
 ) -> Result<OpenCandidate, String> {
     let (mut project, project_dir, document) = read_source(source)?;
+    if hex_engine::native_device_resources::requires_private_sampler_sources(&project) {
+        return Err("sampler reopening requires qualified original source reconstruction".into());
+    }
     let dirty = document.is_none() || !relinks.is_empty();
     if !relinks.is_empty() {
         if relinks.keys().any(|id| project.asset(*id).is_none()) {
@@ -128,6 +134,10 @@ pub(super) fn open_source_with_mode(
             mode,
             Some(reservation),
         )
+        .and_then(|candidate| match native {
+            Some(limits) => candidate.with_native_reservation(limits),
+            None => Ok(candidate),
+        })
         .map_err(|e| e.to_string())?
         .with_shutdown(Arc::clone(&current.shutdown));
         // Verify every retained asset, including unused records, without decoding PCM.
@@ -152,7 +162,7 @@ pub(super) fn open_source_with_mode(
     prepared_assets
         .try_reserve_exact(project.assets().count())
         .map_err(|_| "could not reserve decoded media table".to_owned())?;
-    let mut remaining_frames = current.max_resident_frames();
+    let mut remaining_frames = frame_allowance;
     // Load unreferenced assets too: the editor can place them later, so missing
     // media in any asset record rejects the candidate instead of dropping it.
     for asset in project.assets() {
@@ -177,12 +187,23 @@ pub(super) fn open_source_with_mode(
                 asset.path().display()
             ));
         }
+        let output_allowance = if native.is_some() && decoded.sample_rate() != project.sample_rate()
+        {
+            let original = u64::try_from(decoded.audio().pcm_capacity_frames())
+                .map_err(|_| "source capacity exceeds frame range")?;
+            remaining_frames
+                .checked_sub(original)
+                .filter(|n| *n >= asset.playback_frames())
+                .ok_or("project source and derivative exceed resident reservation")?
+        } else {
+            remaining_frames
+        };
         let prepared = PreparedImport::at_rate(
             decoded,
             project.sample_rate(),
             ResampleLimits {
                 max_source_frames: IMPORT_FRAME_LIMIT,
-                max_output_frames: usize::try_from(remaining_frames)
+                max_output_frames: usize::try_from(output_allowance)
                     .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
             },
         )
@@ -196,12 +217,13 @@ pub(super) fn open_source_with_mode(
             .ok_or_else(|| "project media exceeds resident audio frame limit".to_owned())?;
         prepared_assets.push((asset.id(), prepared));
     }
-    let session = Session::from_prepared_with_sine_table(
+    let session = Session::from_prepared_with_native_limits(
         project,
         history_capacity,
         current.max_resident_frames(),
         prepared_assets,
         current.sine_table(),
+        native,
     )
     .map_err(|error| error.to_string().to_lowercase())?;
     Ok((
