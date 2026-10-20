@@ -240,3 +240,13 @@ The snapshot survives mouse-up and repaint; it owns no timer or global input hoo
 An already edited numeric value keeps its raw draft during text clicks/drag;
 selection emits no numeric events. Nonediting value drag and knob reset retain
 separate adjustment gestures and existing finalization/cancellation contracts.
+
+### per-instance numeric drag direction
+
+`NumericControlConfig::with_drag_axis(NumericDragAxis::{Horizontal, Vertical})`
+overrides pointer scrubbing for that instance without changing its knob/slider
+geometry, numeric codec, keyboard editing or capture/commit/cancel protocol. Right
+increases with Horizontal; upward increases with Vertical. Omitting the option
+preserves the existing kind/readout convention. Fine motion keeps the existing
+Shift sensitivity. Text selection while editing remains independent of the drag
+axis. Arrange header pan opts into Vertical; other controls retain their defaults.

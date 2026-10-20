@@ -694,7 +694,7 @@ fn header_mixer_pan_entry_drag_cancel_and_activator_solo_are_real_commands(
         .unwrap();
     assert!(field.left() >= pan.left() && field.right() <= pan.right());
     let start = field.center();
-    let end = point(start.x + px(20.0), start.y);
+    let end = point(start.x, start.y - px(20.0));
     drag(&mut visual, start, end);
     pump(&editor, cx, |view| {
         view.worker_requests_pending == 0
@@ -927,4 +927,73 @@ fn header_fixture_real_catalog_retains_one_root_after_view_and_caller_drop(
     eprintln!(
         "header fixture SAME Environment/WAV/fourprefs/database, actual held save, view+caller retired, cleanup verified"
     );
+}
+
+#[gpui::test]
+fn header_pan_vertical_drag_direction_fine_bounds_and_atomic_history(cx: &mut TestAppContext) {
+    use hex_session::service::Request;
+    let (_browser, mut visual, editor, [track, other]) = actor_fixture(cx);
+    let pan_bounds = bounds(&mut visual, "track-pan", track);
+    let start = pan_bounds.center();
+    for (dx, dy, fine, expected) in [
+        (0.0, -24.0, false, 0.4),
+        (0.0, 24.0, false, -0.4),
+        (24.0, 0.0, false, 0.0),
+        (0.0, -24.0, true, 0.04),
+        (0.0, -1000.0, false, 1.0),
+        (0.0, 1000.0, false, -1.0),
+    ] {
+        let before = editor.read_with(cx, |view, _| view.state.as_ref().unwrap().project.clone());
+        assert_eq!(before.track(track).unwrap().balance(), 0.0);
+        let end = point(start.x + px(dx), start.y + px(dy));
+        let modifiers = Modifiers {
+            shift: fine,
+            ..Modifiers::default()
+        };
+        visual.simulate_mouse_down(start, MouseButton::Left, modifiers);
+        visual.simulate_mouse_move(end, Some(MouseButton::Left), modifiers);
+        visual.simulate_mouse_up(end, MouseButton::Left, modifiers);
+        pump(&editor, cx, |view| {
+            view.worker_requests_pending == 0 && view.device_gesture.snapshot().is_none()
+        });
+        let after = editor.read_with(cx, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            assert!(
+                (project.track(track).unwrap().balance() - expected).abs() < 0.0001,
+                "actual pan dx={dx} dy={dy} fine={fine}: {} expected{expected}",
+                project.track(track).unwrap().balance()
+            );
+            assert_eq!(project.track(other).unwrap().balance(), 0.0);
+            assert_eq!(
+                project.track(track).unwrap().gain(),
+                before.track(track).unwrap().gain()
+            );
+            assert_eq!(view.selected_track, Some(other));
+            assert!(!view.track_resize_active() && view.active_clip_drag.is_none());
+            project.clone()
+        });
+        visual.run_until_parked();
+        assert_eq!(bounds(&mut visual, "track-pan", track), pan_bounds);
+        if expected == 0.0 {
+            assert_eq!(
+                after, before,
+                "horizontal motion must leave canonical content unchanged"
+            );
+        } else {
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+            pump(&editor, cx, |view| {
+                view.worker_requests_pending == 0
+                    && *view.state.as_ref().unwrap().project == *before
+            });
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+            pump(&editor, cx, |view| {
+                view.worker_requests_pending == 0 && *view.state.as_ref().unwrap().project == *after
+            });
+            editor.update(cx, |view, _| assert!(view.enqueue(Request::Undo)));
+            pump(&editor, cx, |view| {
+                view.worker_requests_pending == 0
+                    && *view.state.as_ref().unwrap().project == *before
+            });
+        }
+    }
 }

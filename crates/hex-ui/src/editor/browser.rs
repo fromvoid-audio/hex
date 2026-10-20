@@ -1,5 +1,6 @@
 //! Compact, bounded left-side media and project browser.
 mod audition;
+mod history;
 mod insertion;
 mod place_icons;
 mod samples;
@@ -145,6 +146,7 @@ pub(super) enum BrowserSection {
     Collection(usize),
 }
 
+#[derive(Clone)]
 enum BrowserItemKey {
     File(PathBuf),
     Device(hex_engine::NativeDeviceClass, hex_engine::DeviceTypeId),
@@ -183,6 +185,8 @@ pub(super) struct BrowserState {
     selected_index: usize,
     scroll: gpui::UniformListScrollHandle,
     _search_observer: gpui::Subscription,
+    observed_query: String,
+    history: history::History,
     playback_generation: u64,
     playback_in_flight: bool,
     playback_pending: Option<PlaybackPreviewRequest>,
@@ -224,13 +228,8 @@ impl BrowserState {
         let home = test_home.expect("editor test home must be resolved before startup");
         let music = home.join("Music");
         let search = cx.new(BrowserSearch::new);
-        let mut previous_query = String::new();
-        let observer = cx.observe(&search, move |view, search, cx| {
-            let query = &search.read(cx).content;
-            if *query != previous_query {
-                previous_query.clone_from(query);
-                view.reset_browser_results();
-            }
+        let observer = cx.observe(&search, |view, _, cx| {
+            view.sync_browser_query(cx);
             cx.notify();
         });
         let places = if music != home {
@@ -270,6 +269,8 @@ impl BrowserState {
             selected_index: 0,
             scroll: gpui::UniformListScrollHandle::new(),
             _search_observer: observer,
+            observed_query: String::new(),
+            history: history::History::default(),
             playback_generation: 0,
             auto_audition: true,
             insert_quantized: false,
@@ -608,6 +609,12 @@ impl EditorView {
     }
 
     fn select_browser_source(&mut self, source: BrowserSection, cx: &mut Context<Self>) {
+        self.checkpoint_browser_history(cx);
+        self.apply_browser_source(source, cx);
+        self.record_browser_location(cx);
+    }
+
+    fn apply_browser_source(&mut self, source: BrowserSection, cx: &mut Context<Self>) {
         self.browser.scans.generation = self.browser.scans.generation.saturating_add(1);
         self.browser.scans.pending = None;
         self.browser.loading = false;
@@ -1403,6 +1410,7 @@ impl EditorView {
     }
 
     fn move_browser_selection(&mut self, next: bool, cx: &mut Context<Self>) {
+        self.checkpoint_browser_history(cx);
         let previous = (self.browser.results_focused, self.browser.selected_index);
         let count = self.browser_visible_entries(cx).len() + self.browser_visible_devices(cx).len();
         self.browser.selected_index = if !self.browser.results_focused || count == 0 {
@@ -1428,6 +1436,7 @@ impl EditorView {
     }
 
     pub(super) fn browser_activate(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.checkpoint_browser_history(cx);
         if self.browser.section == BrowserSection::Instruments {
             let Some(BrowserItemKey::Device(hex_engine::NativeDeviceClass::Instrument, type_id)) =
                 self.browser_selected_item(cx)
@@ -1488,6 +1497,7 @@ impl EditorView {
     }
 
     pub(super) fn browser_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.checkpoint_browser_history(cx);
         if self
             .browser
             .search
@@ -1647,6 +1657,7 @@ impl EditorView {
 
         self.reconcile_browser_source(cx);
         self.reconcile_browser_tree_requests(cx);
+        self.restore_browser_history_position(cx);
         let path = self.browser.directory.clone();
         let folder_dialog = self.browser_folder_button(cx);
         let section = self.browser.section.clone();
@@ -2214,6 +2225,7 @@ impl EditorView {
                         cx.stop_propagation();
                         return;
                     }
+                    view.checkpoint_browser_history(cx);
                     view.browser.selected_index = index;
                     view.browser.results_focused = true;
                     view.browser_selection_audition(
@@ -2400,6 +2412,7 @@ impl EditorView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |view, _, window, cx| {
+                    view.checkpoint_browser_history(cx);
                     view.browser.selected_index = index;
                     view.browser.results_focused = true;
                     view.browser.results_focus.focus(window);
