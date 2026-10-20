@@ -528,8 +528,25 @@ fn check_operator_opaque_roundtrip(state_version: u32) {
 
 #[test]
 fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_preserves_state() {
+    // These legacy layouts require an authored instrument; ordinary current
+    // tracks deliberately start with an empty device chain.
+    let mut authored = Editor::new(project(), 8).unwrap();
+    let tracks: Vec<_> = authored
+        .project()
+        .tracks()
+        .iter()
+        .map(|track| track.id())
+        .collect();
+    for track in tracks {
+        authored
+            .execute(Command::InsertInstrument {
+                track,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+    }
     let mut legacy: serde_json::Value =
-        serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
+        serde_json::from_slice(&encode(authored.project()).unwrap()).unwrap();
     let old_highwater = legacy["next_id"].as_u64().unwrap();
     legacy["version"] = 14.into();
     legacy.as_object_mut().unwrap().remove("tuning");
@@ -562,7 +579,7 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
     }
 
     let mut schema_fifteen: serde_json::Value =
-        serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
+        serde_json::from_slice(&encode(authored.project()).unwrap()).unwrap();
     schema_fifteen["version"] = 15.into();
     schema_fifteen.as_object_mut().unwrap().remove("tuning");
     schema_fifteen
@@ -621,8 +638,11 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
     let mut current = Project::new(48_000).unwrap();
     let mut editor = Editor::new(current.clone(), 8).unwrap();
     let track = match editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "opaque".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     {
