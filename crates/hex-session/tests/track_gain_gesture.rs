@@ -36,8 +36,11 @@ fn fixture() -> (Service, TrackId, TrackId) {
     wait(&service);
     let Some(Created::Track(track)) = edit(
         &service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "held voice".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     )
     .created

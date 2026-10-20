@@ -370,8 +370,11 @@ fn verified_import_into_existing_track_preserves_its_instrument_and_native_refus
     );
     let added = run(
         &service,
-        Request::Edit(Command::AddTrack {
+        Request::Edit(Command::InsertTrackWithDevice {
             name: "existing".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }),
     );
     let track = &added.state.project.tracks()[0];

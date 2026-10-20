@@ -24,8 +24,11 @@ fn fixture(mode: DocumentAudioMode) -> (Session, TrackId, SceneId) {
         Session::new_with_audio_mode(48_000, 32, 8_000_000, mode, Some(reservation)).unwrap();
     let Created::Track(track) = s
         .editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "target".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {

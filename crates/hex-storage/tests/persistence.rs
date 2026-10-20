@@ -449,8 +449,11 @@ fn registered_operator_authored_feedback_roundtrips_as_opaque_state() {
 fn check_operator_opaque_roundtrip(state_version: u32) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "operator state".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -686,8 +689,11 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
 fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "chain".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {

@@ -16,8 +16,11 @@ fn fixture() -> (Editor, DeviceId, AssetId) {
         panic!("asset fixture")
     };
     let Created::Track(track) = editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "sample source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {

@@ -4366,8 +4366,11 @@ mod service_tests {
         let service = Service::new(48_000, 16, 0).expect("service");
         next_event(&service);
         service
-            .submit(Request::Edit(Command::AddTrack {
+            .submit(Request::Edit(Command::InsertTrackWithDevice {
                 name: "instrument slot".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             }))
             .expect("add track");
         let added_track = next_event(&service);
@@ -4654,8 +4657,11 @@ mod service_tests {
         let service = Service::new(48_000, 16, 0).expect("service");
         next_event(&service);
         service
-            .submit(Request::Edit(Command::AddTrack {
+            .submit(Request::Edit(Command::InsertTrackWithDevice {
                 name: "fm4 persistence".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             }))
             .expect("add track");
         let track_event = next_event(&service);
@@ -5170,8 +5176,11 @@ mod service_tests {
         let service = Service::new(48_000, 8, 0).expect("service");
         let _initial = next_event(&service);
         service
-            .submit(Request::Edit(Command::AddTrack {
+            .submit(Request::Edit(Command::InsertTrackWithDevice {
                 name: "operator gesture".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             }))
             .expect("add track");
         let track_event = next_event(&service);
@@ -7267,8 +7276,11 @@ mod service_tests {
         let service = Service::new(48_000, 8, 8_000_000).unwrap();
         let _ = next_event(&service);
         service
-            .submit(Request::Edit(Command::AddMidiTrack {
+            .submit(Request::Edit(Command::InsertTrackWithDevice {
                 name: "keys".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             }))
             .unwrap();
         let edited = next_event(&service);

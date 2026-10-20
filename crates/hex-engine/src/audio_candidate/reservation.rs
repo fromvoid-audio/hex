@@ -197,8 +197,12 @@ mod tests {
                 let asset = editor.project().assets().next().unwrap().id();
                 for index in 1..count {
                     let hex_project::Created::Track(track) = editor
-                        .execute(hex_project::Command::AddTrack {
+                        .execute(hex_project::Command::InsertTrackWithDevice {
                             name: format!("audio {index}"),
+                            before_track: None,
+                            slot: hex_project::TrackDeviceSlot::Instrument,
+                            state: hex_project::default_instrument_state()
+                                .expect("fixture instrument state"),
                         })
                         .unwrap()
                     else {
