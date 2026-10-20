@@ -206,6 +206,32 @@ Close returns focus to the editor. This is separate from the unresolved native
 field-click focus-loss report2794 and the future double-click refinement2817.
 Optimized native pointer/IME/keyboard acceptance remains coordinator-owned.
 
+## Built-in source menus and reversible sidebar removal — Pulse2844 / PR446
+
+Home and Music use the existing row-anchored bundled icon grid and Default Icon
+reset. Their saved identities are `home` and `music`, independent of the resolved
+native Home path. Unknown icon IDs survive saves and show the default folder
+with a bounded diagnostic. Custom Place assignments remain keyed by original
+native paths; paths, casing and same-name identities are unchanged.
+
+Remove on Home, Music, Samples or a custom Place hides that sidebar entry only.
+The source paths remain in Places and the indexed catalog roots, and no files,
+project media or history entries are deleted. Removing the active source stops
+its preview and selects visible All. Existing source settings expose checkboxes
+to restore every hidden Place and Samples; All remains reachable with Command-F.
+Visibility and built-in icon overrides use the existing bounded browser document
+and background latest-snapshot save lane. Malformed settings remain untouched.
+Other section icon cycling and the broader collections work in2672 remain separate.
+
+All is the first Library row in both expanded and compact modes, retaining stable
+internal section IDs. The existing accepted Command-F handler is reused unchanged:
+it reveals All, preserves/selects the query, finalizes valid edits and respects
+invalid numeric drafts and IME handling. It adds no recursive indexing.
+
+Source tests exercise actual built-in right-click/grid/reset, compact glyph
+centers, actual Remove/restore controls, preference reopen and preserved WAV bytes,
+catalog roots/entries and request queues. Native optimized appearance, user menu
+navigation and actual app close/reopen remain root-owned acceptance gaps.
 ## compact picker headings and resize capture — pulse2841 / PR444
 
 At the exact 23 px picker minimum, the section headings show small themed line
@@ -247,6 +273,32 @@ Rendered tests exercise actual down/up click counts, partial/drag/release,
 filesystem worker/tick/resize updates, Unicode composition and empty text. Native
 physical mouse/IME/accessibility acceptance remains coordinator-owned and open.
 
+## selected-track sample input — pulse2821 / PR427
+
+Enter on a selected sample in browser navigation inserts into the selected regular
+Arrangement TrackId at the current edit/playback cursor. It refuses visibly when
+no valid track is selected, the Arrangement is busy, or Session is active; it never
+falls back to a hovered, default or new track. Enter while editing the query,
+including IME composition, does not insert a sample. Explicit drag/drop remains
+independent, and result double-click still does not import.
+
+The compact grid icon in the browser toolbar toggles quantized sample input. It
+starts off for each editor and survives browser close/reopen and source changes.
+When enabled, input snaps to the **nearest** active Arrangement grid line using
+the same tempo, meter and adaptive zoom resolver as Arrangement snapping. A disabled
+grid or stale/unavailable timeline geometry causes a visible refusal. With input
+quantization off, the original frame position is retained.
+
+Invocation captures the native sample path, selected TrackId, resolved frame,
+document generation and revision before worker preparation. Selection/cursor/grid
+changes cannot retarget that request. The existing bounded audio batch controller
+handles cancellation, stale contexts, errors and one canonical overwrite/history
+commit; decode and graph preparation stay off the UI/audio callback. Same-track
+source fragments remain intact outside the inserted interval, and one Undo restores
+the preceding clip content (ID allocation remains monotonic). This Enter route
+reuses the canonical overwrite entrypoint; global no-overlap coverage across other
+entrypoints remains issue2822/PR428. Optimized native input/audio acceptance remains
+separate from headless input and real-worker checks.
 ### invalidated text double-click pairs
 
 A text/keyboard/IME update, Shift selection or drag invalidates the saved first
@@ -287,3 +339,18 @@ private filesystem workers and canonical Service Init; refused row actions leave
 canonical metadata/history and project requests unchanged. Selected-row controls
 and Up/Down-to-Right plus Command-F typing remain positive cases. This is source
 coverage, not physical keyboard/audio-output or native delivery acceptance.
+
+Quantized sample input refuses every disabled Arrangement grid, including a
+remembered fine, medium or coarse density. Disabling input quantization keeps
+the exact invocation frame even when the Arrangement grid is disabled. Active
+density presets continue to use the same nearest-grid resolver. Integration
+controls exercise actual Enter, no queued import/history mutation on refusal,
+real worker commits and Undo, retaining the original six caller cases.
+
+Picking a previously hidden known Home, Music or custom folder restores its
+visibility through the existing source-settings setter before selecting it.
+If loading or read-only preferences refuse restoration, the picker leaves the
+current visible source selected. Cancel/error remains a no-op on source visibility;
+Samples keeps its existing picker-selection convention. Paths, icons, media and
+catalog roots remain intact. Actual injected picker-result tests cover restore,
+preferences reopen and refusals; native panel behavior remains separate.

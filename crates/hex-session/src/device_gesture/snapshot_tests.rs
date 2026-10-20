@@ -449,8 +449,11 @@ fn actual_harmonic_stroke_is_one_history_edit_and_hidden_partials_survive_reopen
     let mut session = Session::new(48000, 32, 0).unwrap();
     let (Created::Track(track), prepared) = session
         .command_prepared_revision(
-            Command::AddMidiTrack {
+            Command::InsertTrackWithDevice {
                 name: "harmonics".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             },
             None,
         )

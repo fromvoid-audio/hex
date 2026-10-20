@@ -6726,8 +6726,12 @@ mod tests {
         for (routed, mutable) in [(false, false), (true, false), (false, true), (true, true)] {
             let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
             let Created::Track(track) = editor
-                .execute(Command::AddMidiTrack {
+                .execute(Command::InsertTrackWithDevice {
                     name: "keys".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state()
+                        .expect("fixture instrument state"),
                 })
                 .unwrap()
             else {

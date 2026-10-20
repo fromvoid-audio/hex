@@ -81,6 +81,9 @@ pub enum NumericControlAppearance {
     InlineValue,
     /// A rail and editable readout for a compact mixer/header row.
     CompactSlider,
+    /// One filled mixer field with centered editable text and horizontal scrubbing.
+    /// Bipolar specs fill from the marked center; other scales fill from the left.
+    FilledSlider,
     DeviceMeters,
 }
 
@@ -715,7 +718,12 @@ impl NumericControl {
         let shift = event.modifiers.shift;
         let primary_delta = match (press.target, self.kind) {
             (PressTarget::Control, NumericControlKind::HorizontalSlider) => delta_x,
-            // Rectangular readouts always scrub vertically, independent of the
+            (PressTarget::Value, NumericControlKind::HorizontalSlider)
+                if self.appearance == NumericControlAppearance::FilledSlider =>
+            {
+                delta_x
+            }
+            // Other rectangular readouts scrub vertically, independent of the
             // track/dial presentation their owner uses.
             _ => -delta_y,
         };
@@ -1481,6 +1489,72 @@ impl gpui::Render for NumericControl {
                     style,
                     self.value_mouse_down_listener(cx),
                 )),
+            (NumericControlKind::HorizontalSlider, NumericControlAppearance::FilledSlider) => {
+                let bipolar = self.spec.scale() == crate::NumericScale::Bipolar;
+                let origin = if bipolar { 0.5 } else { 0.0 };
+                let fill_id = format!("{}-bar-fill", self.id);
+                let center_id = format!("{}-bar-center", self.id);
+                let slider_id = format!("{}-slider", self.id);
+                div()
+                    .id(self.id.clone())
+                    .flex()
+                    .w_full()
+                    .min_w(px(60.0))
+                    .h(px(18.0))
+                    .track_focus(&self.focus)
+                    .key_context(key_context)
+                    .child(
+                        div()
+                            .debug_selector(move || slider_id.clone())
+                            .relative()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .overflow_hidden()
+                            .rounded(px(crate::CONTROL_CORNER_RADIUS))
+                            .bg(rgb(style.rail))
+                            .child(
+                                div()
+                                    .debug_selector(move || fill_id.clone())
+                                    .absolute()
+                                    .left(relative(value.min(origin)))
+                                    .w(relative((value - origin).abs()))
+                                    .h_full()
+                                    .bg(rgb(if enabled { style.accent } else { style.muted }))
+                                    .opacity(0.35),
+                            )
+                            .when(bipolar, |bar| {
+                                bar.child(
+                                    div()
+                                        .debug_selector(move || center_id.clone())
+                                        .absolute()
+                                        .left(relative(0.5))
+                                        .w(px(1.0))
+                                        .h_full()
+                                        .bg(rgb(style.muted))
+                                        .opacity(0.6),
+                                )
+                            })
+                            .child(
+                                value_field_sized(
+                                    self.id.clone(),
+                                    value_text,
+                                    ValueFieldPresentation {
+                                        invalid: self.invalid_text,
+                                        editing: self.editing,
+                                        enabled,
+                                        style,
+                                        width: px(60.0),
+                                        height: px(18.0),
+                                    },
+                                    self.value_mouse_down_listener(cx),
+                                )
+                                .relative()
+                                .w_full()
+                                .h_full(),
+                            ),
+                    )
+            }
             (NumericControlKind::HorizontalSlider, NumericControlAppearance::CompactSlider) => {
                 div()
                     .id(self.id.clone())
@@ -1860,7 +1934,7 @@ fn value_field_sized(
     child: NumericTextElement,
     presentation: ValueFieldPresentation,
     on_down: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
-) -> impl IntoElement {
+) -> gpui::Stateful<gpui::Div> {
     let ValueFieldPresentation {
         invalid,
         editing,

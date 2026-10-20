@@ -4128,7 +4128,7 @@ fn place_correctness_reselect_gates_cached_rows_and_old_audition_callbacks(
             view.browser.playback_generation, generation,
             "old waveform callback admitted stale preview"
         );
-        view.import_browser_audio(path.clone());
+        view.insert_browser_audio(path.clone(), cx);
         assert!(
             view.last_enqueued_import_to_track.is_none(),
             "old result callback admitted stale import"
@@ -4613,7 +4613,10 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
                     .insert(path.clone(), "samples".into());
                 assert_eq!(view.browser_place_glyph(&path), "□");
                 view.open_browser_place_icons(path, point(px(0.0), px(0.0)), window, cx);
-                assert!(view.context_menu.is_none(), "defaults aren't custom Places");
+                assert!(
+                    view.context_menu.is_none(),
+                    "these built-ins are absent from this custom-only fixture"
+                );
             }
             view.browser.preferences_loading = true;
             view.open_browser_place_icons(directory.0.clone(), point(px(0.0), px(0.0)), window, cx);
@@ -4865,6 +4868,9 @@ fn browser_place_icon_grid_uses_clicked_row_reset_and_reopens(cx: &mut TestAppCo
 
 #[path = "browser_focus_ui_test.rs"]
 mod explicit_focus;
+
+#[path = "browser_insert_ui_test.rs"]
+mod insertion;
 #[gpui::test]
 fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
     cx: &mut TestAppContext,
@@ -4926,6 +4932,8 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
     });
 }
 
+#[path = "browser_builtin_source_ui_test.rs"]
+mod builtin_sources;
 #[path = "browser_resize_feedback_ui_test.rs"]
 mod resize_feedback;
 
@@ -5112,3 +5120,9 @@ fn browser_arrows_up_down_enter_results_and_command_f_keeps_text_input(cx: &mut 
         assert!(v.pending_requests.is_empty() && v.pending_audio_commands.is_empty());
     });
 }
+
+#[path = "browser_divider_paint_ui_test.rs"]
+mod divider_paint;
+
+#[path = "browser_instrument_enter_ui_test.rs"]
+mod instrument_enter;

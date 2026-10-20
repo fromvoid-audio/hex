@@ -203,9 +203,10 @@ impl EditorView {
         track: hex_project::TrackId,
         clip: ClipId,
         name: &str,
+        fill: u32,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(track, clip, name, true, cx)
+        self.clip_name_strip(track, clip, name, fill, true, cx)
     }
     pub(super) fn clip_name_preview_header(
         &self,
@@ -214,16 +215,25 @@ impl EditorView {
         name: &str,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        self.clip_name_strip(track, clip, name, false, cx)
+        self.clip_name_strip(
+            track,
+            clip,
+            name,
+            theme::color(theme::PaletteRole::Raised),
+            false,
+            cx,
+        )
     }
     fn clip_name_strip(
         &self,
         track: hex_project::TrackId,
         clip: ClipId,
         name: &str,
+        fill: u32,
         interactive: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
+        let text = theme::readable_text(fill, theme::color(theme::PaletteRole::Text));
         div()
             .id(("clip-name", clip.value()))
             .debug_selector(move || format!("clip-name-{}", clip.value()))
@@ -236,8 +246,8 @@ impl EditorView {
             .overflow_hidden()
             .text_xs()
             .line_height(px(14.0))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            .bg(rgb(fill))
+            .text_color(rgb(text))
             .when(interactive, |header| {
                 header.cursor_pointer().on_click(cx.listener(
                     move |view, event: &gpui::ClickEvent, window, cx| {
@@ -459,3 +469,7 @@ mod tests {
         });
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "clip_header_color_tests.rs"]
+mod color_tests;

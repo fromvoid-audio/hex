@@ -5178,6 +5178,17 @@ open.
   are added; exact-source results follow in PR334/Pulse2718. Native optimized
   audio/MIDI/looped painting acceptance remains coordinator-owned and open.
 
+### pulse2694 — adaptive arranger grid context choices
+
+Canonical PR310 adds fine/medium/coarse adaptive density choices using existing
+popup/focus contracts and the shared painting/snap resolver. Medium remains18px;
+selected density survives snap toggle/bypass without project/history/persistence
+changes. Boundary red→green repairs capped-grid hidden snap targets while
+retaining256-line bounds. See [grid menu](docs/adaptive-grid-menu.md) for original
+failed/green evidence, targeted cases, shared-wiring scope and finite native
+checklist. Final prospective-tree fullCI/integration/merge belongs to the
+separate merger; native/app delivery and physical acceptance remain root-owned.
+
 ## Place availability and query correctness — pulse2791 / PR397, 18 october 2026
 
 Focused follow-up to merged2727/340: pending or failed Place validation hides cached
@@ -5338,6 +5349,12 @@ to normal; existing selection/hover/focus/audition regressions remain applicable
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
 
+18 October2026 — Pulse2844/PR446 source: reuse bundled Place grid/reset for stable
+Home/Music IDs; reversible sidebar-only Remove for Home/Music/Samples/custom
+folders, existing configuration restores sources, active removal falls back to
+All without deleting files/catalog/project media. All displays first; accepted
+Command-F route reused unchanged. Focused rendered/persistence checks recorded
+in Pulse; full prospective CI/merge remains sole merger, native acceptance root.
 18 October2026 — Pulse2708/PR324: actual active picker drag lost cyan beyond its
 moving hit bounds; outer resize activity survived lost-Left movement. Bind paint
 to each existing gesture and notify on state transitions; clear stale outer latch
@@ -5945,6 +5962,14 @@ workers/window resize, composition and empty text. Frozen426+returned7c4d is a
 material input dependency, not new main integration. Sole merger owns final
 prospective full CI/integration; native physical mouse/IME acceptance stays open.
 
+- 18 October 2026 — Pulse2821 / PR427: browser sample Enter captures a valid selected
+  Arrangement TrackId/native path/cursor/document context and uses existing atomic
+  batch overwrite; no new-track fallback. Compact session-local quantized-input
+  toggle resolves nearest active Arrangement grid, preserving ordinary unquantized
+  input; text/IME sample Enter is isolated. Original real-worker no-target regression
+  reproduced two tracks becoming three; targeted input/worker/refusal/nearest-grid/
+  overwrite/Undo tests added. Source6 owns broader2822 global occupancy planner;
+  final integration/full local CI belongs to sole merger and native acceptance is open.
 ### 2026-10-19 — PR423 invalidated first-click review return
 
 - Preserve canonical b017 and its declared426/416 history. Actual helper and
@@ -5987,3 +6012,102 @@ prospective full CI/integration; native physical mouse/IME acceptance stays open
   Focused seven cases pass without rerunning the unchanged original negative.
   Exact source component checks precede sole-merger full21/fresh review/merge;
   no native/app/physical output or user acceptance is inferred.
+
+### 2026-10-19 — PR329 loop-bar gestures and musical marker
+
+- Continue original c525/2713 history after one main2683 composition; preserve
+  earlier c71e three executed negatives and separate literal compile failure.
+- Command-click anywhere on the bar (including endpoints) toggles on/off;
+  ordinary body move preserves full length,
+  Shift uses nearest full-length steps relative to the captured original start.
+  Existing edge resize/empty-rail painting and Command-L/toolbar remain intact.
+- Mark two/four and unambiguous fractional binary musical lengths through exact
+  canonical forward-rounded endpoint intervals, not pixels; ambiguous subframe
+  intervals carry no marker. Include tempo seams, zoom and resize controls.
+- Real routed Escape/stationary-modifier negatives required narrow existing root
+  callbacks into private rail state; no new gesture owner/framework/vendor code.
+  Old rail fixture now initializes its actual Service project instead of only
+  overriding the displayed state. Twelve beats plus the existing two-second
+  Service horizon preserve its exact384000-frame viewport assertions.
+- Qualification covers original five rail cases, eight real-Service loop-bar
+  cases and four pure math cases, with save/open, Undo/Redo, both directions,
+  live modifiers/focus/cancel/Open invalidation. Native physical/listening and
+  merger's prospective full21/review/actual merge remain separate and open.
+
+18 October2026 — Pulse2707/PR323: original scene painted all4px of each resize
+capture gutter. Paint a separate1px themed leading line while retaining all4px
+of capture/geometry/cursor. Actual line+transparent-edge drags and normal/compact,
+editor open/closed paint checks; preserve PR324 gesture color/cancellation.
+Targeted evidence in Pulse; sole merger fullCI/merge, root native acceptance.
+
+
+## 408 empty-track source continuation
+
+- Compose original c206 empty ordinary-track insertion with current non-gray
+  color selection and the 345a one-Environment keyboard fixture return.
+- Original model/Service PCM/storage/Engine and new fixture receipts are source
+  component evidence; current required checks and actual merge are recorded in
+  Pulse2802. Physical input, delivery and listening acceptance remain separate.
+
+408 integration: preserve actual implicit-instrument fixture failures, explicitly
+create only their intended private devices, and retain all history/PCM/allocation
+oracles. Keep common imports and new-track behavior empty. Browser Enter uses the
+selected registered instrument; clip-only transfer does not copy device chains.
+Source-bound component results and the final exact-candidate qualification are
+recorded separately in Pulse2802; native input/listening/delivery remain open.
+
+## reference track-header mixer component — Pulse2835 / PR439, 19 october2026
+
+Additive shared filled numeric fields replace the rejected separate resident
+rail/readout composition. Track activator/Solo, gain/pan and Return gain/mute
+retain canonical commands; TrackBalance/ReturnGain reuse existing worker gesture
+custody, transient prepared previews, Cancel and one-step history. Standard widget
+appearances, automation-owned `auto`, streaming +/- and pinned Return placement
+remain. See docs/track-header-volume.md for exact scope and evidence limits.
+Recording arm is disabled/unavailable and remains Pulse26's deferred0.2 dependency;
+Return pan/Solo have no current model and are omitted. Full2835 acceptance and
+optimized native visual/listening checks stay open. No PR438/431 implementation,
+recording backend, codec, new DSP or native app action is included. Final current
+candidate checks/review/merge belong to the sole merger.
+
+
+PR432 integration: preserve title/body inherited fill reuse and current passive
+preview interaction. Private fixture uses one Environment before sample/UI
+startup; central Environment tests retain catalog lifecycle coverage. Original paint/selection/
+rename/geometry test body unchanged. Current owning/required checks and review
+pending; native readability/input acceptance remains open.
+
+
+PR346 current integration: actual held-middle-pan plain-L queued a worker edit
+on unchanged owner production (one executed RED). Add existing active-pan guard
+only; original complete-selection/Command-L/typing/Console/drop controls kept.
+Private fixture now shares one Environment before startup; no duplicate lifecycle
+test. Corrected owning/required checks and review pending; native acceptance open.
+
+
+PR346 review4321221302: real held-ruler plain-L queued a loop request on
+unchanged missing-guard source (one executed RED). Add existing scrub_active
+predicate beside the pan guard, preserving held/released final seek target
+through existing admission/refusal. L/CmdL and post-retirement Undo/Redo
+controls added; no seek/controller policy change. Current checks/review pending.
+
+## selected-track sample input integration — PR427 / pulse2821
+
+Composed canonical source onto current qualified main, preserving worker-owned
+instrument Enter and all other browser behavior. Reuse the existing is_off grid
+predicate so remembered disabled densities visibly refuse quantized insertion.
+Actual Enter reproduced Off passing refusal then OffDensity(Fine) failing it;
+later variants were not executed after that failure. The private sample fixture
+now precreates one shared Environment before WAV/Service startup and checks its
+identity and four preference paths; original six behavior/helper bodies remain.
+Current-head required qualification/review and native acceptance remain separate.
+
+## hidden-source picker integration — pulse2844 / PR446
+
+Actual Remove → folder-picker same custom path reproduced invisible selection on
+composed439607. Reuse only existing source visibility restoration and require
+visibility before picker selection; preserve Samples convention and all current
+browser Enter/density/capture behavior. Local owning fixtures bind their original
+paths and catalog jobs to one Environment, with pointer/four-path assertions;
+original test bodies remain. Current focused/required/review and native acceptance
+remain separate; old source receipts do not qualify this combined candidate.
