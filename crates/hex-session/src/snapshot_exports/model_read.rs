@@ -72,6 +72,15 @@ impl<'a> SnapshotProjectRead<'a> {
     pub fn master_gain(self) -> f32 {
         self.project.master_gain()
     }
+    pub fn main_devices(self) -> impl ExactSizeIterator<Item = SnapshotDeviceRead<'a>> + 'a {
+        self.project
+            .main_devices()
+            .iter()
+            .map(|device| SnapshotDeviceRead {
+                device,
+                class: hex_engine::NativeDeviceClass::Effect,
+            })
+    }
     pub fn tracks(self) -> impl ExactSizeIterator<Item = SnapshotTrackRead<'a>> + 'a {
         self.project
             .tracks()
