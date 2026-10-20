@@ -210,6 +210,28 @@ pass. Same-head change/refusal, exact metadata/ACK delivery and zero allocation
 or deallocation while guarded remain unexecuted behavioral tests; this adds no
 clean UI/strict/full/native/usable qualification.
 
+The Spectrum/audition continuation now uses nominal effect membership and the
+existing Return/Track/Main focus precedence. It prepares currentness and exact
+revision before target retirement, status changes or focus actions. Reconciliation
+reserves only the existing off-set length outside the read, fills Copy stale IDs
+without growth, and removes them after the guard. Busy/refused reads preserve
+intent; a completed stale check may retire it. Focus captures actual ownership
+at prepaint and rechecks at focus, allowing later capture after Busy.
+
+The exact 15-path core/docs delta from upstream `695ba5d8` to `7bdcaccf`
+was composed without conflicts; every previous blob matched its source parent.
+It supplies exact content tokens and prospective warp scratch described in
+[sampler trim facades](sampler-trim-facades-2789.md). Its focused upstream tests
+are component evidence; the UI trim consumer remains pending.
+
+The frozen combined `modern-spectrum-trim-core` library diagnostic ended with
+exit 101 and 401 actual errors, unchanged full-source SHA-256
+`b030cf2cf5f8b1992de55e9dba4d309f92041e29802bb9ccc0bce5acec38ee9d`.
+There are no primary diagnostics in the new Spectrum or target-check blocks.
+Scoped format/diff/layout checks pass. Registered focus/pressure/allocation
+behavior, complete startup/backend integration, full CI and optimized delivery
+remain unexecuted. This is no usable-build or native qualification.
+
 The sections below preserve the older b94-based component's source history;
 their unconnected-dispatch and unavailable-query descriptions are historical.
 

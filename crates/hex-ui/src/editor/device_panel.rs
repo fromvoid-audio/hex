@@ -45,6 +45,9 @@ mod eq8_panel;
 mod eq_panel;
 pub(super) use eq_panel::after_scroll_worker_event as eq_scroll_after_worker_event;
 pub(super) use eq_panel::reconcile_spectrum as reconcile_eq_spectrum;
+pub(super) use eq_panel::{
+    focused_effect_identity_is_current, reconcile_spectrum_checked as reconcile_eq_spectrum_checked,
+};
 mod gain_meters;
 mod gate_panel;
 mod keyboard;

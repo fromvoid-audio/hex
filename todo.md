@@ -6445,3 +6445,12 @@ union and remaining host wiring/retirement still continue in canonical389.
   aggregate pre-selector construction/custody and usable Sampler remain open;
   no full CI/native/registration claim. Original negatives and910 graph evidence
   retained; no Compressor/Beats/model/native writes.
+
+## 20 october 2026 — sampler retained-read integration continuation
+
+- Spectrum/audition membership, focus and reconciliation use nominal reads with
+  cleanup after successful preflight; refused reads preserve intent.
+- Composed exact upstream trim content and prospective warp helpers (`7bdcaccf`);
+  the UI trim consumer is still pending. Combined scoped library diagnostic
+  fails with 401 errors. Registered pressure/focus checks, complete startup,
+  full local CI and optimized test delivery remain open; no app operation.
