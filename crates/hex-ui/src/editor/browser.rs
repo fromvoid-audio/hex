@@ -13,7 +13,6 @@ use gpui::{
 use hex_audio::sample_preview::Phase;
 use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_directory};
 use hex_preferences::BrowserPlaces;
-use hex_project::Command;
 use hex_session::service::AudioPreview;
 use hex_session::service::Request;
 use std::{
