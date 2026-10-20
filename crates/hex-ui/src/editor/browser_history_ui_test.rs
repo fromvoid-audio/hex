@@ -652,3 +652,193 @@ fn builtin_history_fixture(
     });
     (handle, editor, directory)
 }
+
+#[gpui::test]
+fn review_history_disabled_forward_preserves_the_live_query_transaction(cx: &mut TestAppContext) {
+    let (handle, editor, _directory) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    click(visual, "browser-search");
+    visual.simulate_input("l");
+    visual.run_until_parked();
+    click(visual, "browser-history-forward");
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| {
+            assert!(
+                view.browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window),
+                "disabled arrow changed focus"
+            );
+            assert!(!view.browser.history.can_forward());
+        })
+    });
+    visual.simulate_input("o");
+    visual.run_until_parked();
+    assert_eq!(query(&editor, visual), "lo");
+    click(visual, "browser-history-back");
+    assert_eq!(
+        query(&editor, visual),
+        "",
+        "disabled click must not split typing into two history edits"
+    );
+    editor.read_with(visual, |view, _| {
+        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty())
+    });
+}
+
+#[gpui::test]
+fn review_history_type_delete_collapses_adjacent_location_before_next_edit(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _directory) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    click(visual, "browser-search");
+    visual.simulate_input("l");
+    visual.run_until_parked();
+    visual.simulate_keystrokes("backspace");
+    visual.run_until_parked();
+    assert_eq!(query(&editor, visual), "");
+    editor.read_with(visual, |view, _| {
+        assert!(
+            !view.browser.history.can_back(),
+            "type/delete retained a duplicate predecessor"
+        )
+    });
+    visual.simulate_input("x");
+    visual.run_until_parked();
+    click(visual, "browser-history-back");
+    assert_eq!(query(&editor, visual), "");
+    editor.read_with(visual, |view, _| {
+        assert!(!view.browser.history.can_back());
+        assert!(view.browser.history.can_forward());
+        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+    });
+}
+
+#[gpui::test]
+fn review_history_enabled_arrow_leaves_search_before_following_typing(cx: &mut TestAppContext) {
+    let (handle, editor, _directory) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    click(visual, "browser-search");
+    visual.simulate_input("l");
+    visual.run_until_parked();
+    click(visual, "browser-history-back");
+    visual.update(|window, cx| {
+        editor.read_with(cx, |view, cx| {
+            assert!(view.browser.results_focus.is_focused(window));
+            assert!(
+                !view
+                    .browser
+                    .search
+                    .read(cx)
+                    .focus_handle()
+                    .is_focused(window)
+            );
+        })
+    });
+    visual.simulate_input("z");
+    visual.run_until_parked();
+    assert_eq!(
+        query(&editor, visual),
+        "",
+        "results navigation must not type into the restored query"
+    );
+    editor.read_with(visual, |view, _| {
+        assert!(view.browser.playback_path.is_none());
+        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+    });
+}
+
+#[gpui::test]
+fn review_history_restores_realized_top_even_when_the_anchor_is_already_visible(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, directory) = fixture(cx);
+    for index in 0..80 {
+        std::fs::write(
+            directory.0.join(format!("samples/{index:03}.wav")),
+            mono_pcm_wav(24),
+        )
+        .unwrap();
+    }
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    click(visual, "browser-place-0");
+    editor.update(visual, |view, cx| {
+        view.browser.auto_audition = false;
+        view.browser
+            .scroll
+            .scroll_to_item_strict(10, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let anchor = editor.read_with(visual, |view, cx| {
+        let scroll = view.browser.scroll.0.borrow();
+        assert!(scroll.deferred_scroll_to_item.is_none());
+        let top = scroll.base_handle.logical_scroll_top().0;
+        assert_eq!(top, 10);
+        view.browser_visible_entries(cx)[top].path.clone()
+    });
+    click(visual, "browser-section-devices");
+    click(visual, "browser-history-back");
+    editor.read_with(visual, |view, cx| {
+        let scroll = view.browser.scroll.0.borrow();
+        assert!(
+            scroll.deferred_scroll_to_item.is_none(),
+            "inspect painted layout, not deferred intention"
+        );
+        let top = scroll.base_handle.logical_scroll_top().0;
+        assert_eq!(view.browser_visible_entries(cx)[top].path, anchor);
+        assert_eq!(top, 10);
+    });
+    assert!(
+        visual.debug_bounds("browser-entry-10").is_some(),
+        "actual anchor row must be painted"
+    );
+}
+
+#[gpui::test]
+fn review_history_waits_for_the_used_catalog_not_an_unrelated_scan(cx: &mut TestAppContext) {
+    for indexed in [false, true] {
+        let (handle, editor, _directory) = fixture(cx);
+        let visual = &mut VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        if indexed {
+            click(visual, "browser-search");
+            visual.simulate_input("loop");
+            visual.run_until_parked();
+        }
+        editor.update(visual, |view, _| view.browser.auto_audition = false);
+        click(visual, "browser-entry-0");
+        let selected = editor.read_with(visual, |view, cx| view.browser_selected_item(cx).unwrap());
+        click(visual, "browser-section-devices");
+        editor.update(visual, |view, cx| {
+            view.move_browser_history(false, cx);
+            // Run the ordinary provider scheduling path before checking readiness.
+            view.reconcile_browser_tree_requests(cx);
+            view.refresh_sample_catalog(cx);
+            assert!(
+                view.browser.samples.history_loading(),
+                "real catalog work was not started"
+            );
+            view.restore_browser_history_position(cx);
+            assert_eq!(
+                view.browser_selected_item(cx),
+                (!indexed).then_some(selected.clone()),
+                "indexed={indexed}"
+            );
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(visual, |view, cx| {
+            assert_eq!(view.browser_selected_item(cx), Some(selected));
+            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert!(view.browser.playback_path.is_none());
+        });
+    }
+}
