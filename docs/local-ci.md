@@ -88,6 +88,9 @@ retain comprehensive Python discovery. The reviewed impact matrix and exact
 selection evidence are described in development-workflow.md. This changes only
 the Python command in applicable merge plans, not guards, Rust configurations,
 Cargo target ownership, failure handling or actual matched-count requirements.
+Full-audit delivery qualification separately requires the complete freshly
+resolved command list; full Rust scope alone does not establish comprehensive
+Python coverage. The existing explicit development delivery option is unchanged.
 It cannot turn an old quick or custom component report into required evidence.
 
 As requested on 10 October 2026, agents merge a completed, focused PR immediately

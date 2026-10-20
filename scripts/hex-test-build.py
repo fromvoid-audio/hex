@@ -426,6 +426,11 @@ def validate_ci(report: Path, runner, candidate: str, *, allow_dev_profile: bool
         if resolved != plan:
             raise DeliveryError("recorded scope differs from the current source/dependency plan")
         expected_steps = [(step.step_id, list(step.argv)) for step in ci.planned_steps(plan)]
+        # Full Rust scope can use reduced Python coverage for ordinary merges.
+        # Qualified delivery still requires the complete freshly resolved audit.
+        if not allow_dev_profile and expected_steps != [
+                (step.step_id, list(step.argv)) for step in ci.FULL_STEPS]:
+            raise DeliveryError("beta/stable/native qualified delivery requires the full audit, not scoped dev checks")
         allowed_mode = evidence.get("mode") == plan["profile"]
     if evidence.get("schema_version") == 2:
         required = ci.planned_steps(plan or {"scope": "full"})

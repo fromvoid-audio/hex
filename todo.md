@@ -6461,3 +6461,7 @@ the hashed plan; missing/zero/all-skipped requested tests still refuse. The
 shared subset is measured separately without Cargo; exact full-policy bootstrap
 evidence and limits are recorded with the canonical PR. Sampler PR513 remains
 held and its interrupted report is not requalified by this tooling change.
+The delivery receiver also compares the freshly resolved full-audit commands,
+preventing a core/shared-Python merge report from becoming native/release
+qualification. A consumer regression proved refusal before pending/build; full
+and explicit-development positives remain covered.

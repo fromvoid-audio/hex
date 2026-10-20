@@ -41,6 +41,12 @@ in the existing hashed plan and printed at the Python step; actual unittest
 counts remain in its log and summary. Missing names, zero matches and all-skipped
 requested configurations refuse qualification.
 
+A core merge can have full Rust scope with reduced Python self-tests. That is
+merge evidence, not full-audit native/release qualification. The delivery receiver
+recomputes the plan and requires the exact complete audit command list, including
+comprehensive Python discovery, unless its existing explicit development-profile
+option is selected. Explicit full/release audits remain the qualification path.
+
 Docs accompanying a known executable scope do not falsely force a mixed full
 run. Both sides of renames, deletions, dirty and nonignored untracked inputs are
 considered. Merge plans require clean committed source. Cargo's actual package
