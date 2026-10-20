@@ -1,0 +1,11 @@
+{
+  "source": "cdb4d626a9575d2106df93946550d80910ae9e78",
+  "tree": "a5f63dcdbfe5d0803c87e007610d82f901deae3f",
+  "parent": "62960eef105bc3e4734e0ea6a31ae90dbded8e83",
+  "source_ref": "refs/heads/evidence/hex395-eq-response-336-source",
+  "canonical_base": "b94b0e2f6fbec0932d422c00d4584739c192cb9a",
+  "bytes": 109887,
+  "sha256": "cca4f064dbc425b9e304aeed42b41b2037164412196018d814115a8305a7e9fd",
+  "payloads": 36,
+  "paths": 10
+}
