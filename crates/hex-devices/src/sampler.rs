@@ -8,6 +8,7 @@ mod binding;
 mod envelope;
 mod plan;
 mod runtime;
+pub mod state;
 mod voice;
 pub use binding::{BorrowedSamplerVoice, BoundSamplerPlan};
 pub use envelope::Envelope;

@@ -1,6 +1,6 @@
 use super::*;
 use crate::{Limits, ResampleLimits, decode_wav_file, resample};
-use hex_devices::sampler::{PreparedSamplerPlan, Region, SampleChannels, SampleShape, Settings};
+use hex_devices::sampler::state::{SamplerState, prepare_runtime_on_control};
 use hex_engine::{
     AudioStorageReservation, OwnedAudioInputs,
     native_device_resources::{
@@ -8,12 +8,9 @@ use hex_engine::{
     },
 };
 use hex_lattice::{
-    DeviceResources, NativeInstrumentEvent, NativeInstrumentRuntimeLimits,
-    NativeInstrumentRuntimePair, TuningTable,
+    NativeInstrumentEvent, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair, TuningTable,
 };
-use hex_lattice_contract::{
-    DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceTypeId, NativeDeviceState,
-};
+use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 struct Fixture(PathBuf);
@@ -154,26 +151,30 @@ fn real_mono_and_stereo_wavs_reach_actual_sampler_from_original_rate_native_bank
             &AtomicBool::new(false),
         )
         .unwrap();
-        let state =
-            NativeDeviceState::new(DeviceTypeId::from_static("test.decoded-sampler"), 1, vec![])
-                .unwrap()
-                .with_asset_references(vec![DeviceAssetReference {
-                    slot: DeviceAssetSlot::new(1).unwrap(),
-                    asset: DeviceAssetKey::new(asset.value()).unwrap(),
-                }])
-                .unwrap();
+        let mut authored = SamplerState::for_source_frames(4).unwrap();
+        authored.voices = 1;
+        let state = authored
+            .to_native()
+            .unwrap()
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(asset.value()).unwrap(),
+            }])
+            .unwrap();
         let scope = catalog.prepare_scope_on_control(&state, 4_096).unwrap();
         let resources = catalog.resources(&bank, &scope).unwrap();
-        let prepared = PreparedSamplerPlan::new(
-            SampleShape::new(4, 8_000, SampleChannels::Stereo).unwrap(),
-            8_000,
-            Settings::new(Region { start: 0, end: 4 }),
+        let prepared = prepare_runtime_on_control(
+            &state,
+            &hex_lattice::DevicePreparationContext {
+                sample_rate: 8_000,
+                tuning: &TuningTable::default(),
+                resources: &resources,
+            },
+            1,
         )
-        .unwrap()
-        .bind_source_on_control(resources.get(0).unwrap())
-        .unwrap()
-        .prepare_runtime_on_control(1, 1, &TuningTable::default())
         .unwrap();
+        drop(authored);
+        drop(state);
         let mut pair = NativeInstrumentRuntimePair::new(
             &prepared,
             NativeInstrumentRuntimeLimits {

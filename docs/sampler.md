@@ -212,3 +212,31 @@ installed-build/hash check or reference experiment was possible. The existing
 documented reference is Live12.4.6; recheck its build/hash before taking captures.
 Record source settings, original fixture hashes, exact actions, numerical
 tolerances and per-feature results using the repository research template.
+
+## loaded authored state and control preparation — pulse2961 / PR545
+
+`sampler::state::SamplerState` encodes current finite musical settings in
+`NativeDeviceState` under `hex.instrument.sampler`, current state version1.
+It contains no PCM or file path. The existing Classic/One-Shot/Slice, region,
+loop/reverse, pitch/gain/balance/velocity and amplitude-envelope laws are retained;
+no new DSP is added. Strict decode refuses unsupported versions, malformed or
+truncated payloads, reserved fields, nonfinite/out-of-domain values and invalid
+source-slot declarations. This is the current alpha format, without historical
+readers or conversion. Replacing settings preserves actual host gains and the
+same asset-reference storage; source replacement remains a separate host edit.
+
+`prepare_runtime_on_control` is the production state-to-runtime boundary for the
+next prepared-project/export compiler. It requires one actual source in slot1,
+resolves its exact asset identity, validates actual source shape/rate and authored
+bounds, then prepares scalar coefficients against the effective project tuning.
+Unbound settings may be assembled on control but cannot prepare a loaded runtime.
+The generic registry's asset-free admission rule remains unchanged; no builtin,
+browser or native publication registration is added.
+
+Owning tests cover payload roundtrips/refusals, actual decoded-state PCM, source
+refusals and authored gain/pitch/region plus absolute project tuning in a real
+runtime pair. The real mono/stereo WAV producer fixture now passes through this
+canonical state and control preparer before its literal PCM oracle. Marker and
+state storage can retire after control preparation; actual source ownership must
+still survive processing. These checks do not complete host/export custody,
+project-to-WAV export, controls, app playback or optimized delivery.
