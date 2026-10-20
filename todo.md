@@ -6460,3 +6460,19 @@ pair PCM, refusal/rollback, tuning/velocity, reset and quiescence. Exact source,
 required core qualification and inspection-only allocation limits are recorded
 with the canonical PR. Host resource admission, registry/loading and all three
 app playback paths remain open; this does not complete the usable sampler MVP.
+
+## app-only Python self-test impact — pulse2926 / PR512
+
+Ordinary UI-only or core-only Rust merge inputs retain eight explicit shared
+invariants and the cheap selection-policy tests. All tooling/configuration,
+Python-test, unknown or mixed changes and explicit full/release audits retain
+comprehensive discovery. Rust features/configurations, guards and target custody
+are unchanged. Actual selected IDs, excluded groups and reasons participate in
+the hashed plan; missing/zero/all-skipped requested tests still refuse. The
+shared subset is measured separately without Cargo; exact full-policy bootstrap
+evidence and limits are recorded with the canonical PR. Sampler PR513 remains
+held and its interrupted report is not requalified by this tooling change.
+The delivery receiver also compares the freshly resolved full-audit commands,
+preventing a core/shared-Python merge report from becoming native/release
+qualification. A consumer regression proved refusal before pending/build; full
+and explicit-development positives remain covered.

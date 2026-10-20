@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -9,7 +10,14 @@ import re
 import subprocess
 from urllib.parse import unquote
 
-POLICY_VERSION = 1
+_PYTHON_SPEC = importlib.util.spec_from_file_location(
+    "hex_python_test_plan", Path(__file__).with_name("python_test_plan.py"))
+if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
+    raise RuntimeError("Python self-test impact policy unavailable")
+python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
+_PYTHON_SPEC.loader.exec_module(python_tests)
+
+POLICY_VERSION = 2
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
 TOOLING = {
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
@@ -157,6 +165,9 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
               "paths": paths, "scope": scope, "reasons": reasons,
               "affected_packages": affected, "cargo_inventory": inventory,
               "runtime_inputs": inputs,
+              "python_tests": python_tests.select(
+                  profile, [path for path in paths if not metadata_path(path)],
+                  inventory, UI_PACKAGES, python_tests.available_modules(root)),
               "qualifies_merge": profile in {"merge", "full", "release"}}
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
     return result

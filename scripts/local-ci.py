@@ -164,7 +164,10 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                  next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
     else:
         raise ValueError("unsupported resolved scope")
-    return tuple(Step(s.step_id, s.argv, s.uses_cargo_target,
+    return tuple(Step(s.step_id,
+                      ci_plan.python_tests.argv(plan["python_tests"])
+                      if s.step_id == "runner-tests" and "python_tests" in plan else s.argv,
+                      s.uses_cargo_target,
                       s.argv[:2] == ("cargo", "test") or s.step_id == "runner-tests") for s in steps)
 
 
@@ -1396,6 +1399,9 @@ class LocalCiRunner:
         steps.append(entry)
         self._write_summary()
         print(f"[{index}/{len(self.steps)}] {step.step_id}: running", flush=True)
+        if step.step_id == "runner-tests" and self.summary.get("plan") and "python_tests" in self.summary["plan"]:
+            selection = self.summary["plan"]["python_tests"]
+            print("python self-tests: " + json.dumps(selection, sort_keys=True), flush=True)
         try:
             with log_path.open("w", encoding="utf-8") as log, \
                     terminal_progress(f"checking {step.step_id}", announce=False):

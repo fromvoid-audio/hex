@@ -1,0 +1,181 @@
+"""App-only self-test selection and conservative refusal, without Cargo builds."""
+import copy
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+import unittest
+
+# Module import only: never expose an imported TestCase class in this namespace.
+import test_ci_plan as existing
+
+SPEC = importlib.util.spec_from_file_location(
+    "python_impact_fixture", Path(__file__).resolve().parents[1] / "python_test_plan.py")
+impact = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(impact)
+ROOT = Path(__file__).resolve().parents[2]
+INVENTORY = [
+    {"name": "hex-ui", "manifest": "crates/hex-ui/Cargo.toml", "dependencies": []},
+    {"name": "hex-engine", "manifest": "crates/hex-engine/Cargo.toml", "dependencies": []},
+]
+
+
+def selection(paths, profile="merge", modules=None):
+    return impact.select(profile, paths, INVENTORY, {"hex-ui", "hex-widgets"},
+                         sorted(impact.REVIEWED_MODULES) if modules is None else modules)
+
+
+def cases(suite):
+    for item in suite:
+        if isinstance(item, unittest.TestSuite):
+            yield from cases(item)
+        else:
+            yield item.id()
+
+
+class SelectionTests(unittest.TestCase):
+    def test_ui_and_core_app_edits_have_the_same_reviewed_shared_checks(self):
+        ui = selection(["crates/hex-ui/src/editor.rs"])
+        core = selection(["crates/hex-engine/src/lib.rs"])
+        self.assertEqual(ui["mode"], "shared")
+        self.assertEqual(core["mode"], "shared")
+        self.assertEqual(ui["test_selectors"], core["test_selectors"])
+        self.assertIn("test_local_ci", ui["excluded_groups"])
+        self.assertIn("test_launch_restart_compile", ui["excluded_groups"])
+        self.assertIn("test_ci_plan:remaining-cases", ui["excluded_groups"])
+
+    def test_tooling_configuration_vendor_and_unknown_inputs_stay_comprehensive(self):
+        for path in (
+            "launch", "scripts/launch-restart.py", "scripts/local-ci.py",
+            "scripts/ci_plan.py", "scripts/python_test_plan.py", "scripts/build_inputs.py",
+            "scripts/hex-test-build.py", "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
+            "scripts/tests/test_ci_plan.py", "scripts/new-helper.py", "Cargo.toml", "Cargo.lock",
+            ".cargo/config.toml", "rust-toolchain.toml", "AGENTS.md",
+            "crates/hex-ui/Cargo.toml", "crates/hex-ui/build.rs",
+            "crates/hex-ui/assets/not-source.rs", "third_party/gpui/src/lib.rs",
+            "assets/fonts/font.data", "changelog/generated.json", "unknown.rs",
+        ):
+            with self.subTest(path=path):
+                result = selection([path])
+                self.assertEqual(result["mode"], "comprehensive")
+                self.assertEqual(impact.argv(result), existing.ci.FULL_STEPS[0].argv)
+                self.assertEqual(result["excluded_groups"], [])
+
+    def test_mixed_inputs_and_unregistered_rename_endpoint_cannot_take_fast_path(self):
+        for paths in (
+            ["crates/hex-ui/src/a.rs", "crates/hex-engine/src/a.rs"],
+            ["crates/hex-ui/src/a.rs", "launch"],
+            ["crates/hex-engine/src/a.rs", "unknown/renamed.rs"],
+        ):
+            self.assertEqual(selection(paths)["mode"], "comprehensive")
+
+    def test_new_or_missing_test_module_inventory_falls_back(self):
+        known = sorted(impact.REVIEWED_MODULES)
+        for modules in (known + ["test_new_safety_contract"], known[1:], []):
+            self.assertEqual(selection(["crates/hex-ui/src/a.rs"], modules=modules)["mode"],
+                             "comprehensive")
+
+    def test_actual_nested_duplicate_basename_is_an_unregistered_module(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tests = root / "scripts/tests"
+            tests.mkdir(parents=True)
+            for name in impact.REVIEWED_MODULES:
+                (tests / (name + ".py")).write_text("")
+            self.assertEqual(selection(["crates/hex-ui/src/a.rs"],
+                                       modules=impact.available_modules(root))["mode"], "shared")
+            nested = tests / "nested"
+            nested.mkdir()
+            (nested / "__init__.py").write_text("")
+            (nested / "test_ci_plan.py").write_text("import unittest\n")
+            modules = impact.available_modules(root)
+            self.assertIn("test_ci_plan", modules)
+            self.assertIn("nested.test_ci_plan", modules)
+            self.assertEqual(selection(["crates/hex-ui/src/a.rs"], modules=modules)["mode"],
+                             "comprehensive")
+
+    def test_explicit_full_release_and_nonmerge_stay_comprehensive(self):
+        for profile in ("full", "release", "edit", "unknown"):
+            self.assertEqual(selection(["crates/hex-ui/src/a.rs"], profile)["mode"],
+                             "comprehensive")
+        self.assertEqual(selection([], "full")["mode"], "comprehensive")
+        self.assertEqual(selection([])["mode"], "none")
+
+    def test_selected_collection_is_exactly_approved_methods_and_local_selector_cases(self):
+        chosen = selection(["crates/hex-ui/src/a.rs"])
+        loaded = list(cases(unittest.defaultTestLoader.loadTestsFromNames(chosen["test_selectors"])))
+        expected = set(impact.SHARED_TESTS) | {
+            "test_python_test_plan.SelectionTests." + name
+            for name in unittest.defaultTestLoader.getTestCaseNames(SelectionTests)
+        }
+        self.assertEqual(set(loaded), expected)
+        self.assertEqual(len(loaded), len(expected))
+        self.assertFalse(any(name.startswith("test_local_ci.") for name in loaded))
+
+    def test_empty_unknown_and_missing_named_selection_refuse(self):
+        for chosen in ({"mode": "none"}, {"mode": "unclassified"},
+                       {"mode": "shared", "test_selectors": []},
+                       {"mode": "shared", "test_selectors": [""]}):
+            with self.assertRaises(ValueError):
+                impact.argv(chosen)
+        missing = {"mode": "shared", "test_selectors": [
+            "test_ci_plan.ScopeTests.this_case_does_not_exist"]}
+        result = subprocess.run((sys.executable, *impact.argv(missing)[1:]), cwd=ROOT,
+                                capture_output=True, text=True, check=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FAILED", result.stderr)
+
+    def test_selection_changes_only_python_command_not_rust_guards_or_ownership(self):
+        for scope in ("ui", "full", "tooling"):
+            before = existing.ci.planned_steps({"scope": scope})
+            chosen = selection(["crates/hex-ui/src/a.rs"]) if scope == "ui" else selection(["launch"])
+            after = existing.ci.planned_steps({"scope": scope, "python_tests": chosen})
+            self.assertEqual(before[1:], after[1:])
+            self.assertEqual(before[0].uses_cargo_target, after[0].uses_cargo_target)
+            self.assertTrue(after[0].requires_tests)
+        core = existing.ci.planned_steps({"scope": "full", "python_tests": selection([
+            "crates/hex-engine/src/lib.rs"])})
+        self.assertEqual(core[1:], existing.ci.planned_steps({"scope": "full"})[1:])
+        self.assertNotEqual(core[0].argv, existing.ci.FULL_STEPS[0].argv)
+
+    def test_real_git_planner_embeds_python_impact_and_hash_independent_of_rust_scope(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for module in impact.REVIEWED_MODULES:
+                path = root / "scripts/tests" / (module + ".py")
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("")
+            metadata = {"workspace_members": [], "packages": []}
+            for package in INVENTORY:
+                manifest = root / package["manifest"]
+                manifest.parent.mkdir(parents=True, exist_ok=True)
+                manifest.write_text("fixture metadata supplied without invoking Cargo")
+                source = manifest.parent / "src/lib.rs"
+                source.parent.mkdir();source.write_text("old")
+                metadata["workspace_members"].append(package["name"])
+                metadata["packages"].append({
+                    "id": package["name"], "name": package["name"],
+                    "manifest_path": str(manifest), "features": {}, "targets": [], "dependencies": [],
+                })
+            def git(*args):
+                return subprocess.check_output(["git", *args], cwd=root, stderr=subprocess.DEVNULL).decode().strip()
+            git("init", "-q");git("config", "user.name", "selection fixture")
+            git("config", "user.email", "fixture@invalid")
+            git("add", ".");git("commit", "-qm", "base")
+            base = git("rev-parse", "HEAD")
+            for name, expected_scope in (("hex-ui", "ui"), ("hex-engine", "full")):
+                (root / "crates" / name / "src/lib.rs").write_text("changed")
+                git("add", ".");git("commit", "-qm", name)
+                source = git("rev-parse", "HEAD")
+                resolved = existing.plan.resolve(root, profile="merge", base=base,
+                                                 source=source, metadata=metadata)
+                self.assertEqual(resolved["scope"], expected_scope)
+                self.assertEqual(resolved["python_tests"]["mode"], "shared")
+                unhashed = copy.deepcopy(resolved)
+                certificate = unhashed.pop("plan_sha256")
+                self.assertEqual(certificate, hashlib.sha256(
+                    json.dumps(unhashed, sort_keys=True).encode()).hexdigest())
+                base = source
