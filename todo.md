@@ -6322,3 +6322,12 @@ old/unmatched ACK, interposed canonical edit, document replacement/identity ABA,
 invalid intent and Utility missing/wrong-type controls are included. Earlier
 fixture/compiler and product-regression negatives remain retained separately.
 Final clean candidate required plan/review/merge audit remains pending.
+
+PR484 constructor regression: removed the duplicate Main/Project group location
+within the existing closed Audio-only constructor and explicitly checked prepared
+and actual runtime Main entries before group emission. Existing group identities,
+reservation, storage accounting and ordinary Main behavior are unchanged. Actual
+known constructor, empty/populated eligibility, Engine custody and Audio default
+and feature suites pass; exact prior 51-failure required receipt is retained.
+Four further current-head Main review findings remain open; no merge/full-pass
+claim is made by these owning checks.

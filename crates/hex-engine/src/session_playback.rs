@@ -517,7 +517,7 @@ impl SessionPlayback {
             route_scratch: _,
             device_chains,
             return_chains,
-            main_chain: _,
+            main_chain,
             return_scratch: _,
             return_effect_tails,
             mutable_instruments,
@@ -552,7 +552,15 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
-        if live_expression.is_some() || computer_keyboard.is_some() {
+        // Main is inline Session storage in this closed candidate class, not a
+        // separately transferable owner. Inspect prepared and actual runtime
+        // entries independently; retained empty-chain capacity stays inventoried
+        // by the existing fresh-storage walk. Ordinary Main playback is unaffected.
+        if !self.revision.arrangement().main_device_chain.is_empty()
+            || main_chain.storage_view().entries().next().is_some()
+            || live_expression.is_some()
+            || computer_keyboard.is_some()
+        {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         for index in 0..device_chains.len() {
@@ -578,7 +586,6 @@ impl SessionPlayback {
         }
         visit(7, 0, true)?; // this exact Session revision handle
         visit(8, 0, compensation.is_some())?;
-        visit(9, 0, true)?; // singleton Main, existing owner kinds unchanged
         Ok(())
     }
     pub(crate) fn set_device_metering(&mut self, enabled: bool) {

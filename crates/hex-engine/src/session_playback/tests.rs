@@ -11308,3 +11308,60 @@ mod mutable_long_tail_tests;
 
 #[path = "stream_action_tests.rs"]
 mod stream_action_tests;
+
+#[test]
+fn closed_candidate_main_checks_prepared_and_actual_runtime_before_any_groups() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    fn runtime(with_main: bool) -> SessionPlayback {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        if with_main {
+            editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: hex_devices::utility::UTILITY_DEFINITION
+                        .default_state()
+                        .unwrap(),
+                })
+                .unwrap();
+        }
+        let revision = PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    }
+    let mut empty = runtime(false);
+    let mut main = runtime(true);
+    let mut locations = std::collections::BTreeSet::new();
+    empty
+        .visit_candidate_groups(&mut |kind, index, _| {
+            assert!(locations.insert((kind, index)), "duplicate owning location");
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        locations.len() + 5,
+        candidate_group_reservation(0, 0).unwrap()
+    );
+    // Both prepared and runtime Main are real populated chains, not placeholders.
+    assert!(!main.revision.arrangement().main_device_chain.is_empty());
+    assert!(main.main_chain.storage_view().entries().next().is_some());
+    let refuses_without_emitting = |runtime: &SessionPlayback| {
+        let mut emitted = 0;
+        assert_eq!(
+            runtime.visit_candidate_groups(&mut |_, _, _| {
+                emitted += 1;
+                Ok(())
+            }),
+            Err(crate::AudioStorageError::UnsupportedGraph)
+        );
+        assert_eq!(emitted, 0);
+    };
+    refuses_without_emitting(&main);
+    std::mem::swap(&mut empty.main_chain, &mut main.main_chain);
+    refuses_without_emitting(&empty); // runtime-only population
+    refuses_without_emitting(&main); // prepared-only population
+}

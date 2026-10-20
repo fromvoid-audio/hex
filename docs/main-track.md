@@ -228,3 +228,16 @@ catalog/owner/stamp admission cannot finish an unrelated live control. Utility
 popup controls cover actual action/history and retirement after type change or
 removal. These portable checks do not establish native visual or listening
 acceptance.
+
+### closed Audio candidate containment
+
+The existing closed Audio-only candidate constructor still refuses nonempty
+prepared or actual runtime Main chains. An empty inline Main chain belongs to
+Session's existing container storage; it does not add a transferable group or
+reuse Project's location tag. The unchanged fresh-storage walks retain actual
+runtime entry capacity and prepared ownership accounting. Ordinary Main playback,
+rendering and UI support are unaffected by this constructor-class restriction.
+Actual constructor and storage/custody controls pass after removing the duplicate
+group; the prior full required run's 51 Audio failures remain retained. Further
+Main clock, failure rollback, export-end and outgoing-tail review findings remain
+open; these focused positives are not final merge qualification.
