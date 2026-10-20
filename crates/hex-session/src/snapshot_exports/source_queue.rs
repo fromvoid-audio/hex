@@ -2,7 +2,7 @@
 //! Entries retain actual reserved reads, not owners or copied admission quotes.
 use super::*;
 
-const CAPACITY: usize = 2;
+pub(super) const CAPACITY: usize = 2;
 
 #[derive(Default)]
 pub(super) struct SourceEventQueue {

@@ -7,9 +7,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 static NEXT_FAMILY: AtomicU64 = AtomicU64::new(1);
 
 mod event;
+mod native_editor_profile;
 mod snapshot_retirement;
 mod source_event;
 mod source_queue;
+pub use native_editor_profile::NATIVE_PLAYBACK_CANDIDATE_CAPACITY;
 pub use source_event::{
     SourceBatchFailureRead, SourceEventFacts, SourceEventMetadata, SourceEventRead,
     SourceGestureAckRead, SourceTuningGestureAckRead, SourceTuningLibraryRead,
@@ -44,6 +46,7 @@ pub use family::{
     SessionExportFamily, SnapshotEventConstruction, SnapshotFamilyCleanup,
     SnapshotFamilyInventoryGuard, SnapshotFamilyQueries, SnapshotProducerKey,
 };
+pub(crate) use transport::SnapshotSourceEventSender;
 pub use transport::{
     SnapshotEventReads, SnapshotReadCapability, SnapshotReadContinuation, SnapshotReadOperations,
     SnapshotSourceEventOperations, SnapshotSourceEventReceiver, SnapshotTransportError,

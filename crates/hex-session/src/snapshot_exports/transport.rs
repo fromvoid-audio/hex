@@ -120,15 +120,88 @@ type SourceClaim = fn(
     bool,
     &mut Option<super::SourceEventDelivery>,
 ) -> Result<(), SnapshotTransportError>;
+type SourcePrepare = fn(RetainedControlJobRoute) -> Result<(), SnapshotTransportError>;
+type SourceEnqueue = fn(
+    RetainedControlJobRoute,
+    &super::SnapshotProducerKey,
+    &mut Option<SnapshotReadStamp>,
+    &mut Option<SnapshotReadStamp>,
+    &mut Option<SnapshotReadStamp>,
+) -> Result<(), SnapshotTransportError>;
 /// Static audited Desktop routing only. No owning capture, constructor quote
 /// or admission is carried across the worker/UI boundary.
 pub struct SnapshotSourceEventOperations {
     inspect: SourceHeadRead,
     claim: SourceClaim,
+    worker: Option<(SourcePrepare, SourceEnqueue)>,
 }
 impl SnapshotSourceEventOperations {
     pub const fn new_unqualified(inspect: SourceHeadRead, claim: SourceClaim) -> Self {
-        Self { inspect, claim }
+        Self {
+            inspect,
+            claim,
+            worker: None,
+        }
+    }
+    pub const fn with_worker_transport(
+        mut self,
+        prepare: SourcePrepare,
+        enqueue: SourceEnqueue,
+    ) -> Self {
+        self.worker = Some((prepare, enqueue));
+        self
+    }
+    pub(super) fn prepare_worker(
+        &'static self,
+        route: RetainedControlJobRoute,
+        reads: &'static SnapshotReadOperations,
+    ) -> Result<(SnapshotSourceEventSender, SnapshotSourceEventReceiver), SnapshotTransportError>
+    {
+        let (prepare, _) = self.worker.ok_or(SnapshotTransportError::Protocol)?;
+        prepare(route)?;
+        Ok((
+            SnapshotSourceEventSender {
+                route,
+                operations: self,
+            },
+            SnapshotSourceEventReceiver {
+                route,
+                operations: self,
+                reads,
+                pending: None,
+                pending_head: None,
+            },
+        ))
+    }
+}
+/// Actual worker endpoint, with no owning payload or transferable admission.
+/// The same worker's real producer key is borrowed for each enqueue.
+pub(crate) struct SnapshotSourceEventSender {
+    route: RetainedControlJobRoute,
+    operations: &'static SnapshotSourceEventOperations,
+}
+impl SnapshotSourceEventSender {
+    pub(crate) fn enqueue(
+        &self,
+        control: &super::SnapshotWorkerControl,
+        canonical: &mut Option<SnapshotReadStamp>,
+        device: &mut Option<SnapshotReadStamp>,
+        tuning: &mut Option<SnapshotReadStamp>,
+    ) -> Result<(), SnapshotTransportError> {
+        if control.worker_on_control()?.route_on_control() != self.route {
+            return Err(SnapshotTransportError::Stale);
+        }
+        let (_, enqueue) = self
+            .operations
+            .worker
+            .ok_or(SnapshotTransportError::Protocol)?;
+        enqueue(
+            self.route,
+            control.producer_on_control(),
+            canonical,
+            device,
+            tuning,
+        )
     }
 }
 /// Existing receiver's bounded continuation. A binding refusal retains the

@@ -18,7 +18,7 @@ use crate::snapshot_exports::{SnapshotWorkerControl, SnapshotWorkerStop};
 pub struct WorkerStartupView<'a> {
     pub(super) startup: &'a WorkerStartup,
     pub(super) queues: &'a WorkerStartupQueues,
-    pub(super) event_sender: &'a SyncSender<Event>,
+    pub(super) event_sender: &'a EventSender,
     pub(super) recovery: &'a Option<PathBuf>,
     pub(super) cancellation: &'a SessionCancellation,
     pub(super) last_source: &'a Option<(
@@ -89,7 +89,7 @@ pub(super) enum InitialSnapshotPhase {
 pub struct WorkerInitialSessionView<'a> {
     pub(super) startup: &'a WorkerStartup,
     pub(super) queues: &'a WorkerStartupQueues,
-    pub(super) event_sender: &'a SyncSender<Event>,
+    pub(super) event_sender: &'a EventSender,
     pub(super) recovery: &'a Option<PathBuf>,
     pub(super) cancellation: &'a SessionCancellation,
     pub(super) last_source: &'a Option<(
@@ -100,6 +100,32 @@ pub struct WorkerInitialSessionView<'a> {
     pub(super) phase: &'a mut InitialSnapshotPhase,
 }
 impl WorkerInitialSessionView<'_> {
+    /// Actual transport class only. This is no storage/native certificate.
+    pub fn has_registered_event_transport_on_control(&self) -> bool {
+        self.event_sender.is_registered()
+    }
+    /// Fixed transfer AFTER the closed Initial constructor and ALL of its
+    /// family/Session/native guards end. Actual records retain source owners;
+    /// Full/Busy leaves every producer field intact, with no legacy adoption.
+    pub fn enqueue_initial_event_reads_on_control(
+        &self,
+        canonical: &mut Option<crate::snapshot_exports::SnapshotReadStamp>,
+        device: &mut Option<crate::snapshot_exports::SnapshotReadStamp>,
+        tuning: &mut Option<crate::snapshot_exports::SnapshotReadStamp>,
+    ) -> Result<(), crate::snapshot_exports::SnapshotTransportError> {
+        use crate::snapshot_exports::SnapshotTransportError;
+        if *self.phase != InitialSnapshotPhase::Entered
+            || hex_engine::CancellationQuery::is_cancelled(self.cancellation)
+        {
+            return Err(SnapshotTransportError::Stale);
+        }
+        let control = self
+            .startup
+            .control()
+            .ok_or(SnapshotTransportError::Protocol)?;
+        self.event_sender
+            .enqueue_registered(control, canonical, device, tuning)
+    }
     pub fn sample_rate_on_control(&self) -> Result<u32, hex_engine::AudioStorageError> {
         self.startup
             .session
@@ -300,6 +326,7 @@ mod tests {
             export_events: export_events.into(),
         };
         let (event_sender, _events) = mpsc::sync_channel(1);
+        let event_sender = EventSender::Unqualified(event_sender);
         let recovery = None;
         let last_source = None;
         let startup_error = None;

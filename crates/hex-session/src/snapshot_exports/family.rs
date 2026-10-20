@@ -614,6 +614,26 @@ impl SessionExportFamily {
         }
         records.source_event_head()
     }
+    /// Component readiness against ACTUAL table lengths/request backing. This
+    /// is no retrospective payload/native/whole-cap admission.
+    pub fn validate_source_event_transport_on_control(&self) -> Result<(), ExportRecordError> {
+        let records = self
+            .records
+            .try_read()
+            .map_err(|_| ExportRecordError::Busy)?;
+        let required = Self::native_editor_reservation_on_control(65_536)?;
+        if self.abandoned.load(Ordering::Acquire) || records.closed {
+            return Err(ExportRecordError::Closed);
+        }
+        if records.snapshots.len() < required.snapshot_records
+            || records.reads.len() < required.read_records
+            || records.native_compiled.is_none()
+            || !records.native_requests.ready()
+        {
+            return Err(ExportRecordError::Reservation);
+        }
+        records.validate_source_events_on_control()
+    }
     /// Borrow canonical facts/metadata of the SAME retained queue head. End
     /// this scope before receive, derive, ACK, submission or GPUI callbacks.
     pub fn read_source_event_head_on_control<R>(

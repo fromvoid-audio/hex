@@ -2,9 +2,7 @@
 //! No new registry/queue/device or origin/admission certificate is created.
 use super::*;
 use hex_engine::RetainedControlCancellation;
-use hex_session::snapshot_exports::{
-    SnapshotExportReservation, SnapshotProducerKey, SnapshotWorkerControl,
-};
+use hex_session::snapshot_exports::{SnapshotProducerKey, SnapshotWorkerControl};
 use std::time::{Duration, Instant};
 
 pub(crate) fn configure_native_table_on_control() -> Result<(), Error> {
@@ -72,12 +70,10 @@ impl Drop for PendingStartup {
 pub(crate) fn worker_from_existing_table_on_control()
 -> Result<(RetainedFamilyId<SessionExportFamily>, SnapshotWorkerControl), Error> {
     let mut pending = PendingStartup::default();
-    let (family, key) = SessionExportFamily::try_new_native_on_control(SnapshotExportReservation {
-        snapshot_records: 4,
-        read_records: 16,
-        max_bookkeeping_bytes: 65_536,
-    })
-    .map_err(record_error)?;
+    let limits =
+        SessionExportFamily::native_editor_reservation_on_control(65_536).map_err(record_error)?;
+    let (family, key) =
+        SessionExportFamily::try_new_native_on_control(limits).map_err(record_error)?;
     pending.family = Some(family);
     pending.key = Some(key);
     pending.slot = Some(retry_busy(|| {

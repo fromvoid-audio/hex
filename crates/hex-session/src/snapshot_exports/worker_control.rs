@@ -18,6 +18,10 @@ pub struct SnapshotWorkerOperations {
     report: Report,
     requests: Option<&'static super::SnapshotRequestOperations>,
     export_results: Option<&'static super::SnapshotExportResultOperations>,
+    source_events: Option<(
+        &'static super::SnapshotSourceEventOperations,
+        &'static super::SnapshotReadOperations,
+    )>,
 }
 impl SnapshotWorkerOperations {
     pub const fn new_unqualified(
@@ -33,6 +37,7 @@ impl SnapshotWorkerOperations {
             report,
             requests: None,
             export_results: None,
+            source_events: None,
         }
     }
     pub const fn with_native_requests(
@@ -47,6 +52,14 @@ impl SnapshotWorkerOperations {
         operations: &'static super::SnapshotExportResultOperations,
     ) -> Self {
         self.export_results = Some(operations);
+        self
+    }
+    pub const fn with_native_source_events(
+        mut self,
+        operations: &'static super::SnapshotSourceEventOperations,
+        reads: &'static super::SnapshotReadOperations,
+    ) -> Self {
+        self.source_events = Some((operations, reads));
         self
     }
 }
@@ -120,6 +133,21 @@ impl SnapshotWorkerControl {
     ) -> Result<super::SnapshotExportResultEndpoint, Error> {
         let operations = self.stop.operations.export_results.ok_or(Error::Protocol)?;
         super::SnapshotExportResultEndpoint::prepare(self.stop.route, operations)
+    }
+    pub(crate) fn prepare_source_events_on_control(
+        &self,
+    ) -> Result<
+        Option<(
+            super::SnapshotSourceEventSender,
+            super::SnapshotSourceEventReceiver,
+        )>,
+        Error,
+    > {
+        self.stop
+            .operations
+            .source_events
+            .map(|(operations, reads)| operations.prepare_worker(self.stop.route, reads))
+            .transpose()
     }
     pub fn stop_endpoint(&self) -> SnapshotWorkerStop {
         self.stop

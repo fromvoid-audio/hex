@@ -23,7 +23,30 @@ static SOURCE_EVENT_OPERATIONS: hex_session::snapshot_exports::SnapshotSourceEve
     hex_session::snapshot_exports::SnapshotSourceEventOperations::new_unqualified(
         inspect_source_head,
         claim_source_head,
-    );
+    )
+    .with_worker_transport(prepare_source_events, enqueue_source_event);
+fn prepare_source_events(route: RetainedControlJobRoute) -> Result<(), Error> {
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family
+            .validate_source_event_transport_on_control()
+            .map_err(record_error)
+    })
+    .map_err(family_error)?
+}
+fn enqueue_source_event(
+    route: RetainedControlJobRoute,
+    producer: &hex_session::snapshot_exports::SnapshotProducerKey,
+    canonical: &mut Option<SnapshotReadStamp>,
+    device: &mut Option<SnapshotReadStamp>,
+    tuning: &mut Option<SnapshotReadStamp>,
+) -> Result<(), Error> {
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family
+            .enqueue_source_event_on_control(producer, canonical, device, tuning)
+            .map_err(record_error)
+    })
+    .map_err(family_error)?
+}
 fn inspect_source_head(
     route: RetainedControlJobRoute,
     read: &mut dyn hex_session::snapshot_exports::SourceEventHeadContinuation,

@@ -79,7 +79,7 @@ pub trait WorkerAudioSink: Send {
 }
 
 pub(super) struct WorkerEvents {
-    sender: SyncSender<Event>,
+    sender: EventSender,
     shutdown: SessionCancellation,
     audio: Option<Box<dyn WorkerAudioSink>>,
     last_source: Option<(
@@ -97,7 +97,7 @@ impl WorkerEvents {
         &self.shutdown
     }
     pub(super) fn new(
-        sender: SyncSender<Event>,
+        sender: EventSender,
         shutdown: SessionCancellation,
         audio: Option<Box<dyn WorkerAudioSink>>,
     ) -> Self {
@@ -211,7 +211,7 @@ impl WorkerEvents {
             audio.poll_with_worker_roots(&roots);
         }
     }
-    pub(super) fn send(&mut self, mut event: Event, state: &WorkerDispatchState<'_>) -> bool {
+    pub(super) fn send(&mut self, event: Event, state: &WorkerDispatchState<'_>) -> bool {
         if let Some(source) = &event.state.canonical_audio_source {
             // SaveNew/SaveCurrent replace the immutable source allocation at
             // unchanged musical counters. A nonowning immutable version only
@@ -226,18 +226,19 @@ impl WorkerEvents {
             }
         }
         let mut dispatch = WorkerRootDispatch::ChangedEvent;
+        let mut pending = Some(event);
         loop {
             if self.cancelled() {
                 return false;
             }
             // This exact Event is borrowed only during the call, then moved.
             // Full returns ownership and the next iteration makes a fresh view.
-            self.poll(state, Some(&event), dispatch);
+            self.poll(state, pending.as_ref(), dispatch);
             dispatch = WorkerRootDispatch::PendingEvent;
-            match self.sender.try_send(event) {
+            match self.sender.try_send(&mut pending) {
                 Ok(()) => return true,
-                Err(TrySendError::Disconnected(_)) => return false,
-                Err(TrySendError::Full(returned)) => event = returned,
+                Err(source_events::EventSendError::Disconnected) => return false,
+                Err(source_events::EventSendError::Full) => {}
             }
             // Control-side event backpressure retains this exact event. It does
             // not strand native returns or require dropping a canonical ACK.

@@ -30,6 +30,8 @@ mod export_renderer;
 use export_renderer::ExportRenderer;
 mod request_transport;
 use request_transport::{RequestReceiver, RequestSender};
+mod source_events;
+use source_events::{EventReceiver, EventSender};
 pub(crate) mod canonical_audio_source;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{WorkerAudioInitializationError, WorkerAudioSink};
@@ -609,7 +611,7 @@ impl std::error::Error for ServiceError {
 /// UI-owned endpoints. Dropping both channels detaches the worker without joining it.
 pub struct Service {
     requests: RequestSender,
-    events: Receiver<Event>,
+    events: EventReceiver,
     export_events: ExportResultReceiver,
     export_busy: AtomicBool,
     shutdown: ServiceStop,
@@ -824,7 +826,29 @@ impl Service {
             }
         };
         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
-        let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
+        let source_endpoints = startup
+            .control()
+            .map(|control| control.prepare_source_events_on_control())
+            .transpose()
+            .map_err(|_| {
+                ServiceError::Session(SessionError::Invalid(
+                    "registered event storage is unavailable",
+                ))
+            })?
+            .flatten();
+        let (event_tx, event_rx) = match source_endpoints {
+            Some((sender, receiver)) => (
+                EventSender::Registered(sender),
+                EventReceiver::registered(receiver),
+            ),
+            None => {
+                let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
+                (
+                    EventSender::Unqualified(sender),
+                    EventReceiver::unqualified(receiver),
+                )
+            }
+        };
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
         let (export_event_tx, export_event_rx) = match startup.control() {
             Some(control) => {
@@ -6717,7 +6741,7 @@ mod service_tests {
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let service = Service {
             requests: requests.into(),
-            events,
+            events: EventReceiver::unqualified(events),
             export_events: export_events.into(),
             export_busy: AtomicBool::new(false),
             shutdown: ServiceStop::Unqualified(Arc::new(AtomicBool::new(false))),
