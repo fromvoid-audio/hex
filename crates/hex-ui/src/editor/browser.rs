@@ -2538,9 +2538,19 @@ impl EditorView {
                                         Some("browser folder limit reached".into());
                                 }
                             }
+                            if view.browser.places.contains(&path)
+                                && !view.browser_place_visible(&path)
+                            {
+                                view.set_browser_source_visible(
+                                    BrowserSection::Place(path.clone()),
+                                    true,
+                                    cx,
+                                );
+                            }
                             view.refresh_sample_catalog(cx);
                             if view.browser.section != BrowserSection::Samples
                                 && view.browser.places.contains(&path)
+                                && view.browser_place_visible(&path)
                             {
                                 view.select_browser_source(BrowserSection::Place(path), cx);
                             }

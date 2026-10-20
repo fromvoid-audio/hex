@@ -6101,3 +6101,13 @@ later variants were not executed after that failure. The private sample fixture
 now precreates one shared Environment before WAV/Service startup and checks its
 identity and four preference paths; original six behavior/helper bodies remain.
 Current-head required qualification/review and native acceptance remain separate.
+
+## hidden-source picker integration — pulse2844 / PR446
+
+Actual Remove → folder-picker same custom path reproduced invisible selection on
+composed439607. Reuse only existing source visibility restoration and require
+visibility before picker selection; preserve Samples convention and all current
+browser Enter/density/capture behavior. Local owning fixtures bind their original
+paths and catalog jobs to one Environment, with pointer/four-path assertions;
+original test bodies remain. Current focused/required/review and native acceptance
+remain separate; old source receipts do not qualify this combined candidate.

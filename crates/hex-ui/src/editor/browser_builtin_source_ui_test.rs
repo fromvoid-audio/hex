@@ -515,3 +515,118 @@ fn browser_hidden_source_picker_restores_same_path_visibility_and_preferences(
         eprintln!("ACTUAL_HIDDEN_PICKER_RESTORED {row}");
     }
 }
+
+#[gpui::test]
+fn browser_hidden_source_picker_cancel_and_refusal_keep_visible_selection(cx: &mut TestAppContext) {
+    cx.update(super::super::super::bind_editor_keys);
+    let directory = PreferencesTestDirectory::new();
+    let config = directory.0.join("refusal-browser.json");
+    let recent = directory.0.join("recent.json");
+    let custom = directory.0.join("custom-refusal");
+    std::fs::create_dir(&custom).unwrap();
+    let wav = custom.join("keep.wav");
+    let bytes = mono_pcm_wav(24);
+    std::fs::write(&wav, &bytes).unwrap();
+    hex_preferences::save(
+        &config,
+        &hex_preferences::BrowserPlaces::new([custom.clone()]).unwrap(),
+    )
+    .unwrap();
+    let (handle, editor) = place_icon_preferences_window(cx, &directory, &config, &recent);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    right_click(visual, "browser-place-2");
+    choose(visual, 8);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        visual.run_until_parked();
+        let ready = editor.update(visual, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+            view.state.is_some()
+                && view.worker_requests_pending == 0
+                && hex_preferences::load(&config)
+                    .unwrap()
+                    .place_hidden(&custom)
+        });
+        if ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "actual startup/save did not settle"
+        );
+        std::thread::yield_now();
+    }
+    let saved_bytes = std::fs::read(&config).unwrap();
+    let (before, roots) = editor.read_with(visual, |view, _| {
+        assert_eq!(view.browser.section, BrowserSection::All);
+        (view.state.as_ref().unwrap().clone(), view.sample_roots())
+    });
+    for refusal in ["cancel", "read-only", "loading", "platform-error"] {
+        editor.update(visual, |view, cx| {
+            view.browser.preferences_writable = refusal != "read-only";
+            view.browser.preferences_loading = refusal == "loading";
+            view.open_browser_folder(cx);
+        });
+        assert!(visual.did_prompt_for_paths());
+        match refusal {
+            "cancel" => visual.simulate_paths_selection(None),
+            "platform-error" => visual.simulate_paths_error("fixture picker error"),
+            _ => visual.simulate_paths_selection(Some(vec![custom.clone()])),
+        }
+        visual.run_until_parked();
+        editor.read_with(visual, |view, _| {
+            assert!(!view.browser_place_visible(&custom), "{refusal}");
+            assert_eq!(view.browser.section, BrowserSection::All, "{refusal}");
+            assert_eq!(view.sample_roots(), roots);
+            assert_eq!(view.worker_requests_pending, 0);
+            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(state.project, before.project);
+            assert_eq!(
+                (
+                    state.revision,
+                    state.can_undo,
+                    state.can_redo,
+                    state.unsaved
+                ),
+                (
+                    before.revision,
+                    before.can_undo,
+                    before.can_redo,
+                    before.unsaved
+                )
+            );
+            if refusal == "platform-error" {
+                assert!(
+                    view.error
+                        .as_deref()
+                        .is_some_and(|error| error.contains("fixture picker error"))
+                );
+            }
+        });
+        assert!(visual.debug_bounds("browser-place-2").is_none());
+        assert_eq!(std::fs::read(&config).unwrap(), saved_bytes);
+        assert_eq!(std::fs::read(&wav).unwrap(), bytes);
+        eprintln!("ACTUAL_HIDDEN_PICKER_REFUSAL {refusal}");
+    }
+    editor.update(visual, |view, cx| {
+        view.browser.preferences_writable = true;
+        view.browser.preferences_loading = false;
+        view.select_browser_source(BrowserSection::Samples, cx);
+        view.open_browser_folder(cx);
+    });
+    assert!(visual.did_prompt_for_paths());
+    visual.simulate_paths_selection(Some(vec![custom.clone()]));
+    visual.run_until_parked();
+    editor.read_with(visual, |view, _| {
+        assert!(view.browser_place_visible(&custom));
+        assert_eq!(
+            view.browser.section,
+            BrowserSection::Samples,
+            "existing Samples picker convention retained"
+        );
+    });
+}

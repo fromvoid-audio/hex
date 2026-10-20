@@ -346,3 +346,11 @@ the exact invocation frame even when the Arrangement grid is disabled. Active
 density presets continue to use the same nearest-grid resolver. Integration
 controls exercise actual Enter, no queued import/history mutation on refusal,
 real worker commits and Undo, retaining the original six caller cases.
+
+Picking a previously hidden known Home, Music or custom folder restores its
+visibility through the existing source-settings setter before selecting it.
+If loading or read-only preferences refuse restoration, the picker leaves the
+current visible source selected. Cancel/error remains a no-op on source visibility;
+Samples keeps its existing picker-selection convention. Paths, icons, media and
+catalog roots remain intact. Actual injected picker-result tests cover restore,
+preferences reopen and refusals; native panel behavior remains separate.
