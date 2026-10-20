@@ -34,10 +34,12 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
 fn header(visual: &mut VisualTestContext, track: TrackId, modifiers: Modifiers) {
     let b = visual
         .debug_bounds(Box::leak(
-            format!("arrangement-track-header-{}", track.value()).into_boxed_str(),
+            format!("track-name-{}", track.value()).into_boxed_str(),
         ))
         .unwrap();
-    let p = gpui::point(b.right() - gpui::px(12.0), b.top() + gpui::px(1.0));
+    // The compact mixer now occupies the old top-right header coordinate.
+    // Select through the actual track-name region rather than a child control.
+    let p = b.center();
     visual.simulate_mouse_down(p, MouseButton::Left, modifiers);
     visual.simulate_mouse_up(p, MouseButton::Left, modifiers);
     visual.run_until_parked();

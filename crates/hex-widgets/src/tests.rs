@@ -2335,3 +2335,164 @@ fn lowercase_numeric_presentation_preserves_raw_clipboard_parser_and_ime_offsets
     visual.simulate_keystrokes("escape");
     control.read_with(visual, |control, _| assert_eq!(control.value(), 0.5));
 }
+
+#[gpui::test]
+fn numeric_text_double_click_toggles_without_replacing_draft_or_emitting_value_events(
+    cx: &mut TestAppContext,
+) {
+    use gpui::EntityInputHandler;
+    let (handle, control) = open_numeric_control(cx, NumericControlKind::Knob);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let output = events.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            output.borrow_mut().push(event.phase)
+        })
+    });
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let field = visual.debug_bounds("test-control-value").unwrap();
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.simulate_input("0.625");
+    visual.simulate_keystrokes("cmd-a");
+    let at = visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .bounds_for_range(2..2, field, window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    for (first_count, expected) in [(1, 2..2), (3, 0..5), (1, 2..2), (1, 0..5)] {
+        for click_count in [first_count, first_count + 1] {
+            visual.simulate_event(gpui::MouseDownEvent {
+                position: at,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count,
+                first_mouse: false,
+            });
+            visual.simulate_event(gpui::MouseUpEvent {
+                position: at,
+                button: MouseButton::Left,
+                modifiers: Modifiers::default(),
+                click_count,
+            });
+        }
+        control.read_with(visual, |control, _| {
+            assert_eq!(
+                control.text, "0.625",
+                "text selection must not reformat raw uncommitted draft"
+            );
+            assert_eq!(control.selected, expected);
+            assert!(control.is_editing());
+            assert_eq!(control.value(), 0.0);
+        });
+        assert!(
+            events.borrow().is_empty(),
+            "text doubleclick is not numeric reset/adjustment/commit"
+        );
+    }
+    let start = visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .bounds_for_range(1..1, field, window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    let end = visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .bounds_for_range(3..3, field, window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    control.read_with(visual, |control, _| {
+        assert_eq!(control.selected, 1..3);
+        assert_eq!(control.text, "0.625");
+        assert_eq!(control.value(), 0.0);
+    });
+    visual.simulate_mouse_move(start, None, Modifiers::default());
+    control.read_with(visual, |control, _| assert_eq!(control.selected, 1..3));
+    assert!(events.borrow().is_empty());
+    // Invalid composition remains raw text and selection-only, never a value edit.
+    visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control.style.text_case = crate::TextCase::Lowercase;
+            control.replace_and_mark_text_in_range(Some(0..5), "İA🎛", Some(0..1), window, cx);
+        })
+    });
+    visual.run_until_parked();
+    let at = visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .bounds_for_range(1..1, field, window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    for click_count in [1, 2] {
+        visual.simulate_event(gpui::MouseDownEvent {
+            position: at,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count,
+            first_mouse: false,
+        });
+        visual.simulate_event(gpui::MouseUpEvent {
+            position: at,
+            button: MouseButton::Left,
+            modifiers: Modifiers::default(),
+            click_count,
+        });
+    }
+    visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            assert_eq!(control.text, "İA🎛");
+            assert_eq!(
+                control
+                    .selected_text_range(false, window, cx)
+                    .unwrap()
+                    .range,
+                0..4
+            );
+            assert_eq!(control.marked_text_range(window, cx), None);
+        })
+    });
+    assert!(events.borrow().is_empty());
+    // Text/IME replacement while a pointer is held invalidates the old anchor.
+    let at = visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control
+                .bounds_for_range(4..4, field, window, cx)
+                .unwrap()
+                .center()
+        })
+    });
+    visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+    visual.update(|window, cx| {
+        control.update(cx, |control, cx| {
+            control.replace_and_mark_text_in_range(Some(0..4), "1", Some(1..1), window, cx)
+        })
+    });
+    visual.simulate_mouse_move(
+        field.origin + point(px(2.0), field.size.height / 2.0),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    control.read_with(visual, |control, _| {
+        assert_eq!(control.text, "1");
+        assert_eq!(
+            control.selected,
+            1..1,
+            "IME replacement must invalidate held pointer anchor"
+        );
+    });
+    visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+    assert!(events.borrow().is_empty());
+}

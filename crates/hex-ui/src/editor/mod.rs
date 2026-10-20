@@ -65,6 +65,8 @@ mod loop_rail;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod loop_rail_ui_test;
 mod loop_region;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod loop_selection_ui_test;
 mod menus;
 mod midi;
 mod midi_canvas;
@@ -308,6 +310,7 @@ actions!(
         DuplicateClip,
         SplitClip,
         SetLoopFromClip,
+        LoopSelection,
         ToggleLoop,
         ZoomIn,
         ZoomOut,
@@ -470,7 +473,7 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-alt-down", MoveSceneDown, Some("hex_editor")),
         KeyBinding::new("cmd-e", SplitClip, Some("hex_editor")),
         KeyBinding::new("cmd-l", SetLoopFromClip, Some("hex_editor")),
-        KeyBinding::new("l", ToggleLoop, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
+        KeyBinding::new("l", LoopSelection, Some(EDITOR_PRINTABLE_KEY_CONTEXT)),
         KeyBinding::new("cmd-=", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd-+", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd--", ZoomOut, Some("hex_editor")),
@@ -654,6 +657,7 @@ pub(super) struct EditorView {
     device_panel_active: bool,
     clip_detail_body_height: f32,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
+    pending_loop: Option<loop_rail::PendingLoop>,
     loop_rail_cursor: gpui::CursorStyle,
     clip_content_cache: clip_content_cache::TrackCache,
     drag_lanes: std::collections::HashMap<TrackId, drag::LaneBounds>,
@@ -1024,6 +1028,9 @@ impl EditorView {
             }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
+            if view.cancel_loop_rail_gesture() {
+                cx.defer_in(window, |_, _, cx| cx.notify());
+            }
             if view.cancel_scrub() | view.cancel_clip_paint() {
                 cx.notify();
             }
@@ -1213,6 +1220,7 @@ impl EditorView {
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
             loop_rail_gesture: None,
+            pending_loop: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
             clip_content_cache: clip_content_cache::TrackCache::default(),
             drag_lanes: std::collections::HashMap::new(),

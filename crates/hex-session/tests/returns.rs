@@ -73,8 +73,11 @@ fn return_workflow_routes_pcm_edits_devices_history_and_current_schema_roundtrip
     assert!(initial.playback.is_some());
     let track_event = edit(
         &service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     );
     let Some(Created::Track(track)) = track_event.created else {
@@ -497,8 +500,11 @@ fn eq_eight_processes_on_regular_and_return_device_chains() {
     wait(&service);
     let track_event = edit(
         &service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "eq source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     );
     let Some(Created::Track(track)) = track_event.created else {
@@ -598,8 +604,11 @@ fn return_send_gesture_previews_transiently_and_save_barrier_commits_once() {
     wait(&service);
     let track_event = edit(
         &service,
-        Command::AddMidiTrack {
+        Command::InsertTrackWithDevice {
             name: "source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         },
     );
     let Some(Created::Track(track)) = track_event.created else {

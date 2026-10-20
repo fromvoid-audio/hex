@@ -235,8 +235,11 @@ fn schema24_combined_model_roundtrip_keeps_trimmed_devices_routes_automation_and
         Some(ImportProvenance::new("ableton-live-set", 1, 1, vec![0, 255, 42, 7]).unwrap());
     let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "combined".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {

@@ -6,8 +6,11 @@ use hex_session::Session;
 fn fixture() -> (Session, hex_project::DeviceId) {
     let mut session = Session::new(48_000, 16, 0).unwrap();
     let Created::Track(track) = session
-        .command(Command::AddTrack {
+        .command(Command::InsertTrackWithDevice {
             name: "source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     else {

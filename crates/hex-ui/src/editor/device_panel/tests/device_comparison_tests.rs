@@ -1042,8 +1042,11 @@ fn device_comparison_review_metadata_keeps_actual_callback_graph_and_worker_arc(
         service.submit(request).unwrap();
         receive_service_event(&service)
     };
-    let e = send(Request::Edit(Command::AddMidiTrack {
+    let e = send(Request::Edit(Command::InsertTrackWithDevice {
         name: "held".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     }));
     let track = e.state.project.tracks()[0].id();
     let e = send(Request::Edit(Command::PlaceMidiClip {
@@ -1247,8 +1250,11 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
     };
     receive_service_event(&service);
     service
-        .submit(Request::Edit(Command::AddMidiTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "held".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         }))
         .unwrap();
     receive_service_event(&service);

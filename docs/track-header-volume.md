@@ -52,3 +52,54 @@ Automation-owned headers show `auto` instead of the unrelated static gain/dB
 value. Both authored envelopes and recorded touch spans retain their existing
 edit refusal; the readout has no gain drag binding. Bounded rendered Service
 fixtures verify both indications and unchanged Project/history after pointer drag.
+
+## reference-composed mixer fields — Pulse2835 / PR439
+
+The supported resident header component places a compact name/automation/send
+column beside two mixer rows. The upper row contains a numbered track activator,
+Solo and a clearly disabled recording-availability indication. The lower row has
+one centered, filled dB field and one bipolar balance field. Both use the shared
+`NumericControl::FilledSlider` appearance: click to type, drag horizontally,
+Shift for fine motion, Enter to validate and Escape to cancel. The fill is a
+parameter position, never an audio meter; balance fills outward from a marked
+center and retains Hex's existing stereo-balance law and l/r/c input codec.
+Standard and CompactSlider geometry elsewhere stays unchanged. The 176×44px
+minimum header remains usable; width/height resizing and native font shaping
+have separate finite checks, rather than an imported PR431 sizing implementation.
+
+Track pan and Return gain use additive typed targets in the existing worker
+numeric-gesture protocol. Their overlays prepare through the same finite mixer
+command path as track gain, without canonical history edits until commit. The
+existing generation/token/sequence, cancellation, rebase and terminal handling
+remain shared. Canonical Balance and ReturnGain commands enforce their existing
+ranges; one completed gesture creates one Undo step. Automation-owned track gain
+still reads `auto`, and gain-recording/edit barriers remain effective. Return
+rows reuse the filled gain style and actual mute command without changing pinned
+placement or importing the separate PR438 row-unification work. VerifiedStreaming
+retains the original explicit +/- gain controls for both kinds of track; held
+mixer targets refuse that mode rather than acknowledge an inaudible preview.
+
+This is a supported-controls component, not full Pulse2835 acceptance. Recording
+arm/input capture is absent and remains deferred to Pulse26 / version0.2; the
+circle has no arm state or enabled action. Return buses currently have no pan or
+Solo model/commands, so no fake controls are shown. No recording, routing, schema,
+DSP or native input feature is added by this presentation change. The user rejected
+PR331's earlier appearance; its source/history evidence is preserved and does not
+count as acceptance of this visual refinement.
+
+The source tests retain a real pre-change rendered-layout failure (separate
+86px rail/root and46px value field), completed GPUI scene bounds/paint evidence,
+actual mouse/text input and real Service PCM/history/current-save round trips.
+Linux's deterministic GPUI test platform has no GPU framebuffer and uses no-op
+text shaping; scene evidence is not a native screenshot or a Live parity claim.
+The reference-composition case opts into bundled Ioskeley native shaping on macOS.
+
+Root's later optimized native checklist: compare the supplied crop against the
+actual two-row header at minimum/wide widths and short/tall rows; inspect centered
+dB/l-r-c text, bipolar center, fill contrast, activator/Solo state and disabled
+recording tooltip. Drag and type normal-track gain/pan and Return gain while
+listening, release/Undo/Redo, then Cancel; save/reopen. Check name selection,
+automation/send buttons, resize edges, invalid/IME text and shortcut isolation.
+Verify Return rows remain pinned and streaming retains real +/- controls. Record
+actual source/build and font/visual/audio observations separately; no app action
+or installation is performed by the source executor.

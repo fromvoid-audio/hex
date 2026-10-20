@@ -305,6 +305,12 @@ fn native_device_panel_renders_registered_controls_and_routes_chain_actions(
         hex_engine::default_native_device_state(entry.type_id).expect("valid default state");
     let mut editor = hex_project::Editor::new(base, 16).expect("project editor");
     editor
+        .execute(Command::InsertInstrument {
+            track,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .expect("explicit instrument card fixture");
+    editor
         .execute(Command::InsertDevice {
             track,
             before: None,

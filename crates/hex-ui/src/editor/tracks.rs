@@ -106,15 +106,24 @@ fn clip_drag_ghost(payload: &ClipDrag, geometry: ClipGhostGeometry, decor: ClipG
     )
 }
 
-fn midi_trim_note_shapes(
+pub(super) fn midi_trim_note_shapes(
     project: &hex_project::Project,
     clip: &MidiClip,
     trim: MidiClipTrim,
     visible_start: u64,
     visible_end: u64,
 ) -> Vec<(f32, f32, u8)> {
+    let shifted = |value: BeatTime| {
+        value
+            .raw()
+            .checked_add(trim.source_prefix().raw())
+            .map(BeatTime::from_raw)
+    };
+    let Some(source_length) = shifted(clip.source_length()) else {
+        return Vec::new();
+    };
     let playback = MidiSourcePlayback::new(
-        clip.source_length(),
+        source_length,
         trim.source_start(),
         clip.looping()
             .then_some((clip.loop_start(), clip.loop_end())),
@@ -129,7 +138,7 @@ fn midi_trim_note_shapes(
         .take(hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP)
         .filter_map(|note| {
             playback
-                .note_occurrences(note.start(), note.duration())
+                .note_occurrences(shifted(note.start())?, note.duration())
                 .ok()
                 .map(|plan| (note.pitch(), plan))
         })
@@ -919,7 +928,7 @@ impl EditorView {
                     .opacity(0.2)
             }))
             .debug_selector(|| format!("track-name-{}", track_id.value()))
-            .w(px(self.track_header_width() - 10.0))
+            .w_full()
             .flex_shrink_0()
             .min_w_0()
             .h(px(18.0))
@@ -935,153 +944,306 @@ impl EditorView {
                 .into()
             });
         let live_volume = self.document_audio_mode == hex_session::DocumentAudioMode::Resident;
-        let track_controls = div()
-            .id(("arrangement-track-controls", track_id.value()))
-            .debug_selector(move || format!("track-controls-{}", track_id.value()))
-            .on_click(|_, _, cx| cx.stop_propagation())
-            .flex()
-            .items_center()
-            .gap_1()
-            .when(live_volume, |row| row.w_full().gap(px(1.0)))
-            .child(
-                button(
-                    "a",
-                    "show track gain automation",
-                    ("gain-lane", track_id.value()),
-                )
-                .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
-                .on_click(cx.listener(move |view, _, window, cx| {
-                    view.show_gain_lane(track_id, window, cx);
-                })),
-            )
-            .when(live_volume, |row| row.child(self.track_volume(track, cx)))
-            // VerifiedStreaming keeps its functional explicit controls until
-            // the typed transient-source route can make held drags audible.
-            .when(!live_volume, |row| {
-                row.child(
-                    button("+", "increase track gain", ("gain-up", track_id.value()))
-                        .debug_selector(move || format!("track-gain-up-{}", track_id.value()))
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            if view
-                                .state
-                                .as_ref()
-                                .and_then(|state| state.project.track(track_id))
-                                .is_some_and(|track| {
-                                    !track.gain_envelope().is_empty()
-                                        || !track.gain_lane().spans().is_empty()
-                                })
-                            {
-                                view.show_gain_lane(track_id, window, cx);
-                            }
-                            view.gain_by(track_id, 0.1);
-                            cx.notify();
-                        })),
+        let header_content = if live_volume {
+            let (active_background, active_text) =
+                super::track_gain::activator_colors(!track.muted());
+            let (solo_background, solo_text) = super::track_gain::activator_colors(track.soloed());
+            let utilities = div()
+                .id(("track-header-utilities", track_id.value()))
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .flex()
+                .gap(px(2.0))
+                .child(
+                    button(
+                        "a",
+                        "show track gain automation",
+                        ("gain-lane", track_id.value()),
+                    )
+                    .h(px(18.0))
+                    .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.show_gain_lane(track_id, window, cx)
+                    })),
                 )
                 .child(
-                    button("−", "decrease track gain", ("gain-down", track_id.value()))
-                        .debug_selector(move || format!("track-gain-down-{}", track_id.value()))
-                        .on_click(cx.listener(move |view, _, window, cx| {
-                            if view
-                                .state
-                                .as_ref()
-                                .and_then(|state| state.project.track(track_id))
-                                .is_some_and(|track| {
-                                    !track.gain_envelope().is_empty()
-                                        || !track.gain_lane().spans().is_empty()
-                                })
-                            {
-                                view.show_gain_lane(track_id, window, cx);
-                            }
-                            view.gain_by(track_id, -0.1);
+                    button(
+                        "↗",
+                        "edit return sends",
+                        ("track-return-sends", track_id.value()),
+                    )
+                    .h(px(18.0))
+                    .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        let next = if view.send_menu_track == Some(track_id) {
+                            None
+                        } else {
+                            Some(track_id)
+                        };
+                        if next != view.send_menu_track
+                            && !super::device_panel::finalize_controls(view, cx)
+                        {
                             cx.notify();
-                        })),
+                            return;
+                        }
+                        view.send_menu_track = next;
+                        cx.notify();
+                    })),
+                );
+            let activator = button(
+                "",
+                if track.muted() {
+                    "activate track"
+                } else {
+                    "deactivate track"
+                },
+                ("track-mute", track_id.value()),
+            )
+            .debug_selector(move || format!("track-mute-{}", track_id.value()))
+            .flex_1()
+            .min_w_0()
+            .h(px(18.0))
+            .bg(rgb(active_background))
+            .text_color(rgb(active_text))
+            .child(theme::text((track_index + 1).to_string()))
+            .on_click(cx.listener(move |view, _, _, cx| {
+                view.toggle_mute(track_id);
+                cx.notify();
+            }));
+            let solo = button(
+                "s",
+                "solo track · s · cmd+click additive",
+                ("track-solo", track_id.value()),
+            )
+            .debug_selector(move || format!("track-solo-{}", track_id.value()))
+            .w(px(28.0))
+            .h(px(18.0))
+            .bg(rgb(solo_background))
+            .text_color(rgb(solo_text))
+            .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
+                view.toggle_solo(track_id, !event.modifiers().platform);
+                cx.notify();
+            }));
+            let arm = div()
+                .id(("track-arm-unavailable", track_id.value()))
+                .debug_selector(move || format!("track-arm-unavailable-{}", track_id.value()))
+                .w(px(28.0))
+                .h(px(18.0))
+                .flex_shrink_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_xs()
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                .bg(rgb(theme::color(theme::PaletteRole::Raised)))
+                .cursor(gpui::CursorStyle::Arrow)
+                .opacity(0.45)
+                .tooltip(|_, cx| {
+                    cx.new(|_| ClipTooltip {
+                        name: "recording unavailable · planned for hex 0.2".into(),
+                    })
+                    .into()
+                })
+                .child(theme::text("○"));
+            div()
+                .id(("arrangement-track-controls", track_id.value()))
+                .debug_selector(move || format!("track-controls-{}", track_id.value()))
+                .w_full()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(track_name_view)
+                        .child(utilities),
                 )
                 .child(
                     div()
-                        .w(px(34.0))
-                        .text_xs()
-                        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-                        .child(theme::text(
-                            if track.gain_envelope().is_empty()
-                                && track.gain_lane().spans().is_empty()
-                            {
-                                format!("{:.0}%", track.gain() * 100.0)
-                            } else {
-                                "auto".into()
-                            },
-                        )),
+                        .id(("track-header-mixer", track_id.value()))
+                        .on_click(|_, _, cx| cx.stop_propagation())
+                        .w(px(122.0))
+                        .flex_shrink_0()
+                        .flex()
+                        .flex_col()
+                        .gap(px(2.0))
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .gap(px(2.0))
+                                .child(activator)
+                                .child(solo)
+                                .child(arm),
+                        )
+                        .child(
+                            div()
+                                .w_full()
+                                .flex()
+                                .gap(px(2.0))
+                                .child(self.track_volume(track, cx))
+                                .child(self.track_pan(track, cx)),
+                        ),
                 )
-            })
-            .child(
-                button(
-                    "●",
-                    if track.muted() {
-                        "unmute track"
+        } else {
+            let track_controls = div()
+                .id(("arrangement-track-controls", track_id.value()))
+                .debug_selector(move || format!("track-controls-{}", track_id.value()))
+                .on_click(|_, _, cx| cx.stop_propagation())
+                .flex()
+                .items_center()
+                .gap_1()
+                .when(live_volume, |row| row.w_full().gap(px(1.0)))
+                .child(
+                    button(
+                        "a",
+                        "show track gain automation",
+                        ("gain-lane", track_id.value()),
+                    )
+                    .debug_selector(move || format!("gain-lane-show-{}", track_id.value()))
+                    .on_click(cx.listener(move |view, _, window, cx| {
+                        view.show_gain_lane(track_id, window, cx);
+                    })),
+                )
+                .when(live_volume, |row| row.child(self.track_volume(track, cx)))
+                // VerifiedStreaming keeps its functional explicit controls until
+                // the typed transient-source route can make held drags audible.
+                .when(!live_volume, |row| {
+                    row.child(
+                        button("+", "increase track gain", ("gain-up", track_id.value()))
+                            .debug_selector(move || format!("track-gain-up-{}", track_id.value()))
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                if view
+                                    .state
+                                    .as_ref()
+                                    .and_then(|state| state.project.track(track_id))
+                                    .is_some_and(|track| {
+                                        !track.gain_envelope().is_empty()
+                                            || !track.gain_lane().spans().is_empty()
+                                    })
+                                {
+                                    view.show_gain_lane(track_id, window, cx);
+                                }
+                                view.gain_by(track_id, 0.1);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        button("−", "decrease track gain", ("gain-down", track_id.value()))
+                            .debug_selector(move || format!("track-gain-down-{}", track_id.value()))
+                            .on_click(cx.listener(move |view, _, window, cx| {
+                                if view
+                                    .state
+                                    .as_ref()
+                                    .and_then(|state| state.project.track(track_id))
+                                    .is_some_and(|track| {
+                                        !track.gain_envelope().is_empty()
+                                            || !track.gain_lane().spans().is_empty()
+                                    })
+                                {
+                                    view.show_gain_lane(track_id, window, cx);
+                                }
+                                view.gain_by(track_id, -0.1);
+                                cx.notify();
+                            })),
+                    )
+                    .child(
+                        div()
+                            .w(px(34.0))
+                            .text_xs()
+                            .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                            .child(theme::text(
+                                if track.gain_envelope().is_empty()
+                                    && track.gain_lane().spans().is_empty()
+                                {
+                                    format!("{:.0}%", track.gain() * 100.0)
+                                } else {
+                                    "auto".into()
+                                },
+                            )),
+                    )
+                })
+                .child(
+                    button(
+                        "●",
+                        if track.muted() {
+                            "unmute track"
+                        } else {
+                            "mute track"
+                        },
+                        ("track-mute", track_id.value()),
+                    )
+                    .debug_selector(move || format!("track-mute-{}", track_id.value()))
+                    .text_color(rgb(if track.muted() {
+                        theme::color(theme::PaletteRole::Primary)
                     } else {
-                        "mute track"
-                    },
-                    ("track-mute", track_id.value()),
-                )
-                .debug_selector(move || format!("track-mute-{}", track_id.value()))
-                .text_color(rgb(if track.muted() {
-                    theme::color(theme::PaletteRole::Primary)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                }))
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    view.toggle_mute(track_id);
-                    cx.notify();
-                })),
-            )
-            .child(
-                button(
-                    "s",
-                    "solo track · s · cmd+click additive",
-                    ("track-solo", track_id.value()),
-                )
-                .debug_selector(move || format!("track-solo-{}", track_id.value()))
-                .text_color(rgb(if track.soloed() {
-                    theme::color(theme::PaletteRole::Primary)
-                } else {
-                    theme::color(theme::PaletteRole::Muted)
-                }))
-                .on_click(cx.listener(
-                    move |view, event: &gpui::ClickEvent, _, cx| {
-                        view.toggle_solo(track_id, !event.modifiers().platform);
+                        theme::color(theme::PaletteRole::Muted)
+                    }))
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        view.toggle_mute(track_id);
                         cx.notify();
-                    },
-                )),
-            )
-            .child(
-                button(
-                    "↗",
-                    "edit return sends",
-                    ("track-return-sends", track_id.value()),
+                    })),
                 )
-                .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
-                .text_color(rgb(theme::color(
-                    if self.send_menu_track == Some(track_id) {
-                        theme::PaletteRole::Secondary
+                .child(
+                    button(
+                        "s",
+                        "solo track · s · cmd+click additive",
+                        ("track-solo", track_id.value()),
+                    )
+                    .debug_selector(move || format!("track-solo-{}", track_id.value()))
+                    .text_color(rgb(if track.soloed() {
+                        theme::color(theme::PaletteRole::Primary)
                     } else {
-                        theme::PaletteRole::Muted
-                    },
-                )))
-                .on_click(cx.listener(move |view, _, _, cx| {
-                    let next = if view.send_menu_track == Some(track_id) {
-                        None
-                    } else {
-                        Some(track_id)
-                    };
-                    if next != view.send_menu_track
-                        && !super::device_panel::finalize_controls(view, cx)
-                    {
+                        theme::color(theme::PaletteRole::Muted)
+                    }))
+                    .on_click(cx.listener(
+                        move |view, event: &gpui::ClickEvent, _, cx| {
+                            view.toggle_solo(track_id, !event.modifiers().platform);
+                            cx.notify();
+                        },
+                    )),
+                )
+                .child(
+                    button(
+                        "↗",
+                        "edit return sends",
+                        ("track-return-sends", track_id.value()),
+                    )
+                    .debug_selector(move || format!("track-return-sends-{}", track_id.value()))
+                    .text_color(rgb(theme::color(
+                        if self.send_menu_track == Some(track_id) {
+                            theme::PaletteRole::Secondary
+                        } else {
+                            theme::PaletteRole::Muted
+                        },
+                    )))
+                    .on_click(cx.listener(move |view, _, _, cx| {
+                        let next = if view.send_menu_track == Some(track_id) {
+                            None
+                        } else {
+                            Some(track_id)
+                        };
+                        if next != view.send_menu_track
+                            && !super::device_panel::finalize_controls(view, cx)
+                        {
+                            cx.notify();
+                            return;
+                        }
+                        view.send_menu_track = next;
                         cx.notify();
-                        return;
-                    }
-                    view.send_menu_track = next;
-                    cx.notify();
-                })),
-            );
+                    })),
+                );
+            div()
+                .id(("streaming-track-controls", track_id.value()))
+                .w_full()
+                .flex()
+                .flex_col()
+                .child(track_name_view)
+                .child(track_controls)
+        };
         let header_focus = self.track_header_focus(track_id, cx);
         let click_focus = header_focus.clone();
         let header = div()
@@ -1118,8 +1280,7 @@ impl EditorView {
                 theme::color(theme::PaletteRole::Surface)
             }))
             .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-            .child(track_name_view)
-            .child(track_controls)
+            .child(header_content)
             .children(self.track_resize_handles(track_id, cx))
             .relative()
             .child(
@@ -1325,6 +1486,7 @@ impl EditorView {
                     )
                 })
                 .take(midi_shape_budget);
+            let fill = theme::clip_fill(track.color(), clip.flavor(), selected_clip);
             let mut midi = div()
                 .id(("midi-clip", clip.id().value()))
                 .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
@@ -1337,11 +1499,7 @@ impl EditorView {
                 .overflow_hidden()
                 .cursor(gpui::CursorStyle::Arrow)
                 .opacity(if trim_preview.is_some() { 0.0 } else { 1.0 })
-                .bg(rgb(theme::clip_fill(
-                    track.color(),
-                    clip.flavor(),
-                    selected_clip,
-                )))
+                .bg(rgb(fill))
                 .border_1()
                 .border_color(rgb(if selected_clip {
                     theme::color(theme::PaletteRole::Primary)
@@ -1390,7 +1548,7 @@ impl EditorView {
                         .child(theme::text(format!("{shown}/{}", preview.occurrence_count))),
                 );
             }
-            midi = midi.child(self.clip_name_header(track_id, clip.id(), clip.name(), cx));
+            midi = midi.child(self.clip_name_header(track_id, clip.id(), clip.name(), fill, cx));
             if let Some((payload, lane)) = midi_drag_payload {
                 let move_surface = self
                     .clip_drag_surface(
@@ -1512,6 +1670,14 @@ impl EditorView {
                 )
             });
         let waveform = state.waveforms.get(&clip.asset());
+        let fill = theme::clip_fill(
+            state
+                .project
+                .track(track)
+                .map_or(hex_project::ElementColor::default(), |t| t.color()),
+            clip.flavor(),
+            selected,
+        );
         let mut content = div()
             .absolute()
             .top_0()
@@ -1522,14 +1688,7 @@ impl EditorView {
             .overflow_hidden()
             .cursor(gpui::CursorStyle::Arrow)
             .opacity(if active_trim_preview { 0.0 } else { 1.0 })
-            .bg(rgb(theme::clip_fill(
-                state
-                    .project
-                    .track(track)
-                    .map_or(hex_project::ElementColor::default(), |t| t.color()),
-                clip.flavor(),
-                selected,
-            )))
+            .bg(rgb(fill))
             .hover(move |style| {
                 style.border_color(rgb(theme::color(if selected {
                     theme::PaletteRole::Primary
@@ -1675,7 +1834,7 @@ impl EditorView {
             cx,
         );
         let mut content = content
-            .child(self.clip_name_header(track, clip.id(), clip.name(), cx))
+            .child(self.clip_name_header(track, clip.id(), clip.name(), fill, cx))
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
             .on_mouse_down(
