@@ -100,7 +100,7 @@ pub fn controlled_frame_count(
             let end = match signal {
                 ExportSignal::Main => project.untrimmed_main_end_frame().map_err(|_| {
                     ExportError::Invalid(
-                        "automatic Main range is unbounded or invalid; choose an explicit range",
+                        "automatic main range is unbounded or invalid; choose an explicit range",
                     )
                 })?,
                 ExportSignal::CapturedMix(_) | ExportSignal::Stems(_) => {

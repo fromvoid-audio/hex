@@ -315,3 +315,74 @@ fn neutral_zero_graph_metadata_allocates_no_delay_runtime_and_keeps_first_sample
     runtime.render(&mut actual).unwrap();
     assert_eq!(&actual[..], f.samples.as_slice());
 }
+
+#[test]
+fn main_removal_retains_old_tail_and_applies_future_source_mix_once() {
+    use crate::signal_graph::tests::state;
+    use hex_project::{Command, Created};
+    let mut f = fixture(&[&[]], 64);
+    f.editor
+        .execute(Command::Gain {
+            track: f.tracks[0],
+            gain: 0.5,
+        })
+        .unwrap();
+    f.editor
+        .execute(Command::Balance {
+            track: f.tracks[0],
+            balance: 0.25,
+        })
+        .unwrap();
+    f.editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    let Created::Device(main) = f
+        .editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: state(3).unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("main")
+    };
+    let original = prepare(&f).unwrap();
+    let mut donor = SessionPlayback::new(Arc::clone(&original)).unwrap();
+    let mut old_tail = SessionPlayback::new(original).unwrap();
+    for runtime in [&mut donor, &mut old_tail] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 2]).unwrap();
+    }
+    f.editor.execute(Command::RemoveDevice(main)).unwrap();
+    let current = prepare(&f).unwrap();
+    assert!(
+        !current
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .unwrap()
+            .needs_runtime()
+    );
+    let mut ordinary = SessionPlayback::new(Arc::clone(&current)).unwrap();
+    assert!(ordinary.compensation.is_none());
+    ordinary.apply(SessionPlaybackCommand::Seek(2)).unwrap();
+    ordinary.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut expected = [[0.0; 2]; 64];
+    ordinary.render(&mut expected).unwrap();
+    assert!(expected[61].iter().any(|sample| *sample != 0.0));
+    let mut residual = [[0.0; 2]; 64];
+    old_tail.render(&mut residual).unwrap();
+    assert!(residual[1].iter().any(|sample| *sample != 0.0));
+    assert!(residual[2..].iter().flatten().all(|sample| *sample == 0.0));
+    for (frame, tail) in expected.iter_mut().zip(residual) {
+        frame[0] += tail[0];
+        frame[1] += tail[1];
+    }
+    let mut carried = SessionPlayback::new(current).unwrap();
+    carried.try_inherit_state_from(&mut donor).unwrap();
+    assert!(carried.compensation.is_some());
+    let mut actual = [[0.0; 2]; 64];
+    carried.render(&mut actual).unwrap();
+    assert_eq!(
+        actual, expected,
+        "future source mix once plus independent old residual"
+    );
+}
