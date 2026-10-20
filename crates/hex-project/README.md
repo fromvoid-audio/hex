@@ -192,8 +192,11 @@ preparation returns its artifact with the committed history transition.
 
 Arrangement MIDI edge resizing uses `TrimMidiClipEdge` with beat units and a
 metadata-only `MidiClip::preview_edge_trim` / `MidiClipTrim` candidate. Authored
-notes and IDs remain intact; only timeline bounds and the playback start marker
-change. The original one-shot/intro/loop phase policy is in `docs/midi.md`.
+note data is not copied during preview. Extending a one-shot left past source
+zero prepends blank source time on the single canonical commit: source length,
+loop bounds and note starts translate by the prefix. Note IDs and absolute
+musical placement remain unchanged, and the old right boundary stays anchored.
+The remaining trim, intro and loop phase rules are described in `docs/midi.md`.
 
 `InsertTrack` creates an empty hybrid track before an optional stable anchor
 (or appends), with existing validation/history and no schema change.

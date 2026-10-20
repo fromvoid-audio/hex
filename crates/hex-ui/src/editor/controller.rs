@@ -681,6 +681,18 @@ impl EditorView {
                 {
                     seek.stage = super::arrangement_seek::SeekStage::Published { audio_revision };
                 }
+                if self
+                    .prepared_seek
+                    .as_ref()
+                    .is_some_and(|seek| seek.cancelled)
+                {
+                    // The seek was invalidated while this worker owned its
+                    // runtime. Completing cancellation must not erase a newer
+                    // intent already retained for the same held gesture.
+                    let latest = self.latched_seek_intent.take();
+                    self.invalidate_prepared_seek();
+                    self.latched_seek_intent = latest;
+                }
                 self.status =
                     format!("audio revision {audio_revision} submitted · waiting for playback");
             }
@@ -698,6 +710,18 @@ impl EditorView {
                     tuning_preview_identity: pending.tuning_preview_identity,
                 });
                 self.error = Some(rejected.reason.to_lowercase().into());
+                if self
+                    .prepared_seek
+                    .as_ref()
+                    .is_some_and(|seek| seek.cancelled)
+                {
+                    // The seek was invalidated while this worker owned its
+                    // runtime. Completing cancellation must not erase a newer
+                    // intent already retained for the same held gesture.
+                    let latest = self.latched_seek_intent.take();
+                    self.invalidate_prepared_seek();
+                    self.latched_seek_intent = latest;
+                }
             }
         }
         true
@@ -757,6 +781,7 @@ impl EditorView {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.pending_group_copy.take().is_some();
+                    visible_change |= self.pending_loop.take().is_some();
                     break;
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
@@ -768,6 +793,7 @@ impl EditorView {
         if !self.tuning.client.has_pending_requests() {
             while let Some(request) = self.pending_requests.pop_front() {
                 let resize_request = self.pending_trim_matches(&request);
+                let loop_request = self.pending_loop_matches(&request);
                 let group_copy_request = self.pending_group_copy_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
@@ -775,6 +801,9 @@ impl EditorView {
                             self.worker_requests_pending.saturating_add(1);
                         if resize_request {
                             self.trim_request_submitted();
+                        }
+                        if loop_request {
+                            self.loop_request_submitted();
                         }
                         if group_copy_request {
                             self.group_copy_submitted();
@@ -787,6 +816,9 @@ impl EditorView {
                     Err(SubmitError::Busy(request)) => {
                         if resize_request {
                             self.retire_pending_trim();
+                        }
+                        if loop_request {
+                            self.pending_loop = None;
                         }
                         if matches!(request, Request::Export(_)) {
                             self.export_pending = false;
@@ -801,6 +833,9 @@ impl EditorView {
                     Err(SubmitError::Closed(request)) => {
                         if resize_request {
                             self.retire_pending_trim();
+                        }
+                        if loop_request {
+                            self.pending_loop = None;
                         }
                         if matches!(&request, Request::ImportAudioBatch { .. }) {
                             if let Some(control) = self.audio_batch.take() {
@@ -876,6 +911,14 @@ impl EditorView {
         visible_change |= self.tick_prepared_arrangement_seek();
         visible_change |= self.tick_scrub();
         visible_change |= self.poll_resident_publication();
+        // Snapshot private ACK-source eligibility before borrowing the audio
+        // client. This does not admit publication: promotion below still needs
+        // actual applied/rejected telemetry, including cancellation losing CAS.
+        // No UI event can change this owner during this synchronous tick.
+        let current_seek_source = self.prepared_seek.as_ref().and_then(|seek| {
+            self.seek_publication_is_current(seek.request_id, seek.device_preview_identity)
+                .then_some((seek.request_id, seek.device_preview_identity))
+        });
         let Some(audio) = self.audio.as_mut() else {
             let pending_after = self
                 .worker_requests_pending
@@ -1088,20 +1131,26 @@ impl EditorView {
             rejected_revision.map(|(revision, _)| revision),
         );
         if let Some(candidate) = audible {
-            let source = applied_tuning_candidate_source(
-                &candidate,
-                self.project_generation,
-                self.state.as_ref().map(|s| s.revision),
-                self.tuning.client.snapshot().map(|s| (s.key, s.sequence)),
-            )
-            .unwrap_or_else(|| {
-                applied_candidate_source(
+            let source = if candidate.seek_request_id.is_some_and(|request_id| {
+                current_seek_source != Some((request_id, candidate.device_preview_identity))
+            }) {
+                AppliedCandidateSource::SupersededPreview
+            } else {
+                applied_tuning_candidate_source(
                     &candidate,
                     self.project_generation,
-                    self.state.as_ref().map(|state| state.revision),
-                    active_gesture,
+                    self.state.as_ref().map(|s| s.revision),
+                    self.tuning.client.snapshot().map(|s| (s.key, s.sequence)),
                 )
-            });
+                .unwrap_or_else(|| {
+                    applied_candidate_source(
+                        &candidate,
+                        self.project_generation,
+                        self.state.as_ref().map(|state| state.revision),
+                        active_gesture,
+                    )
+                })
+            };
             if source == AppliedCandidateSource::Current {
                 if candidate.tuning_preview_identity.is_some() {
                     self.tuning.broadcast.observe(
@@ -1358,22 +1407,15 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let focused_owner = self
-            .focused_return
-            .filter(|id| {
-                state
-                    .project
-                    .return_tracks()
-                    .iter()
-                    .any(|track| track.id() == *id)
-            })
-            .map(super::device_panel::DevicePanelOwner::Return)
-            .or_else(|| {
-                self.selected_track
-                    .map(super::device_panel::DevicePanelOwner::Track)
-            });
-
+        let focused_owner = super::device_panel::selected_owner(self, state);
         match (focused_owner, target.identity.owner) {
+            (
+                Some(super::device_panel::DevicePanelOwner::Main),
+                hex_engine::ProcessorChainOwner::Main,
+            ) => state.project.main_devices().iter().any(|device| {
+                device.id().value() == target.identity.device_id
+                    && device.state().type_id() == target.identity.device_type
+            }),
             (
                 Some(super::device_panel::DevicePanelOwner::Track(track_id)),
                 hex_engine::ProcessorChainOwner::Track(owner_id),
@@ -1439,21 +1481,15 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let focused_owner = self
-            .focused_return
-            .filter(|id| {
-                state
-                    .project
-                    .return_tracks()
-                    .iter()
-                    .any(|track| track.id() == *id)
-            })
-            .map(super::device_panel::DevicePanelOwner::Return)
-            .or_else(|| {
-                self.selected_track
-                    .map(super::device_panel::DevicePanelOwner::Track)
-            });
+        let focused_owner = super::device_panel::selected_owner(self, state);
         match (focused_owner, target.identity.owner) {
+            (
+                Some(super::device_panel::DevicePanelOwner::Main),
+                hex_engine::ProcessorChainOwner::Main,
+            ) => state.project.main_devices().iter().any(|device| {
+                device.id().value() == target.identity.device_id
+                    && device.state().type_id() == target.identity.device_type
+            }),
             (
                 Some(super::device_panel::DevicePanelOwner::Track(track_id)),
                 hex_engine::ProcessorChainOwner::Track(owner_id),
@@ -1524,6 +1560,7 @@ impl EditorView {
             return None;
         }
         let retired_trim = self.trim_request_complete(&event);
+        let loop_complete = self.loop_request_complete(&event);
         let group_copy_intent = self.group_copy_request_complete(&event);
         if event.project_replaced {
             self.cancel_open_after_save();
@@ -1711,6 +1748,7 @@ impl EditorView {
             } else {
                 None
             };
+        self.observe_effect_bus_barrier(&event);
         let event_state = Arc::clone(&event.state);
         let revision = event_state.revision;
         if !event.project_replaced {
@@ -1772,6 +1810,9 @@ impl EditorView {
             event.project_replaced,
         );
         self.state = Some(event.state);
+        if loop_complete {
+            self.pending_loop = None;
+        }
         if event.project_replaced {
             self.loop_rail_gesture = None;
             self.cancel_midi_note_gesture();
@@ -1838,6 +1879,7 @@ impl EditorView {
             }
             self.device_gesture.reset();
             self.device_gesture_barriers.clear();
+            self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
             self.clip_paint_gesture = None;
             self.time_selection = None;
@@ -1866,6 +1908,7 @@ impl EditorView {
             self.duplicate_intent.reject();
             self.pending_scene_duplicate = None;
             self.selected_track = None;
+            self.device_panel.main_selected = None;
             self.track_selection = super::selection::TrackSelection::default();
             self.selected_clip = None;
             self.selected_scene = None;
@@ -1886,20 +1929,25 @@ impl EditorView {
                 self.session_copy_source = None;
             }
             self.track_selection.reconcile(&state.project);
-            // A completed time range deliberately has no primary clip. The
-            // generic stale-clip fallback must not reselect its first original
-            // after a range copy (or on a later unrelated worker response).
-            let time_range_owns_selection = self.selected_clip.is_none()
-                && self.time_selection_gesture.is_none()
-                && self.time_range_move_gesture.is_none()
-                && self
-                    .edit_cursor
-                    .is_some_and(|cursor| cursor.generation == self.project_generation)
-                && self.normalized_time_selection().is_some();
-            (self.selected_track, self.selected_clip) =
-                selection::reconcile(&state.project, self.selected_track, self.selected_clip);
-            if time_range_owns_selection {
-                self.selected_clip = None;
+            if self.selected_track.is_some() || self.focused_return.is_some() {
+                self.device_panel.main_selected = None;
+            }
+            if self.device_panel.main_selected != Some(self.project_generation) {
+                // A completed time range deliberately has no primary clip. The
+                // generic stale-clip fallback must not reselect its first original
+                // after a range copy (or on a later unrelated worker response).
+                let time_range_owns_selection = self.selected_clip.is_none()
+                    && self.time_selection_gesture.is_none()
+                    && self.time_range_move_gesture.is_none()
+                    && self
+                        .edit_cursor
+                        .is_some_and(|cursor| cursor.generation == self.project_generation)
+                    && self.normalized_time_selection().is_some();
+                (self.selected_track, self.selected_clip) =
+                    selection::reconcile(&state.project, self.selected_track, self.selected_clip);
+                if time_range_owns_selection {
+                    self.selected_clip = None;
+                }
             }
             if let Some(clip) = self.selected_clip
                 && state.project.session_midi_clip(clip).is_some()
@@ -2179,6 +2227,7 @@ impl EditorView {
             if let Some(snapshot) = self.device_gesture.snapshot() {
                 self.bind_tuning_library_device_terminal(snapshot.key, false);
             }
+            self.refuse_effect_bus_barriers("effect insertion canceled · device edit was retired");
             self.device_gesture.reset();
             super::device_gesture::retire_deferred(
                 &mut self.pending_requests,
@@ -2253,6 +2302,7 @@ impl EditorView {
                         && preview.identity.canonical_revision == revision
                 })
                 .map(|preview| preview.identity);
+            self.retire_seek_before_playback_replacement(preview_identity);
             // Retain the immutable source identity before Playback ownership can
             // move into the audio publication queue.
             let prepared_revision = playback.prepared_revision().cloned();
@@ -2293,6 +2343,9 @@ impl EditorView {
             if let Some(message) = message {
                 self.error = Some(message.into());
             }
+        }
+        if let Some(reason) = self.take_effect_bus_barrier_error() {
+            self.error = Some(reason.into());
         }
         self.reconcile_publication_observation();
         if event.request_complete
@@ -2483,6 +2536,8 @@ impl EditorView {
             Request::DeviceGesture(_)
                 | Request::DropNativeDevice { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
+                | Request::InsertBrowserInstrumentTrack { .. }
+                | Request::InsertEffectBusDevice { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
                 | Request::CompareDevice { .. }
@@ -2555,12 +2610,16 @@ impl EditorView {
             }
         }
         let resize_request = self.pending_trim_matches(&request);
+        let loop_request = self.pending_loop_matches(&request);
         let group_copy_request = self.pending_group_copy_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
                 if resize_request {
                     self.trim_request_submitted();
+                }
+                if loop_request {
+                    self.loop_request_submitted();
                 }
                 if group_copy_request {
                     self.group_copy_submitted();
@@ -4508,8 +4567,11 @@ mod comparison_source_binding_tests {
         };
         receive();
         service
-            .submit(Request::Edit(hex_project::Command::AddMidiTrack {
+            .submit(Request::Edit(hex_project::Command::InsertTrackWithDevice {
                 name: "source".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             }))
             .unwrap();
         let initial = receive();

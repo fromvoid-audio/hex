@@ -63,6 +63,7 @@ impl SessionPlayback {
         self.releases.clear();
         self.suppressions.clear();
         self.release_order = 0;
+        self.main_chain.reset();
         for chain in &mut self.device_chains {
             chain.reset();
         }
@@ -158,6 +159,7 @@ impl SessionPlayback {
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
         self.release_order = 0;
+        self.main_chain.reset();
         for chain in &mut self.device_chains {
             chain.reset();
         }

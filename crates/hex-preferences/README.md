@@ -34,3 +34,9 @@ Browser Places also retain optional icon IDs keyed by exact native Place paths.
 At most one bounded, nonempty, control-free ID (64 UTF-8 bytes) is accepted per
 additional Place. Unknown IDs roundtrip unchanged; glyph inventory, defaults and
 fallback presentation belong to the UI. Orphan/duplicate icon records are refused.
+
+Browser preferences also contain at most three stable built-in source records
+(`home`, `music`, `samples`) with visibility and optional bounded icon IDs, plus
+at most fourteen hidden additional native paths referencing existing Places.
+Duplicate/unknown built-in identities and orphan hidden paths are refused.
+Sidebar visibility never removes a source path or touches its contents.

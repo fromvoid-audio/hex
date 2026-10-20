@@ -440,8 +440,11 @@ fn canonical_service_installs_verified_mixed_rate_and_empty_successors_despite_l
     }
     // Do NOT drain publication events: the capacity-one queue and latest-only
     // pending observation cannot guarantee Submitted(A) ever reaches the UI.
-    let refused = h.run(Request::Edit(hex_project::Command::AddMidiTrack {
+    let refused = h.run(Request::Edit(hex_project::Command::InsertTrackWithDevice {
         name: "unsupported".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     }));
     let b = h.context.unwrap();
     assert_ne!(a, b);

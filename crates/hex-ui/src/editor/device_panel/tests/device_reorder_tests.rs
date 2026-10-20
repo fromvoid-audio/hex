@@ -3,6 +3,7 @@ use super::*;
 fn chain(view: &EditorView, owner: DevicePanelOwner) -> Vec<DeviceId> {
     let project = &view.state.as_ref().expect("state").project;
     match owner {
+        DevicePanelOwner::Main => project.main_devices(),
         DevicePanelOwner::Track(track) => project.track(track).expect("track").devices(),
         DevicePanelOwner::Return(owner) => project
             .return_tracks()
@@ -16,7 +17,7 @@ fn chain(view: &EditorView, owner: DevicePanelOwner) -> Vec<DeviceId> {
     .collect()
 }
 
-fn drag_title(
+pub(super) fn drag_title(
     visual: &mut VisualTestContext,
     device: DeviceId,
     target: DeviceId,
@@ -27,6 +28,7 @@ fn drag_title(
     let title_selector =
         Box::leak(format!("device-drag-title-{}", device.value()).into_boxed_str());
     let prefix = match owner {
+        DevicePanelOwner::Main => "main-device-drop-card",
         DevicePanelOwner::Track(_) => "device-drop-card",
         DevicePanelOwner::Return(_) => "return-device-drop-card",
     };

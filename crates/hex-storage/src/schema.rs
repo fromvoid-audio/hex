@@ -1256,6 +1256,7 @@ impl DocumentV8 {
                 }
                 let sample_rate = document.sample_rate;
                 Snapshot {
+                    main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
@@ -1292,6 +1293,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
@@ -1328,6 +1330,7 @@ impl DocumentV8 {
                     ));
                 }
                 Snapshot {
+                    main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
@@ -1371,6 +1374,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
@@ -1414,6 +1418,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
@@ -1457,6 +1462,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
@@ -1500,6 +1506,7 @@ impl DocumentV8 {
                     })
                     .transpose()?;
                 Snapshot {
+                    main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
@@ -1561,6 +1568,7 @@ impl DocumentV8 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 Snapshot {
+                    main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
@@ -1994,6 +2002,7 @@ impl DocumentV13 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),
@@ -2053,6 +2062,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid("unsupported alpha project format 31"));
         }
         if header.version == 32 {
+            return Err(StorageError::Invalid("unsupported alpha project format 32"));
+        }
+        if header.version == 33 {
             return tuning::decode(bytes);
         }
         if header.version == 29 {
@@ -2333,6 +2345,7 @@ impl DocumentV10 {
                     })
                     .collect::<Result<Vec<_>, StorageError>>()?;
                 let snapshot = Snapshot {
+                    main_devices: Vec::new(),
                     tuning: Default::default(),
                     return_feeds: Vec::new(),
                     audio_feeds: Vec::new(),
@@ -2470,6 +2483,7 @@ impl DocumentV9 {
             })
             .collect::<Result<Vec<_>, StorageError>>()?;
         let snapshot = Snapshot {
+            main_devices: Vec::new(),
             tuning: Default::default(),
             return_feeds: Vec::new(),
             audio_feeds: Vec::new(),

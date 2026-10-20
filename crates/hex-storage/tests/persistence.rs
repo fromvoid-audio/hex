@@ -165,7 +165,7 @@ fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixtee
     let with_returns = editor.project().clone();
     let bytes = encode(&with_returns).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 32);
+    assert_eq!(json["version"], 33);
     assert_eq!(json["return_tracks"][0]["name"], "Verb return");
     assert_eq!(
         json["return_tracks"][0]["devices"][0]["type_id"],
@@ -183,6 +183,14 @@ fn schema_seventeen_roundtrips_return_devices_sends_and_strictly_migrates_sixtee
 
     let mut schema_sixteen = json.clone();
     schema_sixteen["version"] = 16.into();
+    schema_sixteen
+        .as_object_mut()
+        .unwrap()
+        .remove("main_devices");
+    schema_sixteen
+        .as_object_mut()
+        .unwrap()
+        .remove("main_devices");
     schema_sixteen.as_object_mut().unwrap().remove("tuning");
     schema_sixteen
         .as_object_mut()
@@ -387,7 +395,7 @@ fn schema_fourteen_roundtrips_generic_opaque_device_envelopes() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 32);
+    assert_eq!(json["version"], 33);
     assert_eq!(json["tracks"][0]["devices"][0]["id"], second.value());
     assert_eq!(json["tracks"][0]["devices"][1]["id"], first.value());
     assert_eq!(
@@ -449,8 +457,11 @@ fn registered_operator_authored_feedback_roundtrips_as_opaque_state() {
 fn check_operator_opaque_roundtrip(state_version: u32) {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "operator state".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -528,10 +539,28 @@ fn check_operator_opaque_roundtrip(state_version: u32) {
 
 #[test]
 fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_preserves_state() {
+    // These legacy layouts require an authored instrument; ordinary current
+    // tracks deliberately start with an empty device chain.
+    let mut authored = Editor::new(project(), 8).unwrap();
+    let tracks: Vec<_> = authored
+        .project()
+        .tracks()
+        .iter()
+        .map(|track| track.id())
+        .collect();
+    for track in tracks {
+        authored
+            .execute(Command::InsertInstrument {
+                track,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
+    }
     let mut legacy: serde_json::Value =
-        serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
+        serde_json::from_slice(&encode(authored.project()).unwrap()).unwrap();
     let old_highwater = legacy["next_id"].as_u64().unwrap();
     legacy["version"] = 14.into();
+    legacy.as_object_mut().unwrap().remove("main_devices");
     legacy.as_object_mut().unwrap().remove("tuning");
     legacy.as_object_mut().unwrap().remove("device_assets");
     legacy.as_object_mut().unwrap().remove("track_colors");
@@ -562,8 +591,16 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
     }
 
     let mut schema_fifteen: serde_json::Value =
-        serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
+        serde_json::from_slice(&encode(authored.project()).unwrap()).unwrap();
     schema_fifteen["version"] = 15.into();
+    schema_fifteen
+        .as_object_mut()
+        .unwrap()
+        .remove("main_devices");
+    schema_fifteen
+        .as_object_mut()
+        .unwrap()
+        .remove("main_devices");
     schema_fifteen.as_object_mut().unwrap().remove("tuning");
     schema_fifteen
         .as_object_mut()
@@ -621,8 +658,11 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
     let mut current = Project::new(48_000).unwrap();
     let mut editor = Editor::new(current.clone(), 8).unwrap();
     let track = match editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "opaque".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
         })
         .unwrap()
     {
@@ -645,7 +685,7 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 32);
+    assert_eq!(json["version"], 33);
     assert_eq!(
         json["tracks"][0]["instrument"]["type_id"],
         "future.instrument"
@@ -666,8 +706,11 @@ fn schema_fourteen_and_fifteen_migrate_instrument_front_and_schema_sixteen_prese
 fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "chain".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -707,7 +750,7 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 32);
+    assert_eq!(json["version"], 33);
     assert_eq!(json["tracks"][0]["instrument_position"], 1);
     assert_eq!(decode(&bytes).unwrap(), project);
 
@@ -739,8 +782,9 @@ fn schema_sixteen_roundtrips_chain_position_and_rejects_malformed_positions() {
 #[test]
 fn schema_thirteen_projects_migrate_with_empty_device_chains() {
     let mut json: serde_json::Value = serde_json::from_slice(&encode(&project()).unwrap()).unwrap();
-    assert_eq!(json["version"], 32);
+    assert_eq!(json["version"], 33);
     json["version"] = 13.into();
+    json.as_object_mut().unwrap().remove("main_devices");
     json.as_object_mut().unwrap().remove("tuning");
     json.as_object_mut().unwrap().remove("device_assets");
     json.as_object_mut().unwrap().remove("track_colors");
@@ -896,7 +940,7 @@ fn schema_twelve_persists_arrangement_midi_and_session_audio_sources_strictly() 
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 32);
+    assert_eq!(json["version"], 33);
     assert!(
         json["tracks"][0]["audio_clips"]
             .as_array()
@@ -1023,10 +1067,12 @@ fn malformed_unknown_future_and_oversized_documents_refused() {
     let bytes = encode(&project()).unwrap();
     assert!(decode(&bytes[..bytes.len() - 1]).is_err());
     let mut json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 32);
+    assert_eq!(json["version"], 33);
     json["version"] = (json["version"].as_u64().unwrap() + 1).into();
+    json.as_object_mut().unwrap().remove("main_devices");
     assert!(decode(&serde_json::to_vec(&json).unwrap()).is_err());
     json["version"] = 16.into();
+    json.as_object_mut().unwrap().remove("main_devices");
     json.as_object_mut().unwrap().remove("tuning");
     json.as_object_mut().unwrap().remove("device_assets");
     json.as_object_mut().unwrap().remove("track_colors");
@@ -1159,11 +1205,12 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     let project = editor.project().clone();
     let bytes = encode(&project).unwrap();
     let current_json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(current_json["version"], 32);
+    assert_eq!(current_json["version"], 33);
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut json = current_json.clone();
     json.as_object_mut().unwrap().remove("session");
     json["version"] = 8.into();
+    json.as_object_mut().unwrap().remove("main_devices");
     json.as_object_mut().unwrap().remove("tuning");
     json.as_object_mut().unwrap().remove("device_assets");
     json.as_object_mut().unwrap().remove("track_colors");
@@ -1216,6 +1263,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
 
     let mut legacy_v2 = json.clone();
     legacy_v2["version"] = 2.into();
+    legacy_v2.as_object_mut().unwrap().remove("main_devices");
     legacy_v2.as_object_mut().unwrap().remove("tuning");
     legacy_v2.as_object_mut().unwrap().remove("device_assets");
     legacy_v2.as_object_mut().unwrap().remove("track_colors");
@@ -1264,6 +1312,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
 
     let mut legacy_v3 = json.clone();
     legacy_v3["version"] = 3.into();
+    legacy_v3.as_object_mut().unwrap().remove("main_devices");
     legacy_v3.as_object_mut().unwrap().remove("tuning");
     legacy_v3.as_object_mut().unwrap().remove("device_assets");
     legacy_v3.as_object_mut().unwrap().remove("track_colors");
@@ -1310,6 +1359,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
 
     let mut legacy_v4 = json.clone();
     legacy_v4["version"] = 4.into();
+    legacy_v4.as_object_mut().unwrap().remove("main_devices");
     legacy_v4.as_object_mut().unwrap().remove("tuning");
     legacy_v4.as_object_mut().unwrap().remove("device_assets");
     legacy_v4.as_object_mut().unwrap().remove("track_colors");
@@ -1354,6 +1404,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
 
     let mut legacy_v5 = json.clone();
     legacy_v5["version"] = 5.into();
+    legacy_v5.as_object_mut().unwrap().remove("main_devices");
     legacy_v5.as_object_mut().unwrap().remove("tuning");
     legacy_v5.as_object_mut().unwrap().remove("device_assets");
     legacy_v5.as_object_mut().unwrap().remove("track_colors");
@@ -1394,6 +1445,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
 
     let mut legacy_v6 = json.clone();
     legacy_v6["version"] = 6.into();
+    legacy_v6.as_object_mut().unwrap().remove("main_devices");
     legacy_v6.as_object_mut().unwrap().remove("tuning");
     legacy_v6.as_object_mut().unwrap().remove("device_assets");
     legacy_v6.as_object_mut().unwrap().remove("track_colors");
@@ -1428,6 +1480,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
 
     let mut legacy_v7 = json.clone();
     legacy_v7["version"] = 7.into();
+    legacy_v7.as_object_mut().unwrap().remove("main_devices");
     legacy_v7.as_object_mut().unwrap().remove("tuning");
     legacy_v7.as_object_mut().unwrap().remove("device_assets");
     legacy_v7.as_object_mut().unwrap().remove("track_colors");
@@ -1587,6 +1640,7 @@ fn schema_eleven_session_midi_and_stop_migrate_to_schema_twelve_model() {
         "clips": midi_clips,
     });
     value["version"] = 11.into();
+    value.as_object_mut().unwrap().remove("main_devices");
     value.as_object_mut().unwrap().remove("tuning");
     value.as_object_mut().unwrap().remove("device_assets");
     value.as_object_mut().unwrap().remove("track_colors");
@@ -1838,6 +1892,7 @@ fn host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain() {
     assert_eq!(restored.device(id).unwrap().state().input_gain_db(), 3.0);
     let mut legacy: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     legacy["version"] = 17.into();
+    legacy.as_object_mut().unwrap().remove("main_devices");
     legacy.as_object_mut().unwrap().remove("tuning");
     legacy.as_object_mut().unwrap().remove("device_assets");
     legacy.as_object_mut().unwrap().remove("track_colors");
@@ -1870,6 +1925,7 @@ fn host_output_trim_round_trips_migrates_unity_and_rejects_invalid_gain() {
         0
     );
     legacy["version"] = 18.into();
+    legacy.as_object_mut().unwrap().remove("main_devices");
     legacy.as_object_mut().unwrap().remove("tuning");
     legacy.as_object_mut().unwrap().remove("device_assets");
     legacy.as_object_mut().unwrap().remove("track_colors");
@@ -1947,7 +2003,7 @@ fn schema_twenty_clip_gain_round_trip_legacy_unity_and_invalid_values() {
         .unwrap();
     let bytes = encode(editor.project()).unwrap();
     let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(json["version"], 32);
+    assert_eq!(json["version"], 33);
     assert_eq!(decode(&bytes).unwrap(), *editor.project());
     for value in [
         serde_json::json!(-60_001),
@@ -1967,6 +2023,7 @@ fn schema_twenty_clip_gain_round_trip_legacy_unity_and_invalid_values() {
     }
     let mut legacy = json;
     legacy["version"] = 19.into();
+    legacy.as_object_mut().unwrap().remove("main_devices");
     legacy.as_object_mut().unwrap().remove("tuning");
     legacy.as_object_mut().unwrap().remove("device_assets");
     legacy.as_object_mut().unwrap().remove("track_colors");

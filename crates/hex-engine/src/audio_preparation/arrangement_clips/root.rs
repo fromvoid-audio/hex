@@ -9,6 +9,7 @@ use crate::{
 pub struct ArrangementRootCapacity {
     pub track_container_bytes: usize,
     pub return_container_bytes: usize,
+    pub main_prepared_bytes: usize,
     pub previous_growth_backing_bytes: usize,
     pub installed_tracks: usize,
     pub installed_returns: usize,
@@ -18,6 +19,7 @@ impl ArrangementRootCapacity {
     pub(crate) fn bytes(self) -> Result<usize, AudioStorageError> {
         self.track_container_bytes
             .checked_add(self.return_container_bytes)
+            .and_then(|n| n.checked_add(self.main_prepared_bytes))
             .ok_or(AudioStorageError::Overflow)
     }
 }
@@ -40,6 +42,7 @@ pub(super) struct ArrangementRootAssembly {
     returns: Vec<ReturnBus>,
     feed: ReturnFeedPlan,
     contexts: Option<OwnedShared<SharedAnalyticContextTable>>,
+    main_chain: Option<Arc<[hex_lattice::PreparedRuntimeInstance]>>,
     has_feed: bool,
     scalars: Option<Scalars>,
     growth: usize,
@@ -56,6 +59,25 @@ impl ArrangementRootAssembly {
     ) -> Result<ArrangementRootCapacity, AudioStorageError> {
         self.capacity_at(growth, None)
     }
+    pub(super) fn main_carrier_bytes() -> Result<usize, AudioStorageError> {
+        let (payload, overhead) =
+            OwnedShared::<[hex_lattice::PreparedRuntimeInstance]>::declared_slice_parts(0)
+                .ok_or(AudioStorageError::UnknownStorage)?;
+        payload
+            .checked_add(overhead)
+            .ok_or(AudioStorageError::Overflow)
+    }
+    pub(super) fn reserve_main_carrier(&mut self) -> Result<(), AudioStorageError> {
+        if self.scalars.is_none() || self.project.is_some() {
+            return Err(AudioStorageError::Capacity);
+        }
+        // Arc::new([T; 0]) has the exact sized-zero-array layout quoted above;
+        // unsizing transfers this allocation without a second birth.
+        if self.main_chain.is_none() {
+            self.main_chain = Some(Arc::new([]));
+        }
+        Ok(())
+    }
     pub(super) fn project(&self) -> Option<&Project> {
         self.project.as_ref()
     }
@@ -66,6 +88,7 @@ impl ArrangementRootAssembly {
         self.project.is_none()
             && self.tracks.capacity() == 0
             && self.returns.capacity() == 0
+            && self.main_chain.is_none()
             && self.contexts.is_none()
             && self.feed.has_no_owned_storage()
     }
@@ -87,16 +110,18 @@ impl ArrangementRootAssembly {
         }
         // Eligibility is audited again here rather than inferred from an empty
         // mutable-descriptor destination or from a legacy compiler outcome.
-        if project.tracks().iter().any(|t| {
-            t.devices()
+        if !project.main_devices().is_empty()
+            || project.tracks().iter().any(|t| {
+                t.devices()
+                    .iter()
+                    .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+                    || t.instrument().is_some()
+                    || !t.midi_clips().is_empty()
+            })
+            || project
+                .return_tracks()
                 .iter()
-                .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
-                || t.instrument().is_some()
-                || !t.midi_clips().is_empty()
-        }) || project
-            .return_tracks()
-            .iter()
-            .any(|r| !r.devices().is_empty())
+                .any(|r| !r.devices().is_empty())
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
@@ -162,6 +187,8 @@ impl ArrangementRootAssembly {
                 || project.midi_routing.capacity() != 0
                 || self.tracks.capacity() != 0
                 || self.returns.capacity() != 0
+                || self.main_chain.is_some()
+                || !project.main_device_chain.is_empty()
                 || self.contexts.is_some()
                 || !self.feed.has_no_owned_storage()
             {
@@ -212,6 +239,14 @@ impl ArrangementRootAssembly {
                 .capacity()
                 .checked_mul(mem::size_of::<ReturnBus>())
                 .ok_or(AudioStorageError::Overflow)?,
+            main_prepared_bytes: if self.main_chain.is_some()
+                || self.project.is_some()
+                || external.is_some()
+            {
+                Self::main_carrier_bytes()?
+            } else {
+                0
+            },
             previous_growth_backing_bytes: if growth { self.growth } else { 0 },
             installed_tracks: view.tracks.len(),
             installed_returns: view.returns.len(),
@@ -230,6 +265,7 @@ impl ArrangementRootAssembly {
             || !self.returns.is_empty()
             || self.has_feed
             || self.contexts.is_some()
+            || self.main_chain.is_none()
             || self.tracks.capacity() < tracks.root_count()
             || self.returns.capacity() < returns.root_count()
         {
@@ -261,7 +297,9 @@ impl ArrangementRootAssembly {
         self.fault(frontier + 1)?;
         // Every field was validated/reserved before any owner move. The only
         // take below is immediately secured in the persistent final location.
-        if let Some(contexts) = self.contexts.take() {
+        if let (Some(contexts), Some(main_device_chain)) =
+            (self.contexts.take(), self.main_chain.take())
+        {
             let has_streamed_sources = self
                 .tracks
                 .iter()
@@ -271,9 +309,11 @@ impl ArrangementRootAssembly {
                 project_track_ids: crate::project_output::ProjectTrackIds::prepare(&self.tracks),
                 audio_clip_views: Vec::new(),
                 signal_graph: None,
+                main_output_latency_frames: 0,
                 tempo_map: None,
                 midi_routing: Vec::new(),
                 sample_rate: scalars.sample_rate,
+                main_device_chain,
                 tracks: mem::take(&mut self.tracks),
                 return_buses: mem::take(&mut self.returns),
                 return_feed_plan: mem::take(&mut self.feed),
@@ -305,9 +345,11 @@ impl ArrangementRootAssembly {
             project_track_ids: _,
             audio_clip_views: _,
             signal_graph: _,
+            main_output_latency_frames: _,
             tempo_map: _,
             midi_routing: _,
             sample_rate: _,
+            main_device_chain,
             tracks,
             return_buses,
             return_feed_plan,
@@ -318,6 +360,7 @@ impl ArrangementRootAssembly {
             shared_contexts,
         }) = self.project.take()
         {
+            self.main_chain = Some(main_device_chain);
             self.tracks = tracks;
             self.returns = return_buses;
             self.feed = return_feed_plan;
@@ -362,6 +405,7 @@ impl ArrangementRootAssembly {
             returns,
             feed,
             contexts: _,
+            main_chain,
             has_feed: _,
             scalars: _,
             growth,
@@ -375,6 +419,20 @@ impl ArrangementRootAssembly {
         l.vec(returns)?;
         feed.visit_audio_storage(l)?;
         l.growth(*growth)?;
+        let actual_main = project
+            .as_ref()
+            .or(external)
+            .map(|p| &p.main_device_chain)
+            .or(main_chain.as_ref());
+        if let Some(main) = actual_main {
+            l.shared(
+                main,
+                OwnedShared::<[hex_lattice::PreparedRuntimeInstance]>::declared_slice_parts(0),
+                crate::audio_storage::Owner::exclusive(main),
+                crate::audio_only_inputs::handle()?,
+                None,
+            )?;
+        }
         if let Some(project) = project.as_ref().or(external) {
             let Project {
                 project_track_ids: _,
@@ -384,8 +442,10 @@ impl ArrangementRootAssembly {
                 return_buses,
                 return_feed_plan: _,
                 signal_graph: _,
+                main_output_latency_frames: _,
                 tempo_map: _,
                 midi_routing,
+                main_device_chain: _,
                 loop_region: _,
                 master_gain: _,
                 audible_end_frame: _,

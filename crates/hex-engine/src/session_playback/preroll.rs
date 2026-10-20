@@ -262,6 +262,12 @@ impl SessionPlayback {
 
     pub(super) fn accounted_runtime_storage_bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<Self>();
+        checked_add(
+            &mut total,
+            self.main_chain
+                .accounted_storage_bytes()?
+                .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?,
+        )?;
         if self.live_expression.is_some() {
             checked_add(
                 &mut total,
@@ -274,6 +280,8 @@ impl SessionPlayback {
         }
         if let Some(compensation) = &self.compensation {
             checked_add(&mut total, compensation.storage_bytes()?)?;
+        } else if let Some(graph) = &self.revision.arrangement().signal_graph {
+            checked_add(&mut total, graph.table_bytes()?)?;
         }
         checked_add(&mut total, self.analytic_import.backing_bytes()?)?;
         add_capacity::<TrackRoute>(&mut total, self.routes.capacity())?;
@@ -352,9 +360,22 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     let arrangement = revision.arrangement();
     let track_count = arrangement.tracks().len();
     let return_buses = arrangement.return_buses();
+    let main_bytes =
+        hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(
+            &arrangement.main_device_chain,
+        )?
+        .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?;
     let mut total = std::mem::size_of::<SessionPlayback>();
+    checked_add(&mut total, main_bytes)?;
     if let Some(graph) = &arrangement.signal_graph {
-        checked_add(&mut total, graph.runtime_preflight_bytes()?)?;
+        checked_add(
+            &mut total,
+            if graph.needs_runtime() {
+                graph.runtime_preflight_bytes()?
+            } else {
+                graph.table_bytes()?
+            },
+        )?;
     }
     checked_add(&mut total, analytic_import::ImportPlan::preflight_bytes()?)?;
     checked_add(&mut total, PREROLL_SCRATCH_BYTES)?;

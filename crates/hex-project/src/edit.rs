@@ -102,6 +102,17 @@ pub enum Command {
         destination: ReturnId,
         gain: f32,
     },
+    /// Insert an opaque effect state on the singleton Main bus. Preparation
+    /// validates provider class before a Session history transaction commits.
+    InsertMainDevice {
+        before: Option<DeviceId>,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Reorder within Main; cross-owner moves retain their existing commands.
+    MoveMainDevice {
+        device: DeviceId,
+        before: Option<DeviceId>,
+    },
     InsertDevice {
         track: TrackId,
         before: Option<DeviceId>,
@@ -796,9 +807,7 @@ pub(crate) fn insert_track_before(
             .ok_or(Invalid("track insertion anchor no longer exists"))?,
         None => project.tracks.len(),
     };
-    let instrument_state = crate::default_instrument_state()?;
-    let (first_id, instrument_id) = project.allocate_id_range(2)?;
-    let id = TrackId(first_id);
+    let id = TrackId(project.allocate_id()?);
     let color = crate::appearance::new_track_color(project);
     project.tracks.insert(
         index,
@@ -812,13 +821,8 @@ pub(crate) fn insert_track_before(
             muted: false,
             soloed: false,
             devices: Vec::new(),
-            instrument: Some(crate::Device {
-                comparison: None,
-                id: DeviceId(instrument_id),
-                state: instrument_state,
-                bypassed: false,
-            }),
-            instrument_position: Some(0),
+            instrument: None,
+            instrument_position: None,
             content: TrackContent::default(),
             sends: Vec::new(),
         },
@@ -1442,6 +1446,9 @@ impl Project {
                 destination,
                 gain,
             } => self.set_return_feed(source, destination, gain),
+            main_command @ (Command::InsertMainDevice { .. } | Command::MoveMainDevice { .. }) => {
+                crate::main_devices::apply(self, main_command)
+            }
             device_command @ (Command::InsertDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }
@@ -1722,12 +1729,7 @@ impl Project {
                 let track = insert_track_before(self, name, before_track)?;
                 match slot {
                     TrackDeviceSlot::Instrument => {
-                        let device = self
-                            .track(track)
-                            .and_then(|track| track.instrument())
-                            .ok_or(Invalid("new track has no default instrument"))?
-                            .id();
-                        self.apply(Command::ReplaceDeviceState { device, state })?;
+                        self.apply(Command::InsertInstrument { track, state })?;
                     }
                     TrackDeviceSlot::Effect => {
                         self.apply(Command::InsertDevice {

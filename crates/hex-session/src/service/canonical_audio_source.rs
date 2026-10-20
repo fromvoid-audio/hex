@@ -164,8 +164,11 @@ mod tests {
             }
         );
         service
-            .submit(Request::Edit(Command::AddTrack {
+            .submit(Request::Edit(Command::InsertTrackWithDevice {
                 name: "audio".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             }))
             .unwrap();
         let added = next(&service);

@@ -72,3 +72,32 @@ After a coordinator-qualified optimized delivery and with the user present:
 Native GPU/input, real audio/listening and save/reopen remain OPEN until actually
 performed. Prior tuning/MTS physical acceptance gaps are unchanged and are not
 qualified or re-requested by this task.
+
+## focused BPM arrow steps (pulse2879)
+
+Project and enabled sample-BPM fields use Up/Down for exactly 1 BPM and
+Command-Up/Down for 0.1 BPM. Shift is coarse, not the fine modifier. The policy is
+an explicit shared-control opt-in; other numeric controls retain Shift-fine
+behavior. An active valid text draft steps locally, with the existing six-decimal
+codec bounding repeated decimal arithmetic. Enter or blur commits once; Escape
+restores the acknowledged value. Invalid or IME-composing text is not replaced.
+Steps clamp at the existing inclusive 1..1000 bounds; arbitrary invalid typed
+values still refuse. Outside the focused field these bindings do not edit BPM.
+Project beat/revision/generation and sample clip/revision/generation ownership
+checks are unchanged. No new model, timing, persistence or global key policy.
+
+The private `editor::tempo_input::keyboard_tests::` cases use actual pointer/key
+dispatch, a precreated shared test Environment, real Service initialization,
+actual resident WAV import and canonical edits. They cover coarse/Command-fine,
+Shift-coarse, bounds, repeated micro-BPM precision, invalid/IME/cancel/focus
+isolation, project and sample commits and one-step full-state sample Undo/Redo.
+Sample BPM is originally None (tempo-map fallback); Undo restores that exact
+state, not a fabricated explicit value. Existing input lifecycle and widget
+controls remain relevant. These headless source checks do not establish native
+Command dispatch, listening or physical paint acceptance.
+
+On the exact qualified optimized build, check both project and warped-sample
+fields: Up/Down, Command-Up/Down, Shift coarse, repeated fine steps, Enter/blur,
+Escape, 1/1000 limits, then Undo/Redo. Verify focused typing/IME stays local and
+unfocused arrows retain workspace behavior. Root owns that finite native check;
+no app operation is requested here.

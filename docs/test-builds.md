@@ -7,6 +7,19 @@ plugin-release. Unoptimized debug executables are only appropriate for a
 specific stated debugging need. Do not create uniquely named review apps for
 future testing or delete historical review bundles.
 
+An explicitly requested development delivery may use `--dev-profile` with a
+resolved scoped merge report. Its receipt says `scoped-dev-ci`, not `full-ci`;
+the plan is recomputed against current source/dependencies. Beta/stable/native
+qualification keeps the full-audit requirement. Edit/quick/custom-component
+reports never qualify. This adds no staging/publishing command or automation.
+Schema-2 executed counts and guarded compiler/configuration/dependency identity
+are required. Delivery compares that identity under the same target lock before
+pending/cleanup/build and again before consumption/publication. A prose-only
+report without a runtime witness does not qualify an app as tested; use an
+explicit original runtime continuation or ordinary source-only development
+launch instead. Source-only launch still records that tests were not run.
+See [development-workflow.md](development-workflow.md).
+
 ## launch modes
 
 `./launch` is the standard update-and-start path. It requires a clean local `main`,
@@ -80,6 +93,47 @@ before retrying, including when no app is running.
 The option remains test-free unless combined with `--test`; both flags survive
 source update. It cannot be combined with installed-only `--open`. This is future
 operator invocation, not permission for unattended force-quit during verification.
+
+`./launch --recover-release-target` is a separate explicit option for a recreated
+Cargo target, or retrying an exact owned pending handoff, whose retained release
+owner belongs to this exact checkout and common repository. Save and quit **both** the configured app and any raw
+`hex-desktop` first. This option never requests quit or force termination and is
+incompatible with `--force-restart` and `--open`. It still updates clean main,
+rebuilds, installs and opens normally; tests remain opt-in with `--test`.
+
+Read-only inspection under the existing activation/target locks binds the old
+owner bytes by SHA256 and the observed replacement directory device/inode. The
+old source must be a clean known ancestor of the fetched source, and retained
+package name/version/spec ownership must match the current locked workspace
+(new members are permitted). Missing, foreign, malformed or symlinked targets
+refuse. The same current target identity is accepted only for an exact owned
+**pending** record; an unchanged **ready** record still refuses this recovery
+option. Failed cleanup/build/consumption leaves pending ownership, so another
+explicit inspection and guarded fresh build can retry without marker edits. Historical ready-artifact metadata is not reuse or qualification:
+the old executable need not remain in a recreated target and is never adopted as
+a new build. The owner marker stays untouched during inspection.
+
+A missing configured app output parent is created only after plain-path validation,
+and rechecked before its activation lock is opened; symlink or non-directory
+parents refuse. With `--recover-release-target --test`, ordinary full local CI
+uses a fresh invocation-owned target under ignored `artifacts/launch`, retaining
+its normal verification provenance and disk/lock rules. This grants no adoption
+of a stale development owner. Packaging still uses the originally inspected
+release target/environment and its independent owner CAS. Failed verification
+leaves that original dev/release ownership untouched; the isolated target/logs
+remain available for diagnosis.
+
+At the guarded mutation boundary, under the same target-wide lock, packaging
+rechecks configured-app/raw-desktop inactivity, source, exact owner hash,
+replacement directory and package ownership. Races or a busy cooperative lock
+refuse before marker changes or cleanup. Success uses the ordinary pending
+handoff, selective workspace **release-only** clean, fresh optimized build,
+artifact verification and ready publication. It does not rewrite a marker to
+pretend a stale artifact is ready. Original automatic `--force-restart` recovery
+still requires the original target identity; it cannot silently adopt a replaced
+target. Uncooperative raw Cargo/external file writers do not honor these advisory
+locks: exclusive ownership remains an operator requirement, not a global
+filesystem/process-atomicity guarantee.
 
 `./launch --open` verifies and opens the installed optimized app without Git, CI,
 Cargo or replacement. It can activate an already running installed app. Missing or

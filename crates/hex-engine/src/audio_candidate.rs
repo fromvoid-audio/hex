@@ -49,6 +49,14 @@ mod tests {
         let mut owner = AudioCandidateOwner::try_new_on_control(custody, token)
             .ok()
             .unwrap();
+        let locations: std::collections::BTreeSet<_> = owner
+            .inner
+            .groups
+            .iter()
+            .map(|group| group.location)
+            .collect();
+        assert_eq!(locations.len(), owner.inner.groups.len());
+        assert_eq!(locations.iter().filter(|(kind, _)| *kind == 9).count(), 1);
         let count = owner.inner.groups.iter().filter(|g| g.present).count();
         assert!(owner.inner.groups.iter().any(|g| !g.present));
         owner

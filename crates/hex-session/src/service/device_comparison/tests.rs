@@ -33,8 +33,11 @@ fn typed_comparison_copy_noop_switch_undo_redo_and_stale_owner_are_atomic() {
     let service = Service::new(48_000, 32, 0).unwrap();
     event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let initial = event(&service);
@@ -195,8 +198,12 @@ fn every_available_catalog_device_uses_shared_pair_on_track_and_return() {
                     event(&service)
                 } else {
                     service
-                        .submit(Request::Edit(Command::AddTrack {
+                        .submit(Request::Edit(Command::InsertTrackWithDevice {
                             name: "track owner".into(),
+                            before_track: None,
+                            slot: hex_project::TrackDeviceSlot::Instrument,
+                            state: hex_project::default_instrument_state()
+                                .expect("fixture instrument state"),
                         }))
                         .unwrap();
                     let added = event(&service);
@@ -326,8 +333,11 @@ fn stale_comparison_does_not_finalize_an_unrelated_live_draft() {
     let service = Service::new(48_000, 32, 0).unwrap();
     event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "draft owner".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let initial = event(&service);

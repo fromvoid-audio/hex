@@ -406,7 +406,7 @@ impl Session {
         self.editor.project()
     }
 
-    /// Resolve a canonical device's class from its owning track slot. UI
+    /// Resolve a canonical device's class from its actual owning slot. UI
     /// requests carry stable IDs, never authority to select a registry.
     pub(crate) fn native_device_class(
         &self,
@@ -428,6 +428,11 @@ impl Session {
             .return_tracks()
             .iter()
             .any(|track| track.devices().iter().any(|effect| effect.id() == device))
+            || self
+                .project()
+                .main_devices()
+                .iter()
+                .any(|effect| effect.id() == device)
         {
             return Ok(hex_engine::NativeDeviceClass::Effect);
         }
@@ -818,22 +823,30 @@ impl Session {
         gain: f32,
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.preview_mix_command(Command::Gain { track, gain }, previous)
+    }
+
+    // Finite mixer callers only. This does not admit arbitrary UI commands.
+    fn preview_mix_command(
+        &self,
+        command: Command,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
         let mut preview = Editor::new(self.project().clone(), 1)?;
         let media = self.media_bank();
         let sine_table = self.sine_table();
-        let (_, prepared) =
-            preview.execute_prepared(Command::Gain { track, gain }, |candidate| {
-                prepare_with_waveforms(
-                    candidate,
-                    &media,
-                    Arc::clone(&sine_table),
-                    previous.map(|artifact| artifact.session().as_ref()),
-                    &self.audio_transforms,
-                    &self.audio_clip_waveforms,
-                )
-                .map(Arc::new)
-                .map_err(SessionError::from)
-            })?;
+        let (_, prepared) = preview.execute_prepared(command, |candidate| {
+            prepare_with_waveforms(
+                candidate,
+                &media,
+                Arc::clone(&sine_table),
+                previous.map(|artifact| artifact.session().as_ref()),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
+            )
+            .map(Arc::new)
+            .map_err(SessionError::from)
+        })?;
         Ok((Arc::new(preview.project().clone()), prepared))
     }
 
@@ -845,6 +858,44 @@ impl Session {
         previous: Option<&hex_engine::PreparedRevision>,
     ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
         self.command_prepared_revision(Command::Gain { track, gain }, previous)
+            .map(|(_, prepared)| prepared)
+    }
+
+    fn preview_track_balance(
+        &self,
+        track: hex_project::TrackId,
+        balance: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.preview_mix_command(Command::Balance { track, balance }, previous)
+    }
+
+    fn commit_track_balance(
+        &mut self,
+        track: hex_project::TrackId,
+        balance: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        self.command_prepared_revision(Command::Balance { track, balance }, previous)
+            .map(|(_, prepared)| prepared)
+    }
+
+    fn preview_return_gain(
+        &self,
+        return_track: hex_project::ReturnId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.preview_mix_command(Command::ReturnGain { return_track, gain }, previous)
+    }
+
+    fn commit_return_gain(
+        &mut self,
+        return_track: hex_project::ReturnId,
+        gain: f32,
+        previous: Option<&hex_engine::PreparedRevision>,
+    ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+        self.command_prepared_revision(Command::ReturnGain { return_track, gain }, previous)
             .map(|(_, prepared)| prepared)
     }
 

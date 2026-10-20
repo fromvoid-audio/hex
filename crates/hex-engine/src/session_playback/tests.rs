@@ -953,6 +953,7 @@ fn project(gain: f32, note_start: u64, note_duration: u64) -> Project {
 
 fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
@@ -1169,6 +1170,7 @@ fn session_audio_midi_arrangement_mix_project() -> Project {
 
 fn project_at_tempo(gain: f32, note_start: u64, note_duration: u64, tempo: Tempo) -> Project {
     legacy_project_from_snapshot(Snapshot {
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
@@ -3104,8 +3106,11 @@ fn shared_context_table_admits_the_full_track_bound_without_duplicate_owners() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 128).unwrap();
     for index in 0..hex_project::MAX_TRACKS {
         let track = match editor
-            .execute(Command::AddMidiTrack {
+            .execute(Command::InsertTrackWithDevice {
                 name: format!("context {index}"),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         {
@@ -3473,8 +3478,11 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "short source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3482,8 +3490,11 @@ fn unchanged_mutable_session_route_carries_across_another_route_source_edit() {
         _ => panic!("expected first MIDI track"),
     };
     let second_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "held source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3648,8 +3659,11 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "removed mutable track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -3657,8 +3671,11 @@ fn mutable_arrangement_continuity_uses_track_ids_after_an_earlier_track_is_remov
         _ => panic!("expected first MIDI track"),
     };
     let retained_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "retained mutable track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -6926,8 +6943,11 @@ fn instrument_edit_captures_only_the_changed_session_track() {
     let table = Arc::new(hex_devices::SineTable::new());
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let first = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "first".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -6935,8 +6955,11 @@ fn instrument_edit_captures_only_the_changed_session_track() {
         _ => panic!("first MIDI track"),
     };
     let second = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "second".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -11285,3 +11308,60 @@ mod mutable_long_tail_tests;
 
 #[path = "stream_action_tests.rs"]
 mod stream_action_tests;
+
+#[test]
+fn closed_candidate_main_checks_prepared_and_actual_runtime_before_any_groups() {
+    use hex_lattice_contract::NativeDeviceMetadata;
+    fn runtime(with_main: bool) -> SessionPlayback {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        if with_main {
+            editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: hex_devices::utility::UTILITY_DEFINITION
+                        .default_state()
+                        .unwrap(),
+                })
+                .unwrap();
+        }
+        let revision = PreparedRevision::prepare(
+            editor.project(),
+            &BTreeMap::new(),
+            Arc::new(crate::SineTable::new()),
+            None,
+        )
+        .unwrap();
+        SessionPlayback::new(Arc::new(revision)).unwrap()
+    }
+    let mut empty = runtime(false);
+    let mut main = runtime(true);
+    let mut locations = std::collections::BTreeSet::new();
+    empty
+        .visit_candidate_groups(&mut |kind, index, _| {
+            assert!(locations.insert((kind, index)), "duplicate owning location");
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        locations.len() + 5,
+        candidate_group_reservation(0, 0).unwrap()
+    );
+    // Both prepared and runtime Main are real populated chains, not placeholders.
+    assert!(!main.revision.arrangement().main_device_chain.is_empty());
+    assert!(main.main_chain.storage_view().entries().next().is_some());
+    let refuses_without_emitting = |runtime: &SessionPlayback| {
+        let mut emitted = 0;
+        assert_eq!(
+            runtime.visit_candidate_groups(&mut |_, _, _| {
+                emitted += 1;
+                Ok(())
+            }),
+            Err(crate::AudioStorageError::UnsupportedGraph)
+        );
+        assert_eq!(emitted, 0);
+    };
+    refuses_without_emitting(&main);
+    std::mem::swap(&mut empty.main_chain, &mut main.main_chain);
+    refuses_without_emitting(&empty); // runtime-only population
+    refuses_without_emitting(&main); // prepared-only population
+}

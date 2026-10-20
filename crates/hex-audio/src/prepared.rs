@@ -2887,6 +2887,7 @@ mod tests {
             return_state = state.clone();
         }
         let project = CanonicalProject::from_snapshot(Snapshot {
+            main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -3022,6 +3023,7 @@ mod tests {
             .expect("saturator curve")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -3145,6 +3147,7 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -3280,6 +3283,7 @@ mod tests {
             .expect("gate floor")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -6101,6 +6105,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -6564,6 +6569,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -6726,8 +6732,12 @@ mod tests {
         for (routed, mutable) in [(false, false), (true, false), (false, true), (true, true)] {
             let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
             let Created::Track(track) = editor
-                .execute(Command::AddMidiTrack {
+                .execute(Command::InsertTrackWithDevice {
                     name: "keys".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state()
+                        .expect("fixture instrument state"),
                 })
                 .unwrap()
             else {

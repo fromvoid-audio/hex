@@ -485,7 +485,7 @@ impl AudioPreparationCustody {
             assemble_tracks,
             assemble_returns,
             assemble_preview,
-            assemble_project: _,
+            assemble_project,
             assemble_revision,
         } = stages;
         let mut slots = Vec::new();
@@ -618,6 +618,11 @@ impl AudioPreparationCustody {
                     tempo_observation?;
                     shared_observation?;
                     assembly_observation?;
+                    if assemble_project {
+                        // Quote the exact empty Main allocation BEFORE its birth.
+                        capacity.arrangement_clips.root.main_prepared_bytes =
+                            ArrangementClips::main_carrier_bytes()?;
+                    }
                     let current = capacity
                         .session
                         .bytes()?
@@ -658,6 +663,9 @@ impl AudioPreparationCustody {
                             > inputs.reservation.max_construction_data_bytes
                     {
                         return Err(AudioStorageError::ReservationExceeded);
+                    }
+                    if assemble_project {
+                        self.arrangement_clips.reserve_main_carrier()?;
                     }
                     Ok(())
                 }),
@@ -1528,8 +1536,11 @@ mod tests {
         use hex_project::{Command, Created, Editor, Project};
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
         let Created::Track(track) = editor
-            .execute(Command::AddTrack {
+            .execute(Command::InsertTrackWithDevice {
                 name: "audio".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         else {

@@ -712,8 +712,11 @@ fn injected_mutable_instrument_process_handoff_and_retirement_are_allocation_fre
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "mutable".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected MIDI track".into()),
@@ -833,8 +836,11 @@ fn shared_analytic_context_release_survives_handoff_and_drops_on_control()
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "shared context".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected MIDI track".into()),
@@ -1036,8 +1042,11 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "mutable arrangement".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected MIDI track".into()),
@@ -1169,8 +1178,11 @@ fn unchanged_mutable_arrangement_handoff_and_refusal_are_callback_allocation_fre
 fn hybrid_arrangement_audio_and_midi_callback_is_allocation_free_and_exact()
 -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "hybrid".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected hybrid track".into()),
@@ -1881,8 +1893,11 @@ fn priority_stop_is_allocation_free_while_retirement_ring_is_full() -> Result<()
 
 fn midi_session_project() -> Result<(Project, TrackId, SceneId, SceneId), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "keys".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected instrument track".into()),
@@ -2281,8 +2296,11 @@ fn stateful_utility_handoff_at_position(
     bypass_instrument: bool,
 ) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "keys".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected instrument track".into()),
@@ -2420,8 +2438,11 @@ fn arrangement_instrument_bypass_and_reenable_are_callback_allocation_free()
 fn builtin_fm4_render_state_handoff_and_retirement_are_callback_allocation_free()
 -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "fm4 arrangement".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected FM4 instrument track".into()),
@@ -2547,8 +2568,11 @@ fn mixed_wave_operator_handoff_and_retirement_are_callback_allocation_free()
 
 fn check_operator_callback_lifecycle(mixed_waveforms: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "operator arrangement".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected Operator track".into()),
@@ -2692,8 +2716,11 @@ fn arrangement_instrument_bypass_at_position(
     instrument_position: usize,
 ) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "arrangement keys".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected instrument track".into()),
@@ -2995,8 +3022,11 @@ fn mutable_session_source_loop_callback_is_allocation_and_deallocation_free()
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "looping mutable".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected midi track".into()),
@@ -3082,8 +3112,11 @@ fn mutable_arrangement_transport_loop_callback_is_allocation_and_deallocation_fr
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "transport loop".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected MIDI track".into()),
@@ -3160,8 +3193,11 @@ fn mutable_arrangement_source_and_transport_loops_are_callback_allocation_free()
     let definitions: [&dyn hex_lattice::NativeInstrumentDefinition; 1] = [&definition];
     let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions)?;
     let mut editor = Editor::new(Project::new(RATE)?, 16)?;
-    let track = match editor.execute(Command::AddMidiTrack {
+    let track = match editor.execute(Command::InsertTrackWithDevice {
         name: "combined loop".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     })? {
         Created::Track(track) => track,
         _ => return Err("expected MIDI track".into()),

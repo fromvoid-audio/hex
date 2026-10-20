@@ -364,6 +364,7 @@ fn validate(
     }
     if match identity.owner {
         ProcessorChainOwner::Track(id) | ProcessorChainOwner::Return(id) => id == 0,
+        ProcessorChainOwner::Main => false,
     } {
         return Err(TargetError::InvalidOwner);
     }
@@ -437,6 +438,63 @@ mod tests {
             )
             .expect("valid target")
             .1
+    }
+
+    #[test]
+    fn main_owner_preserves_exact_target_and_rejects_invalid_inputs() {
+        let (mut control, mut callback) = channel();
+        let main = PostNodeIdentity::new(
+            ProcessorChainOwner::Main,
+            17,
+            hex_engine::DeviceTypeId::from_static("hex.eq8"),
+        );
+        let chosen = selection(3);
+        let (target, _) = control.select(main, 7, 12, 48_000, chosen).unwrap();
+        callback.begin_block();
+        assert_eq!(callback.current(), Some(target));
+        assert_eq!(target.identity, main);
+        assert_eq!(target.project_generation, 7);
+        assert_eq!(target.activation_floor, 12);
+        assert_eq!(target.selection, chosen);
+        for (identity, floor, rate, error) in [
+            (
+                PostNodeIdentity::new(ProcessorChainOwner::Main, 0, main.device_type),
+                12,
+                48_000,
+                TargetError::InvalidDevice,
+            ),
+            (main, 0, 48_000, TargetError::InvalidActivationFloor),
+            (main, 12, 7_999, TargetError::UnsupportedSampleRate(7_999)),
+            (
+                PostNodeIdentity::new(ProcessorChainOwner::Track(0), 17, main.device_type),
+                12,
+                48_000,
+                TargetError::InvalidOwner,
+            ),
+            (
+                PostNodeIdentity::new(ProcessorChainOwner::Return(0), 17, main.device_type),
+                12,
+                48_000,
+                TargetError::InvalidOwner,
+            ),
+            (
+                PostNodeIdentity::new(
+                    ProcessorChainOwner::Main,
+                    17,
+                    hex_engine::DeviceTypeId::from_static(
+                        "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+                    ),
+                ),
+                12,
+                48_000,
+                TargetError::InvalidDevice,
+            ),
+        ] {
+            assert_eq!(control.select(identity, 7, floor, rate, chosen), Err(error));
+            assert_eq!(control.desired(), Some(target));
+            callback.begin_block();
+            assert_eq!(callback.current(), Some(target));
+        }
     }
 
     #[test]

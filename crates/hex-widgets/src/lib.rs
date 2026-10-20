@@ -22,10 +22,12 @@ mod spectrum_painter;
 mod spectrum_plot;
 mod style;
 mod text_case;
+mod text_click_selection;
 pub use spectrum_plot::{
     MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot,
 };
 pub use text_case::TextCase;
+pub use text_click_selection::TextClickSelection;
 
 pub use color_picker::{
     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,
@@ -49,8 +51,8 @@ pub use frame::{
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
     NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlFinalValue, NumericControlKind, NumericEscape, NumericEventPhase,
-    bind_numeric_control_keys,
+    NumericControlFinalValue, NumericControlKind, NumericDragAxis, NumericEscape,
+    NumericEventPhase, bind_numeric_control_keys,
 };
 pub use response_graph::{
     ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphEvent,

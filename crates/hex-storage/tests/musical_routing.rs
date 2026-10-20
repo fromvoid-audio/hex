@@ -83,9 +83,17 @@ fn fixture(transformed: bool) -> Project {
 fn schema25_combines_roots_session_gain_routes_lanes_provenance_and_host_trims() {
     let mut e = Editor::new(fixture(true), 32).unwrap();
     let source = e.project().tracks()[0].id();
+    e.execute(Command::InsertInstrument {
+        track: source,
+        state: hex_project::default_instrument_state().unwrap(),
+    })
+    .unwrap();
     let Created::Track(target) = e
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "target".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -215,6 +223,7 @@ fn state_table_requires_exact_audio_id_bijection_and_strict_nullable_fields() {
     for version in 1..=24 {
         let mut old = base.clone();
         old["version"] = json!(version);
+        old.as_object_mut().unwrap().remove("main_devices");
         old.as_object_mut().unwrap().remove("tuning");
         old.as_object_mut().unwrap().remove("device_assets");
         old.as_object_mut().unwrap().remove("track_colors");
@@ -267,6 +276,7 @@ fn development(version: u32) -> Value {
         }
     }
     doc["version"] = json!(version);
+    doc.as_object_mut().unwrap().remove("main_devices");
     doc.as_object_mut().unwrap().remove("track_colors");
     doc.as_object_mut().unwrap().remove("accented_clips");
     doc
@@ -327,6 +337,7 @@ fn private20_21_dispatch_is_explicit_strict_and_migrates_both_audio_kinds() {
     let neutral = Project::new(16_000).unwrap();
     let mut old: Value = serde_json::from_slice(&encode(&neutral).unwrap()).unwrap();
     old["version"] = json!(24);
+    old.as_object_mut().unwrap().remove("main_devices");
     old.as_object_mut().unwrap().remove("tuning");
     old.as_object_mut().unwrap().remove("device_assets");
     old.as_object_mut().unwrap().remove("track_colors");

@@ -73,7 +73,10 @@ impl SessionPlayback {
                                 suppressions: &self.suppression_scratch,
                                 continuations: &self.analytic_continuations,
                                 index,
-                                raw: false,
+                                // Retained Main history can keep this path active
+                                // after the current graph returns to a fused mix.
+                                // The content-origin fader below owns that mix.
+                                raw: true,
                                 timing: &timing,
                                 table: self.revision.session().sine_table(),
                             },
@@ -111,7 +114,7 @@ impl SessionPlayback {
                                 suppressions: &self.suppression_scratch,
                                 continuations: &self.analytic_continuations,
                                 index,
-                                raw: false,
+                                raw: true,
                                 timing: &timing,
                                 table: self.revision.session().sine_table(),
                             },

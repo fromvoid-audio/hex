@@ -292,7 +292,7 @@ pub(crate) fn candidate_group_reservation(
 const SESSION_RELEASE_CAPACITY: usize = MAX_TRACKS * MAX_SIMULTANEOUS_VOICES_PER_TRACK;
 const SESSION_TAIL_GROUP_CAPACITY: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 const MAX_RETAINED_SUFFIX_ENTRIES: usize = 4_096;
-const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 10;
+pub(crate) const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 10;
 
 /// Bounded result for targets canceled because their stable track or clip was
 /// removed by the candidate revision.
@@ -330,6 +330,7 @@ pub struct SessionPlayback {
     route_scratch: Vec<TrackRoute>,
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    main_chain: hex_lattice::NativeRuntimeChain,
     return_scratch: Vec<[Frame; 256]>,
     return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
@@ -516,6 +517,7 @@ impl SessionPlayback {
             route_scratch: _,
             device_chains,
             return_chains,
+            main_chain,
             return_scratch: _,
             return_effect_tails,
             mutable_instruments,
@@ -550,7 +552,15 @@ impl SessionPlayback {
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
-        if live_expression.is_some() || computer_keyboard.is_some() {
+        // Main is inline Session storage in this closed candidate class, not a
+        // separately transferable owner. Inspect prepared and actual runtime
+        // entries independently; retained empty-chain capacity stays inventoried
+        // by the existing fresh-storage walk. Ordinary Main playback is unaffected.
+        if !self.revision.arrangement().main_device_chain.is_empty()
+            || main_chain.storage_view().entries().next().is_some()
+            || live_expression.is_some()
+            || computer_keyboard.is_some()
+        {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         for index in 0..device_chains.len() {
@@ -584,6 +594,7 @@ impl SessionPlayback {
             .device_chains
             .iter_mut()
             .chain(self.return_chains.iter_mut())
+            .chain(std::iter::once(&mut self.main_chain))
         {
             chain.set_metering(enabled);
         }
@@ -648,6 +659,12 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => self.main_chain.select_processor_audition(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection,
+            ),
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -735,6 +752,12 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => self.main_chain.processor_audition_is_active(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection,
+            ),
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -767,6 +790,13 @@ impl SessionPlayback {
     pub(crate) fn cancel_processor_audition(&mut self, identity: crate::PostNodeIdentity) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => {
+                self.main_chain.cancel_processor_audition_for_identity(
+                    identity.owner,
+                    identity.device_id,
+                    identity.device_type,
+                )
+            }
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -804,6 +834,7 @@ impl SessionPlayback {
         for chain in self.tail_groups.iter_mut().flatten() {
             chain.cancel_all_processor_auditions();
         }
+        self.main_chain.cancel_all_processor_auditions();
         self.return_effect_tails.cancel_all_processor_auditions();
     }
 
@@ -995,6 +1026,10 @@ impl SessionPlayback {
             );
             return_scratch.push([[0.0; 2]; 256]);
         }
+        let main_chain = revision
+            .arrangement()
+            .new_main_device_runtime()
+            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         let return_effect_tails = ReturnEffectTailBank::new()?;
         let mut tail_groups = Vec::new();
         tail_groups
@@ -1061,6 +1096,7 @@ impl SessionPlayback {
             .arrangement()
             .signal_graph
             .as_ref()
+            .filter(|graph| graph.needs_runtime())
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
@@ -1081,6 +1117,7 @@ impl SessionPlayback {
             route_scratch,
             device_chains,
             return_chains,
+            main_chain,
             return_scratch,
             return_effect_tails,
             mutable_instruments,

@@ -14,8 +14,9 @@ Stale or scrolled-out first-row bounds cannot anchor an insertion.
 
 Gaps use the established full-width insertion line; empty space and existing
 lanes show a destination outline. New-track drops retain the canonical hybrid
-track defaults: an effect keeps the normal default instrument, while a browser
-instrument becomes that new track's instrument. Creation and assignment form
+track's empty device chain: an effect creates an effect-only track, while a
+browser instrument becomes that new track's explicitly chosen instrument.
+Creation and assignment form
 one neutral project command, compiled once on the bounded control worker before
 one history commit. One Undo restores the prior tracks/content; the existing
 ID high-water rule is unchanged. No track type, schema, DSP or routing policy is

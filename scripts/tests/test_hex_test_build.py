@@ -25,6 +25,51 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_current_review_malformed_ci_report_is_explicit_refusal(self):
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        evidence = {"schema_version": 2, "mode": "full", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False, "start_tree": tree, "end_tree": tree,
+                    "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}} for s in delivery.ci.FULL_STEPS]}
+        report = self.root / "malformed-ci.json"
+        cases = [None, [], {**evidence, "steps": None}, {**evidence, "steps": [None]},
+                 {**evidence, "steps": [7]}, {**evidence, "steps": "bad"},
+                 {**evidence, "steps": [{**evidence["steps"][0], "test_results": None}]},
+                 {**evidence, "start_tree": None, "end_tree": None}]
+        with patch.object(runner, "_capture_repository_state", return_value=True):
+            for value in cases:
+                report.write_text(json.dumps(value))
+                with self.subTest(value=value), self.assertRaises(delivery.DeliveryError):
+                    delivery.validate_ci(report, runner, tree["commit"])
+            report.write_text(json.dumps(evidence))
+            self.assertEqual(delivery.validate_ci(report, runner, tree["commit"]), evidence)
+
+    def test_review_ci_gate_rejects_legacy_and_changed_guarded_inputs(self):
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        original = {"version": 1, "sha256": "a" * 64, "packages": []}
+        evidence = {"schema_version": 2, "mode": "full", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "target_cache": {"dependency_inputs": original},
+                    "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}} for s in delivery.ci.FULL_STEPS]}
+        report = self.root / "review-ci.json"
+        with patch.object(runner, "_capture_repository_state", return_value=True):
+            for schema in (None, 1, True):
+                delivery.write_json(report, {**evidence, "schema_version": schema})
+                with self.subTest(schema=schema), self.assertRaisesRegex(delivery.DeliveryError, "schema"):
+                    delivery.validate_ci(report, runner, tree["commit"])
+            runner.target_lock = Mock()
+            delivery.write_json(report, evidence)
+            with patch.object(runner, "_dependency_context", return_value=original):
+                delivery.validate_ci(report, runner, tree["commit"])
+            with patch.object(runner, "_dependency_context", return_value={**original, "sha256": "b" * 64}):
+                with self.assertRaisesRegex(delivery.DeliveryError, "toolchain|configuration"):
+                    delivery.validate_ci(report, runner, tree["commit"])
+
     def test_cli_release_ownership_refusal_is_controlled_and_never_activates(self):
         arguments = ["hex-test-build", "--ci-report", "report.json", "--candidate", "a" * 40,
                      "--included", "included.json", "--checklist", "checklist.md"]
@@ -37,6 +82,27 @@ class DeliveryTests(unittest.TestCase):
         self.assertIn("release ownership is pending", errors.getvalue())
         self.assertIn("temporary publication files preserved", errors.getvalue())
         activate.assert_not_called()
+
+    def test_recovery_mutation_boundary_refuses_configured_or_raw_app_without_control(self):
+        app=Path('/owned/hex.app')
+        for observed in ('3 /owned/hex.app/Contents/MacOS/hex', '4 /other/hex-desktop'):
+            with patch.object(delivery,'run',return_value=observed):
+                with self.assertRaisesRegex(delivery.DeliveryError,'running'):
+                    delivery.assert_recovery_inactive(app)
+        with patch.object(delivery,'run',return_value='5 /other/other-program'):
+            delivery.assert_recovery_inactive(app)
+
+    def test_recovery_cli_requires_complete_identity_owner_and_explicit_adoption(self):
+        base=['hex-test-build','--build-only','--candidate','a'*40,'--included','included.json','--checklist','list.md']
+        cases=[['--expected-recreated-target-device','1'],
+               ['--expected-recreated-target-inode','2'],
+               ['--expected-recreated-target-device','1','--expected-recreated-target-inode','2'],
+               ['--expected-recreated-target-device','-1','--expected-recreated-target-inode','2',
+                '--adopt-release-target','--expected-release-owner-sha256','e'*64]]
+        for args in cases:
+            with patch.object(delivery.sys,'argv',base+args), patch.object(delivery,'build') as build, redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:delivery.main()
+            self.assertEqual(error.exception.code,2);build.assert_not_called()
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -379,6 +445,7 @@ class DeliveryTests(unittest.TestCase):
         runner = delivery.ci.LocalCiRunner(source)
         runner.summary["start_tree"] = {"commit":candidate, "dirty":False, "dirty_files":[],
                                         "content_sha256":"d" * 64}
+        runner.summary["runtime_inputs"] = {"version": 1, "sha256": "d" * 64, "symlinks": []}
         runner.cargo_identity = {"target_directory":str(target.parent.parent)}
         runner.target_lock = None if rmdir_member else SimpleNamespace(release=Mock(return_value=None))
         runner.target_state_dir = self.root / "target-state"
@@ -431,6 +498,8 @@ class DeliveryTests(unittest.TestCase):
                 patch.object(runner, "_capture_repository_state", side_effect=capture), \
                 patch.object(runner, "_resolve_cargo_identity", return_value=True), \
                 patch.object(runner, "_release_scope", return_value=scope), \
+                patch.object(delivery.ci.build_inputs, "workspace_snapshot", return_value={"packages": [], "observed_ns": 1}), \
+                patch.object(runner, "_path_dependency_inputs", return_value=[]), \
                 patch.object(runner, "_check_disk_headroom", return_value=True), \
                 patch.object(delivery, "optimized_artifact", side_effect=artifact_guard), \
                 patch.object(delivery, "native_signature", return_value=SIGNED), \
@@ -598,9 +667,10 @@ class DeliveryTests(unittest.TestCase):
         runner = delivery.ci.LocalCiRunner(self.root, steps=(delivery.ci.Step("fake", ("true",)),))
         tree = {"commit": "a" * 40, "dirty": False, "dirty_files": [], "content_sha256": "digest"}
         runner.summary["start_tree"] = tree
-        evidence = {"mode": "full", "status": "passed", "stale": False, "exit_code": 0,
+        evidence = {"schema_version": 2, "mode": "full", "status": "passed", "stale": False, "exit_code": 0,
                     "commit": tree["commit"], "dirty": False, "start_tree": tree, "end_tree": tree,
-                    "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed"}
+                    "steps": [{"step_id": step.step_id, "argv": list(step.argv), "status": "passed",
+                               "test_results": {"rust_passed_by_binary": [1]}}
                               for step in delivery.ci.FULL_STEPS]}
         report = self.root / "ci.json"
         with patch.object(runner, "_capture_repository_state", return_value=True):
@@ -615,6 +685,36 @@ class DeliveryTests(unittest.TestCase):
             runner.summary["start_tree"] = {**tree, "content_sha256": "changed"}
             with self.assertRaises(delivery.DeliveryError):
                 delivery.validate_ci(report, runner, tree["commit"])
+
+    def test_scoped_ci_requires_explicit_dev_and_recomputed_plan_with_positive_tests(self):
+        # Fabricated report data tests consumer refusal, not product execution.
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        plan = {"scope": "tooling", "profile": "merge", "qualifies_merge": True,
+                "source": tree["commit"], "base": "b" * 40}
+        required = delivery.ci.planned_steps(plan)
+        evidence = {"schema_version": 2, "mode": "merge", "status": "passed", "stale": False,
+                    "exit_code": 0, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "plan": plan,
+                    "steps": [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                               "test_results": {"python_executions": [1]}} for s in required]}
+        report = self.root / "scoped.json"
+        with patch.object(runner, "_capture_repository_state", return_value=True), \
+                patch.object(delivery, "run", return_value="{}"), \
+                patch.object(delivery.ci.ci_plan, "resolve", return_value=plan) as resolve:
+            delivery.write_json(report, evidence)
+            with self.assertRaisesRegex(delivery.DeliveryError, "full audit"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+            resolve.return_value = {**plan, "scope": "full"}
+            with self.assertRaisesRegex(delivery.DeliveryError, "differs"):
+                delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
+            resolve.return_value = plan
+            evidence["steps"][0]["test_results"] = {"python_executions": [2], "python_skipped": [2]}
+            delivery.write_json(report, evidence)
+            with self.assertRaisesRegex(delivery.DeliveryError, "no executed"):
+                delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
 
 
 @unittest.skipUnless(sys.platform == "darwin", "native macOS signature behavior")
@@ -745,7 +845,11 @@ class ReleaseCargoTests(unittest.TestCase):
                     min_free_bytes=0, target_state_dir=state)
             def build(cwd, name, expected, selected_env=env):
                 instance = runner(cwd, name, selected_env)
-                with delivery.optimized_artifact(instance, package="fixture-app") as (binary, ownership):
+                checks = []
+                def verify():
+                    self.assertIsNotNone(instance.target_lock)
+                    checks.append("artifact" if instance.summary.get("release_target_cache", {}).get("artifact") else "before-build")
+                with delivery.optimized_artifact(instance, package="fixture-app", verification_check=verify) as (binary, ownership):
                     self.assertEqual(command([str(binary)]), expected)
                     self.assertEqual(delivery.sha(binary), ownership["artifact"]["sha256"])
                     self.assertIsNotNone(instance.target_lock)
@@ -756,8 +860,17 @@ class ReleaseCargoTests(unittest.TestCase):
                     shutil.copy2(binary, base / (name + "-retained-binary"))
                 self.assertIsNone(instance.target_lock)
                 self.assertEqual(ownership["state"], "ready")
+                self.assertEqual(checks, ["before-build", "artifact"])
                 return ownership
             first = build(root, "release-a", "16")
+            owner_before = Path(first["owner_path"]).read_bytes()
+            def refuse_certificate():
+                raise delivery.DeliveryError("test certificate inputs changed")
+            with self.assertRaisesRegex(delivery.DeliveryError, "certificate"):
+                with delivery.optimized_artifact(runner(root, "ci-refused"), package="fixture-app",
+                                                 verification_check=refuse_certificate):
+                    self.fail("changed CI certificate reached compilation/consumer")
+            self.assertEqual(Path(first["owner_path"]).read_bytes(), owner_before)
             dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
             self.assertTrue(dependencies)
             # Keep a real dev build and ensure release handoff cannot touch it.
@@ -798,7 +911,72 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual({str(p.relative_to(target)):delivery.sha(p) for p in (target / "debug").rglob("*") if p.is_file()}, dev)
             self.assertEqual(command([str(base / "release-a-retained-binary")]), "16")
             self.assertEqual(command([str(base / "release-b-retained-binary")]), "B string API 9")
-            build(root, "release-a-reuse", "16")
+            build(root, "release-a-normal-tool", "16")
+            reused = build(root, "release-a-reuse", "16")
+            self.assertEqual(reused["cleanup_status"], "not_needed")
+            # Same checkout/source edit must invoke Cargo and change the actual
+            # executable, retaining the known build cache rather than cleaning.
+            (root / "api/src/lib.rs").write_text('pub fn value() -> u32 { 10 }\n')
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "same checkout changed behavior"])
+            incremental = build(root, "release-a-incremental", "19")
+            self.assertEqual(incremental["cleanup_status"], "not_needed")
+            self.assertNotEqual(incremental["source"], reused["source"])
+            self.assertNotEqual(incremental["artifact"]["sha256"], reused["artifact"]["sha256"])
+            # Same-size current source with the exact old mtime must never
+            # reuse the old optimized executable. Normal edits above stay warm.
+            api = root / "api/src/lib.rs"
+            stamp = api.stat()
+            api.write_text('pub fn value() -> u32 { 20 }\n')
+            os.utime(api, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "backdated workspace behavior"])
+            restored = build(root, "release-a-restored-mtime", "29")
+            self.assertEqual(restored["cleanup_status"], "passed")
+            self.assertIn("fixture-api", " ".join(restored["cleanup_argv"]))
+            self.assertNotEqual(restored["artifact"]["sha256"], incremental["artifact"]["sha256"])
+            api.write_text('pub fn value() -> u32 { 10 }\n')
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "restore normal behavior"])
+            build(root, "release-a-after-restored", "19")
+            # External path dependencies need the same content-based release
+            # protection, even when Cargo's timestamp observation is unchanged.
+            external_source = external / "src/lib.rs"
+            stamp = external_source.stat()
+            external_source.write_text('pub fn suffix() -> u32 { 8 }\n')
+            os.utime(external_source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+            external_changed = build(root, "release-a-external-restored", "18")
+            self.assertIn("external-helper", " ".join(external_changed["cleanup_argv"]))
+            external_source.write_text('pub fn suffix() -> u32 { 9 }\n')
+            build(root, "release-a-external-restored-back", "19")
+            changed_config = build(root, "release-a-config", "19", {**env, "RUSTFLAGS": "--cfg release_fixture_changed"})
+            self.assertEqual(changed_config["cleanup_status"], "passed")
+            configured_dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
+            self.assertEqual({name: configured_dependencies[name] for name in dependencies}, dependencies)
+            dependencies = configured_dependencies
+            build(root, "release-a-normal-config", "19")
+            original_main = (root / "app/src/main.rs").read_text()
+            (root / "app/src/main.rs").write_text("invalid Rust source")
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "actual failed build"])
+            failed = runner(root, "release-a-failed")
+            with self.assertRaises(delivery.DeliveryError):
+                with delivery.optimized_artifact(failed, package="fixture-app"):
+                    self.fail("failed Cargo build yielded an artifact")
+            owner = json.loads(Path(incremental["owner_path"]).read_text())
+            self.assertEqual(owner["state"], "pending")
+            (root / "app/src/main.rs").write_text(original_main)
+            (root / "api/src/lib.rs").write_text('pub fn value() -> u32 { 7 }\n')
+            command(["git", "add", "."])
+            command(["git", "commit", "-qm", "restore behavior"])
+            with self.assertRaisesRegex(delivery.ci.TargetCacheError, "pending"):
+                with delivery.optimized_artifact(runner(root, "pending-refused"), package="fixture-app"):
+                    self.fail("pending state was silently reused")
+            with delivery.optimized_artifact(runner(root, "pending-explicit"), package="fixture-app", adopt=True) as (binary, _):
+                self.assertEqual(command([str(binary)]), "16")
+            # Explicit recovery switched from the guarded Cargo wrapper back
+            # to the original tool, invalidating that release dependency profile.
+            dependencies = {p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}
             # Cargo cannot select the old removed/renamed member from this graph.
             (other / "api/Cargo.toml").write_text('[package]\nname="renamed-api"\nversion="0.1.0"\nedition="2021"\n')
             (other / "app/Cargo.toml").write_text(manifest.replace('fixture-api={path=', 'fixture-api={package="renamed-api",path='))
@@ -829,7 +1007,7 @@ class ReleaseCargoTests(unittest.TestCase):
             command(["cargo", "generate-lockfile", "--offline"])
             command(["git", "add", "."])
             command(["git", "commit", "-qm", "add workspace dependency"])
-            addition = build(root, "release-addition", "17", guarded_env)
+            addition = build(root, "release-addition", "17")
             self.assertEqual(addition["cleanup_status"], "passed")
             self.assertTrue(any("fixture-extra" in argument for argument in addition["cleanup_argv"]))
             self.assertEqual({p.name:delivery.sha(p) for p in (target / "release/deps").glob("libexternal_helper-*.rlib")}, dependencies)

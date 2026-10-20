@@ -22,6 +22,7 @@ const BED_ASSET: u64 = 7;
 
 fn project(source_start: u64, source_end: u64) -> Project {
     Project::from_snapshot(Snapshot {
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
@@ -136,8 +137,11 @@ fn project(source_start: u64, source_end: u64) -> Project {
 fn project_with_arrangement_midi(source_start: u64, source_end: u64) -> Project {
     let mut editor = Editor::new(project(source_start, source_end), 8).unwrap();
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {

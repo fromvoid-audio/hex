@@ -1,3 +1,6 @@
+#[path = "adaptive_grid_menu.rs"]
+mod adaptive_grid_menu;
+
 use super::{EditorView, ViewState, device_panel};
 use crate::context_menu::{MenuItem, PopupMenu};
 use gpui::{Context, Div, Pixels, Point, Window};
@@ -21,6 +24,11 @@ pub(super) struct UtilityModeAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    RemoveBrowserSource(super::browser::BrowserSection),
+    AdaptiveGrid {
+        generation: u64,
+        density: super::musical_time::AdaptiveGridDensity,
+    },
     PlaceIcon {
         path: std::path::PathBuf,
         id: Option<&'static str>,
@@ -128,6 +136,7 @@ impl EditorView {
                 }),
             }],
         });
+        self.append_adaptive_grid_choices();
         cx.notify();
     }
 
@@ -166,6 +175,7 @@ impl EditorView {
                     }),
             );
         }
+        self.append_adaptive_grid_choices();
     }
 
     pub(super) fn open_clip_context_menu(
@@ -222,6 +232,9 @@ impl EditorView {
                 },
             }],
         });
+        if self.mode == super::EditorMode::Arrangement {
+            self.append_adaptive_grid_choices();
+        }
         cx.notify();
     }
 
@@ -288,6 +301,19 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::RemoveBrowserSource(source) => {
+                self.remove_browser_source(source, window, cx);
+            }
+            EditorContextAction::AdaptiveGrid {
+                generation,
+                density,
+            } => {
+                if generation == self.project_generation {
+                    self.snap_grid = self.snap_grid.with_density(density);
+                    self.status = format!("arranger · {}", density.label());
+                    cx.notify();
+                }
+            }
             EditorContextAction::DeviceComparison(target) => {
                 self.perform_device_comparison(target, cx)
             }
@@ -413,7 +439,13 @@ impl EditorView {
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)
                 }
+                EditorContextAction::RemoveBrowserSource(source) => {
+                    !self.browser_source_removable(source)
+                }
                 EditorContextAction::InsertTrack(_) => false,
+                EditorContextAction::AdaptiveGrid { generation, .. } => {
+                    *generation != self.project_generation
+                }
                 EditorContextAction::InsertScene {
                     generation,
                     revision,
@@ -489,19 +521,24 @@ fn clip_belongs_to_track(project: &hex_project::Project, track: TrackId, clip: C
 }
 
 fn utility_device_exists(project: &hex_project::Project, id: DeviceId) -> bool {
-    project.tracks().iter().any(|track| {
-        track.ordered_device_chain().any(|node| {
-            let device = match node {
-                hex_project::TrackDeviceRef::Instrument(device)
-                | hex_project::TrackDeviceRef::Effect(device) => device,
-            };
-            device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+    project
+        .main_devices()
+        .iter()
+        .any(|device| device.id() == id && device.state().type_id().as_str() == Ok("hex.utility"))
+        || project.tracks().iter().any(|track| {
+            track.ordered_device_chain().any(|node| {
+                let device = match node {
+                    hex_project::TrackDeviceRef::Instrument(device)
+                    | hex_project::TrackDeviceRef::Effect(device) => device,
+                };
+                device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+            })
         })
-    }) || project.return_tracks().iter().any(|track| {
-        track.devices().iter().any(|device| {
-            device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+        || project.return_tracks().iter().any(|track| {
+            track.devices().iter().any(|device| {
+                device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+            })
         })
-    })
 }
 
 fn insertion_anchor(state: &ViewState, after_track: Option<TrackId>) -> Option<TrackId> {
@@ -563,7 +600,7 @@ mod tests {
             visual.run_until_parked();
             editor.read_with(cx, |view, _| {
                 let menu = view.context_menu.as_ref().expect("clip menu");
-                assert_eq!(menu.items.len(), 1);
+                assert_eq!(menu.items.len(), 4);
                 assert_eq!(menu.items[0].label, "use accent flavor");
             });
             visual.simulate_keystrokes("enter");
@@ -661,7 +698,7 @@ mod tests {
         visual.run_until_parked();
         editor.read_with(cx, |view, _| {
             let menu = view.context_menu.as_ref().expect("track menu");
-            assert_eq!(menu.items.len(), 10);
+            assert_eq!(menu.items.len(), 13);
             assert_eq!(
                 menu.items
                     .iter()
@@ -679,9 +716,30 @@ mod tests {
                 .collect();
             assert_eq!(choices, ElementColor::ALL[1..]);
             assert!(!choices.contains(&ElementColor::Gray));
-            assert_eq!(menu.items.iter().filter(|item| item.checked).count(), 1);
+            // Color and density are independent checkmark groups in one popup.
+            let checked_colors: Vec<_> = menu
+                .items
+                .iter()
+                .filter(|item| {
+                    item.checked && matches!(item.action, EditorContextAction::TrackColor { .. })
+                })
+                .collect();
+            assert_eq!(checked_colors.len(), 1);
+            let checked_densities: Vec<_> = menu
+                .items
+                .iter()
+                .filter_map(|item| {
+                    if let EditorContextAction::AdaptiveGrid { density, .. } = item.action {
+                        item.checked.then_some(density)
+                    } else {
+                        None
+                    }
+                })
+                .collect();
+            assert_eq!(checked_densities, vec![view.snap_grid.density()]);
+            assert_eq!(menu.items.iter().filter(|item| item.checked).count(), 2);
             assert!(
-                menu.items.iter().find(|item| item.checked).unwrap().label
+                checked_colors[0].label
                     == view
                         .state
                         .as_ref()
@@ -737,8 +795,12 @@ mod tests {
         visual.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
         visual.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
         visual.run_until_parked();
-        let item = visual.debug_bounds("context-menu-item").expect("menu row");
-        let click = point(item.origin.x + px(15.0), item.origin.y + px(12.0));
+        let panel = visual
+            .debug_bounds("context-menu-panel")
+            .expect("menu panel");
+        // Insert remains the FIRST row; the generic row selector is ambiguous
+        // now that the same popup also contains adaptive-density choices.
+        let click = point(panel.origin.x + px(15.0), panel.origin.y + px(14.0));
         visual.simulate_mouse_down(click, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(click, MouseButton::Left, Modifiers::default());
         editor.read_with(cx, |view, _| {

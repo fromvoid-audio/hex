@@ -89,3 +89,14 @@ Measure first audible output with a physical loopback as well as transport/UI
 acknowledgment. Record unavoidable device latency separately from host overhead.
 These contracts and tests are unimplemented; no current plugin-compensation or
 zero-latency claim is supported by the fixed demo.
+
+
+## Main serial output arrival
+
+The prepared Project reports pre-Main Track/Return merge arrival plus the actual
+known latency of its enabled serial Main effects. This final arrival is distinct
+from the compensation graph's pre-Main summing clock, taps and stems. Main latency
+is validated under the existing checked cumulative frame limit before publication;
+unknown active latency refuses, while bypass contributes zero. Processing remains
+one Main chain followed by master gain. This is causal reporting and admission,
+not removal of physical latency or insertion of another compensation delay.
