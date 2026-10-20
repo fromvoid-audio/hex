@@ -1,6 +1,17 @@
 //! History through real toolbar input over bounded private worker roots.
 use super::*;
 
+struct PreferencesTestDirectory(
+    std::path::PathBuf,
+    std::sync::Arc<crate::editor::test_environment::Environment>,
+);
+impl PreferencesTestDirectory {
+    fn new() -> Self {
+        let environment = crate::editor::test_environment::Environment::new().unwrap();
+        Self(environment.root().to_owned(), environment)
+    }
+}
+
 fn fixture(
     cx: &mut TestAppContext,
 ) -> (
@@ -17,15 +28,27 @@ fn fixture(
     let editor = cx
         .update_window(handle, |_, window, cx| {
             window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test_with_browser_directory(
+                EditorView::new_for_test_with_environment(
                     window,
                     cx,
                     Service::new(48_000, 32, 8_000_000).unwrap(),
-                    &directory.0,
+                    std::sync::Arc::clone(&directory.1),
                 )
             })
         })
         .unwrap();
+    editor.read_with(cx, |view, _| {
+        assert!(std::sync::Arc::ptr_eq(&directory.1, &view.test_environment));
+        assert_eq!(view.browser.directory, directory.0.join("samples"));
+        for (actual, name) in [
+            (view.browser.test_preferences_path(), "browser.json"),
+            (view.recent_projects.test_path(), "recent-projects.json"),
+            (view.theme_settings.test_path(), "theme.json"),
+            (view.project_directory.test_path(), "project-directory.json"),
+        ] {
+            assert_eq!(actual, directory.0.join("config").join(name));
+        }
+    });
     (handle, editor, directory)
 }
 
@@ -434,4 +457,143 @@ fn browser_history_removed_or_hidden_source_fallback_does_not_push_or_clear_forw
         assert_eq!(view.browser.section, BrowserSection::Samples);
         assert!(view.pending_requests.is_empty());
     });
+}
+
+#[gpui::test]
+fn browser_history_hidden_custom_home_music_never_restore_through_back_or_forward(
+    cx: &mut TestAppContext,
+) {
+    for row in ["browser-place-2", "browser-place-1", "browser-place-0"] {
+        for forward in [false, true] {
+            let (handle, editor, directory) = fixture(cx);
+            let visual = &mut VisualTestContext::from_window(handle, cx);
+            visual.run_until_parked();
+            let custom = directory.0.join("history-custom");
+            std::fs::create_dir(&custom).unwrap();
+            let wav = custom.join("keep.wav");
+            let bytes = mono_pcm_wav(24);
+            std::fs::write(&wav, &bytes).unwrap();
+            editor.update(visual, |view, cx| {
+                view.browser.auto_audition = false;
+                view.open_browser_folder(cx);
+            });
+            assert!(visual.did_prompt_for_paths());
+            visual.simulate_paths_selection(Some(vec![custom.clone()]));
+            visual.run_until_parked();
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let ready = editor.update(visual, |view, cx| {
+                    if view.tick(cx) {
+                        cx.notify();
+                    }
+                    view.state.is_some() && view.worker_requests_pending == 0
+                });
+                if ready {
+                    break;
+                }
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            let (target, roots, before) = editor.read_with(visual, |view, _| {
+                assert_eq!(view.browser.section, BrowserSection::Samples);
+                let target = match row {
+                    "browser-place-2" => custom.clone(),
+                    "browser-place-1" => view.browser.home.clone(),
+                    _ => view.browser.music.clone(),
+                };
+                (
+                    target,
+                    view.sample_roots(),
+                    view.state.as_ref().unwrap().clone(),
+                )
+            });
+            click(visual, row);
+            click(visual, "browser-section-devices");
+            if forward {
+                click(visual, "browser-history-back");
+                click(visual, "browser-history-back");
+                editor.read_with(visual, |view, _| {
+                    assert_eq!(view.browser.section, BrowserSection::Samples)
+                });
+            }
+            // Remove the retained history target through its actual row menu.
+            // The current visible Samples/Devices source is deliberately unchanged.
+            let bounds = visual.debug_bounds(row).unwrap();
+            visual.simulate_mouse_down(bounds.center(), MouseButton::Right, Modifiers::default());
+            visual.simulate_mouse_up(bounds.center(), MouseButton::Right, Modifiers::default());
+            let remove = visual.debug_bounds("context-menu-choice-8").unwrap();
+            visual.simulate_click(remove.center(), Modifiers::default());
+            visual.run_until_parked();
+            editor.read_with(visual, |view, _| {
+                assert!(!view.browser_place_visible(&target));
+                assert!(view.browser.places.contains(&target));
+                assert_eq!(view.sample_roots(), roots);
+                assert_eq!(
+                    view.browser.section,
+                    if forward {
+                        BrowserSection::Samples
+                    } else {
+                        BrowserSection::Instruments
+                    }
+                );
+            });
+            assert!(visual.debug_bounds(row).is_none());
+            click(
+                visual,
+                if forward {
+                    "browser-history-forward"
+                } else {
+                    "browser-history-back"
+                },
+            );
+            editor.read_with(visual, |view, _| {
+                assert_eq!(
+                    view.browser.section,
+                    BrowserSection::All,
+                    "hidden target {row} forward={forward}"
+                );
+                assert!(!view.browser_place_visible(&target));
+                assert!(view.browser.history.can_forward());
+                assert!(view.browser.playback_path.is_none());
+                assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+                let state = view.state.as_ref().unwrap();
+                assert_eq!(state.project, before.project);
+                assert_eq!(
+                    (
+                        state.revision,
+                        state.can_undo,
+                        state.can_redo,
+                        state.unsaved
+                    ),
+                    (
+                        before.revision,
+                        before.can_undo,
+                        before.can_redo,
+                        before.unsaved
+                    )
+                );
+            });
+            assert_eq!(std::fs::read(&wav).unwrap(), bytes);
+            assert_eq!(query(&editor, visual), "");
+            click(visual, "browser-history-forward");
+            editor.read_with(visual, |view, _| {
+                assert_eq!(view.browser.section, BrowserSection::Instruments);
+                assert!(
+                    !view.browser.history.can_forward(),
+                    "fallback must not add a history step"
+                );
+            });
+            click(visual, "browser-history-back");
+            editor.read_with(visual, |view, _| {
+                assert_eq!(view.browser.section, BrowserSection::All)
+            });
+            click(visual, "browser-history-back");
+            editor.read_with(visual, |view, _| {
+                assert_eq!(view.browser.section, BrowserSection::Samples);
+                assert!(!view.browser.history.can_back());
+                assert!(view.browser.history.can_forward());
+            });
+            eprintln!("ACTUAL_HIDDEN_HISTORY {row} forward={forward}");
+        }
+    }
 }
