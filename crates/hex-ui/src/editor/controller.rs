@@ -911,9 +911,10 @@ impl EditorView {
         visible_change |= self.tick_prepared_arrangement_seek();
         visible_change |= self.tick_scrub();
         visible_change |= self.poll_resident_publication();
-        // Snapshot private source eligibility before borrowing the audio client
-        // for publication/telemetry. No UI event can change this owner during
-        // this synchronous tick; the callback still checks its runtime fence.
+        // Snapshot private ACK-source eligibility before borrowing the audio
+        // client. This does not admit publication: promotion below still needs
+        // actual applied/rejected telemetry, including cancellation losing CAS.
+        // No UI event can change this owner during this synchronous tick.
         let current_seek_source = self.prepared_seek.as_ref().and_then(|seek| {
             self.seek_publication_is_current(seek.request_id, seek.device_preview_identity)
                 .then_some((seek.request_id, seek.device_preview_identity))

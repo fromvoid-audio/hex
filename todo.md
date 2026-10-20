@@ -4,8 +4,8 @@ Three actual worker/callback interleavings reproduced lost Space intent during
 resident publication retirement, an overtaken intermediate preview, and stale
 UI audible metadata after callback-won cancellation. The repair preserves the
 existing single seek/retirement owner and latest scalar intent, validates ordered
-same-owner preview identities, and distinguishes Applying from Complete-with-
-actual-installed-revision and returned cancellation. See
+same-owner preview identities, and separates invalidation intent from actual
+applied/rejected metadata reconciliation for Published seeks. See
 [prepared seek cancellation](docs/prepared-seek-cancellation.md). Exact targeted,
 strict/default-feature, cancellation and allocation receipts are recorded in
 Pulse; these are source component checks, not final prospective qualification,

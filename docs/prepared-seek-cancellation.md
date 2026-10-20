@@ -166,13 +166,17 @@ revision, with old <= incoming <= active sequence. Foreign, terminal and older
 identities retain their existing refusal behavior. Admission still waits for the
 exact latest applied preview and its original prepared-root/fence checks.
 
-Cancellation result is distinct from the invalidation request. If callback is
-Applying, the exact pending identity survives until actual terminal observation.
-If Complete, its applied revision must match before it can restore audible
-metadata; a completed returned/canceled candidate remains canceled. Pause after
-callback installation therefore reconciles the actually installed preview and a
-later held Space can capture a fresh fence. No new runtime owner, counter, queue,
-publication API or callback work is added.
+The private canceled flag records the invalidation request, not proof that
+control won the callback CAS. Only Published identities remain eligible for
+applied-metadata reconciliation through the same exact request, generation,
+revision and active-source guards. Existing actual applied/rejected promotion
+then determines the installed runtime; Preparing/CandidateReady cancellation
+never gains admission. This avoids sampling cancellation Complete as if it were
+an atomic observation of applied revision: callback publishes those separately.
+Returned/cancellation-won candidates keep their existing quiet terminal path.
+Pause after callback installation therefore adopts actual audible metadata and
+a later held Space can capture a fresh fence. No new runtime owner, counter,
+queue, publication API or callback work is added.
 
 Three real GPUI/Service/publication/callback regressions failed at the intended
 assertions on f855 production; all three passed after the repair, alongside the

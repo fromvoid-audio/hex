@@ -201,20 +201,8 @@ fn cancel_published_seek<C: SeekAudioControl>(
     let SeekStage::Published { audio_revision } = pending.stage else {
         return None;
     };
-    let result = control.map(|control| control.cancel_publication(audio_revision));
-    // Invalidation is a request, not proof that control won the apply CAS.
-    // When callback won, retain the exact source through its actual ACK so
-    // the installed runtime can still supply a fresh admission fence.
-    pending.cancelled = match result {
-        Some(FreshRuntimeCancellationResult::Applying) => false,
-        // Complete also describes a returned/rejected candidate. Only an
-        // actually installed exact revision can restore audible metadata.
-        Some(FreshRuntimeCancellationResult::Complete) => control
-            .and_then(SeekAudioControl::status_view)
-            .is_none_or(|status| status.applied_revision.load(Acquire) != audio_revision),
-        _ => true,
-    };
-    result
+    pending.cancelled = true;
+    control.map(|control| control.cancel_publication(audio_revision))
 }
 
 pub(super) fn routes_are_current(entries: &[SessionRouteEntry], project: &Project) -> bool {
@@ -353,7 +341,12 @@ impl EditorView {
     ) -> bool {
         self.prepared_seek.as_ref().is_some_and(|pending| {
             pending.request_id == request_id
-                && !pending.cancelled
+                // This predicate is ONLY applied-metadata eligibility, not
+                // publication admission. Invalidation can lose the callback
+                // CAS, and Complete can precede applied/rejected telemetry.
+                // Keep the Published source eligible until actual terminal
+                // promotion proves which runtime was installed or returned.
+                && matches!(pending.stage, SeekStage::Published { .. })
                 && pending.device_preview_identity == preview
                 && self.seek_source_is_current(
                     pending.project_generation,
