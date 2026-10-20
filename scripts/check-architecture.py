@@ -40,6 +40,8 @@ ALLOWED = {
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
+    # Real decoded WAV -> sealed source scope -> sampler PCM oracles only.
+    'hex-media': {'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     # Verified-mode source limits for real worker/key-handler failure fixtures only.
     'hex-ui': {'hex-media'},
     'hex-engine': {'hex-tuning'},
