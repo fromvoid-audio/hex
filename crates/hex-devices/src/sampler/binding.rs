@@ -4,14 +4,14 @@ use super::*;
 use hex_lattice::{DeviceResourceIdentity, DeviceResourcePcm, DeviceResourceView, DeviceResources};
 use hex_lattice_contract::DeviceAssetSlot;
 
-#[derive(Clone, Copy, Debug)]
-struct SourceKey {
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct SourceKey {
     slot: DeviceAssetSlot,
     identity: DeviceResourceIdentity,
     shape: SampleShape,
 }
 impl SourceKey {
-    fn matches(self, view: DeviceResourceView<'_>) -> bool {
+    pub(super) fn matches(self, view: DeviceResourceView<'_>) -> bool {
         self.slot == view.slot
             && self.identity == view.identity
             && self.shape.sample_rate() == view.sample_rate
@@ -31,8 +31,8 @@ fn channels(pcm: DeviceResourcePcm<'_>) -> SampleChannels {
 /// storage provenance, publication or retirement authority.
 #[derive(Clone, Copy, Debug)]
 pub struct BoundSamplerPlan<'a> {
-    plan: PreparedSamplerPlan<'a>,
-    source: SourceKey,
+    pub(super) plan: PreparedSamplerPlan<'a>,
+    pub(super) source: SourceKey,
 }
 impl<'a> PreparedSamplerPlan<'a> {
     /// Bind and validate finite PCM once on control, never once per note or in
