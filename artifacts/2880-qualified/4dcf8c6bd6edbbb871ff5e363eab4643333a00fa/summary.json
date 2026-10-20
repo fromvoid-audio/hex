@@ -1,0 +1,165 @@
+{
+  "source": "4dcf8c6bd6edbbb871ff5e363eab4643333a00fa",
+  "tree": "908fabb28d1996f1fefaef4169d550b72765554d",
+  "base": "e4c0f55c69a78839eab25151286aef0855d1f640",
+  "branch": "pulse/task-2880-g1-2e2d2e49c14c",
+  "initial_status": "",
+  "target": "/Users/portalsurfer/.codex/worktrees/hex-general-local/hex/target",
+  "environment": {
+    "CARGO_INCREMENTAL": "0",
+    "CARGO_PROFILE_DEV_DEBUG": "0",
+    "CARGO_PROFILE_TEST_DEBUG": "0"
+  },
+  "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)\nbinary: rustc\ncommit-hash: 4a4ef493e3a1488c6e321570238084b38948f6db\ncommit-date: 2026-03-02\nhost: aarch64-apple-darwin\nrelease: 1.94.0\nLLVM version: 21.1.8\n",
+  "steps": [
+    {
+      "name": "targeted83",
+      "argv": [
+        "cargo",
+        "test",
+        "-p",
+        "hex-ui",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "editor::time_selection::",
+        "editor::edit_cursor_ui_test::",
+        "editor::selection::tests::",
+        "editor::clip_selection::tests::",
+        "editor::clip_clipboard_ui_test::",
+        "editor::track_selection_ui_test::",
+        "editor::drag::group_drag_ui_test::",
+        "editor::arrangement_main_track_ui_test::",
+        "editor::session_navigation_ui_test::"
+      ],
+      "started_utc": "2026-10-20T11:17:26.763019+00:00",
+      "duration_s": 21.72,
+      "exit_code": 0,
+      "log": "targeted83.log",
+      "test_results": [
+        "ok. 83 passed; 0 failed; 0 ignored; 0 measured; 992 filtered out; finished in 6.48s",
+        "ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+      ]
+    },
+    {
+      "name": "strict-default",
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-20T11:17:48.483703+00:00",
+      "duration_s": 5.592,
+      "exit_code": 0,
+      "log": "strict-default.log"
+    },
+    {
+      "name": "strict-ui-feature",
+      "argv": [
+        "cargo",
+        "clippy",
+        "-p",
+        "hex-ui",
+        "--all-targets",
+        "--features",
+        "ui-test-support",
+        "--locked",
+        "--",
+        "-D",
+        "warnings"
+      ],
+      "started_utc": "2026-10-20T11:17:54.076178+00:00",
+      "duration_s": 10.31,
+      "exit_code": 0,
+      "log": "strict-ui-feature.log"
+    },
+    {
+      "name": "quick-final",
+      "argv": [
+        "python3",
+        "scripts/local-ci.py",
+        "--quick"
+      ],
+      "started_utc": "2026-10-20T11:18:04.386355+00:00",
+      "duration_s": 4.34,
+      "exit_code": 0,
+      "log": "quick-final.log"
+    },
+    {
+      "name": "diff-check",
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "started_utc": "2026-10-20T11:18:08.726217+00:00",
+      "duration_s": 0.011,
+      "exit_code": 0,
+      "log": "diff-check.log"
+    }
+  ],
+  "scope": "Targeted local source verification only. Quick is partial; full integration/merge qualification belongs to Cloud3. No app/native install, launch, listening, or UI acceptance.",
+  "final_source": "4dcf8c6bd6edbbb871ff5e363eab4643333a00fa",
+  "final_tree": "908fabb28d1996f1fefaef4169d550b72765554d",
+  "final_status": "",
+  "unchanged": true,
+  "passed": true,
+  "earlier_attempts": [
+    {
+      "case": "initial stale test filter",
+      "result": "zero selected tests; not verification",
+      "raw_log_retained": false,
+      "detail": "Initial test name was renamed during dependency compilation. Corrected filter pointer_selection_aba subsequently ran both actual regressions and failed before runtime repair."
+    },
+    {
+      "case": "ABA pre-fix product regression",
+      "result": "0 passed / 2 failed at post-ACK selection equality; canonical destination assertion passed",
+      "log": "red.log",
+      "source_context": "Original e4c0f55c runtime with two newly added dirty rendered tests; exploratory dirty test tree, not an immutable final-source certificate."
+    },
+    {
+      "case": "intermediate missing field compilation",
+      "result": "E0063 in two existing Main PendingTimeRangeMove initializers; fixed by capturing epoch",
+      "raw_log_retained": false,
+      "detail": "Compiler output was observed and retained in the task transcript; the reused green-time-selection log was overwritten by the subsequent successful run."
+    },
+    {
+      "case": "inherited Main ACK fixture setup",
+      "result": "8 passed / 2 failed; fixtures lacked original required current cursor/source scope",
+      "log": "main-track.log",
+      "detail": "Primary approved bounded test-only valid source/cursor/scope setup. Original production guards were preserved, not weakened."
+    },
+    {
+      "case": "Console fixture setup",
+      "result": "0 passed / 2 failed before Arrange lane selection",
+      "log": "console-fixture-setup-failure.log",
+      "detail": "Real SessionClip creation changed mode; fixture now explicitly restores transient Arrangement mode/focus before actual source pointer input. Not a product regression."
+    },
+    {
+      "case": "Console pre-extension product regression",
+      "result": "0 passed / 2 failed after ACK restored original track over actual Console MIDI arrow selection",
+      "log": "red-console.log"
+    },
+    {
+      "case": "pre-Console scope receipt",
+      "result": "60 passed / 0 failed (original57 plus ABA2/exhaustion1)",
+      "log": "regression60.log",
+      "detail": "Superseded by final clean-commit83 run after accepted Session input hooks and Main fixture repairs."
+    }
+  ],
+  "warnings": [
+    "Five existing third_party/xattr macOS libc::uint32_t deprecation warnings remain. No suppression or unrelated vendor repair."
+  ],
+  "acceptance_gaps": [
+    "Full integration/merge qualification is owned by Cloud3; quick7 remains partial.",
+    "macOS arm64 headless GPUI/real Service evidence only; native physical input, paint, listening, installation and user acceptance are untested here.",
+    "No app stop, launch, install, rebuild-in-place or delivery operation; no hosted CI; PR readiness unchanged."
+  ]
+}
