@@ -85,7 +85,7 @@ fn fixture() -> (
         source_sample_rate: 16_000,
         source_frames: 8_000,
         conversion_version: hex_project::IDENTITY_CONVERSION,
-        source_audio: audio.clone(),
+        source_audio: OriginalAudio::Stereo(audio.clone()),
         audio,
         waveform,
     };
@@ -106,7 +106,13 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
             Some(&previous),
         )
         .unwrap();
-    let root = Arc::clone(&session.audio_clip_waveforms.borrow()[&clip].waveform);
+    let root = (session
+        .audio_clip_waveforms
+        .borrow()
+        .get(&clip)
+        .unwrap()
+        .waveform)
+        .clone();
     let (Created::Clip(tail), split) = session
         .command_prepared_revision(Command::SplitClip { clip, frame: 3_137 }, Some(&pitched))
         .unwrap()
@@ -115,9 +121,9 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
     };
     {
         let views = session.audio_clip_waveforms.borrow();
-        assert!(Arc::ptr_eq(&root, &views[&tail].waveform));
-        assert_eq!(views[&tail].offset, 3_137);
-        assert_eq!(views[&tail].length, 4_863);
+        assert!(root.shares_owner_with(&views.get(&tail).unwrap().waveform));
+        assert_eq!(views.get(&tail).unwrap().offset, 3_137);
+        assert_eq!(views.get(&tail).unwrap().length, 4_863);
     }
     session
         .command_prepared_revision(
@@ -128,14 +134,25 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
             Some(&split),
         )
         .unwrap();
-    assert!(Arc::ptr_eq(
-        &root,
-        &session.audio_clip_waveforms.borrow()[&tail].waveform
-    ));
+    assert!(
+        root.shares_owner_with(
+            &session
+                .audio_clip_waveforms
+                .borrow()
+                .get(&tail)
+                .unwrap()
+                .waveform
+        )
+    );
     let before = session.project().clone();
     let can_undo = session.can_undo();
     let can_redo = session.can_redo();
-    session.shutdown.store(true, Ordering::Release);
+    match &session.shutdown {
+        SessionCancellation::Unqualified(flag) => flag.store(true, Ordering::Release),
+        SessionCancellation::Retained(_) => {
+            panic!("fixture requires its original raw cancellation input")
+        }
+    }
     assert!(
         session
             .command_prepared_revision(
@@ -152,10 +169,16 @@ fn accepted_waveforms_share_cropped_pcm_keep_gain_outside_and_failed_edit_keeps_
         (session.can_undo(), session.can_redo()),
         (can_undo, can_redo)
     );
-    assert!(Arc::ptr_eq(
-        &root,
-        &session.audio_clip_waveforms.borrow()[&tail].waveform
-    ));
+    assert!(
+        root.shares_owner_with(
+            &session
+                .audio_clip_waveforms
+                .borrow()
+                .get(&tail)
+                .unwrap()
+                .waveform
+        )
+    );
     let mut renderer = hex_engine::Renderer::new(split.arrangement());
     renderer.play();
     let mut actual = [[0.0; 2]; 31];

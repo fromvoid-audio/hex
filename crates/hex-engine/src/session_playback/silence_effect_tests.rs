@@ -8,7 +8,7 @@ fn audio_with_filter() -> SessionPlayback {
         PreparedRevision::prepare(
             &project,
             &media,
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

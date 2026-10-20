@@ -1,8 +1,10 @@
 //! Control-side peak summaries. Compute once after import, cache for visible UI.
-use crate::ImportError;
-use hex_engine::Audio;
+use crate::{DeviceSourceImportError, ImportError};
+use hex_engine::native_device_resources::OriginalSourceLease;
+use hex_engine::{Audio, OwnedAudioSource};
 
 pub const MAX_BINS: usize = 65_536;
+const PYRAMID_LEVEL_CAPACITY: usize = 16;
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Peak {
     pub min: f32,
@@ -10,21 +12,211 @@ pub struct Peak {
 }
 /// A bin summarizes a nonempty, disjoint interval of the original PCM. The full
 /// source is covered exactly once, even when its length is not divisible by bins.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Waveform {
     pub source_frames: usize,
     pub bins: Vec<[Peak; 2]>,
     // Pairwise extrema above the leaf bins; built once on the control worker.
     levels: Vec<Vec<[Peak; 2]>>,
-    samples: Option<Audio>,
+    samples: Option<SampleBacking>,
+}
+
+/// Canonical shared summary with its fresh outer-constructor receipt retained
+/// beside the actual owner. No raw Arc adoption or mutable shared access.
+pub type SharedWaveform = hex_engine::SharedMetadata<Waveform>;
+
+mod read;
+pub use read::{WaveformRead, read_shared};
+mod native_original;
+pub use native_original::{
+    NativeOriginalWaveformLimits, native_original_metadata_bytes, summarize_native_audio_on_worker,
+    summarize_native_source_on_worker,
+};
+
+#[cfg(test)]
+mod shared_storage_tests;
+
+/// Actual outer field/body, pyramid capacities and retained PCM child. Every
+/// physical field is deduplicated in the existing ledger, even across exported
+/// aliases. A header-only prior visit cannot hide an unvisited nested child.
+/// This is selected storage, not whole-root custody/peak/retirement admission.
+pub fn borrow_shared_storage_on_control<'a>(
+    owner: &'a SharedWaveform,
+    ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+) -> Result<(), hex_engine::AudioStorageError> {
+    ledger.borrow_sampler_waveform_fields_on_control(&sampler_fields_on_control(owner))
+}
+
+/// Internal audited actual owner projection; neither an admission certificate
+/// nor a source clone. Used by the same worker/family inventory consumers.
+/// ```compile_fail
+/// fn escape(owner: &hex_media::waveform::SharedWaveform)
+///     -> hex_engine::sampler_host_fields::WaveformFields<'static> {
+///     hex_media::waveform::sampler_fields_on_control(owner)
+/// }
+/// ```
+pub fn sampler_fields_on_control(
+    owner: &SharedWaveform,
+) -> hex_engine::sampler_host_fields::WaveformFields<'_> {
+    hex_engine::sampler_host_fields::WaveformFields {
+        owner: hex_engine::sampler_host_fields::SharedMetadataRef::of(owner),
+        payload: owner.as_ref(),
+    }
+}
+// Exhaustive leaf declaration: adding an owning Peak field requires review of
+// this finite schema; the Engine physical Vec view certifies footprint only.
+const _: fn(Peak) = |Peak { min: _, max: _ }| {};
+impl hex_engine::sampler_host_fields::WaveformPayload for Waveform {
+    fn body(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
+    fn bins(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
+        let Self {
+            source_frames: _,
+            bins,
+            levels: _,
+            samples: _,
+        } = self;
+        hex_engine::sampler_host_fields::VecRef::of(bins)
+    }
+    fn levels(&self) -> hex_engine::sampler_host_fields::WaveformLevelsRef<'_> {
+        let Self {
+            source_frames: _,
+            bins: _,
+            levels,
+            samples: _,
+        } = self;
+        hex_engine::sampler_host_fields::WaveformLevelsRef::of(levels)
+    }
+    fn samples(&self) -> hex_engine::sampler_host_fields::WaveformSamples<'_> {
+        use hex_engine::sampler_host_fields::WaveformSamples;
+        let Self {
+            source_frames: _,
+            bins: _,
+            levels: _,
+            samples,
+        } = self;
+        match samples {
+            None => WaveformSamples::None,
+            Some(SampleBacking::Audio(audio)) => WaveformSamples::Audio(audio),
+            Some(SampleBacking::Original(source)) => WaveformSamples::Original(source),
+            Some(SampleBacking::NativeOriginal(source)) => WaveformSamples::NativeOriginal(source),
+        }
+    }
+}
+
+enum SampleBacking {
+    Audio(Audio),
+    Original(OriginalSourceLease),
+    NativeOriginal(OwnedAudioSource),
+}
+impl std::fmt::Debug for SampleBacking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Audio(source) => f.debug_tuple("Audio").field(source).finish(),
+            Self::Original(source) => f.debug_tuple("Original").field(source).finish(),
+            Self::NativeOriginal(source) => f
+                .debug_struct("NativeOriginal")
+                .field("sample_rate", &source.sample_rate())
+                .field("frames", &source.frames())
+                .finish(),
+        }
+    }
+}
+#[derive(Clone, Copy)]
+enum BorrowedSamples<'a> {
+    Mono(&'a [f32]),
+    Stereo(&'a [[f32; 2]]),
+}
+impl BorrowedSamples<'_> {
+    fn len(self) -> usize {
+        match self {
+            Self::Mono(v) => v.len(),
+            Self::Stereo(v) => v.len(),
+        }
+    }
+    fn frame(self, index: usize) -> Option<[f32; 2]> {
+        match self {
+            Self::Mono(v) => v.get(index).map(|v| [*v; 2]),
+            Self::Stereo(v) => v.get(index).copied(),
+        }
+    }
+}
+impl SampleBacking {
+    fn borrow(&self) -> Option<BorrowedSamples<'_>> {
+        match self {
+            Self::Audio(audio) => Some(BorrowedSamples::Stereo(audio.frames())),
+            Self::Original(source) => borrow_original(source).ok(),
+            Self::NativeOriginal(source) => borrow_native(source).ok(),
+        }
+    }
+}
+fn borrow_native(
+    source: &OwnedAudioSource,
+) -> Result<BorrowedSamples<'_>, DeviceSourceImportError> {
+    let view = source.view();
+    if let Some(mono) = view.resident_mono_samples() {
+        Ok(BorrowedSamples::Mono(mono))
+    } else if let Some(stereo) = view.resident_frames() {
+        Ok(BorrowedSamples::Stereo(stereo))
+    } else {
+        Err(ImportError::Invalid("waveform requires resident original PCM").into())
+    }
+}
+fn borrow_original(
+    source: &OriginalSourceLease,
+) -> Result<BorrowedSamples<'_>, DeviceSourceImportError> {
+    let view = source.view().map_err(DeviceSourceImportError::Storage)?;
+    if let Some(mono) = view.resident_mono_samples() {
+        Ok(BorrowedSamples::Mono(mono))
+    } else if let Some(stereo) = view.resident_frames() {
+        Ok(BorrowedSamples::Stereo(stereo))
+    } else {
+        Err(ImportError::Invalid("waveform requires resident original PCM").into())
+    }
 }
 
 impl Waveform {
     /// Exact retained PCM identity, for control-side summary reuse across revisions.
     pub fn shares_audio_with(&self, audio: &Audio) -> bool {
-        self.samples
-            .as_ref()
-            .is_some_and(|samples| samples.shares_pcm_with(audio))
+        match &self.samples {
+            Some(SampleBacking::Audio(samples)) => samples.shares_pcm_with(audio),
+            Some(SampleBacking::NativeOriginal(samples)) => {
+                samples.sample_rate() == audio.sample_rate()
+                    && samples
+                        .view()
+                        .resident_frames()
+                        .is_some_and(|frames| std::ptr::eq(frames, audio.frames()))
+            }
+            _ => false,
+        }
+    }
+    pub fn shares_original_with(&self, source: &OriginalSourceLease) -> bool {
+        matches!(&self.samples, Some(SampleBacking::Original(samples)) if samples.shares_source_with(source))
+    }
+    /// Borrow the actual retained field for control-side source-plan/union
+    /// inventory. This neither clones an owner nor grants publication rights.
+    pub fn original_source(&self) -> Option<&OriginalSourceLease> {
+        match &self.samples {
+            Some(SampleBacking::Original(source)) => Some(source),
+            _ => None,
+        }
+    }
+    /// Borrow the actual stereo backing field for control-side union inventory.
+    /// Audio native lineage is retained; this does not create an owning alias.
+    pub fn audio_source(&self) -> Option<&Audio> {
+        match &self.samples {
+            Some(SampleBacking::Audio(audio)) => Some(audio),
+            _ => None,
+        }
+    }
+    /// Actual retained field for control-side inventory only. Scoped renderer
+    /// reads expose no source. This borrow grants no assignment/publication right.
+    pub fn native_original_source(&self) -> Option<&OwnedAudioSource> {
+        match &self.samples {
+            Some(SampleBacking::NativeOriginal(source)) => Some(source),
+            _ => None,
+        }
     }
 
     /// Construct immutable cached peaks without resident PCM (e.g. fixtures).
@@ -45,7 +237,7 @@ impl Waveform {
         }
         let mut levels = Vec::new();
         levels
-            .try_reserve_exact(16)
+            .try_reserve_exact(PYRAMID_LEVEL_CAPACITY)
             .map_err(|_| ImportError::AllocationFailed)?;
         let mut previous = bins.as_slice();
         while previous.len() > 1 {
@@ -87,14 +279,18 @@ impl Waveform {
             return None;
         }
         if end - start <= 64 {
-            if let Some(audio) = &self.samples {
-                let frames = audio.frames().get(start..end)?;
-                let first = frames.first()?;
+            if let Some(backing) = &self.samples {
+                let frames = backing.borrow()?;
+                if end > frames.len() {
+                    return None;
+                }
+                let first = frames.frame(start)?;
                 let mut peaks = first.map(|sample| Peak {
                     min: sample,
                     max: sample,
                 });
-                for frame in &frames[1..] {
+                for index in start + 1..end {
+                    let frame = frames.frame(index)?;
                     merge(
                         &mut peaks,
                         frame.map(|sample| Peak {
@@ -157,10 +353,62 @@ fn include(result: &mut Option<[Peak; 2]>, peaks: [Peak; 2]) {
 }
 
 pub fn summarize(audio: &Audio, requested_bins: usize) -> Result<Waveform, ImportError> {
+    let mut waveform = summarize_borrowed(
+        BorrowedSamples::Stereo(audio.frames()),
+        requested_bins,
+        || Ok(()),
+    )?;
+    waveform.samples = Some(SampleBacking::Audio(audio.clone()));
+    Ok(waveform)
+}
+
+/// Worker-only summary retaining the actual closed original source for deep
+/// zoom. Share the finished immutable summary with SharedWaveform; no infallible
+/// Waveform clone can create an unreserved native source handle.
+pub fn summarize_original(
+    source: &OriginalSourceLease,
+    requested_bins: usize,
+    max_scan_frames: usize,
+    max_source_metadata_bytes: usize,
+    cancel: &dyn hex_engine::CancellationQuery,
+) -> Result<Waveform, DeviceSourceImportError> {
+    let check = || {
+        if cancel.is_cancelled() {
+            Err(ImportError::Cancelled)
+        } else {
+            Ok(())
+        }
+    };
+    check()?;
+    if max_source_metadata_bytes < std::mem::size_of::<OriginalSourceLease>() {
+        return Err(
+            hex_engine::native_device_resources::ResourcePreparationError::MetadataCapacity.into(),
+        );
+    }
+    let frames = borrow_original(source)?;
+    if frames.len() > max_scan_frames {
+        return Err(ImportError::LimitExceeded("waveform source scan frames").into());
+    }
+    let mut waveform = summarize_borrowed(frames, requested_bins, check)?;
+    check()?;
+    waveform.samples = Some(SampleBacking::Original(
+        source.try_clone_on_control(max_source_metadata_bytes)?,
+    ));
+    Ok(waveform)
+}
+
+fn summarize_borrowed(
+    frames: BorrowedSamples<'_>,
+    requested_bins: usize,
+    mut check: impl FnMut() -> Result<(), ImportError>,
+) -> Result<Waveform, ImportError> {
+    check()?;
     if requested_bins == 0 || requested_bins > MAX_BINS {
         return Err(ImportError::LimitExceeded("waveform bins must be 1..65536"));
     }
-    let frames = audio.frames();
+    if frames.len() == 0 {
+        return Err(ImportError::Invalid("waveform source is empty"));
+    }
     let count = requested_bins.min(frames.len());
     let mut bins = Vec::new();
     bins.try_reserve_exact(count)
@@ -170,29 +418,57 @@ pub fn summarize(audio: &Audio, requested_bins: usize) -> Result<Waveform, Impor
     let extra = frames.len() % count;
     let mut start = 0;
     for bin in 0..count {
+        if start % 256 == 0 {
+            check()?;
+        }
         let end = start + width + usize::from(bin < extra);
-        let first = frames[start];
+        let first = frames
+            .frame(start)
+            .ok_or(ImportError::Invalid("waveform source is incomplete"))?;
         let mut peaks = first.map(|sample| Peak {
             min: sample,
             max: sample,
         });
-        for frame in &frames[start + 1..end] {
+        for index in start + 1..end {
+            if index % 256 == 0 {
+                check()?;
+            }
+            let frame = frames
+                .frame(index)
+                .ok_or(ImportError::Invalid("waveform source is incomplete"))?;
             for (peak, sample) in peaks.iter_mut().zip(frame) {
-                peak.min = peak.min.min(*sample);
-                peak.max = peak.max.max(*sample);
+                peak.min = peak.min.min(sample);
+                peak.max = peak.max.max(sample);
             }
         }
         bins.push(peaks);
         start = end;
     }
-    let mut waveform = Waveform::from_peaks(frames.len(), bins)?;
-    waveform.samples = Some(audio.clone());
+    check()?;
+    let waveform = Waveform::from_peaks(frames.len(), bins)?;
+    check()?;
     Ok(waveform)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cancelled_original_summary_does_not_return_a_partial_cache() {
+        let samples = vec![0.25; 1025];
+        let mut checks = 0;
+        let result = summarize_borrowed(BorrowedSamples::Mono(&samples), 3, || {
+            checks += 1;
+            if checks == 4 {
+                Err(ImportError::Cancelled)
+            } else {
+                Ok(())
+            }
+        });
+        assert!(matches!(result, Err(ImportError::Cancelled)));
+        assert_eq!(checks, 4);
+        assert_eq!(samples, [0.25; 1025]);
+    }
     #[test]
     fn nondivisible_source_keeps_every_transient_and_stereo_extrema() {
         let audio = Audio::new(

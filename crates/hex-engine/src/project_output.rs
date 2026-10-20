@@ -1,6 +1,77 @@
 //! Prepared inline identity table for bounded live project observation.
 use crate::Track;
 
+/// Validated scalar inputs for infallible empty compiler field assembly.
+/// This is neither a storage declaration nor a construction-budget permit.
+pub(crate) struct CompiledProjectScalars {
+    sample_rate: std::num::NonZeroU32,
+    master_gain: crate::PreparedMasterGain,
+    loop_region: Option<hex_project::LoopRegion>,
+}
+impl CompiledProjectScalars {
+    pub(crate) fn prepare(
+        sample_rate: u32,
+        master_gain: f32,
+        loop_region: Option<hex_project::LoopRegion>,
+    ) -> Result<Self, crate::Invalid> {
+        let sample_rate = std::num::NonZeroU32::new(sample_rate)
+            .ok_or(crate::Invalid("sample rate must be positive"))?;
+        Ok(Self {
+            sample_rate,
+            master_gain: crate::PreparedMasterGain::new(master_gain)?,
+            loop_region,
+        })
+    }
+    /// Fixed field moves only after scalar validation. No default context
+    /// birth, clone, callback or owning error result can discard this owner.
+    pub(crate) fn assemble_empty(
+        self,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
+    ) -> crate::Project {
+        crate::Project {
+            sample_rate: self.sample_rate.get(),
+            master_gain: self.master_gain,
+            loop_region: self.loop_region,
+            project_track_ids: ProjectTrackIds::prepare(&[]),
+            audio_clip_views: Vec::new(),
+            audible_end_frame: None,
+            tracks: Vec::new(),
+            return_buses: Vec::new(),
+            return_feed_plan: crate::return_feed_plan::ReturnFeedPlan::default(),
+            signal_graph: None,
+            main_device_chain: std::sync::Arc::from([]),
+            main_output_latency_frames: 0,
+            tempo_map: None,
+            midi_routing: Vec::new(),
+            has_streamed_sources: false,
+            shared_contexts,
+        }
+    }
+}
+
+/// Fixed moves of a previously prepared Return chain. Both the legacy common
+/// compiler and the paired custody constructor use this same musical layout.
+/// This does not construct/adopt shared children or establish their provenance.
+impl crate::ReturnBus {
+    pub(crate) fn from_compiled_fields(
+        id: hex_project::ReturnId,
+        gain: f32,
+        muted: bool,
+        matrix: Option<hex_lattice::StereoMatrix>,
+        device_chain: std::sync::Arc<[crate::PreparedEffectInstance]>,
+    ) -> Self {
+        Self {
+            id,
+            gain,
+            muted,
+            matrix,
+            device_chain,
+        }
+    }
+}
+
 /// Immutable, inline owner index prepared before callback publication. The
 /// callback merges a sorted selection with this table in at most256 comparisons.
 /// No callback sorting, project scan, allocation or independent heap ownership.
@@ -61,6 +132,123 @@ impl ProjectTrackIds {
 #[cfg(test)]
 mod project_owner_index_tests {
     use super::*;
+    fn assemble_compiled(
+        rate: u32,
+        tracks: Vec<Track>,
+        returns: Vec<crate::ReturnBus>,
+        loop_region: Option<hex_project::LoopRegion>,
+        gain: f32,
+        contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
+    ) -> Result<crate::Project, crate::Invalid> {
+        let mut project =
+            CompiledProjectScalars::prepare(rate, gain, loop_region)?.assemble_empty(contexts);
+        project.tracks = tracks;
+        project.return_buses = returns;
+        project.finalize_compiled_tracks_on_control()?;
+        Ok(project)
+    }
+    #[test]
+    fn compiled_project_moves_original_context_without_discarded_default_birth() {
+        use crate::{
+            Audio, Clip, owned_shared::OwnedShared, shared_analytic::SharedAnalyticContextTable,
+        };
+        let contexts = OwnedShared::new_owned(SharedAnalyticContextTable::default());
+        let pointer = std::sync::Arc::as_ptr(contexts.arc());
+        let mut tracks = Vec::with_capacity(5);
+        tracks.push(
+            Track::new(
+                vec![
+                    Clip::new(
+                        Audio::new(48_000, vec![[0.25, -0.5]; 4]).unwrap(),
+                        0,
+                        4,
+                        false,
+                    )
+                    .unwrap(),
+                ],
+                0.5,
+                false,
+            )
+            .unwrap(),
+        );
+        let track_pointer = tracks.as_ptr();
+        let track_capacity = tracks.capacity();
+        let returns = Vec::with_capacity(7);
+        let return_pointer = returns.as_ptr();
+        let return_capacity = returns.capacity();
+        crate::owned_shared::reset_birth_count();
+        crate::owned_shared::reset_clone_count();
+        let project = assemble_compiled(48_000, tracks, returns, None, 0.5, contexts).unwrap();
+        assert_eq!(
+            crate::owned_shared::birth_count(),
+            0,
+            "field assembly must not construct then discard a default owner"
+        );
+        assert_eq!(crate::owned_shared::clone_count(), 0);
+        assert_eq!(
+            std::sync::Arc::as_ptr(project.shared_contexts.arc()),
+            pointer
+        );
+        assert_eq!(
+            std::sync::Arc::strong_count(project.shared_contexts.arc()),
+            1
+        );
+        assert_eq!(project.tracks.as_ptr(), track_pointer);
+        assert_eq!(project.tracks.capacity(), track_capacity);
+        assert_eq!(project.return_buses.as_ptr(), return_pointer);
+        assert_eq!(project.return_buses.capacity(), return_capacity);
+        let mut renderer = crate::Renderer::new(&project);
+        renderer.play();
+        let mut pcm = [[0.0; 2]; 6];
+        renderer.render(&mut pcm).unwrap();
+        assert_eq!(
+            pcm,
+            [
+                [0.0625, -0.125],
+                [0.0625, -0.125],
+                [0.0625, -0.125],
+                [0.0625, -0.125],
+                [0.0; 2],
+                [0.0; 2]
+            ]
+        );
+    }
+    #[test]
+    fn compiled_project_assembly_preserves_validation_and_unknown_context_origin() {
+        use crate::{
+            Audio, Clip, Project, owned_shared::OwnedShared,
+            shared_analytic::SharedAnalyticContextTable,
+        };
+        crate::owned_shared::reset_birth_count();
+        assert!(Project::with_master_gain(0, vec![], None, 1.0).is_err());
+        assert!(Project::with_master_gain(48_000, vec![], None, f32::NAN).is_err());
+        let track = Track::new(
+            vec![Clip::new(Audio::new(44_100, vec![[0.25; 2]; 4]).unwrap(), 0, 4, false).unwrap()],
+            1.0,
+            false,
+        )
+        .unwrap();
+        assert!(Project::with_master_gain(48_000, vec![track], None, 1.0).is_err());
+        assert_eq!(crate::owned_shared::birth_count(), 0);
+        let unknown =
+            OwnedShared::untracked(std::sync::Arc::new(SharedAnalyticContextTable::default()));
+        let pointer = std::sync::Arc::as_ptr(unknown.arc());
+        let project = assemble_compiled(48_000, vec![], vec![], None, 1.0, unknown).unwrap();
+        assert_eq!(
+            std::sync::Arc::as_ptr(project.shared_contexts.arc()),
+            pointer
+        );
+        assert!(project.shared_contexts.parts().is_none());
+        assert_eq!(crate::owned_shared::birth_count(), 0);
+        let legacy = Project::with_master_gain(48_000, vec![], None, 1.0).unwrap();
+        assert_eq!(crate::owned_shared::birth_count(), 1);
+        assert_eq!(
+            std::sync::Arc::strong_count(legacy.shared_contexts.arc()),
+            1
+        );
+    }
     #[test]
     fn project_owner_validation_is_linear_at_maximum_and_refuses_stale_or_unsorted_ids() {
         let index = ProjectTrackIds::from_ids((1..=256).rev());
@@ -82,5 +270,45 @@ mod project_owner_index_tests {
         assert!(!replaced.contains(&[1], || {}));
         assert!(replaced.contains(&[257], || {}));
         assert!(!ProjectTrackIds::from_ids(1..=257).contains(&[], || {}));
+    }
+}
+
+#[cfg(test)]
+mod return_field_assembly_tests {
+    #[test]
+    fn compiled_return_field_assembly_moves_original_paired_chain_without_extra_alias() {
+        use hex_project::{Command, Created, Editor};
+        let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 1).unwrap();
+        let Created::ReturnTrack(id) = editor
+            .execute(Command::AddReturnTrack {
+                name: "return".into(),
+            })
+            .unwrap()
+        else {
+            panic!("return")
+        };
+        for gain in [0.0, 0.375, 2.0] {
+            for muted in [false, true] {
+                for matrix in [None, Some(hex_lattice::StereoMatrix::identity())] {
+                    let chain = crate::owned_shared::OwnedShared::<[crate::PreparedEffectInstance]>::new_owned_empty_slice();
+                    let expected_parts = chain.parts().unwrap();
+                    let pointer = std::sync::Arc::as_ptr(chain.arc());
+                    let (chain, declaration) = chain.into_paired_parts_on_control();
+                    assert_eq!(std::sync::Arc::strong_count(&chain), 1);
+                    let bus =
+                        crate::ReturnBus::from_compiled_fields(id, gain, muted, matrix, chain);
+                    assert_eq!(
+                        (bus.id, bus.gain, bus.muted, bus.matrix),
+                        (id, gain, muted, matrix)
+                    );
+                    assert!(std::ptr::eq(
+                        std::sync::Arc::as_ptr(&bus.device_chain),
+                        pointer
+                    ));
+                    assert_eq!(std::sync::Arc::strong_count(&bus.device_chain), 1);
+                    assert_eq!(declaration.parts(&bus.device_chain), Some(expected_parts));
+                }
+            }
+        }
     }
 }

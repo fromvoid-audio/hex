@@ -27,12 +27,12 @@ pub struct AudioCandidatePreparationRefusal {
     pub domains: Vec<AudioCandidateDomainToken>,
 }
 pub(super) struct PreparationExecution {
-    token: AudioCandidatePreparationToken,
-    cell: Option<hex_engine::AudioCandidatePreparation>,
-    domains: Vec<AudioCandidateDomainToken>,
-    pending: bool,
-    failed: bool,
-    refusal: Option<&'static str>,
+    pub(super) token: AudioCandidatePreparationToken,
+    pub(super) cell: Option<hex_engine::AudioCandidatePreparation>,
+    pub(super) domains: Vec<AudioCandidateDomainToken>,
+    pub(super) pending: bool,
+    pub(super) failed: bool,
+    pub(super) refusal: Option<&'static str>,
 }
 #[cfg(test)]
 impl PreparationExecution {
@@ -77,7 +77,11 @@ impl Custody {
                 .publication
                 .slots
                 .iter()
-                .position(|s| s.phase == Phase::Vacant)
+                .position(|s| {
+                    s.phase == Phase::Vacant
+                        && s.state_storage.is_none()
+                        && s.claim_storage.iter().all(Option::is_none)
+                })
                 .ok_or("candidate runtime cells are full")?;
             let archive = bank
                 .publication
@@ -477,7 +481,7 @@ impl Custody {
                 .domains
                 .capacity()
                 .checked_mul(std::mem::size_of::<AudioCandidateDomainToken>())
-                .and_then(|n| n.checked_add(std::mem::size_of::<State>()))
+                .and_then(|n| n.checked_add(state_peak_storage_bytes(bank.native.is_some())?))
                 .and_then(|n| {
                     n.checked_add(
                         slot.streaming
@@ -506,11 +510,14 @@ impl Custody {
         let execution = work.publication.preparations[token.slot]
             .as_mut()
             .ok_or("candidate preparation storage differs")?;
+        // Candidate-local budget preflight is NOT the final joint admission.
+        // It retains the existing split allowance before allocating that Box.
+        // Pending native reservation already covers this whole constructor.
         let summary = match catch_unwind(AssertUnwindSafe(|| {
             let owner = execution
                 .cell
                 .as_mut()
-                .and_then(|c| c.owner_on_control())
+                .and_then(|cell| cell.owner_on_control())
                 .ok_or("candidate preparation is not ready")?;
             if owner.sample_rate() != rate
                 || owner.phase() != hex_engine::AudioCandidateDisposalPhase::Owned
@@ -518,6 +525,9 @@ impl Custody {
             {
                 return Err("candidate constructor rate or phase differs");
             }
+            owner
+                .prepare_device_metering_on_control(true)
+                .map_err(|_| "candidate constructor metering setup refused")?;
             owner
                 .seal_constructor_with_runtime_storage_on_control(ledger, external)
                 .map_err(|_| "candidate DATA or resource closure refused")
@@ -532,39 +542,20 @@ impl Custody {
                 return Err("candidate preparation is incomplete");
             }
         };
-        let barrier = lock(&root.0.bank);
-        if barrier.closing || barrier.retiring {
-            return Err("candidate Root is closing");
-        }
-        let owner = execution
+        let cell = execution
             .cell
             .as_mut()
-            .and_then(|c| c.owner_on_control())
             .ok_or("candidate preparation is not ready")?;
-        let plan = self.preflight_stage(
-            root,
-            owner,
-            &execution.domains,
-            header,
-            summary,
-            Some(token),
-        )?;
-        let state = Self::publication_state(plan.stamp, &execution.domains, header);
-        execution.pending = true;
-        // Split itself preflights while borrowed; only fixed moves follow its
-        // final take. A scalar refusal leaves the exact owner in this cell.
-        let parts = catch_unwind(AssertUnwindSafe(|| {
-            execution
-                .cell
-                .as_mut()
-                .ok_or(hex_engine::AudioStorageError::SourceMismatch)?
-                .split_for_publication_on_control()
-        }));
-        let (runtime, anchors) = match parts {
-            Ok(Ok(parts)) => parts,
-            Ok(Err(_)) => {
-                execution.pending = false;
-                return Err("candidate constructor split refused");
+        // Allocate the ACTUAL claimed wrapper after its local allowance check,
+        // but BEFORE the short terminal scope. Original owner remains rooted.
+        let split = match catch_unwind(AssertUnwindSafe(move || {
+            // Consume the actual mutable reference in this FnOnce call; a
+            // FnMut reborrow cannot escape as the lifetime-bound split handle.
+            let cell = cell;
+            hex_engine::AudioCandidatePreparation::preallocate_publication_split_on_control(cell)
+        })) {
+            Ok(result) => {
+                result.map_err(|_| "candidate constructor split preallocation refused")?
             }
             Err(payload) => {
                 execution.failed = true;
@@ -575,9 +566,94 @@ impl Custody {
                 return Err("candidate preparation is incomplete");
             }
         };
-        let domains = std::mem::take(&mut execution.domains);
-        let (queued, ticket) = self.commit_stage(
+        let owner = split
+            .owner_on_control()
+            .ok_or("candidate preparation is not ready")?;
+        let preliminary = self.preflight_stage(
             root,
+            owner,
+            &execution.domains,
+            header,
+            summary,
+            Some(token),
+        )?;
+        // This actual unpublished State Box and paired Root/Life handles exist
+        // BEFORE the terminal barrier. Final preflight rechecks its exact stamp;
+        // neither the handles nor this preliminary plan grant installation.
+        let state =
+            self.preconstruct_publication_state(root, &preliminary, &execution.domains, header)?;
+        let barrier = lock(&root.0.bank);
+        if barrier.closing || barrier.retiring {
+            drop(barrier);
+            self.discard_unpublished_state_on_control(state);
+            return Err("candidate Root is closing");
+        }
+        // Preserve the existing outer-root -> eligible-bank order, retaining
+        // the ACTUAL preparation-cancellation exclusion through queue commit.
+        // External family/worker inspection will precede these native guards;
+        // this candidate-local operation does not yet provide that joint proof.
+        let mut bank = lock(&self.bank);
+        let final_plan = (|| {
+            let owner = split
+                .owner_on_control()
+                .ok_or("candidate preparation is not ready")?;
+            let plan = Self::preflight_stage_with_bank(
+                &bank,
+                root,
+                owner,
+                &execution.domains,
+                header,
+                summary,
+                Some(token),
+            )?;
+            if plan.stamp != state.stamp {
+                return Err("candidate preallocated publication stamp differs");
+            }
+            Ok(plan)
+        })();
+        let plan = match final_plan {
+            Ok(plan) => plan,
+            Err(reason) => {
+                drop(bank);
+                drop(barrier);
+                self.discard_unpublished_state_on_control(state);
+                return Err(reason);
+            }
+        };
+        execution.pending = true;
+        // Only the preallocated transfer moves owners. This remains the legacy
+        // candidate-local stage: the actual joint ledger/source/cancel frontier
+        // still needs the separate closed-graph route. The held eligible guard
+        // excludes native preparation cancellation, not the worker watermark.
+        let parts = catch_unwind(AssertUnwindSafe(|| split.transfer_on_control()));
+        let (runtime, anchors) = match parts {
+            Ok(Ok(parts)) => parts,
+            Ok(Err(_)) => {
+                execution.pending = false;
+                drop(bank);
+                drop(barrier);
+                self.discard_unpublished_state_on_control(state);
+                return Err("candidate constructor split refused");
+            }
+            Err(payload) => {
+                execution.failed = true;
+                work.publication.failed_payloads[token.slot] = Some(payload);
+                bank.publication.slots[token.slot].phase = Phase::Failed;
+                self.mark_closing(&mut bank);
+                drop(bank);
+                drop(barrier);
+                self.discard_unpublished_state_on_control(state);
+                return Err("candidate preparation is incomplete");
+            }
+        };
+        // Read only the actual privately retained constructor halves. This
+        // Engine check traverses their owned fields/receipts without locking a
+        // native bank or invoking provider/user code. No Root/Life clone occurs.
+        let matched = anchors
+            .constructor_claims(&runtime)
+            .is_some_and(|proof| proof.summary() == Some(summary));
+        let domains = std::mem::take(&mut execution.domains);
+        let (queued, ticket) = self.commit_stage_with_bank(
             StageCommit {
                 runtime,
                 anchors,
@@ -587,9 +663,12 @@ impl Custody {
                 plan,
                 state,
             },
+            matched,
+            &mut bank,
         );
         enqueue(queued);
         execution.pending = false;
+        drop(bank);
         drop(barrier);
         self.advance_runtime_preparations(&mut work.publication, false);
         Ok(ticket)
@@ -652,6 +731,13 @@ impl Custody {
             }));
             match result {
                 Ok(Ok(())) => {}
+                Ok(Err(hex_engine::AudioStorageError::ExternalReadersPending)) => {
+                    // Cleanup has not consumed the constructor root. Its actual
+                    // registered readers and all charges remain in this slot.
+                    execution.pending = false;
+                    lock(&self.bank).publication.slots[index].phase = Phase::Reserved;
+                    continue;
+                }
                 result => {
                     execution.failed = true;
                     let mut bank = lock(&self.bank);
@@ -710,6 +796,11 @@ impl Custody {
             let slot = &mut bank.publication.slots[index];
             slot.preparation_reservation = None;
             slot.preparation_retiring = false;
+            if slot.state_storage.is_some() || slot.claim_storage.iter().any(Option::is_some) {
+                slot.phase = Phase::Failed;
+                self.mark_closing(&mut bank);
+                continue;
+            }
             slot.phase = Phase::Vacant;
             slot.retained = 0;
             slot.peak = 0;
@@ -720,7 +811,11 @@ impl Custody {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
     fn root() -> CandidateRoot {
+        root_with_rows(4096, 4096)
+    }
+    fn root_with_rows(member_rows: usize, transfer_rows: usize) -> CandidateRoot {
         let root = CandidateRoot::new(2).unwrap();
         root.0
             .eligible
@@ -729,8 +824,8 @@ mod tests {
                 AudioCandidatePublicationReservation {
                     runtime_slots: 2,
                     archive_slots: 2,
-                    member_rows: 4096,
-                    transfer_rows: 4096,
+                    member_rows,
+                    transfer_rows,
                     receipt_rows: 2,
                     data_rows: 4096,
                     handle_rows: 4096,
@@ -738,6 +833,8 @@ mod tests {
                     max_construction_peak_data_bytes: 64 * 1024 * 1024,
                 },
                 std::mem::size_of::<Inner>() + 2 * std::mem::size_of::<Slot>(),
+                root.0.resident.as_ref(),
+                root.0.root_fields.as_ref(),
             )
             .unwrap();
         root
@@ -804,6 +901,341 @@ mod tests {
             hex_engine::Audio::new(48000, vec![[0.25; 2]; 8]).unwrap(),
         )
     }
+    #[test]
+    fn actual_native_work_contention_refuses_loan_and_retains_prepared_sources() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported constructor layout; no positive actual work proof");
+            return;
+        }
+        let root = root();
+        let custody = &root.0.eligible;
+        let token = custody
+            .reserve_runtime_preparation(reservation(), Vec::new())
+            .ok()
+            .unwrap();
+        let (_, asset, audio) = project();
+        assert_eq!(
+            custody
+                .with_runtime_preparation(token, |cell| cell
+                    .copy_resident_source_on_control(asset, &audio))
+                .unwrap(),
+            AudioCandidatePreparationProgress::Collecting
+        );
+        let before = lock(&custody.work).publication.preparations[token.slot]
+            .as_ref()
+            .unwrap()
+            .test_summary();
+        crate::candidate_custody::inline_lock_tests::held_on_other_thread(&custody.work, || {
+            let measured = allocation_counter::measure(|| {
+                assert_eq!(
+                    custody
+                        .with_runtime_preparation(token, |_| panic!("contended loan must not run")),
+                    Err("candidate preparation is busy")
+                );
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        });
+        assert_eq!(
+            lock(&custody.work).publication.preparations[token.slot]
+                .as_ref()
+                .unwrap()
+                .test_summary(),
+            before
+        );
+        assert_eq!(
+            custody
+                .with_runtime_preparation(token, |cell| {
+                    assert!(!cell.failed_incomplete());
+                    Ok(())
+                })
+                .unwrap(),
+            AudioCandidatePreparationProgress::Collecting
+        );
+        assert!(custody.cancel_runtime_preparation(token));
+        custody.advance_publications_on_control(&root, false);
+        assert!(custody.complete());
+        eprintln!(
+            "SUPPORTED actual native Work other-thread hold: real loan busy BEFORE callback/allocfree0, same parent/source reservation retained; after release loan then cancellation cleanup completes"
+        );
+    }
+
+    #[test]
+    fn rooted_stage_holds_terminal_and_preparation_cancellation_guards_through_enqueue() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported rooted native guard test; no positive stage proof");
+            return;
+        }
+        eprintln!("SUPPORTED actual rooted stage guards, cancel-before refusal and normal return");
+        for cancel_before in [true, false] {
+            let (project, asset, audio) = project();
+            // The older root() fixture covers partial construction only. This
+            // case stages a complete runtime, so reserve its independently
+            // quoted actual project rows without changing any DATA ceiling.
+            let quote =
+                hex_engine::AudioCandidateReservationQuote::for_project(&project, 1).unwrap();
+            let root = root_with_rows(quote.member_rows, quote.transfer_rows);
+            let custody = &root.0.eligible;
+            let mut limits = reservation();
+            limits.member_rows = quote.member_rows;
+            limits.transfer_rows = quote.transfer_rows;
+            limits.storage = quote
+                .storage_reservation(8 * std::mem::size_of::<hex_engine::Frame>())
+                .unwrap();
+            limits.handle_rows = limits.storage.handle_obligations;
+            let token = custody
+                .reserve_runtime_preparation(limits, Vec::new())
+                .ok()
+                .unwrap();
+            let mut identity = None;
+            custody
+                .with_runtime_preparation(token, |cell| {
+                    cell.copy_resident_source_on_control(asset, &audio)?;
+                    cell.prepare_on_control(
+                        &project,
+                        11,
+                        hex_engine::AudioSourceContext {
+                            project_generation: 2,
+                            editor_revision: 8,
+                        },
+                    )?;
+                    identity = cell.owner_on_control().map(|owner| owner.identity());
+                    Ok(())
+                })
+                .unwrap();
+            if cancel_before {
+                assert!(custody.cancel_runtime_preparation(token));
+            }
+            let mut queued = None;
+            let result =
+                custody.stage_runtime_preparation(
+                    &root,
+                    token,
+                    Header {
+                        revision: 1,
+                        context_generation: 2,
+                        policy: crate::prepared::PublicationPolicy::InheritRuntime,
+                    },
+                    48_000,
+                    |value| {
+                        // Test-only queue observer. Production supplies its already
+                        // reserved rtrb write, not an application callback.
+                        assert!(matches!(
+                        root.0.bank.try_lock(),
+                        Err(crate::candidate_custody::custody_mutex::CustodyTryLockError::Contended)
+                    ));
+                        assert!(matches!(
+                        custody.bank.try_lock(),
+                        Err(crate::candidate_custody::custody_mutex::CustodyTryLockError::Contended)
+                    ));
+                        assert!(matches!(
+                        custody.work.try_lock(),
+                        Err(crate::candidate_custody::custody_mutex::CustodyTryLockError::Contended)
+                    ));
+                        queued = Some(value);
+                    },
+                );
+            if cancel_before {
+                assert!(result.is_err());
+                assert!(queued.is_none());
+                let mut work = lock(&custody.work);
+                let owner = work.publication.preparations[token.slot]
+                    .as_mut()
+                    .unwrap()
+                    .cell
+                    .as_mut()
+                    .unwrap()
+                    .owner_on_control()
+                    .unwrap();
+                assert_eq!(Some(owner.identity()), identity);
+                assert_eq!(
+                    owner.phase(),
+                    hex_engine::AudioCandidateDisposalPhase::Owned
+                );
+                drop(work);
+                std::thread::scope(|scope| {
+                    scope.spawn(|| root.advance_on_control()).join().unwrap();
+                });
+            } else {
+                let ticket = result.unwrap();
+                // Once accepted, constructor cancellation cannot retake this
+                // owner; the existing publication/return protocol owns it.
+                assert!(!custody.cancel_runtime_preparation(token));
+                custody
+                    .ingest_publication(&root, queued.unwrap().reject_before_install())
+                    .ok()
+                    .unwrap();
+                std::thread::scope(|scope| {
+                    scope.spawn(|| root.advance_on_control()).join().unwrap();
+                });
+                let returned = custody.recover_publication(&ticket).unwrap();
+                assert_eq!(Some(returned.disposed.identity()), identity);
+                assert!(returned.inputs.owning_handle_count() > 0);
+                assert!(custody.recover_publication(&ticket).is_none());
+            }
+            assert!(custody.complete());
+        }
+    }
+    #[test]
+    #[cfg(feature = "allocation-probe")]
+    fn preallocated_split_transfer_allocates_and_frees_nothing_and_preserves_runtime_storage() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported split allocation constructor; no positive transfer proof");
+            return;
+        }
+        eprintln!(
+            "SUPPORTED preallocated constructor split allocation probe; queue/native admission remains separate"
+        );
+        let (project, asset, audio) = project();
+        let mut cell =
+            hex_engine::AudioCandidatePreparation::try_new_on_control(1, reservation().storage)
+                .unwrap();
+        // Historical audio-clip fixture only, not Sampler original-PCM loading.
+        cell.copy_resident_source_on_control(asset, &audio).unwrap();
+        cell.prepare_on_control(
+            &project,
+            11,
+            hex_engine::AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 7,
+            },
+        )
+        .unwrap();
+        let identity = cell.owner_on_control().unwrap().identity();
+        let mut prepared = cell.preallocate_publication_split_on_control().unwrap();
+        prepared
+            .seal_constructor_on_control(
+                hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 4096,
+                    handle_rows: 2048,
+                    root_rows: 4,
+                    max_retained_bytes: 64 * 1024 * 1024,
+                    max_construction_peak_bytes: 64 * 1024 * 1024,
+                },
+                0,
+            )
+            .unwrap();
+        let mut result = None;
+        let measured = allocation_counter::measure(|| {
+            result = Some(prepared.transfer_on_control().unwrap());
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let (mut runtime, mut anchor) = result.unwrap();
+        assert_eq!(runtime.identity(), identity);
+        assert!(anchor.matches_current(&runtime));
+        assert!(cell.owner_on_control().is_none());
+        runtime
+            .apply_action(hex_engine::PlaybackAction::Transport(
+                hex_engine::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        let mut output = [[0.0; 2]; 8];
+        runtime
+            .render_with_post_node_observer(&mut output, None)
+            .unwrap();
+        assert_eq!(output, [[0.25; 2]; 8]);
+        assert!(anchor.recover_inputs_on_control().is_none());
+        let proof = runtime.dispose_on_control().unwrap();
+        let mut anchors = [Some(anchor)];
+        proof.record_anchor_cells_on_control(&mut anchors).unwrap();
+        let anchor = anchors[0].as_mut().unwrap();
+        assert!(
+            matches!(
+                anchor.finish_disposal_on_control(),
+                Err(hex_engine::AudioStorageError::ExternalReadersPending)
+            ),
+            "actual proof still owns its constructor group-book backing"
+        );
+        drop(proof); // Same actual proof, only after complete origin fanout.
+        assert!(
+            matches!(
+                anchor.finish_disposal_on_control(),
+                Err(hex_engine::AudioStorageError::ExternalReadersPending)
+            ),
+            "actual claimed Box remains separate from DSP/proof destruction"
+        );
+        drop(runtime);
+        anchor.finish_disposal_on_control().unwrap();
+        drop(anchor.recover_inputs_on_control().unwrap());
+        cell.cleanup_on_control().unwrap();
+    }
+    #[test]
+    fn registered_compiled_reader_keeps_closed_preparation_slot_charged_until_release() {
+        if !hex_engine::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported constructor layout; no positive compiled-reader custody proof");
+            return;
+        }
+        let root = root();
+        let custody = &root.0.eligible;
+        let token = custody
+            .reserve_runtime_preparation(reservation(), Vec::new())
+            .ok()
+            .unwrap();
+        let held = lock(&custody.bank).publication.retained_bytes().unwrap();
+        let (project, asset, audio) = project();
+        let mut reader = None;
+        custody
+            .with_runtime_preparation(token, |cell| {
+                cell.copy_resident_source_on_control(asset, &audio)?;
+                cell.prepare_on_control(
+                    &project,
+                    11,
+                    hex_engine::AudioSourceContext {
+                        project_generation: 2,
+                        editor_revision: 8,
+                    },
+                )?;
+                reader = Some(cell.register_compiled_reader_on_control()?);
+                Ok(())
+            })
+            .unwrap();
+        assert!(custody.cancel_runtime_preparation(token));
+        for _ in 0..2 {
+            std::thread::scope(|scope| {
+                scope.spawn(|| root.advance_on_control()).join().unwrap();
+            });
+            let bank = lock(&custody.bank);
+            assert_eq!(
+                bank.publication.slots[token.slot].incarnation,
+                token.incarnation
+            );
+            assert_eq!(bank.publication.slots[token.slot].phase, Phase::Reserved);
+            assert_eq!(bank.publication.retained_bytes(), Some(held));
+            drop(bank);
+            let work = lock(&custody.work);
+            let execution = work.publication.preparations[token.slot].as_ref().unwrap();
+            assert!(!execution.pending && !execution.failed);
+            assert!(!execution.cell.as_ref().unwrap().failed_incomplete());
+        }
+        assert!(reader.as_ref().unwrap().try_duplicate_on_control().is_err());
+        drop(reader.take());
+        std::thread::scope(|scope| {
+            scope.spawn(|| root.advance_on_control()).join().unwrap();
+        });
+        assert!(custody.complete());
+        assert_eq!(lock(&custody.bank).publication.retained_bytes(), Some(0));
+        assert!(lock(&custody.work).publication.preparations[token.slot].is_none());
+        assert!(custody.with_runtime_preparation(token, |_| Ok(())).is_err());
+        eprintln!(
+            "SUPPORTED actual registered compiled reader; same preparation slot/charge retained twice; normal release cleanup completed"
+        );
+    }
+
     #[test]
     fn reserved_slot_incarnation_survives_actual_preparation_close_and_normal_cleanup() {
         if !hex_engine::audio_storage_constructor_layout_supported() {

@@ -1,5 +1,5 @@
 use hex_engine::{
-    Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, SineTable, compile,
+    Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, compile,
 };
 use hex_project::{
     BeatTime, Command, Created, Editor, GainInterpolation, GainPoint, Project, Tempo, TempoPoint,
@@ -60,7 +60,7 @@ fn revision(f: &Fixture) -> Arc<PreparedRevision> {
         PreparedRevision::prepare(
             f.editor.project(),
             &media(f),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -460,7 +460,7 @@ fn detached_effect_tail_freezes_the_effective_transition_gain_and_current_gain_e
         PreparedRevision::prepare(
             &p,
             &BTreeMap::from([(f.asset, Audio::new(48000, samples).unwrap())]),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

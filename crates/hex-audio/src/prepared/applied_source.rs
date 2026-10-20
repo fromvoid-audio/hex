@@ -61,6 +61,24 @@ impl Status {
         (self.applied_revision.load(Acquire) == source.audio_revision).then_some(source)
     }
 }
+
+impl AppliedSourceStatus {
+    pub(super) fn audit_scalar_storage(&self) {
+        let Self {
+            sequence,
+            root,
+            generation,
+            editor,
+            audio,
+        } = self;
+        let _: &AtomicU64 = sequence;
+        let _: &AtomicU64 = root;
+        let _: &AtomicU64 = generation;
+        let _: &AtomicU64 = editor;
+        let _: &AtomicU64 = audio;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

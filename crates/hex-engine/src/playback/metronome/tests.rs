@@ -2,7 +2,7 @@ use super::*;
 use crate::playback::Playback;
 use crate::{
     PlaybackAction, PlaybackActionError, PlaybackCommand, PreparedRevision, SessionPlayback,
-    SessionPlaybackCommand, SineTable,
+    SessionPlaybackCommand,
 };
 use hex_project::{Meter, MeterPoint, Project, Tempo, TempoMap, TempoPoint};
 use std::{collections::BTreeMap, sync::Arc};
@@ -26,7 +26,7 @@ fn revision(loop_region: Option<LoopRegion>) -> Arc<PreparedRevision> {
         PreparedRevision::prepare(
             &Project::from_snapshot(snapshot).unwrap(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -159,7 +159,7 @@ fn compatible_revision_handoff_preserves_click_and_new_timing_reanchors() {
         PreparedRevision::prepare(
             &Project::from_snapshot(snapshot).unwrap(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

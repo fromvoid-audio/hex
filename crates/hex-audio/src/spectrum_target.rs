@@ -1,14 +1,12 @@
 //! Bounded control-to-callback selection for one EQ8 post-node spectrum tap.
+use crate::native_callback_owner::atomic_signal::{self, Signal};
+use crate::native_callback_owner::{
+    NativePreparedConsumer as Consumer, NativePreparedProducer as Producer, native_prepared_ring,
+    registered_prepared_ring,
+};
 use crate::spectrum_worker::SpectrumTargetId;
 use hex_engine::{PostNodeIdentity, ProcessorChainOwner};
-use rtrb::{Consumer, Producer, RingBuffer};
-use std::sync::{
-    Arc,
-    atomic::{
-        AtomicU64,
-        Ordering::{Acquire, Release},
-    },
-};
+use std::sync::atomic::Ordering::{Acquire, Release};
 
 pub const TARGET_COMMAND_CAPACITY: usize = 8;
 pub const MAX_TARGET_COMMANDS_PER_BLOCK: usize = 8;
@@ -53,7 +51,7 @@ struct TargetCommand {
 /// invalidates stale callback output.
 pub struct SpectrumTargetControl {
     producer: Producer<TargetCommand>,
-    desired_epoch: Arc<AtomicU64>,
+    desired_epoch: Signal,
     desired: Option<SpectrumTarget>,
     next_epoch: u64,
     next_token: u64,
@@ -64,19 +62,49 @@ pub struct SpectrumTargetControl {
 /// Callback-side bounded command receiver and currently selected EQ8 owner.
 pub struct SpectrumTargetCallback {
     consumer: Consumer<TargetCommand>,
-    desired_epoch: Arc<AtomicU64>,
+    desired_epoch: Signal,
     active_epoch: u64,
     active: Option<SpectrumTarget>,
     future: Option<TargetCommand>,
 }
 
+pub(crate) fn constructor_cost() -> Option<(usize, usize)> {
+    let retained = crate::prepared::factory::ring_bytes::<TargetCommand>(TARGET_COMMAND_CAPACITY)?
+        .checked_add(crate::prepared::factory::shared_atomic_bytes()?)?;
+    let peak = retained
+        .checked_add(crate::prepared::factory::ring_scratch::<TargetCommand>()?)?
+        .checked_add(size_of::<(SpectrumTargetControl, SpectrumTargetCallback)>())?
+        .checked_add(crate::prepared::factory::atomic_signal_scratch()?)?;
+    Some((retained, peak))
+}
+
 pub fn channel() -> (SpectrumTargetControl, SpectrumTargetCallback) {
-    let (producer, consumer) = RingBuffer::new(TARGET_COMMAND_CAPACITY);
-    let desired_epoch = Arc::new(AtomicU64::new(0));
-    (
+    construct_channel(None).expect("unqualified target channel has no fallible registration")
+}
+pub(crate) fn registered_channel(
+    root: &crate::candidate_custody::CandidateRoot,
+    slot: usize,
+) -> Result<(SpectrumTargetControl, SpectrumTargetCallback), hex_engine::Invalid> {
+    construct_channel(Some((root, slot)))
+}
+fn construct_channel(
+    root: Option<(&crate::candidate_custody::CandidateRoot, usize)>,
+) -> Result<(SpectrumTargetControl, SpectrumTargetCallback), hex_engine::Invalid> {
+    let (producer, consumer) = if let Some((root, slot)) = root {
+        let (producer, consumer, record) = registered_prepared_ring(TARGET_COMMAND_CAPACITY)
+            .map_err(|_| hex_engine::Invalid("target queue constructor pairing refused"))?;
+        root.retain_prepared_ring(slot, record)
+            .map_err(hex_engine::Invalid)?;
+        (producer, consumer)
+    } else {
+        native_prepared_ring(TARGET_COMMAND_CAPACITY)
+    };
+    let [desired_epoch_control, desired_epoch] =
+        atomic_signal::pair(root.map(|(root, _)| root), 0)?;
+    Ok((
         SpectrumTargetControl {
             producer,
-            desired_epoch: Arc::clone(&desired_epoch),
+            desired_epoch: desired_epoch_control,
             desired: None,
             next_epoch: 1,
             next_token: 1,
@@ -90,10 +118,20 @@ pub fn channel() -> (SpectrumTargetControl, SpectrumTargetCallback) {
             active: None,
             future: None,
         },
-    )
+    ))
 }
 
 impl SpectrumTargetControl {
+    /// Actual constructor channel-field correlation only. Other owning
+    /// descendants retain their independent mandatory inventory contracts.
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        root.matches_prepared_producer(3, &self.producer)
+            && root.matches_atomic_signal(0, &self.desired_epoch, 0)
+    }
+
     pub fn desired(&self) -> Option<SpectrumTarget> {
         self.desired
     }
@@ -216,6 +254,16 @@ impl SpectrumTargetControl {
 }
 
 impl SpectrumTargetCallback {
+    /// Actual constructor channel-field correlation only. Other owning
+    /// descendants retain their independent mandatory inventory contracts.
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        root.matches_prepared_consumer(3, &self.consumer)
+            && root.matches_atomic_signal(0, &self.desired_epoch, 1)
+    }
+
     pub(crate) fn constructor_channel_storage(
         &self,
     ) -> Option<crate::native_callback_owner::ChannelStorage> {
@@ -501,5 +549,56 @@ mod tests {
         assert_eq!(control.retry_pending(), TargetUpdate::Queued);
         callback.begin_block();
         assert_eq!(callback.current(), None);
+    }
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+mod native_signal_field_tests {
+    use super::*;
+    #[test]
+    fn actual_foreign_signal_field_refuses_before_native_carrier_birth() {
+        let mut completed = 0;
+        for field in 0..1 {
+            let limits = crate::AudioCandidatePublicationReservation {
+                runtime_slots: 3,
+                archive_slots: 3,
+                member_rows: 128,
+                transfer_rows: 128,
+                receipt_rows: 3,
+                data_rows: 512,
+                handle_rows: 512,
+                max_retained_data_bytes: 4 << 20,
+                max_construction_peak_data_bytes: 8 << 20,
+            };
+            let (mut control, callback) =
+                crate::prepared::channel_with_factory_reservation(48000, None, Some(limits))
+                    .unwrap();
+            let root = control.native_candidate_root();
+            // The real Root queue fields remain intact: only this actual atomic
+            // owning field changes. Identical scalar value/layout is not origin.
+            let foreign = Signal::Legacy(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)));
+            match field {
+                0 => control.spectrum_target.desired_epoch = foreign,
+                _ => unreachable!(),
+            }
+            let mut refused = false;
+            let birth = allocation_counter::measure(|| {
+                refused =
+                    crate::native_callback_owner::reserve_native_worker(control, callback, None)
+                        .is_err();
+            });
+            assert!(
+                refused,
+                "actual foreign signal field {field} must not inherit Root origin"
+            );
+            assert_eq!(
+                birth.count_total, 0,
+                "signal field {field}: before any carrier birth"
+            );
+            assert_eq!(root.test_native_carrier_facts().unwrap().0, 0);
+            completed += 1;
+            eprintln!("SUPPORTED actual signal field{field} refused before carrier births");
+        }
+        assert_eq!(completed, 1);
     }
 }

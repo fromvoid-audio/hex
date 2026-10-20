@@ -12,6 +12,65 @@ fn begin(
         AudioArrangementInput::new(project, 11, bank).with_session_sources(),
     )
 }
+
+#[test]
+fn cached_sine_and_actual_native_installed_table_count_independent_bodies_through_retirement() {
+    if !super::session_source_tests::supported("cached_native_sine_overlap") {
+        return;
+    }
+    eprintln!(
+        "SUPPORTED cached sine coexists with actual native installed table and cleanup bridge"
+    );
+    let cached = crate::SharedSineTable::new_on_control();
+    let alias = cached.clone();
+    let (project, bank, _) = super::session_source_tests::fixture(false);
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let token = custody
+        .begin_input_on_control(
+            AudioArrangementInput::new(&project, 11, bank).with_session_inventory(),
+        )
+        .ok()
+        .unwrap();
+    assert!(custody.session_inventory_metadata().is_some());
+    let limits = crate::AudioStorageLedgerReservation {
+        data_rows: 512,
+        handle_rows: 512,
+        root_rows: 32,
+        max_retained_bytes: 4_000_000,
+        max_construction_peak_bytes: 4_000_000,
+    };
+    let collect = |limits| -> Result<_, AudioStorageError> {
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(limits)?;
+        ledger.borrow_custody_on_control(&custody, crate::AudioStorageRole::Current)?;
+        let native = ledger.summary()?;
+        cached.visit_storage_on_control(&mut ledger)?;
+        let cached_once = ledger.summary()?;
+        let (body, header) = crate::owned_shared::OwnedShared::<crate::SineTable>::declared_parts()
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        assert_eq!(cached_once.data_bytes - native.data_bytes, body + header);
+        assert_eq!(cached_once.data_allocations, native.data_allocations + 1);
+        assert!(
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .is_err()
+        );
+        alias.visit_storage_on_control(&mut ledger)?;
+        ledger.validate_selected_shared_handles_on_control()?;
+        assert_eq!(ledger.summary()?.data_bytes, cached_once.data_bytes);
+        ledger.summary()
+    };
+    let measured = collect(limits).unwrap();
+    let mut exact = limits;
+    exact.max_retained_bytes = measured.retained_bytes;
+    exact.max_construction_peak_bytes = measured.construction_peak_bytes;
+    assert_eq!(collect(exact).unwrap(), measured);
+    exact.max_retained_bytes -= 1;
+    assert!(collect(exact).is_err());
+    assert!(custody.cancel(&token));
+    custody.cleanup_on_control();
+    assert!(custody.recover_on_control(&token).is_some());
+    assert!(cached.shares_owner_with(&alias));
+}
 #[test]
 fn actual_fixed_inventory_allocations_and_independent_handle_locations_are_conserved() {
     if !super::session_source_tests::supported("shared_inventory_owners") {

@@ -1,6 +1,6 @@
 //! Canonical revision handoff benchmark; no device or UI runtime.
 mod support;
-use hex_engine::{PreparedRevision, SessionPlayback, SineTable};
+use hex_engine::{PreparedRevision, SessionPlayback};
 use hex_project::{Command, Editor};
 use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time::Instant};
 use support::session_fixture::{self, RATE};
@@ -22,12 +22,12 @@ fn main() -> Result<(), Box<dyn Error>> {
     // Session source occurrence, with both route classes holding notes.
     let initial_cut = if loop_tempo { 144_000 } else { 24_000 };
     let mut editor = Editor::new(session_fixture::project(loop_tempo)?, 8)?;
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let media = BTreeMap::new();
     let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &media,
-        Arc::clone(&table),
+        table.clone(),
         None,
     )?);
     let mut playback = session_fixture::kernel(Arc::clone(&revision))?;
@@ -52,7 +52,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 Ok(PreparedRevision::prepare(
                     project,
                     &media,
-                    Arc::clone(&table),
+                    table.clone(),
                     Some(revision.session()),
                 )?)
             },

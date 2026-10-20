@@ -54,6 +54,19 @@ impl Journal {
         &self.path
     }
 
+    /// Internal borrowed physical fields, including reserved capacity. No IO,
+    /// serialization, clone, slot adoption or ownership/cleanup certificate.
+    /// The enclosing Journal body remains the caller's actual borrowed field.
+    /// ```compile_fail
+    /// fn escape(journal: &hex_storage::Journal) -> &'static Vec<u8> {
+    ///     journal.journal_storage_fields_on_control().1.unwrap()
+    /// }
+    /// ```
+    pub fn journal_storage_fields_on_control(&self) -> (&PathBuf, Option<&Vec<u8>>) {
+        let Self { path, bytes } = self;
+        (path, bytes.as_ref())
+    }
+
     /// Flush/sync staging before atomic publication; keep the old checkpoint on
     /// prepublication failure. Adopt the published bytes even if directory sync fails.
     pub fn checkpoint(&mut self, project: &Project) -> Result<(), StorageError> {
@@ -275,6 +288,31 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn journal_storage_borrow_preserves_actual_headers_and_spare_checkpoint_capacity() {
+        let mut path = PathBuf::from("Case/Untitled.hex-journal");
+        path.reserve(513);
+        let mut bytes = Vec::with_capacity(2047);
+        bytes.extend_from_slice(b"borrowed-only checkpoint");
+        let journal = Journal {
+            path,
+            bytes: Some(bytes),
+        };
+        let (path, bytes) = journal.journal_storage_fields_on_control();
+        let bytes = bytes.unwrap();
+        assert!(std::ptr::eq(path, &journal.path));
+        assert!(std::ptr::eq(bytes, journal.bytes.as_ref().unwrap()));
+        assert!(path.capacity() > path.as_os_str().len());
+        assert!(bytes.capacity() > bytes.len());
+        assert_eq!(bytes, b"borrowed-only checkpoint");
+        assert_eq!(journal.path(), Path::new("Case/Untitled.hex-journal"));
+        let empty = Journal {
+            path: PathBuf::new(),
+            bytes: None,
+        };
+        assert!(empty.journal_storage_fields_on_control().1.is_none());
     }
 
     #[cfg(unix)]

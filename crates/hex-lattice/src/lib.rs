@@ -13,11 +13,12 @@ pub use hex_tuning::{TuningTable, Waveform as TuningWaveform};
 pub use meter::DeviceMeter;
 pub use owned_processor::{
     OwnedProcessorRuntime, PreparedOwnedProcessorRuntime, PreparedProcessorFactory,
-    PreparedRuntimeDevice, PreparedRuntimeInstance,
+    PreparedRuntimeDevice, PreparedRuntimeInstance, PreparedScopedRuntimeInstance,
 };
 pub use resources::{
     BorrowedDeviceResources, DevicePreparationContext, DeviceResourceIdentity, DeviceResourcePcm,
-    DeviceResourceView, DeviceResources, EMPTY_DEVICE_RESOURCES,
+    DeviceResourceView, DeviceResources, EMPTY_DEVICE_RESOURCES, HostDeviceResourceScope,
+    NoDeviceResourceScope,
 };
 use runtime_ownership::RuntimeOwnership;
 use std::any::Any as StdAny;
@@ -86,11 +87,11 @@ pub use instrument_pair::{
     NativeOwnedInstrumentRuntimePair, OwnedInstrumentRuntime, PreparedOwnedInstrumentRuntime,
 };
 pub use instrument_runtime::{
-    AnalyticInstrumentHistory, InstrumentHistoryRetargetPreparation, MutableInstrumentRuntime,
-    NativeInstrumentAnalyticSeed, NativeInstrumentClock, NativeInstrumentEvent,
-    NativeInstrumentExpression, NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits,
-    NativeInstrumentRuntimePair, PreparedInstrumentHistoryRetarget,
-    PreparedMutableInstrumentRuntime,
+    AnalyticInstrumentHistory, InstrumentHistoryRetargetPreparation,
+    InstrumentRuntimeBoxObservation, MutableInstrumentRuntime, NativeInstrumentAnalyticSeed,
+    NativeInstrumentClock, NativeInstrumentEvent, NativeInstrumentExpression,
+    NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+    PreparedInstrumentHistoryRetarget, PreparedMutableInstrumentRuntime,
 };
 
 /// Immutable, control-prepared configuration for one stateful native effect.
@@ -346,7 +347,8 @@ impl fmt::Debug for PreparedProcessorInstance {
     }
 }
 
-struct RuntimeEntry {
+struct RuntimeEntry<R: HostDeviceResourceScope> {
+    resources: R,
     meter: std::sync::Arc<DeviceMeter>,
     metering: bool,
     input_gain: f32,
@@ -401,37 +403,38 @@ impl NativeInstrumentClock for OffsetClock<'_> {
 /// operates on `scratch` and `commit_block` is called only after the entire
 /// containing block succeeds. Construction and final destruction are control
 /// side responsibilities.
-pub struct NativeRuntimeChain {
-    entries: Vec<RuntimeEntry>,
+pub struct NativeRuntimeChain<R: HostDeviceResourceScope = NoDeviceResourceScope> {
+    entries: Vec<RuntimeEntry<R>>,
     stateful_count: usize,
     declared_pair_bytes: usize,
 }
 
 /// Borrowed physical storage observations, never a provider declaration or
 /// ownership/retirement capability. Private chain fields remain inaccessible.
-pub struct NativeRuntimeStorage<'a> {
-    chain: &'a NativeRuntimeChain,
+pub struct NativeRuntimeStorage<'a, R: HostDeviceResourceScope = NoDeviceResourceScope> {
+    chain: &'a NativeRuntimeChain<R>,
 }
-pub struct NativeRuntimeEntryStorage<'a> {
-    entry: &'a RuntimeEntry,
+pub struct NativeRuntimeEntryStorage<'a, R: HostDeviceResourceScope = NoDeviceResourceScope> {
+    entry: &'a RuntimeEntry<R>,
 }
-impl NativeRuntimeStorage<'_> {
+impl<'a, R: HostDeviceResourceScope> NativeRuntimeStorage<'a, R> {
     pub fn entry_capacity_bytes(&self) -> Option<usize> {
         self.chain
             .entries
             .capacity()
-            .checked_mul(std::mem::size_of::<RuntimeEntry>())
+            .checked_mul(std::mem::size_of::<RuntimeEntry<R>>())
     }
-    pub fn entries(&self) -> impl Iterator<Item = NativeRuntimeEntryStorage<'_>> {
+    pub fn entries(&self) -> impl Iterator<Item = NativeRuntimeEntryStorage<'a, R>> {
         self.chain
             .entries
             .iter()
             .map(NativeRuntimeEntryStorage::new)
     }
 }
-impl NativeRuntimeEntryStorage<'_> {
-    fn new(entry: &RuntimeEntry) -> NativeRuntimeEntryStorage<'_> {
+impl<'a, R: HostDeviceResourceScope> NativeRuntimeEntryStorage<'a, R> {
+    fn new(entry: &RuntimeEntry<R>) -> NativeRuntimeEntryStorage<'_, R> {
         let RuntimeEntry {
+            resources: _,
             meter: _,
             metering: _,
             input_gain: _,
@@ -486,7 +489,29 @@ impl NativeRuntimeEntryStorage<'_> {
             .legacy()
             .is_some_and(|(a, b)| a.as_any().is::<T>() && b.as_any().is::<T>())
     }
+    /// Borrow the actual host-owned scope. This view is control-side only;
+    /// access to an active runtime still requires its ownership protocol.
+    pub fn host_resources(&self) -> &'a R {
+        &self.entry.resources
+    }
+}
+
+// Physical metadata matching for the selected asset-free constructor only.
+// An empty resource query does not prove absence of owning scope storage.
+impl NativeRuntimeEntryStorage<'_, NoDeviceResourceScope> {
     pub fn matches_prepared_runtime_storage(&self, prepared: &PreparedRuntimeInstance) -> bool {
+        self.matches_runtime_metadata(prepared)
+    }
+}
+impl<R: HostDeviceResourceScope> NativeRuntimeEntryStorage<'_, Option<R>> {
+    /// Only an ACTUALLY absent host scope can match the asset-free constructor.
+    /// Some(empty) remains owning storage even when it returns no PCM views.
+    pub fn matches_prepared_runtime_storage(&self, prepared: &PreparedRuntimeInstance) -> bool {
+        self.entry.resources.is_none() && self.matches_runtime_metadata(prepared)
+    }
+}
+impl<R: HostDeviceResourceScope> NativeRuntimeEntryStorage<'_, R> {
+    fn matches_runtime_metadata(&self, prepared: &PreparedRuntimeInstance) -> bool {
         self.entry.owner == prepared.owner
             && self.entry.device_id == prepared.device_id
             && self.entry.device_type == prepared.device_type
@@ -498,6 +523,8 @@ impl NativeRuntimeEntryStorage<'_> {
                 _ => false,
             }
     }
+}
+impl NativeRuntimeEntryStorage<'_, NoDeviceResourceScope> {
     /// Compare against an already borrowed prepared owner. The view never
     /// returns or clones either shared owning field.
     pub fn matches_prepared_storage(&self, prepared: &PreparedProcessorInstance) -> bool {
@@ -514,10 +541,54 @@ impl NativeRuntimeEntryStorage<'_> {
     }
 }
 
-impl NativeRuntimeChain {
+impl NativeRuntimeChain<NoDeviceResourceScope> {
+    /// Declared payload preflight estimate for building a chain from instances.
+    /// Call before runtime factories to reject an aggregate owner over budget.
+    /// This assumes the requested entry capacity; allocator bookkeeping and
+    /// shared prepared definitions are excluded. Check actual vector capacities
+    /// and fixed runtime payload declarations after construction.
+    pub fn declared_storage_preflight_bytes_for_instances(
+        instances: &[PreparedProcessorInstance],
+    ) -> Option<usize> {
+        let payloads = instances.iter().try_fold(0_usize, |total, instance| {
+            total.checked_add(
+                instance
+                    .definition
+                    .as_ref()
+                    .map_or(Some(0), |v| v.declared_runtime_bytes().checked_mul(2))?,
+            )
+        })?;
+        Self::preflight_bytes(instances.len(), payloads)
+    }
+    pub fn declared_storage_preflight_bytes_for_prepared(
+        instances: &[PreparedRuntimeInstance],
+    ) -> Option<usize> {
+        let payloads = instances.iter().try_fold(0_usize, |total, instance| {
+            total.checked_add(
+                instance
+                    .definition
+                    .as_ref()
+                    .map_or(Some(0), PreparedProcessorFactory::declared_pair_bytes)?,
+            )
+        })?;
+        Self::preflight_bytes(instances.len(), payloads)
+    }
+    pub fn new(instances: Vec<PreparedProcessorInstance>) -> Result<Self, DeviceContractError> {
+        Self::from_prepared(
+            instances
+                .into_iter()
+                .map(|instance| PreparedScopedRuntimeInstance {
+                    instance: instance.into(),
+                    resources: NoDeviceResourceScope,
+                }),
+        )
+    }
+}
+
+impl<R: HostDeviceResourceScope> NativeRuntimeChain<R> {
     /// Control-side inventory or bounded scalar test observation only. This
     /// does not authorize concurrent access to an active runtime.
-    pub fn storage_view(&self) -> NativeRuntimeStorage<'_> {
+    pub fn storage_view(&self) -> NativeRuntimeStorage<'_, R> {
         let Self {
             entries: _,
             stateful_count: _,
@@ -533,18 +604,14 @@ impl NativeRuntimeChain {
         }
     }
 
-    pub fn new(instances: Vec<PreparedProcessorInstance>) -> Result<Self, DeviceContractError> {
-        Self::from_prepared(instances.into_iter().map(PreparedRuntimeInstance::from))
-    }
-
-    pub fn new_prepared(
-        instances: Vec<PreparedRuntimeInstance>,
+    pub fn new_prepared<I: Into<PreparedScopedRuntimeInstance<R>>>(
+        instances: Vec<I>,
     ) -> Result<Self, DeviceContractError> {
-        Self::from_prepared(instances.into_iter())
+        Self::from_prepared(instances.into_iter().map(Into::into))
     }
 
     fn from_prepared(
-        instances: impl ExactSizeIterator<Item = PreparedRuntimeInstance>,
+        instances: impl ExactSizeIterator<Item = PreparedScopedRuntimeInstance<R>>,
     ) -> Result<Self, DeviceContractError> {
         let mut entries = Vec::new();
         entries
@@ -552,9 +619,15 @@ impl NativeRuntimeChain {
             .map_err(|_| DeviceContractError::RuntimeAllocation)?;
         let mut declared_pair_bytes = 0_usize;
         let mut stateful_count = 0_usize;
-        for instance in instances {
+        for scoped in instances {
+            let PreparedScopedRuntimeInstance {
+                instance,
+                resources,
+            } = scoped;
             if let Some(configuration) = &instance.configuration {
-                configuration.require_asset_free_processing()?;
+                resources.validate_configuration_on_control(configuration, instance.sample_rate)?;
+            } else if !resources.is_empty() {
+                return Err(DeviceContractError::AssetResourcesUnavailable);
             }
             if !instance.owner.is_valid() || instance.device_id == 0 || instance.sample_rate == 0 {
                 return Err(DeviceContractError::RuntimeBudgetExceeded);
@@ -589,6 +662,7 @@ impl NativeRuntimeChain {
                 };
             let runtime = RuntimeOwnership::prepare(instance.definition.as_ref())?;
             entries.push(RuntimeEntry {
+                resources,
                 meter: instance.meter,
                 metering: false,
                 input_gain: instance
@@ -656,35 +730,21 @@ impl NativeRuntimeChain {
             .checked_add(
                 self.entries
                     .capacity()
-                    .checked_mul(std::mem::size_of::<RuntimeEntry>())?,
+                    .checked_mul(std::mem::size_of::<RuntimeEntry<R>>())?,
             )?
             .checked_add(self.declared_pair_bytes)
     }
 
-    /// Declared payload preflight estimate for building a chain from instances.
-    /// Call before runtime factories to reject an aggregate owner over budget.
-    /// This assumes the requested entry capacity; allocator bookkeeping and
-    /// shared prepared definitions are excluded. Check actual vector capacities
-    /// and fixed runtime payload declarations after construction.
-    pub fn declared_storage_preflight_bytes_for_instances(
-        instances: &[PreparedProcessorInstance],
+    /// Counts actual entry headers, including each inline host scope, and fixed
+    /// provider payloads. Separately retained scope allocations must also be
+    /// inventoried by their control owner; this is not a complete admission proof.
+    pub fn declared_storage_preflight_bytes_for_scoped(
+        instances: &[PreparedScopedRuntimeInstance<R>],
     ) -> Option<usize> {
-        let payloads = instances.iter().try_fold(0_usize, |total, instance| {
+        let payloads = instances.iter().try_fold(0_usize, |total, scoped| {
             total.checked_add(
-                instance
-                    .definition
-                    .as_ref()
-                    .map_or(Some(0), |v| v.declared_runtime_bytes().checked_mul(2))?,
-            )
-        })?;
-        Self::preflight_bytes(instances.len(), payloads)
-    }
-    pub fn declared_storage_preflight_bytes_for_prepared(
-        instances: &[PreparedRuntimeInstance],
-    ) -> Option<usize> {
-        let payloads = instances.iter().try_fold(0_usize, |total, instance| {
-            total.checked_add(
-                instance
+                scoped
+                    .instance
                     .definition
                     .as_ref()
                     .map_or(Some(0), PreparedProcessorFactory::declared_pair_bytes)?,
@@ -694,7 +754,7 @@ impl NativeRuntimeChain {
     }
     fn preflight_bytes(count: usize, payloads: usize) -> Option<usize> {
         std::mem::size_of::<Self>()
-            .checked_add(count.checked_mul(std::mem::size_of::<RuntimeEntry>())?)?
+            .checked_add(count.checked_mul(std::mem::size_of::<RuntimeEntry<R>>())?)?
             .checked_add(payloads)
     }
 
@@ -848,6 +908,7 @@ impl NativeRuntimeChain {
                     && left.sample_rate == right.sample_rate
                     && left.bypassed == right.bypassed
                     && left.matrix == right.matrix
+                    && left.resources.same_configuration(&right.resources)
                     && match (&left.configuration, &right.configuration) {
                         (Some(left), Some(right)) => {
                             std::sync::Arc::ptr_eq(left, right) || left.processing_eq(right)
@@ -883,7 +944,8 @@ impl NativeRuntimeChain {
                     && candidate.runtime_version == old.runtime_version
                     && candidate.sample_rate == old.sample_rate
                     && candidate.bypassed == old.bypassed
-                    && candidate.matrix == old.matrix;
+                    && candidate.matrix == old.matrix
+                    && candidate.resources.same_configuration(&old.resources);
                 if !stable_processing_identity {
                     return false;
                 }
@@ -1002,10 +1064,12 @@ impl NativeRuntimeChain {
             }) else {
                 return true;
             };
-            excluded_old_range.contains(&index) || entry.runtime.can_inherit_from(&old.runtime)
+            excluded_old_range.contains(&index)
+                || (entry.resources.same_configuration(&old.resources)
+                    && entry.runtime.can_inherit_from(&old.runtime))
         })
     }
-    fn same_runtime_identity(a: &RuntimeEntry, b: &RuntimeEntry) -> bool {
+    fn same_runtime_identity(a: &RuntimeEntry<R>, b: &RuntimeEntry<R>) -> bool {
         a.owner == b.owner
             && a.device_id == b.device_id
             && a.device_type == b.device_type
@@ -1045,6 +1109,8 @@ impl NativeRuntimeChain {
             if let Some((index, old)) = previous.entries.iter().enumerate().find(|(_, old)| {
                 Self::same_runtime_identity(entry, old) && old.runtime.is_stateful()
             }) && !excluded_old_range.contains(&index)
+                && entry.resources.same_configuration(&old.resources)
+                && entry.runtime.can_inherit_from(&old.runtime)
             {
                 entry.runtime.inherit_from(&old.runtime);
             }
@@ -1197,7 +1263,7 @@ impl NativeRuntimeChain {
     }
 
     fn process_entries_tapped(
-        entries: &mut [RuntimeEntry],
+        entries: &mut [RuntimeEntry<R>],
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
@@ -1232,7 +1298,7 @@ impl NativeRuntimeChain {
     }
 
     fn process_entries(
-        entries: &mut [RuntimeEntry],
+        entries: &mut [RuntimeEntry<R>],
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
     ) {
@@ -1242,7 +1308,7 @@ impl NativeRuntimeChain {
     }
 
     fn process_entries_observed(
-        entries: &mut [RuntimeEntry],
+        entries: &mut [RuntimeEntry<R>],
         frames: &mut [StereoFrame],
         frame_offset: usize,
         clock: Option<&dyn NativeInstrumentClock>,
@@ -1261,7 +1327,7 @@ impl NativeRuntimeChain {
     }
 
     fn process_entry(
-        entry: &mut RuntimeEntry,
+        entry: &mut RuntimeEntry<R>,
         frames: &mut [StereoFrame],
         clock: Option<&dyn NativeInstrumentClock>,
     ) {
@@ -1277,7 +1343,9 @@ impl NativeRuntimeChain {
         if entry.bypassed {
             if entry.runtime.is_stateful() {
                 if entry.matrix.is_identity() {
-                    entry.runtime.process_bypassed_with_clock(frames, clock);
+                    entry
+                        .runtime
+                        .process_bypassed_with_clock(frames, clock, &entry.resources);
                 } else {
                     for (frame_index, frame) in frames.iter_mut().enumerate() {
                         let audible = *frame;
@@ -1293,6 +1361,7 @@ impl NativeRuntimeChain {
                             shifted
                                 .as_ref()
                                 .map(|clock| clock as &dyn NativeInstrumentClock),
+                            &entry.resources,
                         );
                         *frame = audible;
                     }
@@ -1300,7 +1369,9 @@ impl NativeRuntimeChain {
             }
         } else {
             entry.matrix.apply_block(frames);
-            entry.runtime.process_with_clock(frames, clock);
+            entry
+                .runtime
+                .process_with_clock(frames, clock, &entry.resources);
         }
         if !entry.bypassed && entry.output_gain != 1.0 {
             for frame in frames.iter_mut() {

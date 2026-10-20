@@ -4,6 +4,8 @@
 mod preview_tests;
 pub(super) mod returns;
 mod root;
+mod sampler_compile;
+pub(crate) use sampler_compile::Construction as OriginalSamplerConstruction;
 pub(super) mod tracks;
 use super::*;
 use crate::{Clip, ClipMetadata, owned_shared::SharedDeclaration};
@@ -112,7 +114,9 @@ impl ArrangementClips {
         Ok(ArrangementClipCapacity {
             tracks: self.tracks.capacity_at(growth, root.tracks)?,
             root: self.root.capacity_at(growth, project)?,
-            returns: self.returns.capacity_at(growth, root.returns, root.feed)?,
+            returns: self
+                .returns
+                .capacity_at(growth, root.returns, root.paired_feed())?,
             preview: self.preview.capacity_at(preview)?,
             pair_backing_bytes: self
                 .rows
@@ -134,7 +138,7 @@ impl ArrangementClips {
                     .and_then(|n| {
                         n.checked_add(
                             self.returns
-                                .capacity_at(true, root.returns, root.feed)
+                                .capacity_at(true, root.returns, root.paired_feed())
                                 .ok()?
                                 .previous_growth_backing_bytes,
                         )
@@ -298,7 +302,7 @@ impl ArrangementClips {
                 .get(s.source)
                 .ok_or(AudioStorageError::SourceMismatch)?;
             let owner = s.owner.as_ref().ok_or(AudioStorageError::SourceMismatch)?;
-            let required = matches!(&owner.kind, SourceKind::Streamed(_))
+            let required = matches!(&owner.kind, ClipSourceKind::Streamed(_))
                 || s.phase != 0
                 || !s.fade.is_neutral();
             if r.binding
@@ -333,9 +337,9 @@ impl ArrangementClips {
         // Batch preflight plus exclusive borrows make all following owner moves
         // infallible. No legacy consuming builder, allocation, clone or helper.
         for (index, (r, s)) in self.rows.iter_mut().zip(slots.iter_mut()).enumerate() {
-            if let Some(OwnedAudioSource { kind, handle }) = s.owner.take() {
+            if let Some(OwnedAudioClipSource { kind, handle }) = s.owner.take() {
                 match kind {
-                    SourceKind::Resident(audio) => {
+                    ClipSourceKind::Resident(audio) => {
                         r.clip = Some(Clip {
                             audio: Some(audio),
                             start: s.start,
@@ -346,7 +350,7 @@ impl ArrangementClips {
                             metadata: r.metadata.take(),
                         });
                     }
-                    SourceKind::Streamed(metadata) => {
+                    ClipSourceKind::Streamed(metadata) => {
                         let (arc, receipt) = metadata.into_paired_parts_on_control();
                         r.declaration = Some(receipt);
                         r.stream = Some(arc);
@@ -465,6 +469,10 @@ impl ArrangementClips {
     }
     pub(super) fn has_next(&self) -> bool {
         !matches!(self.phase, Phase::Vacant | Phase::Complete)
+            || self.preview.has_next()
+            || self.returns.has_next()
+            || self.tracks.has_next()
+            || self.root.has_metadata_disposal()
     }
     pub(super) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
         if self.preview.has_next() {
@@ -477,6 +485,10 @@ impl ArrangementClips {
         }
         if self.tracks.has_next() {
             self.tracks.dispose_next(&mut self.rows)?;
+            return Ok(());
+        }
+        if self.root.has_metadata_disposal() {
+            self.root.dispose_metadata_on_control()?;
             return Ok(());
         }
         self.phase = Phase::Cleaning;
@@ -546,7 +558,11 @@ impl ArrangementClips {
         Ok(())
     }
     pub(super) fn clear_disposed(&mut self) -> Result<(), AudioStorageError> {
-        if self.phase == Phase::Vacant {
+        if self.phase == Phase::Vacant && !self.has_next() {
+            self.root.clear_context_retirement()?;
+            self.preview.clear_disposed()?;
+            self.returns.clear_disposed()?;
+            self.tracks.clear_disposed()?;
             return Ok(());
         }
         if self.phase != Phase::Complete
@@ -560,6 +576,7 @@ impl ArrangementClips {
         {
             return Err(AudioStorageError::Capacity);
         }
+        self.root.clear_context_retirement()?;
         self.preview.clear_disposed()?;
         self.returns.clear_disposed()?;
         self.tracks.clear_disposed()?;
@@ -698,7 +715,7 @@ impl ArrangementClips {
         l.growth(*growth)?;
         let view = root.visit_audio_storage(l, project)?;
         tracks.visit_audio_storage(l, view.tracks)?;
-        returns.visit_audio_storage(l, view.returns, view.feed)?;
+        returns.visit_audio_storage(l, view.returns, view.paired_feed())?;
         preview.visit_audio_storage(l, external_preview)?;
         for Pair {
             transferred: _,
@@ -731,6 +748,44 @@ impl ArrangementClips {
         if let Some(metadata) = pending_metadata {
             l.clip_metadata(metadata)?;
         }
-        Ok(root.context_at(project))
+        Ok(root.legacy_context_at(project))
+    }
+}
+
+/// Affine borrow of actual private paired Return rows. It carries no owner or
+/// detachable declaration, and cannot select a public compiled output.
+pub(crate) struct CompilerReturnChildren<'a> {
+    rows: &'a mut returns::ReturnAssembly,
+}
+impl ArrangementClips {
+    pub(crate) fn compiler_return_children_on_control<'a>(
+        &'a mut self,
+        project: &hex_project::Project,
+    ) -> Result<CompilerReturnChildren<'a>, AudioStorageError> {
+        CompilerReturnChildren::from_rows(&mut self.returns, project)
+    }
+}
+impl<'a> CompilerReturnChildren<'a> {
+    fn from_rows(
+        rows: &'a mut returns::ReturnAssembly,
+        project: &hex_project::Project,
+    ) -> Result<Self, AudioStorageError> {
+        rows.preflight_root_move()?;
+        rows.compiler_preflight(project)?;
+        Ok(Self { rows })
+    }
+
+    pub(crate) fn chain(
+        &self,
+        index: usize,
+    ) -> Result<&[crate::PreparedEffectInstance], AudioStorageError> {
+        self.rows.compiler_chain(index)
+    }
+    pub(crate) fn install(
+        &mut self,
+        index: usize,
+        target: &mut Vec<crate::ReturnBus>,
+    ) -> Result<(), AudioStorageError> {
+        self.rows.compiler_install(index, target)
     }
 }

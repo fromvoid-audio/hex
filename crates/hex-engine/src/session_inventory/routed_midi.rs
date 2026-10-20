@@ -15,12 +15,27 @@ impl RoutedMidiPlan {
                 template_count: 0,
             });
         }
-        let mut counts = BTreeMap::<TrackId, (usize, usize)>::new();
+        // One capacity-visible scalar backing, reserved before counting cells.
+        // Avoid opaque tree-node allocations in the closed compiler's quote.
+        let mut count_entries = Vec::new();
+        count_entries
+            .try_reserve_exact(project.tracks().len())
+            .map_err(|_| crate::Invalid("could not reserve Session MIDI source counts"))?;
+        for track in project.tracks() {
+            count_entries.push((track.id(), (0usize, 0usize)));
+        }
+        let mut counts = hex_project::SortedEntries::try_from_unsorted_on_control(
+            count_entries,
+            hex_project::MAX_TRACKS,
+        )
+        .map_err(|_| crate::Invalid("Session MIDI source counts are invalid"))?;
         let mut templates = 0usize;
         let mut notes = 0usize;
         for cell in project.session_cells() {
             if let SessionCellContent::Midi(clip) = cell.content() {
-                let count = counts.entry(cell.track()).or_default();
+                let count = counts
+                    .get_mut(&cell.track())
+                    .ok_or(crate::Invalid("Session MIDI source track is missing"))?;
                 count.0 = count
                     .0
                     .checked_add(1)
@@ -98,13 +113,16 @@ pub(super) fn prepare_clip(
     clip: &SessionMidiClip,
     config: &PreparedTrackInstrumentConfig,
     source_timing: &SessionTimingView<'_>,
-    shared_contexts: &Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts: &crate::owned_shared::OwnedShared<
+        crate::shared_analytic::SharedAnalyticContextTable,
+    >,
     cached: Option<&PreparedSessionMidiClip>,
 ) -> Result<PreparedSessionMidiClip, crate::Invalid> {
     let source_identity = clip.source_identity();
     let mutable_limits = config
         .mutable_runtime
-        .as_deref()
+        .as_ref()
+        .map(PreparedTrackRuntimeFactory::as_ref)
         .map(crate::midi_compile::MutableInstrumentLimits::from_factory)
         .transpose()?;
     if mutable_limits.is_some()
@@ -118,7 +136,8 @@ pub(super) fn prepare_clip(
     }
     let instrument_id = config.device_id;
     let instrument_state = config.state.clone();
-    let instrument_enabled = config.config.is_some() && !config.bypassed;
+    let instrument_enabled =
+        (config.config.is_some() || config.mutable_runtime.is_some()) && !config.bypassed;
     let cached = cached.filter(|old| {
         old.track == destination
             && old.source_identity == source_identity
@@ -128,9 +147,9 @@ pub(super) fn prepare_clip(
             && old.instrument_enabled == instrument_enabled
     });
     let source = if let Some(old) = cached {
-        Arc::clone(&old.source)
+        old.source.clone_on_control()
     } else {
-        Arc::new(
+        crate::owned_shared::OwnedShared::new_owned(
             PreparedMidiSourceTemplate::prepare_source(
                 destination,
                 clip.id(),
@@ -150,18 +169,18 @@ pub(super) fn prepare_clip(
             && old.mutable_limits == mutable_limits
     });
     let instrument = if let Some(old) = cached_instrument {
-        Arc::clone(&old.instrument)
+        old.instrument.clone_on_control()
     } else if let Some(limits) = mutable_limits {
-        Arc::new(
+        crate::owned_shared::OwnedShared::new_owned(
             PreparedMidiInstrumentTemplate::prepare_events(&source, limits)
                 .map_err(template_error)?,
         )
     } else {
-        Arc::new(
+        crate::owned_shared::OwnedShared::new_owned(
             PreparedMidiInstrumentTemplate::prepare_with_bank_and_contexts(
                 &source,
-                Arc::clone(bank),
-                Arc::clone(shared_contexts),
+                bank.clone_on_control(),
+                shared_contexts.clone_on_control(),
             )
             .map_err(template_error)?,
         )
@@ -204,7 +223,7 @@ pub(super) fn account_template(
         ))?;
     *bytes = bytes
         .checked_add(std::mem::size_of::<
-            Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+            crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>,
         >())
         .ok_or(crate::Invalid(
             "Session MIDI bank handle byte count overflow",

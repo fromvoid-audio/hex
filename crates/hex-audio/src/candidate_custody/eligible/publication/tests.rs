@@ -31,10 +31,18 @@ fn reservation_for(owner: &mut AudioCandidateOwner) -> AudioCandidatePublication
 }
 fn root(reservation: AudioCandidatePublicationReservation) -> CandidateRoot {
     let root = CandidateRoot::new(2).unwrap();
-    let bytes = std::mem::size_of::<Inner>() + 2 * std::mem::size_of::<Slot>();
+    let bytes = root_allocation_bytes().unwrap()
+        + pages::signal_data_bytes().unwrap()
+        + 2 * std::mem::size_of::<Slot>();
     root.0
         .eligible
-        .configure_publications(root.root_id(), reservation, bytes)
+        .configure_publications(
+            root.root_id(),
+            reservation,
+            bytes,
+            root.0.resident.as_ref(),
+            root.0.root_fields.as_ref(),
+        )
         .unwrap();
     root
 }
@@ -222,4 +230,506 @@ fn excessive_metadata_request_refuses_before_reserving_per_cell_payloads() {
     reservation.runtime_slots = usize::MAX / std::mem::size_of::<RuntimeSlot>();
     reservation.receipt_rows = reservation.runtime_slots;
     assert!(Bank::prepare(reservation, 128).is_err());
+}
+
+#[test]
+fn actual_lifecycle_paired_birth_reconciles_quote_and_each_limit_before_allocation() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported pinned lifecycle layout; no allocation qualification");
+        return;
+    }
+    use hex_engine::sampler_host_fields::SharedMetadataRef;
+    let mut quoted = None;
+    let quote = allocation_counter::measure(|| {
+        quoted = Some(SharedMetadataRef::constructor_bytes::<Life>().unwrap());
+    });
+    assert_eq!(quote.count_total, 0);
+    assert_eq!(quote.bytes_total, 0);
+    let bytes = quoted.unwrap();
+    let mut single = None;
+    let birth = allocation_counter::measure(|| single = Some(RuntimeSlot::vacant()));
+    assert_eq!(birth.count_total, 1);
+    assert_eq!(birth.bytes_total as usize, bytes);
+    let Life {
+        incarnation: _,
+        live: _,
+        revision: _,
+        cancellation: _,
+        successor_dependencies: _,
+    } = single.as_ref().unwrap().life.as_ref(); // audited atomic-only leaf
+    let mut alias = None;
+    let cloning = allocation_counter::measure(|| {
+        alias = Some(single.as_ref().unwrap().life.clone());
+    });
+    assert_eq!(cloning.count_total, 0);
+    assert_eq!(cloning.bytes_total, 0);
+    let dropping = allocation_counter::measure(|| drop(alias.take()));
+    assert_eq!(dropping.count_total, 0);
+    assert_eq!(dropping.count_current, 0);
+    drop(single.take());
+
+    let mut pair = None;
+    let full = allocation_counter::measure(|| {
+        pair = Some(Bank::prepare(reservation(), 0).unwrap());
+    });
+    let (bank, work) = pair.take().unwrap();
+    assert_eq!(
+        full.bytes_total as usize, bank.metadata_bytes,
+        "all seven actual Vec backings plus both atomic Life payload/header allocations"
+    );
+    assert_eq!(full.count_total, 7 + bank.slots.len() as u64);
+    let required = bank.metadata_bytes;
+    drop((bank, work));
+    let mut exact = reservation();
+    exact.max_retained_data_bytes = required;
+    exact.max_construction_peak_data_bytes = required;
+    let (bank, work) = Bank::prepare(exact, 0).unwrap();
+    assert_eq!(bank.metadata_bytes, required);
+    drop((bank, work));
+    for retained in [true, false] {
+        let mut short = exact;
+        if retained {
+            short.max_retained_data_bytes -= 1;
+        } else {
+            short.max_construction_peak_data_bytes -= 1;
+        }
+        let mut refusal = None;
+        let failure = allocation_counter::measure(|| {
+            refusal = Bank::prepare(short, 0).err();
+        });
+        assert_eq!(
+            refusal,
+            Some(if retained {
+                "constructor publication metadata reservation exceeded"
+            } else {
+                // This metadata-only constructor has equal retained/peak demand.
+                // Peak-minus1 is independently rejected by its peak>=retained law,
+                // not evidence of a separate transient graph-construction peak.
+                "invalid constructor publication reservation"
+            })
+        );
+        assert_eq!(
+            failure.count_total, 0,
+            "both limits refuse BEFORE Vec or paired Life birth"
+        );
+        assert_eq!(failure.bytes_total, 0);
+    }
+    eprintln!(
+        "SUPPORTED lifecycle fresh paired payload+header bytes={bytes}; one allocation reconciled; clone/nonfinaldrop0; all metadata{required} exact/retained-minus1 priced; peak-minus1 rejects peak<retained law; both prebirth0 allocations"
+    );
+}
+
+#[test]
+fn actual_lifecycle_paired_aliases_require_each_physical_handle() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported pinned lifecycle layout; no alias qualification");
+        return;
+    }
+    let slot = RuntimeSlot::vacant();
+    let alias = slot.life.clone();
+    let budget = hex_engine::AudioStorageLedgerReservation {
+        data_rows: 4,
+        handle_rows: 4,
+        root_rows: 1,
+        max_retained_bytes: 65_536,
+        max_construction_peak_bytes: 65_536,
+    };
+    let mut omitted = hex_engine::AudioRootStorageLedger::try_new_on_control(budget).unwrap();
+    omitted
+        .borrow_shared_metadata_body_on_control(&slot.life)
+        .unwrap();
+    assert_eq!(
+        omitted.validate_selected_shared_handles_on_control(),
+        Err(hex_engine::AudioStorageError::UnknownStorage)
+    );
+    drop(omitted);
+    let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(budget).unwrap();
+    ledger
+        .borrow_shared_metadata_body_on_control(&slot.life)
+        .unwrap();
+    ledger
+        .borrow_shared_metadata_body_on_control(&alias)
+        .unwrap();
+    ledger
+        .validate_selected_shared_handles_on_control()
+        .unwrap();
+    let summary = ledger.summary().unwrap();
+    assert_eq!(summary.data_allocations, 1);
+    assert_eq!(summary.unresolved_handles, 2);
+    assert_eq!(
+        summary.data_bytes,
+        hex_engine::sampler_host_fields::SharedMetadataRef::constructor_bytes::<Life>().unwrap()
+    );
+    ledger
+        .borrow_shared_metadata_body_on_control(&alias)
+        .unwrap();
+    assert_eq!(ledger.summary().unwrap(), summary);
+    eprintln!(
+        "SUPPORTED actual lifecycle paired data1/handles2; omitted actual alias refuses, repeated identical field dedups; no whole native-root claim"
+    );
+}
+
+#[test]
+fn actual_native_bank_contention_refuses_cancel_without_mutating_live_owner() {
+    let Some(mut owner) = crate::prepared::candidate_tests::candidate() else {
+        return;
+    };
+    let identity = owner.identity();
+    let root = root(reservation_for(&mut owner));
+    let (queued, ticket) = stage(&root, owner, vec![]).ok().unwrap();
+    crate::candidate_custody::inline_lock_tests::held_on_other_thread(
+        &root.0.eligible.bank,
+        || {
+            let measured = allocation_counter::measure(|| {
+                assert_eq!(
+                    root.cancel_eligible(&ticket),
+                    AudioCandidateCancellationResult::Unavailable
+                );
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        },
+    );
+    {
+        let bank = lock(&root.0.eligible.bank);
+        let slot = &bank.publication.slots[ticket.stamp.slot];
+        assert_eq!(slot.identity, Some(identity));
+        assert_eq!(slot.life.cancellation.load(Ordering::Acquire), PENDING);
+        assert_eq!(slot.anchors.as_ref().unwrap().identity(), identity);
+    }
+    assert_eq!(
+        root.cancel_eligible(&ticket),
+        AudioCandidateCancellationResult::Cancelled
+    );
+    root.ingest_eligible(queued.reject_before_install())
+        .ok()
+        .unwrap();
+    root.advance_on_control();
+    let recovered = root
+        .recover(&ticket)
+        .expect("actual same owner retired after release");
+    assert_eq!(recovered.disposed.identity(), identity);
+    eprintln!(
+        "SUPPORTED actual native Bank other-thread hold: one-try cancellation Unavailable/allocfree0 preserves SAME live anchors and Pending; release allows actual cancel+normal retirement"
+    );
+}
+
+#[test]
+fn changed_inline_custody_body_is_priced_once_in_existing_publication_metadata_limits() {
+    if !hex_engine::audio_storage_constructor_layout_supported() {
+        eprintln!("unsupported pinned constructor layout; no positive metadata limit proof");
+        return;
+    }
+    let root = CandidateRoot::new(2).unwrap();
+    let capacity = lock(&root.0.bank).slots.capacity();
+    // Same actual caller expression as configure_publications: Inner embeds
+    // eligible and all five wrappers. Their bodies must NOT be added again.
+    let body = std::mem::size_of::<Inner>();
+    let base = root_allocation_bytes().unwrap()
+        + pages::signal_data_bytes().unwrap()
+        + capacity * std::mem::size_of::<Slot>();
+    let (bank, work) = Bank::prepare(reservation(), base).unwrap();
+    let required = base + bank.metadata_bytes;
+    drop((bank, work));
+    let mut exact = reservation();
+    exact.max_retained_data_bytes = required;
+    exact.max_construction_peak_data_bytes = required;
+    let (bank, work) = Bank::prepare(exact, base).unwrap();
+    assert_eq!(base + bank.metadata_bytes, required);
+    drop((bank, work));
+    for retained in [true, false] {
+        let mut short = exact;
+        if retained {
+            short.max_retained_data_bytes -= 1;
+        } else {
+            short.max_construction_peak_data_bytes -= 1;
+        }
+        let mut refused = false;
+        let measured =
+            allocation_counter::measure(|| refused = Bank::prepare(short, base).is_err());
+        assert!(refused);
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+    eprintln!(
+        "SUPPORTED changed inline Inner{body} embeds all5wrappers once, existing slot capacity{capacity}; publication metadata total{required} exact/eachminus1 pre-new-backing0. Guard{} is separate overlapping scratch for future whole-host peak, not admitted here. Peak-minus1 also rejects peak<retained; no aggregate Root factory ceiling/claim.",
+        std::mem::size_of::<CustodyMutexGuard<'_, NativeBank>>()
+    );
+}
+
+#[test]
+fn actual_native_state_body_pair_binds_queued_owner_and_normal_return() {
+    use hex_engine::AudioRootStorageLedger;
+    let Some(mut owner) = crate::prepared::candidate_tests::candidate() else {
+        return;
+    };
+    let root = root(reservation_for(&mut owner));
+    let (queued, ticket) =
+        stage(&root, owner, Vec::new()).unwrap_or_else(|r| panic!("{}", r.reason));
+    {
+        let bank = lock(&root.0.eligible.bank);
+        let record = bank.publication.slots[ticket.stamp.slot]
+            .state_storage
+            .as_ref()
+            .unwrap();
+        let mut ledger =
+            AudioRootStorageLedger::try_new_on_control(reservation().ledger()).unwrap();
+        let measured =
+            allocation_counter::measure(|| record.visit_storage_on_control(&mut ledger).unwrap());
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.count_current,
+                measured.bytes_total,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        let observed = ledger.summary().unwrap();
+        assert_eq!(observed.data_bytes, state_storage_bytes(false).unwrap());
+        assert!(observed.require_complete().is_err()); // Body is not its children.
+        assert!(!record.is_normally_disposed_on_control());
+        assert!(queued.state.storage_lease.is_some());
+    }
+    root.0
+        .eligible
+        .ingest_publication(&root, queued.reject_before_install())
+        .ok()
+        .unwrap();
+    root.advance_on_control();
+    {
+        let bank = lock(&root.0.eligible.bank);
+        let record = bank.publication.slots[ticket.stamp.slot]
+            .state_storage
+            .as_ref()
+            .unwrap();
+        assert!(record.is_normally_disposed_on_control());
+        let mut ledger =
+            AudioRootStorageLedger::try_new_on_control(reservation().ledger()).unwrap();
+        record.visit_storage_on_control(&mut ledger).unwrap();
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        assert_eq!(ledger.summary().unwrap().data_bytes,
+            hex_engine::sampler_host_fields::NativeStateStorageRegistration::metadata_requested_bytes_on_control().unwrap());
+    }
+    assert!(root.0.eligible.recover_publication(&ticket).is_some());
+    assert!(
+        lock(&root.0.eligible.bank).publication.slots[ticket.stamp.slot]
+            .state_storage
+            .is_none()
+    );
+    eprintln!(
+        "SUPPORTED real queued State Box+record+individual lease lineage closes with0allocation inspection; actual normal returned State destruction removes ONLY body charge, metadata persists until actual recovery"
+    );
+}
+
+#[test]
+fn actual_native_state_foreign_pair_refuses_before_phase_or_owner_mutation() {
+    use hex_engine::sampler_host_fields::BodyRef;
+    let Some(mut owner_a) = crate::prepared::candidate_tests::candidate() else {
+        return;
+    };
+    let Some(mut owner_b) = crate::prepared::candidate_tests::candidate() else {
+        return;
+    };
+    let a = root(reservation_for(&mut owner_a));
+    let b = root(reservation_for(&mut owner_b));
+    let (queued_a, ticket_a) =
+        stage(&a, owner_a, Vec::new()).unwrap_or_else(|r| panic!("{}", r.reason));
+    let (queued_b, ticket_b) =
+        stage(&b, owner_b, Vec::new()).unwrap_or_else(|r| panic!("{}", r.reason));
+    {
+        let bank = lock(&a.0.eligible.bank);
+        let record = bank.publication.slots[ticket_a.stamp.slot]
+            .state_storage
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            record.begin_actual_state_drop_on_control(
+                BodyRef::of(queued_b.state.as_ref()),
+                queued_b.state.storage_lease.as_ref().unwrap(),
+            ),
+            Err(hex_engine::AudioStorageError::SourceMismatch)
+        );
+        let mut ledger =
+            hex_engine::AudioRootStorageLedger::try_new_on_control(reservation().ledger()).unwrap();
+        record.visit_storage_on_control(&mut ledger).unwrap();
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        assert!(!record.is_normally_disposed_on_control());
+    }
+    for (root, queued, ticket) in [(&a, queued_a, ticket_a), (&b, queued_b, ticket_b)] {
+        root.0
+            .eligible
+            .ingest_publication(root, queued.reject_before_install())
+            .ok()
+            .unwrap();
+        root.advance_on_control();
+        assert!(root.0.eligible.recover_publication(&ticket).is_some());
+    }
+    eprintln!(
+        "SUPPORTED equal-layout foreign REAL State+lease refused by actual constructor pair; both original roots subsequently dispose/recover normally"
+    );
+}
+
+#[test]
+fn actual_native_state_record_and_box_allowance_precedes_birth_and_unpublished_disposal() {
+    actual_state_allowance(false);
+}
+
+#[test]
+fn actual_native_two_claim_pairs_are_priced_before_birth_and_unpublished_drop() {
+    actual_state_allowance(true);
+}
+
+fn actual_state_allowance(with_native: bool) {
+    let _serial = with_native.then(crate::prepared::candidate_tests::serial);
+    let Some(mut owner) = crate::prepared::candidate_tests::candidate() else {
+        return;
+    };
+    let mut native = with_native.then(crate::prepared::candidate_tests::anchored);
+    let root = if let Some((control, _, _, _)) = native.as_mut() {
+        let root = control.native_candidate_root();
+        root.configure_publications(reservation_for(&mut owner), 0)
+            .unwrap();
+        root
+    } else {
+        root(reservation_for(&mut owner))
+    };
+    let custody = &root.0.eligible;
+    let domains = Vec::new();
+    let header = Header {
+        revision: 1,
+        context_generation: 19,
+        policy: crate::prepared::PublicationPolicy::InheritRuntime,
+    };
+    let summary = custody.seal_for_stage(&mut owner, 0).unwrap();
+    let plan = custody
+        .preflight_stage(&root, &owner, &domains, header, summary, None)
+        .unwrap();
+    assert_eq!(plan.resources.is_some(), with_native);
+    let (retained, peak) = {
+        let bank = lock(&custody.bank);
+        (
+            bank.metadata_bytes + plan.retained,
+            bank.metadata_bytes + plan.peak,
+        )
+    };
+    for (minus_retained, minus_peak) in [(1, 0), (0, 1), (0, 0)] {
+        {
+            let mut bank = lock(&custody.bank);
+            let limits = bank.publication.reservation.as_mut().unwrap();
+            limits.max_retained_data_bytes = retained - minus_retained;
+            limits.max_construction_peak_data_bytes = peak - minus_peak;
+        }
+        let mut result = None;
+        let measured = allocation_counter::measure(|| {
+            result = Some(custody.preflight_stage(&root, &owner, &domains, header, summary, None));
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.count_current,
+                measured.bytes_total,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            result.as_ref().unwrap().is_ok(),
+            minus_retained == 0 && minus_peak == 0
+        );
+        assert!(
+            lock(&custody.bank)
+                .publication
+                .slots
+                .iter()
+                .all(|slot| slot.state_storage.is_none()
+                    && slot.claim_storage.iter().all(Option::is_none))
+        );
+    }
+    let mut state = None;
+    let measured = allocation_counter::measure(|| {
+        state = Some(
+            custody
+                .preconstruct_publication_state(&root, &plan, &domains, header)
+                .unwrap(),
+        );
+    });
+    let allocations = if with_native { 4 } else { 2 };
+    assert_eq!(measured.count_total, allocations);
+    assert_eq!(
+        measured.bytes_total as usize,
+        state_storage_bytes(with_native).unwrap()
+    );
+    assert!(state.as_ref().unwrap().runtime.is_none());
+    assert_eq!(
+        state.as_ref().unwrap().pending_claim_handles.is_some(),
+        with_native
+    );
+    {
+        let bank = lock(&custody.bank);
+        let slot = &bank.publication.slots[plan.stamp.slot];
+        assert_eq!(
+            slot.claim_storage.iter().flatten().count(),
+            if with_native { 2 } else { 0 }
+        );
+    }
+    let dropped = allocation_counter::measure(|| {
+        custody.discard_unpublished_state_on_control(state.take().unwrap())
+    });
+    assert_eq!(
+        (
+            dropped.count_total,
+            dropped.count_current,
+            dropped.bytes_total,
+            dropped.bytes_current
+        ),
+        (0, -(allocations as i64), 0, -(measured.bytes_total as i64))
+    );
+    assert!(
+        lock(&custody.bank)
+            .publication
+            .slots
+            .iter()
+            .all(|slot| slot.state_storage.is_none())
+    );
+    owner.dispose_on_control().unwrap();
+    owner.recover_inputs_on_control().unwrap();
+    assert!(
+        lock(&custody.bank)
+            .publication
+            .slots
+            .iter()
+            .all(|slot| slot.state_storage.is_none()
+                && slot.claim_storage.iter().all(Option::is_none))
+    );
+    if let Some((mut control, data, errors, mut retirement)) = native {
+        drop((data, errors));
+        control.reclaim();
+        drop(control);
+        crate::prepared::candidate_tests::finish(&mut retirement);
+    }
+    eprintln!(
+        "SUPPORTED native={with_native} actual State+paired records {allocations} allocations match requested bytes; retained-minus1/peak-minus1 refuse before all record births; normal unpublished payload drops close both claim pairs and State, freeing exact metadata once; separate initializer/pair scratch reserved; no whole-union admission claim"
+    );
 }

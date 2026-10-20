@@ -31,6 +31,17 @@ impl TimeRange {
     pub fn tracks(&self) -> &[TrackId] {
         &self.tracks
     }
+    /// Internal control-side storage inspection of the actual owning buffer.
+    /// The borrow includes spare capacity; it neither transfers ownership nor
+    /// grants admission or retirement authority.
+    pub fn track_buffer_on_control(&self) -> &Vec<TrackId> {
+        let Self {
+            tracks,
+            start: _,
+            end: _,
+        } = self;
+        tracks
+    }
     pub fn start(&self) -> u64 {
         self.start
     }

@@ -164,7 +164,7 @@ fn global_main_audition_cancellation_preserves_normal_pcm_after_restart() {
         .unwrap(),
     )]);
     let revision = Arc::new(
-        PreparedRevision::prepare(edit.project(), &media, Arc::new(SineTable::new()), None)
+        PreparedRevision::prepare(edit.project(), &media, crate::SharedSineTable::new_on_control(), None)
             .unwrap(),
     );
     let identity = PostNodeIdentity::new(

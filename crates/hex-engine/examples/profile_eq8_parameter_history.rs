@@ -1,5 +1,5 @@
 //! Registered EQ8 compatible parameter-handoff profiler; headless, not a device deadline.
-use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
+use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 use hex_project::{BeatTime, Command, Created, DeviceId, Editor, Project};
 use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time::Instant};
@@ -13,11 +13,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("usage: profile_eq8_parameter_history [128|256] [100..20000]".into());
     }
     let (mut editor, device) = fixture()?;
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::clone(&table),
+        table.clone(),
         None,
     )?);
     let mut playback = SessionPlayback::new(Arc::clone(&revision))?;
@@ -60,7 +60,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let prepared = Arc::new(PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::clone(&table),
+            table.clone(),
             Some(revision.session()),
         )?);
         let mut candidate = SessionPlayback::new(Arc::clone(&prepared))?;

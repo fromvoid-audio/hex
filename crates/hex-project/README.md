@@ -40,12 +40,60 @@ preserve the clip's duration/source-length difference and shift source bounds
 with the timeline; loop left trims move phase while right trims only change
 duration. Actual trims reanchor fades, while boundary no-ops preserve them.
 
+`Clip::with_audio_preview` lends an opaque evaluator through a higher-ranked
+callback. Trim, lower-fade-handle resize and stretch share their canonical
+calculations with owning command materialization. Only Copy facts, placement
+occurrences, projected fade samples and accepted-waveform positions are exposed;
+no project, clip, domain, marker/event list or tempo owner is created by evaluation.
+Construction performs each operation's existing checks once; column sampling does
+not repeat full metadata validation. Repeat waveform ranges must split at the
+returned occurrence boundaries, and exhausted Once views retain their silent tail.
+`default_audio_warp_markers` returns the original default source-region mapping
+as a Copy two-endpoint array from borrowed clip/tempo inputs. The owning
+`default_audio_warp` builds its marker vector from that same query outside reads.
+Timing conversion keeps its frame-domain event-edit refusal, and placement phase
+and current tempo still determine the signed projection origin.
+Raw unwrapped source positions use `u128` so a legal timeline plus loop phase
+cannot overflow `u64`. Full validation of at most 1024 audio events uses a fixed
+`[(u64, usize); 1024]` scratch array: 16 KiB on 64-bit hosts, no heap allocation or
+hard-budget increase. The temporary-fragment edit validator retains its existing
+separate capacity and allocation behavior. Owning command materialization remains
+control-side work and may allocate; this interface does not admit DSP or callback
+work. Feature-gated headless allocation coverage lives in
+`hex-audio/tests/audio_preview_allocation.rs`, using its existing dev-only counter.
+
+`Clip::with_audio_event_root` lends current/default root facts, Copy warp/gain
+points and the full stored fade-projection tempo points without owning metadata.
+The scalar default factory is also used by actual `AudioClipEdit::capture` and
+preview capture, so the UI does not reconstruct defaults. These partial facts
+are not a compatibility token: counts do not replace comparing point values.
+Its editable event view retains hidden intervals and applies the same two
+interior split laws as canonical editing. Implicit source IDs begin at 1 with
+next ID 2; only actual interior hits consume fresh IDs. A canonical 1024-event
+source may yield 1026 virtual fragments, without changing final canonical limits.
+Iteration uses two Copy overlays and constant per-event state. Cropped setup
+uses one 16 KiB identity scratch and `O(n log n)` validation; intermediate geometry
+is checked before the second cut, with no scratch or metadata owner per item.
+The original full-root shortcut still skips geometry validation. For malformed,
+noncanonical cropped authored sources already larger than 1024, only the new
+borrowed API explicitly returns `audio event read exceeds canonical event limit`;
+the owning helper and its temporary-fragment behavior are unchanged. This does
+not admit such sources through project validation. Root/event reads cannot escape
+their callback. Gesture-edit materialization and clipboard payload ownership are
+separate caller operations outside the read and are not allocation-free claims.
+
 Finite Arrangement time rectangles use `TimeRange` and opaque `RangeClipboard`
 metadata. Capture preserves audio source/fades and materializes selected MIDI
 playback in frames; paste/delete/move are validated candidate edits with one-step
 history. No PCM or OS clipboard is owned here. See [time selection](../../docs/time-selection.md).
 
 ## Dependencies
+
+Canonical MIDI owners expose narrow borrowed storage observations and actual
+current/Undo/Redo traversal without cloning identities. These are selected
+model-domain facts, not a raw Arc upgrade or host admission. See
+[native MIDI storage](../../docs/native-midi-storage.md) for the constructor/COW
+invariant, separate native layout qualification and remaining custody proof.
 
 Depends on the standard library, `hex-tuning` for validated project tuning and
 audition settings, and `hex-lattice-contract` for opaque, bounded

@@ -6,7 +6,7 @@ use hex_project::{
     SessionMidiClipSnapshot, SessionSnapshot, Snapshot, Tempo, TempoPoint, TrackContentSnapshot,
     TrackSnapshot,
 };
-use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time::Instant};
+use std::{collections::BTreeMap, error::Error, hint::black_box, time::Instant};
 
 const TRACKS: usize = 100;
 const RUNS: usize = 100;
@@ -147,8 +147,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         })
         .sum();
     let track = project.tracks().first().ok_or("missing track")?.id();
-    let table = Arc::new(hex_devices::SineTable::new());
-    let mut previous = PreparedSessionInventory::prepare(&project, Arc::clone(&table), None)?;
+    let table = hex_engine::SharedSineTable::new_on_control();
+    let mut previous = PreparedSessionInventory::prepare(&project, table.clone(), None)?;
     let clip = previous.midi_clips().first().ok_or("missing midi clip")?.id;
     println!(
         "canonical fixture: tracks={} scenes={} midi_cells={} stop_cells=50 absent_cells=50 notes={} rate=48000 history_slots=8; preparation and canonical edits only",
@@ -177,8 +177,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut times = Vec::with_capacity(RUNS);
     for _ in 0..RUNS {
         let started = Instant::now();
-        let prepared =
-            PreparedSessionInventory::prepare(black_box(&project), Arc::clone(&table), None)?;
+        let prepared = PreparedSessionInventory::prepare(black_box(&project), table.clone(), None)?;
         black_box(&prepared);
         times.push(started.elapsed().as_nanos());
     }
@@ -194,11 +193,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             track,
             gain: if index % 2 == 0 { 0.2 } else { 0.1 },
         })?;
-        let prepared = PreparedSessionInventory::prepare(
-            editor.project(),
-            Arc::clone(&table),
-            Some(&previous),
-        )?;
+        let prepared =
+            PreparedSessionInventory::prepare(editor.project(), table.clone(), Some(&previous))?;
         black_box(&prepared);
         times.push(started.elapsed().as_nanos());
         if reused(&previous, &prepared) != 200 {
@@ -218,11 +214,8 @@ fn main() -> Result<(), Box<dyn Error>> {
             channel: 0,
             velocity: 100,
         })?;
-        let prepared = PreparedSessionInventory::prepare(
-            editor.project(),
-            Arc::clone(&table),
-            Some(&previous),
-        )?;
+        let prepared =
+            PreparedSessionInventory::prepare(editor.project(), table.clone(), Some(&previous))?;
         black_box(&prepared);
         times.push(started.elapsed().as_nanos());
         if reused(&previous, &prepared) != 199 {
@@ -234,11 +227,8 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
         let started = Instant::now();
         editor.execute(Command::RemoveMidiNote(note))?;
-        let prepared = PreparedSessionInventory::prepare(
-            editor.project(),
-            Arc::clone(&table),
-            Some(&previous),
-        )?;
+        let prepared =
+            PreparedSessionInventory::prepare(editor.project(), table.clone(), Some(&previous))?;
         black_box(&prepared);
         times.push(started.elapsed().as_nanos());
         if reused(&previous, &prepared) != 199 {
@@ -249,12 +239,8 @@ fn main() -> Result<(), Box<dyn Error>> {
     report("note insert/remove transaction plus inventory", &mut times);
     println!("inventory-only reuse checks outside timer: gain 200/200, note edit 199/200");
     let media = BTreeMap::new();
-    let mut revision = PreparedRevision::prepare(
-        editor.project(),
-        &media,
-        Arc::clone(&table),
-        Some(&previous),
-    )?;
+    let mut revision =
+        PreparedRevision::prepare(editor.project(), &media, table.clone(), Some(&previous))?;
     times.clear();
     for index in 0..RUNS {
         let started = Instant::now();
@@ -267,7 +253,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 PreparedRevision::prepare(
                     candidate,
                     &media,
-                    Arc::clone(&table),
+                    table.clone(),
                     Some(revision.session()),
                 )
                 .map_err(|error| hex_project::Invalid(error.0))

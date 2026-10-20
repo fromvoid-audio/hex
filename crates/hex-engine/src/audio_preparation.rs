@@ -1,10 +1,15 @@
 //! Preparation-only Arrangement and opt-in sealed Session/revision assembly.
 //! Not a storage-complete graph, publication admission or lifetime authority.
 //! The audio host must retain this custody through cancellation and abandonment.
+use crate::audio_clip_source::{ClipSourceKind, OwnedAudioClipSource};
 use crate::audio_only_inputs::*;
 mod arrangement_clips;
+mod original_resources;
 mod storage;
-pub(crate) use arrangement_clips::ArrangementClips;
+pub(crate) use arrangement_clips::tracks::CompilerTrackChildren;
+pub(crate) use arrangement_clips::{
+    ArrangementClips, CompilerReturnChildren, OriginalSamplerConstruction,
+};
 #[cfg(test)]
 #[path = "session_inventory_assembly_tests.rs"]
 mod assembly_tests;
@@ -91,6 +96,9 @@ pub struct AudioArrangementCapacity {
     pub input_container_bytes: usize,
     pub declared_source_bytes: usize,
     pub retained_stage_bytes: usize,
+    /// Reserved local producer ceilings, not observed union or instantaneous peak.
+    pub original_resource_retained_allowance: usize,
+    pub original_resource_construction_allowance: usize,
     pub construction_peak_bytes: usize,
     pub session: crate::SessionSourceCapacity,
     pub structure: crate::SessionStructureCapacity,
@@ -255,7 +263,7 @@ struct SourceSlot {
     gain: f32,
     looping: bool,
     fade: hex_project::ClipFade,
-    owner: Option<OwnedAudioSource>,
+    owner: Option<OwnedAudioClipSource>,
     disposal: Disposal,
     #[cfg(test)]
     probe: Option<DropProbe>,
@@ -286,6 +294,8 @@ pub struct AudioPreparationCustody {
     incarnation: u64,
     phase: AudioPreparationPhase,
     bank: Option<OwnedAudioInputs>,
+    original_resources: Option<crate::native_device_resources::DeviceResourceBank>,
+    original_resources_drop_pending: bool,
     slots: Vec<SourceSlot>,
     next_disposal: usize,
     first_panic: Option<Box<dyn Any + Send>>,
@@ -318,6 +328,28 @@ impl AudioPreparationCustody {
         Ok((self.root, self.incarnation, self.revision.candidate_root()?))
     }
 
+    #[cfg(test)]
+    pub(crate) fn reader_word_for_test(&self) -> Option<usize> {
+        self.revision.reader_word_for_test()
+    }
+    #[cfg(test)]
+    pub(crate) fn revision_strong_count_for_test(&self) -> Option<usize> {
+        self.revision
+            .owner_for_test()
+            .map(|owner| std::sync::Arc::strong_count(owner.arc()))
+    }
+    /// Register an immutable compiled field against this actual constructor
+    /// incarnation. No arbitrary revision owner can be adopted.
+    pub fn register_compiled_reader_on_control(
+        &self,
+        token: &AudioPreparationToken,
+    ) -> Result<crate::AudioCompiledRevision, AudioStorageError> {
+        if !self.matches(token) || self.phase != AudioPreparationPhase::ArrangementAndSessionSources
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.revision.registered_reader(self.root, self.incarnation)
+    }
     pub(crate) fn candidate_root_view(
         &self,
         token: &AudioPreparationToken,
@@ -343,6 +375,15 @@ impl AudioPreparationCustody {
         }
         result
     }
+    #[cfg(test)]
+    pub(crate) fn test_original_input_drop(
+        &mut self,
+        probe: crate::audio_only_inputs::OriginalInputDropProbe,
+    ) {
+        let bank = self.bank.as_mut().expect("actual original input bank");
+        assert!(bank.drop_probe.is_none());
+        bank.drop_probe = Some(probe);
+    }
     pub(crate) fn source_context(&self) -> Option<AudioSourceContext> {
         self.source_context
     }
@@ -353,6 +394,8 @@ impl AudioPreparationCustody {
             incarnation: 0,
             phase: AudioPreparationPhase::Vacant,
             bank: None,
+            original_resources: None,
+            original_resources_drop_pending: false,
             slots: Vec::new(),
             next_disposal: 0,
             first_panic: None,
@@ -560,7 +603,7 @@ impl AudioPreparationCustody {
                     .and_then(|n| n.checked_add(device_handles))
                     .and_then(|n| n.checked_add(return_handles))
                     .and_then(|n| n.checked_add(usize::from(assemble_preview)))
-                    .and_then(|n| n.checked_add(if assemble_revision { 4 } else { 0 }))
+                    .and_then(|n| n.checked_add(if assemble_revision { 5 } else { 0 }))
                     .ok_or(AudioStorageError::Overflow)?;
                 self.shared
                     .reserve(handles, inputs.reservation.handle_obligations)?;
@@ -850,7 +893,10 @@ impl AudioPreparationCustody {
         capacity: &mut AudioArrangementCapacity,
     ) -> Result<u64, AudioStorageError> {
         if self.phase != AudioPreparationPhase::Vacant
+            || self.arrangement_clips.has_next()
             || self.bank.is_some()
+            || self.original_resources.is_some()
+            || self.original_resources_drop_pending
             || !self.slots.is_empty()
         {
             return Err(AudioStorageError::Capacity);
@@ -969,6 +1015,9 @@ impl AudioPreparationCustody {
                     .asset(clip.asset())
                     .ok_or(AudioStorageError::SourceMismatch)?;
                 let owner = &inputs.sources[source].1;
+                if matches!(&owner.kind, SourceKind::ResidentMono(_)) {
+                    return Err(AudioStorageError::UnsupportedGraph);
+                }
                 if owner.sample_rate() != project.sample_rate()
                     || owner.frames() != asset.playback_frames()
                 {
@@ -1037,11 +1086,8 @@ impl AudioPreparationCustody {
                 .ok_or(AudioStorageError::SourceMismatch)?
                 .sources[slot.source]
                 .1;
-            let kind = match &source.kind {
-                SourceKind::Resident(audio) => SourceKind::Resident(audio.clone()),
-                SourceKind::Streamed(meta) => SourceKind::Streamed(meta.clone_on_control()),
-            };
-            slot.owner = Some(OwnedAudioSource {
+            let kind = ClipSourceKind::try_clone_source_on_control(&source.kind, slot.handle)?;
+            slot.owner = Some(OwnedAudioClipSource {
                 kind,
                 handle: slot.handle,
             });
@@ -1081,6 +1127,14 @@ impl AudioPreparationCustody {
     /// CONTROL ONLY, outside ordinary locks. Pending is recorded before take;
     /// panic makes an irreversible tombstone, preserving bank and remaining rows.
     pub fn cleanup_on_control(&mut self) {
+        if self.phase == AudioPreparationPhase::Vacant {
+            if self.arrangement_clips.has_next() {
+                self.phase = AudioPreparationPhase::Cleaning;
+            } else {
+                self.dispose_original_resources_on_control();
+                return;
+            }
+        }
         if self.phase != AudioPreparationPhase::Cleaning {
             return;
         }
@@ -1126,12 +1180,24 @@ impl AudioPreparationCustody {
         if !self.dispose_shared_on_control() {
             return;
         }
+        if !self.dispose_original_resources_on_control() {
+            return;
+        }
         self.phase = AudioPreparationPhase::Recoverable;
     }
     fn dispose_arrangement_clips_on_control(&mut self) -> bool {
+        match self.revision.external_readers_pending() {
+            Ok(true) => return false, // real registered readers retain all root charges
+            Ok(false) => {}
+            Err(_) => {
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                return false;
+            }
+        }
         match catch_unwind(AssertUnwindSafe(|| {
             self.revision
-                .restore(&mut self.arrangement_clips, &mut self.assembly)
+                .restore(&mut self.arrangement_clips, &mut self.assembly)?;
+            self.revision.clear_descriptor_custody_on_control()
         })) {
             Ok(Ok(())) => {}
             Ok(Err(_)) => {
@@ -1183,11 +1249,20 @@ impl AudioPreparationCustody {
                 }
             }
         }
-        if self.assembly.return_timing(&mut self.tempo).is_err() {
-            self.phase = AudioPreparationPhase::FailedIncomplete;
-            return false;
+        match catch_unwind(AssertUnwindSafe(|| {
+            self.assembly.return_timing(&mut self.tempo)
+        })) {
+            Ok(Ok(())) => true,
+            Ok(Err(_)) => {
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                false
+            }
+            Err(payload) => {
+                self.first_panic = Some(payload);
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                false
+            }
         }
-        true
     }
     fn dispose_session_on_control(&mut self) -> bool {
         while self.session.has_next_disposal() {
@@ -1260,7 +1335,11 @@ impl AudioPreparationCustody {
         &mut self,
         token: &AudioPreparationToken,
     ) -> Option<OwnedAudioInputs> {
-        if !self.matches(token) || self.phase != AudioPreparationPhase::Recoverable {
+        if !self.matches(token)
+            || self.phase != AudioPreparationPhase::Recoverable
+            || self.original_resources.is_some()
+            || self.original_resources_drop_pending
+        {
             return None;
         }
         if self.arrangement_clips.clear_disposed().is_err()

@@ -3,9 +3,8 @@
 use crate::{AssetId, Audio, SessionError};
 use hex_engine::{PreparedRevision, PreparedSessionInventory, compile::PreparedAudioSource};
 use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits};
-use hex_project::Project;
+use hex_project::{MAX_ASSETS, Project, SortedEntries};
 use std::{
-    collections::BTreeMap,
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -174,35 +173,65 @@ pub(crate) fn fresh_source_epoch() -> Result<u64, SessionError> {
 }
 pub(crate) struct MediaBank {
     pub(crate) epoch: u64,
-    pub(crate) resident: BTreeMap<AssetId, Audio>,
-    pub(crate) verified: BTreeMap<AssetId, VerifiedAudioFile>,
+    pub(crate) resident: SortedEntries<AssetId, Audio>,
+    pub(crate) verified: SortedEntries<AssetId, VerifiedAudioFile>,
 }
 impl MediaBank {
     pub(crate) fn contains_key(&self, id: &AssetId) -> bool {
         self.resident.contains_key(id) || self.verified.contains_key(id)
     }
-    pub(crate) fn insert(&mut self, id: AssetId, audio: Audio) -> Option<Audio> {
-        self.resident.insert(id, audio)
+    pub(crate) fn insert(
+        &mut self,
+        id: AssetId,
+        audio: Audio,
+    ) -> Result<Option<Audio>, hex_engine::Invalid> {
+        self.resident
+            .try_insert_on_control(id, audio, MAX_ASSETS)
+            .map_err(|error| hex_engine::Invalid(error.0))
     }
     pub(crate) fn prepare(
         &self,
         project: &Project,
-        table: Arc<hex_engine::SineTable>,
+        table: hex_engine::SharedSineTable,
         previous: Option<&PreparedSessionInventory>,
     ) -> Result<PreparedRevision, hex_engine::Invalid> {
         if self.verified.is_empty() {
             return PreparedRevision::prepare(project, &self.resident, table, previous);
         }
-        let mut sources: BTreeMap<_, _> = self
+        let count = self
             .resident
-            .iter()
-            .map(|(id, a)| (*id, PreparedAudioSource::Resident(a.clone())))
-            .collect();
+            .len()
+            .checked_add(
+                self.verified
+                    .keys()
+                    .filter(|id| !self.resident.contains_key(id))
+                    .count(),
+            )
+            .filter(|count| *count <= MAX_ASSETS)
+            .ok_or(hex_engine::Invalid("media source count limit exceeded"))?;
+        let mut sources = SortedEntries::new();
+        sources
+            .try_reserve_on_control(count, MAX_ASSETS)
+            .map_err(|error| hex_engine::Invalid(error.0))?;
+        for (id, audio) in &self.resident {
+            sources
+                .try_insert_on_control(
+                    *id,
+                    PreparedAudioSource::Resident(audio.clone()),
+                    MAX_ASSETS,
+                )
+                .map_err(|error| hex_engine::Invalid(error.0))?;
+        }
         for (id, source) in &self.verified {
-            sources.insert(
-                *id,
-                PreparedAudioSource::Streamed(Arc::new(source.source_metadata(*id, self.epoch)?)),
-            );
+            sources
+                .try_insert_on_control(
+                    *id,
+                    PreparedAudioSource::Streamed(Arc::new(
+                        source.source_metadata(*id, self.epoch)?,
+                    )),
+                    MAX_ASSETS,
+                )
+                .map_err(|error| hex_engine::Invalid(error.0))?;
         }
         PreparedRevision::prepare_with_prepared_audio_sources(
             project, &sources, self.epoch, table, previous,

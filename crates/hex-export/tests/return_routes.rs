@@ -1,4 +1,4 @@
-use hex_engine::{Audio, PreparedRevision, SineTable};
+use hex_engine::{Audio, PreparedRevision};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 use hex_project::{Command, Created, Editor, Project};
 use std::{
@@ -146,8 +146,13 @@ fn assert_return_export(authored_feed: bool, automation: bool) {
     }
     let media = BTreeMap::from([(asset, Audio::new(RATE, samples.to_vec()).expect("audio"))]);
     let revision = Arc::new(
-        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
-            .expect("prepared return revision"),
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .expect("prepared return revision"),
     );
     let directory = TestDir::new();
     let path = directory.0.join("return.wav");
@@ -494,8 +499,13 @@ fn assert_transformed_warp_export(mode: hex_project::WarpMode) {
         .unwrap(),
     )]);
     let revision = Arc::new(
-        PreparedRevision::prepare(editor.project(), &media, Arc::new(SineTable::new()), None)
-            .unwrap(),
+        PreparedRevision::prepare(
+            editor.project(),
+            &media,
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .unwrap(),
     );
     let view = &revision.arrangement().audio_clip_views()[0];
     let length = usize::try_from(view.length).unwrap();

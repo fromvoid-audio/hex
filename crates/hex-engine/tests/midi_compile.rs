@@ -12,7 +12,7 @@ use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
 use hex_project::{
     BeatTime, Command, Created, Editor, MidiNoteSnapshot, Project, Tempo, TrackContentSnapshot,
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::collections::BTreeMap;
 
 fn beat(num: u64, den: u64) -> BeatTime {
     BeatTime::from_ratio(num, den).unwrap()
@@ -513,14 +513,22 @@ fn session_source_window_editor(high_note_start: BeatTime) -> Editor {
 fn session_bank_ignores_notes_outside_the_emitted_source_window() {
     let hidden = session_source_window_editor(beat(1, 2));
     assert!(
-        PreparedSessionInventory::prepare(hidden.project(), Arc::new(SineTable::new()), None,)
-            .is_ok()
+        PreparedSessionInventory::prepare(
+            hidden.project(),
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .is_ok()
     );
 
     let emitted = session_source_window_editor(beat(5, 2));
     assert!(
-        PreparedSessionInventory::prepare(emitted.project(), Arc::new(SineTable::new()), None,)
-            .is_err()
+        PreparedSessionInventory::prepare(
+            emitted.project(),
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .is_err()
     );
 }
 
@@ -829,8 +837,12 @@ fn session_inventory_admits_non_front_instrument_and_keeps_slot_validation() {
     );
     assert!(compile::project(editor.project(), &BTreeMap::new()).is_ok());
     assert!(
-        PreparedSessionInventory::prepare(editor.project(), Arc::new(SineTable::new()), None)
-            .is_ok()
+        PreparedSessionInventory::prepare(
+            editor.project(),
+            hex_engine::SharedSineTable::new_on_control(),
+            None
+        )
+        .is_ok()
     );
     assert!(editor.project().device(effect).is_some());
 }

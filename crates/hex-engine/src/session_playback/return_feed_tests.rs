@@ -90,7 +90,7 @@ fn assert_late_failure(automation: bool) {
                 asset,
                 crate::Audio::new(48000, vec![[1.0; 2]; 1024]).unwrap(),
             )]),
-            Arc::new(crate::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

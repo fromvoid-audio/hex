@@ -3,6 +3,8 @@ use crate::Invalid;
 use hex_lattice_contract::{
     DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor, ParameterValue,
 };
+mod sampler_parameters;
+pub use sampler_parameters::sampler_parameters_on_control;
 
 /// Reserved host parameter. Device codecs never own this identifier.
 pub const DEVICE_OUTPUT_GAIN: hex_lattice_contract::ParameterDescriptor =

@@ -1,6 +1,9 @@
 //! Bounded live gain commands and receipts for successfully written output quantums.
 //! Control owns take construction/history. The callback owns only fixed-size values.
-use rtrb::{Consumer, Producer, RingBuffer};
+use crate::native_callback_owner::{
+    NativePreparedConsumer as Consumer, NativePreparedProducer as Producer, native_prepared_ring,
+    registered_prepared_ring,
+};
 
 const IN_FLIGHT: usize = 64;
 const CAPACITY: usize = IN_FLIGHT + 2;
@@ -94,7 +97,7 @@ pub struct Control {
     sequence: u64,
     outstanding: usize,
     finishing: bool,
-    status: Option<std::sync::Arc<crate::prepared::Status>>,
+    status: Option<crate::prepared::status_owner::StatusHandle>,
 }
 pub(crate) struct Callback {
     commands: Consumer<Command>,
@@ -116,10 +119,42 @@ pub(crate) struct Clock {
     pub delivery_delay: u64,
     pub loop_pass: u64,
 }
+pub(crate) fn constructor_cost() -> Option<(usize, usize)> {
+    let retained = crate::prepared::factory::ring_bytes::<Command>(CAPACITY)?
+        .checked_add(crate::prepared::factory::ring_bytes::<Receipt>(CAPACITY)?)?;
+    let peak = retained
+        .checked_add(crate::prepared::factory::ring_scratch::<Command>()?)?
+        .checked_add(crate::prepared::factory::ring_scratch::<Receipt>()?)?
+        .checked_add(size_of::<(Control, Callback)>())?;
+    Some((retained, peak))
+}
 pub(crate) fn channel() -> (Control, Callback) {
-    let (commands, incoming) = RingBuffer::new(CAPACITY);
-    let (returning, receipts) = RingBuffer::new(CAPACITY);
-    (
+    construct_channel(None).expect("unqualified gain channel has no fallible registration")
+}
+pub(crate) fn registered_channel(
+    root: &crate::candidate_custody::CandidateRoot,
+) -> Result<(Control, Callback), hex_engine::Invalid> {
+    construct_channel(Some(root))
+}
+fn construct_channel(
+    root: Option<&crate::candidate_custody::CandidateRoot>,
+) -> Result<(Control, Callback), hex_engine::Invalid> {
+    let (commands, incoming, returning, receipts) = if let Some(root) = root {
+        let (commands, incoming, first) = registered_prepared_ring(CAPACITY)
+            .map_err(|_| hex_engine::Invalid("gain command queue pairing refused"))?;
+        root.retain_prepared_ring(7, first)
+            .map_err(hex_engine::Invalid)?;
+        let (returning, receipts, second) = registered_prepared_ring(CAPACITY)
+            .map_err(|_| hex_engine::Invalid("gain receipt queue pairing refused"))?;
+        root.retain_prepared_ring(8, second)
+            .map_err(hex_engine::Invalid)?;
+        (commands, incoming, returning, receipts)
+    } else {
+        let (commands, incoming) = native_prepared_ring(CAPACITY);
+        let (returning, receipts) = native_prepared_ring(CAPACITY);
+        (commands, incoming, returning, receipts)
+    };
+    Ok((
         Control {
             commands,
             receipts,
@@ -140,10 +175,23 @@ pub(crate) fn channel() -> (Control, Callback) {
             pending_len: 0,
             receipt_fault: false,
         },
-    )
+    ))
 }
 impl Control {
-    pub(crate) fn bind_status(&mut self, status: std::sync::Arc<crate::prepared::Status>) {
+    /// Actual constructor channel-field correlation only. Other owning
+    /// descendants retain their independent mandatory inventory contracts.
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        root.matches_prepared_producer(7, &self.commands)
+            && root.matches_prepared_consumer(8, &self.receipts)
+            && self.status.as_ref().is_some_and(|field| {
+                root.matches_status_field(field, crate::prepared::status_owner::GAIN)
+            })
+    }
+
+    pub(crate) fn bind_status(&mut self, status: crate::prepared::status_owner::StatusHandle) {
         self.status = Some(status);
     }
 
@@ -267,6 +315,16 @@ fn validate_gain(gain: f32) -> Result<(), &'static str> {
     }
 }
 impl Callback {
+    /// Actual constructor channel-field correlation only. Other owning
+    /// descendants retain their independent mandatory inventory contracts.
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        root.matches_prepared_consumer(7, &self.commands)
+            && root.matches_prepared_producer(8, &self.receipts)
+    }
+
     pub(crate) fn constructor_channel_storage(
         &self,
     ) -> Option<crate::native_callback_owner::ChannelStorage> {

@@ -4,7 +4,7 @@ mod fixture;
 
 use hex_engine::{
     LaunchQuantization, PlaybackAction, PlaybackCommand, PreparedRevision, SessionPlaybackCommand,
-    SessionPlaybackOwner, SineTable, playback::Playback,
+    SessionPlaybackOwner, playback::Playback,
 };
 use hex_project::{BeatTime, Command, Editor, Tempo};
 use std::{error::Error, sync::Arc};
@@ -32,11 +32,11 @@ fn verify(distinct: bool) -> Result<(), Box<dyn Error>> {
             assets * fixture::SOURCE_FRAMES * std::mem::size_of::<hex_engine::Frame>(),
         )
     );
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let revision = Arc::new(PreparedRevision::prepare(
         &fixture.project,
         &fixture.media,
-        Arc::clone(&table),
+        table.clone(),
         None,
     )?);
     assert_eq!(revision.session().audio_clips().len(), 200);

@@ -42,25 +42,42 @@ pub struct AudioInputStorageRefusal {
     pub reservation: AudioStorageReservation,
     pub partial_metadata_bytes: usize,
 }
-fn allocation_parts(source: &OwnedAudioSource) -> Result<[(usize, usize); 2], AudioStorageError> {
-    match &source.kind {
-        SourceKind::Resident(audio) => audio
-            .pcm_arc_receipt
-            .and_then(|receipt| receipt.checked_allocations(audio))
-            .ok_or(AudioStorageError::UnknownStorage),
-        SourceKind::Streamed(source) => Ok([
+fn allocation_parts(source: &impl SourceStorage) -> Result<[(usize, usize); 2], AudioStorageError> {
+    match source.storage_kind() {
+        SourceStorageKind::Resident(audio) => {
+            let allocations = audio
+                .pcm_arc_receipt
+                .and_then(|receipt| receipt.checked_allocations(audio))
+                .ok_or(AudioStorageError::UnknownStorage)?;
+            if audio.native_handle.map(|h| h.get()) != Some(source.storage_handle()) {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            Ok(allocations)
+        }
+        SourceStorageKind::ResidentMono(source) => Ok([
+            source.parts().ok_or(AudioStorageError::UnknownStorage)?,
+            (
+                source
+                    .samples
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<f32>())
+                    .ok_or(AudioStorageError::Overflow)?,
+                0,
+            ),
+        ]),
+        SourceStorageKind::Streamed(source) => Ok([
             source.parts().ok_or(AudioStorageError::UnknownStorage)?,
             (0, 0),
         ]),
     }
 }
-fn allocation_count(source: &OwnedAudioSource) -> usize {
-    match &source.kind {
-        SourceKind::Resident(_) => 2,
-        SourceKind::Streamed(_) => 1,
+fn allocation_count(source: &impl SourceStorage) -> usize {
+    match source.storage_kind() {
+        SourceStorageKind::Resident(_) | SourceStorageKind::ResidentMono(_) => 2,
+        SourceStorageKind::Streamed(_) => 1,
     }
 }
-pub(crate) fn parts(source: &OwnedAudioSource) -> Result<(usize, usize), AudioStorageError> {
+pub(crate) fn parts(source: &impl SourceStorage) -> Result<(usize, usize), AudioStorageError> {
     allocation_parts(source)?.into_iter().try_fold(
         (0_usize, 0_usize),
         |(payload, overhead), (p, o)| {
@@ -71,10 +88,15 @@ pub(crate) fn parts(source: &OwnedAudioSource) -> Result<(usize, usize), AudioSt
         },
     )
 }
-pub(crate) fn same(a: &OwnedAudioSource, b: &OwnedAudioSource) -> bool {
-    match (&a.kind, &b.kind) {
-        (SourceKind::Resident(a), SourceKind::Resident(b)) => a.shares_pcm_with(b),
-        (SourceKind::Streamed(a), SourceKind::Streamed(b)) => Arc::ptr_eq(a.arc(), b.arc()),
+pub(crate) fn same(a: &impl SourceStorage, b: &impl SourceStorage) -> bool {
+    match (a.storage_kind(), b.storage_kind()) {
+        (SourceStorageKind::Resident(a), SourceStorageKind::Resident(b)) => a.shares_pcm_with(b),
+        (SourceStorageKind::ResidentMono(a), SourceStorageKind::ResidentMono(b)) => {
+            Arc::ptr_eq(a.arc(), b.arc())
+        }
+        (SourceStorageKind::Streamed(a), SourceStorageKind::Streamed(b)) => {
+            Arc::ptr_eq(a.arc(), b.arc())
+        }
         _ => false,
     }
 }
@@ -227,6 +249,21 @@ impl OwnedAudioInputs {
     }
 }
 impl AudioInputStorageAndObligations {
+    pub(crate) fn visit_resource_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        let Self {
+            inputs,
+            allocations,
+            obligations,
+            summary: _,
+        } = self;
+        self.validate_unresolved_on_control()?;
+        ledger.inputs(inputs)?;
+        ledger.vec(allocations)?;
+        ledger.vec(obligations)
+    }
     pub fn summary(&self) -> AudioInputStorageSummary {
         self.summary
     }
@@ -241,6 +278,27 @@ impl AudioInputStorageAndObligations {
         token: &AudioSourceToken,
     ) -> Result<OwnedAudioSourceView<'_>, AudioStorageError> {
         self.inputs.source_view(token)
+    }
+    /// Closed source-plan transfer only; not a raw Audio/Arc alias or admission.
+    /// All declaration/identity failures precede the owning control clone.
+    pub(crate) fn alias_resource_source_on_control(
+        &self,
+        token: &AudioSourceToken,
+    ) -> Result<OwnedAudioSource, AudioStorageError> {
+        let source = self.inputs.checked_source(token)?;
+        parts(source)?;
+        if matches!(&source.kind, SourceKind::Streamed(_)) {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        let handle = handle()?;
+        let kind = match &source.kind {
+            SourceKind::Resident(audio) => {
+                SourceKind::Resident(audio.clone_with_native_handle_on_control(Some(handle)))
+            }
+            SourceKind::ResidentMono(source) => SourceKind::ResidentMono(source.clone_on_control()),
+            SourceKind::Streamed(_) => return Err(AudioStorageError::UnsupportedGraph),
+        };
+        Ok(OwnedAudioSource { kind, handle })
     }
     /// Verify actual anchored owners/handle locations, never Arc counts or IDs
     /// alone. There is no lifetime-closed/admission authority in this operation.

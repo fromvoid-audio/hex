@@ -1,6 +1,6 @@
 use hex_devices::utility::{UTILITY_DEFINITION, parameter as utility_parameter};
 use hex_engine::{
-    Audio, BorrowedMediaPage, Frame, PlaybackAction, PlaybackCommand, PreparedRevision, SineTable,
+    Audio, BorrowedMediaPage, Frame, PlaybackAction, PlaybackCommand, PreparedRevision,
     StreamSourceKey, StreamedSourceMetadata, compile::PreparedAudioSource, playback::Playback,
 };
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
@@ -303,7 +303,7 @@ fn prepared(project: &Project, generation: u64, fingerprint: [u8; 32]) -> Arc<Pr
             project,
             &sources(project, metadata(project, generation, fingerprint)),
             generation,
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .expect("prepared mixed revision"),
@@ -439,7 +439,7 @@ fn streamed_arrangement_audio_mixes_with_builtin_fm4_midi() {
             &project,
             &sources(&project, source_metadata),
             generation,
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -594,8 +594,13 @@ fn streamed_session_cold_miss_keeps_arrangement_midi_and_audio_exact() {
         resident_media.insert(asset.id(), Audio::new(RATE, frames).unwrap());
     }
     let baseline_revision = Arc::new(
-        PreparedRevision::prepare(&stopped, &resident_media, Arc::new(SineTable::new()), None)
-            .unwrap(),
+        PreparedRevision::prepare(
+            &stopped,
+            &resident_media,
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .unwrap(),
     );
     let mut baseline = Playback::try_from_prepared_with_session(baseline_revision).unwrap();
     baseline.apply(PlaybackCommand::Play);
@@ -624,7 +629,7 @@ fn streamed_session_bindings_validate_referenced_facts_and_ignore_unused_extras(
             &project,
             &good,
             71,
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None
         )
         .is_ok()
@@ -638,7 +643,7 @@ fn streamed_session_bindings_validate_referenced_facts_and_ignore_unused_extras(
             &project,
             &missing,
             71,
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None
         )
         .is_err()
@@ -654,7 +659,7 @@ fn streamed_session_bindings_validate_referenced_facts_and_ignore_unused_extras(
             &project,
             &bank,
             71,
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .is_err()
@@ -753,7 +758,7 @@ fn streamed_session_bindings_validate_referenced_facts_and_ignore_unused_extras(
             &project,
             &with_unused,
             71,
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None
         )
         .is_ok()
@@ -946,14 +951,14 @@ fn finite_playback_keeps_streamed_arrangement_loop_segments_and_wraps() {
 #[test]
 fn streamed_session_source_reuse_compares_metadata_values_not_arc_identity() {
     let project = project(4_094, 4_102);
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let first_source = metadata(&project, 71, [3; 32]);
     let first_bank = sources(&project, first_source.clone());
     let first = PreparedRevision::prepare_with_prepared_audio_sources(
         &project,
         &first_bank,
         71,
-        Arc::clone(&table),
+        table.clone(),
         None,
     )
     .unwrap();
@@ -977,7 +982,7 @@ fn streamed_session_source_reuse_compares_metadata_values_not_arc_identity() {
         &project,
         &sources(&project, equivalent_source),
         71,
-        Arc::clone(&table),
+        table.clone(),
         Some(first.session()),
     )
     .unwrap();
@@ -1126,8 +1131,13 @@ fn session_gain_resident_streamed_and_replacement_keep_one_shot_anchor() {
                 prepared(project, 71, [3; 32])
             } else {
                 Arc::new(
-                    PreparedRevision::prepare(project, &media, Arc::new(SineTable::new()), None)
-                        .unwrap(),
+                    PreparedRevision::prepare(
+                        project,
+                        &media,
+                        hex_engine::SharedSineTable::new_on_control(),
+                        None,
+                    )
+                    .unwrap(),
                 )
             }
         };

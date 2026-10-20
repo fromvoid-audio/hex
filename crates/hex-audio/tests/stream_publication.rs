@@ -1,8 +1,8 @@
 //! Native publication refuses streams until callback page ownership is integrated.
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{
-    Audio, Clip, PreparedRevision, Project, SineTable, StreamSourceKey, StreamedSourceMetadata,
-    Track, compile::PreparedAudioSource, playback::Playback,
+    Audio, Clip, PreparedRevision, Project, StreamSourceKey, StreamedSourceMetadata, Track,
+    compile::PreparedAudioSource, playback::Playback,
 };
 use hex_project::{Command, Created, Editor, Project as CanonicalProject};
 use std::{
@@ -64,7 +64,7 @@ fn streamed_session_only() -> Arc<PreparedRevision> {
             editor.project(),
             &bank,
             77,
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -101,7 +101,7 @@ fn streamed_candidates_are_returned_before_publication_or_revision_admission() {
                 "caller keeps candidate"
             );
             callback.begin_block();
-            assert_eq!(control.status.applied_revision.load(Acquire), 0);
+            assert_eq!(control.status().applied_revision.load(Acquire), 0);
         }
     }
     // Refusal must not consume a publication slot or increment the revision.
@@ -133,7 +133,7 @@ fn streamed_candidates_are_returned_before_publication_or_revision_admission() {
     };
     assert_eq!(admitted, 1);
     callback.begin_block();
-    assert_eq!(control.status.applied_revision.load(Acquire), 1);
+    assert_eq!(control.status().applied_revision.load(Acquire), 1);
     control.request_shutdown();
     callback.begin_block();
     control.reclaim();

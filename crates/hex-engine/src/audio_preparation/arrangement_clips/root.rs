@@ -10,6 +10,10 @@ pub struct ArrangementRootCapacity {
     pub track_container_bytes: usize,
     pub return_container_bytes: usize,
     pub main_prepared_bytes: usize,
+    pub tempo_backing_bytes: usize,
+    pub midi_routing_backing_bytes: usize,
+    pub signal_topology_bytes: usize,
+    pub fresh_feed_backing_bytes: usize,
     pub previous_growth_backing_bytes: usize,
     pub installed_tracks: usize,
     pub installed_returns: usize,
@@ -20,6 +24,10 @@ impl ArrangementRootCapacity {
         self.track_container_bytes
             .checked_add(self.return_container_bytes)
             .and_then(|n| n.checked_add(self.main_prepared_bytes))
+            .and_then(|n| n.checked_add(self.tempo_backing_bytes))
+            .and_then(|n| n.checked_add(self.midi_routing_backing_bytes))
+            .and_then(|n| n.checked_add(self.signal_topology_bytes))
+            .and_then(|n| n.checked_add(self.fresh_feed_backing_bytes))
             .ok_or(AudioStorageError::Overflow)
     }
 }
@@ -34,6 +42,22 @@ pub(super) struct RootStorageView<'a> {
     pub(super) tracks: &'a [Track],
     pub(super) returns: &'a [ReturnBus],
     pub(super) feed: Option<&'a ReturnFeedPlan>,
+    feed_is_paired: bool,
+}
+impl<'a> RootStorageView<'a> {
+    pub(super) fn paired_feed(&self) -> Option<&'a ReturnFeedPlan> {
+        self.feed.filter(|_| self.feed_is_paired)
+    }
+}
+/// Disposal routing only; actual fields/receipts remain storage authority.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ContextLifecycle {
+    #[default]
+    None,
+    LegacyProducer,
+    CompilerOwned,
+    RetirementPending,
+    RetirementComplete,
 }
 #[derive(Default)]
 pub(super) struct ArrangementRootAssembly {
@@ -42,7 +66,12 @@ pub(super) struct ArrangementRootAssembly {
     returns: Vec<ReturnBus>,
     feed: ReturnFeedPlan,
     contexts: Option<OwnedShared<SharedAnalyticContextTable>>,
-    main_chain: Option<Arc<[hex_lattice::PreparedRuntimeInstance]>>,
+    main_chain: Option<Arc<[crate::PreparedEffectInstance]>>,
+    context_lifecycle: ContextLifecycle,
+    tempo_map: Option<hex_project::TempoMap>,
+    midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
+    topology: Option<OwnedShared<crate::signal_graph::SignalGraph>>,
+    metadata_drop_pending: bool,
     has_feed: bool,
     scalars: Option<Scalars>,
     growth: usize,
@@ -50,6 +79,10 @@ pub(super) struct ArrangementRootAssembly {
     pub(super) fail_after: Option<usize>,
     #[cfg(test)]
     pub(super) panic_after: Option<usize>,
+    #[cfg(test)]
+    pub(super) panic_after_metadata_take: bool,
+    #[cfg(test)]
+    pub(super) context_probe: Option<crate::audio_preparation::DropProbe>,
 }
 impl ArrangementRootAssembly {
     #[cfg(test)]
@@ -61,7 +94,7 @@ impl ArrangementRootAssembly {
     }
     pub(super) fn main_carrier_bytes() -> Result<usize, AudioStorageError> {
         let (payload, overhead) =
-            OwnedShared::<[hex_lattice::PreparedRuntimeInstance]>::declared_slice_parts(0)
+            OwnedShared::<[crate::PreparedEffectInstance]>::declared_slice_parts(0)
                 .ok_or(AudioStorageError::UnknownStorage)?;
         payload
             .checked_add(overhead)
@@ -90,10 +123,77 @@ impl ArrangementRootAssembly {
             && self.returns.capacity() == 0
             && self.main_chain.is_none()
             && self.contexts.is_none()
+            && self.tempo_map.is_none()
+            && self.topology.is_none()
+            && self.midi_routing.capacity() == 0
+            && !self.metadata_drop_pending
+            && self.context_lifecycle != ContextLifecycle::RetirementPending
             && self.feed.has_no_owned_storage()
     }
     pub(super) fn restore_project(&mut self, source: &mut Option<Project>) {
-        self.project = source.take();
+        *self.compiler_destination_on_control() = source.take();
+    }
+    pub(super) fn compiler_destinations_vacant(&self) -> bool {
+        self.project.is_none()
+            && self.contexts.is_none()
+            && !self.metadata_drop_pending
+            && self.context_lifecycle == ContextLifecycle::None
+    }
+    pub(super) fn begin_compiler_context(&mut self) -> Result<(), AudioStorageError> {
+        if !self.compiler_destinations_vacant() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.context_lifecycle = ContextLifecycle::CompilerOwned;
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(super) fn record_external_legacy_transfer(
+        &mut self,
+        shared: &crate::session_shared_preparation::SessionSharedConstruction,
+    ) -> Result<(), AudioStorageError> {
+        if !self.compiler_destinations_vacant() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        // The two direct common-compiler fixtures transfer from the actual
+        // producer outside construct(); validate its real transfer state.
+        shared.preflight_arrangement_restore()?;
+        self.context_lifecycle = ContextLifecycle::LegacyProducer;
+        Ok(())
+    }
+    pub(super) fn legacy_context_at<'a>(
+        &'a self,
+        external: Option<&'a Project>,
+    ) -> Option<&'a OwnedShared<SharedAnalyticContextTable>> {
+        if self.context_lifecycle == ContextLifecycle::CompilerOwned {
+            None
+        } else {
+            self.context_at(external)
+        }
+    }
+    pub(super) fn clear_context_retirement(&mut self) -> Result<(), AudioStorageError> {
+        if self.metadata_drop_pending
+            || self.context_lifecycle == ContextLifecycle::RetirementPending
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        if self.project.is_some() || self.contexts.is_some() || self.has_metadata_disposal() {
+            return Err(AudioStorageError::Capacity);
+        }
+        if self.context_lifecycle == ContextLifecycle::RetirementComplete {
+            self.context_lifecycle = ContextLifecycle::None;
+        }
+        Ok(())
+    }
+    pub(super) fn compiler_destinations(
+        &mut self,
+    ) -> (
+        &mut Option<Project>,
+        &mut Option<OwnedShared<SharedAnalyticContextTable>>,
+    ) {
+        (&mut self.project, &mut self.contexts)
+    }
+    pub(super) fn compiler_destination_on_control(&mut self) -> &mut Option<Project> {
+        &mut self.project
     }
     pub(super) fn reserve(
         &mut self,
@@ -103,7 +203,15 @@ impl ArrangementRootAssembly {
             || !self.tracks.is_empty()
             || !self.returns.is_empty()
             || self.contexts.is_some()
+            || self.context_lifecycle != ContextLifecycle::None
             || self.has_feed
+            // A fresh compiler feed remains here after root restoration; it
+            // must finish guarded metadata retirement before this slot reopens.
+            || !self.feed.has_no_owned_storage()
+            || self.tempo_map.is_some()
+            || self.topology.is_some()
+            || self.midi_routing.capacity() != 0
+            || self.metadata_drop_pending
             || self.scalars.is_some()
         {
             return Err(AudioStorageError::Capacity);
@@ -177,19 +285,28 @@ impl ArrangementRootAssembly {
         &'a self,
         external: Option<&'a Project>,
     ) -> Result<RootStorageView<'a>, AudioStorageError> {
+        if self.metadata_drop_pending
+            || self.context_lifecycle == ContextLifecycle::RetirementPending
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         if self.project.is_some() && external.is_some() {
             return Err(AudioStorageError::SourceMismatch);
         }
         if let Some(project) = self.project.as_ref().or(external) {
             if project.audio_clip_views.capacity() != 0
-                || project.signal_graph.is_some()
-                || project.tempo_map.is_some()
-                || project.midi_routing.capacity() != 0
+                || project
+                    .signal_graph
+                    .as_ref()
+                    .is_some_and(|graph| graph.parts().is_none())
                 || self.tracks.capacity() != 0
                 || self.returns.capacity() != 0
                 || self.main_chain.is_some()
                 || !project.main_device_chain.is_empty()
                 || self.contexts.is_some()
+                || self.topology.is_some()
+                || self.tempo_map.is_some()
+                || self.midi_routing.capacity() != 0
                 || !self.feed.has_no_owned_storage()
             {
                 return Err(AudioStorageError::UnknownStorage);
@@ -198,12 +315,14 @@ impl ArrangementRootAssembly {
                 tracks: &project.tracks,
                 returns: &project.return_buses,
                 feed: Some(&project.return_feed_plan),
+                feed_is_paired: self.has_feed,
             })
         } else {
             Ok(RootStorageView {
                 tracks: &self.tracks,
                 returns: &self.returns,
                 feed: self.has_feed.then_some(&self.feed),
+                feed_is_paired: self.has_feed,
             })
         }
     }
@@ -230,7 +349,62 @@ impl ArrangementRootAssembly {
             .map_or((&self.tracks, &self.returns), |p| {
                 (&p.tracks, &p.return_buses)
             });
+        let tempo_map = self
+            .project
+            .as_ref()
+            .or(external)
+            .and_then(|project| project.tempo_map.as_ref())
+            .or(self.tempo_map.as_ref());
+        let tempo_backing_bytes = tempo_map
+            .map(|map| {
+                let layout = map.owned_allocation_layout();
+                layout
+                    .point_bytes()
+                    .and_then(|n| layout.prefix_bytes().and_then(|m| n.checked_add(m)))
+                    .ok_or(AudioStorageError::Overflow)
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let routes = self
+            .project
+            .as_ref()
+            .or(external)
+            .map_or(&self.midi_routing, |project| &project.midi_routing);
+        let topology = self
+            .project
+            .as_ref()
+            .or(external)
+            .and_then(|project| project.signal_graph.as_ref())
+            .or(self.topology.as_ref());
+        let signal_topology_bytes = topology
+            .map(|graph| {
+                let (_, overhead) = graph
+                    .parts()
+                    .ok_or(AudioStorageError::UnsupportedConstructor)?;
+                graph
+                    .table_body_bytes()
+                    .and_then(|bytes| bytes.checked_add(overhead))
+                    .ok_or(AudioStorageError::Overflow)
+            })
+            .transpose()?
+            .unwrap_or(0);
+        let fresh_feed_backing_bytes = if self.has_feed {
+            0
+        } else {
+            self.project
+                .as_ref()
+                .or(external)
+                .map_or(&self.feed, |project| &project.return_feed_plan)
+                .backing_bytes()?
+        };
         Ok(ArrangementRootCapacity {
+            fresh_feed_backing_bytes,
+            signal_topology_bytes,
+            tempo_backing_bytes,
+            midi_routing_backing_bytes: routes
+                .capacity()
+                .checked_mul(mem::size_of::<(hex_project::TrackId, hex_project::TrackId)>())
+                .ok_or(AudioStorageError::Overflow)?,
             track_container_bytes: tracks
                 .capacity()
                 .checked_mul(mem::size_of::<Track>())
@@ -266,6 +440,11 @@ impl ArrangementRootAssembly {
             || self.has_feed
             || self.contexts.is_some()
             || self.main_chain.is_none()
+            || self.context_lifecycle != ContextLifecycle::None
+            || self.tempo_map.is_some()
+            || self.topology.is_some()
+            || self.midi_routing.capacity() != 0
+            || self.metadata_drop_pending
             || self.tracks.capacity() < tracks.root_count()
             || self.returns.capacity() < returns.root_count()
         {
@@ -293,6 +472,7 @@ impl ArrangementRootAssembly {
         #[cfg(test)]
         self.fault(frontier)?;
         shared.commit_arrangement_transfer(&mut self.contexts);
+        self.context_lifecycle = ContextLifecycle::LegacyProducer;
         #[cfg(test)]
         self.fault(frontier + 1)?;
         // Every field was validated/reserved before any owner move. The only
@@ -328,26 +508,46 @@ impl ArrangementRootAssembly {
         self.fault(frontier + 2)?;
         Ok(())
     }
+    pub(super) fn preflight_restore(
+        &self,
+        tracks: &tracks::TrackAssembly,
+        returns: &returns::ReturnAssembly,
+        shared: &crate::session_shared_preparation::SessionSharedConstruction,
+    ) -> Result<(), AudioStorageError> {
+        let view = self.view_at(None)?;
+        tracks.preflight_root_restore(view.tracks)?;
+        returns.preflight_root_restore(view.returns, self.has_feed)?;
+        match self.context_lifecycle {
+            ContextLifecycle::CompilerOwned => {
+                if let Some(context) = self.context_at(None) {
+                    context.refuse_opaque_control_drop()?;
+                }
+            }
+            ContextLifecycle::LegacyProducer => shared.preflight_arrangement_restore()?,
+            ContextLifecycle::None | ContextLifecycle::RetirementComplete => {
+                if self.context_at(None).is_some() {
+                    return Err(AudioStorageError::SourceMismatch);
+                }
+            }
+            ContextLifecycle::RetirementPending => return Err(AudioStorageError::UnknownStorage),
+        }
+        Ok(())
+    }
     pub(super) fn restore(
         &mut self,
         tracks: &mut tracks::TrackAssembly,
         returns: &mut returns::ReturnAssembly,
         shared: &mut crate::session_shared_preparation::SessionSharedConstruction,
     ) -> Result<(), AudioStorageError> {
-        let view = self.view_at(None)?;
-        tracks.preflight_root_restore(view.tracks)?;
-        returns.preflight_root_restore(view.returns, self.has_feed)?;
-        if self.context_at(None).is_some() {
-            shared.preflight_arrangement_restore()?;
-        }
+        self.preflight_restore(tracks, returns, shared)?;
         // Validate the whole restoration batch before unpacking any final owner.
         if let Some(Project {
             project_track_ids: _,
             audio_clip_views: _,
-            signal_graph: _,
+            signal_graph,
+            tempo_map,
+            midi_routing,
             main_output_latency_frames: _,
-            tempo_map: _,
-            midi_routing: _,
             sample_rate: _,
             main_device_chain,
             tracks,
@@ -365,12 +565,92 @@ impl ArrangementRootAssembly {
             self.returns = return_buses;
             self.feed = return_feed_plan;
             self.contexts = Some(shared_contexts);
+            self.topology = signal_graph;
+            self.install_restored_metadata(tempo_map, midi_routing);
         }
-        shared.restore_arrangement(&mut self.contexts);
+        if self.context_lifecycle == ContextLifecycle::LegacyProducer {
+            shared.restore_arrangement(&mut self.contexts);
+            self.context_lifecycle = ContextLifecycle::None;
+        }
         returns.restore_root(&mut self.returns, &mut self.feed, self.has_feed);
         tracks.restore_root_rows(&mut self.tracks);
         self.has_feed = false;
         self.scalars = None;
+        Ok(())
+    }
+    /// Fixed move after the actual aggregate/destination preflight. No fresh
+    /// constructor receipt or provenance is manufactured by moving owned Vecs.
+    fn install_restored_metadata(
+        &mut self,
+        tempo_map: Option<hex_project::TempoMap>,
+        midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
+    ) {
+        self.tempo_map = tempo_map;
+        self.midi_routing = midi_routing;
+    }
+    pub(super) fn has_metadata_disposal(&self) -> bool {
+        self.metadata_drop_pending
+            || self.contexts.is_some()
+            || self.project.is_some()
+            || matches!(
+                self.context_lifecycle,
+                ContextLifecycle::CompilerOwned | ContextLifecycle::RetirementPending
+            )
+            || self.tempo_map.is_some()
+            || self.topology.is_some()
+            || self.midi_routing.capacity() != 0
+            || !self.feed.has_no_owned_storage()
+    }
+    pub(super) fn dispose_metadata_on_control(&mut self) -> Result<(), AudioStorageError> {
+        if self.metadata_drop_pending
+            || self.context_lifecycle == ContextLifecycle::RetirementPending
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        if self.project.is_some()
+            || !self.tracks.is_empty()
+            || !self.returns.is_empty()
+            || (self.contexts.is_some()
+                && self.context_lifecycle != ContextLifecycle::CompilerOwned)
+        {
+            return Err(AudioStorageError::Capacity);
+        }
+        if self.context_lifecycle == ContextLifecycle::CompilerOwned {
+            if let Some(context) = &self.contexts {
+                context.refuse_opaque_control_drop()?;
+            }
+            self.context_lifecycle = ContextLifecycle::RetirementPending;
+            drop(self.contexts.take());
+            #[cfg(test)]
+            drop(self.context_probe.take());
+            self.context_lifecycle = ContextLifecycle::RetirementComplete;
+            return Ok(());
+        }
+        if self
+            .topology
+            .as_ref()
+            .is_some_and(|graph| graph.parts().is_none())
+        {
+            return Err(AudioStorageError::UnsupportedConstructor);
+        }
+        // SignalGraph descendants are audited fixed scalar vectors; no provider
+        // destructor, mutable runtime buffer, or adopted raw Arc is accepted.
+        // Canonical TempoMap owns only TempoPoint/u128 Vecs; routing entries
+        // are Copy IDs. Parent catch retains pending/FailedIncomplete on unwind.
+        fn copy_element<T: Copy>() {}
+        copy_element::<hex_project::TempoPoint>();
+        copy_element::<(hex_project::TrackId, hex_project::TrackId)>();
+        self.metadata_drop_pending = true;
+        drop(self.topology.take());
+        drop(self.tempo_map.take());
+        #[cfg(test)]
+        assert!(
+            !self.panic_after_metadata_take,
+            "persistent Arrangement metadata drop panic"
+        );
+        drop(mem::take(&mut self.midi_routing));
+        drop(mem::take(&mut self.feed));
+        self.metadata_drop_pending = false;
         Ok(())
     }
     #[cfg(test)]
@@ -406,6 +686,11 @@ impl ArrangementRootAssembly {
             feed,
             contexts: _,
             main_chain,
+            context_lifecycle: _,
+            tempo_map,
+            midi_routing,
+            topology,
+            metadata_drop_pending: _,
             has_feed: _,
             scalars: _,
             growth,
@@ -413,8 +698,19 @@ impl ArrangementRootAssembly {
                 fail_after: _,
             #[cfg(test)]
                 panic_after: _,
+            #[cfg(test)]
+                panic_after_metadata_take: _,
+            #[cfg(test)]
+                context_probe: _,
         } = self;
         let view = self.view_at(external)?;
+        if self.context_lifecycle == ContextLifecycle::CompilerOwned {
+            if let Some(context) = self.context_at(external) {
+                if !l.skip_observed_shared_field(context) {
+                    crate::shared_analytic::resource_storage::visit_table_contents(context, l)?;
+                }
+            }
+        }
         l.vec(tracks)?;
         l.vec(returns)?;
         feed.visit_audio_storage(l)?;
@@ -425,13 +721,22 @@ impl ArrangementRootAssembly {
             .map(|p| &p.main_device_chain)
             .or(main_chain.as_ref());
         if let Some(main) = actual_main {
-            l.shared(
-                main,
-                OwnedShared::<[hex_lattice::PreparedRuntimeInstance]>::declared_slice_parts(0),
-                crate::audio_storage::Owner::exclusive(main),
-                crate::audio_only_inputs::handle()?,
-                None,
-            )?;
+            if !l.skip_observed_shared_field(main) {
+                l.shared(
+                    main,
+                    OwnedShared::<[crate::PreparedEffectInstance]>::declared_slice_parts(0),
+                    crate::audio_storage::Owner::exclusive(main),
+                    crate::audio_only_inputs::handle()?,
+                    None,
+                )?;
+            }
+        }
+        l.vec(midi_routing)?;
+        if let Some(graph) = topology {
+            crate::signal_graph::storage::visit(graph, l)?;
+        }
+        if let Some(map) = tempo_map {
+            l.mutate(|ledger| ledger.map(map))?;
         }
         if let Some(project) = project.as_ref().or(external) {
             let Project {
@@ -440,10 +745,10 @@ impl ArrangementRootAssembly {
                 sample_rate: _,
                 tracks,
                 return_buses,
-                return_feed_plan: _,
-                signal_graph: _,
+                return_feed_plan,
+                signal_graph,
+                tempo_map,
                 main_output_latency_frames: _,
-                tempo_map: _,
                 midi_routing,
                 main_device_chain: _,
                 loop_region: _,
@@ -452,11 +757,26 @@ impl ArrangementRootAssembly {
                 has_streamed_sources: _,
                 shared_contexts: _,
             } = project;
+            if let Some(graph) = signal_graph {
+                crate::signal_graph::storage::visit(graph, l)?;
+            }
+            if !self.has_feed {
+                return_feed_plan.visit_audio_storage(l)?;
+            }
             l.vec(audio_clip_views)?;
             l.vec(tracks)?;
             l.vec(return_buses)?;
             l.vec(midi_routing)?;
+            if let Some(map) = tempo_map {
+                l.mutate(|ledger| ledger.map(map))?;
+            }
         }
         Ok(view)
     }
 }
+
+#[cfg(test)]
+mod metadata_tests;
+
+#[cfg(test)]
+mod lifecycle_tests;

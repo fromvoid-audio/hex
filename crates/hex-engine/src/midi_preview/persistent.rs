@@ -1,12 +1,19 @@
-//! Actual audio-only preview owner, retained in the existing preparation root.
+//! Actual preview owner, retained in the existing preparation root.
+//! Nonempty observation/restore/cleanup is separate from closed constructor admission.
 //! Constructor/layout observations leave its allocation/handle obligation OPEN.
+mod compiler;
 use super::{MidiArrangementPreview, MidiClipPreview};
 use crate::{AudioStorageError as Error, owned_shared::OwnedShared};
+
+// A wildcard binding would not enforce this trait obligation.
+fn require_copy<T: Copy>(_: &T) {}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AudioPreviewCapacity {
     pub clips_payload_bytes: usize,
     pub clips_declared_overhead_bytes: usize,
+    pub samples_backing_bytes: usize,
+    pub compiler_draft_backing_bytes: usize,
     pub reserved_handle_destinations: usize,
     pub independent_handle_obligations: usize,
     pub unresolved_allocations: usize,
@@ -15,6 +22,8 @@ impl AudioPreviewCapacity {
     pub(crate) fn bytes(self) -> Result<usize, Error> {
         self.clips_payload_bytes
             .checked_add(self.clips_declared_overhead_bytes)
+            .and_then(|bytes| bytes.checked_add(self.samples_backing_bytes))
+            .and_then(|bytes| bytes.checked_add(self.compiler_draft_backing_bytes))
             .ok_or(Error::Overflow)
     }
 }
@@ -46,6 +55,7 @@ enum Disposal {
 pub(crate) struct PreviewCustody {
     clips: Option<OwnedShared<[MidiClipPreview]>>,
     preview: Option<MidiArrangementPreview>,
+    draft: Vec<MidiClipPreview>,
     handle: u64,
     phase: Phase,
     disposal: Disposal,
@@ -61,7 +71,10 @@ impl PreviewCustody {
         self.capacity_at(None)
     }
     pub(crate) fn can_transfer_revision(&self) -> bool {
-        self.phase == Phase::Installed && self.preview.is_some() && self.clips.is_none()
+        self.phase == Phase::Installed
+            && self.preview.is_some()
+            && self.clips.is_none()
+            && self.draft.capacity() == 0
     }
     pub(crate) fn can_restore_revision(&self) -> bool {
         self.phase == Phase::Installed
@@ -79,6 +92,11 @@ impl PreviewCustody {
         &self,
         external: Option<&MidiArrangementPreview>,
     ) -> Result<AudioPreviewCapacity, Error> {
+        if self.draft.capacity() != 0
+            && (self.clips.is_some() || self.preview.is_some() || external.is_some())
+        {
+            return Err(Error::SourceMismatch);
+        }
         if self.preview.is_some() && external.is_some() {
             return Err(Error::SourceMismatch);
         }
@@ -96,7 +114,7 @@ impl PreviewCustody {
             ..Default::default()
         };
         if let Some(owner) = owner {
-            if self.handle == 0 || !owner.is_empty() {
+            if self.handle == 0 {
                 return Err(Error::UnknownStorage);
             }
             let (payload, overhead) = owner.parts().ok_or(Error::UnsupportedConstructor)?;
@@ -104,6 +122,37 @@ impl PreviewCustody {
             report.clips_declared_overhead_bytes = overhead;
             report.independent_handle_obligations = 1;
             report.unresolved_allocations = 1;
+            for clip in owner.iter() {
+                let bytes = clip
+                    .samples
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<super::MidiPreviewSample>())
+                    .ok_or(Error::Overflow)?;
+                report.samples_backing_bytes = report
+                    .samples_backing_bytes
+                    .checked_add(bytes)
+                    .ok_or(Error::Overflow)?;
+                report.unresolved_allocations = report
+                    .unresolved_allocations
+                    .checked_add(usize::from(bytes != 0))
+                    .ok_or(Error::Overflow)?;
+            }
+        }
+        report.compiler_draft_backing_bytes = self
+            .draft
+            .capacity()
+            .checked_mul(std::mem::size_of::<MidiClipPreview>())
+            .ok_or(Error::Overflow)?;
+        for clip in &self.draft {
+            report.samples_backing_bytes = report
+                .samples_backing_bytes
+                .checked_add(
+                    clip.samples
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<super::MidiPreviewSample>())
+                        .ok_or(Error::Overflow)?,
+                )
+                .ok_or(Error::Overflow)?;
         }
         report.bytes()?;
         Ok(report)
@@ -114,6 +163,7 @@ impl PreviewCustody {
             || self.preview.is_some()
             || self.handle != 0
             || self.disposal != Disposal::Unstarted
+            || self.draft.capacity() != 0
         {
             return Err(Error::Capacity);
         }
@@ -197,7 +247,12 @@ impl PreviewCustody {
         }
         self.capacity()?;
         self.disposal = Disposal::Pending;
+        // The exhaustive typed storage visitor audits this closed payload: scalar clip
+        // metadata plus Vec<scalar sample>. No provider/PCM/custom destructor
+        // or callback is reachable. The actual shared slice stays in this
+        // persistent slot until this control-only terminal operation.
         drop(self.clips.take());
+        drop(std::mem::take(&mut self.draft));
         #[cfg(test)]
         drop(self.probe.take());
         self.disposal = Disposal::Complete;
@@ -212,6 +267,7 @@ impl PreviewCustody {
             || self.disposal != Disposal::Complete
             || self.clips.is_some()
             || self.preview.is_some()
+            || self.draft.capacity() != 0
         {
             return Err(Error::Capacity);
         }
@@ -251,6 +307,7 @@ impl PreviewCustody {
         let Self {
             clips,
             preview,
+            draft,
             handle,
             phase: _,
             disposal: _,
@@ -261,6 +318,10 @@ impl PreviewCustody {
             #[cfg(test)]
                 probe: _,
         } = self;
+        l.vec(draft)?;
+        for clip in draft {
+            l.vec(&clip.samples)?;
+        }
         let owner = clips.as_ref().or_else(|| {
             preview
                 .as_ref()
@@ -268,13 +329,46 @@ impl PreviewCustody {
                 .map(|MidiArrangementPreview { clips }| clips)
         });
         if let Some(owner) = owner {
-            l.shared(
-                owner.arc(),
-                owner.parts(),
-                Owner::exclusive(owner),
-                *handle,
-                None,
-            )?;
+            // Re-visiting this actual physical field is not another owning
+            // alias. Keep shared()'s standalone duplicate-root refusal intact.
+            if !l.skip_observed_shared_field(owner) {
+                l.shared(
+                    owner.arc(),
+                    owner.parts(),
+                    Owner::exclusive(owner),
+                    *handle,
+                    None,
+                )?;
+            }
+            for super::MidiClipPreview {
+                clip_id,
+                frame_start,
+                frame_end,
+                authored_note_count,
+                occurrence_count,
+                samples,
+            } in owner.iter()
+            {
+                // Copy is part of the closed scalar-ID leaf contract: an
+                // owning/non-Copy replacement must force this audit to change.
+                require_copy(clip_id);
+                let _: (&hex_project::ClipId, &u64, &u64, &usize, &usize) = (
+                    clip_id,
+                    frame_start,
+                    frame_end,
+                    authored_note_count,
+                    occurrence_count,
+                );
+                for super::MidiPreviewSample {
+                    frame_start,
+                    frame_gate_end,
+                    pitch,
+                } in samples
+                {
+                    let _: (&u64, &u64, &u8) = (frame_start, frame_gate_end, pitch);
+                }
+                l.vec(samples)?;
+            }
         }
         Ok(())
     }
@@ -289,10 +383,12 @@ mod tests {
         let project = hex_project::Project::new(48_000).unwrap();
         assert!(MidiArrangementPreview::default().clips.parts().is_none());
         assert!(
-            MidiArrangementPreview::from_sorted_clips(Vec::new())
-                .clips
-                .parts()
-                .is_none()
+            MidiArrangementPreview {
+                clips: OwnedShared::from_owned_vec(Vec::new())
+            }
+            .clips
+            .parts()
+            .is_none()
         );
         if !crate::pcm_arc::native_layout_known() {
             assert_eq!(
@@ -327,3 +423,6 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod nonempty_tests;

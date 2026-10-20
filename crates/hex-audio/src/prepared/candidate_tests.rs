@@ -185,7 +185,7 @@ pub(crate) fn anchored() -> (
     NativeRetirement,
 ) {
     let (mut control, callback) = channel(48_000).unwrap();
-    let (data, errors, terminals) = reserve_native(callback, Arc::clone(&control.status));
+    let (data, errors, terminals) = reserve_native(callback, &control.status).unwrap();
     let retirement = NativeRetirement::new(terminals, control.native_candidate_root());
     control.enable_native_custody().unwrap();
     (control, data, errors, retirement)
@@ -634,4 +634,41 @@ fn constructor_domain_opt_in_requires_vacancy_and_preserves_legacy_refusal_owner
     drop(data);
     drop(errors);
     finish(&mut retirement);
+}
+
+#[cfg(feature = "allocation-probe")]
+#[test]
+fn registered_native_worker_refuses_actual_queued_preview_before_carrier_birth() {
+    let _serial = serial();
+    let reservation = crate::AudioCandidatePublicationReservation {
+        runtime_slots: 3,
+        archive_slots: 3,
+        member_rows: 1024,
+        transfer_rows: 1024,
+        receipt_rows: 3,
+        data_rows: 4096,
+        handle_rows: 2048,
+        max_retained_data_bytes: 64 * 1024 * 1024,
+        max_construction_peak_data_bytes: 64 * 1024 * 1024,
+    };
+    let (mut control, callback) =
+        channel_with_factory_reservation(48000, None, Some(reservation)).unwrap();
+    let request = control.sample_preview.request().unwrap();
+    control
+        .sample_preview
+        .publish(
+            request,
+            hex_engine::Audio::new(48000, vec![[0.5; 2]; 16]).unwrap(),
+        )
+        .unwrap();
+    let mut result = None;
+    let measured = allocation_counter::measure(|| {
+        result = Some(crate::native_callback_owner::reserve_native_worker(
+            control, callback, None,
+        ));
+    });
+    assert!(result.unwrap().is_err());
+    // Inputs are consumed and may be destroyed on refusal. This proves no NEW
+    // carrier allocation, not zero frees or publication/native admission.
+    assert_eq!(measured.count_total, 0);
 }

@@ -199,7 +199,7 @@ pub(super) fn try_prepare_mutable(
     PreparedRevision::prepare_with_instrument_registry(
         project,
         &BTreeMap::new(),
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
         &registry,
     )

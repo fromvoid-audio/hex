@@ -11,14 +11,17 @@ use hex_audio::{
 use hex_engine::AudioSourceContext;
 use hex_session::{
     AudioSourceBinding, DocumentAudioMode,
-    service::{CanonicalAudioSourceSnapshot, Service, WorkerAudioSink},
+    service::{Service, SharedCanonicalAudioSource, WorkerAudioSink},
 };
 use hex_ui::{EditorAudio, EditorAudioEvent, EditorBackend, EditorPublicationState};
+#[cfg(all(test, feature = "allocation-probe"))]
+use std::sync::Arc;
 use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering::Acquire},
+    atomic::Ordering::Acquire,
     mpsc::{self, SyncSender, TrySendError},
 };
+
+mod main_control_file;
 
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests;
@@ -34,7 +37,7 @@ struct Domain {
     retiring: bool,
 }
 impl Domain {
-    fn request_retirement(&mut self, control: &mut hex_audio::prepared::PublicationControl) {
+    fn request_retirement(&mut self, control: &mut hex_audio::prepared::WorkerPublication<'_>) {
         // Local cleanup intent survives Root's transition into Cleaning or
         // Complete (including verification failure before our first request).
         // Only exact report recovery removes this adapter record.
@@ -49,7 +52,7 @@ struct Submitted {
 }
 struct Preparation {
     token: AudioCandidatePreparationToken,
-    snapshot: Arc<CanonicalAudioSourceSnapshot>,
+    snapshot: SharedCanonicalAudioSource,
     catalog: u64,
     domain: Option<AudioCandidateDomainToken>,
     bound: bool,
@@ -61,7 +64,7 @@ pub(super) struct NativeAudioSink {
     events: SyncSender<EditorAudioEvent>,
     pending_open_event: Option<EditorAudioEvent>,
     pending_observation: Option<EditorAudioEvent>,
-    desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
+    desired: Option<SharedCanonicalAudioSource>,
     output: Option<WorkerPreparedOutput>,
     output_generation: Option<u64>,
     output_identity: Option<u64>,
@@ -151,7 +154,16 @@ impl NativeAudioSink {
             return;
         }
         if self.opening.is_none() {
-            match hex_audio::request_worker_open(self.requested_rate) {
+            let reservation = match self.policy.as_ref() {
+                Ok(policy) => policy.publication,
+                Err(error) => {
+                    self.open_error = Some(error.clone());
+                    self.open_pending = false;
+                    return;
+                }
+            };
+            match hex_audio::request_worker_open_with_reservation(self.requested_rate, reservation)
+            {
                 Ok(opening) => self.opening = Some(opening),
                 Err(
                     hex_audio::RecoveryOpenError::Busy | hex_audio::RecoveryOpenError::QueueFull,
@@ -211,7 +223,7 @@ impl NativeAudioSink {
                 .map_err(Clone::clone)
                 .and_then(|policy| {
                     policy.configure(
-                        output
+                        &mut output
                             .publication
                             .control()
                             .ok_or("audio publication endpoint is closed")?,
@@ -288,7 +300,7 @@ impl NativeAudioSink {
             self.relinquish_output();
         }
     }
-    fn maintain_returns(&mut self, control: &mut hex_audio::prepared::PublicationControl) {
+    fn maintain_returns(&mut self, control: &mut hex_audio::prepared::WorkerPublication<'_>) {
         control.reclaim();
         for submitted in &mut self.submitted {
             if submitted
@@ -307,11 +319,11 @@ impl NativeAudioSink {
         }
     }
     fn drive_verified(&mut self, output: &mut WorkerPreparedOutput) {
-        let Some(control) = output.publication.control() else {
+        let Some(mut control) = output.publication.control() else {
             return;
         };
-        self.maintain_returns(control);
-        let Some(snapshot) = self.desired.as_ref().map(Arc::clone) else {
+        self.maintain_returns(&mut control);
+        let Some(snapshot) = self.desired.clone() else {
             return;
         };
         let context = snapshot.context();
@@ -325,7 +337,9 @@ impl NativeAudioSink {
             );
             return;
         }
-        if control.status.device_fault.load(Acquire) || control.status.render_fault.load(Acquire) {
+        if control.status().device_fault.load(Acquire)
+            || control.status().render_fault.load(Acquire)
+        {
             self.observe(
                 context,
                 "fault",
@@ -355,7 +369,7 @@ impl NativeAudioSink {
                         .flatten()
                         .find(|d| d.token == token && !d.ready)
                     {
-                        domain.request_retirement(control);
+                        domain.request_retirement(&mut control);
                     }
                 }
             }
@@ -433,7 +447,7 @@ impl NativeAudioSink {
             };
             let existing =
                 self.domains.iter().flatten().find(|d| {
-                    d.ready && !d.retiring && d.sources.covers(&snapshot, d.token, control)
+                    d.ready && !d.retiring && d.sources.covers(&snapshot, d.token, &control)
                 });
             let domain = existing.map(|d| d.token);
             let catalog = if let Some(d) = existing {
@@ -466,7 +480,7 @@ impl NativeAudioSink {
                 Ok(token) => {
                     self.preparation = Some(Preparation {
                         token,
-                        snapshot: Arc::clone(&snapshot),
+                        snapshot: snapshot.clone(),
                         catalog,
                         domain,
                         bound: domain.is_some(),
@@ -480,11 +494,11 @@ impl NativeAudioSink {
                 }
             }
         }
-        self.advance_preparation(control, policy);
+        self.advance_preparation(&mut control, policy);
     }
     fn advance_preparation(
         &mut self,
-        control: &mut hex_audio::prepared::PublicationControl,
+        control: &mut hex_audio::prepared::WorkerPublication<'_>,
         policy: AudioPolicy,
     ) {
         let Some(mut pending) = self.preparation.take() else {
@@ -600,7 +614,7 @@ impl NativeAudioSink {
             let record = pending
                 .domain
                 .and_then(|token| self.domains.iter().flatten().find(|d| d.token == token));
-            let prepared = control.prepare_audio_candidate_on_control(pending.token, |cell| {
+            let prepared = control.prepare_audio_candidate_on_control(pending.token, |mut cell| {
                 for (asset, source) in pending.snapshot.required_sources() {
                     match source {
                         AudioSourceBinding::Resident(audio) => {
@@ -621,7 +635,7 @@ impl NativeAudioSink {
                 }
                 pending
                     .snapshot
-                    .prepare_candidate_on_control(pending.catalog, cell)
+                    .prepare_candidate_on_control(pending.catalog, &mut cell)
             });
             match prepared {
                 Ok(hex_audio::AudioCandidatePreparationProgress::Ready) => pending.built = true,
@@ -675,7 +689,7 @@ impl NativeAudioSink {
     }
     fn fail_preparation(
         &mut self,
-        control: &mut hex_audio::prepared::PublicationControl,
+        control: &mut hex_audio::prepared::WorkerPublication<'_>,
         mut pending: Preparation,
         error: String,
     ) {
@@ -698,10 +712,10 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
-    fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
+    fn initialize(&mut self, shutdown: &dyn hex_engine::CancellationQuery) -> Result<u32, String> {
         self.request_open(None, None);
         loop {
-            if shutdown.load(Acquire) {
+            if shutdown.is_cancelled() {
                 self.close();
                 return Err("audio startup cancelled".into());
             }
@@ -715,7 +729,7 @@ impl WorkerAudioSink for NativeAudioSink {
             std::thread::sleep(std::time::Duration::from_millis(5));
         }
     }
-    fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+    fn canonical_changed(&mut self, source: SharedCanonicalAudioSource) {
         let previous = self
             .desired
             .as_ref()
@@ -766,7 +780,7 @@ impl WorkerAudioSink for NativeAudioSink {
                     .is_some_and(|s| s.audio_mode() == DocumentAudioMode::VerifiedStreaming)
                 {
                     self.drive_verified(&mut output);
-                } else if let Some(control) = output.publication.control() {
+                } else if let Some(mut control) = output.publication.control() {
                     control.reclaim();
                     control.poll_resident_publication();
                 }
@@ -785,11 +799,16 @@ pub(super) fn backend() -> Result<EditorBackend, String> {
     let source_reservation = AudioPolicy::source_reservation();
     let (events, audio_events) = mpsc::sync_channel(4);
     let recovery = hex_session::service::untitled_recovery_path()?;
-    let service = Service::with_audio_sink(
+    crate::snapshot_transport::configure_native_table_on_control()
+        .map_err(|error| format!("native worker storage unavailable: {error:?}"))?;
+    let (_, control) = crate::snapshot_transport::worker_from_existing_table_on_control()
+        .map_err(|error| format!("native worker binding unavailable: {error:?}"))?;
+    let service = Service::with_audio_sink_and_worker_control(
         32,
         MAX_RESIDENT_FRAMES,
         Some(recovery),
         Box::new(NativeAudioSink::new(events)),
+        control,
     )
     .map_err(|e| e.to_string())?;
     Ok(EditorBackend {

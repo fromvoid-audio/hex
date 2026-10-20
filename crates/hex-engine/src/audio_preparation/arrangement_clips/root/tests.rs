@@ -97,6 +97,9 @@ fn actual_resident_and_streamed_root_matches_legacy_pcm_and_preserves_context_ha
                 (
                     *id,
                     match &source.kind {
+                        SourceKind::ResidentMono(_) => {
+                            panic!("stereo clip fixture contains a resource-only mono source")
+                        }
                         SourceKind::Resident(audio) => {
                             crate::compile::PreparedAudioSource::Resident(audio.clone())
                         }

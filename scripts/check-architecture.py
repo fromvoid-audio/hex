@@ -5,6 +5,8 @@ from pathlib import Path
 import subprocess
 import sys
 
+from sampler_host_policy import repository_violations
+
 ROOT = Path(__file__).resolve().parent.parent
 ALLOWED = {
     'hex-mts': {'hex-tuning'},
@@ -52,8 +54,9 @@ DEV_ALLOWED = {
 BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},
-              # Source and controlled scanner identities never enter DSP.
-              'sha2': {'hex-media', 'hex-plugin-scan', 'hex-clap-scan'},
+              # Source/scanner identities and bounded control-side hashes of
+              # the engine's actual retained PCM bank; never callback DSP.
+              'sha2': {'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan'},
               # Child disposition belongs only to the standalone scanners.
               'signal-hook': {'hex-plugin-scan', 'hex-clap-scan'},
               # Safe publication and standalone child ownership only.
@@ -66,7 +69,7 @@ BUILD_BOUNDARIES = {'coremidi': {'hex-midi'}, 'sha2': {'hex-stream'}}
 metadata = json.loads(subprocess.check_output(
     ['cargo', 'metadata', '--format-version', '1', '--no-deps'], cwd=ROOT))
 packages = {p['name']: p for p in metadata['packages'] if p['id'] in metadata['workspace_members']}
-errors = []
+errors = repository_violations(ROOT)
 for name, package in packages.items():
     if name not in ALLOWED:
         errors.append(f'{name}: register a purpose and dependency policy before adding this crate')
@@ -80,8 +83,11 @@ for name, package in packages.items():
         target = dep['name']
         if target == 'rustix' and 'process' in dep.get('features', []) and name not in {'hex-plugin-scan', 'hex-clap-scan'}:
             errors.append(f'{name}: rustix process APIs belong only to the scanner supervisor')
-        if target == 'allocation-counter' and (name not in {'hex-audio', 'hex-stream', 'hex-desktop'} or dep['kind'] != 'dev'):
-            errors.append(f'{name}: allocation-counter is allowed only for audio/stream/desktop dev probes')
+        if target == 'allocation-counter':
+            engine_probe = name == 'hex-engine' and dep['kind'] == 'dev' and dep['req'] == '=0.8.1'
+            existing_probe = name in {'hex-audio', 'hex-stream', 'hex-desktop'} and dep['kind'] == 'dev'
+            if not (engine_probe or existing_probe):
+                errors.append(f'{name}: allocation-counter requires an allowed dev probe (engine pinned to =0.8.1)')
         allowed = ALLOWED[name]
         if dep['kind'] == 'dev':
             allowed = allowed | DEV_ALLOWED.get(name, set())

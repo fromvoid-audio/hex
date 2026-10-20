@@ -162,6 +162,42 @@ fn grow_overlap<T>(values: &Vec<T>, needed: usize) -> Result<usize, AudioStorage
     }
 }
 impl SessionStructureConstruction {
+    pub(crate) fn compiler_construction_bytes(
+        project: &Project,
+    ) -> Result<usize, AudioStorageError> {
+        fn rows<T>(n: usize) -> Result<usize, AudioStorageError> {
+            std::alloc::Layout::array::<T>(n).map_err(|_| AudioStorageError::Overflow)?;
+            n.checked_mul(mem::size_of::<T>())
+                .ok_or(AudioStorageError::Overflow)
+        }
+        let mut total = 0usize;
+        for bytes in [
+            rows::<SceneRow>(project.scenes().len())?,
+            rows::<TrackRow>(project.tracks().len())?,
+            rows::<CellRow>(project.session_cells().len())?,
+            rows::<(TrackId, usize)>(project.tracks().len())?,
+            rows::<usize>(project.session_cells().len())?,
+            rows::<SceneRange>(project.scenes().len())?,
+        ] {
+            total = total
+                .checked_add(bytes)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        for name in project
+            .scenes()
+            .iter()
+            .map(|s| s.name())
+            .chain(project.tracks().iter().map(|t| t.name()))
+        {
+            if !name_valid(name) {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
+            total = total
+                .checked_add(name.len())
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        Ok(total)
+    }
     /// Control-only exclusive-allocation inventory. A visitor error leaves
     /// partial observations: callers must discard the entire sink on Err.
     /// References are anchored to this live immutable borrow, never retained as

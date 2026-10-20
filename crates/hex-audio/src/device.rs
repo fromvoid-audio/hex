@@ -1,17 +1,12 @@
 //! Device adapter for the canonical compiled playback handoff.
-use crate::spectrum_worker::{
-    SpectrumReader, SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker,
-};
+use crate::spectrum_worker::SpectrumReader;
 use crate::{lifecycle, prepared};
 use cpal::{
     FromSample, Sample, SizedSample,
     traits::{DeviceTrait, HostTrait},
 };
 use hex_engine::Frame;
-use std::{
-    sync::{Arc, atomic::Ordering::Relaxed},
-    time::Instant,
-};
+use std::{sync::atomic::Ordering::Relaxed, time::Instant};
 
 pub struct PreparedOutput {
     _stream: lifecycle::StreamOwner,
@@ -33,7 +28,7 @@ impl PreparedOutput {
         expected_sample_rate: Option<u32>,
         lease: lifecycle::Lease,
     ) -> Result<Self, String> {
-        open_prepared(expected_sample_rate, lease, false)?.into_legacy()
+        open_prepared(expected_sample_rate, lease, false, None)?.into_legacy()
     }
 }
 /// Worker-owned native output. Only take_client() may deliver its UI endpoint;
@@ -55,7 +50,7 @@ impl WorkerPreparedOutput {
         expected_sample_rate: Option<u32>,
         lease: lifecycle::Lease,
     ) -> Result<Self, String> {
-        open_prepared(expected_sample_rate, lease, true)?.into_worker()
+        open_prepared(expected_sample_rate, lease, true, None)?.into_worker()
     }
     pub fn take_client(&mut self) -> Option<prepared::Client> {
         let mut client = self.client.take()?;
@@ -101,103 +96,306 @@ pub(crate) fn open_prepared(
     expected_sample_rate: Option<u32>,
     lease: lifecycle::Lease,
     worker: bool,
+    factory_reservation: Option<crate::AudioCandidatePublicationReservation>,
 ) -> Result<Opened, String> {
+    let negotiated = negotiate_default_output(expected_sample_rate)?;
+    complete_prepared_open(negotiated, lease, worker, factory_reservation)
+}
+
+// Native backend configuration is RESOURCE, not a fabricated prepared channel.
+// In particular negotiation never creates a Root/Reaper/empty callback owner.
+struct NegotiatedOutput {
+    device: cpal::Device,
+    config: cpal::StreamConfig,
+    sample_format: cpal::SampleFormat,
+}
+fn negotiate_default_output(expected_sample_rate: Option<u32>) -> Result<NegotiatedOutput, String> {
     let device = cpal::default_host()
         .default_output_device()
         .ok_or("no default audio output device")?;
     let supported = device.default_output_config().map_err(|e| e.to_string())?;
     let config = supported.config();
     validate_expected_rate(expected_sample_rate, config.sample_rate)?;
-    if config.channels == 0 {
+    let sample_format = supported.sample_format();
+    validate_output_configuration(config.channels, sample_format)?;
+    Ok(NegotiatedOutput {
+        device,
+        config,
+        sample_format,
+    })
+}
+
+fn validate_output_configuration(
+    channels: u16,
+    sample_format: cpal::SampleFormat,
+) -> Result<(), String> {
+    if channels == 0 {
         return Err("output device has no channels".into());
     }
-    let sample_format = supported.sample_format();
     if !matches!(
         sample_format,
         cpal::SampleFormat::F32 | cpal::SampleFormat::I16 | cpal::SampleFormat::U16
     ) {
         return Err(format!("unsupported output format: {sample_format:?}"));
     }
+    Ok(())
+}
 
-    let (capture, mut spectrum, spectrum_reaper, spectrum_error) =
-        if (8_000..=192_000).contains(&config.sample_rate) {
-            let initial = SpectrumStamp {
-                target: SpectrumTargetId(0),
-                generation: 0,
-                sample_rate_hz: config.sample_rate,
-                applied_revision: 0,
-            };
-            let spawned = if worker {
-                crate::spectrum_worker::spawn_native_spectrum_worker(initial)
-            } else {
-                spawn_spectrum_worker(initial)
-            };
-            match spawned {
-                Ok((capture, reader, reaper)) => (Some(capture), Some(reader), Some(reaper), None),
-                Err(error) => (None, None, None, Some(error.to_string())),
+// Move-only stage of the existing open operation, never a second custodian.
+// Guards/endpoints drop before the same retirement parent on rejected handoff.
+pub(crate) struct PreparedBackend {
+    // The actual negotiated backend selection travels with this DATA stage.
+    // Only the resource-negotiating constructor installs it; a sample-rate
+    // scalar cannot recreate or qualify a device selection.
+    negotiated: Option<NegotiatedOutput>,
+    data_guard:
+        crate::native_callback_owner::Guard<crate::native_callback_owner::NativeCallbackOwner>,
+    error_guard:
+        crate::native_callback_owner::Guard<crate::native_callback_owner::ErrorCallbackOwner>,
+    legacy: Option<prepared::Control>,
+    publication: Option<prepared::WorkerControl>,
+    client: Option<prepared::Client>,
+    spectrum: Option<SpectrumReader>,
+    spectrum_error: Option<String>,
+    sample_rate: u32,
+    stream_owner: lifecycle::StreamOwner,
+}
+#[derive(Debug)]
+pub(crate) enum PreparedDataError {
+    Constructor(hex_engine::Invalid),
+    Association,
+    Endpoint(String),
+}
+impl PreparedBackend {
+    pub(crate) fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+    // Kind/consistency check on the actual private constructor fields, not a
+    // caller's worker flag or an admission/retirement certificate. The later
+    // complete host/lineage/guard traversal remains mandatory.
+    pub(crate) fn has_worker_endpoints(&self) -> bool {
+        let Self {
+            negotiated: _,
+            data_guard,
+            error_guard,
+            legacy,
+            publication,
+            client,
+            spectrum,
+            spectrum_error: _,
+            sample_rate: _,
+            stream_owner: _,
+        } = self;
+        let Some(publication) = publication
+            .as_ref()
+            .and_then(prepared::WorkerControl::owner_ref)
+        else {
+            return false;
+        };
+        let Some(client) = client
+            .as_ref()
+            .filter(|client| client.owner_ref().is_some())
+        else {
+            return false;
+        };
+        legacy.is_none()
+            && spectrum.is_none()
+            && data_guard.owner_ref().is_some()
+            && error_guard.owner_ref().is_some()
+            && publication.output_identity().is_some()
+            && publication.output_identity() == client.output_identity()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_output_identity(&self) -> u64 {
+        self.client
+            .as_ref()
+            .and_then(prepared::Client::output_identity)
+            .or_else(|| {
+                self.legacy
+                    .as_ref()
+                    .and_then(|control| control.output_identity())
+            })
+            .unwrap()
+    }
+}
+impl std::fmt::Display for PreparedDataError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Constructor(error) => std::fmt::Display::fmt(error, formatter),
+            Self::Association => {
+                formatter.write_str("native carrier constructor association refused")
             }
-        } else {
-            (
-                None,
-                None,
-                None,
-                Some(format!(
-                    "spectrum analysis unavailable at {} hz; supported range is 8000..=192000 hz",
-                    config.sample_rate
-                )),
-            )
-        };
-    let channel_result = match capture {
-        Some(capture) => prepared::channel_with_spectrum(config.sample_rate, Some(capture)),
-        None => prepared::channel(config.sample_rate),
-    };
-    let (control, callback) = match channel_result {
-        Ok(channel) => channel,
-        Err(error) => {
-            // Even pre-channel failure transfers the actual worker/lease to
-            // persistent lifecycle custody; no consuming join loses a panic.
-            drop(lifecycle::StreamOwner::failed_preparation_custody(
-                lease,
-                spectrum_reaper,
-            ));
-            return Err(error.to_string());
+            Self::Endpoint(error) => formatter.write_str(error),
         }
+    }
+}
+
+// Includes the ACTUAL inline parent exactly once. Descendants remain separately
+// priced by the Root/channel/analyzer constructor and mandatory host inventory.
+pub(crate) fn prepared_open_stage_body_bytes() -> usize {
+    std::mem::size_of::<PreparedBackend>()
+}
+pub(crate) fn prepared_open_stage_scratch_bytes() -> Option<usize> {
+    std::mem::size_of::<PreparedBackend>()
+        .checked_add(std::mem::size_of::<NegotiatedOutput>())?
+        .checked_add(std::mem::size_of::<Box<PreparedBackend>>())
+}
+
+fn complete_prepared_open(
+    negotiated: NegotiatedOutput,
+    lease: lifecycle::Lease,
+    worker: bool,
+    factory_reservation: Option<crate::AudioCandidatePublicationReservation>,
+) -> Result<Opened, String> {
+    let mut prepared = prepare_backend_data(
+        lease,
+        negotiated.config.sample_rate,
+        worker,
+        factory_reservation,
+    )
+    .map_err(|error| error.to_string())?;
+    prepared.negotiated = Some(negotiated);
+    finish_prepared_backend(prepared)
+}
+
+pub(crate) fn prepare_backend_data(
+    lease: lifecycle::Lease,
+    sample_rate: u32,
+    worker: bool,
+    factory_reservation: Option<crate::AudioCandidatePublicationReservation>,
+) -> Result<Box<PreparedBackend>, PreparedDataError> {
+    let channel = lifecycle::StreamOwner::construct_prepared_channel_on_control(
+        lease,
+        sample_rate,
+        worker,
+        factory_reservation,
+    )
+    .map_err(PreparedDataError::Constructor)?;
+    install_backend_carriers(channel, sample_rate, worker)
+}
+
+// Same actual carrier constructor for the ordinary analyzer-bearing operation
+// and a headless channel whose parent genuinely never requested an analyzer.
+fn install_backend_carriers(
+    channel: lifecycle::ConstructedChannel,
+    sample_rate: u32,
+    worker: bool,
+) -> Result<Box<PreparedBackend>, PreparedDataError> {
+    let (mut stream_owner, control, callback, mut spectrum, spectrum_error) = channel;
+    let spectrum_error = spectrum_error.map(|error| error.to_string());
+    let endpoints = if worker {
+        crate::native_callback_owner::reserve_native_worker(control, callback, spectrum.take()).map(
+            |(data, errors, terminals, client, publication)| {
+                (
+                    data,
+                    errors,
+                    terminals,
+                    None,
+                    Some(publication),
+                    Some(client),
+                )
+            },
+        )
+    } else {
+        crate::native_callback_owner::reserve_native(callback, &control.status)
+            .map(|(data, errors, terminals)| (data, errors, terminals, Some(control), None, None))
     };
-    let root = control.native_candidate_root();
     let (data_guard, error_guard, terminals, mut legacy_control, mut worker_control, client) =
-        if worker {
-            let (data, errors, terminals, client, publication) =
-                crate::native_callback_owner::reserve_native_worker(
-                    control,
-                    callback,
-                    spectrum.take(),
-                );
-            (
-                data,
-                errors,
-                terminals,
-                None,
-                Some(publication),
-                Some(client),
-            )
-        } else {
-            let (data, errors, terminals) =
-                crate::native_callback_owner::reserve_native(callback, Arc::clone(&control.status));
-            (data, errors, terminals, Some(control), None, None)
+        match endpoints {
+            Ok(endpoints) => endpoints,
+            Err(error) => {
+                // reserve_native(_worker) returned after normally dropping
+                // its rejected channel inputs. Retain the actual existing
+                // Root/Reaper/lease parent; never invent a failure custodian.
+                let _aborted = stream_owner.abort_before_carriers();
+                return Err(PreparedDataError::Constructor(error));
+            }
         };
-    let native = crate::native_callback_owner::NativeRetirement::new(terminals, root);
-    // Anchor both terminal receivers and lease BEFORE CPAL can start or
-    // retain a callback, including failed construction with no Stream handle.
-    let mut stream_owner = lifecycle::StreamOwner::prepared_custody(lease, spectrum_reaper, native);
+    let mut terminals = Some(terminals);
+    if stream_owner
+        .install_constructed_native_carriers_on_control(&mut terminals)
+        .is_err()
+    {
+        // The intended empty destination consumes and retains the actual
+        // terminals BEFORE association validation. A duplicate refusal leaves
+        // its incoming owner in this explicit local destination.
+        return Err(PreparedDataError::Association);
+    }
     if let Some(control) = legacy_control.as_mut() {
-        control.enable_native_custody()?;
+        control
+            .enable_native_custody()
+            .map_err(PreparedDataError::Endpoint)?;
     }
     if let Some(worker) = worker_control.as_mut() {
         worker
             .control()
-            .ok_or("worker publication endpoint unavailable")?
-            .enable_native_custody()?;
+            .ok_or(PreparedDataError::Association)?
+            .enable_native_custody()
+            .map_err(PreparedDataError::Endpoint)?;
     }
+    // The actual stage body is priced by preflight_native_worker_birth BEFORE
+    // the Root/channel/analyzer births above. Box has no hidden header; its
+    // inline pointer and overlapping construction body belong to peak scratch.
+    // This allocation does not create another retirement custodian.
+    Ok(Box::new(PreparedBackend {
+        negotiated: None,
+        data_guard,
+        error_guard,
+        legacy: legacy_control,
+        publication: worker_control,
+        client,
+        spectrum,
+        spectrum_error,
+        sample_rate,
+        stream_owner,
+    }))
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+pub(crate) fn prepare_headless_legacy_test_stage(
+    lease: lifecycle::Lease,
+    sample_rate: u32,
+    reservation: crate::AudioCandidatePublicationReservation,
+) -> Result<Box<PreparedBackend>, PreparedDataError> {
+    crate::prepared::preflight_native_worker_birth(false, Some(reservation))
+        .map_err(PreparedDataError::Constructor)?;
+    let (control, callback) =
+        prepared::channel_with_factory_reservation(sample_rate, None, Some(reservation))
+            .map_err(PreparedDataError::Constructor)?;
+    let parent =
+        lifecycle::StreamOwner::begin_prepared_custody(lease, control.native_candidate_root());
+    // No analyzer constructor was called; parent's real phase is NotRequested.
+    // In particular no legacy analyzer receipt is cleared or reclassified.
+    install_backend_carriers((parent, control, callback, None, None), sample_rate, false)
+}
+
+pub(crate) fn finish_prepared_backend(
+    mut prepared: Box<PreparedBackend>,
+) -> Result<Opened, String> {
+    let negotiated = prepared
+        .negotiated
+        .take()
+        .ok_or("prepared output has no negotiated backend resource")?;
+    // A negotiated rate is correlation, never a saved native admission.
+    // Refusal drops this SAME parent/carrier payload, not a reconstructed Root.
+    validate_expected_rate(Some(prepared.sample_rate), negotiated.config.sample_rate)?;
+    let NegotiatedOutput {
+        device,
+        config,
+        sample_format,
+    } = negotiated;
+    let PreparedBackend {
+        negotiated: _,
+        data_guard,
+        error_guard,
+        legacy: legacy_control,
+        publication: worker_control,
+        client,
+        spectrum,
+        spectrum_error,
+        sample_rate: _,
+        mut stream_owner,
+    } = *prepared;
     stream_owner.expose_backend();
     let stream = if sample_format == cpal::SampleFormat::F32 {
         build::<f32>(&device, &config, data_guard, error_guard)
@@ -400,7 +598,7 @@ pub(crate) fn headless_worker_output(
     let (control, callback) = prepared::channel(rate).map_err(|e| e.to_string())?;
     let root = control.native_candidate_root();
     let (data, errors, terminals, client, mut publication) =
-        crate::native_callback_owner::reserve_native_worker(control, callback, None);
+        crate::native_callback_owner::reserve_native_worker(control, callback, None).unwrap();
     let native = crate::native_callback_owner::NativeRetirement::new(terminals, root);
     let mut stream = lifecycle::StreamOwner::prepared_custody(lease, None, native);
     stream.expose_headless_backend();
@@ -421,13 +619,188 @@ pub(crate) fn headless_worker_output(
     ))
 }
 
+#[cfg(feature = "allocation-probe")]
+pub(crate) fn headless_reserved_worker_output(
+    rate: u32,
+    reservation: crate::AudioCandidatePublicationReservation,
+) -> Result<(WorkerPreparedOutput, crate::worker_fixture::HeadlessBackend), String> {
+    // Same factory and same lifecycle parent; actual constructor NotRequested
+    // means no analyzer thread or captured buffer cohort exists in this fixture.
+    crate::prepared::preflight_native_worker_birth(false, Some(reservation))
+        .map_err(|error| error.to_string())?;
+    let lease = lifecycle::Lease::acquire()?;
+    let (control, callback) =
+        prepared::channel_with_factory_reservation(rate, None, Some(reservation))
+            .map_err(|error| error.to_string())?;
+    let parent =
+        lifecycle::StreamOwner::begin_prepared_custody(lease, control.native_candidate_root());
+    let prepared = install_backend_carriers((parent, control, callback, None, None), rate, true)
+        .map_err(|error| error.to_string())?;
+    let PreparedBackend {
+        negotiated,
+        data_guard,
+        error_guard,
+        legacy,
+        publication,
+        client,
+        spectrum,
+        spectrum_error,
+        sample_rate,
+        mut stream_owner,
+    } = *prepared;
+    if negotiated.is_some() || legacy.is_some() || spectrum.is_some() {
+        return Err("headless constructor fields differ".into());
+    }
+    stream_owner.expose_headless_backend();
+    Ok((
+        WorkerPreparedOutput {
+            _stream: stream_owner,
+            publication: publication.ok_or("worker endpoint unavailable")?,
+            client,
+            sample_rate,
+            label: "headless reserved constructor fixture".into(),
+            spectrum_error,
+        },
+        crate::worker_fixture::HeadlessBackend::new(data_guard, error_guard),
+    ))
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{copy_host_chunk, finish_host_chunk, mono_mean, validate_expected_rate};
+    use super::{
+        copy_host_chunk, finish_host_chunk, mono_mean, validate_expected_rate,
+        validate_output_configuration,
+    };
+    #[test]
+    fn actual_prepared_parent_and_carrier_stage_is_send_without_sync_widening() {
+        fn require_send<T: Send>() {}
+        // This resolves only while the ACTUAL stage is not Sync. If a later
+        // change widens it, both marker implementations apply and compilation
+        // fails; no unsafe/negative impl or runtime owner getter is involved.
+        trait AmbiguousIfSync<Marker> {
+            fn check() {}
+        }
+        impl<T: ?Sized> AmbiguousIfSync<()> for T {}
+        impl<T: ?Sized + Sync> AmbiguousIfSync<u8> for T {}
+        let _ = <super::PreparedBackend as AmbiguousIfSync<_>>::check;
+        require_send::<super::PreparedBackend>();
+        require_send::<super::Opened>();
+        require_send::<crate::lifecycle::StreamOwner>();
+        assert!(
+            super::prepared_open_stage_body_bytes()
+                >= std::mem::size_of::<crate::lifecycle::StreamOwner>()
+        );
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn prepared_data_stage_both_minus_one_refuse_without_allocating_an_error() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let (retained, peak) = crate::prepared::native_worker_birth_bound(true).unwrap();
+        for (retained, peak) in [(retained - 1, peak), (retained, peak - 1)] {
+            let limits = crate::AudioCandidatePublicationReservation {
+                runtime_slots: 3,
+                archive_slots: 3,
+                member_rows: 128,
+                transfer_rows: 128,
+                receipt_rows: 3,
+                data_rows: 256,
+                handle_rows: 256,
+                max_retained_data_bytes: retained,
+                max_construction_peak_data_bytes: peak,
+            };
+            let lease = crate::lifecycle::Lease::acquire().unwrap();
+            let mut result = None;
+            let measured = allocation_counter::measure(|| {
+                result = Some(super::prepare_backend_data(
+                    lease,
+                    48000,
+                    true,
+                    Some(limits),
+                ));
+            });
+            assert!(matches!(
+                result,
+                Some(Err(super::PreparedDataError::Constructor(_)))
+            ));
+            assert_eq!(measured.count_total, 0);
+            assert_eq!(measured.bytes_total, 0);
+            assert_eq!(measured.count_current, 0);
+            assert_eq!(measured.bytes_current, 0);
+        }
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn prepared_backend_full_handoff_returns_same_parent_and_retires_without_backend() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let (retained, peak) = crate::prepared::native_worker_birth_bound(true).unwrap();
+        let limits = crate::AudioCandidatePublicationReservation {
+            runtime_slots: 3,
+            archive_slots: 3,
+            member_rows: 128,
+            transfer_rows: 128,
+            receipt_rows: 3,
+            data_rows: 256,
+            handle_rows: 256,
+            max_retained_data_bytes: retained,
+            max_construction_peak_data_bytes: peak,
+        };
+        let prepared = super::prepare_backend_data(
+            crate::lifecycle::Lease::acquire().unwrap(),
+            48000,
+            true,
+            Some(limits),
+        )
+        .unwrap();
+        let identity = prepared.client.as_ref().unwrap().output_identity().unwrap();
+        // This stage has its REAL Root/Reaper and both carriers; no backend
+        // request or supplied receipt is involved. A full handoff must return
+        // that exact payload, never rebuild a parent or silently discard it.
+        let (sender, _receiver) = std::sync::mpsc::sync_channel(0);
+        let refused = match sender.try_send(prepared) {
+            Err(std::sync::mpsc::TrySendError::Full(prepared)) => prepared,
+            _ => panic!("zero-capacity handoff must retain the prepared payload"),
+        };
+        assert_eq!(
+            refused.client.as_ref().unwrap().output_identity(),
+            Some(identity)
+        );
+        assert_eq!(refused.sample_rate, 48000);
+        assert!(refused.publication.is_some());
+        assert!(refused.legacy.is_none());
+        drop(refused);
+        // The same leased parent must complete its actual analyzer join and
+        // terminal cleanup before another lease can be obtained. No scalar
+        // caller retirement receipt can release OCCUPIED.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if let Ok(next) = crate::lifecycle::Lease::acquire() {
+                drop(next);
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "original parent did not retire"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(1));
+        }
+    }
+    #[test]
+    fn negotiated_configuration_refuses_before_prepared_channel_construction() {
+        assert!(validate_output_configuration(0, cpal::SampleFormat::F32).is_err());
+        assert!(validate_output_configuration(2, cpal::SampleFormat::F64).is_err());
+        for format in [
+            cpal::SampleFormat::F32,
+            cpal::SampleFormat::I16,
+            cpal::SampleFormat::U16,
+        ] {
+            assert!(validate_output_configuration(1, format).is_ok());
+            assert!(validate_output_configuration(2, format).is_ok());
+        }
+    }
     use crate::gain_recording::{AbortReason, Receipt, Target};
     use crate::prepared;
     use cpal::{FromSample, SizedSample};
-    use hex_engine::{Audio, PlaybackCommand, PreparedRevision, SineTable, playback::Playback};
+    use hex_engine::{Audio, PlaybackCommand, PreparedRevision, playback::Playback};
     use std::{
         collections::BTreeMap,
         sync::{Arc, atomic::Ordering::Acquire},
@@ -592,7 +965,7 @@ mod tests {
             PreparedRevision::prepare_for_gain_recording(
                 editor.project(),
                 &BTreeMap::from([(asset, Audio::new(48_000, vec![[0.25, -0.5]; 4096]).unwrap())]),
-                Arc::new(SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
                 track,
             )

@@ -59,7 +59,7 @@ fn project_with_gates(
 
 fn render(project: &Project, frame_count: usize) -> Vec<[f32; 2]> {
     let mut playback =
-        SessionPlayback::new(revision(project, Arc::new(hex_devices::SineTable::new())))
+        SessionPlayback::new(revision(project, crate::SharedSineTable::new_on_control()))
             .expect("prepared playback");
     playback.apply(SessionPlaybackCommand::Play).expect("play");
     let mut frames = vec![[0.0; 2]; frame_count];
@@ -139,8 +139,8 @@ fn gate_processes_ordered_track_and_return_routes_and_bypass_is_transparent() {
 #[test]
 fn live_parameter_revision_keeps_track_and_return_gate_ramp_history() {
     let original = project_with_gates(-72.0, -72.0, false, false);
-    let table = Arc::new(hex_devices::SineTable::new());
-    let original_revision = revision(&original, Arc::clone(&table));
+    let table = crate::SharedSineTable::new_on_control();
+    let original_revision = revision(&original, table.clone());
     let mut playback = SessionPlayback::new(Arc::clone(&original_revision)).expect("playback");
     playback.apply(SessionPlaybackCommand::Play).expect("play");
     let mut reference = SessionPlayback::new(Arc::clone(&original_revision)).expect("reference");
@@ -184,7 +184,7 @@ fn live_parameter_revision_keeps_track_and_return_gate_ramp_history() {
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::clone(&table),
+            table.clone(),
             Some(original_revision.session()),
         )
         .expect("prepare edited revision"),
@@ -203,8 +203,7 @@ fn live_parameter_revision_keeps_track_and_return_gate_ramp_history() {
     let mut after = [[0.0; 2]; 64];
     changed.render(&mut after).expect("edited frames");
     let dry_project = project(1.0, 0, 8 << 32);
-    let mut dry_playback =
-        SessionPlayback::new(revision(&dry_project, Arc::clone(&table))).unwrap();
+    let mut dry_playback = SessionPlayback::new(revision(&dry_project, table.clone())).unwrap();
     dry_playback.apply(SessionPlaybackCommand::Play).unwrap();
     let mut dry_all = [[0.0; 2]; 88];
     dry_playback.render(&mut dry_all).unwrap();

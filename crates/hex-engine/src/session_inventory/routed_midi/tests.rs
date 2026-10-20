@@ -92,9 +92,9 @@ fn routed_session_templates_use_destination_instruments_and_keep_source_occurren
             })
             .unwrap();
     }
-    let table = Arc::new(SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let reference =
-        PreparedSessionInventory::prepare(editor.project(), Arc::clone(&table), None).unwrap();
+        PreparedSessionInventory::prepare(editor.project(), table.clone(), None).unwrap();
     let expected = pcm(&reference, reference.midi_clip(source_clip).unwrap());
     assert!(expected.iter().any(|frame| frame[0] != 0.0));
     editor
@@ -113,7 +113,7 @@ fn routed_session_templates_use_destination_instruments_and_keep_source_occurren
         })
         .unwrap();
     let prepared =
-        PreparedSessionInventory::prepare(editor.project(), Arc::clone(&table), None).unwrap();
+        PreparedSessionInventory::prepare(editor.project(), table.clone(), None).unwrap();
     // Canonical inventory retains the hidden local clip for the Session UI.
     assert_eq!(prepared.midi_clips().len(), 2);
     assert_eq!(prepared.midi_clip(hidden_local).unwrap().track, a);
@@ -167,7 +167,7 @@ fn routed_session_templates_use_destination_instruments_and_keep_source_occurren
         );
     }
     let reused =
-        PreparedSessionInventory::prepare(editor.project(), Arc::clone(&table), Some(&prepared))
+        PreparedSessionInventory::prepare(editor.project(), table.clone(), Some(&prepared))
             .unwrap();
     assert!(std::ptr::eq(
         prepared
@@ -258,7 +258,11 @@ fn routed_session_fanout_admits_exact_weighted_note_limit_before_reserving_templ
     root.source.notes.push(extra);
     let over_limit = Project::from_snapshot(snapshot).unwrap();
     assert!(matches!(
-        PreparedSessionInventory::prepare(&over_limit, Arc::new(SineTable::new()), None),
+        PreparedSessionInventory::prepare(
+            &over_limit,
+            crate::SharedSineTable::new_on_control(),
+            None
+        ),
         Err(crate::Invalid("routed Session MIDI note key limit reached"))
     ));
 }

@@ -405,3 +405,775 @@ fn actual_return_nested_spares_growth_reservations_and_clone_conservation() {
         "hex preparation evidence: arrangement_returns_capacity; supported-controls=completed; staging-clones={clones}"
     );
 }
+
+#[test]
+fn paired_return_utility_children_preserve_pcm_aliases_moves_and_pending_disposal() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    if !supported("paired_return_utility_children") {
+        return;
+    }
+    eprintln!("SUPPORTED actual paired Return Utility children lifecycle and legacy PCM");
+    for filtered in [false, true] {
+        for bypassed in [false, true] {
+            let (project, bank) = utility_return_fixture(filtered, bypassed);
+            assert_eq!(
+                crate::audio_preparation::validate_constructor_project(&project),
+                Err(AudioStorageError::UnsupportedGraph)
+            );
+            let mut media = std::collections::BTreeMap::new();
+            for (id, source) in &bank.sources {
+                let SourceKind::Resident(audio) = &source.kind else {
+                    panic!("resident");
+                };
+                media.insert(*id, audio.clone());
+            }
+            let reference = crate::compile::project(&project, &media).unwrap();
+            let mut assembly = ReturnAssembly::default();
+            assembly.reserve(&project).unwrap();
+            assembly.construct().unwrap();
+            let bus = assembly.rows[0].bus.as_ref().unwrap();
+            let expected = &reference.return_buses[0];
+            assert_eq!(
+                (bus.id, bus.gain, bus.muted),
+                (expected.id, expected.gain, expected.muted)
+            );
+            assert_eq!(bus.device_chain.len(), 1);
+            assert_eq!(
+                bus.device_chain[0].owner,
+                hex_lattice::ProcessorChainOwner::Return(bus.id.value())
+            );
+            assert_eq!(bus.device_chain[0].definition.is_some(), filtered);
+            assert_eq!(bus.device_chain[0].bypassed, bypassed);
+            let chain_pointer = bus.device_chain.as_ptr();
+            let state_pointer = Arc::as_ptr(bus.device_chain[0].configuration.as_ref().unwrap());
+            let meter_pointer = Arc::as_ptr(&bus.device_chain[0].meter);
+            let mut actual_runtime = crate::EffectRuntimeChain::new_prepared(
+                crate::effect_resources::clone_prepared_on_control(&bus.device_chain).unwrap(),
+            )
+            .unwrap();
+            let mut expected_runtime = crate::EffectRuntimeChain::new_prepared(
+                crate::effect_resources::clone_prepared_on_control(&expected.device_chain).unwrap(),
+            )
+            .unwrap();
+            let input = std::array::from_fn::<_, 257, _>(|i| {
+                [if i == 0 { 1.0 } else { 0.125 }, -(i as f32) / 512.0]
+            });
+            let mut actual = input;
+            let mut expected_pcm = input;
+            actual_runtime.begin_block();
+            expected_runtime.begin_block();
+            actual_runtime.process_block(&mut actual[..63]);
+            actual_runtime.process_block(&mut actual[63..]);
+            expected_runtime.process_block(&mut expected_pcm);
+            actual_runtime.commit_block();
+            expected_runtime.commit_block();
+            assert_eq!(actual, expected_pcm);
+            drop((actual_runtime, expected_runtime, reference, media));
+            let budget = AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 256,
+                root_rows: 32,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            };
+            let collect = |r: &ReturnAssembly,
+                           roots: &Vec<ReturnBus>,
+                           feed: Option<&crate::return_feed_plan::ReturnFeedPlan>,
+                           limits| {
+                let mut ledger = AudioRootStorageLedger::try_new_on_control(limits)?;
+                ledger.root(r, AudioStorageRole::Current)?;
+                ledger.vec(roots)?;
+                ledger.mutate(|ledger| r.visit_audio_storage(ledger, roots, feed))?;
+                let report = ledger.summary()?;
+                report.require_known_storage().unwrap();
+                ledger.validate_selected_shared_handles_on_control()?;
+                // Selected constructor/alias closure does not open the full
+                // retirement/publication gate.
+                assert_eq!(
+                    report.require_complete(),
+                    Err(crate::AudioStorageIncomplete::RetirementReceiptUnknown)
+                );
+                if report.unresolved_handles != 0 {
+                    // Raw visitors are called once inside a ledger transaction.
+                    // A duplicate physical handle visit refuses and invalidates
+                    // every partial total; it cannot add a synthetic owner or
+                    // turn repeated growth scratch into a publishable report.
+                    assert_eq!(
+                        ledger.mutate(|ledger| r.visit_audio_storage(ledger, roots, feed)),
+                        Err(AudioStorageError::SourceMismatch)
+                    );
+                    assert_eq!(ledger.summary(), Err(AudioStorageError::UnknownStorage));
+                }
+                Ok::<_, AudioStorageError>(report)
+            };
+            let mut roots = Vec::new();
+            let report = collect(&assembly, &roots, None, budget).unwrap();
+            let mut exact = budget;
+            exact.max_retained_bytes = report.retained_bytes;
+            exact.max_construction_peak_bytes = report.construction_peak_bytes;
+            assert_eq!(collect(&assembly, &roots, None, exact).unwrap(), report);
+            exact.max_retained_bytes -= 1;
+            assert_eq!(
+                collect(&assembly, &roots, None, exact),
+                Err(AudioStorageError::ReservationExceeded)
+            );
+            // A real extra outer owner is independently required even though
+            // its payload/config/processor allocations are the same bodies.
+            let exported = Arc::clone(&assembly.rows[0].bus.as_ref().unwrap().device_chain);
+            assert!(collect(&assembly, &roots, None, budget).is_err());
+            drop(exported);
+            roots.try_reserve_exact(1).unwrap();
+            let mut feed = crate::return_feed_plan::ReturnFeedPlan::default();
+            assembly.preflight_root_move().unwrap();
+            assembly.move_root_row(0, &mut roots);
+            assembly.move_root_feed(&mut feed);
+            assert_eq!(roots[0].device_chain.as_ptr(), chain_pointer);
+            collect(&assembly, &roots, Some(&feed), budget).unwrap();
+            assembly.preflight_root_restore(&roots, true).unwrap();
+            assembly.restore_root(&mut roots, &mut feed, true);
+            let bus = assembly.rows[0].bus.as_ref().unwrap();
+            assert_eq!(bus.device_chain.as_ptr(), chain_pointer);
+            assert_eq!(
+                Arc::as_ptr(bus.device_chain[0].configuration.as_ref().unwrap()),
+                state_pointer
+            );
+            assert_eq!(Arc::as_ptr(&bus.device_chain[0].meter), meter_pointer);
+            while assembly.has_next() {
+                assembly.dispose_next().unwrap();
+                collect(&assembly, &roots, None, budget).unwrap();
+            }
+            assembly.clear_disposed().unwrap();
+            assert!(assembly.rows[0].bus.is_none());
+            assert_eq!(assembly.rows[0].utility.handles(), 0);
+            // Same actual nonempty constructor, injected final control failure:
+            // parent catches once, pending tombstone forbids observe/retry.
+            let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+            custody.arrangement_clips.returns.reserve(&project).unwrap();
+            custody.arrangement_clips.returns.construct().unwrap();
+            custody.arrangement_clips.phase = Phase::Installed;
+            custody.arrangement_clips.returns.probe = Some(DropProbe(Some(Box::new(|| {
+                panic!("paired Return control disposal probe")
+            }))));
+            assert!(!custody.dispose_arrangement_clips_on_control());
+            assert_eq!(custody.phase, AudioPreparationPhase::FailedIncomplete);
+            assert!(custody.first_panic.is_some());
+            let failed = &mut custody.arrangement_clips.returns;
+            assert_eq!(failed.rows[0].disposal, Disposal::Pending);
+            assert_eq!(
+                failed.dispose_next(),
+                Err(AudioStorageError::UnknownStorage)
+            );
+            assert!(matches!(
+                collect(failed, &roots, None, budget),
+                Err(AudioStorageError::UnknownStorage)
+            ));
+        }
+    }
+}
+
+fn utility_return_fixture(
+    filtered: bool,
+    bypassed: bool,
+) -> (hex_project::Project, OwnedAudioInputs) {
+    use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    let (project, bank, _) = fixture(1, false);
+    let mut snapshot = project.snapshot();
+    let definition = &hex_devices::utility::UTILITY_DEFINITION;
+    let state = definition
+        .patch_parameter(
+            &definition.default_state().unwrap(),
+            hex_devices::utility::parameter::DC_REMOVE,
+            ParameterValue::Bool(filtered),
+        )
+        .unwrap()
+        .with_input_gain_millidb(-6000)
+        .unwrap()
+        .with_output_gain_millidb(3000)
+        .unwrap();
+    snapshot.return_tracks[0]
+        .devices
+        .push(hex_project::DeviceSnapshot {
+                comparison: None,
+            id: snapshot.next_id,
+            bypassed,
+            state,
+        });
+    snapshot.next_id += 1;
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    (project, bank)
+}
+
+#[test]
+fn paired_return_utility_constructor_frontiers_keep_original_children_before_cleanup() {
+    if !supported("paired_return_utility_frontiers") {
+        return;
+    }
+    eprintln!("SUPPORTED actual nonempty paired Return constructor error/panic frontiers");
+    for panic in [false, true] {
+        let (project, _bank) = utility_return_fixture(true, false);
+        let mut assembly = ReturnAssembly::default();
+        assembly.reserve(&project).unwrap();
+        let original = assembly.rows[0].chain.as_ref().unwrap().as_ptr();
+        if panic {
+            assembly.panic_after = Some(0);
+        } else {
+            assembly.fail_after = Some(0);
+        }
+        let result =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| assembly.construct()));
+        if panic {
+            assert!(result.is_err());
+        } else {
+            assert_eq!(result.unwrap(), Err(AudioStorageError::Allocation));
+        }
+        let bus = assembly.rows[0].bus.as_ref().unwrap();
+        assert_eq!(bus.device_chain.as_ptr(), original);
+        assert!(
+            assembly.rows[0]
+                .declaration
+                .as_ref()
+                .unwrap()
+                .parts(&bus.device_chain)
+                .is_some()
+        );
+        assert!(assembly.rows[0].chain.is_none());
+        assert!(assembly.rows[0].bare.is_none());
+        assert!(assembly.reserve(&project).is_err());
+        assert_eq!(assembly.construct(), Err(AudioStorageError::SourceMismatch));
+        let limits = crate::AudioStorageLedgerReservation {
+            data_rows: 128,
+            handle_rows: 128,
+            root_rows: 16,
+            max_retained_bytes: 1_000_000,
+            max_construction_peak_bytes: 1_000_000,
+        };
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(limits).unwrap();
+        ledger
+            .root(&assembly, crate::AudioStorageRole::FailedConstruction)
+            .unwrap();
+        ledger
+            .mutate(|ledger| assembly.visit_audio_storage(ledger, &[], None))
+            .unwrap();
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        assert!(ledger.summary().unwrap().require_complete().is_err());
+        drop(ledger);
+        if !panic {
+            while assembly.has_next() {
+                assembly.dispose_next().unwrap();
+            }
+            assembly.clear_disposed().unwrap();
+        }
+        // The panic case is a selected raw constructor fixture, not an actual
+        // parent recovery permit. Keep its owner alive through all assertions;
+        // the production caller must retain panic/FailedIncomplete and charges.
+    }
+}
+
+#[test]
+fn compiler_source_rows_correlate_actual_return_owners_without_rebinding_births() {
+    use crate::compile::PreparedAudioSourceRef;
+    if !supported("compiler_source_rows_return_owners") {
+        return;
+    }
+    for filtered in [false, true] {
+        for bypassed in [false, true] {
+            eprintln!(
+                "SUPPORTED compiler_source_rows_return_owners filtered={filtered} bypassed={bypassed}"
+            );
+            let (project, bank) = utility_return_fixture(filtered, bypassed);
+            // Existing production native-ingress guard stays closed. Stage the
+            // original Track owners through its supported empty-Return class;
+            // then use the already-audited private Return constructor itself.
+            assert_eq!(
+                crate::audio_preparation::validate_constructor_project(&project),
+                Err(AudioStorageError::UnsupportedGraph)
+            );
+            let mut base = project.snapshot();
+            for bus in &mut base.return_tracks {
+                bus.devices.clear();
+            }
+            let base = hex_project::Project::from_snapshot(base).unwrap();
+            let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+            let _token = custody
+                .begin_input_on_control(
+                    AudioArrangementInput::new(&base, 11, bank).with_audio_track_inventory(),
+                )
+                .ok()
+                .unwrap();
+            custody.arrangement_clips.returns.reserve(&project).unwrap();
+            custody.arrangement_clips.returns.construct().unwrap();
+            let old = custody.arrangement_clips.returns.rows[0]
+                .bus
+                .as_ref()
+                .unwrap();
+            let declaration_pointer = std::ptr::from_ref(
+                custody.arrangement_clips.returns.rows[0]
+                    .declaration
+                    .as_ref()
+                    .unwrap(),
+            );
+            let chain_pointer = Arc::as_ptr(&old.device_chain);
+            let config_pointer = Arc::as_ptr(old.device_chain[0].configuration.as_ref().unwrap());
+            let effects = hex_devices::native_registry().unwrap();
+            let instruments = hex_devices::native_instrument_registry().unwrap();
+            let transforms = crate::audio_transform::AudioTransformPreparation::default();
+            let mut contexts = None;
+            let mut destination = None;
+            let bank = custody.bank.as_ref().unwrap();
+            transforms
+                .compile_transaction(|| {
+                    crate::compile::compile_project_into(
+                        &project,
+                        |asset, _| {
+                            let (_, source) = bank
+                                .sources
+                                .iter()
+                                .find(|(id, _)| *id == asset.id())
+                                .unwrap();
+                            let SourceKind::Resident(audio) = &source.kind else {
+                                unreachable!()
+                            };
+                            Ok(PreparedAudioSourceRef::Resident(audio))
+                        },
+                        None,
+                        &effects,
+                        &instruments,
+                        &mut contexts,
+                        &transforms,
+                        &mut destination,
+                        Some((&mut custody.arrangement_clips, bank)),
+                    )
+                })
+                .unwrap();
+            let output = &destination.as_ref().unwrap().return_buses[0];
+            let row = &custody.arrangement_clips.returns.rows[0];
+            let old = row.bus.as_ref().unwrap();
+            assert!(row.compiler_observed);
+            assert!(std::ptr::eq(Arc::as_ptr(&old.device_chain), chain_pointer));
+            assert_eq!(
+                Arc::as_ptr(old.device_chain[0].configuration.as_ref().unwrap()),
+                config_pointer
+            );
+            assert_eq!(
+                output.device_chain[0].owner,
+                hex_lattice::ProcessorChainOwner::Return(output.id.value())
+            );
+            assert_eq!(
+                output.device_chain[0].device_id,
+                project.return_tracks()[0].devices()[0].id().value()
+            );
+            assert_eq!(output.device_chain[0].bypassed, bypassed);
+            assert_eq!(output.device_chain[0].definition.is_some(), filtered);
+            assert!(!Arc::ptr_eq(&old.device_chain, &output.device_chain));
+            let birth = row.declaration.as_ref().unwrap();
+            assert!(birth.parts(&old.device_chain).is_some());
+            assert_eq!(std::ptr::from_ref(birth), declaration_pointer);
+            // A declaration prices the layout; its pairing is the sealed move
+            // route, not an address checker. Never apply this old declaration
+            // to the distinct legacy output or adopt that output into the row.
+            let unknown =
+                crate::owned_shared::OwnedShared::untracked(Arc::clone(&output.device_chain));
+            assert!(unknown.parts().is_none());
+            drop(unknown);
+            assert!(!custody.arrangement_clips.can_transfer_revision());
+            // A same-number Track tag is the wrong physical processor owner.
+            let mut wrong_chain =
+                crate::effect_resources::clone_prepared_on_control(&output.device_chain).unwrap();
+            wrong_chain[0].instance.owner =
+                hex_lattice::ProcessorChainOwner::Track(output.id.value());
+            let wrong = ReturnBus::from_compiled_fields(
+                output.id,
+                output.gain,
+                output.muted,
+                output.matrix,
+                Arc::from(wrong_chain),
+            );
+            let mut independent = ReturnAssembly::default();
+            independent.reserve(&project).unwrap();
+            independent.construct().unwrap();
+            assert_eq!(
+                independent.compiler_observe(
+                    0,
+                    &project.return_tracks()[0],
+                    &wrong,
+                    project.sample_rate()
+                ),
+                Err(AudioStorageError::SourceMismatch)
+            );
+            assert!(!independent.rows[0].compiler_observed);
+            independent
+                .compiler_observe(
+                    0,
+                    &project.return_tracks()[0],
+                    output,
+                    project.sample_rate(),
+                )
+                .unwrap();
+            assert!(!Arc::ptr_eq(
+                &independent.rows[0].bus.as_ref().unwrap().device_chain,
+                &output.device_chain
+            ));
+            assert!(
+                independent.rows[0]
+                    .declaration
+                    .as_ref()
+                    .unwrap()
+                    .parts(&independent.rows[0].bus.as_ref().unwrap().device_chain)
+                    .is_some()
+            );
+            // No original source or paired child moved into the legacy output.
+            let SourceKind::Resident(original) = &custody.bank.as_ref().unwrap().sources[0].1.kind
+            else {
+                unreachable!()
+            };
+            assert!(
+                original.shares_pcm_with(
+                    destination.as_ref().unwrap().tracks[0].clips[0]
+                        .audio
+                        .as_ref()
+                        .unwrap()
+                )
+            );
+        }
+    }
+}
+
+#[test]
+fn selected_return_children_enter_common_compiler_once_and_restore_actual_births() {
+    if !supported("selected_return_children_common_compiler") {
+        return;
+    }
+    let collect = |rows: &ReturnAssembly, roots: &Vec<ReturnBus>| {
+        let mut ledger = crate::AudioRootStorageLedger::try_new_on_control(
+            crate::AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 256,
+                root_rows: 32,
+                max_retained_bytes: 1_000_000,
+                max_construction_peak_bytes: 1_000_000,
+            },
+        )
+        .unwrap();
+        ledger.root(rows, crate::AudioStorageRole::Current).unwrap();
+        ledger.vec(roots).unwrap();
+        ledger
+            .mutate(|ledger| rows.visit_audio_storage(ledger, roots, None))
+            .unwrap();
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .unwrap();
+        let report = ledger.summary().unwrap();
+        report.require_known_storage().unwrap();
+        assert_eq!(
+            report.require_complete(),
+            Err(crate::AudioStorageIncomplete::RetirementReceiptUnknown)
+        );
+        report
+    };
+    for filtered in [false, true] {
+        for bypassed in [false, true] {
+            for fault in 0..4 {
+                eprintln!(
+                    "SUPPORTED selected_return_children filtered={filtered} bypassed={bypassed} fault={fault}"
+                );
+                let (project, bank) = utility_return_fixture(filtered, bypassed);
+                let snapshot = project.snapshot();
+                let mut rows = ArrangementClips::default();
+                rows.returns.reserve(&project).unwrap();
+                rows.returns.construct().unwrap();
+                let bus = rows.returns.rows[0].bus.as_ref().unwrap();
+                let chain_pointer = Arc::as_ptr(&bus.device_chain);
+                let state_pointer =
+                    Arc::as_ptr(bus.device_chain[0].configuration.as_ref().unwrap());
+                let meter_pointer = Arc::as_ptr(&bus.device_chain[0].meter);
+                let declaration_pointer =
+                    std::ptr::from_ref(rows.returns.rows[0].declaration.as_ref().unwrap());
+                rows.returns.fail_after = (fault == 2).then_some(0);
+                rows.returns.panic_after = (fault == 3).then_some(0);
+                let before = collect(&rows.returns, &Vec::new());
+                let effects = hex_devices::native_registry().unwrap();
+                let instruments = hex_devices::native_instrument_registry().unwrap();
+                let transforms = crate::audio_transform::AudioTransformPreparation::default();
+                let mut contexts = None;
+                let mut destination = None;
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    transforms.compile_transaction(|| {
+                        crate::compile::compile_project_into_with_children(
+                            &project,
+                            |asset, _| {
+                                if fault == 1 {
+                                    return Err(crate::Invalid("selected Return source refusal"));
+                                }
+                                let (_, source) = bank
+                                    .sources
+                                    .iter()
+                                    .find(|(id, _)| *id == asset.id())
+                                    .unwrap();
+                                let SourceKind::Resident(audio) = &source.kind else {
+                                    unreachable!()
+                                };
+                                Ok(crate::compile::PreparedAudioSourceRef::Resident(audio))
+                            },
+                            None,
+                            &effects,
+                            &instruments,
+                            &mut contexts,
+                            &transforms,
+                            &mut destination,
+                            None,
+                            Some(&mut rows),
+                            None,
+                        )
+                    })
+                }));
+                match fault {
+                    0 => assert!(result.unwrap().is_ok()),
+                    1 => assert!(matches!(
+                        result.unwrap(),
+                        Err(crate::Invalid("selected Return source refusal"))
+                    )),
+                    2 => assert!(matches!(
+                        result.unwrap(),
+                        Err(crate::Invalid(
+                            "compiler paired Return destination is unavailable"
+                        ))
+                    )),
+                    3 => assert!(result.is_err()),
+                    _ => unreachable!(),
+                }
+                let compiled = destination.as_mut().unwrap();
+                assert_eq!(compiled.return_buses.len(), usize::from(fault != 1));
+                if fault != 1 {
+                    let bus = &compiled.return_buses[0];
+                    assert_eq!(Arc::as_ptr(&bus.device_chain), chain_pointer);
+                    assert_eq!(
+                        Arc::as_ptr(bus.device_chain[0].configuration.as_ref().unwrap()),
+                        state_pointer
+                    );
+                    assert_eq!(Arc::as_ptr(&bus.device_chain[0].meter), meter_pointer);
+                    assert_eq!(Arc::strong_count(&bus.device_chain), 1);
+                    assert_eq!(
+                        std::ptr::from_ref(rows.returns.rows[0].declaration.as_ref().unwrap()),
+                        declaration_pointer
+                    );
+                    assert!(rows.returns.rows[0].bus.is_none());
+                    assert_eq!(rows.returns.rows[0].root_index, Some(0));
+                    let moved = collect(&rows.returns, &compiled.return_buses);
+                    assert_eq!(
+                        moved.retained_bytes,
+                        before.retained_bytes
+                            + compiled.return_buses.capacity() * std::mem::size_of::<ReturnBus>()
+                    );
+                    assert_eq!(
+                        rows.returns.dispose_next(),
+                        Err(AudioStorageError::UnknownStorage)
+                    );
+                    if fault == 0 {
+                        let media = bank
+                            .sources
+                            .iter()
+                            .map(|(id, source)| {
+                                let SourceKind::Resident(audio) = &source.kind else {
+                                    unreachable!()
+                                };
+                                (*id, audio.clone())
+                            })
+                            .collect::<std::collections::BTreeMap<_, _>>();
+                        let legacy = crate::compile::project(&project, &media).unwrap();
+                        let actual_bus = &compiled.return_buses[0];
+                        let expected_bus = &legacy.return_buses[0];
+                        let mut actual_runtime = crate::EffectRuntimeChain::new_prepared(
+                            crate::effect_resources::clone_prepared_on_control(
+                                &actual_bus.device_chain,
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                        let mut expected_runtime = crate::EffectRuntimeChain::new_prepared(
+                            crate::effect_resources::clone_prepared_on_control(
+                                &expected_bus.device_chain,
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                        let mut actual = std::array::from_fn::<_, 257, _>(|i| {
+                            [if i == 0 { 1.0 } else { 0.125 }, -(i as f32) / 512.0]
+                        });
+                        let mut expected = actual;
+                        actual_runtime.begin_block();
+                        expected_runtime.begin_block();
+                        actual_runtime.process_block(&mut actual[..63]);
+                        actual_runtime.process_block(&mut actual[63..]);
+                        expected_runtime.process_block(&mut expected);
+                        actual_runtime.commit_block();
+                        expected_runtime.commit_block();
+                        assert_eq!(actual, expected);
+                    }
+                    rows.returns
+                        .preflight_root_restore(&compiled.return_buses, false)
+                        .unwrap();
+                    rows.returns.restore_root(
+                        &mut compiled.return_buses,
+                        &mut compiled.return_feed_plan,
+                        false,
+                    );
+                }
+                let restored_report = collect(&rows.returns, &compiled.return_buses);
+                assert_eq!(
+                    restored_report.retained_bytes,
+                    before.retained_bytes
+                        + compiled.return_buses.capacity() * std::mem::size_of::<ReturnBus>()
+                );
+                let restored = rows.returns.rows[0].bus.as_ref().unwrap();
+                assert_eq!(Arc::as_ptr(&restored.device_chain), chain_pointer);
+                assert_eq!(
+                    Arc::as_ptr(restored.device_chain[0].configuration.as_ref().unwrap()),
+                    state_pointer
+                );
+                assert_eq!(Arc::as_ptr(&restored.device_chain[0].meter), meter_pointer);
+                assert_eq!(Arc::strong_count(&restored.device_chain), 1);
+                while rows.returns.has_next() {
+                    rows.returns.dispose_next().unwrap();
+                }
+                rows.returns.clear_disposed().unwrap();
+                assert_eq!(project.snapshot(), snapshot);
+            }
+        }
+    }
+}
+
+#[test]
+fn selected_return_children_empty_dag_and_preflight_refusals_preserve_inputs() {
+    if !supported("selected_return_children_empty_preflight") {
+        return;
+    }
+    for mismatched in [false, true] {
+        eprintln!("SUPPORTED selected_return_children_empty_preflight mismatched={mismatched}");
+        let (project, bank, _) = fixture(3, true);
+        let mut rows = ArrangementClips::default();
+        rows.returns.reserve(&project).unwrap();
+        rows.returns.construct().unwrap();
+        let pointers = rows.returns.rows[..3]
+            .iter()
+            .map(|row| Arc::as_ptr(&row.bus.as_ref().unwrap().device_chain))
+            .collect::<Vec<_>>();
+        let mut changed = project.snapshot();
+        if mismatched {
+            changed.return_tracks[1].gain = 0.5;
+        }
+        let candidate = hex_project::Project::from_snapshot(changed).unwrap();
+        let effects = hex_devices::native_registry().unwrap();
+        let instruments = hex_devices::native_instrument_registry().unwrap();
+        let transforms = crate::audio_transform::AudioTransformPreparation::default();
+        let mut contexts = Some(crate::owned_shared::OwnedShared::new_owned(
+            crate::shared_analytic::SharedAnalyticContextTable::default(),
+        ));
+        let context_pointer = Arc::as_ptr(contexts.as_ref().unwrap().arc());
+        let mut destination = None;
+        let mut lookups = 0;
+        let result = transforms.compile_transaction(|| {
+            crate::compile::compile_project_into_with_children(
+                &candidate,
+                |asset, _| {
+                    lookups += 1;
+                    assert!(!mismatched, "mismatch must refuse before lookup");
+                    let (_, source) = bank
+                        .sources
+                        .iter()
+                        .find(|(id, _)| *id == asset.id())
+                        .unwrap();
+                    let SourceKind::Resident(audio) = &source.kind else {
+                        unreachable!()
+                    };
+                    Ok(crate::compile::PreparedAudioSourceRef::Resident(audio))
+                },
+                None,
+                &effects,
+                &instruments,
+                &mut contexts,
+                &transforms,
+                &mut destination,
+                None,
+                Some(&mut rows),
+                None,
+            )
+        });
+        if mismatched {
+            assert!(matches!(
+                result,
+                Err(crate::Invalid(
+                    "compiler paired Return children are unavailable"
+                ))
+            ));
+            assert!(destination.is_none());
+            assert_eq!(lookups, 0);
+            assert_eq!(
+                Arc::as_ptr(contexts.as_ref().unwrap().arc()),
+                context_pointer
+            );
+        } else {
+            result.unwrap();
+            assert!(lookups > 0);
+            let output = destination.as_mut().unwrap();
+            assert_eq!(output.return_buses.len(), 3);
+            for (bus, pointer) in output.return_buses.iter().zip(&pointers) {
+                assert_eq!(Arc::as_ptr(&bus.device_chain), *pointer);
+                assert_eq!(Arc::strong_count(&bus.device_chain), 1);
+                assert!(bus.device_chain.is_empty());
+            }
+            let expected = crate::return_feed_plan::ReturnFeedPlan::prepare(&project).unwrap();
+            assert_eq!(output.return_feed_plan.order(), expected.order());
+            assert_eq!(
+                output.return_feed_plan.test_edges().collect::<Vec<_>>(),
+                expected.test_edges().collect::<Vec<_>>()
+            );
+            // Existing ownership indices make an un-restored selection refuse
+            // before taking another context or consulting another resolver.
+            let mut second = None;
+            let mut input = Some(crate::owned_shared::OwnedShared::new_owned(
+                crate::shared_analytic::SharedAnalyticContextTable::default(),
+            ));
+            let pointer = Arc::as_ptr(input.as_ref().unwrap().arc());
+            assert!(matches!(
+                crate::compile::compile_project_into_with_children(
+                    &candidate,
+                    |_, _| panic!("moved rows cannot be selected twice"),
+                    None,
+                    &effects,
+                    &instruments,
+                    &mut input,
+                    &transforms,
+                    &mut second,
+                    None,
+                    Some(&mut rows),
+                    None,
+                ),
+                Err(crate::Invalid(
+                    "compiler paired Return children are unavailable"
+                ))
+            ));
+            assert!(second.is_none());
+            assert_eq!(Arc::as_ptr(input.as_ref().unwrap().arc()), pointer);
+            rows.returns
+                .preflight_root_restore(&output.return_buses, false)
+                .unwrap();
+            rows.returns.restore_root(
+                &mut output.return_buses,
+                &mut output.return_feed_plan,
+                false,
+            );
+        }
+        for (row, pointer) in rows.returns.rows[..3].iter().zip(&pointers) {
+            assert_eq!(
+                Arc::as_ptr(&row.bus.as_ref().unwrap().device_chain),
+                *pointer
+            );
+        }
+        while rows.returns.has_next() {
+            rows.returns.dispose_next().unwrap();
+        }
+        rows.returns.clear_disposed().unwrap();
+    }
+}

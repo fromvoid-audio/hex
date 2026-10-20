@@ -141,7 +141,7 @@ fn inventory_shape(
     Ok(Arc::new(PreparedRevision::prepare(
         &project,
         &BTreeMap::new(),
-        Arc::new(hex_devices::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
     )?))
 }

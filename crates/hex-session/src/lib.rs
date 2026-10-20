@@ -1,26 +1,36 @@
 //! Control-side owner of canonical editing state and its bounded decoded media.
 pub mod gain_recording;
 
+mod shared_project;
+pub use shared_project::{SharedProject, visit_shared_project_selected_storage_on_control};
+
 use hex_engine::{Audio, Project as PlaybackProject};
+mod session_cancellation;
 use hex_media::{
     DecodedAudio, ImportError as MediaInvalid, ResampleLimits, resample,
     waveform::{self, Waveform},
 };
 use hex_project::{
     AssetId, Command, Created, Editor, Invalid as ProjectInvalid, MAX_ASSETS, Project,
+    SortedEntries,
 };
-use std::{
-    collections::{BTreeMap, HashMap},
-    error::Error,
-    fmt, mem,
-    path::PathBuf,
-    sync::Arc,
-};
+use session_cancellation::SessionCancellation;
+use std::{error::Error, fmt, mem, path::PathBuf, sync::Arc};
 
 pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
+mod device_sample;
+pub use device_sample::{DeviceSampleWaveformLimits, PreparedDeviceSample};
+mod original_audio;
+mod resource_plan;
+pub use resource_plan::{
+    OriginalSamplerResidentView, OriginalSamplerSessionLoan, ResidentPcmInventory,
+    ResidentResourcePlanReservation,
+};
 mod resident_pcm;
+pub use original_audio::DecodedOriginal;
+use original_audio::{OriginalAudio, ResidentPcm};
 mod verified_import;
 use audio_sources::MediaBank;
 pub use audio_sources::{
@@ -33,8 +43,12 @@ mod device_snapshot;
 pub mod import_batch;
 pub mod import_batch_decode;
 pub mod service;
+pub mod snapshot_exports;
 pub mod tuning_gesture;
-pub use hex_media::waveform::{Peak as CachedPeak, Waveform as CachedWaveform};
+pub use hex_media::waveform::{
+    Peak as CachedPeak, SharedWaveform, Waveform as CachedWaveform, WaveformRead,
+    read_shared as read_shared_waveform,
+};
 
 #[derive(Debug)]
 pub enum SessionError {
@@ -91,12 +105,40 @@ pub struct PreparedImport {
     source_sample_rate: u32,
     source_frames: u64,
     conversion_version: u32,
-    source_audio: Audio,
+    source_audio: OriginalAudio,
     audio: Audio,
     waveform: Waveform,
 }
 
 impl PreparedImport {
+    /// Worker-side original decode before source sharing. Native mono retains
+    /// one actual mono buffer plus the required project-rate stereo derivative.
+    /// Portable imports retain their existing explicit stereo representation.
+    pub fn decode_at_rate(
+        path: impl AsRef<std::path::Path>,
+        project_rate: u32,
+        media_limits: hex_media::Limits,
+        conversion_limits: ResampleLimits,
+        cancel: &dyn hex_engine::CancellationQuery,
+    ) -> Result<Self, SessionError> {
+        let decoded = DecodedOriginal::decode_file(path, media_limits, cancel)?;
+        let prepared = decoded.at_rate(project_rate, conversion_limits)?;
+        if cancel.is_cancelled() {
+            return Err(MediaInvalid::Cancelled.into());
+        }
+        Ok(prepared)
+    }
+
+    /// Consume actual closed source custody, without raw Arc adoption.
+    pub fn from_native_source(
+        path: PathBuf,
+        source: hex_engine::OwnedAudioSource,
+        project_rate: u32,
+        limits: ResampleLimits,
+    ) -> Result<Self, SessionError> {
+        DecodedOriginal::from_native(path, source)?.at_rate(project_rate, limits)
+    }
+
     /// Prepare an identity import away from the UI and audio callback.
     pub fn new(decoded: DecodedAudio) -> Result<Self, SessionError> {
         let rate = decoded.sample_rate();
@@ -132,7 +174,7 @@ impl PreparedImport {
             } else {
                 hex_project::SINC_CONVERSION_V1
             },
-            source_audio: decoded.into_audio(),
+            source_audio: OriginalAudio::Stereo(decoded.into_audio()),
             audio,
             waveform,
         })
@@ -144,9 +186,11 @@ impl PreparedImport {
 }
 
 struct ResidentAsset {
-    source_audio: Audio,
-    audio: Audio,
-    waveform: Arc<Waveform>,
+    source_audio: OriginalAudio,
+    // Device-only originals need no project-rate stereo derivative. Clip
+    // imports still prepare it before publication; never decode on playback.
+    audio: Option<Audio>,
+    waveform: SharedWaveform,
     frames: u64,
 }
 
@@ -160,13 +204,14 @@ struct ResidentImportAccounting {
 /// Canonical project controller plus retained, bounded decoded assets.
 pub struct Session {
     editor: Editor,
+    original_sampler_source: std::cell::RefCell<resource_plan::original_sampler::PendingSource>,
     audio_transforms: hex_engine::audio_transform::AudioTransformPreparation,
     audio_clip_waveforms:
-        std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
-    shutdown: Arc<std::sync::atomic::AtomicBool>,
-    sine_table: Arc<hex_engine::SineTable>,
-    media: HashMap<AssetId, ResidentAsset>,
-    verified_sources: BTreeMap<AssetId, VerifiedAudioFile>,
+        std::cell::RefCell<SortedEntries<hex_project::ClipId, service::AudioClipWaveform>>,
+    shutdown: SessionCancellation,
+    sine_table: hex_engine::SharedSineTable,
+    media: SortedEntries<AssetId, ResidentAsset>,
+    verified_sources: SortedEntries<AssetId, VerifiedAudioFile>,
     semantic_source_epoch: u64,
     audio_mode: DocumentAudioMode,
     source_reservation: Option<SourcePlanReservation>,
@@ -182,17 +227,43 @@ impl Session {
         history_capacity: usize,
         max_resident_frames: u64,
     ) -> Result<Self, SessionError> {
-        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        Self::new_with_cancellation(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            SessionCancellation::Unqualified(Arc::new(std::sync::atomic::AtomicBool::new(false))),
+        )
+    }
+    /// The supported worker supplies its ACTUAL prebound handle before Session
+    /// construction. This constructor is not whole-root admission or UI escape.
+    pub fn new_with_retained_cancellation_on_control(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        worker: hex_engine::RetainedControlCancellation,
+    ) -> Result<Self, SessionError> {
+        Self::new_with_cancellation(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            SessionCancellation::Retained(worker),
+        )
+    }
+    fn new_with_cancellation(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        shutdown: SessionCancellation,
+    ) -> Result<Self, SessionError> {
         Ok(Self {
-            audio_transforms: hex_engine::audio_transform::AudioTransformPreparation::new(
-                Arc::clone(&shutdown),
-            ),
-            audio_clip_waveforms: std::cell::RefCell::new(BTreeMap::new()),
+            audio_transforms: shutdown.transform(),
+            original_sampler_source: std::cell::RefCell::default(),
+            audio_clip_waveforms: std::cell::RefCell::new(SortedEntries::new()),
             shutdown,
             editor: Editor::new(Project::new(sample_rate)?, history_capacity)?,
-            sine_table: Arc::new(hex_engine::SineTable::new()),
-            media: HashMap::new(),
-            verified_sources: BTreeMap::new(),
+            sine_table: hex_engine::SharedSineTable::new_on_control(),
+            media: SortedEntries::new(),
+            verified_sources: SortedEntries::new(),
             semantic_source_epoch: 0,
             audio_mode: DocumentAudioMode::Resident,
             source_reservation: None,
@@ -232,7 +303,9 @@ impl Session {
             // needs no new buffer reservation even when remaining capacity is zero.
             let shared_identity = decoded.sample_rate() == project.sample_rate()
                 && prepared_assets.iter().any(|(_, p)| {
-                    decoded.audio().shares_pcm_with(&p.source_audio)
+                    p.source_audio
+                        .stereo()
+                        .is_some_and(|a| decoded.audio().shares_pcm_with(a))
                         || decoded.audio().shares_pcm_with(&p.audio)
                 });
             let output_limit = if shared_identity {
@@ -252,11 +325,8 @@ impl Session {
             )?;
             remaining = remaining
                 .checked_sub(
-                    prepared.additional_pcm_frames(
-                        prepared_assets
-                            .iter()
-                            .flat_map(|(_, p)| [&p.source_audio, &p.audio]),
-                    )?,
+                    prepared
+                        .additional_pcm_frames(prepared_assets.iter().flat_map(|(_, p)| p.pcm()))?,
                 )
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             prepared_assets.push((id, prepared));
@@ -282,7 +352,7 @@ impl Session {
             history_capacity,
             max_resident_frames,
             prepared_assets,
-            Arc::new(hex_engine::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
         )
     }
 
@@ -293,7 +363,7 @@ impl Session {
         history_capacity: usize,
         max_resident_frames: u64,
         prepared_assets: Vec<(AssetId, PreparedImport)>,
-        sine_table: Arc<hex_engine::SineTable>,
+        sine_table: hex_engine::SharedSineTable,
     ) -> Result<Self, SessionError> {
         device_comparison::validate_project(&project)?;
         let asset_count = project.assets().count();
@@ -303,9 +373,9 @@ impl Session {
                 "prepared media does not match project assets",
             ));
         }
-        let mut media: HashMap<AssetId, ResidentAsset> = HashMap::new();
+        let mut media: SortedEntries<AssetId, ResidentAsset> = SortedEntries::new();
         media
-            .try_reserve(asset_count)
+            .try_reserve_on_control(asset_count, MAX_ASSETS)
             .map_err(|_| SessionError::Allocation)?;
         let mut resident_frames = 0_u64;
         let mut resident_waveform_bins = 0_usize;
@@ -320,7 +390,7 @@ impl Session {
             if prepared.audio.sample_rate() != editor.project().sample_rate()
                 || frames != metadata.playback_frames()
                 || prepared.source_audio.sample_rate() != prepared.source_sample_rate
-                || u64::try_from(prepared.source_audio.frames().len()).ok()
+                || u64::try_from(prepared.source_audio.frames()).ok()
                     != Some(prepared.source_frames)
                 || prepared.source_sample_rate != metadata.source_sample_rate()
                 || prepared.source_frames != metadata.source_frames()
@@ -331,9 +401,7 @@ impl Session {
                 ));
             }
             resident_frames = resident_frames
-                .checked_add(prepared.additional_pcm_frames(
-                    media.values().flat_map(|m| [&m.source_audio, &m.audio]),
-                )?)
+                .checked_add(prepared.additional_pcm_frames(media.values().flat_map(|m| m.pcm()))?)
                 .filter(|total| *total <= max_resident_frames)
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             let audio = prepared.audio;
@@ -349,31 +417,32 @@ impl Session {
                 .checked_add(bytes)
                 .ok_or(SessionError::Invalid("waveform memory count overflow"))?;
             if media
-                .insert(
+                .try_insert_on_control(
                     asset_id,
                     ResidentAsset {
                         source_audio: prepared.source_audio,
-                        audio,
-                        waveform: Arc::new(waveform),
+                        audio: Some(audio),
+                        waveform: SharedWaveform::new_on_control(waveform),
                         frames,
                     },
-                )
+                    MAX_ASSETS,
+                )?
                 .is_some()
             {
                 return Err(SessionError::Invalid("duplicate decoded project asset"));
             }
         }
-        let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let shutdown =
+            SessionCancellation::Unqualified(Arc::new(std::sync::atomic::AtomicBool::new(false)));
         Ok(Self {
-            audio_transforms: hex_engine::audio_transform::AudioTransformPreparation::new(
-                Arc::clone(&shutdown),
-            ),
-            audio_clip_waveforms: std::cell::RefCell::new(BTreeMap::new()),
+            audio_transforms: shutdown.transform(),
+            original_sampler_source: std::cell::RefCell::default(),
+            audio_clip_waveforms: std::cell::RefCell::new(SortedEntries::new()),
             shutdown,
             editor,
             sine_table,
             media,
-            verified_sources: BTreeMap::new(),
+            verified_sources: SortedEntries::new(),
             semantic_source_epoch: 0,
             audio_mode: DocumentAudioMode::Resident,
             source_reservation: None,
@@ -384,9 +453,8 @@ impl Session {
         })
     }
 
-    fn with_shutdown(mut self, shutdown: Arc<std::sync::atomic::AtomicBool>) -> Self {
-        self.audio_transforms =
-            hex_engine::audio_transform::AudioTransformPreparation::new(Arc::clone(&shutdown));
+    fn with_shutdown(mut self, shutdown: SessionCancellation) -> Self {
+        self.audio_transforms = shutdown.transform();
         self.shutdown = shutdown;
         self
     }
@@ -395,7 +463,7 @@ impl Session {
     /// it never replaces canonical metadata or the currently accepted audio.
     pub fn audio_clip_waveforms(
         &self,
-    ) -> Result<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>, SessionError> {
+    ) -> Result<SortedEntries<hex_project::ClipId, service::AudioClipWaveform>, SessionError> {
         self.audio_clip_waveforms
             .try_borrow()
             .map(|views| views.clone())
@@ -439,8 +507,8 @@ impl Session {
         Err(SessionError::Invalid("device no longer exists"))
     }
 
-    pub fn sine_table(&self) -> Arc<hex_engine::SineTable> {
-        Arc::clone(&self.sine_table)
+    pub fn sine_table(&self) -> hex_engine::SharedSineTable {
+        self.sine_table.clone()
     }
 
     /// Unique retained PCM buffer capacity, including original-rate sources.
@@ -475,23 +543,25 @@ impl Session {
         &mut self,
         id: AssetId,
         audio: Audio,
-        source_audio: Audio,
+        source_audio: OriginalAudio,
         waveform: Waveform,
         frames: u64,
         accounting: ResidentImportAccounting,
-    ) {
-        self.media.insert(
+    ) -> Result<(), SessionError> {
+        self.media.try_insert_on_control(
             id,
             ResidentAsset {
                 source_audio,
-                audio,
-                waveform: Arc::new(waveform),
+                audio: Some(audio),
+                waveform: SharedWaveform::new_on_control(waveform),
                 frames,
             },
-        );
+            MAX_ASSETS,
+        )?;
         self.resident_frames = accounting.total_frames;
         self.resident_waveform_bins = accounting.total_waveform_bins;
         self.resident_waveform_bytes = accounting.total_waveform_bytes;
+        Ok(())
     }
 
     pub const fn resident_waveform_bins(&self) -> usize {
@@ -548,7 +618,7 @@ impl Session {
         (
             Created,
             PlaybackProject,
-            Arc<hex_engine::MidiArrangementPreview>,
+            hex_engine::SharedMidiArrangementPreview,
         ),
         SessionError,
     > {
@@ -569,7 +639,7 @@ impl Session {
         Ok((
             created,
             prepared.arrangement().as_ref().clone(),
-            Arc::clone(prepared.midi_preview()),
+            prepared.midi_preview_on_control(),
         ))
     }
 
@@ -606,14 +676,14 @@ impl Session {
                 "audio media must be committed through a prepared import",
             ));
         }
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let sine_table = self.sine_table();
         self.editor
             .execute_prepared_transition(command, |source, candidate| {
                 let prepared = prepare_with_waveforms(
                     candidate,
                     &media,
-                    Arc::clone(&sine_table),
+                    sine_table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -634,9 +704,9 @@ impl Session {
         &self,
         tuning: hex_tuning::ProjectTuning,
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let table = self.sine_table();
         let (_, prepared) = preview.execute_prepared_transition(
             Command::SetTuning(tuning),
@@ -644,7 +714,7 @@ impl Session {
                 prepare_with_waveforms(
                     candidate,
                     &media,
-                    Arc::clone(&table),
+                    table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -656,7 +726,10 @@ impl Session {
                 .map_err(SessionError::from)
             },
         )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        Ok((
+            crate::SharedProject::new_on_control(preview.project().clone()),
+            prepared,
+        ))
     }
 
     /// Prepare a typed native parameter overlay without changing canonical
@@ -667,7 +740,7 @@ impl Session {
         parameter: hex_lattice_contract::ParameterId,
         value: hex_lattice_contract::ParameterValue,
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         let class = self.native_device_class(device)?;
         let current = self
             .project()
@@ -680,7 +753,7 @@ impl Session {
             value,
         )?;
         let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let table = self.sine_table();
         let (_, prepared) = preview.execute_prepared(
             Command::ReplaceDeviceState { device, state },
@@ -688,7 +761,7 @@ impl Session {
                 prepare_with_waveforms(
                     candidate,
                     &media,
-                    Arc::clone(&table),
+                    table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -697,7 +770,10 @@ impl Session {
                 .map_err(SessionError::from)
             },
         )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        Ok((
+            crate::SharedProject::new_on_control(preview.project().clone()),
+            prepared,
+        ))
     }
 
     /// Prepare two native parameter values as one atomic project overlay.
@@ -715,7 +791,7 @@ impl Session {
             hex_lattice_contract::ParameterValue,
         ),
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         if first.0 == second.0 {
             return Err(SessionError::Invalid(
                 "device parameter pair must target two distinct parameters",
@@ -735,7 +811,7 @@ impl Session {
         let state =
             hex_engine::patch_native_device_parameter_for_class(class, &state, second.0, second.1)?;
         let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let table = self.sine_table();
         let (_, prepared) = preview.execute_prepared(
             Command::ReplaceDeviceState { device, state },
@@ -743,7 +819,7 @@ impl Session {
                 prepare_with_waveforms(
                     candidate,
                     &media,
-                    Arc::clone(&table),
+                    table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -752,7 +828,10 @@ impl Session {
                 .map_err(SessionError::from)
             },
         )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        Ok((
+            crate::SharedProject::new_on_control(preview.project().clone()),
+            prepared,
+        ))
     }
 
     /// Commit only this parameter onto the latest authored device state.
@@ -822,7 +901,7 @@ impl Session {
         track: hex_project::TrackId,
         gain: f32,
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         self.preview_mix_command(Command::Gain { track, gain }, previous)
     }
 
@@ -831,15 +910,15 @@ impl Session {
         &self,
         command: Command,
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let sine_table = self.sine_table();
         let (_, prepared) = preview.execute_prepared(command, |candidate| {
             prepare_with_waveforms(
                 candidate,
                 &media,
-                Arc::clone(&sine_table),
+                sine_table.clone(),
                 previous.map(|artifact| artifact.session().as_ref()),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
@@ -847,7 +926,10 @@ impl Session {
             .map(Arc::new)
             .map_err(SessionError::from)
         })?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        Ok((
+            crate::SharedProject::new_on_control(preview.project().clone()),
+            prepared,
+        ))
     }
 
     /// Publish the final absolute value as one ordinary canonical gain command.
@@ -866,7 +948,7 @@ impl Session {
         track: hex_project::TrackId,
         balance: f32,
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         self.preview_mix_command(Command::Balance { track, balance }, previous)
     }
 
@@ -885,7 +967,7 @@ impl Session {
         return_track: hex_project::ReturnId,
         gain: f32,
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         self.preview_mix_command(Command::ReturnGain { return_track, gain }, previous)
     }
 
@@ -907,14 +989,14 @@ impl Session {
         return_track: hex_project::ReturnId,
         gain: f32,
         previous: Option<&hex_engine::PreparedRevision>,
-    ) -> Result<(Arc<Project>, Arc<hex_engine::PreparedRevision>), SessionError> {
+    ) -> Result<(crate::SharedProject, Arc<hex_engine::PreparedRevision>), SessionError> {
         if !gain.is_finite() || !(0.0..=2.0).contains(&gain) {
             return Err(SessionError::Invalid(
                 "return send gain must be finite and between zero and two",
             ));
         }
         let mut preview = Editor::new(self.project().clone(), 1)?;
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let sine_table = self.sine_table();
         let (_, prepared) = preview.execute_prepared(
             Command::SetReturnSend {
@@ -926,7 +1008,7 @@ impl Session {
                 prepare_with_waveforms(
                     candidate,
                     &media,
-                    Arc::clone(&sine_table),
+                    sine_table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -935,7 +1017,10 @@ impl Session {
                 .map_err(SessionError::from)
             },
         )?;
-        Ok((Arc::new(preview.project().clone()), prepared))
+        Ok((
+            crate::SharedProject::new_on_control(preview.project().clone()),
+            prepared,
+        ))
     }
 
     /// Commit one return-send value onto the latest canonical project as one
@@ -979,7 +1064,7 @@ impl Session {
         (
             Created,
             PlaybackProject,
-            Arc<hex_engine::MidiArrangementPreview>,
+            hex_engine::SharedMidiArrangementPreview,
         ),
         SessionError,
     > {
@@ -987,7 +1072,7 @@ impl Session {
         Ok((
             created,
             revision.arrangement().as_ref().clone(),
-            Arc::clone(revision.midi_preview()),
+            revision.midi_preview_on_control(),
         ))
     }
 
@@ -1020,16 +1105,10 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(
-                prepared.additional_pcm_frames(
-                    self.media
-                        .values()
-                        .flat_map(|m| [&m.source_audio, &m.audio]),
-                )?,
-            )
+            .checked_add(prepared.additional_pcm_frames(self.media.values().flat_map(|m| m.pcm()))?)
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
-        if self.media.try_reserve(1).is_err() {
+        if self.media.try_reserve_on_control(1, MAX_ASSETS).is_err() {
             return Err(SessionError::Allocation);
         }
         let bins = prepared.waveform.cached_bin_count();
@@ -1044,7 +1123,7 @@ impl Session {
             .resident_waveform_bytes
             .checked_add(waveform_bytes)
             .ok_or(SessionError::Invalid("waveform memory count overflow"))?;
-        let mut candidate_media = self.media_bank();
+        let mut candidate_media = self.media_bank()?;
         let staged_audio = prepared.audio.clone();
         let staged_asset = prepared.audio.clone();
         let sine_table = self.sine_table();
@@ -1072,11 +1151,11 @@ impl Session {
                         "import candidate contains multiple new assets",
                     ));
                 }
-                candidate_media.insert(asset_id, staged_asset.clone());
+                candidate_media.insert(asset_id, staged_asset.clone())?;
                 let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
-                    Arc::clone(&sine_table),
+                    sine_table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -1088,11 +1167,12 @@ impl Session {
         )?;
         let resident = ResidentAsset {
             source_audio: prepared.source_audio,
-            audio: staged_audio,
-            waveform: Arc::new(prepared.waveform),
+            audio: Some(staged_audio),
+            waveform: crate::SharedWaveform::new_on_control(prepared.waveform),
             frames,
         };
-        self.media.insert(asset_id, resident);
+        self.media
+            .try_insert_on_control(asset_id, resident, MAX_ASSETS)?;
         self.resident_frames = new_resident_frames;
         self.resident_waveform_bins = new_resident_bins;
         self.resident_waveform_bytes = new_resident_waveform_bytes;
@@ -1144,21 +1224,15 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(
-                prepared.additional_pcm_frames(
-                    self.media
-                        .values()
-                        .flat_map(|m| [&m.source_audio, &m.audio]),
-                )?,
-            )
+            .checked_add(prepared.additional_pcm_frames(self.media.values().flat_map(|m| m.pcm()))?)
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         self.media
-            .try_reserve(1)
+            .try_reserve_on_control(1, MAX_ASSETS)
             .map_err(|_| SessionError::Allocation)?;
         let (new_resident_bins, new_resident_waveform_bytes) =
             self.reserve_waveform_accounting(&prepared.waveform)?;
-        let mut candidate_media = self.media_bank();
+        let mut candidate_media = self.media_bank()?;
         let staged_audio = prepared.audio.clone();
         let staged_asset = prepared.audio.clone();
         let sine_table = self.sine_table();
@@ -1203,11 +1277,11 @@ impl Session {
                         "import candidate contains multiple new assets",
                     ));
                 }
-                candidate_media.insert(asset_id, staged_asset.clone());
+                candidate_media.insert(asset_id, staged_asset.clone())?;
                 let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
-                    Arc::clone(&sine_table),
+                    sine_table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -1217,15 +1291,16 @@ impl Session {
                 Ok((asset_id, revision))
             },
         )?;
-        self.media.insert(
+        self.media.try_insert_on_control(
             asset_id,
             ResidentAsset {
                 source_audio: prepared.source_audio,
-                audio: staged_audio,
-                waveform: Arc::new(prepared.waveform),
+                audio: Some(staged_audio),
+                waveform: crate::SharedWaveform::new_on_control(prepared.waveform),
                 frames,
             },
-        );
+            MAX_ASSETS,
+        )?;
         self.resident_frames = new_resident_frames;
         self.resident_waveform_bins = new_resident_bins;
         self.resident_waveform_bytes = new_resident_waveform_bytes;
@@ -1254,21 +1329,15 @@ impl Session {
             .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
         let new_resident_frames = self
             .resident_frames
-            .checked_add(
-                prepared.additional_pcm_frames(
-                    self.media
-                        .values()
-                        .flat_map(|m| [&m.source_audio, &m.audio]),
-                )?,
-            )
+            .checked_add(prepared.additional_pcm_frames(self.media.values().flat_map(|m| m.pcm()))?)
             .filter(|total| *total <= self.max_resident_frames)
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
         self.media
-            .try_reserve(1)
+            .try_reserve_on_control(1, MAX_ASSETS)
             .map_err(|_| SessionError::Allocation)?;
         let (new_resident_bins, new_resident_waveform_bytes) =
             self.reserve_waveform_accounting(&prepared.waveform)?;
-        let mut candidate_media = self.media_bank();
+        let mut candidate_media = self.media_bank()?;
         let staged_audio = prepared.audio.clone();
         let staged_asset = prepared.audio.clone();
         let sine_table = self.sine_table();
@@ -1304,11 +1373,11 @@ impl Session {
                         "import candidate contains multiple new assets",
                     ));
                 }
-                candidate_media.insert(asset_id, staged_asset.clone());
+                candidate_media.insert(asset_id, staged_asset.clone())?;
                 let revision = prepare_with_waveforms(
                     candidate,
                     &candidate_media,
-                    Arc::clone(&sine_table),
+                    sine_table.clone(),
                     previous.map(|artifact| artifact.session().as_ref()),
                     &self.audio_transforms,
                     &self.audio_clip_waveforms,
@@ -1329,7 +1398,7 @@ impl Session {
                 total_waveform_bins: new_resident_bins,
                 total_waveform_bytes: new_resident_waveform_bytes,
             },
-        );
+        )?;
         Ok((result, revision))
     }
 
@@ -1342,13 +1411,13 @@ impl Session {
     /// Compile the previous history snapshot before committing Undo.
     pub fn undo_prepared_with_midi_preview(
         &mut self,
-    ) -> Result<Option<(PlaybackProject, Arc<hex_engine::MidiArrangementPreview>)>, SessionError>
+    ) -> Result<Option<(PlaybackProject, hex_engine::SharedMidiArrangementPreview)>, SessionError>
     {
         self.undo_prepared_revision(None).map(|result| {
             result.map(|prepared| {
                 (
                     prepared.arrangement().as_ref().clone(),
-                    Arc::clone(prepared.midi_preview()),
+                    prepared.midi_preview_on_control(),
                 )
             })
         })
@@ -1371,13 +1440,13 @@ impl Session {
             &Arc<hex_engine::PreparedRevision>,
         ) -> Result<T, SessionError>,
     ) -> Result<Option<(Arc<hex_engine::PreparedRevision>, T)>, SessionError> {
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let sine_table = self.sine_table();
         self.editor.undo_prepared_transition(|source, candidate| {
             let prepared = prepare_with_waveforms(
                 candidate,
                 &media,
-                Arc::clone(&sine_table),
+                sine_table.clone(),
                 previous.map(|artifact| artifact.session().as_ref()),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
@@ -1398,13 +1467,13 @@ impl Session {
     /// Compile the next history snapshot before committing Redo.
     pub fn redo_prepared_with_midi_preview(
         &mut self,
-    ) -> Result<Option<(PlaybackProject, Arc<hex_engine::MidiArrangementPreview>)>, SessionError>
+    ) -> Result<Option<(PlaybackProject, hex_engine::SharedMidiArrangementPreview)>, SessionError>
     {
         self.redo_prepared_revision(None).map(|result| {
             result.map(|prepared| {
                 (
                     prepared.arrangement().as_ref().clone(),
-                    Arc::clone(prepared.midi_preview()),
+                    prepared.midi_preview_on_control(),
                 )
             })
         })
@@ -1427,13 +1496,13 @@ impl Session {
             &Arc<hex_engine::PreparedRevision>,
         ) -> Result<T, SessionError>,
     ) -> Result<Option<(Arc<hex_engine::PreparedRevision>, T)>, SessionError> {
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let sine_table = self.sine_table();
         self.editor.redo_prepared_transition(|source, candidate| {
             let prepared = prepare_with_waveforms(
                 candidate,
                 &media,
-                Arc::clone(&sine_table),
+                sine_table.clone(),
                 previous.map(|artifact| artifact.session().as_ref()),
                 &self.audio_transforms,
                 &self.audio_clip_waveforms,
@@ -1447,28 +1516,38 @@ impl Session {
     }
 
     pub fn audio(&self, asset: AssetId) -> Option<&Audio> {
-        self.media.get(&asset).map(|resident| &resident.audio)
+        self.media
+            .get(&asset)
+            .and_then(|resident| resident.audio.as_ref())
     }
 
-    /// Original decoded source, borrowed on control; not a callback resource lease.
+    /// Stereo original, borrowed on control; native mono uses source_mono.
+    /// Neither control borrow is a callback resource lease.
     pub fn source_audio(&self, asset: AssetId) -> Option<&Audio> {
         self.media
             .get(&asset)
-            .map(|resident| &resident.source_audio)
+            .and_then(|resident| resident.source_audio.stereo())
     }
 
-    pub fn waveform(&self, asset: AssetId) -> Option<Arc<Waveform>> {
+    /// Actual native mono original, borrowed on control; not a resource lease.
+    /// Stereo originals remain available through source_audio.
+    pub fn source_mono(&self, asset: AssetId) -> Option<hex_engine::OwnedAudioSourceView<'_>> {
+        match &self.media.get(&asset)?.source_audio {
+            OriginalAudio::Mono(source) => Some(source.view()),
+            OriginalAudio::Stereo(_) => None,
+        }
+    }
+
+    pub fn waveform(&self, asset: AssetId) -> Option<SharedWaveform> {
         self.media
             .get(&asset)
-            .map(|resident| Arc::clone(&resident.waveform))
+            .map(|resident| resident.waveform.clone())
     }
 
     /// Clone only the small asset map and its shared waveform handles.
-    pub fn waveforms(&self) -> BTreeMap<AssetId, Arc<Waveform>> {
+    pub fn waveforms(&self) -> SortedEntries<AssetId, SharedWaveform> {
         self.media
-            .iter()
-            .map(|(id, resident)| (*id, Arc::clone(&resident.waveform)))
-            .collect()
+            .filter_map_values_on_control(|_, resident| Some(resident.waveform.clone()))
     }
 
     pub fn resident_asset_frames(&self, asset: AssetId) -> Option<u64> {
@@ -1492,7 +1571,7 @@ impl Session {
     /// Compile the current snapshot once for playback and prepared UI summaries.
     pub fn compile_with_midi_preview(
         &self,
-    ) -> Result<(PlaybackProject, Arc<hex_engine::MidiArrangementPreview>), SessionError> {
+    ) -> Result<(PlaybackProject, hex_engine::SharedMidiArrangementPreview), SessionError> {
         if self.audio_mode == DocumentAudioMode::VerifiedStreaming {
             return Err(SessionError::Invalid(
                 "verified streaming requires protected native pages",
@@ -1501,7 +1580,7 @@ impl Session {
         let prepared = self.compile_prepared_revision(None)?;
         Ok((
             prepared.arrangement().as_ref().clone(),
-            Arc::clone(prepared.midi_preview()),
+            prepared.midi_preview_on_control(),
         ))
     }
 
@@ -1518,7 +1597,7 @@ impl Session {
         }
         hex_engine::PreparedRevision::prepare_for_gain_recording_with_audio_transforms(
             self.project(),
-            &self.media_bank().resident,
+            &self.media_bank()?.resident,
             self.sine_table(),
             previous.map(|prepared| prepared.session().as_ref()),
             track,
@@ -1534,7 +1613,7 @@ impl Session {
     ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
         Ok(Arc::new(prepare_with_waveforms(
             self.project(),
-            &self.media_bank(),
+            &self.media_bank()?,
             self.sine_table(),
             previous.map(|artifact| artifact.session().as_ref()),
             &self.audio_transforms,
@@ -1542,16 +1621,21 @@ impl Session {
         )?))
     }
 
-    fn media_bank(&self) -> MediaBank {
-        MediaBank {
-            epoch: self.semantic_source_epoch,
-            resident: self
-                .media
-                .iter()
-                .map(|(id, resident)| (*id, resident.audio.clone()))
-                .collect(),
-            verified: self.verified_sources.clone(),
+    fn media_bank(&self) -> Result<MediaBank, SessionError> {
+        let mut resident = SortedEntries::new();
+        resident.try_reserve_on_control(self.media.len(), MAX_ASSETS)?;
+        for (id, entry) in &self.media {
+            if let Some(audio) = &entry.audio {
+                resident.try_insert_on_control(*id, audio.clone(), MAX_ASSETS)?;
+            }
         }
+        Ok(MediaBank {
+            epoch: self.semantic_source_epoch,
+            resident,
+            verified: self
+                .verified_sources
+                .try_clone_with_on_control(MAX_ASSETS, |key, value| Ok((*key, value.clone())))?,
+        })
     }
 }
 
@@ -1560,10 +1644,10 @@ impl Session {
 fn prepare_with_waveforms(
     project: &Project,
     media: &MediaBank,
-    table: Arc<hex_engine::SineTable>,
+    table: hex_engine::SharedSineTable,
     previous: Option<&hex_engine::PreparedSessionInventory>,
     transforms: &hex_engine::audio_transform::AudioTransformPreparation,
-    retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
+    retained: &std::cell::RefCell<SortedEntries<hex_project::ClipId, service::AudioClipWaveform>>,
 ) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
     device_comparison::validate_project(project)?;
     let mut old = retained
@@ -1585,43 +1669,48 @@ fn prepare_with_waveforms(
         // and per-root metadata). Dense projects receive coarser truthful peaks.
         let requested_bins =
             (262_144 / prepared.arrangement().audio_clip_views().len().max(1)).clamp(1, 1_024);
-        let mut roots: Vec<(Audio, Arc<Waveform>)> = Vec::new();
-        let mut next = BTreeMap::new();
+        let mut roots: Vec<(Audio, SharedWaveform)> = Vec::new();
+        let mut next = Vec::new();
+        next.try_reserve_exact(prepared.arrangement().audio_clip_views().len())
+            .map_err(|_| hex_engine::Invalid("could not reserve waveform entries"))?;
         for view in prepared.arrangement().audio_clip_views() {
             let waveform = if let Some((_, waveform)) = roots
                 .iter()
                 .find(|(audio, _)| audio.shares_pcm_with(&view.audio))
             {
-                Arc::clone(waveform)
+                waveform.clone()
             } else {
                 // Existing summaries retain exact PCM identity for safe cross-revision reuse.
                 let existing = old.values().find(|entry| {
                     entry.waveform.shares_audio_with(&view.audio)
                         && entry.waveform.bins.len() <= requested_bins
                 });
-                let waveform =
-                    if let Some(existing) = existing {
-                        Arc::clone(&existing.waveform)
-                    } else {
-                        Arc::new(waveform::summarize(&view.audio, requested_bins).map_err(
-                            |_| hex_engine::Invalid("transformed waveform preparation failed"),
-                        )?)
-                    };
+                let waveform = if let Some(existing) = existing {
+                    existing.waveform.clone()
+                } else {
+                    SharedWaveform::new_on_control(
+                        waveform::summarize(&view.audio, requested_bins).map_err(|_| {
+                            hex_engine::Invalid("transformed waveform preparation failed")
+                        })?,
+                    )
+                };
                 roots.try_reserve(1).map_err(|_| {
                     hex_engine::Invalid("audio waveform root index allocation failed")
                 })?;
-                roots.push((view.audio.clone(), Arc::clone(&waveform)));
+                roots.push((view.audio.clone(), waveform.clone()));
                 waveform
             };
-            next.insert(
+            next.push((
                 view.clip,
                 service::AudioClipWaveform {
                     waveform,
                     offset: view.offset,
                     length: view.length,
                 },
-            );
+            ));
         }
+        let next = SortedEntries::try_from_unsorted_on_control(next, hex_project::MAX_CLIPS)
+            .map_err(|error| hex_engine::Invalid(error.0))?;
         Ok((prepared, next))
     })?;
     *old = next;

@@ -13,6 +13,7 @@ use std::sync::Arc;
 
 struct Entry {
     device_id: u64,
+    owner: ProcessorChainOwner,
     state: SharedDeclaration,
     processor: Option<SharedDeclaration>,
     meter: SharedDeclaration,
@@ -20,30 +21,57 @@ struct Entry {
     handles: [u64; 4],
 }
 #[derive(Default)]
-pub(super) struct UtilityCustody {
+pub(in crate::audio_preparation::arrangement_clips) struct UtilityCustody {
     entries: Vec<Entry>,
     construction_overlap: usize,
 }
+mod allowance;
 impl UtilityCustody {
-    pub(super) fn prepare(
+    pub(in crate::audio_preparation::arrangement_clips) fn prepare(
         &mut self,
         devices: &[hex_project::Device],
-        track: hex_project::TrackId,
+        owner: ProcessorChainOwner,
         rate: u32,
-    ) -> Result<OwnedShared<[PreparedRuntimeInstance]>, AudioStorageError> {
+    ) -> Result<OwnedShared<[crate::PreparedEffectInstance]>, AudioStorageError> {
+        if match owner {
+            ProcessorChainOwner::Track(id) | ProcessorChainOwner::Return(id) => id == 0,
+            // This closed custody constructs Track/Return chains only.
+            ProcessorChainOwner::Main => true,
+        } {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         if !self.entries.is_empty() {
             return Err(AudioStorageError::SourceMismatch);
         }
+        // Compute requested-layout allowance before backing/child births. The
+        // whole compiler still needs its enclosing same-ceiling reservation.
+        let allowance = self.construction_allowance(devices, owner)?;
+        let old_entries = self.metadata_bytes()?;
+        let replacing_entries = devices.len() > self.entries.capacity();
         self.entries
             .try_reserve_exact(devices.len())
             .map_err(|_| AudioStorageError::Allocation)?;
+        if self.entries.capacity() > allowance.entry_capacity {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
         let mut prepared = Vec::new();
         prepared
             .try_reserve_exact(devices.len())
             .map_err(|_| AudioStorageError::Allocation)?;
+        if prepared.capacity() > devices.len() {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
         self.construction_overlap = prepared
             .capacity()
-            .checked_mul(std::mem::size_of::<PreparedRuntimeInstance>())
+            .checked_mul(std::mem::size_of::<crate::PreparedEffectInstance>())
+            .and_then(|bytes| bytes.checked_add(if replacing_entries { old_entries } else { 0 }))
+            .and_then(|bytes| {
+                bytes.checked_add(if devices.is_empty() {
+                    0
+                } else {
+                    hex_devices::utility::UTILITY_STATE_PAYLOAD_BYTES
+                })
+            })
             .ok_or(AudioStorageError::Overflow)?;
         let mut admission = StereoMatrix::identity();
         for device in devices {
@@ -106,36 +134,69 @@ impl UtilityCustody {
             let handles = [handle()?, handle()?, handle()?, handle()?];
             self.entries.push(Entry {
                 device_id: device.id().value(),
+                owner,
                 state,
                 processor: processor_declaration,
                 meter: meter_declaration,
                 payload,
                 handles,
             });
-            prepared.push(PreparedRuntimeInstance {
-                meter,
-                owner: ProcessorChainOwner::Track(track.value()),
-                device_id: device.id().value(),
-                device_type: hex_devices::utility::UTILITY_TYPE_ID,
-                matrix,
-                bypassed: device.bypassed(),
-                sample_rate: rate,
-                configuration: Some(configuration),
-                definition: processor.map(hex_lattice::PreparedProcessorFactory::Legacy),
+            prepared.push(crate::PreparedEffectInstance {
+                instance: PreparedRuntimeInstance {
+                    meter,
+                    owner,
+                    device_id: device.id().value(),
+                    device_type: hex_devices::utility::UTILITY_TYPE_ID,
+                    matrix,
+                    bypassed: device.bypassed(),
+                    sample_rate: rate,
+                    configuration: Some(configuration),
+                    definition: processor.map(hex_lattice::PreparedProcessorFactory::Legacy),
+                },
+                resources: None,
             });
         }
-        Ok(if prepared.is_empty() {
+        let owner = if prepared.is_empty() {
             OwnedShared::new_owned_empty_slice()
         } else {
             OwnedShared::from_owned_vec(prepared)
-        })
+        };
+        let (body, header) = owner
+            .parts()
+            .ok_or(AudioStorageError::UnsupportedConstructor)?;
+        let actual = self
+            .bytes(owner.arc())?
+            .checked_add(body)
+            .and_then(|bytes| bytes.checked_add(header))
+            .ok_or(AudioStorageError::Overflow)?;
+        let additional_actual = actual
+            .checked_sub(if replacing_entries { 0 } else { old_entries })
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        let additional_peak = actual
+            .checked_add(self.construction_overlap)
+            .and_then(|bytes| bytes.checked_sub(old_entries))
+            .ok_or(AudioStorageError::Overflow)?;
+        if additional_actual > allowance.additional_retained_bytes
+            || additional_peak > allowance.additional_construction_peak_bytes
+            || actual > allowance.retained_bytes
+            || actual
+                .checked_add(self.construction_overlap)
+                .is_none_or(|bytes| bytes > allowance.construction_peak_bytes)
+        {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
+        Ok(owner)
     }
-    fn validate(&self, chain: &[PreparedRuntimeInstance]) -> Result<(), AudioStorageError> {
+    fn validate(&self, chain: &[crate::PreparedEffectInstance]) -> Result<(), AudioStorageError> {
         if chain.len() != self.entries.len() {
             return Err(AudioStorageError::SourceMismatch);
         }
         for (value, pair) in chain.iter().zip(&self.entries) {
-            if value.device_id != pair.device_id
+            if value.resources.is_some() {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            if value.owner != pair.owner
+                || value.device_id != pair.device_id
                 || value.device_type != hex_devices::utility::UTILITY_TYPE_ID
                 || value.definition.is_some() != pair.processor.is_some()
             {
@@ -155,9 +216,9 @@ impl UtilityCustody {
         }
         Ok(())
     }
-    pub(super) fn bytes(
+    pub(in crate::audio_preparation::arrangement_clips) fn bytes(
         &self,
-        chain: &[PreparedRuntimeInstance],
+        chain: &[crate::PreparedEffectInstance],
     ) -> Result<usize, AudioStorageError> {
         self.validate(chain)?;
         let mut bytes = self
@@ -199,34 +260,36 @@ impl UtilityCustody {
         }
         Ok(bytes)
     }
-    pub(super) fn handles(&self) -> usize {
+    pub(in crate::audio_preparation::arrangement_clips) fn handles(&self) -> usize {
         self.entries
             .iter()
             .map(|e| 3 + usize::from(e.processor.is_some()))
             .sum()
     }
-    pub(super) fn visit_metadata<'a>(
+    pub(in crate::audio_preparation::arrangement_clips) fn visit_metadata<'a>(
         &'a self,
         l: &mut crate::AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
         l.vec(&self.entries)
     }
-    pub(super) fn construction_overlap(&self) -> usize {
+    pub(in crate::audio_preparation::arrangement_clips) fn construction_overlap(&self) -> usize {
         self.construction_overlap
     }
-    pub(super) fn metadata_bytes(&self) -> Result<usize, AudioStorageError> {
+    pub(in crate::audio_preparation::arrangement_clips) fn metadata_bytes(
+        &self,
+    ) -> Result<usize, AudioStorageError> {
         self.entries
             .capacity()
             .checked_mul(std::mem::size_of::<Entry>())
             .ok_or(AudioStorageError::Overflow)
     }
-    pub(super) fn clear(&mut self) {
+    pub(in crate::audio_preparation::arrangement_clips) fn clear(&mut self) {
         self.entries.clear();
         self.construction_overlap = 0;
     }
-    pub(super) fn visit<'a>(
+    pub(in crate::audio_preparation::arrangement_clips) fn visit<'a>(
         &'a self,
-        chain: &'a Arc<[PreparedRuntimeInstance]>,
+        chain: &'a Arc<[crate::PreparedEffectInstance]>,
         l: &mut crate::AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
         use crate::audio_storage::{Location, Owner};
@@ -245,17 +308,20 @@ impl UtilityCustody {
             )?;
             l.bytes(
                 Owner::device_payload(state),
-                Location("native-state-payload", 0),
+                Location("inline-state-payload", 0),
                 pair.payload
                     .0
                     .checked_add(pair.payload.1)
                     .ok_or(AudioStorageError::Overflow)?,
             )?;
-            l.handle(
-                Owner::device_payload(state),
-                Owner::exclusive(state.as_ref()),
-                pair.handles[1],
-            )?;
+            if !l.skip_observed_canonical_state_field(state, 0) {
+                l.handle_at(
+                    Owner::device_payload(state),
+                    Owner::exclusive(state.as_ref()),
+                    Location("inline-state-field", 0),
+                    pair.handles[1],
+                )?;
+            }
             l.shared(
                 &value.meter,
                 pair.meter.parts(&value.meter),
@@ -282,8 +348,103 @@ impl UtilityCustody {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::audio_preparation::*;
     use hex_lattice_contract::{NativeDeviceMetadata, ParameterValue};
+    #[test]
+    fn paired_utility_constructor_preserves_track_and_return_owner_and_refuses_wrong_owner() {
+        if !crate::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported paired Utility Track/Return owner construction");
+            return;
+        }
+        eprintln!("SUPPORTED paired Utility Track/Return owner construction actual births");
+        let (project, _bank) = crate::audio_preparation::tests::fixture(2);
+        let mut snapshot = project.snapshot();
+        let definition = &hex_devices::utility::UTILITY_DEFINITION;
+        let base = definition.default_state().unwrap();
+        for filtered in [false, true] {
+            for bypassed in [false, true] {
+                let state = definition
+                    .patch_parameter(
+                        &base,
+                        hex_devices::utility::parameter::DC_REMOVE,
+                        ParameterValue::Bool(filtered),
+                    )
+                    .unwrap()
+                    .with_input_gain_millidb(-6000)
+                    .unwrap()
+                    .with_output_gain_millidb(3000)
+                    .unwrap();
+                snapshot.tracks[0].devices.clear();
+                snapshot.tracks[0]
+                    .devices
+                    .push(hex_project::DeviceSnapshot {
+                comparison: None,
+                        id: snapshot.next_id,
+                        bypassed,
+                        state,
+                    });
+                snapshot.next_id += 1;
+                let model = hex_project::Project::from_snapshot(snapshot.clone()).unwrap();
+                let track = &model.tracks()[0];
+                assert_eq!(track.devices()[0].state().input_gain_millidb(), -6000);
+                assert_eq!(track.devices()[0].state().output_gain_millidb(), 3000);
+                for owner in [
+                    ProcessorChainOwner::Track(track.id().value()),
+                    ProcessorChainOwner::Return(777),
+                ] {
+                    let mut custody = UtilityCustody::default();
+                    let chain = custody.prepare(track.devices(), owner, 48000).unwrap();
+                    assert!(chain.parts().is_some());
+                    assert_eq!(chain.len(), 1);
+                    assert_eq!(chain[0].owner, owner);
+                    assert_eq!(chain[0].device_id, track.devices()[0].id().value());
+                    assert_eq!(chain[0].bypassed, bypassed);
+                    assert_eq!(chain[0].definition.is_some(), filtered);
+                    let state = chain[0].configuration.as_ref().unwrap();
+                    assert_eq!(state.input_gain_millidb(), -6000);
+                    assert_eq!(state.output_gain_millidb(), 3000);
+                    custody.bytes(chain.arc()).unwrap();
+                    let (actual, birth) = chain.into_paired_parts_on_control();
+                    let pointer = actual.as_ptr();
+                    let entry = &custody.entries[0];
+                    let saved_owner = entry.owner;
+                    custody.entries[0].owner = match owner {
+                        ProcessorChainOwner::Track(id) => ProcessorChainOwner::Return(id),
+                        ProcessorChainOwner::Return(id) => ProcessorChainOwner::Track(id),
+                        ProcessorChainOwner::Main => panic!("Main is outside this closed Utility fixture"),
+                    };
+                    assert_eq!(
+                        custody.bytes(&actual),
+                        Err(AudioStorageError::SourceMismatch)
+                    );
+                    custody.entries[0].owner = saved_owner;
+                    assert!(birth.parts(&actual).is_some());
+                    assert_eq!(actual.as_ptr(), pointer);
+                    // Whole paired owner moves without replacing any child. No
+                    // public compiler result is adopted by this constructor test.
+                    let mut pending = Some(actual);
+                    let actual = pending.take().unwrap();
+                    assert!(pending.is_none());
+                    assert!(birth.parts(&actual).is_some());
+                    assert_eq!(actual.as_ptr(), pointer);
+                    custody.bytes(&actual).unwrap();
+                }
+            }
+        }
+        let mut empty = UtilityCustody::default();
+        let chain = empty
+            .prepare(&[], ProcessorChainOwner::Return(777), 48000)
+            .unwrap();
+        assert!(chain.is_empty());
+        assert!(chain.parts().is_some());
+        assert_eq!(empty.handles(), 0);
+        assert!(matches!(
+            UtilityCustody::default().prepare(&[], ProcessorChainOwner::Return(0), 48000),
+            Err(AudioStorageError::SourceMismatch)
+        ));
+    }
+
     #[test]
     fn sealed_utility_graph_matches_canonical_pcm_reports_nested_payload_and_recovers_original_bank()
      {
@@ -328,7 +489,7 @@ mod tests {
         let reference = crate::PreparedRevision::prepare(
             &project,
             &media,
-            std::sync::Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap();
@@ -442,7 +603,7 @@ mod asset_refusal_tests {
             assert!(matches!(
                 custody.prepare(
                     editor.project().track(track).unwrap().devices(),
-                    track,
+                    ProcessorChainOwner::Track(track.value()),
                     48000
                 ),
                 Err(AudioStorageError::UnsupportedGraph)

@@ -17,11 +17,13 @@ struct ClaimedState {
     identity: AudioCandidateIdentity,
     source_context: Option<crate::AudioSourceContext>,
     runtime: Option<Box<RuntimeOwner>>,
-    groups: Vec<Group>,
-    journal: Vec<groups::TransferRow>,
+    runtime_lease: Option<groups::RuntimeStorageLease>,
+    groups: groups::GroupBook,
+    journal: groups::TransferJournal,
     phase: ClaimedPhase,
     first_panic: Option<Box<dyn Any + Send>>,
     owned_runtime_bytes: Option<usize>,
+    main_export: bool,
 }
 impl ClaimedState {
     fn wrapper_storage_bytes(&self) -> usize {
@@ -29,11 +31,13 @@ impl ClaimedState {
             identity: _,
             source_context: _,
             runtime: _,
+            runtime_lease: _,
             groups: _,
             journal: _,
             phase: _,
             first_panic: _,
             owned_runtime_bytes: _,
+            main_export: _,
         } = self;
         // Existing Runtime/Vec allocations move unchanged from the constructor;
         // only this wrapper is a new allocation at the split frontier.
@@ -52,7 +56,45 @@ enum ClaimedPhase {
 /// Its exact nested Runtime Box and group/journal backings come from the same
 /// original constructor; a split never reruns the compiler or adopts a runtime.
 pub struct ClaimedAudioCandidateRuntime {
-    inner: Box<ClaimedState>,
+    inner: ClaimedBox,
+}
+// Affine holder: no Box extraction/Clone/getter. The actual Box and its birth
+// lease move together; body storage is independent of DSP/Group/journal owners.
+struct ClaimedBox {
+    body: Option<Box<ClaimedState>>,
+    lease: crate::sampler_host_fields::NativeStateStorageLease,
+}
+impl std::ops::Deref for ClaimedBox {
+    type Target = ClaimedState;
+    fn deref(&self) -> &Self::Target {
+        self.body.as_deref().expect("live claimed Box")
+    }
+}
+impl std::ops::DerefMut for ClaimedBox {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.body.as_deref_mut().expect("live claimed Box")
+    }
+}
+impl AsRef<ClaimedState> for ClaimedBox {
+    fn as_ref(&self) -> &ClaimedState {
+        self
+    }
+}
+impl Drop for ClaimedBox {
+    fn drop(&mut self) {
+        let Some(body) = self.body.as_deref() else {
+            return;
+        };
+        if self
+            .lease
+            .begin_paired_body_drop_on_control(crate::sampler_host_fields::BodyRef::of(body))
+            .is_err()
+        {
+            return;
+        }
+        drop(self.body.take());
+        let _ = self.lease.complete_actual_state_drop_on_control();
+    }
 }
 /// A borrow of both actual halves, never a detached scalar capability. Native
 /// hosts must retain these exact anchors before transferring their runtime.
@@ -68,20 +110,50 @@ impl AudioCandidateConstructorClaims<'_> {
         self.anchors.owner.inner.constructor_data
     }
 }
-pub(super) fn reserved_state_bytes() -> usize {
-    std::mem::size_of::<ClaimedState>()
+pub(super) fn reserved_state_bytes() -> Result<usize, AudioStorageError> {
+    // Conservative retained/peak overlap: actual Box, its initializer, affine
+    // holder, and actual paired metadata constructor. Not a DATA certificate.
+    std::mem::size_of::<ClaimedState>().checked_mul(2)
+        .and_then(|n| n.checked_add(std::mem::size_of::<ClaimedBox>()))
+        .and_then(|n| n.checked_add(crate::sampler_host_fields::NativeStateStorageRegistration::metadata_requested_bytes_on_control().ok()?))
+        .and_then(|n| n.checked_add(crate::sampler_host_fields::NativeStateStorageRegistration::construction_scratch_bytes_on_control().ok()?))
+        .ok_or(AudioStorageError::UnknownStorage)
 }
 impl AudioCandidateOwner {
+    /// Configure existing metering flags while the actual constructor is still
+    /// rooted and unpublished. No runtime/owner escapes and no storage is
+    /// constructed here. Native hosts perform this BEFORE final inspection;
+    /// this is not a publication or resource-admission proof.
+    pub fn prepare_device_metering_on_control(
+        &mut self,
+        enabled: bool,
+    ) -> Result<(), AudioStorageError> {
+        if self.inner.phase != AudioCandidateDisposalPhase::Owned
+            || self.inner.runtime_receipt.is_some()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let runtime = self
+            .inner
+            .runtime
+            .as_mut()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if !runtime.playback.candidate_constructor_is_fresh() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        runtime.playback.set_device_metering(enabled);
+        Ok(())
+    }
     /// All reported refusals precede owner movement. Box allocation follows the
     /// existing control-side fatal-OOM convention. The host must preflight and
     /// charge this wrapper plus all simultaneous anchor/runtime storage first.
     pub fn split_constructor_on_control(
-        self,
+        mut self,
     ) -> Result<
         (ClaimedAudioCandidateRuntime, AudioCandidateAnchors),
         Box<AudioCandidateSplitRefusal>,
     > {
-        match self.prepare_constructor_split() {
+        match self.prepare_constructor_split(ConstructorPurpose::NativeFresh) {
             Ok(state) => Ok(self.commit_constructor_split(state)),
             Err(reason) => Err(Box::new(AudioCandidateSplitRefusal {
                 reason,
@@ -89,36 +161,91 @@ impl AudioCandidateOwner {
             })),
         }
     }
-    fn prepare_constructor_split(&self) -> Result<Box<ClaimedState>, AudioStorageError> {
+    fn prepare_constructor_split(
+        &mut self,
+        purpose: ConstructorPurpose,
+    ) -> Result<ClaimedBox, AudioStorageError> {
         if self.inner.phase != AudioCandidateDisposalPhase::Owned
             || self.inner.runtime_receipt.is_some()
         {
             return Err(AudioStorageError::SourceMismatch);
         }
+        if self.inner.runtime.as_ref().is_none_or(|r| {
+            r.playback.is_main_control_runtime() != (purpose == ConstructorPurpose::MainExport)
+        }) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         self.inner.validate_groups()?;
         self.inner.validate_fresh_origins()?;
+        if !self.inner.archive.wrapper_can_be_prepared() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let extra = self
+            .inner
+            .archive
+            .metadata_bytes()?
+            .checked_add(
+                self.inner
+                    .groups
+                    .capacity()
+                    .checked_mul(size_of::<Group>())
+                    .ok_or(AudioStorageError::Overflow)?,
+            )
+            .and_then(|n| {
+                n.checked_add(
+                    self.inner
+                        .journal
+                        .capacity()
+                        .checked_mul(size_of::<groups::TransferRow>())?,
+                )
+            })
+            .and_then(|n| n.checked_add(size_of::<CandidateState>()))
+            .and_then(|n| n.checked_add(reserved_state_bytes().ok()?))
+            .ok_or(AudioStorageError::Overflow)?;
+        self.inner
+            .runtime
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .playback
+            .validate_candidate_runtime_storage(extra)?;
         let state = Box::new(ClaimedState {
             identity: self.identity(),
             source_context: self.source_context(),
             runtime: None,
-            groups: Vec::new(),
-            journal: Vec::new(),
+            runtime_lease: None,
+            groups: groups::GroupBook::default(),
+            journal: groups::TransferJournal::default(),
             phase: ClaimedPhase::Current,
             first_panic: None,
             owned_runtime_bytes: self.inner.constructor_data.map(|s| s.owned_runtime_bytes),
+            main_export: purpose == ConstructorPurpose::MainExport,
         });
         let _actual_wrapper_bytes = state.wrapper_storage_bytes();
-        Ok(state)
+        let (record, lease) = crate::sampler_host_fields::NativeStateStorageRegistration::pair_actual_state_on_control(
+            crate::sampler_host_fields::BodyRef::of(state.as_ref()))?;
+        self.inner.archive.install_wrapper_registration(record);
+        Ok(ClaimedBox {
+            body: Some(state),
+            lease,
+        })
     }
     fn commit_constructor_split(
         mut self,
-        mut state: Box<ClaimedState>,
+        mut state: ClaimedBox,
     ) -> (ClaimedAudioCandidateRuntime, AudioCandidateAnchors) {
         // Only fixed moves after every check/allocation. The actual Runtime Box
         // and the original outer preparation wrapper both keep their addresses.
+        state.owned_runtime_bytes = self.inner.constructor_data.map(|s| s.owned_runtime_bytes);
         state.runtime = self.inner.runtime.take();
+        state.runtime_lease = self.inner.runtime_lease.take();
         state.groups = std::mem::take(&mut self.inner.groups);
+        if !state.main_export {
+            state.groups.mark_transferred();
+        }
         state.journal = std::mem::take(&mut self.inner.journal);
+        if !state.main_export {
+            state.journal.mark_transferred();
+        }
         self.inner.phase = AudioCandidateDisposalPhase::Leased;
         (
             ClaimedAudioCandidateRuntime { inner: state },
@@ -126,22 +253,119 @@ impl AudioCandidateOwner {
         )
     }
 }
-impl AudioCandidatePreparation {
-    /// Final transfer to the native host's already-reserved publication receiver.
-    /// Every fallible validation/allocation borrows the rooted owner; an error
-    /// leaves it in this cell. The caller must immediately retain BOTH resulting
-    /// halves before granting any installation authority.
-    pub fn split_for_publication_on_control(
+/// Lifetime-bound preallocated split storage for the ACTUAL construction cell.
+/// No publication permission, owner extraction or static/Clone escape. Dropping
+/// this preparation leaves the original constructor in its original cell; only
+/// the empty, scalar/empty-Vec wrapper is reclaimed on control.
+/// The host must reserve its actual overlap BEFORE calling and retain all real
+/// external guards/custody through final inspection and reserved queue commit.
+/// ```compile_fail
+/// let _ = hex_engine::AudioCandidatePreparedSplit {};
+/// ```
+/// ```compile_fail
+/// fn escape<'a>(p: hex_engine::AudioCandidatePreparedSplit<'a>)
+///     -> hex_engine::AudioCandidatePreparedSplit<'static> { p }
+/// ```
+/// ```compile_fail
+/// fn mutate(cell: &mut hex_engine::AudioCandidatePreparation) {
+///     let split = cell.preallocate_publication_split_on_control().unwrap();
+///     let _ = cell.cleanup_on_control();
+///     std::hint::black_box(split);
+/// }
+/// ```
+pub struct AudioCandidatePreparedSplit<'a> {
+    preparation: &'a mut AudioCandidatePreparation,
+    state: ClaimedBox,
+}
+impl AudioCandidatePreparedSplit<'_> {
+    /// Actual requested allocated wrapper layout, not generic provenance,
+    /// unseen payload accounting, RSS or a whole-graph peak declaration.
+    pub fn wrapper_layout_on_control(&self) -> std::alloc::Layout {
+        std::alloc::Layout::for_value(self.state.as_ref())
+    }
+    /// Immutable constructor facts. The mutable cell remains exclusively
+    /// borrowed by this preparation; no owner or PCM is moved/cloned out.
+    pub fn owner_on_control(&self) -> Option<&AudioCandidateOwner> {
+        self.preparation.owner_ref_on_control()
+    }
+    /// The existing constructor seal is still ONLY its own storage proof.
+    /// A native host must join actual external roots under current custody;
+    /// this summary is not a native/publication permit or joint ledger.
+    pub fn seal_constructor_on_control(
         &mut self,
+        reservation: crate::AudioStorageLedgerReservation,
+        external_runtime_bytes: usize,
+    ) -> Result<AudioCandidateConstructorSummary, AudioStorageError> {
+        self.preparation
+            .owner_on_control()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .seal_constructor_with_runtime_storage_on_control(reservation, external_runtime_bytes)
+    }
+    /// All refusal precedes the irreversible ownership moves. The same native
+    /// host exclusion MUST continue from final inspection through this call and
+    /// queue visibility; no guard is supplied or manufactured by this wrapper.
+    /// The successful transfer itself allocates/clones no owner and invokes no
+    /// user code; the actual runtime Box/groups/journal move one-to-one.
+    pub fn transfer_on_control(
+        self,
     ) -> Result<(ClaimedAudioCandidateRuntime, AudioCandidateAnchors), AudioStorageError> {
+        let owner = self
+            .preparation
+            .owner_ref_on_control()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        // Before the frontier: keep the original rooted on every refusal.
+        // No mutable owner access is exposed while this split borrow exists.
+        if owner.identity() != self.state.identity
+            || owner.source_context() != self.state.source_context
+            || owner.inner.phase != AudioCandidateDisposalPhase::Owned
+            || owner.inner.runtime_receipt.is_some()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let Self { preparation, state } = self;
+        let owner = preparation
+            .take_preflighted_owner()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        // Irreversible frontier: only closed, fixed ownership/scalar moves.
+        Ok(owner.commit_constructor_split(state))
+    }
+}
+impl AudioCandidatePreparation {
+    /// Allocate/validate split metadata BEFORE the final native inspection
+    /// scope. All source/runtime owners stay in this exact construction cell.
+    /// Its exclusive borrow prevents intervening mutation, without supplying
+    /// external family/native guards or candidate/source cancellation fences.
+    pub fn preallocate_publication_split_on_control(
+        &mut self,
+    ) -> Result<AudioCandidatePreparedSplit<'_>, AudioStorageError> {
         let state = self
             .owner_on_control()
             .ok_or(AudioStorageError::SourceMismatch)?
-            .prepare_constructor_split()?;
-        let owner = self
-            .take_preflighted_owner()
-            .ok_or(AudioStorageError::SourceMismatch)?;
-        Ok(owner.commit_constructor_split(state))
+            .prepare_constructor_split(ConstructorPurpose::NativeFresh)?;
+        Ok(AudioCandidatePreparedSplit {
+            preparation: self,
+            state,
+        })
+    }
+    pub(super) fn preallocate_main_split_on_control(
+        &mut self,
+    ) -> Result<AudioCandidatePreparedSplit<'_>, AudioStorageError> {
+        let state = self
+            .owner_on_control()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .prepare_constructor_split(ConstructorPurpose::MainExport)?;
+        Ok(AudioCandidatePreparedSplit {
+            preparation: self,
+            state,
+        })
+    }
+    /// Existing convenience path. Native joint publication must preallocate
+    /// separately and retain its actual guards through the audited transfer.
+    pub fn split_for_publication_on_control(
+        &mut self,
+    ) -> Result<(ClaimedAudioCandidateRuntime, AudioCandidateAnchors), AudioStorageError> {
+        self.preallocate_publication_split_on_control()?
+            .transfer_on_control()
     }
 }
 impl AudioCandidateAnchors {
@@ -149,9 +373,21 @@ impl AudioCandidateAnchors {
         &'a self,
         runtime: &'a ClaimedAudioCandidateRuntime,
     ) -> Option<AudioCandidateConstructorClaims<'a>> {
-        if !self.matches_current(runtime)
+        if runtime.inner.main_export
+            || runtime
+                .inner
+                .runtime
+                .as_ref()
+                .is_none_or(|r| r.playback.is_main_control_runtime())
+            || !self.matches_current(runtime)
             || self.owner.inner.constructor_data.is_none()
             || runtime.inner.phase != ClaimedPhase::Current
+            || self
+                .owner
+                .inner
+                .archive
+                .validate_fresh_pairs(&runtime.inner.groups)
+                .is_err()
             || !runtime
                 .inner
                 .runtime
@@ -189,6 +425,13 @@ impl AudioCandidateAnchors {
         if self.identity() != runtime.identity()
             || self.owner.source_context() != runtime.source_context()
             || self.owner.inner.phase != AudioCandidateDisposalPhase::Leased
+            || runtime.inner.runtime_lease.as_ref().is_none_or(|lease| {
+                self.owner
+                    .inner
+                    .archive
+                    .validate_runtime_pair(lease)
+                    .is_err()
+            })
         {
             return false;
         }
@@ -233,6 +476,87 @@ impl AudioCandidateAnchors {
     }
 }
 impl ClaimedAudioCandidateRuntime {
+    /// Actual control-owned envelope only: the claimed Box and its current
+    /// group/journal backings. The caller must ALSO visit the constructor's
+    /// retained graph, source and physical registration fields. This never
+    /// exposes Playback or certifies absent descendants/whole native storage.
+    /// A borrow cannot coexist with mutation or a callback ownership transfer.
+    pub fn visit_envelope_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        ledger.mutate(|ledger| {
+            if matches!(
+                self.inner.phase,
+                ClaimedPhase::Pending | ClaimedPhase::Failed
+            ) || self.inner.first_panic.is_some()
+            {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            self.inner.lease.visit_bound_body_fields(
+                crate::sampler_host_fields::BodyRef::of(self.inner.as_ref()),
+                ledger,
+            )?;
+            self.inner.groups.visit(ledger)?;
+            self.inner.journal.visit(ledger)
+        })
+    }
+    pub(super) fn visit_main_control_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        use crate::audio_storage::{Location, Owner};
+        if !self.inner.main_export
+            || self.inner.phase != ClaimedPhase::Current
+            || !self.inner.journal.is_empty()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let runtime = self
+            .inner
+            .runtime
+            .as_ref()
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        if !runtime.playback.is_main_control_runtime()
+            || self.inner.groups.iter().enumerate().any(|(i, g)| {
+                g.closed
+                    || g.origin
+                        != g.present.then_some(groups::Origin {
+                            runtime: self.inner.identity,
+                            member: i,
+                        })
+            })
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        validate_runtime_groups(runtime, &self.inner.groups)?;
+        self.inner.lease.visit_bound_body_fields(
+            crate::sampler_host_fields::BodyRef::of(self.inner.as_ref()),
+            ledger,
+        )?;
+        let runtime_lease = self
+            .inner
+            .runtime_lease
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if !runtime_lease.matches_identity(self.inner.identity) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        runtime_lease.visit(ledger)?;
+        self.inner.groups.visit(ledger)?;
+        for group in &self.inner.groups {
+            if let Some(lease) = &group.lease {
+                lease.visit(ledger)?;
+            }
+        }
+        self.inner.journal.visit(ledger)?;
+        ledger.bytes(
+            Owner::exclusive(runtime),
+            Location("runtime-owner-box", 0),
+            std::mem::size_of::<RuntimeOwner>(),
+        )?;
+        runtime.playback.visit_main_control_storage(ledger, false)
+    }
     pub fn source_context(&self) -> Option<crate::AudioSourceContext> {
         self.inner.source_context
     }
@@ -374,16 +698,15 @@ impl ClaimedAudioCandidateRuntime {
         if old.inner.phase != ClaimedPhase::Current || old.identity() == self.identity() {
             return Err(invalid());
         }
-        let next_runtime = self.inner.runtime.as_mut().ok_or_else(invalid)?;
-        let old_runtime = old.inner.runtime.as_mut().ok_or_else(invalid)?;
+        let next: &mut ClaimedState = &mut self.inner;
+        let old_state: &mut ClaimedState = &mut old.inner;
+        let next_runtime = next.runtime.as_mut().ok_or_else(invalid)?;
+        let old_runtime = old_state.runtime.as_mut().ok_or_else(invalid)?;
         let transfer = groups::Transfer::new(
-            &mut self.inner.groups,
-            &mut old.inner.groups,
-            &mut self.inner.journal,
-            self.inner
-                .owned_runtime_bytes
-                .as_mut()
-                .ok_or_else(invalid)?,
+            &mut next.groups,
+            &mut old_state.groups,
+            &mut next.journal,
+            next.owned_runtime_bytes.as_mut().ok_or_else(invalid)?,
         );
         next_runtime
             .playback
@@ -402,31 +725,44 @@ impl ClaimedAudioCandidateRuntime {
     pub fn dispose_on_control(
         &mut self,
     ) -> Result<AudioCandidateRuntimeDisposed, AudioStorageError> {
-        if !matches!(
-            self.inner.phase,
-            ClaimedPhase::Current | ClaimedPhase::Retired
-        ) {
+        let inner: &mut ClaimedState = &mut self.inner;
+        if !matches!(inner.phase, ClaimedPhase::Current | ClaimedPhase::Retired) {
             return Err(AudioStorageError::UnknownStorage);
         }
-        let runtime = self
-            .inner
+        let runtime = inner
             .runtime
             .as_ref()
             .ok_or(AudioStorageError::UnknownStorage)?;
-        validate_runtime_groups(runtime, &self.inner.groups)?;
-        self.inner.phase = ClaimedPhase::Pending;
-        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(self.inner.runtime.take()))) {
-            self.inner.first_panic = Some(payload);
-            self.inner.phase = ClaimedPhase::Failed;
+        validate_runtime_groups(runtime, &inner.groups)?;
+        let runtime_lease = inner
+            .runtime_lease
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if !runtime_lease.matches_identity(inner.identity) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        groups::begin_disposal(&inner.groups)?;
+        runtime_lease.begin_disposal();
+        inner.phase = ClaimedPhase::Pending;
+        if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(inner.runtime.take()))) {
+            inner.first_panic = Some(payload);
+            inner.phase = ClaimedPhase::Failed;
             return Err(AudioStorageError::UnknownStorage);
         }
-        self.inner.phase = ClaimedPhase::Disposed;
-        for group in &mut self.inner.groups {
+        groups::complete_disposal(&inner.groups);
+        runtime_lease.complete_disposal();
+        // Only this actual wrapper's still-owned scalar journal is retired.
+        // A journal previously moved into another State's manifest remains
+        // there with its SAME lease and keeps its birth archive Pending.
+        drop(std::mem::take(&mut inner.journal));
+        inner.phase = ClaimedPhase::Disposed;
+        for group in &mut inner.groups {
             group.closed = group.present;
         }
         Ok(AudioCandidateRuntimeDisposed {
-            runtime: self.inner.identity,
-            groups: std::mem::take(&mut self.inner.groups),
+            runtime: inner.identity,
+            groups: std::mem::take(&mut inner.groups),
+            runtime_lease: inner.runtime_lease.take(),
         })
     }
 }
@@ -434,6 +770,395 @@ impl ClaimedAudioCandidateRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn actual_claimed_box_pair_prices_new_birth_and_retains_metadata_after_body_drop() {
+        let Some((custody, token, _, _)) = crate::audio_preparation::candidate_test_fixture(false)
+        else {
+            return;
+        };
+        let mut owner = AudioCandidateOwner::try_new_on_control(custody, token)
+            .ok()
+            .unwrap();
+        let limits = crate::AudioStorageLedgerReservation {
+            data_rows: 4096,
+            handle_rows: 2048,
+            root_rows: 4,
+            max_retained_bytes: 64 * 1024 * 1024,
+            max_construction_peak_bytes: 64 * 1024 * 1024,
+        };
+        let initial = owner.seal_constructor_on_control(limits).unwrap();
+        assert!(!owner.inner.archive.has_wrapper_registration());
+        let mut row_short = limits;
+        row_short.handle_rows = initial.data.unresolved_handles + 1;
+        crate::owned_shared::reset_birth_count();
+        crate::owned_shared::reset_clone_count();
+        assert_eq!(
+            owner.seal_constructor_on_control(row_short),
+            Err(AudioStorageError::Capacity),
+            "actual normal fields fit, but the two fixed future wrapper handles do not"
+        );
+        assert_eq!(
+            (
+                crate::owned_shared::birth_count(),
+                crate::owned_shared::clone_count()
+            ),
+            (0, 0)
+        );
+        assert!(!owner.inner.archive.has_wrapper_registration());
+        for (retained, peak) in [(1, 0), (0, 1), (0, 0)] {
+            let mut exact = limits;
+            exact.max_retained_bytes =
+                initial.data.retained_bytes + initial.reserved_split_bytes - retained;
+            exact.max_construction_peak_bytes =
+                initial.data.construction_peak_bytes + initial.reserved_split_bytes - peak;
+            crate::owned_shared::reset_birth_count();
+            crate::owned_shared::reset_clone_count();
+            let result = owner.seal_constructor_on_control(exact);
+            assert_eq!(result.is_ok(), retained == 0 && peak == 0);
+            assert_eq!(
+                (
+                    crate::owned_shared::birth_count(),
+                    crate::owned_shared::clone_count()
+                ),
+                (0, 0),
+                "actual future Box allowance checked before any new paired metadata birth/clone"
+            );
+            assert!(!owner.inner.archive.has_wrapper_registration());
+        }
+        let mut holder = None;
+        let allocated = allocation_counter::measure(|| {
+            holder = Some(
+                owner
+                    .prepare_constructor_split(ConstructorPurpose::NativeFresh)
+                    .unwrap(),
+            );
+        });
+        let metadata = crate::sampler_host_fields::NativeStateStorageRegistration::metadata_requested_bytes_on_control().unwrap();
+        assert_eq!(allocated.count_total, 2);
+        assert_eq!(
+            allocated.bytes_total as usize,
+            size_of::<ClaimedState>() + metadata
+        );
+        assert!(
+            initial.reserved_split_bytes > allocated.bytes_total as usize,
+            "separate initializer/holder/pair overlap is conservative, not heap DATA"
+        );
+        let with_box = owner.seal_constructor_on_control(limits).unwrap();
+        assert_eq!(
+            with_box.data.data_bytes - initial.data.data_bytes,
+            allocated.bytes_total as usize
+        );
+        assert!(with_box.data.require_complete().is_err());
+        assert_eq!(
+            (
+                with_box.shared_resource_groups,
+                with_box.shared_resource_handles
+            ),
+            (
+                initial.shared_resource_groups,
+                initial.shared_resource_handles
+            ),
+            "finite future capacity becomes actual metadata fields; it never supplies identity"
+        );
+        assert_eq!(
+            with_box.reserved_split_bytes,
+            size_of::<AudioCandidatePreparedSplit<'_>>(),
+            "actual Box is already DATA: reserve only actual prepared-value stack overlap"
+        );
+        let released = allocation_counter::measure(|| drop(holder.take()));
+        assert_eq!(
+            (
+                released.count_total,
+                released.count_current,
+                released.bytes_total,
+                released.bytes_current
+            ),
+            (0, -1, 0, -(size_of::<ClaimedState>() as i64))
+        );
+        assert!(owner.inner.archive.wrapper_can_be_prepared());
+        let retained = owner.seal_constructor_on_control(limits).unwrap();
+        assert_eq!(
+            retained.data.data_bytes - initial.data.data_bytes,
+            metadata,
+            "actual Box freed, same constructor record still owns its metadata"
+        );
+        let retry = owner
+            .prepare_constructor_split(ConstructorPurpose::NativeFresh)
+            .unwrap();
+        drop(retry);
+        owner.dispose_on_control().unwrap();
+        drop(owner.recover_inputs_on_control().unwrap());
+        eprintln!(
+            "SUPPORTED actual future retained/peak each-minus1 seal refuses before new metadata birth/clone; actual Box+record2alloc bytes{}; body freed{} while metadata{metadata} retained; same rooted normal empty-split retry; conservative overlap NOT whole-host admission",
+            allocated.bytes_total,
+            size_of::<ClaimedState>()
+        );
+    }
+    #[test]
+    fn constructor_metering_setup_preserves_pcm_storage_and_actual_device_peaks() {
+        use hex_lattice_contract::NativeDeviceMetadata;
+        if !crate::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported constructor metering; no positive setup proof");
+            return;
+        }
+        eprintln!("SUPPORTED actual rooted constructor metering and Utility output peaks");
+        let mut snapshot = crate::audio_preparation::candidate_test_project().snapshot();
+        let device = snapshot.next_id;
+        snapshot.tracks[0]
+            .devices
+            .push(hex_project::DeviceSnapshot {
+                comparison: None,
+                id: device,
+                bypassed: false,
+                state: hex_devices::utility::UTILITY_DEFINITION
+                    .default_state()
+                    .unwrap(),
+            });
+        snapshot.next_id += 1;
+        let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+        let asset = project.assets().next().unwrap().id();
+        let mut results = Vec::new();
+        for enabled in [false, true] {
+            let quote = AudioCandidateReservationQuote::for_project(&project, 1).unwrap();
+            let mut cell = AudioCandidatePreparation::try_new_on_control(
+                1,
+                quote.storage_reservation(1024).unwrap(),
+            )
+            .unwrap();
+            let audio = crate::Audio::new(48_000, vec![[0.25, -0.5]; 8]).unwrap();
+            cell.copy_resident_source_on_control(asset, &audio).unwrap();
+            cell.prepare_on_control(
+                &project,
+                11,
+                crate::AudioSourceContext {
+                    project_generation: 2,
+                    editor_revision: 7,
+                },
+            )
+            .unwrap();
+            let owner = cell.owner_on_control().unwrap();
+            let address = owner.inner.runtime.as_deref().unwrap() as *const RuntimeOwner;
+            owner.prepare_device_metering_on_control(enabled).unwrap();
+            assert_eq!(
+                owner.inner.runtime.as_deref().unwrap() as *const RuntimeOwner,
+                address
+            );
+            let summary = owner
+                .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                    data_rows: 4096,
+                    handle_rows: 2048,
+                    root_rows: 4,
+                    max_retained_bytes: 64 * 1024 * 1024,
+                    max_construction_peak_bytes: 64 * 1024 * 1024,
+                })
+                .unwrap();
+            let (mut runtime, mut anchors) = cell.split_for_publication_on_control().unwrap();
+            assert_eq!(
+                anchors.constructor_claims(&runtime).unwrap().summary(),
+                Some(summary)
+            );
+            assert!(
+                anchors
+                    .owner
+                    .prepare_device_metering_on_control(!enabled)
+                    .is_err()
+            );
+            runtime
+                .apply_action(crate::PlaybackAction::Transport(
+                    crate::PlaybackCommand::Play,
+                ))
+                .unwrap();
+            let mut pcm = [[0.0; 2]; 8];
+            runtime
+                .render_with_post_node_observer(&mut pcm, None)
+                .unwrap();
+            let root = anchors
+                .owner
+                .inner
+                .custody
+                .candidate_root_view(&anchors.owner.inner.token)
+                .unwrap();
+            let peaks = root
+                .arrangement()
+                .device_meter(device)
+                .unwrap()
+                .take_peaks();
+            if enabled {
+                // DeviceMeter reports aggregate input/output peaks, rather
+                // than separate left/right channels. Unity Utility preserves
+                // the independent 0.5 absolute stereo input maximum.
+                assert_eq!(peaks, [0.5, 0.5]);
+            } else {
+                assert_eq!(peaks, [0.0, 0.0]);
+            }
+            results.push(pcm);
+            let proof = runtime.dispose_on_control().unwrap();
+            let mut cells = [Some(anchors)];
+            proof.record_anchor_cells_on_control(&mut cells).unwrap();
+            let anchors = cells[0].as_mut().unwrap();
+            assert!(matches!(
+                anchors.finish_disposal_on_control(),
+                Err(AudioStorageError::ExternalReadersPending)
+            ));
+            drop(proof); // Actual held group-book backing, after real fanout.
+            assert!(matches!(
+                anchors.finish_disposal_on_control(),
+                Err(AudioStorageError::ExternalReadersPending)
+            ));
+            drop(runtime); // Actual separate claimed Box, not the DSP proof.
+            anchors.finish_disposal_on_control().unwrap();
+            let _bank = anchors.recover_inputs_on_control().unwrap();
+            cell.cleanup_on_control().unwrap();
+        }
+        assert_eq!(results[0], results[1]);
+        assert_eq!(results[1], [[0.25, -0.5]; 8]);
+    }
+    #[test]
+    fn preallocated_split_drop_and_transfer_preserve_actual_cell_and_allocation_ownership() {
+        if !crate::audio_storage_constructor_layout_supported() {
+            eprintln!("unsupported preallocated split constructor; no positive transfer proof");
+            return;
+        }
+        eprintln!(
+            "SUPPORTED actual preallocated split drop/retry and fixed constructor ownership transfer"
+        );
+        let reservation = crate::AudioStorageReservation {
+            allocation_items: 256,
+            handle_obligations: 4096,
+            max_prepared_data_bytes: 64 * 1024 * 1024,
+            max_construction_data_bytes: 64 * 1024 * 1024,
+            caller_retained_bytes: 0,
+            caller_construction_bytes: 0,
+        };
+        let mut cell = AudioCandidatePreparation::try_new_on_control(1, reservation).unwrap();
+        assert!(cell.preallocate_publication_split_on_control().is_err());
+        let project = crate::audio_preparation::candidate_test_project();
+        let asset = project.assets().next().unwrap().id();
+        // Existing audio-clip constructor fixture only; this is not Sampler
+        // original-resource admission or a new production PCM-copy route.
+        let audio = crate::Audio::new(48_000, vec![[0.25; 2]; 8]).unwrap();
+        cell.copy_resident_source_on_control(asset, &audio).unwrap();
+        cell.prepare_on_control(
+            &project,
+            11,
+            crate::AudioSourceContext {
+                project_generation: 2,
+                editor_revision: 7,
+            },
+        )
+        .unwrap();
+        let facts = |owner: &AudioCandidateOwner| {
+            (
+                owner.identity(),
+                owner.inner.as_ref() as *const CandidateState as usize,
+                owner.inner.runtime.as_deref().unwrap() as *const RuntimeOwner as usize,
+                owner.inner.groups.as_ptr() as usize,
+                owner.inner.journal.as_ptr() as usize,
+            )
+        };
+        let before = facts(cell.owner_on_control().unwrap());
+        {
+            let prepared = cell.preallocate_publication_split_on_control().unwrap();
+            assert_eq!(facts(prepared.owner_on_control().unwrap()), before);
+            assert!(prepared.state.runtime.is_none());
+            assert_eq!(prepared.state.groups.capacity(), 0);
+            assert_eq!(prepared.state.journal.capacity(), 0);
+            // Drop before final admission leaves the original owner rooted.
+        }
+        assert_eq!(facts(cell.owner_on_control().unwrap()), before);
+        let mut prepared = cell.preallocate_publication_split_on_control().unwrap();
+        let allocated_wrapper = prepared.state.as_ref() as *const ClaimedState as usize;
+        // Final constructor sealing follows allocation; the transferred wrapper
+        // must receive the NEW seal rather than its earlier absent declaration.
+        assert!(prepared.state.owned_runtime_bytes.is_none());
+        assert!(
+            prepared
+                .seal_constructor_on_control(
+                    crate::AudioStorageLedgerReservation {
+                        data_rows: 4096,
+                        handle_rows: 2048,
+                        root_rows: 4,
+                        max_retained_bytes: 1,
+                        max_construction_peak_bytes: 1,
+                    },
+                    0
+                )
+                .is_err()
+        );
+        assert_eq!(facts(prepared.owner_on_control().unwrap()), before);
+        assert_eq!(
+            prepared.state.as_ref() as *const ClaimedState as usize,
+            allocated_wrapper
+        );
+        let summary = prepared
+            .seal_constructor_on_control(
+                crate::AudioStorageLedgerReservation {
+                    data_rows: 4096,
+                    handle_rows: 2048,
+                    root_rows: 4,
+                    max_retained_bytes: 64 * 1024 * 1024,
+                    max_construction_peak_bytes: 64 * 1024 * 1024,
+                },
+                0,
+            )
+            .unwrap();
+        let (mut runtime, mut anchors) = prepared.transfer_on_control().unwrap();
+        assert!(cell.owner_on_control().is_none());
+        assert_eq!(
+            runtime.inner.as_ref() as *const ClaimedState as usize,
+            allocated_wrapper
+        );
+        assert_eq!(anchors.owner.identity(), before.0);
+        assert_eq!(
+            anchors.owner.inner.as_ref() as *const CandidateState as usize,
+            before.1
+        );
+        assert_eq!(
+            runtime.inner.runtime.as_deref().unwrap() as *const RuntimeOwner as usize,
+            before.2
+        );
+        assert_eq!(runtime.inner.groups.as_ptr() as usize, before.3);
+        assert_eq!(runtime.inner.journal.as_ptr() as usize, before.4);
+        assert_eq!(
+            runtime.inner.owned_runtime_bytes,
+            Some(summary.owned_runtime_bytes)
+        );
+        assert!(anchors.matches_current(&runtime));
+        assert!(anchors.recover_inputs_on_control().is_none());
+        runtime
+            .apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        let mut actual = [[0.0; 2]; 8];
+        runtime
+            .render_with_post_node_observer(&mut actual, None)
+            .unwrap();
+        assert!(
+            actual
+                .iter()
+                .any(|frame| frame.iter().any(|sample| *sample != 0.0))
+        );
+        let proof = runtime.dispose_on_control().unwrap();
+        let mut anchor_cells = [Some(anchors)];
+        proof
+            .record_anchor_cells_on_control(&mut anchor_cells)
+            .unwrap();
+        let anchors = anchor_cells[0].as_mut().unwrap();
+        assert!(matches!(
+            anchors.finish_disposal_on_control(),
+            Err(AudioStorageError::ExternalReadersPending)
+        ));
+        drop(proof); // Same proof is physically retired, never a scalar receipt.
+        assert!(matches!(
+            anchors.finish_disposal_on_control(),
+            Err(AudioStorageError::ExternalReadersPending)
+        ));
+        drop(runtime);
+        anchors.finish_disposal_on_control().unwrap();
+        let _bank = anchors.recover_inputs_on_control().unwrap();
+        cell.cleanup_on_control().unwrap();
+    }
     #[test]
     fn split_keeps_actual_runtime_box_and_original_custodian_until_normal_bound_disposal() {
         let Some((custody, token, pointer, capacity)) =
@@ -516,6 +1241,16 @@ mod tests {
         proof.record_anchor_cells_on_control(&mut anchors).unwrap();
         assert!(proof.record_anchor_cells_on_control(&mut anchors).is_err());
         let anchor = anchors[0].as_mut().unwrap();
+        assert!(matches!(
+            anchor.finish_disposal_on_control(),
+            Err(AudioStorageError::ExternalReadersPending)
+        ));
+        drop(proof);
+        assert!(matches!(
+            anchor.finish_disposal_on_control(),
+            Err(AudioStorageError::ExternalReadersPending)
+        ));
+        drop(runtime);
         anchor.finish_disposal_on_control().unwrap();
         let bank = anchor.recover_inputs_on_control().unwrap();
         assert_eq!(

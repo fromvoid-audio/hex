@@ -7,12 +7,14 @@ use hex_engine::{
 use std::{
     any::Any,
     panic::{AssertUnwindSafe, catch_unwind},
-    sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicBool, AtomicU64, Ordering},
 };
+mod custody_mutex;
+#[cfg(test)]
+mod inline_lock_tests;
+pub(crate) use custody_mutex::{CustodyMutex, CustodyMutexGuard, CustodyTryLockError};
 mod eligible;
+mod root_fields;
 pub(crate) use eligible::DomainEnvelope;
 pub(crate) use eligible::publication::{
     Active as ActiveEligibleCandidate, FinalReturn as EligibleFinalReturn, InstallDecision,
@@ -28,6 +30,7 @@ pub use eligible::{
     AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
     AudioCandidatePublicationReservation,
 };
+pub(crate) use root_fields::RootActor;
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -130,7 +133,8 @@ struct Work {
     last_thread: Option<std::thread::ThreadId>,
 }
 struct AbandonedReturns {
-    receiver: rtrb::Consumer<crate::prepared::ReturnedPublication>,
+    receiver:
+        crate::native_callback_owner::NativePreparedConsumer<crate::prepared::ReturnedPublication>,
     held: Option<crate::prepared::ReturnedPublication>,
     pending: bool,
     first_panic: Option<Box<dyn Any + Send>>,
@@ -138,13 +142,16 @@ struct AbandonedReturns {
 struct Inner {
     root: u64,
     eligible: eligible::Custody,
-    bank: Mutex<Bank>,
-    execution: Mutex<Work>,
+    bank: CustodyMutex<Bank>,
+    execution: CustodyMutex<Work>,
     abandoned: AtomicBool,
-    returns: Mutex<Option<AbandonedReturns>>,
+    returns: CustodyMutex<Option<AbandonedReturns>>,
+    resident: Option<crate::prepared::resident_forwarding::ResidentArchive>,
+    carrier_birth: std::sync::OnceLock<AudioCandidatePublicationReservation>,
+    root_fields: Option<hex_engine::sampler_host_fields::NativeRootFieldRegistration>,
 }
 #[derive(Clone)]
-pub(crate) struct CandidateRoot(Arc<Inner>);
+pub(crate) struct CandidateRoot(hex_engine::SharedMetadata<Inner>);
 pub(crate) struct QueuedCandidate {
     pub(crate) stamp: Stamp,
     pub(crate) owner: AudioCandidateOwner,
@@ -215,11 +222,204 @@ impl QueuedCandidate {
         }
     }
 }
-fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
-    value.lock().unwrap_or_else(PoisonError::into_inner)
+fn root_allocation_bytes() -> Option<usize> {
+    hex_engine::sampler_host_fields::SharedMetadataRef::constructor_bytes::<Inner>().ok()
+}
+fn lock<T>(value: &CustodyMutex<T>) -> CustodyMutexGuard<'_, T> {
+    value.lock_recover_on_control()
 }
 impl CandidateRoot {
+    /// The concrete Root shell, its original two signals and actual selected
+    /// slot backing. This is a constructor cost, never whole-host admission.
+    pub(crate) fn requested_birth_bytes(capacity: usize) -> Option<usize> {
+        let slots = std::alloc::Layout::array::<Slot>(capacity).ok()?.size();
+        root_allocation_bytes()?
+            .checked_add(eligible::pages::signal_data_bytes()?)?
+            .checked_add(slots)
+    }
+    pub(crate) fn birth_scratch_bytes() -> Option<usize> {
+        std::mem::size_of::<Inner>().checked_add(std::mem::size_of::<Slot>())
+    }
+    pub(crate) fn status_guard_bytes() -> usize {
+        eligible::Custody::status_guard_bytes()
+    }
+    pub(crate) fn initialize_status(
+        &self,
+    ) -> Result<crate::prepared::status_owner::InitialFields, hex_engine::Invalid> {
+        self.0.eligible.initialize_status()
+    }
+    pub(crate) fn duplicate_status(
+        &self,
+        field: &crate::prepared::status_owner::StatusHandle,
+        role: usize,
+    ) -> Result<crate::prepared::status_owner::StatusHandle, hex_engine::Invalid> {
+        self.0.eligible.duplicate_status(field, role)
+    }
+    pub(crate) fn matches_status_field(
+        &self,
+        field: &crate::prepared::status_owner::StatusHandle,
+        role: usize,
+    ) -> bool {
+        self.0.eligible.matches_status_field(field, role)
+    }
+    pub(crate) fn matches_atomic_signal(
+        &self,
+        index: usize,
+        field: &crate::native_callback_owner::atomic_signal::Signal,
+        endpoint: usize,
+    ) -> bool {
+        self.0
+            .eligible
+            .matches_atomic_signal(index, field, endpoint)
+    }
+    pub(crate) fn matches_prepared_producer<T>(
+        &self,
+        index: usize,
+        field: &crate::native_callback_owner::NativePreparedProducer<T>,
+    ) -> bool {
+        self.0.eligible.matches_prepared_producer(index, field)
+    }
+    pub(crate) fn matches_prepared_consumer<T>(
+        &self,
+        index: usize,
+        field: &crate::native_callback_owner::NativePreparedConsumer<T>,
+    ) -> bool {
+        self.0.eligible.matches_prepared_consumer(index, field)
+    }
+    pub(crate) fn retain_atomic_signal(
+        &self,
+        index: usize,
+        record: hex_engine::sampler_host_fields::NativeAtomicSignalRegistration,
+    ) -> Result<(), &'static str> {
+        self.0.eligible.retain_atomic_signal(index, record)
+    }
+    pub(crate) fn retain_prepared_ring(
+        &self,
+        index: usize,
+        record: hex_engine::sampler_host_fields::NativeFixedRingRegistration,
+    ) -> Result<(), &'static str> {
+        self.0.eligible.retain_prepared_ring(index, record)
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_resident_facts(
+        &self,
+    ) -> Result<(usize, usize), hex_engine::AudioStorageError> {
+        self.0
+            .resident
+            .as_ref()
+            .ok_or(hex_engine::AudioStorageError::SourceMismatch)?
+            .test_facts(16)
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_status_data(&self) -> Result<usize, hex_engine::AudioStorageError> {
+        self.0.eligible.test_status_data()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_atomic_signal_data(
+        &self,
+    ) -> Result<(usize, usize), hex_engine::AudioStorageError> {
+        self.0.eligible.test_atomic_signal_data()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_prepared_ring_data(
+        &self,
+    ) -> Result<(usize, usize), hex_engine::AudioStorageError> {
+        self.0.eligible.test_prepared_ring_data()
+    }
     pub(crate) fn new(capacity: usize) -> Result<Self, &'static str> {
+        Self::construct(capacity, false)
+    }
+    pub(crate) fn new_registered(capacity: usize) -> Result<Self, &'static str> {
+        Self::construct(capacity, true)
+    }
+    pub(crate) fn matches_resident_field(
+        &self,
+        field: &crate::prepared::resident_forwarding::ResidentHandle,
+        role: usize,
+    ) -> bool {
+        self.0
+            .resident
+            .as_ref()
+            .is_some_and(|archive| archive.matches_actual_field(field, role))
+    }
+    pub(crate) fn resident_fields(
+        &self,
+    ) -> Result<[crate::prepared::resident_forwarding::ResidentHandle; 2], hex_engine::Invalid>
+    {
+        match &self.0.resident {
+            Some(archive) => archive.pair(),
+            None => Ok(crate::prepared::resident_forwarding::ResidentHandle::legacy_pair()),
+        }
+    }
+    pub(crate) fn plan_native_carrier_birth(
+        &self,
+        limits: AudioCandidatePublicationReservation,
+    ) -> Result<(), hex_engine::Invalid> {
+        self.0
+            .carrier_birth
+            .set(limits)
+            .map_err(|_| hex_engine::Invalid("native carrier birth already planned"))
+    }
+    pub(crate) fn same_constructor_as(&self, other: &Self) -> bool {
+        self.0.shares_owner_with(&other.0)
+    }
+    pub(crate) fn native_carrier_birth_limits(
+        &self,
+    ) -> Option<AudioCandidatePublicationReservation> {
+        self.0.carrier_birth.get().copied()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_native_root_header_fields(
+        &self,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 32,
+                handle_rows: 32,
+                root_rows: 4,
+                max_retained_bytes: 1 << 20,
+                max_construction_peak_bytes: 1 << 20,
+            },
+        )?;
+        ledger.borrow_sampler_native_root_fields_on_control(
+            hex_engine::sampler_host_fields::SharedMetadataRef::of(&self.0),
+            self.0.root_fields.as_ref(),
+        )?;
+        ledger.validate_selected_shared_handles_on_control()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_native_carrier_facts(
+        &self,
+    ) -> Result<(usize, usize), hex_engine::AudioStorageError> {
+        self.0.eligible.test_native_carrier_facts()
+    }
+    pub(crate) fn native_carrier_vacant(&self, index: usize) -> bool {
+        self.0.eligible.native_carrier_vacant(index)
+    }
+    pub(crate) fn retain_native_carrier(
+        &self,
+        index: usize,
+        record: hex_engine::sampler_host_fields::NativeCarrierStorageRegistration,
+    ) -> Result<(), &'static str> {
+        self.0.eligible.retain_native_carrier(index, record)
+    }
+    pub(crate) fn resident_requested_bytes() -> Option<usize> {
+        crate::prepared::resident_forwarding::ResidentArchive::requested_bytes()
+    }
+    pub(crate) fn resident_scratch_bytes() -> Option<usize> {
+        crate::prepared::resident_forwarding::ResidentArchive::construction_scratch()
+    }
+    fn construct(capacity: usize, registered: bool) -> Result<Self, &'static str> {
+        if registered {
+            Self::requested_birth_bytes(capacity)
+                .and_then(|n| n.checked_add(Self::resident_requested_bytes()?))
+                .and_then(|n| n.checked_add(Self::root_fields_requested_bytes()?))
+                .ok_or("constructor resident allocation overflow")?;
+        }
+        // Aggregate overflow/layout refusal before any slot, signal or Root birth.
+        Self::requested_birth_bytes(capacity).ok_or("constructor Root layout overflow")?;
+        root_allocation_bytes().ok_or("constructor Root layout is unsupported")?;
+        eligible::pages::signal_data_bytes().ok_or("constructor signal layout is unsupported")?;
         let root = NEXT_ROOT
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
             .map_err(|_| "candidate root identity exhausted")?;
@@ -228,27 +428,36 @@ impl CandidateRoot {
             .try_reserve_exact(capacity)
             .map_err(|_| "could not reserve candidate custody")?;
         slots.resize_with(capacity, Slot::vacant);
-        let root = Self(Arc::new(Inner {
+        let root_fields = if registered {
+            Some(
+                hex_engine::sampler_host_fields::NativeRootFieldRegistration::new_on_control()
+                    .map_err(|_| "Root field constructor refused")?,
+            )
+        } else {
+            None
+        };
+        let resident = if registered {
+            Some(crate::prepared::resident_forwarding::ResidentArchive::new().map_err(|e| e.0)?)
+        } else {
+            None
+        };
+        let root = Self(hex_engine::SharedMetadata::new_on_control(Inner {
             root,
             eligible: eligible::Custody::default(),
-            bank: Mutex::new(Bank {
+            bank: CustodyMutex::new(Bank {
                 root,
                 closing: false,
                 slots,
                 scheduled: false,
                 retiring: false,
             }),
-            execution: Mutex::new(Work::default()),
+            execution: CustodyMutex::new(Work::default()),
             abandoned: AtomicBool::new(false),
-            returns: Mutex::new(None),
+            returns: CustodyMutex::new(None),
+            resident,
+            carrier_birth: std::sync::OnceLock::new(),
+            root_fields,
         }));
-        // Some supported std mutex implementations allocate lazily at first
-        // lock. Initialize every actual lock during channel construction,
-        // never during the legacy allocation-free control reclaim contract.
-        drop(lock(&root.0.bank));
-        drop(lock(&root.0.execution));
-        drop(lock(&root.0.returns));
-        root.0.eligible.prewarm_on_control();
         Ok(root)
     }
     /// Ordinary control lock spans reservation and queue push: terminal closure
@@ -357,12 +566,16 @@ impl CandidateRoot {
             .slots
             .capacity()
             .checked_mul(std::mem::size_of::<Slot>())
-            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(root_allocation_bytes()?))
             .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?))
             .ok_or("constructor Root metadata overflow")?;
-        self.0
-            .eligible
-            .configure(self.root_id(), reservation, bytes)
+        self.0.eligible.configure(
+            self.root_id(),
+            reservation,
+            bytes,
+            self.0.resident.as_ref(),
+            self.0.root_fields.as_ref(),
+        )
     }
     pub(crate) fn record_native_boundary(
         &self,
@@ -379,13 +592,17 @@ impl CandidateRoot {
     pub(crate) fn anchor_native_boundary(
         &self,
         terminals: &crate::native_callback_owner::NativeTerminals,
-    ) {
+    ) -> bool {
         self.0
             .eligible
-            .anchor_native_boundary(self.root_id(), terminals);
+            .anchor_native_boundary(self.root_id(), terminals)
     }
     pub(crate) fn native_boundary_bytes(&self) -> Option<usize> {
         self.0.eligible.native_boundary_bytes(self.root_id())
+    }
+    #[cfg(test)]
+    pub(crate) fn test_requires_analyzer_parent(&self) -> bool {
+        self.0.eligible.test_requires_analyzer_parent()
     }
     pub(crate) fn configure_publications(
         &self,
@@ -400,13 +617,17 @@ impl CandidateRoot {
             .slots
             .capacity()
             .checked_mul(std::mem::size_of::<Slot>())
-            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(root_allocation_bytes()?))
             .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?))
             .and_then(|n| n.checked_add(queue_bytes))
             .ok_or("constructor Root metadata overflow")?;
-        self.0
-            .eligible
-            .configure_publications(self.root_id(), reservation, bytes)
+        self.0.eligible.configure_publications(
+            self.root_id(),
+            reservation,
+            bytes,
+            self.0.resident.as_ref(),
+            self.0.root_fields.as_ref(),
+        )
     }
     pub(crate) fn configure_streaming(&self, limit: usize) -> Result<(), &'static str> {
         self.0.eligible.configure_streaming(limit)
@@ -651,7 +872,11 @@ impl CandidateRoot {
 
     pub(crate) fn abandon_control(
         &self,
-        receiver: Option<rtrb::Consumer<crate::prepared::ReturnedPublication>>,
+        receiver: Option<
+            crate::native_callback_owner::NativePreparedConsumer<
+                crate::prepared::ReturnedPublication,
+            >,
+        >,
         held: Option<crate::prepared::ReturnedPublication>,
     ) {
         // Sole non-Clone Control moves this endpoint exactly once. No earlier
@@ -972,11 +1197,165 @@ impl CandidateRoot {
     }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_strong_count(&self) -> usize {
-        Arc::strong_count(&self.0)
+        hex_engine::sampler_host_fields::SharedMetadataRef::of(&self.0).strong_handles_on_control()
     }
     #[cfg(test)]
     pub(crate) fn test_eligible_complete(&self) -> bool {
         self.0.eligible.complete()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_spectrum_capture_facts(
+        &self,
+    ) -> Result<Option<(bool, usize)>, hex_engine::AudioStorageError> {
+        self.0.eligible.test_spectrum_capture_facts()
+    }
+    pub(crate) fn spectrum_capture_pair_guard_bytes() -> usize {
+        eligible::Custody::status_guard_bytes()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_spectrum_ring_facts(
+        &self,
+    ) -> Result<([bool; 6], usize), hex_engine::AudioStorageError> {
+        self.0.eligible.test_spectrum_ring_facts()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_spectrum_stop_data(&self) -> Result<usize, hex_engine::AudioStorageError> {
+        self.0.eligible.test_spectrum_stop_data()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_spectrum_packet_facts(
+        &self,
+    ) -> Result<(usize, usize, usize), hex_engine::AudioStorageError> {
+        self.0.eligible.test_spectrum_packet_facts()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_spectrum_result_facts(
+        &self,
+    ) -> Result<(usize, usize, usize), hex_engine::AudioStorageError> {
+        self.0.eligible.test_spectrum_result_facts()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_matches_spectrum_packet(
+        &self,
+        lease: &hex_engine::sampler_host_fields::NativeSpectrumPacketLease,
+    ) -> bool {
+        self.0.eligible.test_matches_spectrum_packet(lease)
+    }
+    pub(crate) fn pair_spectrum_packet_on_control(
+        &self,
+        index: usize,
+        fields: hex_engine::sampler_host_fields::NativeSpectrumPacketFields<'_>,
+    ) -> Result<
+        hex_engine::sampler_host_fields::NativeSpectrumPacketLease,
+        hex_engine::AudioStorageError,
+    > {
+        self.0.eligible.pair_spectrum_packet(index, fields)
+    }
+    pub(crate) fn pair_spectrum_result_on_control(
+        &self,
+        index: usize,
+        fields: hex_engine::sampler_host_fields::NativeSpectrumResultFields<'_>,
+    ) -> Result<
+        (
+            hex_engine::sampler_host_fields::NativeSpectrumResultLease,
+            hex_engine::sampler_host_fields::NativeSpectrumResultHome,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.0.eligible.pair_spectrum_result(index, fields)
+    }
+    pub(crate) fn spectrum_stop_pair_on_control(
+        &self,
+    ) -> Result<
+        [hex_engine::sampler_host_fields::NativeAtomicSignal; 2],
+        hex_engine::AudioStorageError,
+    > {
+        self.0.eligible.spectrum_stop_pair()
+    }
+    pub(crate) fn matches_spectrum_stop(
+        &self,
+        stop: &crate::spectrum_worker::SpectrumStop,
+    ) -> bool {
+        self.0.eligible.matches_spectrum_stop(stop)
+    }
+    pub(crate) fn spectrum_project_ring_on_control<T>(
+        &self,
+        index: usize,
+        capacity: usize,
+    ) -> Result<
+        (
+            crate::native_callback_owner::NativePreparedProducer<T>,
+            crate::native_callback_owner::NativePreparedConsumer<T>,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.0.eligible.spectrum_project_ring(index, capacity)
+    }
+    pub(crate) fn spectrum_capture_ring_on_control(
+        &self,
+    ) -> Result<
+        (
+            crate::native_callback_owner::NativePreparedProducer<
+                crate::spectrum_worker::CaptureBatch,
+            >,
+            crate::native_callback_owner::NativePreparedConsumer<
+                crate::spectrum_worker::CaptureBatch,
+            >,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.0.eligible.spectrum_capture_ring()
+    }
+    pub(crate) fn spectrum_result_ring_on_control(
+        &self,
+    ) -> Result<
+        (
+            crate::native_callback_owner::NativePreparedProducer<
+                crate::spectrum_worker::PublishedSpectra,
+            >,
+            crate::native_callback_owner::NativePreparedConsumer<
+                crate::spectrum_worker::PublishedSpectra,
+            >,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.0.eligible.spectrum_result_ring()
+    }
+    pub(crate) fn matches_spectrum_capture(
+        &self,
+        capture: Option<&crate::spectrum_worker::SpectrumCapture>,
+    ) -> bool {
+        self.0.eligible.matches_spectrum_capture(capture)
+    }
+    pub(crate) fn matches_spectrum_reader(
+        &self,
+        reader: Option<&crate::spectrum_worker::SpectrumReader>,
+    ) -> bool {
+        self.0.eligible.matches_spectrum_reader(reader)
+    }
+    pub(crate) fn pair_spectrum_capture_on_control(
+        &self,
+        fields: hex_engine::sampler_host_fields::NativeSpectrumCaptureFields<'_>,
+    ) -> Result<
+        (
+            hex_engine::sampler_host_fields::NativeSpectrumCaptureLease,
+            hex_engine::sampler_host_fields::NativeSpectrumJoinLease,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.0.eligible.pair_spectrum_capture(fields)
+    }
+    pub(crate) fn finish_spectrum_capture_on_control(
+        &self,
+        join: &mut hex_engine::sampler_host_fields::NativeSpectrumJoinLease,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        self.0.eligible.finish_spectrum_capture(join)
+    }
+    pub(crate) fn abort_spectrum_capture_on_control(
+        &self,
+        join: &mut hex_engine::sampler_host_fields::NativeSpectrumJoinLease,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        self.0.eligible.abort_spectrum_capture(join)
     }
     pub(crate) fn finish_on_control(&self) -> bool {
         self.close();
@@ -988,7 +1367,7 @@ impl CandidateRoot {
             && self.0.eligible.complete()
     }
     pub(crate) fn same_root(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.0, &other.0)
+        self.0.shares_owner_with(&other.0)
     }
     /// Producer serialization with retirement announcement. The send executes
     /// synchronously under this short lock; no cleanup can queue after Retire.
@@ -1080,7 +1459,7 @@ impl CandidateRoot {
             .slots
             .capacity()
             .checked_mul(std::mem::size_of::<Slot>())
-            .and_then(|n| n.checked_add(std::mem::size_of::<Inner>()))
+            .and_then(|n| n.checked_add(root_allocation_bytes()?))
             .and_then(|n| n.checked_add(eligible::pages::signal_data_bytes()?));
         for slot in &bank.slots {
             for catalog in slot.catalog.iter() {
@@ -1127,7 +1506,7 @@ mod tests {
             .ok()
             .unwrap();
         root.ingest(queued.reject_before_install()).ok().unwrap();
-        let drops = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let drops = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
         let counter = drops.clone();
         {
             // Secure the actual returned constructor owners in the same

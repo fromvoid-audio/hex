@@ -18,7 +18,7 @@ pub(crate) struct DomainEnvelope {
 pub(super) struct DomainPages {
     pub(super) token: AudioCandidateDomainToken,
     pub(super) loan: Option<hex_stream::ConstructorPageLoan>,
-    pub(super) signal: Arc<DomainSignal>,
+    pub(super) signal: hex_engine::SharedMetadata<DomainSignal>,
     pub(super) epoch: u64,
     // Last exact worker receipt, retained as bounded diagnostic metadata. Its
     // consumption releases a failed pending request, never readiness authority.
@@ -28,7 +28,7 @@ impl DomainEnvelope {
     pub(super) fn new(
         token: AudioCandidateDomainToken,
         loan: hex_stream::ConstructorPageLoan,
-        signal: Arc<DomainSignal>,
+        signal: hex_engine::SharedMetadata<DomainSignal>,
     ) -> Self {
         Self {
             inner: Box::new(DomainPages {
@@ -79,7 +79,7 @@ impl Custody {
         if !slot.matches(pages.inner.token)
             || !slot.loan_outstanding
             || slot.returned_pages.is_some()
-            || !Arc::ptr_eq(&slot.signal, &pages.inner.signal)
+            || !slot.signal.shares_owner_with(&pages.inner.signal)
             || pages.inner.loan.is_none()
             || !matches!(slot.phase, Phase::Accepted | Phase::Cleaning)
         {
@@ -90,7 +90,10 @@ impl Custody {
     }
 }
 pub(in crate::candidate_custody) fn signal_data_bytes() -> Option<usize> {
-    2usize.checked_mul(std::mem::size_of::<DomainSignal>())
+    2usize.checked_mul(
+        hex_engine::sampler_host_fields::SharedMetadataRef::constructor_bytes::<DomainSignal>()
+            .ok()?,
+    )
 }
 
 #[cfg(test)]
@@ -114,6 +117,8 @@ mod tests {
                 max_construction_peak_data_bytes: 4 * 1024 * 1024,
             },
             128,
+            None, // This fixture owns only the standalone Custody, no Root archive.
+            None, // No enclosing Root actor registration in this fixture.
         )
         .unwrap();
         root

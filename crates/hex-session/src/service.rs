@@ -10,21 +10,38 @@ use crate::tuning_gesture::{
     TuningLibraryOperation, TuningLibraryResult,
 };
 use crate::verified_import::VerifiedImportDestination;
-use crate::{DocumentAudioMode, PreparedImport, Session, SessionError, SourcePlanReservation};
+use crate::{DocumentAudioMode, Session, SessionCancellation, SessionError, SourcePlanReservation};
 use hex_engine::{PreparedRevision, playback::Playback};
 use hex_export::ExportReport;
 pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
-use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
-use hex_project::{Command, Created, Project};
+use hex_media::{Limits, ResampleLimits};
+use hex_project::{Command, Created, Project, SortedEntries};
 use hex_tuning::ProjectTuning;
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
-mod canonical_audio_source;
-mod comparison_audio;
-pub use audio_sink::WorkerAudioSink;
+mod main_control_file;
+pub use main_control_file::{
+    MainControlFileError, MainControlFileJob, MainControlFileLoan, MainControlFileProgress,
+    MainControlHostError,
+};
+mod event_fields;
+mod export_renderer;
+use export_renderer::ExportRenderer;
+mod request_transport;
+use request_transport::{RequestReceiver, RequestSender};
+mod source_events;
+use source_events::{EventReceiver, EventSender};
+pub(crate) mod canonical_audio_source;
 use audio_sink::WorkerEvents;
-pub use comparison_audio::ComparisonAudioBinding;
+pub use audio_sink::{WorkerAudioInitializationError, WorkerAudioSink};
+mod worker_roots;
+use worker_roots::WorkerDispatchState;
+pub use worker_roots::{WorkerRootChildInventory, WorkerRootDispatch, WorkerRootView};
+mod worker_startup;
+use worker_startup::{ServiceStop, WorkerStartup};
+pub use worker_startup::{WorkerInitialSessionView, WorkerStartupView};
+mod comparison_audio;
 mod device_comparison;
 mod effect_bus;
 #[cfg(test)]
@@ -33,7 +50,12 @@ pub mod preset;
 mod recovery;
 #[cfg(test)]
 mod verified_source_tests;
-pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
+pub use canonical_audio_source::{
+    CanonicalAudioSourceSnapshot, SharedCanonicalAudioSource,
+    sampler_fields_on_control as sampler_captured_source_fields_on_control,
+    visit_canonical_source_selected_storage_on_control,
+};
+pub use comparison_audio::ComparisonAudioBinding;
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
@@ -59,30 +81,30 @@ const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
 const IMPORT_FRAME_LIMIT: usize = 8_000_000;
 const BROWSER_PREVIEW_BINS: usize = 48;
 const EXPORT_EVENT_CAPACITY: usize = 1;
+mod export_result_transport;
+use export_result_transport::{ExportResultReceiver, ExportResultSender};
 
 #[derive(Clone)]
 pub struct AudioClipWaveform {
-    pub waveform: Arc<Waveform>,
+    pub waveform: crate::SharedWaveform,
     pub offset: u64,
     pub length: u64,
 }
 
 /// Read-only model and cached summaries for a single committed project revision.
 pub struct ViewState {
-    /// Exact audio preparation source. Comparison-only authoring can advance
-    /// while this retained source/context remains unchanged. Preview views cannot
-    /// mint source freshness for streamed constructor publication.
-    pub canonical_audio_source: Option<Arc<CanonicalAudioSourceSnapshot>>,
-    /// Sealed worker proof of comparison-only authoring, never a callback ACK.
+    /// Present only for a canonical worker snapshot. Preview views cannot mint
+    /// source freshness for streamed constructor publication.
+    pub canonical_audio_source: Option<SharedCanonicalAudioSource>,
     pub comparison_audio: Option<ComparisonAudioBinding>,
-    pub project: Arc<Project>,
-    pub waveforms: BTreeMap<hex_project::AssetId, Arc<Waveform>>,
+    pub project: crate::SharedProject,
+    pub waveforms: SortedEntries<hex_project::AssetId, crate::SharedWaveform>,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
-    pub audio_clip_waveforms: BTreeMap<hex_project::ClipId, AudioClipWaveform>,
+    pub audio_clip_waveforms: SortedEntries<hex_project::ClipId, AudioClipWaveform>,
     /// Control-prepared MIDI clip summaries matching this project revision.
-    pub midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    pub midi_preview: hex_engine::SharedMidiArrangementPreview,
     /// Canonical curve preview; an allocation refusal is visible, never a fake empty lane.
-    pub gain_preview: Result<Arc<hex_engine::GainAutomationPreview>, hex_engine::Invalid>,
+    pub gain_preview: Result<hex_engine::SharedGainAutomationPreview, hex_engine::Invalid>,
     pub timeline_frames: u64,
     pub can_undo: bool,
     pub can_redo: bool,
@@ -93,6 +115,44 @@ pub struct ViewState {
     /// Lexical absolute path associated with the current document, if saved.
     pub document_path: Option<PathBuf>,
 }
+
+impl ViewState {
+    /// Actual prepared gain-preview owner/backings for this exported revision.
+    /// No enclosing view, Project/MIDI/PCM completeness or publication permit.
+    pub fn visit_gain_preview_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        match &self.gain_preview {
+            Ok(preview) => {
+                hex_engine::visit_shared_gain_preview_storage_on_control(preview, ledger)
+            }
+            Err(_) => Ok(()), // Invalid carries only a static diagnostic, no owned preview.
+        }
+    }
+    /// Borrow this actual exported view's waveform handles and map backings.
+    /// Project/source snapshots, previews and the enclosing view owner require
+    /// separate root traversal. This is not a freeze/publication permit.
+    pub fn visit_waveform_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        ledger.borrow_metadata_entries_backing_on_control(&self.waveforms)?;
+        ledger.borrow_metadata_entries_backing_on_control(&self.audio_clip_waveforms)?;
+        for waveform in self.waveforms.values() {
+            hex_media::waveform::borrow_shared_storage_on_control(waveform, ledger)?;
+        }
+        for waveform in self.audio_clip_waveforms.values() {
+            hex_media::waveform::borrow_shared_storage_on_control(&waveform.waveform, ledger)?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod shared_project_storage_tests;
+#[cfg(test)]
+mod waveform_storage_tests;
 
 /// Control-side batch failure metadata; no decoded media crosses this boundary.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -105,6 +165,9 @@ pub struct AudioBatchMemberFailure {
 /// A worker response. `playback` is present only when a new graph was compiled.
 pub struct Event {
     pub state: Arc<ViewState>,
+    /// Bound before channel insertion; these slots do not qualify remaining
+    /// legacy owning view fields for supported native graph admission.
+    pub snapshot_reads: crate::snapshot_exports::SnapshotEventReads,
     pub playback: Option<Playback>,
     pub status: Option<String>,
     pub error: Option<String>,
@@ -184,7 +247,7 @@ pub struct ExportEvent {
 pub struct AudioPreview {
     pub playback_frames: u64,
     pub sample_rate: u32,
-    pub waveform: Arc<Waveform>,
+    pub waveform: crate::SharedWaveform,
 }
 
 /// Decode and convert an audio source using the same limits and conversion path
@@ -196,7 +259,7 @@ pub fn prepare_audio_preview(
     let audio = prepare_sample_preview(path, project_sample_rate)?;
     let playback_frames = u64::try_from(audio.frames().len())
         .map_err(|_| "converted frame count exceeds project range".to_owned())?;
-    let waveform = Arc::new(
+    let waveform = crate::SharedWaveform::new_on_control(
         hex_media::waveform::summarize(&audio, BROWSER_PREVIEW_BINS)
             .map_err(|error| error.to_string().to_lowercase())?,
     );
@@ -213,17 +276,21 @@ pub fn prepare_sample_preview(
     path: impl AsRef<Path>,
     output_sample_rate: u32,
 ) -> Result<hex_engine::Audio, String> {
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let audio = hex_media::resample(
-        decoded.audio(),
-        output_sample_rate,
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: IMPORT_FRAME_LIMIT,
-        },
+    let decoded = crate::DecodedOriginal::decode_file(
+        path,
+        Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+        &AtomicBool::new(false),
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    let audio = decoded
+        .project_audio(
+            output_sample_rate,
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: IMPORT_FRAME_LIMIT,
+            },
+        )
+        .map_err(|error| error.to_string().to_lowercase())?;
     Ok(audio)
 }
 
@@ -573,11 +640,11 @@ impl std::error::Error for ServiceError {
 
 /// UI-owned endpoints. Dropping both channels detaches the worker without joining it.
 pub struct Service {
-    requests: SyncSender<Request>,
-    events: Receiver<Event>,
-    export_events: Receiver<ExportEvent>,
-    export_busy: Arc<AtomicBool>,
-    shutdown: Arc<AtomicBool>,
+    requests: RequestSender,
+    events: EventReceiver,
+    export_events: ExportResultReceiver,
+    export_busy: AtomicBool,
+    shutdown: ServiceStop,
     arrangement_seek: Option<ArrangementSeekWorker>,
     _worker: JoinHandle<()>,
     _export_worker: JoinHandle<()>,
@@ -585,10 +652,11 @@ pub struct Service {
 
 impl Drop for Service {
     fn drop(&mut self) {
-        self.shutdown.store(true, Ordering::Release);
+        self.shutdown.request_cancel();
     }
 }
 
+#[cfg(test)]
 type Exporter = Arc<
     dyn Fn(&Path, &Arc<PreparedRevision>, u64, u64) -> Result<ExportReport, String> + Send + Sync,
 >;
@@ -621,10 +689,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             None,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
-            }),
+            ExportRenderer::Wav,
         )
     }
 
@@ -640,10 +705,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             Some(untitled_path),
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
-            }),
+            ExportRenderer::Wav,
         )
     }
 
@@ -659,7 +721,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             None,
-            exporter,
+            ExportRenderer::Injected(exporter),
         )
     }
 
@@ -677,11 +739,31 @@ impl Service {
             history_capacity,
             max_resident_frames,
             recovery,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
-            }),
+            ExportRenderer::Wav,
             Some(audio),
+            None,
+        )
+    }
+
+    /// Concrete desktop supplies a pre-escape registered/bound worker control.
+    /// Successful return means binding and thread spawn succeeded; actual device
+    /// initialization remains the existing asynchronous worker/offline flow.
+    /// No GUI acknowledgement or invented readiness state is introduced.
+    pub fn with_audio_sink_and_worker_control(
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: Option<PathBuf>,
+        audio: Box<dyn WorkerAudioSink>,
+        control: crate::snapshot_exports::SnapshotWorkerControl,
+    ) -> Result<Self, ServiceError> {
+        Self::start_with_audio(
+            48_000,
+            history_capacity,
+            max_resident_frames,
+            recovery,
+            ExportRenderer::Wav,
+            Some(audio),
+            Some(control),
         )
     }
 
@@ -690,7 +772,7 @@ impl Service {
         history_capacity: usize,
         max_resident_frames: u64,
         recovery: Option<PathBuf>,
-        exporter: Exporter,
+        exporter: ExportRenderer,
     ) -> Result<Self, ServiceError> {
         Self::start_with_audio(
             sample_rate,
@@ -698,6 +780,7 @@ impl Service {
             max_resident_frames,
             recovery,
             exporter,
+            None,
             None,
         )
     }
@@ -707,61 +790,196 @@ impl Service {
         history_capacity: usize,
         max_resident_frames: u64,
         recovery: Option<PathBuf>,
-        exporter: Exporter,
+        exporter: ExportRenderer,
         audio: Option<Box<dyn WorkerAudioSink>>,
+        control: Option<crate::snapshot_exports::SnapshotWorkerControl>,
     ) -> Result<Self, ServiceError> {
-        let shutdown = Arc::new(AtomicBool::new(false));
+        // Native initialization negotiates the rate asynchronously. Reject its
+        // other fallible model input before a Service/producer can escape, using
+        // the canonical constructor validation rather than a throwaway Session.
+        hex_project::Editor::validate_history_capacity(history_capacity)
+            .map_err(|error| ServiceError::Session(error.into()))?;
+        let (shutdown, worker_shutdown) = match control.as_ref() {
+            Some(control) => (
+                ServiceStop::Registered(control.stop_endpoint()),
+                SessionCancellation::Retained(
+                    control
+                        .worker_on_control()
+                        .map_err(|_| {
+                            ServiceError::Session(SessionError::Invalid(
+                                "document worker binding is unavailable",
+                            ))
+                        })?
+                        .clone(),
+                ),
+            ),
+            None => {
+                let flag = Arc::new(AtomicBool::new(false));
+                (
+                    ServiceStop::Unqualified(flag.clone()),
+                    SessionCancellation::Unqualified(flag),
+                )
+            }
+        };
         let session = if audio.is_none() {
             Some(
-                Session::new(sample_rate, history_capacity, max_resident_frames)
-                    .map_err(ServiceError::Session)?
-                    .with_shutdown(Arc::clone(&shutdown)),
+                Session::new_with_cancellation(
+                    sample_rate,
+                    history_capacity,
+                    max_resident_frames,
+                    worker_shutdown.clone(),
+                )
+                .map_err(ServiceError::Session)?,
             )
         } else {
             None
         };
+        let mut startup = WorkerStartup::new(session, control, worker_shutdown);
+        let (request_tx, request_rx) = match startup.control() {
+            Some(control) => {
+                let endpoint = control.prepare_requests_on_control().map_err(|_| {
+                    ServiceError::Session(SessionError::Invalid(
+                        "registered request storage is unavailable",
+                    ))
+                })?;
+                (
+                    RequestSender::Registered(endpoint),
+                    RequestReceiver::Registered(endpoint),
+                )
+            }
+            None => {
+                let (sender, receiver) = mpsc::sync_channel(REQUEST_CAPACITY);
+                (
+                    RequestSender::Unqualified(sender),
+                    RequestReceiver::Unqualified(receiver),
+                )
+            }
+        };
         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
-        let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
-        let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
+        let source_endpoints = startup
+            .control()
+            .map(|control| control.prepare_source_events_on_control())
+            .transpose()
+            .map_err(|_| {
+                ServiceError::Session(SessionError::Invalid(
+                    "registered event storage is unavailable",
+                ))
+            })?
+            .flatten();
+        let (event_tx, event_rx) = match source_endpoints {
+            Some((sender, receiver)) => (
+                EventSender::Registered(sender),
+                EventReceiver::registered(receiver),
+            ),
+            None => {
+                let (sender, receiver) = mpsc::sync_channel(EVENT_CAPACITY);
+                (
+                    EventSender::Unqualified(sender),
+                    EventReceiver::unqualified(receiver),
+                )
+            }
+        };
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
-        let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
+        let (export_event_tx, export_event_rx) = match startup.control() {
+            Some(control) => {
+                let endpoint = control.prepare_export_results_on_control().map_err(|_| {
+                    ServiceError::Session(SessionError::Invalid(
+                        "registered export result storage is unavailable",
+                    ))
+                })?;
+                (
+                    ExportResultSender::Registered(endpoint),
+                    ExportResultReceiver::Registered(endpoint),
+                )
+            }
+            None => {
+                let (sender, receiver) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
+                (sender.into(), receiver.into())
+            }
+        };
         let actor_export_events = export_event_tx.clone();
-        let export_busy = Arc::new(AtomicBool::new(false));
+        let export_busy = AtomicBool::new(false);
+        let worker_shutdown =
+            startup
+                .take_cancellation()
+                .ok_or(ServiceError::Session(SessionError::Invalid(
+                    "document worker cancellation is unavailable",
+                )))?;
+        startup.install_events(WorkerEvents::new(event_tx, worker_shutdown, audio));
+        let mut pending_queues = Some(worker_startup::WorkerStartupQueues {
+            requests: request_rx,
+            export_work: export_work_tx,
+            export_events: actor_export_events,
+        });
+        if !startup.install_queues(&mut pending_queues) {
+            return Err(ServiceError::Session(SessionError::Invalid(
+                "worker startup queue destination is occupied",
+            )));
+        }
         let export_worker = thread::Builder::new()
             .name("hex-export".into())
             .stack_size(8 * 1024 * 1024)
             .spawn(move || run_export_worker(export_work_rx, export_event_tx, exporter))
             .map_err(ServiceError::Worker)?;
-        let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
             .name("hex-session".into())
             .spawn(move || {
-                let mut events = WorkerEvents::new(event_tx, Arc::clone(&worker_shutdown), audio);
-                let session = match session {
-                    Some(session) => session,
-                    None => {
-                        let (rate, error) = match events.initialize() {
-                            Ok(rate) => (rate, None),
-                            Err(error) => (48_000, Some(error)),
-                        };
-                        let Ok(session) = Session::new(rate, history_capacity, max_resident_frames)
-                        else {
-                            return;
-                        };
-                        if let Some(error) = error {
-                            events.startup_failed(error);
-                        }
-                        session.with_shutdown(worker_shutdown)
-                    }
+                let Some(mut events) = startup.take_events() else {
+                    return;
                 };
+                if events.cancelled() {
+                    return;
+                }
+                let Some(queues) = startup.take_queues() else {
+                    return;
+                };
+                if !startup.has_session() {
+                    let (rate, error) = match events.initialize(&startup, &queues, &recovery) {
+                        Ok(rate) => (rate, None),
+                        Err(error) => (48_000, Some(error)),
+                    };
+                    if events.cancelled() {
+                        return;
+                    }
+                    let Ok(session) = Session::new_with_cancellation(
+                        rate,
+                        history_capacity,
+                        max_resident_frames,
+                        events.cancellation_on_control().clone(),
+                    ) else {
+                        return;
+                    };
+                    let mut incoming = Some(session);
+                    if !startup.install_negotiated_session(&mut incoming) {
+                        return;
+                    }
+                    if let Some(error) = error {
+                        events.startup_failed(error);
+                    }
+                }
+                // Keep the REAL Session in its existing startup parent until
+                // the pre-first-current native operation has returned. This
+                // creates no second Session or temporary legacy snapshot.
+                events.initialize_session(&startup, &queues, &recovery);
+                let Some(session) = startup.take_session() else {
+                    return;
+                };
+                let worker_startup::WorkerStartupQueues {
+                    requests,
+                    export_work,
+                    export_events,
+                } = queues;
                 run_worker(
                     session,
-                    history_capacity,
-                    request_rx,
+                    requests,
                     events,
-                    export_work_tx,
-                    actor_export_events,
-                    recovery,
+                    export_work,
+                    export_events,
+                    WorkerRunContext {
+                        history_capacity,
+                        recovery,
+                        control: startup.control(),
+                    },
                 )
             })
             .map_err(ServiceError::Worker)?;
@@ -788,7 +1006,7 @@ impl Service {
             {
                 return Err(SubmitError::Busy(request));
             }
-            match try_submit(&self.requests, request) {
+            match self.requests.submit(request) {
                 Ok(()) => Ok(()),
                 Err(error) => {
                     self.export_busy.store(false, Ordering::Release);
@@ -796,7 +1014,7 @@ impl Service {
                 }
             }
         } else {
-            try_submit(&self.requests, request)
+            self.requests.submit(request)
         }
     }
 
@@ -805,12 +1023,37 @@ impl Service {
         self.events.try_recv()
     }
 
-    /// Consume one separate export result and release the single-job reservation.
+    /// Consume a legacy headless export result and release its reservation.
+    /// Registered native clients must use `with_export_event`; this owning
+    /// query returns Empty and does not acknowledge their pending result.
     pub fn try_export_event(&self) -> Result<ExportEvent, TryRecvError> {
         match self.export_events.try_recv() {
             Ok(event) => {
                 self.export_busy.store(false, Ordering::Release);
                 Ok(event)
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.export_busy.store(false, Ordering::Release);
+                Err(TryRecvError::Disconnected)
+            }
+            Err(TryRecvError::Empty) => Err(TryRecvError::Empty),
+        }
+    }
+    /// Scoped native completion metadata; no owning renderer/graph/result
+    /// escapes. The read returns before ACK; busy retains the exact record.
+    /// ```compile_fail
+    /// fn escape(service: &hex_session::service::Service) {
+    ///     let _ = service.with_export_event(|event| event.path());
+    /// }
+    /// ```
+    pub fn with_export_event<R>(
+        &self,
+        read: impl for<'a> FnOnce(crate::snapshot_exports::ExportResultRead<'a>) -> R,
+    ) -> Result<R, TryRecvError> {
+        match self.export_events.with_read(read) {
+            Ok(result) => {
+                self.export_busy.store(false, Ordering::Release);
+                Ok(result)
             }
             Err(TryRecvError::Disconnected) => {
                 self.export_busy.store(false, Ordering::Release);
@@ -883,13 +1126,31 @@ fn try_submit(sender: &SyncSender<Request>, request: Request) -> Result<(), Subm
 
 fn view_state(
     session: &Session,
-    midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    midi_preview: hex_engine::SharedMidiArrangementPreview,
     revision: u64,
     project_generation: u64,
     unsaved: bool,
     document_path: Option<&Path>,
 ) -> Arc<ViewState> {
-    view_state_bound(
+    Arc::new(view_state_owned(
+        session,
+        midi_preview,
+        revision,
+        project_generation,
+        unsaved,
+        document_path,
+    ))
+}
+
+pub(crate) fn view_state_owned(
+    session: &Session,
+    midi_preview: hex_engine::SharedMidiArrangementPreview,
+    revision: u64,
+    project_generation: u64,
+    unsaved: bool,
+    document_path: Option<&Path>,
+) -> ViewState {
+    view_state_owned_bound(
         session,
         midi_preview,
         revision,
@@ -899,20 +1160,67 @@ fn view_state(
         None,
     )
 }
-
-fn view_state_bound(
+// Preserve both the Native owned constructor and Main's exact existing binding
+// constructor. Neither constructs then replaces a canonical source owner.
+fn view_state_owned_bound(
     session: &Session,
-    midi_preview: Arc<hex_engine::MidiArrangementPreview>,
+    midi_preview: hex_engine::SharedMidiArrangementPreview,
     revision: u64,
     project_generation: u64,
     unsaved: bool,
     document_path: Option<&Path>,
-    binding: Option<(
-        Arc<CanonicalAudioSourceSnapshot>,
-        Option<ComparisonAudioBinding>,
-    )>,
+    previous: Option<&ViewState>,
+) -> ViewState {
+    let binding = previous
+        .and_then(|previous| {
+            ComparisonAudioBinding::advance(previous, project_generation, revision, session)
+        })
+        .map(|proof| (proof.source.clone(), Some(proof)));
+    view_state_owned_binding(
+        session,
+        midi_preview,
+        revision,
+        project_generation,
+        unsaved,
+        document_path,
+        binding,
+    )
+}
+
+fn view_state_bound(
+    session: &Session,
+    midi_preview: hex_engine::SharedMidiArrangementPreview,
+    revision: u64,
+    project_generation: u64,
+    unsaved: bool,
+    document_path: Option<&Path>,
+    binding: Option<(SharedCanonicalAudioSource, Option<ComparisonAudioBinding>)>,
 ) -> Arc<ViewState> {
-    let project = Arc::new(session.project().clone());
+    Arc::new(view_state_owned_binding(
+        session,
+        midi_preview,
+        revision,
+        project_generation,
+        unsaved,
+        document_path,
+        binding,
+    ))
+}
+
+// Same worker constructor only. The closed caller quotes the actual old/new
+// pair and all view children before entry; this helper grants no admission.
+fn view_state_owned_binding(
+    session: &Session,
+    midi_preview: hex_engine::SharedMidiArrangementPreview,
+    revision: u64,
+    project_generation: u64,
+    unsaved: bool,
+    document_path: Option<&Path>,
+    binding: Option<(SharedCanonicalAudioSource, Option<ComparisonAudioBinding>)>,
+) -> ViewState {
+    let comparison_audio = binding.as_ref().and_then(|(_, proof)| proof.clone());
+    let source = binding.map(|(source, _)| source);
+    let project = crate::SharedProject::new_on_control(session.project().clone());
     let rate = u64::from(project.sample_rate());
     let latest_clip_end = latest_clip_end(&project);
     let latest_content_end = latest_clip_end.max(
@@ -921,17 +1229,21 @@ fn view_state_bound(
             .map(|region| region.end())
             .unwrap_or(0),
     );
-    Arc::new(ViewState {
-        comparison_audio: binding.as_ref().and_then(|(_, proof)| proof.clone()),
-        canonical_audio_source: binding.map(|(source, _)| source).or_else(|| {
-            Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
-                &project,
-                project_generation,
-                revision,
-                session,
-            )))
+    ViewState {
+        canonical_audio_source: Some(match source {
+            Some(source) => source,
+            None => {
+                SharedCanonicalAudioSource::new_on_control(CanonicalAudioSourceSnapshot::capture(
+                    &project,
+                    project_generation,
+                    revision,
+                    session,
+                ))
+            }
         }),
-        gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
+        comparison_audio,
+        gain_preview: hex_engine::GainAutomationPreview::prepare(&project)
+            .map(hex_engine::SharedGainAutomationPreview::new_on_control),
         project,
         waveforms: session.waveforms(),
         audio_clip_waveforms: session.audio_clip_waveforms().unwrap_or_default(),
@@ -944,12 +1256,12 @@ fn view_state_bound(
         revision,
         unsaved,
         document_path: document_path.map(Path::to_path_buf),
-    })
+    }
 }
 
 fn preview_view_state(
     canonical: &Arc<ViewState>,
-    project: Arc<Project>,
+    project: crate::SharedProject,
     prepared: Arc<PreparedRevision>,
 ) -> Arc<ViewState> {
     let rate = u64::from(project.sample_rate());
@@ -962,11 +1274,12 @@ fn preview_view_state(
     Arc::new(ViewState {
         canonical_audio_source: None,
         comparison_audio: None,
-        gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
+        gain_preview: hex_engine::GainAutomationPreview::prepare(&project)
+            .map(hex_engine::SharedGainAutomationPreview::new_on_control),
         project,
         waveforms: canonical.waveforms.clone(),
         audio_clip_waveforms: canonical.audio_clip_waveforms.clone(),
-        midi_preview: Arc::clone(prepared.midi_preview()),
+        midi_preview: prepared.midi_preview_on_control(),
         timeline_frames: content_end
             .saturating_add(rate.saturating_mul(2))
             .max(rate.saturating_mul(8)),
@@ -1028,7 +1341,7 @@ fn project_source_for_runtime_input(
     session: &Session,
     tuning: Option<TuningGestureSnapshot>,
     canonical: &Arc<PreparedRevision>,
-) -> Result<(Arc<Project>, Arc<PreparedRevision>, bool), String> {
+) -> Result<(crate::SharedProject, Arc<PreparedRevision>, bool), String> {
     if let Some(snapshot) = tuning {
         session
             .preview_tuning(snapshot.tuning, Some(canonical))
@@ -1036,7 +1349,7 @@ fn project_source_for_runtime_input(
             .map_err(|error| error.to_string().to_lowercase())
     } else {
         Ok((
-            Arc::new(session.project().clone()),
+            crate::SharedProject::new_on_control(session.project().clone()),
             Arc::clone(canonical),
             false,
         ))
@@ -1208,32 +1521,47 @@ fn run_tuning_library_operation_in(
     (result, prepared)
 }
 
+struct WorkerRunContext<'a> {
+    history_capacity: usize,
+    recovery: Option<PathBuf>,
+    control: Option<&'a crate::snapshot_exports::SnapshotWorkerControl>,
+}
+enum ArrangementClipboard {
+    Range(Arc<hex_project::RangeClipboard>),
+    Clips(Arc<hex_project::ClipClipboard>),
+}
+
 fn run_worker(
     mut session: Session,
-    history_capacity: usize,
-    requests: Receiver<Request>,
+    requests: RequestReceiver,
     mut events: WorkerEvents,
     export_work: SyncSender<ExportWork>,
-    export_events: SyncSender<ExportEvent>,
-    recovery: Option<PathBuf>,
+    export_events: ExportResultSender,
+    context: WorkerRunContext<'_>,
 ) {
+    let WorkerRunContext {
+        history_capacity,
+        recovery,
+        control: worker_control,
+    } = context;
+    if !events.enter_legacy_initial() {
+        // An entered initial closed operation owns its actual pending fields;
+        // it cannot fall through to a raw legacy snapshot or model commit.
+        return;
+    }
     let mut revision = 0_u64;
     let mut unsaved = false;
-    enum ArrangementClipboard {
-        Range(Arc<hex_project::RangeClipboard>),
-        Clips(Arc<hex_project::ClipClipboard>),
-    }
     let mut range_clipboard: Option<ArrangementClipboard> = None;
     // Media paths remain relative to the directory from which the current
     // project was opened. Save As changes the document handle, not this base.
     let mut media_base: Option<PathBuf> = None;
     let mut document: Option<DocumentHandle> = None;
     let mut journal: Option<hex_storage::Journal> = None;
-    let mut midi_preview = Arc::new(hex_engine::MidiArrangementPreview::default());
+    let mut midi_preview = hex_engine::empty_midi_preview_on_control();
     let mut project_generation = 0_u64;
     let mut state = view_state(
         &session,
-        Arc::clone(&midi_preview),
+        midi_preview.clone(),
         revision,
         project_generation,
         unsaved,
@@ -1256,10 +1584,10 @@ fn run_worker(
     let mut tuning_gesture = TuningGestureMachine::default();
     let mut initial = match compile(&session, None) {
         Ok(prepared) => {
-            midi_preview = Arc::clone(prepared.midi_preview());
+            midi_preview = prepared.midi_preview_on_control();
             state = view_state(
                 &session,
-                Arc::clone(&midi_preview),
+                midi_preview.clone(),
                 revision,
                 project_generation,
                 unsaved,
@@ -1267,6 +1595,7 @@ fn run_worker(
             );
             compiled = Some((revision, Arc::clone(&prepared)));
             Event {
+                snapshot_reads: Default::default(),
                 state: Arc::clone(&state),
                 playback: Some(native_playback(prepared)),
                 status: Some("project ready".into()),
@@ -1297,6 +1626,7 @@ fn run_worker(
             }
         }
         Err(error) => Event {
+            snapshot_reads: Default::default(),
             state: Arc::clone(&state),
             playback: None,
             status: None,
@@ -1330,11 +1660,43 @@ fn run_worker(
     if audio_error.is_some() && initial.error.is_none() {
         initial.error = audio_error;
     }
-    if !events.send(initial) {
+    // Private input references only. The public inspection view is rebuilt
+    // inside each synchronous sink call and ends before any queue operation.
+    macro_rules! dispatch_state {
+        ($export_job:expr, $export_completion:expr) => {
+            WorkerDispatchState {
+                session: &session,
+                current: &state,
+                compiled: &compiled,
+                midi_preview: &midi_preview,
+                generation: project_generation,
+                revision,
+                control: worker_control,
+                clipboard: &range_clipboard,
+                media_base: &media_base,
+                recovery: &recovery,
+                document: &document,
+                journal: &journal,
+                keyboard: &keyboard_activation,
+                keyboard_hint: &keyboard_tuning_hint,
+                audition: &audition_activation,
+                expression: &live_expression,
+                device_gesture: &device_gesture,
+                tuning_gesture: &tuning_gesture,
+                export_job: $export_job,
+                export_completion: $export_completion,
+            }
+        };
+    }
+    if !events.send(initial, &dispatch_state!(None, None)) {
         return;
     }
 
-    while let Some(request) = events.next_request(&requests) {
+    while let Some(delivery) = events.next_request(&requests, &dispatch_state!(None, None)) {
+        let crate::snapshot_exports::NativeRequestDelivery {
+            request,
+            stamp: request_stamp,
+        } = delivery;
         let mut computer_keyboard_complete = None;
         let mut tuning_audition_complete = None;
         let mut live_expression_complete = None;
@@ -1456,11 +1818,11 @@ fn run_worker(
                         if outcome.canonical_changed {
                             revision = revision.saturating_add(1);
                             unsaved = true;
-                            midi_preview = Arc::clone(prepared.midi_preview());
+                            midi_preview = prepared.midi_preview_on_control();
                             compiled = Some((revision, Arc::clone(&prepared)));
                             state = view_state(
                                 &session,
-                                Arc::clone(&midi_preview),
+                                midi_preview.clone(),
                                 revision,
                                 project_generation,
                                 unsaved,
@@ -1499,11 +1861,11 @@ fn run_worker(
                         if outcome.canonical_changed {
                             revision = revision.saturating_add(1);
                             unsaved = true;
-                            midi_preview = Arc::clone(prepared.midi_preview());
+                            midi_preview = prepared.midi_preview_on_control();
                             compiled = Some((revision, Arc::clone(&prepared)));
                             state = view_state(
                                 &session,
-                                Arc::clone(&midi_preview),
+                                midi_preview.clone(),
                                 revision,
                                 project_generation,
                                 unsaved,
@@ -2017,7 +2379,7 @@ fn run_worker(
                         mode,
                         reservation,
                     )
-                    .map(|candidate| candidate.with_shutdown(Arc::clone(&session.shutdown)))
+                    .map(|candidate| candidate.with_shutdown(session.shutdown.clone()))
                     .map_err(|reason| reason.to_string());
                     match candidate.and_then(|candidate| {
                         compile(&candidate, None).map(|prepared| (candidate, prepared))
@@ -2624,13 +2986,13 @@ fn run_worker(
                                     unsaved = false;
                                     state = view_state_bound(
                                         &session,
-                                        Arc::clone(&midi_preview),
+                                        midi_preview.clone(),
                                         revision,
                                         project_generation,
                                         unsaved,
                                         document.as_ref().map(|handle| handle.path.as_path()),
                                         state.canonical_audio_source.as_ref().map(|source| {
-                                            (Arc::clone(source), state.comparison_audio.clone())
+                                            (source.clone(), state.comparison_audio.clone())
                                         }),
                                     );
                                     status = Some("project saved".into());
@@ -2666,13 +3028,13 @@ fn run_worker(
                                     error = commit.error;
                                     state = view_state_bound(
                                         &session,
-                                        Arc::clone(&midi_preview),
+                                        midi_preview.clone(),
                                         revision,
                                         project_generation,
                                         unsaved,
                                         document.as_ref().map(|current| current.path.as_path()),
                                         state.canonical_audio_source.as_ref().map(|source| {
-                                            (Arc::clone(source), state.comparison_audio.clone())
+                                            (source.clone(), state.comparison_audio.clone())
                                         }),
                                     );
                                 }
@@ -2969,10 +3331,10 @@ fn run_worker(
                         ) {
                             Ok(prepared) => {
                                 compiled = Some((revision, Arc::clone(&prepared)));
-                                midi_preview = Arc::clone(prepared.midi_preview());
+                                midi_preview = prepared.midi_preview_on_control();
                                 state = view_state(
                                     &session,
-                                    Arc::clone(&midi_preview),
+                                    midi_preview.clone(),
                                     revision,
                                     project_generation,
                                     unsaved,
@@ -3007,12 +3369,12 @@ fn run_worker(
                 revision = next;
                 state = view_state_bound(
                     &session,
-                    Arc::clone(&midi_preview),
+                    midi_preview.clone(),
                     revision,
                     project_generation,
                     unsaved,
                     document.as_ref().map(|handle| handle.path.as_path()),
-                    Some((Arc::clone(&binding.source), Some(binding))),
+                    Some((binding.source.clone(), Some(binding))),
                 );
                 if let Some((compiled_revision, _)) = &mut compiled {
                     *compiled_revision = revision;
@@ -3026,12 +3388,12 @@ fn run_worker(
             }
         }
         let canonical_changed = replacement_revision.is_some();
-        let canonical_prepared = if let Some(prepared) = replacement_revision {
+        let mut canonical_prepared = if let Some(prepared) = replacement_revision {
             revision = revision.saturating_add(1);
-            midi_preview = Arc::clone(prepared.midi_preview());
+            midi_preview = prepared.midi_preview_on_control();
             state = view_state(
                 &session,
-                Arc::clone(&midi_preview),
+                midi_preview.clone(),
                 revision,
                 project_generation,
                 unsaved,
@@ -3158,13 +3520,13 @@ fn run_worker(
         let mut playback = if session.audio_mode() == DocumentAudioMode::VerifiedStreaming {
             None
         } else if computer_keyboard_playback.is_some() && !prefer_rebased_preview {
-            computer_keyboard_playback
-        } else if let Some(prepared) = preview_prepared {
+            computer_keyboard_playback.take()
+        } else if let Some(prepared) = preview_prepared.take() {
             Some(native_playback(prepared))
-        } else if let Some(prepared) = canonical_prepared {
+        } else if let Some(prepared) = canonical_prepared.take() {
             Some(native_playback(prepared))
         } else {
-            restore_prepared.map(native_playback)
+            restore_prepared.take().map(native_playback)
         };
         if let (Some(candidate), Some(input)) = (
             playback.as_mut(),
@@ -3211,35 +3573,51 @@ fn run_worker(
                 }
             }
         }
-        if !events.send(Event {
-            state: Arc::clone(&state),
-            playback,
-            status,
-            error,
-            request_complete: true,
-            computer_keyboard_complete,
-            tuning_audition_complete,
-            live_expression_complete,
-            audio_batch_complete,
-            audio_batch_failure,
-            save_complete,
-            open_complete,
-            project_replaced,
-            stopped_playback_restore_complete,
-            created,
-            duplicate_complete,
-            restore_complete,
-            device_preview,
-            gesture_ack,
-            gesture_protocol_ack,
-            gesture_request,
-            active_device_gesture: device_gesture.snapshot(),
-            tuning_preview,
-            tuning_gesture_ack,
-            tuning_gesture_request,
-            active_tuning_gesture: tuning_gesture.snapshot(),
-            tuning_library,
-        }) {
+        // End unused preparation aliases before final synchronous inspection;
+        // selected playback/preview owners now reside in the actual Event.
+        drop((
+            computer_keyboard_playback,
+            preview_prepared,
+            canonical_prepared,
+            restore_prepared,
+            preview_project,
+        ));
+        if !events.complete_request(&requests, request_stamp) {
+            return;
+        }
+        if !events.send(
+            Event {
+                snapshot_reads: Default::default(),
+                state: Arc::clone(&state),
+                playback,
+                status,
+                error,
+                request_complete: true,
+                computer_keyboard_complete,
+                tuning_audition_complete,
+                live_expression_complete,
+                audio_batch_complete,
+                audio_batch_failure,
+                save_complete,
+                open_complete,
+                project_replaced,
+                stopped_playback_restore_complete,
+                created,
+                duplicate_complete,
+                restore_complete,
+                device_preview,
+                gesture_ack,
+                gesture_protocol_ack,
+                gesture_request,
+                active_device_gesture: device_gesture.snapshot(),
+                tuning_preview,
+                tuning_gesture_ack,
+                tuning_gesture_request,
+                active_tuning_gesture: tuning_gesture.snapshot(),
+                tuning_library,
+            },
+            &dispatch_state!(export_job.as_ref(), export_completion.as_ref()),
+        ) {
             return;
         }
         if let Some(job) = export_job {
@@ -3247,16 +3625,32 @@ fn run_worker(
                 Ok(()) => {}
                 Err(TrySendError::Full(ExportWork::Render(job)))
                 | Err(TrySendError::Disconnected(ExportWork::Render(job))) => {
-                    let _ = export_events.try_send(ExportEvent {
-                        revision: job.revision,
-                        path: job.path,
-                        result: Err("export worker is unavailable".into()),
-                    });
+                    let ExportJob {
+                        revision,
+                        path,
+                        prepared,
+                        frames: _,
+                        controlled,
+                    } = job;
+                    drop((prepared, controlled));
+                    if !events.send_export_result(
+                        &export_events,
+                        ExportEvent {
+                            revision,
+                            path,
+                            result: Err("export worker is unavailable".into()),
+                        },
+                        &dispatch_state!(None, None),
+                    ) {
+                        return;
+                    }
                 }
             }
         }
         if let Some(event) = export_completion {
-            let _ = export_events.try_send(event);
+            if !events.send_export_result(&export_events, event, &dispatch_state!(None, None)) {
+                return;
+            }
         }
     }
 }
@@ -3287,8 +3681,8 @@ fn latest_clip_end(project: &Project) -> u64 {
 
 fn run_export_worker(
     work: Receiver<ExportWork>,
-    events: SyncSender<ExportEvent>,
-    exporter: Exporter,
+    events: ExportResultSender,
+    exporter: ExportRenderer,
 ) {
     while let Ok(work) = work.recv() {
         let event = match work {
@@ -3315,7 +3709,7 @@ fn run_export_worker(
                         })
                         .map_err(|error| error.to_string())
                 } else {
-                    exporter(&job.path, &job.prepared, 0, job.frames)
+                    exporter.render(&job.path, &job.prepared, 0, job.frames)
                 },
             },
         };
@@ -3361,17 +3755,21 @@ fn import(
             .map_err(|error| error.to_string().to_lowercase())?
             .join(path)
     };
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
+    let decoded = crate::DecodedOriginal::decode_file(
+        path,
+        Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+        &session.shutdown,
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    let prepared = decoded
+        .at_rate(
+            session.project().sample_rate(),
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: output_limit,
+            },
+        )
+        .map_err(|error| error.to_string().to_lowercase())?;
     session
         .import_prepared_revision(prepared, previous)
         .map(|(_, revision)| revision)
@@ -3418,17 +3816,21 @@ fn import_to_track(
             .map_err(|error| error.to_string().to_lowercase())?
             .join(path)
     };
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
+    let decoded = crate::DecodedOriginal::decode_file(
+        path,
+        Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+        &session.shutdown,
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    let prepared = decoded
+        .at_rate(
+            session.project().sample_rate(),
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: output_limit,
+            },
+        )
+        .map_err(|error| error.to_string().to_lowercase())?;
     let imported = if overwrite {
         session.import_prepared_audio_clip_with_overwrite_revision(prepared, track, start, previous)
     } else {
@@ -3487,17 +3889,21 @@ fn import_to_new_track(
             .map_err(|error| error.to_string().to_lowercase())?
             .join(path)
     };
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
+    let decoded = crate::DecodedOriginal::decode_file(
+        path,
+        Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+        &session.shutdown,
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    let prepared = decoded
+        .at_rate(
+            session.project().sample_rate(),
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: output_limit,
+            },
+        )
+        .map_err(|error| error.to_string().to_lowercase())?;
     session
         .import_prepared_audio_track_at_revision(prepared, before_track, start, previous)
         .map(|(_, revision)| revision)
@@ -3539,17 +3945,21 @@ fn import_to_session(
             .map_err(|error| error.to_string().to_lowercase())?
             .join(path)
     };
-    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
-        .map_err(|error| error.to_string().to_lowercase())?;
-    let prepared = PreparedImport::at_rate(
-        decoded,
-        session.project().sample_rate(),
-        ResampleLimits {
-            max_source_frames: IMPORT_FRAME_LIMIT,
-            max_output_frames: output_limit,
-        },
+    let decoded = crate::DecodedOriginal::decode_file(
+        path,
+        Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+        &session.shutdown,
     )
     .map_err(|error| error.to_string().to_lowercase())?;
+    let prepared = decoded
+        .at_rate(
+            session.project().sample_rate(),
+            ResampleLimits {
+                max_source_frames: IMPORT_FRAME_LIMIT,
+                max_output_frames: output_limit,
+            },
+        )
+        .map_err(|error| error.to_string().to_lowercase())?;
     session
         .import_session_audio_clip_revision(prepared, track, scene, previous)
         .map(|(_, revision)| revision)
@@ -6612,11 +7022,11 @@ mod service_tests {
         let (_event_sender, events) = mpsc::sync_channel(1);
         let (_export_sender, export_events) = mpsc::sync_channel(1);
         let service = Service {
-            requests,
-            events,
-            export_events,
-            export_busy: Arc::new(AtomicBool::new(false)),
-            shutdown: Arc::new(AtomicBool::new(false)),
+            requests: requests.into(),
+            events: EventReceiver::unqualified(events),
+            export_events: export_events.into(),
+            export_busy: AtomicBool::new(false),
+            shutdown: ServiceStop::Unqualified(Arc::new(AtomicBool::new(false))),
             arrangement_seek: None,
             _worker: thread::spawn(|| {}),
             _export_worker: thread::spawn(|| {}),
@@ -6910,10 +7320,12 @@ mod service_tests {
         assert!(refused.error.is_some());
         assert!(refused.playback.is_none());
         assert_eq!(refused.state.revision, redone.state.revision);
-        assert!(Arc::ptr_eq(
-            &refused.state.midi_preview,
-            &redone.state.midi_preview
-        ));
+        assert!(
+            refused
+                .state
+                .midi_preview
+                .shares_owner_with(&redone.state.midi_preview)
+        );
 
         service
             .submit(Request::SaveNew(path.clone()))
@@ -6922,10 +7334,12 @@ mod service_tests {
         assert!(saved.error.is_none());
         assert!(saved.playback.is_none());
         assert_eq!(saved.state.revision, redone.state.revision);
-        assert!(Arc::ptr_eq(
-            &saved.state.midi_preview,
-            &redone.state.midi_preview
-        ));
+        assert!(
+            saved
+                .state
+                .midi_preview
+                .shares_owner_with(&redone.state.midi_preview)
+        );
 
         service
             .submit(Request::Open(path))
@@ -6940,10 +7354,12 @@ mod service_tests {
             .as_ref()
             .and_then(Playback::prepared_revision)
             .expect("opened playback retains prepared revision");
-        assert!(Arc::ptr_eq(
-            redone_artifact.session().sine_table(),
-            reopened_artifact.session().sine_table()
-        ));
+        assert!(
+            redone_artifact
+                .session()
+                .sine_table()
+                .shares_owner_with(reopened_artifact.session().sine_table())
+        );
         assert_eq!(
             reopened
                 .state

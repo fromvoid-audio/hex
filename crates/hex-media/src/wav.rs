@@ -166,6 +166,16 @@ pub(super) fn scan<R: Read + Seek>(
     file_len: u64,
     header_limit: usize,
 ) -> Result<Layout, ImportError> {
+    scan_checked(reader, file_len, header_limit, || Ok(()))
+}
+
+pub(super) fn scan_checked<R: Read + Seek>(
+    reader: &mut R,
+    file_len: u64,
+    header_limit: usize,
+    mut check: impl FnMut() -> Result<(), ImportError>,
+) -> Result<Layout, ImportError> {
+    check()?;
     reader.seek(SeekFrom::Start(0))?;
     let mut container = [0_u8; 12];
     read_exact_invalid(reader, &mut container, "truncated RIFF/WAVE header")?;
@@ -190,6 +200,7 @@ pub(super) fn scan<R: Read + Seek>(
     let mut data = None;
     let mut fact_frames = None;
     while cursor < riff_end {
+        check()?;
         header_count = header_count
             .checked_add(1)
             .ok_or(ImportError::LimitExceeded("chunk headers"))?;

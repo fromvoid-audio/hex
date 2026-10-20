@@ -1,5 +1,7 @@
 //! Bounded metadata and authored state shared across native device boundaries.
 mod device_assets;
+mod state_storage;
+pub use state_storage::NativeStateStorageObservation;
 #[cfg(test)]
 mod device_assets_tests;
 pub use device_assets::{
@@ -305,7 +307,14 @@ impl NativeDeviceState {
         Ok(Self {
             type_id,
             state_version,
-            payload: Arc::from(payload),
+            payload: if payload.is_empty() {
+                // Explicit fresh zero-array constructor, then unsize the SAME
+                // allocation. No shared default/opaque empty-slice adoption.
+                let empty: Arc<[u8; 0]> = Arc::new([]);
+                empty
+            } else {
+                Arc::from(payload)
+            },
             input_gain_millidb: 0,
             output_gain_millidb: 0,
             asset_references: None,
@@ -443,6 +452,26 @@ impl NativeDeviceState {
     /// Actual shared backing identity, independently of equal state bytes.
     pub fn shares_payload_storage_with(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.payload, &other.payload)
+    }
+    /// Physical observations of the actual optional asset-reference allocation.
+    /// No Arc escapes; counts and matching identity confer neither provenance,
+    /// resource leases nor retirement/publication authority.
+    pub fn asset_reference_storage_observation(&self) -> Option<(usize, usize, usize)> {
+        self.asset_references.as_ref().map(|references| {
+            (
+                references.len(),
+                Arc::strong_count(references),
+                Arc::weak_count(references),
+            )
+        })
+    }
+    /// Equal bindings in different allocations do not share storage. Absence
+    /// denotes no allocation, so two absent lists are not a shared owner.
+    pub fn shares_asset_reference_storage_with(&self, other: &Self) -> bool {
+        self.asset_references
+            .as_ref()
+            .zip(other.asset_references.as_ref())
+            .is_some_and(|(left, right)| Arc::ptr_eq(left, right))
     }
     pub fn payload(&self) -> &[u8] {
         &self.payload
@@ -1053,6 +1082,32 @@ mod tests {
             }
             .validate_descriptor()
             .is_err()
+        );
+    }
+    #[test]
+    fn empty_state_payloads_have_fresh_constructor_custody_and_binding_aliases_stay_independent() {
+        let id = DeviceTypeId::from_static("test.metadata-custody");
+        let first = NativeDeviceState::new(id, 1, vec![]).unwrap();
+        let second = NativeDeviceState::new(id, 1, vec![]).unwrap();
+        assert_eq!(first, second);
+        assert!(!first.shares_payload_storage_with(&second));
+        assert_eq!(first.payload_storage_observation(), (0, 1, 0));
+        assert_eq!(first.asset_reference_storage_observation(), None);
+        assert!(!first.shares_asset_reference_storage_with(&second));
+        let references = vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(7).unwrap(),
+        }];
+        let first = first.with_asset_references(references.clone()).unwrap();
+        let alias = first.clone();
+        let replacement = first.clone().with_asset_references(references).unwrap();
+        assert!(first.shares_asset_reference_storage_with(&alias));
+        assert!(!first.shares_asset_reference_storage_with(&replacement));
+        assert!(first.shares_payload_storage_with(&replacement));
+        assert_eq!(first.asset_reference_storage_observation(), Some((1, 2, 0)));
+        assert_eq!(
+            replacement.asset_reference_storage_observation(),
+            Some((1, 1, 0))
         );
     }
 }

@@ -1,6 +1,20 @@
 //! Bounded independent project layers, owned by the existing analyzer worker.
 use super::*;
+mod packet;
+mod result;
+pub use result::PublishedProjectSpectrum;
+pub const PROJECT_INTERNAL_RESULTS: usize = 3;
+pub const PROJECT_UI_RESULTS: usize = 2;
+pub const PROJECT_RESULT_OWNERS: usize = PROJECT_INTERNAL_RESULTS + PROJECT_UI_RESULTS;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProjectSpectrumRefresh {
+    Unchanged,
+    Updated,
+    Cleared,
+    Busy,
+}
 use hex_engine::{Frame, ProjectSignal};
+use packet::PacketOwner;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering::SeqCst};
 
 pub const MAX_PROJECT_TRACKS: usize = hex_engine::MAX_SESSION_ROUTE_TRACKS;
@@ -9,6 +23,7 @@ pub const MAX_PROJECT_LAYERS: usize = MAX_PROJECT_TRACKS + 1;
 /// the whole project batch; it never publishes a capped subset of tracks.
 pub const MAX_PROJECT_CONTRIBUTION_FRAMES: usize = MAX_PROJECT_LAYERS * MAX_CAPTURE_FRAMES * 4;
 pub const PROJECT_PACKET_OWNERS: usize = CAPTURE_QUEUE_CAPACITY + 1;
+const PROJECT_PACKET_SAMPLES: usize = MAX_PROJECT_LAYERS * MAX_CAPTURE_FRAMES;
 pub const MAX_PROJECT_PAYLOAD_BYTES: usize = 32 * 1024 * 1024;
 pub const PROJECT_DISPLAY_STALE_AFTER: Duration = Duration::from_millis(400);
 
@@ -214,33 +229,13 @@ impl ProjectSelectionMailbox {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct PublishedProjectSpectrum {
-    pub selection: ProjectSelection,
-    pub applied_revision: u64,
-    pub captured_at: Instant,
-    pub processed_at: Instant,
-    // Keep the fixed maximum payload out of factory, reader and UI stack values.
-    // Construct it through Vec, never Box::new([large inline array]).
-    pub frames: Box<[SpectrumFrame; MAX_PROJECT_LAYERS]>,
-}
-impl PublishedProjectSpectrum {
-    /// Master first, followed by one independent layer per sorted selected ID.
-    pub fn frames(&self) -> &[SpectrumFrame] {
-        &self.frames[..self.selection.layer_count()]
-    }
-    pub fn is_fresh_at(&self, now: Instant) -> bool {
-        now.checked_duration_since(self.captured_at)
-            .is_some_and(|age| age <= self.selection.stale_after())
-    }
-}
 struct ProjectPacket {
     selection: ProjectSelection,
     sequence: u64,
     revision: u64,
     captured_at: Instant,
     frames: usize,
-    samples: Box<[Frame]>,
+    samples: Box<[Frame; PROJECT_PACKET_SAMPLES]>,
 }
 
 impl ProjectPacket {
@@ -258,9 +253,9 @@ impl ProjectPacket {
 }
 
 pub(crate) struct ProjectCapture {
-    producer: Producer<Box<ProjectPacket>>,
-    returned: Consumer<Box<ProjectPacket>>,
-    packet: Option<Box<ProjectPacket>>,
+    producer: NativePreparedProducer<PacketOwner>,
+    returned: NativePreparedConsumer<PacketOwner>,
+    packet: Option<PacketOwner>,
     selection: Option<ProjectSelection>,
     sequence: u64,
     exhausted: bool,
@@ -271,6 +266,20 @@ pub(crate) struct ProjectCapture {
     contribution_frames_left: usize,
 }
 impl ProjectCapture {
+    pub(super) fn matches_rings(
+        &self,
+        records: [Option<&hex_engine::sampler_host_fields::NativeFixedRingRegistration>; 3],
+        packets: &[Option<hex_engine::sampler_host_fields::NativeSpectrumPacketRegistration>],
+    ) -> bool {
+        self.packet.as_ref().is_none_or(|owner| {
+            packets
+                .iter()
+                .flatten()
+                .any(|record| owner.matches_record(record))
+        }) && records[0].is_some_and(|record| self.producer.matches_constructor_record(record))
+            && records[1].is_some_and(|record| self.returned.matches_constructor_record(record))
+    }
+
     pub(crate) fn observing(&self) -> bool {
         self.valid
     }
@@ -285,7 +294,7 @@ impl ProjectCapture {
         if !self.valid {
             return None;
         }
-        let packet = self.packet.as_ref()?;
+        let packet = self.packet.as_ref()?.payload.as_deref()?;
         let layer = match signal {
             ProjectSignal::Master => 0,
             ProjectSignal::Track(id) => packet.selection.tracks().binary_search(&id).ok()? + 1,
@@ -324,7 +333,12 @@ impl ProjectCapture {
         self.valid =
             source_valid && frames > 0 && frames <= MAX_CAPTURE_FRAMES && self.selection.is_some();
         if self.valid
-            && let (Some(packet), Some(selection)) = (self.packet.as_mut(), self.selection)
+            && let (Some(packet), Some(selection)) = (
+                self.packet
+                    .as_mut()
+                    .and_then(|owner| owner.payload.as_deref_mut()),
+                self.selection,
+            )
         {
             packet.selection = selection;
             packet.frames = frames.min(MAX_CAPTURE_FRAMES);
@@ -351,7 +365,11 @@ impl ProjectCapture {
             return;
         };
         self.contribution_frames_left = remaining;
-        let Some(packet) = self.packet.as_mut() else {
+        let Some(packet) = self
+            .packet
+            .as_mut()
+            .and_then(|owner| owner.payload.as_deref_mut())
+        else {
             self.valid = false;
             return;
         };
@@ -412,9 +430,13 @@ impl ProjectCapture {
         let Some(mut packet) = self.packet.take() else {
             return Some(CaptureOutcome::Skipped { sequence });
         };
-        packet.sequence = sequence;
-        packet.revision = revision;
-        packet.captured_at = captured_at;
+        let Some(payload) = packet.payload.as_deref_mut() else {
+            self.packet = Some(packet);
+            return Some(CaptureOutcome::Skipped { sequence });
+        };
+        payload.sequence = sequence;
+        payload.revision = revision;
+        payload.captured_at = captured_at;
         match self.producer.push(packet) {
             Ok(()) => Some(CaptureOutcome::Queued { sequence }),
             Err(rtrb::PushError::Full(packet)) => {
@@ -426,42 +448,205 @@ impl ProjectCapture {
 }
 
 pub(crate) struct ProjectReader {
-    results: Receiver<PublishedProjectSpectrum>,
+    results: NativePreparedConsumer<PublishedProjectSpectrum>,
     latest: Option<PublishedProjectSpectrum>,
-    identity: (usize, usize),
+    result_returns: NativePreparedProducer<PublishedProjectSpectrum>,
+    pending_recycle: Option<PublishedProjectSpectrum>,
+    ui_free: [Option<PublishedProjectSpectrum>; PROJECT_UI_RESULTS],
+    homes:
+        [Option<hex_engine::sampler_host_fields::NativeSpectrumResultHome>; PROJECT_RESULT_OWNERS],
+    identity: (usize, usize, usize, usize),
 }
 impl ProjectReader {
-    pub(crate) fn ring_identity(&self) -> (usize, usize) {
-        self.identity
+    pub(super) fn matches_rings(
+        &self,
+        records: [Option<&hex_engine::sampler_host_fields::NativeFixedRingRegistration>; 4],
+        results: &[Option<hex_engine::sampler_host_fields::NativeSpectrumResultRegistration>],
+    ) -> bool {
+        results.len() == self.homes.len()
+            && self.homes.iter().zip(results).all(|(home, record)| {
+                home.as_ref()
+                    .zip(record.as_ref())
+                    .is_some_and(|(home, record)| record.matches_actual_home_on_control(home))
+            })
+            && records[2].is_some_and(|record| self.results.matches_constructor_record(record))
+            && records
+                .get(3)
+                .and_then(|r| *r)
+                .is_some_and(|record| self.result_returns.matches_constructor_record(record))
+    }
+
+    pub(crate) fn ring_identity(&self) -> Option<(usize, usize, usize, usize)> {
+        // Correlation of this ACTUAL endpoint with the private constructor,
+        // never pointer-based physical origin, closure or disposal authority.
+        (self.identity.2 == self.results.buffer() as *const _ as usize
+            && self.identity.3 == self.result_returns.buffer() as *const _ as usize)
+            .then_some(self.identity)
+    }
+    fn return_internal(&mut self, value: PublishedProjectSpectrum) {
+        if let Err(rtrb::PushError::Full(value)) = self.result_returns.push(value) {
+            self.pending_recycle = Some(value);
+        }
+    }
+    fn recycle_ui(&mut self, slot: &mut Option<PublishedProjectSpectrum>) {
+        if let Some(value) = slot.take() {
+            if let Some(index) = value
+                .index
+                .checked_sub(PROJECT_INTERNAL_RESULTS)
+                .filter(|i| *i < PROJECT_UI_RESULTS)
+                && self.homes[value.index]
+                    .as_ref()
+                    .is_some_and(|home| value.belongs(home))
+                && self.ui_free[index].is_none()
+            {
+                self.ui_free[index] = Some(value);
+            } else {
+                // Foreign/old closed-root snapshot retires against its OWN
+                // affine lease. Never adopt it into this constructor pool.
+                drop(value);
+            }
+        }
+    }
+    fn poll_latest(&mut self, now: Instant, selection: Option<ProjectSelection>) -> bool {
+        if let Some(value) = self.pending_recycle.take() {
+            self.return_internal(value);
+        }
+        if self.pending_recycle.is_some() {
+            return false;
+        }
+        if let Ok(result) = self.results.pop() {
+            if let Some(previous) = self.latest.replace(result) {
+                self.return_internal(previous);
+            }
+        }
+        if self
+            .latest
+            .as_ref()
+            .is_some_and(|r| !valid_result(r, now, selection))
+            && let Some(value) = self.latest.take()
+        {
+            self.return_internal(value);
+        }
+        true
     }
     pub(crate) fn latest_at(
         &mut self,
         now: Instant,
         selection: ProjectSelection,
-    ) -> Option<PublishedProjectSpectrum> {
-        if let Ok(result) = self.results.try_recv() {
-            self.latest = Some(result);
+    ) -> Option<&PublishedProjectSpectrum> {
+        self.poll_latest(now, Some(selection));
+        self.latest
+            .as_ref()
+            .filter(|r| valid_result(r, now, Some(selection)))
+    }
+    pub(super) fn refresh(
+        &mut self,
+        slot: &mut Option<PublishedProjectSpectrum>,
+        now: Instant,
+        selection: Option<ProjectSelection>,
+    ) -> ProjectSpectrumRefresh {
+        let stale = slot.as_ref().is_some_and(|r| {
+            !valid_result(r, now, selection)
+                || !self
+                    .homes
+                    .get(r.index)
+                    .and_then(Option::as_ref)
+                    .is_some_and(|home| r.belongs(home))
+        });
+        if stale || selection.is_none() {
+            self.recycle_ui(slot);
         }
-        if self
+        if !self.poll_latest(now, selection) {
+            return ProjectSpectrumRefresh::Busy;
+        }
+        let Some(latest) = self
             .latest
             .as_ref()
-            .is_some_and(|r| r.selection != selection || !r.is_fresh_at(now))
-        {
-            self.latest = None;
+            .filter(|r| valid_result(r, now, selection))
+        else {
+            self.recycle_ui(slot);
+            return ProjectSpectrumRefresh::Cleared;
+        };
+        if slot.as_ref().is_some_and(|old| old == latest) {
+            return ProjectSpectrumRefresh::Unchanged;
         }
-        self.latest.clone()
+        let Some(index) = self.ui_free.iter().position(Option::is_some) else {
+            return ProjectSpectrumRefresh::Busy;
+        };
+        let Some(mut value) = self.ui_free[index].take() else {
+            return ProjectSpectrumRefresh::Busy;
+        };
+        if !value.copy_from(latest) {
+            self.ui_free[index] = Some(value);
+            return ProjectSpectrumRefresh::Busy;
+        }
+        let mut previous = slot.replace(value);
+        self.recycle_ui(&mut previous);
+        ProjectSpectrumRefresh::Updated
     }
 }
 
 pub(crate) struct ProjectWorker {
-    pending_return: Option<Box<ProjectPacket>>,
-    consumer: Consumer<Box<ProjectPacket>>,
-    returned: Producer<Box<ProjectPacket>>,
-    results: SyncSender<PublishedProjectSpectrum>,
+    pending_return: Option<PacketOwner>,
+    consumer: NativePreparedConsumer<PacketOwner>,
+    returned: NativePreparedProducer<PacketOwner>,
+    results: NativePreparedProducer<PublishedProjectSpectrum>,
+    result_returns: NativePreparedConsumer<PublishedProjectSpectrum>,
     core: ProjectCore,
     pool_bytes: usize,
 }
 impl ProjectWorker {
+    pub(super) fn native_core_fields(
+        &self,
+    ) -> hex_engine::sampler_host_fields::NativeSpectrumProjectCoreFields<'_> {
+        use hex_engine::sampler_host_fields::{
+            BodyRef, NativeSpectrumProjectCoreFields, SpectrumFloatBoxRef,
+        };
+        let Self {
+            pending_return: _,
+            consumer: _,
+            returned: _,
+            results: _,
+            result_returns: _,
+            core,
+            pool_bytes: _,
+        } = self;
+        let ProjectCore {
+            rate: _,
+            kernel,
+            rolling,
+            ordered,
+            envelopes,
+            selection: _,
+            write: _,
+            filled: _,
+            sequence: _,
+            revision: _,
+            captured_at: _,
+            analyzed_at: _,
+            envelope_at: _,
+            dirty: _,
+            pending: _,
+            free_results: _,
+        } = core;
+        for frame in envelopes.iter().flatten() {
+            frame.validate_native_inline_fields();
+        }
+        let [window, real, imaginary, left_power] = kernel.native_buffer_fields();
+        NativeSpectrumProjectCoreFields {
+            body: BodyRef::of(core),
+            buffers: [
+                SpectrumFloatBoxRef::stereo(rolling),
+                SpectrumFloatBoxRef::stereo(ordered),
+                window,
+                real,
+                imaginary,
+                left_power,
+            ],
+            envelope_field: BodyRef::of(envelopes),
+            envelopes: BodyRef::of(envelopes.as_ref()),
+        }
+    }
     pub(crate) fn poll(&mut self, now: Instant) -> usize {
         // A full return ring retains the same owner off callback and pauses
         // consumption. One retry per turn; EQ remains serviced by the shared loop.
@@ -480,7 +665,11 @@ impl ProjectWorker {
                 let Ok(packet) = self.consumer.pop() else {
                     break;
                 };
-                self.core.ingest(&packet);
+                if let Some(payload) = packet.payload.as_deref() {
+                    self.core.ingest(payload);
+                } else {
+                    self.core.clear();
+                }
                 if let Err(rtrb::PushError::Full(packet)) = self.returned.push(packet) {
                     self.pending_return = Some(packet);
                     self.core.clear();
@@ -489,10 +678,18 @@ impl ProjectWorker {
                 drained += 1;
             }
         }
+        for _ in 0..PROJECT_INTERNAL_RESULTS {
+            let Ok(value) = self.result_returns.pop() else {
+                break;
+            };
+            self.core.recycle_result(value);
+        }
         let pending = self.core.pending.is_some();
         let mut analyzed = false;
         if let Some(result) = self.core.analyze_if_due(now) {
-            let _ = self.results.try_send(result);
+            if let Some(value) = try_publish_project_result(&mut self.results, result) {
+                self.core.recycle_result(value);
+            }
             analyzed = true;
         }
         // Report real analysis work so the shared loop does not sleep between
@@ -501,12 +698,20 @@ impl ProjectWorker {
             pending || self.core.pending.is_some() || analyzed,
         ))
     }
-    pub(crate) fn ring_identity(&self, capture: &ProjectCapture) -> Option<(usize, usize)> {
+    pub(crate) fn ring_identity(
+        &self,
+        capture: &ProjectCapture,
+    ) -> Option<(usize, usize, usize, usize)> {
         let forward = self.consumer.buffer() as *const _ as usize;
         let returned = self.returned.buffer() as *const _ as usize;
         (forward == capture.producer.buffer() as *const _ as usize
             && returned == capture.returned.buffer() as *const _ as usize)
-            .then_some((forward, returned))
+            .then_some((
+                forward,
+                returned,
+                self.results.buffer() as *const _ as usize,
+                self.result_returns.buffer() as *const _ as usize,
+            ))
     }
     pub(crate) fn storage(
         &self,
@@ -520,38 +725,54 @@ impl ProjectWorker {
         limit: usize,
     ) -> Option<crate::native_callback_owner::ChannelStorage> {
         use crate::native_callback_owner::ChannelStorage;
+        let storage = self.storage_children(capture)?.plus(ChannelStorage {
+            data_bytes: std::mem::size_of_val(self),
+            shared_groups: 0,
+            shared_handles: 0,
+        })?;
+        (storage.data_bytes <= limit).then_some(storage)
+    }
+    pub(super) fn storage_children(
+        &self,
+        capture: &ProjectCapture,
+    ) -> Option<crate::native_callback_owner::ChannelStorage> {
+        use crate::native_callback_owner::ChannelStorage;
         let Self {
             pending_return: _,
             consumer: _,
             returned,
-            results: _,
+            results,
+            result_returns,
             core,
             pool_bytes,
         } = self;
         self.ring_identity(capture)?;
         let storage = ChannelStorage::ring(capture.producer.buffer())?
             .plus(ChannelStorage::ring(returned.buffer())?)?
+            .plus(ChannelStorage::ring(results.buffer())?)?
+            .plus(ChannelStorage::ring(result_returns.buffer())?)?
             .plus(ChannelStorage {
-                data_bytes: std::mem::size_of_val(self)
-                    .checked_add(*pool_bytes)?
+                data_bytes: pool_bytes
                     .checked_add(core.heap_bytes()?)?
-                    .checked_add(std::mem::size_of::<PublishedProjectSpectrum>())?
                     // One queued publication and one retained reader result. The
                     // latter used to be included inline in the client owner.
-                    .checked_add(2 * std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())?,
-                shared_groups: 1,
-                shared_handles: 2,
+                    .checked_add(
+                        PROJECT_RESULT_OWNERS
+                            * std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>(),
+                    )?,
+                shared_groups: 0,
+                shared_handles: 0,
             })?;
-        (storage.data_bytes <= limit).then_some(storage)
+        Some(storage)
     }
 }
 
 struct ProjectCore {
     rate: u32,
     kernel: SpectrumKernel,
-    rolling: Box<[Frame]>,
-    ordered: Box<[Frame]>,
-    envelopes: Box<[Option<SpectrumFrame>]>,
+    rolling: Box<[Frame; MAX_PROJECT_LAYERS * FFT_SIZE]>,
+    ordered: Box<[Frame; FFT_SIZE]>,
+    envelopes: Box<[Option<SpectrumFrame>; MAX_PROJECT_LAYERS]>,
     selection: Option<ProjectSelection>,
     write: usize,
     filled: usize,
@@ -562,6 +783,7 @@ struct ProjectCore {
     envelope_at: Option<Instant>,
     dirty: bool,
     pending: Option<PendingAnalysis>,
+    free_results: [Option<PublishedProjectSpectrum>; PROJECT_INTERNAL_RESULTS],
 }
 const MAX_PROJECT_LAYERS_PER_POLL: usize = 8;
 const MAX_PROJECT_BATCHES_PER_POLL: usize = 2;
@@ -571,7 +793,27 @@ struct PendingAnalysis {
     at: Instant,
     decay: f32,
 }
+fn valid_result(
+    result: &PublishedProjectSpectrum,
+    now: Instant,
+    selection: Option<ProjectSelection>,
+) -> bool {
+    selection.is_some_and(|s| {
+        s.active
+            && result.selection == s
+            && result.applied_revision >= s.activation_floor
+            && result.is_fresh_at(now)
+    })
+}
 impl ProjectCore {
+    fn recycle_result(&mut self, value: PublishedProjectSpectrum) {
+        if let Some(slot) = self.free_results.iter_mut().find(|s| s.is_none()) {
+            *slot = Some(value);
+        } else {
+            drop(value);
+        } // malformed extra input is normally retired, never adopted
+    }
+
     fn clear(&mut self) {
         self.write = 0;
         self.filled = 0;
@@ -579,7 +821,9 @@ impl ProjectCore {
         self.captured_at = None;
         self.envelope_at = None;
         self.dirty = false;
-        self.pending = None;
+        if let Some(pending) = self.pending.take() {
+            self.recycle_result(pending.result);
+        }
     }
     fn ingest(&mut self, packet: &ProjectPacket) {
         let changed = self.selection != Some(packet.selection);
@@ -632,15 +876,13 @@ impl ProjectCore {
             {
                 return None;
             }
-            let frames = project_frames(self.rate).ok()?;
+            let mut result = self.free_results.iter_mut().find_map(Option::take)?;
+            result.selection = selection;
+            result.applied_revision = self.revision;
+            result.captured_at = self.captured_at?;
+            result.processed_at = now;
             self.pending = Some(PendingAnalysis {
-                result: PublishedProjectSpectrum {
-                    selection,
-                    applied_revision: self.revision,
-                    captured_at: self.captured_at?,
-                    processed_at: now,
-                    frames,
-                },
+                result,
                 next_layer: 0,
                 at: now,
                 decay: self.envelope_at.map_or(0.0, |at| {
@@ -657,13 +899,14 @@ impl ProjectCore {
             for (offset, out) in self.ordered.iter_mut().enumerate() {
                 *out = self.rolling[layer * FFT_SIZE + (self.write + offset) % FFT_SIZE];
             }
-            let Ok(mut frame) = self.kernel.analyze(&self.ordered) else {
+            let Ok(mut frame) = self.kernel.analyze(self.ordered.as_ref()) else {
+                self.recycle_result(pending.result);
                 self.clear();
                 return None;
             };
             apply_decay(&mut frame, self.envelopes[layer].as_ref(), pending.decay);
             self.envelopes[layer] = Some(frame.clone());
-            pending.result.frames[layer] = frame;
+            pending.result.frames.as_mut()?[layer] = frame;
         }
         pending.next_layer = end;
         if end == pending.result.selection.layer_count() {
@@ -692,13 +935,12 @@ impl ProjectCore {
             envelope_at: _,
             dirty: _,
             pending: _,
+            free_results: _,
         } = self;
         std::mem::size_of_val(rolling.as_ref())
             .checked_add(std::mem::size_of_val(ordered.as_ref()))?
             .checked_add(kernel.heap_data_bytes()?)?
-            .checked_add(std::mem::size_of_val(envelopes.as_ref()))?
-            // Reserve the pending result payload even before analysis starts.
-            .checked_add(std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())
+            .checked_add(std::mem::size_of_val(envelopes.as_ref()))
     }
 }
 fn project_frames(
@@ -728,29 +970,160 @@ fn zeroed_frames(count: usize) -> Result<Box<[Frame]>, SpectrumWorkerError> {
     frames.resize(count, [0.0; 2]);
     Ok(frames.into_boxed_slice())
 }
+fn try_publish_project_result(
+    producer: &mut NativePreparedProducer<PublishedProjectSpectrum>,
+    value: PublishedProjectSpectrum,
+) -> Option<PublishedProjectSpectrum> {
+    if producer.is_abandoned() {
+        return Some(value);
+    }
+    producer
+        .push(value)
+        .err()
+        .map(|rtrb::PushError::Full(value)| value)
+}
+
+pub(super) fn channel_for_parent(
+    rate: u32,
+    parent: Option<&crate::native_callback_owner::NativeRetirement>,
+) -> Result<(ProjectCapture, ProjectReader, ProjectWorker), SpectrumWorkerError> {
+    channel_with_parent(rate, PROJECT_PACKET_OWNERS, parent)
+}
+#[cfg(test)]
 pub(crate) fn channel(
     rate: u32,
 ) -> Result<(ProjectCapture, ProjectReader, ProjectWorker), SpectrumWorkerError> {
     channel_with_return_capacity(rate, PROJECT_PACKET_OWNERS)
 }
+// Physical requested storage for this exact fixed constructor and three
+// simultaneous result Boxes (pending analysis, queued, reader-latest). This
+// arithmetic does not certify any raw endpoint/element's origin or lifetime.
+#[cfg(all(test, feature = "allocation-probe"))]
+pub(super) fn raw_project_packet_ring_data() -> Option<usize> {
+    super::native::raw_ring_requested::<PacketOwner>(CAPTURE_QUEUE_CAPACITY)?.checked_add(
+        super::native::raw_ring_requested::<PacketOwner>(PROJECT_PACKET_OWNERS)?,
+    )
+}
+#[cfg(all(test, feature = "allocation-probe"))]
+pub(super) fn raw_project_result_ring_data() -> Option<usize> {
+    super::native::raw_ring_requested::<PublishedProjectSpectrum>(RESULT_QUEUE_CAPACITY)?
+        .checked_add(
+            super::native::raw_ring_requested::<PublishedProjectSpectrum>(
+                PROJECT_INTERNAL_RESULTS,
+            )?,
+        )
+}
+#[cfg(all(test, feature = "allocation-probe"))]
+pub(super) fn raw_project_ring_data() -> Option<usize> {
+    raw_project_packet_ring_data()?.checked_add(raw_project_result_ring_data()?)
+}
+pub(super) fn constructor_cost() -> Option<(usize, usize)> {
+    let packets = size_of::<ProjectPacket>()
+        .checked_add(
+            MAX_PROJECT_LAYERS
+                .checked_mul(MAX_CAPTURE_FRAMES)?
+                .checked_mul(size_of::<Frame>())?,
+        )?
+        .checked_mul(PROJECT_PACKET_OWNERS)?;
+    let core_heap = SpectrumKernel::constructor_heap_bytes()?
+        .checked_add(
+            MAX_PROJECT_LAYERS
+                .checked_mul(FFT_SIZE)?
+                .checked_mul(size_of::<Frame>())?,
+        )?
+        .checked_add(size_of::<[Frame; FFT_SIZE]>())?
+        .checked_add(MAX_PROJECT_LAYERS.checked_mul(size_of::<Option<SpectrumFrame>>())?)?
+        .checked_add(
+            PROJECT_RESULT_OWNERS.checked_mul(size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>())?,
+        )?;
+    let metadata = hex_engine::sampler_host_fields::NativeFixedRingRegistration::metadata_requested_bytes_on_control().ok()?.checked_mul(4)?;
+    let result_metadata = hex_engine::sampler_host_fields::NativeSpectrumResultRegistration::metadata_requested_bytes_on_control().ok()?.checked_mul(PROJECT_RESULT_OWNERS)?;
+    let result_scratch = hex_engine::sampler_host_fields::NativeSpectrumResultRegistration::construction_scratch_bytes_on_control().ok()?
+        .checked_add(size_of::<PublishedProjectSpectrum>())?
+        .checked_add(size_of::<Vec<SpectrumFrame>>())?
+        .checked_add(size_of::<SpectrumFrame>())?
+        .checked_add(size_of::<Result<(PublishedProjectSpectrum, hex_engine::sampler_host_fields::NativeSpectrumResultHome), SpectrumWorkerError>>())?
+        .checked_add(crate::candidate_custody::CandidateRoot::spectrum_capture_pair_guard_bytes())?;
+    let packet_metadata = hex_engine::sampler_host_fields::NativeSpectrumPacketRegistration::metadata_requested_bytes_on_control().ok()?.checked_mul(PROJECT_PACKET_OWNERS)?;
+    let packet_scratch = hex_engine::sampler_host_fields::NativeSpectrumPacketRegistration::construction_scratch_bytes_on_control().ok()?
+        .checked_add(size_of::<Result<PacketOwner, SpectrumWorkerError>>())?
+        .checked_add(size_of::<PacketOwner>())?
+        .checked_add(crate::candidate_custody::CandidateRoot::spectrum_capture_pair_guard_bytes())?;
+
+    let ring_scratch = hex_engine::sampler_host_fields::NativeFixedRingRegistration::construction_scratch_bytes_on_control::<RingBuffer<PacketOwner>>().ok()?.checked_mul(2)?
+        .checked_add(hex_engine::sampler_host_fields::NativeFixedRingRegistration::construction_scratch_bytes_on_control::<RingBuffer<PublishedProjectSpectrum>>().ok()?.checked_mul(2)?)?
+        .checked_add(crate::candidate_custody::CandidateRoot::spectrum_capture_pair_guard_bytes())?;
+    let data = super::native::raw_ring_requested::<PacketOwner>(CAPTURE_QUEUE_CAPACITY)?
+        .checked_add(super::native::raw_ring_requested::<PacketOwner>(
+            PROJECT_PACKET_OWNERS,
+        )?)?
+        .checked_add(
+            super::native::raw_ring_requested::<PublishedProjectSpectrum>(RESULT_QUEUE_CAPACITY)?,
+        )?
+        .checked_add(
+            super::native::raw_ring_requested::<PublishedProjectSpectrum>(
+                PROJECT_INTERNAL_RESULTS,
+            )?,
+        )?
+        .checked_add(metadata)?
+        .checked_add(result_metadata)?
+        .checked_add(packet_metadata)?
+        .checked_add(packets)?
+        .checked_add(core_heap)?;
+    let scratch = ring_scratch
+        .checked_add(packet_scratch)?
+        .checked_add(result_scratch)?
+        .checked_add(size_of::<(ProjectCapture, ProjectReader, ProjectWorker)>())?
+        .checked_add(size_of::<ProjectCore>())?
+        .checked_add(size_of::<ProjectPacket>())?
+        .checked_add(size_of::<[Vec<Frame>; 3]>())?
+        .checked_add(SpectrumKernel::constructor_heap_bytes()?)?;
+    Some((data, data.checked_add(scratch)?))
+}
+#[cfg(test)]
 fn channel_with_return_capacity(
     rate: u32,
     return_capacity: usize,
 ) -> Result<(ProjectCapture, ProjectReader, ProjectWorker), SpectrumWorkerError> {
-    let (producer, consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
-    let (mut returned, free) = RingBuffer::new(return_capacity);
+    channel_with_parent(rate, return_capacity, None)
+}
+fn project_ring<T>(
+    parent: Option<&crate::native_callback_owner::NativeRetirement>,
+    index: usize,
+    capacity: usize,
+) -> Result<(NativePreparedProducer<T>, NativePreparedConsumer<T>), SpectrumWorkerError> {
+    match parent {
+        Some(parent) => parent
+            .spectrum_project_ring_on_control(index, capacity)
+            .map_err(|_| SpectrumWorkerError::StorageRefused),
+        None => Ok(native_prepared_ring(capacity)),
+    }
+}
+fn channel_with_parent(
+    rate: u32,
+    return_capacity: usize,
+    parent: Option<&crate::native_callback_owner::NativeRetirement>,
+) -> Result<(ProjectCapture, ProjectReader, ProjectWorker), SpectrumWorkerError> {
+    let (producer, consumer) = project_ring(parent, 0, CAPTURE_QUEUE_CAPACITY)?;
+    let (mut returned, free) = project_ring(parent, 1, return_capacity)?;
     let mut packet = None;
     let mut pool_bytes = 0usize;
     for index in 0..PROJECT_PACKET_OWNERS {
-        let samples = zeroed_frames(MAX_PROJECT_LAYERS * MAX_CAPTURE_FRAMES)?;
-        let owner = Box::new(ProjectPacket {
-            selection: ProjectSelection::default(),
-            sequence: 0,
-            revision: 0,
-            captured_at: Instant::now(),
-            frames: 0,
-            samples,
-        });
+        let samples = zeroed_frames(PROJECT_PACKET_SAMPLES)?
+            .try_into()
+            .map_err(|_| SpectrumWorkerError::StorageOverflow)?;
+        let owner = PacketOwner::new(
+            ProjectPacket {
+                selection: ProjectSelection::default(),
+                sequence: 0,
+                revision: 0,
+                captured_at: Instant::now(),
+                frames: 0,
+                samples,
+            },
+            parent,
+            index,
+        )?;
         pool_bytes = pool_bytes
             .checked_add(
                 owner
@@ -766,20 +1139,40 @@ fn channel_with_return_capacity(
                 .map_err(|_| SpectrumWorkerError::PoolCapacity)?;
         }
     }
-    let (results, receiver) = sync_channel(1);
+    let (results, receiver) = project_ring(parent, 2, RESULT_QUEUE_CAPACITY)?;
+    let (result_return_sender, result_returns) = project_ring(parent, 3, PROJECT_INTERNAL_RESULTS)?;
+    let mut free_results = std::array::from_fn(|_| None);
+    let mut ui_free = std::array::from_fn(|_| None);
+    let mut homes = std::array::from_fn(|_| None);
+    for index in 0..PROJECT_RESULT_OWNERS {
+        let (value, home) = PublishedProjectSpectrum::new(rate, parent, index)?;
+        homes[index] = Some(home);
+        if index < PROJECT_INTERNAL_RESULTS {
+            free_results[index] = Some(value);
+        } else {
+            ui_free[index - PROJECT_INTERNAL_RESULTS] = Some(value);
+        }
+    }
     let core = ProjectCore {
         rate,
         kernel: SpectrumKernel::new(rate)
             .map_err(|_| SpectrumWorkerError::InvalidSampleRate(rate))?,
-        rolling: zeroed_frames(MAX_PROJECT_LAYERS * FFT_SIZE)?,
-        ordered: zeroed_frames(FFT_SIZE)?,
+        rolling: zeroed_frames(MAX_PROJECT_LAYERS * FFT_SIZE)?
+            .try_into()
+            .map_err(|_| SpectrumWorkerError::StorageOverflow)?,
+        ordered: zeroed_frames(FFT_SIZE)?
+            .try_into()
+            .map_err(|_| SpectrumWorkerError::StorageOverflow)?,
         envelopes: {
             let mut envelopes = Vec::new();
             envelopes
                 .try_reserve_exact(MAX_PROJECT_LAYERS)
                 .map_err(|_| SpectrumWorkerError::Allocation)?;
             envelopes.resize(MAX_PROJECT_LAYERS, None);
-            envelopes.into_boxed_slice()
+            envelopes
+                .into_boxed_slice()
+                .try_into()
+                .map_err(|_| SpectrumWorkerError::StorageOverflow)?
         },
         selection: None,
         write: 0,
@@ -791,6 +1184,7 @@ fn channel_with_return_capacity(
         envelope_at: None,
         dirty: false,
         pending: None,
+        free_results,
     };
     let capture = ProjectCapture {
         producer,
@@ -810,6 +1204,7 @@ fn channel_with_return_capacity(
         consumer,
         returned,
         results,
+        result_returns,
         core,
         pool_bytes,
     };
@@ -824,19 +1219,250 @@ fn channel_with_return_capacity(
         ProjectReader {
             results: receiver,
             latest: None,
+            result_returns: result_return_sender,
+            pending_recycle: None,
+            ui_free,
+            homes,
             identity,
         },
         worker,
     ))
 }
 
+impl ProjectSelectionMailbox {
+    pub(crate) fn audit_scalar_storage(&self) {
+        let Self {
+            version,
+            generation,
+            floor,
+            rate,
+            count,
+            tracks,
+            active,
+        } = self;
+        let _: &AtomicU64 = version;
+        let _: &AtomicU64 = generation;
+        let _: &AtomicU64 = floor;
+        let _: &AtomicU32 = rate;
+        let _: &AtomicUsize = count;
+        let _: &[AtomicU64; MAX_PROJECT_TRACKS] = tracks;
+        let _: &AtomicBool = active;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn actual_project_result_consumer_cannot_borrow_another_native_factory_identity() {
+        let (capture_a, mut reader_a, reaper_a) = spawn_native_spectrum_worker(SpectrumStamp {
+            target: SpectrumTargetId(1),
+            generation: 1,
+            sample_rate_hz: 48000,
+            applied_revision: 1,
+        })
+        .unwrap();
+        let (capture_b, mut reader_b, reaper_b) = spawn_native_spectrum_worker(SpectrumStamp {
+            target: SpectrumTargetId(1),
+            generation: 1,
+            sample_rate_hz: 48000,
+            applied_revision: 1,
+        })
+        .unwrap();
+        let identity_a = reader_a.native_identity().unwrap();
+        let identity_b = reader_b.native_identity().unwrap();
+        assert_ne!(identity_a, identity_b);
+        std::mem::swap(
+            &mut reader_a.project.as_mut().unwrap().results,
+            &mut reader_b.project.as_mut().unwrap().results,
+        );
+        let refused;
+        #[cfg(feature = "allocation-probe")]
+        {
+            let mut observed = false;
+            let measured = allocation_counter::measure(|| {
+                observed =
+                    reader_a.native_identity().is_none() && reader_b.native_identity().is_none();
+            });
+            assert_eq!((measured.count_total, measured.count_current), (0, 0));
+            refused = observed;
+        }
+        #[cfg(not(feature = "allocation-probe"))]
+        {
+            refused = reader_a.native_identity().is_none() && reader_b.native_identity().is_none();
+        }
+        std::mem::swap(
+            &mut reader_a.project.as_mut().unwrap().results,
+            &mut reader_b.project.as_mut().unwrap().results,
+        );
+        assert_eq!(reader_a.native_identity(), Some(identity_a));
+        assert_eq!(reader_b.native_identity(), Some(identity_b));
+        drop((capture_a, capture_b, reader_a, reader_b));
+        reaper_a.shutdown_and_join().unwrap();
+        reaper_b.shutdown_and_join().unwrap();
+        assert!(
+            refused,
+            "actual foreign project result consumers must not carry native reader identity"
+        );
+    }
     fn selected(ids: &[u64]) -> ProjectSelection {
         ProjectSelectionMailbox::default()
             .select(ids, 7, 11, 48_000)
             .unwrap()
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn actual_project_result_ring_keeps_three_internal_buffers_and_returns_full_payload_once() {
+        let (capture, mut reader, mut worker) = channel(48_000).unwrap();
+        let now = Instant::now();
+        let selection = selected(&[1]);
+        let make = |revision| PublishedProjectSpectrum {
+            selection,
+            applied_revision: revision,
+            captured_at: now,
+            processed_at: now,
+            frames: Some(project_frames(48_000).unwrap()),
+            storage: None,
+            index: usize::MAX,
+            #[cfg(feature = "allocation-probe")]
+            panic_on_drop: false,
+        };
+        let bytes = worker.storage(&capture).unwrap().data_bytes;
+        let pending = make(1);
+        let queued = make(2);
+        let latest = make(3);
+        let pending_address = pending.frames.as_ref().unwrap().as_ptr();
+        let queued_address = queued.frames.as_ref().unwrap().as_ptr();
+        let latest_address = latest.frames.as_ref().unwrap().as_ptr();
+        assert_ne!(pending_address, queued_address);
+        assert_ne!(pending_address, latest_address);
+        assert_ne!(queued_address, latest_address);
+        worker.core.pending = Some(PendingAnalysis {
+            result: pending,
+            next_layer: 0,
+            at: now,
+            decay: 0.0,
+        });
+        assert!(try_publish_project_result(&mut worker.results, queued).is_none());
+        reader.latest = Some(latest);
+        let refused = make(4);
+        let refused_address = refused.frames.as_ref().unwrap().as_ptr();
+        let mut returned = None;
+        let measured = allocation_counter::measure(|| {
+            let value = try_publish_project_result(&mut worker.results, refused).unwrap();
+            assert_eq!(value.frames.as_ref().unwrap().as_ptr(), refused_address);
+            returned = Some(value);
+        });
+        assert_eq!((measured.count_total, measured.count_current), (0, 0));
+        let measured = allocation_counter::measure(|| drop(returned.take()));
+        assert_eq!(measured.count_total, 0);
+        assert_eq!(measured.count_current, -1);
+        assert_eq!(
+            measured.bytes_current,
+            -(std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>() as i64)
+        );
+        assert_eq!(
+            worker
+                .core
+                .pending
+                .as_ref()
+                .unwrap()
+                .result
+                .frames
+                .as_ref()
+                .unwrap()
+                .as_ptr(),
+            pending_address
+        );
+        assert_eq!(
+            reader
+                .latest
+                .as_ref()
+                .unwrap()
+                .frames
+                .as_ref()
+                .unwrap()
+                .as_ptr(),
+            latest_address
+        );
+        let mut drained = None;
+        let measured =
+            allocation_counter::measure(|| drained = Some(reader.results.pop().unwrap()));
+        assert_eq!((measured.count_total, measured.count_current), (0, 0));
+        assert_eq!(
+            drained.as_ref().unwrap().frames.as_ref().unwrap().as_ptr(),
+            queued_address
+        );
+        assert_eq!(drained.as_ref().unwrap().applied_revision, 2);
+        assert!(reader.results.pop().is_err());
+        assert!(worker.storage_with_limit(&capture, bytes).is_some());
+        assert!(worker.storage_with_limit(&capture, bytes - 1).is_none());
+        // These three INTERNAL buffers are distinct from an owning public
+        // latest_at clone; any such external UI owner still needs its own root.
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn actual_project_result_retained_after_reader_drop_frees_on_last_worker_endpoint() {
+        let (capture, reader, worker) = channel(48_000).unwrap();
+        let mut results = {
+            drop(capture);
+            // Isolate the ACTUAL worker field only in this destruction oracle;
+            // production keeps it in the same existing worker until join.
+            worker.results
+        };
+        let backing = crate::native_callback_owner::ChannelStorage::ring(results.buffer())
+            .unwrap()
+            .data_bytes;
+        let now = Instant::now();
+        let value = PublishedProjectSpectrum {
+            selection: selected(&[1]),
+            applied_revision: 11,
+            captured_at: now,
+            processed_at: now,
+            frames: Some(project_frames(48_000).unwrap()),
+            storage: None,
+            index: usize::MAX,
+            #[cfg(feature = "allocation-probe")]
+            panic_on_drop: false,
+        };
+        let measured = allocation_counter::measure(|| {
+            assert!(try_publish_project_result(&mut results, value).is_none())
+        });
+        assert_eq!((measured.count_total, measured.count_current), (0, 0));
+        drop(reader); // the queued owner was published BEFORE peer shutdown
+        let disconnected = PublishedProjectSpectrum {
+            selection: selected(&[1]),
+            applied_revision: 12,
+            captured_at: now,
+            processed_at: now,
+            frames: Some(project_frames(48_000).unwrap()),
+            storage: None,
+            index: usize::MAX,
+            #[cfg(feature = "allocation-probe")]
+            panic_on_drop: false,
+        };
+        let disconnected_address = disconnected.frames.as_ref().unwrap().as_ptr();
+        let mut returned = None;
+        let measured = allocation_counter::measure(|| {
+            returned = Some(try_publish_project_result(&mut results, disconnected).unwrap());
+        });
+        assert_eq!((measured.count_total, measured.count_current), (0, 0));
+        assert_eq!(
+            returned.as_ref().unwrap().frames.as_ref().unwrap().as_ptr(),
+            disconnected_address
+        );
+        let measured = allocation_counter::measure(|| drop(returned.take()));
+        assert_eq!((measured.count_total, measured.count_current), (0, -1));
+        // Unlike disconnected std mpsc, the bounded ring may retain this ONE
+        // result until the existing worker endpoint retires. Its queued Box is
+        // already one of the three internal allowances, not an absent owner.
+        let measured = allocation_counter::measure(|| drop(results));
+        assert_eq!(measured.count_total, 0);
+        assert_eq!(measured.count_current, -3); // core + buffer + queued frames
+        assert_eq!(
+            measured.bytes_current,
+            -((backing + std::mem::size_of::<[SpectrumFrame; MAX_PROJECT_LAYERS]>()) as i64)
+        );
     }
     fn observe(
         capture: &mut ProjectCapture,
@@ -880,18 +1506,25 @@ mod tests {
     #[test]
     fn return_backpressure_retains_exact_owner_and_resumes_without_allocating_or_dropping() {
         let (mut capture, _reader, mut worker) = channel(48_000).unwrap();
-        let (returned, mut free) = RingBuffer::new(1);
+        let (returned, mut free) = native_prepared_ring(1);
         worker.returned = returned;
         let blocker = capture.returned.pop().unwrap();
         assert!(worker.returned.push(blocker).is_ok());
         let now = Instant::now();
         let selection = selected(&[1, 6]);
-        let original = capture.packet.as_deref().unwrap() as *const ProjectPacket;
+        let original =
+            capture.packet.as_ref().unwrap().payload.as_deref().unwrap() as *const ProjectPacket;
         observe(&mut capture, selection, 0, now);
         let info = allocation_counter::measure(|| {
             assert_eq!(worker.poll(now), 1);
             assert_eq!(
-                worker.pending_return.as_deref().unwrap() as *const ProjectPacket,
+                worker
+                    .pending_return
+                    .as_ref()
+                    .unwrap()
+                    .payload
+                    .as_deref()
+                    .unwrap() as *const ProjectPacket,
                 original
             );
             assert_eq!(
@@ -927,7 +1560,7 @@ mod tests {
         assert!(worker.pending_return.is_none());
         let recovered = free.pop().unwrap();
         assert_eq!(
-            recovered.as_ref() as *const ProjectPacket,
+            recovered.payload.as_deref().unwrap() as *const ProjectPacket,
             original,
             "same packet, no replacement owner"
         );

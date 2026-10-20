@@ -96,8 +96,8 @@ fn operator_filter_imports_sounding_analytic_notes_without_retrigger_or_duplicat
                 fixture()
             };
             let source = modulation(source, kind);
-            let table = Arc::new(hex_devices::SineTable::new());
-            let old = revision(&source, Arc::clone(&table));
+            let table = crate::SharedSineTable::new_on_control();
+            let old = revision(&source, table.clone());
             let mut previous = SessionPlayback::new(Arc::clone(&old)).unwrap();
             let mut dry = SessionPlayback::new(Arc::clone(&old)).unwrap();
             for p in [&mut previous, &mut dry] {
@@ -213,8 +213,8 @@ fn operator_filter_pause_seek_stop_and_saved_snapshot_preserve_expected_history(
     let source = enable(&fixture());
     let saved = Project::from_snapshot(source.snapshot()).unwrap();
     assert_eq!(source.snapshot(), saved.snapshot());
-    let table = Arc::new(hex_devices::SineTable::new());
-    let prepared = revision(&source, Arc::clone(&table));
+    let table = crate::SharedSineTable::new_on_control();
+    let prepared = revision(&source, table.clone());
     let mut active = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     let mut continuous = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     for p in [&mut active, &mut continuous] {
@@ -243,7 +243,7 @@ fn operator_filter_pause_seek_stop_and_saved_snapshot_preserve_expected_history(
     active.apply(SessionPlaybackCommand::Stop).unwrap();
     active.apply(SessionPlaybackCommand::Seek(0)).unwrap();
     active.apply(SessionPlaybackCommand::Play).unwrap();
-    let mut fresh = SessionPlayback::new(revision(&saved, Arc::clone(&table))).unwrap();
+    let mut fresh = SessionPlayback::new(revision(&saved, table.clone())).unwrap();
     fresh.apply(SessionPlaybackCommand::Play).unwrap();
     assert_eq!(
         render_checkpoint_prefix(&mut active, 512),
@@ -254,8 +254,8 @@ fn operator_filter_pause_seek_stop_and_saved_snapshot_preserve_expected_history(
 #[test]
 fn operator_filter_refuses_ambiguous_reloaded_sounding_sources_without_changing_old_audio() {
     let source = fixture();
-    let table = Arc::new(hex_devices::SineTable::new());
-    let prepared = revision(&source, Arc::clone(&table));
+    let table = crate::SharedSineTable::new_on_control();
+    let prepared = revision(&source, table.clone());
     let mut old = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     let mut reference = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     for p in [&mut old, &mut reference] {
@@ -279,8 +279,8 @@ fn operator_filter_refuses_ambiguous_reloaded_sounding_sources_without_changing_
 #[test]
 fn operator_filter_imports_released_analytic_voice_with_original_gate_and_finite_end() {
     let source = fixture_duration(1 << 24);
-    let table = Arc::new(hex_devices::SineTable::new());
-    let prepared = revision(&source, Arc::clone(&table));
+    let table = crate::SharedSineTable::new_on_control();
+    let prepared = revision(&source, table.clone());
     let mut old = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     let mut reference = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     for p in [&mut old, &mut reference] {
@@ -324,8 +324,8 @@ fn operator_filter_imports_released_analytic_voice_with_original_gate_and_finite
 #[test]
 fn operator_filter_does_not_import_an_active_analytic_enable_continuation() {
     let source = fixture();
-    let table = Arc::new(hex_devices::SineTable::new());
-    let prepared = revision(&source, Arc::clone(&table));
+    let table = crate::SharedSineTable::new_on_control();
+    let prepared = revision(&source, table.clone());
     let mut old = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
     old.apply(SessionPlaybackCommand::Play).unwrap();
     render_checkpoint_prefix(&mut old, 128);
@@ -346,7 +346,7 @@ fn operator_filter_does_not_import_an_active_analytic_enable_continuation() {
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::clone(&table),
+            table.clone(),
             Some(prepared.session()),
         )
         .unwrap(),

@@ -5,12 +5,46 @@ use crate::{
 };
 use hex_engine::Audio;
 use hex_project::converted_frame_count;
+mod window_source;
+use window_source::WindowSource;
 
 /// Caller-owned bounds for one resampling operation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResampleLimits {
     pub max_source_frames: usize,
     pub max_output_frames: usize,
+}
+
+/// Prepare the required stereo clip derivative directly from a borrowed native
+/// mono original. No full stereo original-rate scratch or second source cache.
+pub fn resample_mono_original(
+    source: hex_engine::OwnedAudioSourceView<'_>,
+    target_rate: u32,
+    limits: ResampleLimits,
+) -> Result<Audio, ImportError> {
+    let samples = source
+        .resident_mono_samples()
+        .ok_or(ImportError::Invalid("mono original required"))?;
+    let plan = ResamplePlan::new(
+        source.sample_rate(),
+        target_rate,
+        u64::try_from(samples.len()).map_err(|_| ImportError::LimitExceeded("source frames"))?,
+        limits.max_source_frames as u64,
+        limits.max_output_frames as u64,
+        limits.max_output_frames,
+    )?;
+    let count = usize::try_from(plan.output_frames())
+        .map_err(|_| ImportError::LimitExceeded("converted frames"))?;
+    let mut output = Vec::new();
+    output
+        .try_reserve_exact(count)
+        .map_err(|_| ImportError::AllocationFailed)?;
+    output.resize(count, [0.0; 2]);
+    plan.render_original_window(source, 0, &mut output)?;
+    hex_engine::OwnedAudioSource::try_resident(target_rate, output)
+        .map_err(|_| ImportError::Invalid("native mono derivative refused"))?
+        .try_into_native_audio_on_control()
+        .map_err(|_| ImportError::Invalid("native mono derivative transfer refused"))
 }
 
 /// Convert validated stereo PCM into the target rate using the v1 windowed-sinc kernel.
@@ -45,8 +79,17 @@ pub fn resample(
         .map_err(|_| ImportError::AllocationFailed)?;
     output.resize(output_capacity, [0.0; 2]);
     plan.render_window(0, source.frames(), 0, &mut output)?;
-    Audio::new(target_rate, output)
-        .map_err(|_| ImportError::Invalid("resampler produced invalid audio"))
+    if hex_engine::audio_storage_constructor_layout_supported() {
+        // Fresh computed PCM enters the native constructor, never an upgraded
+        // shared raw Arc. Original-file provenance remains a separate concern.
+        hex_engine::OwnedAudioSource::try_resident(target_rate, output)
+            .map_err(|_| ImportError::Invalid("resampler produced invalid native audio"))?
+            .try_into_native_audio_on_control()
+            .map_err(|_| ImportError::Invalid("native resampler owner transfer refused"))
+    } else {
+        Audio::new(target_rate, output)
+            .map_err(|_| ImportError::Invalid("resampler produced invalid audio"))
+    }
 }
 
 /// Immutable global-phase conversion configuration for bounded output windows.
@@ -191,6 +234,49 @@ impl ResamplePlan {
         result
     }
 
+    /// Control-worker conversion directly from a retained original view. Mono
+    /// is read in place; no full stereo source copy or owning Audio alias is
+    /// made. This reuses the exact indexed v1 kernel and clears output on error.
+    /// For identity-rate stereo, publication should reuse the closed source
+    /// alias instead of allocating a redundant derivative buffer.
+    pub fn render_original_window(
+        &self,
+        source: hex_engine::OwnedAudioSourceView<'_>,
+        global_output_start: u64,
+        output: &mut [[f32; 2]],
+    ) -> Result<(), ImportError> {
+        let result = (|| {
+            if source.sample_rate() != self.source_rate() {
+                return Err(ImportError::Invalid(
+                    "original source rate differs from resampling plan",
+                ));
+            }
+            if let Some(mono) = source.resident_mono_samples() {
+                if u64::try_from(mono.len()).ok() != Some(self.source_frames) {
+                    return Err(ImportError::Invalid(
+                        "original source extent differs from resampling plan",
+                    ));
+                }
+                self.render_window_inner(0, mono, global_output_start, output)
+            } else if let Some(stereo) = source.resident_frames() {
+                if u64::try_from(stereo.len()).ok() != Some(self.source_frames) {
+                    return Err(ImportError::Invalid(
+                        "original source extent differs from resampling plan",
+                    ));
+                }
+                self.render_window_inner(0, stereo, global_output_start, output)
+            } else {
+                Err(ImportError::Invalid(
+                    "original source must be resident mono or stereo",
+                ))
+            }
+        })();
+        if result.is_err() {
+            output.fill([0.0; 2]);
+        }
+        result
+    }
+
     /// Reads exactly the required source halo from a bounded WAV reader, then
     /// converts without allocating. Both scratch capacities and metadata are
     /// checked before the reader performs payload I/O.
@@ -298,10 +384,10 @@ impl ResamplePlan {
         Ok(output_end)
     }
 
-    fn render_window_inner(
+    fn render_window_inner<S: WindowSource + ?Sized>(
         &self,
         source_start: u64,
-        source: &[[f32; 2]],
+        source: &S,
         global_output_start: u64,
         output: &mut [[f32; 2]],
     ) -> Result<(), ImportError> {
@@ -310,7 +396,7 @@ impl ResamplePlan {
         if output.is_empty() {
             return Ok(());
         }
-        let source_count = u64::try_from(source.len())
+        let source_count = u64::try_from(source.frame_count())
             .map_err(|_| ImportError::Invalid("source window frame count overflow"))?;
         let source_end = source_start
             .checked_add(source_count)
@@ -329,25 +415,13 @@ impl ResamplePlan {
             .map_err(|_| ImportError::Invalid("source window offset exceeds addressable range"))?;
         let required_end_index = usize::try_from(required_end - source_start)
             .map_err(|_| ImportError::Invalid("source window end exceeds addressable range"))?;
-        if source[required_start_index..required_end_index]
-            .iter()
-            .flatten()
-            .any(|sample| !sample.is_finite())
-        {
-            return Err(ImportError::Invalid("source samples must be finite"));
-        }
+        source.validate_finite(required_start_index..required_end_index)?;
         if self.source_rate() == self.target_rate() {
             let source_offset =
                 usize::try_from(global_output_start - source_start).map_err(|_| {
                     ImportError::Invalid("identity source offset exceeds addressable range")
                 })?;
-            let source_end = source_offset
-                .checked_add(output.len())
-                .ok_or(ImportError::Invalid("identity source range overflow"))?;
-            let identity_source = source
-                .get(source_offset..source_end)
-                .ok_or(ImportError::Invalid("identity source window is incomplete"))?;
-            output.copy_from_slice(identity_source);
+            source.copy_identity(source_offset, output)?;
             return Ok(());
         }
 
@@ -392,7 +466,7 @@ impl ResamplePlan {
                 let source_offset = usize::try_from(source_index - source_start).map_err(|_| {
                     ImportError::Invalid("source tap offset exceeds addressable range")
                 })?;
-                let frame = source.get(source_offset).ok_or(ImportError::Invalid(
+                let frame = source.sample(source_offset).ok_or(ImportError::Invalid(
                     "source window is missing a required tap",
                 ))?;
                 left += f64::from(frame[0]) * weight;

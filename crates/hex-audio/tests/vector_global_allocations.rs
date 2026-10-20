@@ -3,7 +3,7 @@
 use allocation_counter::measure;
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{
-    NativeDeviceClass, PreparedRevision, SineTable,
+    NativeDeviceClass, PreparedRevision,
     live_expression::{LiveExpressionInput, Snapshot},
     playback::{Playback, PlaybackCommand},
 };
@@ -78,11 +78,11 @@ fn controller_flood_algorithm_handoff_cancel_and_shutdown_do_not_allocate_or_dea
             velocity: 100,
         })?;
     }
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::clone(&table),
+        table.clone(),
         None,
     )?);
     let input = Arc::new(LiveExpressionInput::new(1, track, device));
@@ -130,7 +130,7 @@ fn controller_flood_algorithm_handoff_cancel_and_shutdown_do_not_allocate_or_dea
             let next = Arc::new(PreparedRevision::prepare(
                 editor.project(),
                 &BTreeMap::new(),
-                Arc::clone(&table),
+                table.clone(),
                 Some(revision.session()),
             )?);
             let mut candidate = Playback::try_from_prepared_with_session(Arc::clone(&next))?;

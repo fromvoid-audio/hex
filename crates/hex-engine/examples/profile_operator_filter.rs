@@ -2,7 +2,7 @@
 #[allow(dead_code)]
 #[path = "support/operator_feedback_fixture.rs"]
 mod fixture;
-use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
+use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
 use hex_lattice::NativeInstrumentDefinition;
 use hex_lattice_contract::{NativeDeviceMetadata, ParameterId, ParameterValue};
 use hex_project::{Command, Editor};
@@ -48,7 +48,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let revision = Arc::new(PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )?);
         let preparation = start.elapsed();

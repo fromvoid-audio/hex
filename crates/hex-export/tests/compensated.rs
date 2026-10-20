@@ -1,6 +1,6 @@
 #![cfg(feature = "instrument-test-support")]
 //! Export's source range excludes causal startup while retaining its final sample.
-use hex_engine::{Audio, PreparedRevision, SineTable, compile};
+use hex_engine::{Audio, PreparedRevision, compile};
 #[path = "../../hex-engine/examples/support/latency_fixture.rs"]
 mod latency_fixture;
 use hex_lattice::{NativeDeviceDefinition, NativeDeviceRegistry};
@@ -70,7 +70,7 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         PreparedRevision::prepare_with_test_registries(
             editor.project(),
             &media,
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
             &effects,
             &instruments,

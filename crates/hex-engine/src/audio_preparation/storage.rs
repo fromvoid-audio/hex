@@ -3,6 +3,7 @@ impl AudioPreparationCustody {
     pub(crate) fn visit_audio_storage<'a>(
         &'a self,
         l: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
     ) -> Result<(), AudioStorageError> {
         let Self {
             root: _,
@@ -10,6 +11,8 @@ impl AudioPreparationCustody {
             incarnation: _,
             phase: _,
             bank,
+            original_resources,
+            original_resources_drop_pending,
             slots,
             next_disposal: _,
             first_panic,
@@ -27,11 +30,18 @@ impl AudioPreparationCustody {
             #[cfg(test)]
                 panic_after: _,
         } = self;
+        if *original_resources_drop_pending {
+            l.unknown()?;
+            return Err(AudioStorageError::UnknownStorage);
+        }
         if first_panic.is_some() {
             l.unknown()?;
         }
         if let Some(bank) = bank {
             l.inputs(bank)?;
+        }
+        if let Some(resources) = original_resources {
+            resources.visit_storage_on_control(l)?;
         }
         l.vec(slots)?;
         l.growth(capacity.previous_slot_backing_bytes)?;
@@ -70,7 +80,7 @@ impl AudioPreparationCustody {
         session.visit_audio_storage(l)?;
         structure.visit_audio_storage(l)?;
         tempo.visit_audio_storage(l)?;
-        assembly.visit_audio_storage(l, view.session)?;
+        assembly.visit_audio_storage(l, view.session, role)?;
         let contexts = arrangement_clips.visit_audio_storage(l, view.arrangement, view.preview)?;
         shared.visit_audio_storage(l, contexts, assembly.shared_storage_at(view.session)?)?;
         Ok(())

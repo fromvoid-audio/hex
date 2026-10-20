@@ -157,17 +157,19 @@ pub struct AudioClipEdit {
 /// Read-only output/root-frame fade projection shared by preparation and views.
 /// Construction and sampling allocate nothing; source gain is deliberately separate.
 pub struct ProjectedAudioFade<'a> {
-    edit: &'a AudioClipEdit,
-    tempo: &'a TempoMap,
-    first: i128,
-    origin: i128,
-    length: u64,
+    pub(crate) fade: ClipFade,
+    pub(crate) fade_start: u64,
+    pub(crate) projection: Option<crate::audio_preview::ProjectionRead<'a>>,
+    pub(crate) tempo: &'a TempoMap,
+    pub(crate) first: i128,
+    pub(crate) origin: i128,
+    pub(crate) length: u64,
 }
 impl ProjectedAudioFade<'_> {
     /// Finite curve knots in the same root-output clock, with explicit rounding.
     pub fn breakpoints(&self) -> Result<[Option<u64>; 8], Invalid> {
         let mut result = [None; 8];
-        for (index, position) in self.edit.domain.fade.breakpoints().into_iter().enumerate() {
+        for (index, position) in self.fade.breakpoints().into_iter().enumerate() {
             if let Some(position) = position {
                 result[index] = self.frame_at_domain_position(position)?;
             }
@@ -176,18 +178,17 @@ impl ProjectedAudioFade<'_> {
     }
     /// Project an authored fade-domain knot into the prepared root output clock.
     pub fn frame_at_domain_position(&self, position: u64) -> Result<Option<u64>, Invalid> {
-        let domain = &self.edit.domain;
-        let Some(age) = position.checked_sub(domain.fade.offset()) else {
+        let Some(age) = position.checked_sub(self.fade.offset()) else {
             return Ok(None);
         };
-        let root = if let Some(projection) = &domain.fade_projection {
-            let first = audio_projection_frame(&projection.tempo, projection.origin_beat_raw)?;
-            let beat = audio_projection_beat(&projection.tempo, first + i128::from(age))?;
+        let root = if let Some(projection) = &self.projection {
+            let first = audio_projection_frame(projection.tempo, projection.origin_beat_raw)?;
+            let beat = audio_projection_beat(projection.tempo, first + i128::from(age))?;
             let local = i128::from(projection.local_start_raw) + beat - projection.origin_beat_raw;
             u64::try_from(audio_projection_frame(self.tempo, self.origin + local)? - self.first)
                 .ok()
         } else {
-            domain.fade_start.checked_add(age)
+            self.fade_start.checked_add(age)
         };
         Ok(root.filter(|frame| *frame < self.length))
     }
@@ -196,11 +197,10 @@ impl ProjectedAudioFade<'_> {
         if root_output_frame >= self.length {
             return Err(Invalid("fade sample is outside the prepared root"));
         }
-        let domain = &self.edit.domain;
-        if domain.fade.is_neutral() {
+        if self.fade.is_neutral() {
             return Ok(1.0);
         }
-        let age = if let Some(projection) = &domain.fade_projection {
+        let age = if let Some(projection) = &self.projection {
             let beat =
                 audio_projection_beat(self.tempo, self.first + i128::from(root_output_frame))?
                     - self.origin;
@@ -208,15 +208,15 @@ impl ProjectedAudioFade<'_> {
             if delta < 0 {
                 None
             } else {
-                let start = audio_projection_frame(&projection.tempo, projection.origin_beat_raw)?;
+                let start = audio_projection_frame(projection.tempo, projection.origin_beat_raw)?;
                 let at =
-                    audio_projection_frame(&projection.tempo, projection.origin_beat_raw + delta)?;
+                    audio_projection_frame(projection.tempo, projection.origin_beat_raw + delta)?;
                 u64::try_from(at - start).ok()
             }
         } else {
-            root_output_frame.checked_sub(domain.fade_start)
+            root_output_frame.checked_sub(self.fade_start)
         };
-        Ok(age.map_or(0.0, |age| domain.fade.gain_at(age)))
+        Ok(age.map_or(0.0, |age| self.fade.gain_at(age)))
     }
 }
 
@@ -290,7 +290,15 @@ impl AudioClipEdit {
             0
         };
         Ok(ProjectedAudioFade {
-            edit: self,
+            fade: self.domain.fade,
+            fade_start: self.domain.fade_start,
+            projection: self.domain.fade_projection.as_ref().map(|p| {
+                crate::audio_preview::ProjectionRead {
+                    tempo: &p.tempo,
+                    origin_beat_raw: p.origin_beat_raw,
+                    local_start_raw: p.local_start_raw,
+                }
+            }),
             tempo,
             first,
             origin,
@@ -298,92 +306,43 @@ impl AudioClipEdit {
         })
     }
     pub(crate) fn capture(clip: &Clip) -> Self {
+        let facts = crate::AudioClipRootFacts::capture(clip);
+        let domain = facts.domain;
         Self {
             domain: Arc::new(AudioClipDomain {
                 events: None,
-                source_offset: clip.source_offset,
-                source_length: clip.source_length,
-                source_phase: clip.source_phase,
-                looping: clip.looping,
-                clock: AudioDomainClock::Frames(clip.duration),
-                pitch_cents: 0,
-                sample_bpm: None,
+                source_offset: domain.source_offset,
+                source_length: domain.source_length,
+                source_phase: domain.source_phase,
+                looping: domain.looping,
+                clock: domain.clock,
+                pitch_cents: domain.pitch_cents,
+                sample_bpm: domain.sample_bpm,
                 warp: None,
-                warp_enabled: false,
+                warp_enabled: domain.warp_enabled,
                 source_gain: Vec::new(),
-                fade: clip.fade,
-                fade_start: 0,
+                fade: domain.fade,
+                fade_start: domain.fade_start,
                 fade_projection: None,
             }),
-            view_start: 0,
-            view_end: clip.duration,
-            musical_start: None,
-            placement: None,
+            view_start: facts.view_start,
+            view_end: facts.view_end,
+            musical_start: facts.musical_start,
+            placement: facts.placement,
         }
     }
+
     pub fn root_frame_at(&self, position: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
-        if position > self.domain.clock.length() {
-            return Err(Invalid("audio event position exceeds its root"));
-        }
-        match self.domain.clock {
-            AudioDomainClock::Frames(_) => Ok(position),
-            AudioDomainClock::Beats(_) => {
-                let origin = self.projection_origin()?;
-                u64::try_from(
-                    audio_projection_frame(tempo, origin + i128::from(position))?
-                        - audio_projection_frame(tempo, origin)?,
-                )
-                .map_err(|_| Invalid("audio event frame projection overflow"))
-            }
-        }
+        crate::audio_preview::root_frame_at(self, position, tempo)
     }
     pub fn root_position_at(&self, frame: u64, tempo: &TempoMap) -> Result<u64, Invalid> {
-        let position = match self.domain.clock {
-            AudioDomainClock::Frames(_) => frame,
-            AudioDomainClock::Beats(_) => {
-                let origin = self.projection_origin()?;
-                u64::try_from(
-                    audio_projection_beat(
-                        tempo,
-                        audio_projection_frame(tempo, origin)? + i128::from(frame),
-                    )? - origin,
-                )
-                .map_err(|_| Invalid("audio event clock projection overflow"))?
-            }
-        };
-        Ok(position.min(self.domain.clock.length()))
+        crate::audio_preview::root_position_at(self, frame, tempo)
     }
     pub fn projection_origin(&self) -> Result<i128, Invalid> {
-        self.musical_start
-            .map(|start| {
-                i128::from(start.raw())
-                    - i128::from(self.view_start)
-                    - i128::from(self.placement.map_or(0, |p| p.cycle_phase))
-            })
-            .ok_or(Invalid("audio domain has no musical projection"))
+        crate::audio_preview::projection_origin(self)
     }
     pub fn projected_domain(&self, tempo: &TempoMap) -> Result<(i128, u64, u64, u64), Invalid> {
-        match self.domain.clock {
-            AudioDomainClock::Frames(length) => Ok((0, length, self.view_start, self.view_end)),
-            AudioDomainClock::Beats(length) => {
-                let origin = self.projection_origin()?;
-                let first = audio_projection_frame(tempo, origin)?;
-                let end = audio_projection_frame(tempo, origin + i128::from(length.raw()))?;
-                let view_start =
-                    audio_projection_frame(tempo, origin + i128::from(self.view_start))?;
-                let view_end = audio_projection_frame(tempo, origin + i128::from(self.view_end))?;
-                let positive = |frame: i128| {
-                    u64::try_from(frame - first)
-                        .map_err(|_| Invalid("audio projection has invalid frame span"))
-                };
-                Ok((
-                    first,
-                    positive(end)?,
-                    positive(view_start)?,
-                    positive(view_end)?,
-                ))
-            }
-        }
+        crate::audio_preview::projected_domain(self, tempo)
     }
     pub fn validate(
         &self,
@@ -391,182 +350,10 @@ impl AudioClipEdit {
         tempo: &TempoMap,
         asset_frames: u64,
     ) -> Result<(), Invalid> {
-        let domain = &self.domain;
-        if let Some(events) = &domain.events {
-            events.validate(domain.clock.length())?;
-        }
-        let source_end = domain
-            .source_offset
-            .checked_add(domain.source_length)
-            .ok_or(Invalid("audio domain source end overflow"))?;
-        if domain.source_length == 0
-            || source_end > asset_frames
-            || (domain.looping && domain.source_phase >= domain.source_length)
-            || (!domain.looping && domain.source_phase != 0)
-        {
-            return Err(Invalid("audio domain source interval or phase is invalid"));
-        }
-        if !(-4_800..=4_800).contains(&domain.pitch_cents) {
-            return Err(Invalid("audio pitch must be within -4800..4800 cents"));
-        }
-        if self.view_start >= self.view_end || self.view_end > domain.clock.length() {
-            return Err(Invalid("audio crop must be inside its retained domain"));
-        }
-        if domain.fade_start >= domain.clock.length() {
-            return Err(Invalid("audio fade starts outside its domain"));
-        }
-        if matches!(domain.clock, AudioDomainClock::Beats(_)) != self.musical_start.is_some() {
-            return Err(Invalid("audio clock and placement disagree"));
-        }
-        if domain.source_gain.len() > MAX_AUDIO_POINTS
-            || domain
-                .source_gain
-                .iter()
-                .any(|point| point.frame > asset_frames || point.gain_q16 > MAX_SOURCE_GAIN)
-            || domain
-                .source_gain
-                .windows(2)
-                .any(|pair| pair[0].frame >= pair[1].frame)
-        {
-            return Err(Invalid(
-                "source gain points must be bounded, sorted and within media",
-            ));
-        }
-        if let Some(warp) = &domain.warp {
-            if domain.warp_enabled && self.musical_start.is_none() {
-                return Err(Invalid("warp requires musical placement"));
-            }
-            warp.mode.validate()?;
-            if !(2..=MAX_AUDIO_POINTS).contains(&warp.markers.len())
-                || warp.markers.first().is_none_or(|marker| {
-                    marker.source_frame != domain.source_offset || marker.beat != BeatTime::ZERO
-                })
-                || warp.markers.last().is_none_or(|marker| {
-                    marker.source_frame != source_end || marker.beat == BeatTime::ZERO
-                })
-                || warp.markers.windows(2).any(|pair| {
-                    pair[0].source_frame >= pair[1].source_frame || pair[0].beat >= pair[1].beat
-                })
-            {
-                return Err(Invalid(
-                    "warp markers need increasing source/beat positions and explicit region endpoints",
-                ));
-            }
-        }
-        if domain.warp_enabled && domain.warp.is_none() {
-            return Err(Invalid("active warp needs settings and markers"));
-        }
-        let (_, length, view_start, view_end) = self.projected_domain(tempo)?;
-        if length == 0 || length > MAX_AUDIO_DOMAIN_FRAMES || view_start >= view_end {
-            return Err(Invalid(
-                "full audio domain exceeds its 16777216 frame limit or has an empty crop",
-            ));
-        }
-        if clip.source_offset != domain.source_offset
-            || clip.source_length != domain.source_length
-            || clip.source_phase != domain.source_phase
-            || clip.looping != domain.looping
-        {
-            return Err(Invalid(
-                "audio source cache differs from its canonical domain",
-            ));
-        }
-        if self.placement.is_some() {
-            AudioViewProjection::new(clip, tempo)?;
-        } else if let Some(start) = self.musical_start {
-            let end = start
-                .raw()
-                .checked_add(self.view_end - self.view_start)
-                .ok_or(Invalid("musical audio end overflow"))?;
-            let start_frame = tempo.beat_to_frame(start)?;
-            let end_frame = tempo.beat_to_frame(BeatTime::from_raw(end))?;
-            if clip.start != start_frame
-                || clip.duration
-                    != end_frame
-                        .checked_sub(start_frame)
-                        .ok_or(Invalid("musical audio frame span invalid"))?
-            {
-                return Err(Invalid(
-                    "musical audio frame cache differs from beat endpoints",
-                ));
-            }
-        } else if clip.duration != view_end - view_start {
-            return Err(Invalid("audio crop duration differs from frame placement"));
-        }
-        if matches!(domain.clock, AudioDomainClock::Beats(_)) != domain.fade_projection.is_some() {
-            return Err(Invalid("audio fade projection and domain clock disagree"));
-        }
-        if let Some(projection) = &domain.fade_projection {
-            if projection.tempo.sample_rate() != tempo.sample_rate()
-                || projection.local_start_raw >= domain.clock.length()
-                || projection.local_start_raw != domain.fade_start
-            {
-                return Err(Invalid("audio fade projection is invalid"));
-            }
-            audio_projection_frame(&projection.tempo, projection.origin_beat_raw)?;
-        }
-        Ok(())
+        crate::audio_preview::validate_edit(self, clip, tempo, asset_frames)
     }
     pub(crate) fn anchor(&mut self, clip_start: u64, tempo: &TempoMap) -> Result<(), Invalid> {
-        if self.musical_start.is_some() {
-            return Ok(());
-        }
-        if self.domain.events.is_some() {
-            return Err(Invalid(
-                "timing mode cannot change after audio event edits; undo those edits first",
-            ));
-        }
-        let phase = self.placement.map_or(0, |p| p.cycle_phase);
-        let origin_frame = i128::from(clip_start) - i128::from(self.view_start) - i128::from(phase);
-        let origin_beat = audio_projection_beat(tempo, origin_frame)?;
-        let beat_at = |frame: u64| -> Result<u64, Invalid> {
-            u64::try_from(
-                audio_projection_beat(tempo, origin_frame + i128::from(frame))? - origin_beat,
-            )
-            .map_err(|_| Invalid("musical audio domain projection overflow"))
-        };
-        let length = beat_at(self.domain.clock.length())?;
-        let start = beat_at(self.view_start)?;
-        let end = beat_at(self.view_end)?;
-        let fade_start = beat_at(self.domain.fade_start)?;
-        let placement = self
-            .placement
-            .map(|p| -> Result<_, Invalid> {
-                let outer_start = tempo.frame_to_beat(clip_start)?.raw();
-                let outer_end = tempo
-                    .frame_to_beat(
-                        clip_start
-                            .checked_add(p.outer_length.length())
-                            .ok_or(Invalid("audio outer end overflow"))?,
-                    )?
-                    .raw();
-                Ok(AudioViewPlacement {
-                    mode: p.mode,
-                    outer_length: AudioDomainClock::Beats(BeatTime::from_raw(
-                        outer_end
-                            .checked_sub(outer_start)
-                            .ok_or(Invalid("audio outer beat span invalid"))?,
-                    )),
-                    cycle_phase: u64::try_from(
-                        i128::from(outer_start) - origin_beat - i128::from(start),
-                    )
-                    .map_err(|_| Invalid("audio consumed offset is not representable in beats"))?,
-                })
-            })
-            .transpose()?;
-        let domain = Arc::make_mut(&mut self.domain);
-        domain.clock = AudioDomainClock::Beats(BeatTime::from_raw(length));
-        domain.fade_start = fade_start;
-        domain.fade_projection = Some(AudioFadeProjection {
-            tempo: tempo.clone(),
-            origin_beat_raw: origin_beat + i128::from(fade_start),
-            local_start_raw: fade_start,
-        });
-        self.view_start = start;
-        self.view_end = end;
-        self.musical_start = Some(tempo.frame_to_beat(clip_start)?);
-        self.placement = placement;
-        Ok(())
+        crate::audio_preview::anchor_edit(self, clip_start, tempo)
     }
     pub(crate) fn unanchor(&mut self, tempo: &TempoMap) -> Result<(), Invalid> {
         if self.musical_start.is_some() && self.domain.events.is_some() {
@@ -659,8 +446,8 @@ mod commands;
 pub use commands::default_audio_warp;
 mod view;
 pub(crate) use commands::{
-    apply, move_clip, project_clip, reset_region, set_clip_fade_envelope, set_fade_envelope,
-    set_fades, source_policy, trim_view,
+    apply, move_clip, project_clip, reset_region, set_fade_envelope, set_fades, source_policy,
+    trim_view,
 };
 pub(crate) use view::resize_view;
 pub use view::{
@@ -671,4 +458,4 @@ pub use view::{
 mod stretch;
 pub use stretch::preview_audio_clip_stretch;
 
-mod warp_projection;
+pub(crate) mod warp_projection;

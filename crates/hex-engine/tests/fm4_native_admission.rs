@@ -1,4 +1,3 @@
-use hex_devices::SineTable;
 use hex_engine::{LaunchQuantization, PreparedRevision, SessionPlayback, SessionPlaybackCommand};
 use hex_lattice_contract::DeviceTypeId;
 use hex_project::{BeatTime, Command, Created, Editor, Project};
@@ -141,8 +140,13 @@ fn assert_independent_carrier_law(samples: &[[f32; 2]], age_start: u64) {
 fn built_in_fm4_renders_arrangement_and_session_with_independent_carrier_law() {
     let (project, session_clip, _) = fixture();
     let revision = Arc::new(
-        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)
-            .expect("built-in FM4 prepares for both source owners"),
+        PreparedRevision::prepare(
+            &project,
+            &BTreeMap::new(),
+            hex_engine::SharedSineTable::new_on_control(),
+            None,
+        )
+        .expect("built-in FM4 prepares for both source owners"),
     );
 
     let mut arrangement = SessionPlayback::new(Arc::clone(&revision)).expect("runtime");

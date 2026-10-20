@@ -8,6 +8,9 @@ impl SessionAssembly {
         if self.inventory.is_none() {
             return Ok(());
         }
+        if let Some(inventory) = &self.inventory {
+            inventory.refuse_opaque_control_drop()?;
+        }
         // Every actual owner destination is empty BEFORE taking the aggregate.
         if self.scenes.capacity() != 0
             || self.tracks.capacity() != 0
@@ -18,26 +21,29 @@ impl SessionAssembly {
             || self.timing.is_some()
             || self.meter.is_some()
             || self.sine.is_some()
+            || self.sine_declaration.is_some()
             || self.contexts.is_some()
             || self.unused_midi.capacity() != 0
+            || self.unused_routed_midi.capacity() != 0
+            || self.unused_midi_source_roots.capacity() != 0
             || self.unused_mutable.capacity() != 0
+            || self.pending_midi.is_some()
+            || self.pending_mutable.is_some()
+            || self.midi_drop_pending
+            || self.mutable_drop_pending
+            || self.meter_disposal != Step::Unstarted
+            || self.timing_disposal != Step::Unstarted
         {
             return Err(AudioStorageError::Capacity);
         }
-        if self.inventory.as_ref().is_some_and(|inventory| {
-            inventory.routed_midi_clips.capacity() != 0
-                || inventory.midi_source_roots.capacity() != 0
-        }) {
-            return Err(AudioStorageError::UnknownStorage);
-        }
         if let Some(PreparedSessionInventory {
             meter_map,
-            routed_midi_clips: _,
-            midi_source_roots: _,
+            routed_midi_clips,
+            midi_source_roots,
             timing,
-            periodic_tempo: _,
-            periodic_tempo_error: _,
-            source_admission_max_micro_bpm: _,
+            periodic_tempo,
+            periodic_tempo_error,
+            source_admission_max_micro_bpm,
             sine_table,
             scenes,
             cells,
@@ -46,22 +52,35 @@ impl SessionAssembly {
             tracks,
             midi_clips,
             mutable_instruments,
-            mutable_history_retarget_storage_bytes: _,
+            mutable_history_retarget_storage_bytes,
             audio_clips,
-            work: _,
-            contains_streamed_sources: _,
-            midi_note_bank_storage_bytes: _,
-            midi_note_bank_reference_count: _,
+            work,
+            contains_streamed_sources,
+            midi_note_bank_storage_bytes,
+            midi_note_bank_reference_count,
             shared_contexts,
         }) = self.inventory.take()
         {
-            // Audio-only construction has zero-capacity unsupported vectors.
-            // Keep them persistent too; never dispose an unexpected owner here.
+            fn scalar<T: Copy>(_: T) {}
+            scalar((
+                periodic_tempo,
+                periodic_tempo_error,
+                source_admission_max_micro_bpm,
+                mutable_history_retarget_storage_bytes,
+                work,
+                contains_streamed_sources,
+                midi_note_bank_storage_bytes,
+                midi_note_bank_reference_count,
+            ));
             self.unused_midi = midi_clips;
+            self.unused_routed_midi = routed_midi_clips;
+            self.unused_midi_source_roots = midi_source_roots;
             self.unused_mutable = mutable_instruments;
             self.timing = Some(timing);
             self.meter = Some(meter_map);
+            let (sine_table, declaration) = sine_table.into_native_paired_on_control();
             self.sine = Some(sine_table);
+            self.sine_declaration = Some(declaration);
             self.contexts = Some(shared_contexts);
             self.scenes = scenes;
             self.cells = cells;
@@ -75,12 +94,36 @@ impl SessionAssembly {
     pub(crate) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
         self.unpack_on_control()?;
         self.phase = AssemblyPhase::Cleaning;
-        if !self.unused_midi.is_empty()
-            || self.unused_midi.capacity() != 0
-            || !self.unused_mutable.is_empty()
-            || self.unused_mutable.capacity() != 0
+        if self.midi_drop_pending
+            || self.mutable_drop_pending
+            || self.meter_disposal == Step::Pending
+            || self.timing_disposal == Step::Pending
         {
             return Err(AudioStorageError::UnknownStorage);
+        }
+        if self.pending_midi.is_some() {
+            self.midi_drop_pending = true;
+            drop(self.pending_midi.take());
+            self.midi_drop_pending = false;
+            return Ok(());
+        }
+        if let Some(row) = self
+            .unused_midi
+            .pop()
+            .or_else(|| self.unused_routed_midi.pop())
+        {
+            self.pending_midi = Some(row);
+            return Ok(());
+        }
+        if self.pending_mutable.is_some() {
+            self.mutable_drop_pending = true;
+            drop(self.pending_mutable.take());
+            self.mutable_drop_pending = false;
+            return Ok(());
+        }
+        if let Some(row) = self.unused_mutable.pop() {
+            self.pending_mutable = Some(row);
+            return Ok(());
         }
         if self.scene_cursor < self.scenes.len() {
             if self.name_pending {
@@ -179,9 +222,28 @@ impl SessionAssembly {
             return Ok(());
         }
         if self.meter.is_some() {
-            self.meter_copy
-                .clean_transferred_on_control(&mut self.meter)
-                .map_err(meter_error)?;
+            use hex_project::MeterMapCopyPhase;
+            if matches!(
+                self.meter_copy.phase(),
+                MeterMapCopyPhase::Preparing | MeterMapCopyPhase::Incomplete
+            ) || self.meter_disposal != Step::Unstarted
+            {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            self.meter_disposal = Step::Pending;
+            if self.meter_copy.phase() == MeterMapCopyPhase::Transferred {
+                self.meter_copy
+                    .clean_transferred_on_control(&mut self.meter)
+                    .map_err(meter_error)?;
+            } else {
+                // The concrete owned map has only scalar Vec elements. Copy
+                // custody state selects its cleanup destination, not provenance.
+                fn copy_element<T: Copy>() {}
+                copy_element::<hex_project::MeterPoint>();
+                drop(self.meter.take());
+                self.meter_copy.clean_on_control().map_err(meter_error)?;
+            }
+            self.meter_disposal = Step::Complete;
         } else {
             self.meter_copy.clean_on_control().map_err(meter_error)?;
         }
@@ -193,7 +255,18 @@ impl SessionAssembly {
         tempo: &mut SessionTempoConstruction,
     ) -> Result<(), AudioStorageError> {
         if self.timing.is_some() {
-            tempo.restore_inventory_map(&mut self.timing)?;
+            if self.timing_disposal != Step::Unstarted || tempo.incomplete() {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            self.timing_disposal = Step::Pending;
+            if tempo.inventory_map_is_outstanding() {
+                tempo.restore_inventory_map(&mut self.timing)?;
+            } else {
+                PreparedTempoMap::drop_owned_on_control(&mut self.timing);
+            }
+            self.timing_disposal = Step::Complete;
+        } else if self.timing_disposal == Step::Pending {
+            return Err(AudioStorageError::UnknownStorage);
         }
         Ok(())
     }
@@ -209,6 +282,15 @@ impl SessionAssembly {
             || self.pending_name.is_some()
             || self.sine.is_some()
             || self.contexts.is_some()
+            || !self.unused_midi.is_empty()
+            || !self.unused_routed_midi.is_empty()
+            || !self.unused_mutable.is_empty()
+            || self.pending_midi.is_some()
+            || self.pending_mutable.is_some()
+            || self.midi_drop_pending
+            || self.mutable_drop_pending
+            || self.meter_disposal == Step::Pending
+            || self.timing_disposal == Step::Pending
             || self.name_pending
             || self.scenes.iter().any(|s| s.name.capacity() != 0)
             || self.tracks.iter().any(|t| t.name.capacity() != 0)
@@ -228,12 +310,25 @@ impl SessionAssembly {
         self.indices.clear();
         self.ranges.clear();
         self.pairs.clear();
+        // Row owners were retired in earlier explicit steps. Release only
+        // their now-empty backings on control, so the next aggregate has
+        // genuinely vacant destinations rather than overwriting old storage.
+        self.unused_midi.clear();
+        self.unused_routed_midi.clear();
+        self.unused_mutable.clear();
+        self.unused_midi = Vec::new();
+        self.unused_routed_midi = Vec::new();
+        self.unused_mutable = Vec::new();
+        // Scalar routing pairs have no owning descendants.
+        self.unused_midi_source_roots = Vec::new();
         self.sine_declaration = None;
         self.metadata_handles = [0; 3];
         self.scene_cursor = 0;
         self.track_cursor = 0;
         self.sine_disposal = Step::Unstarted;
         self.context_disposal = Step::Unstarted;
+        self.meter_disposal = Step::Unstarted;
+        self.timing_disposal = Step::Unstarted;
         self.phase = AssemblyPhase::Vacant;
         Ok(())
     }

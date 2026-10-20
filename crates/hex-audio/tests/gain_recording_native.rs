@@ -3,7 +3,7 @@ use hex_audio::{
     gain_recording::{AbortReason, Receipt, Target},
     prepared,
 };
-use hex_engine::{Audio, PlaybackCommand, PreparedRevision, SineTable, playback::Playback};
+use hex_engine::{Audio, PlaybackCommand, PreparedRevision, playback::Playback};
 use hex_project::{Command, Created, Editor, Project};
 use std::{
     collections::BTreeMap,
@@ -30,7 +30,7 @@ fn fixture() -> (prepared::Control, prepared::Callback, Target) {
         PreparedRevision::prepare_for_gain_recording(
             editor.project(),
             &BTreeMap::from([(asset, Audio::new(48000, vec![[0.25, -0.5]; 4096]).unwrap())]),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
             track,
         )
@@ -47,14 +47,14 @@ fn fixture() -> (prepared::Control, prepared::Callback, Target) {
     callback.render(&mut output).unwrap();
     callback.finish_gain_recording_quantum(true);
     assert_eq!(output, [[0.0; 2]; 16]);
-    assert!(control.status.gain_recording_ready.load(Acquire));
+    assert!(control.status().gain_recording_ready.load(Acquire));
     let target = Target {
         track_id: track.value(),
         project_generation: 0,
         canonical_revision: 1,
         audio_revision: revision,
         recording_epoch: 1,
-        transport_epoch: control.status.transport_epoch.load(Acquire),
+        transport_epoch: control.status().transport_epoch.load(Acquire),
         gesture_serial: 1,
         sample_rate: 48000,
     };
@@ -167,7 +167,7 @@ fn failed_sink_discards_take_and_priority_stop_works_with_a_full_transport_queue
         })
     ));
     assert!(control.gain_recording.try_receipt().is_none());
-    assert!(!control.status.gain_recording_fault.load(Acquire));
+    assert!(!control.status().gain_recording_fault.load(Acquire));
 }
 
 #[cfg(feature = "allocation-probe")]
@@ -223,7 +223,7 @@ fn compensated_touch_waits_for_the_main_sample_and_preserves_release_to_read() {
     let revision = PreparedRevision::prepare_with_test_registries(
         editor.project(),
         &media,
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
         &effects,
         &instruments,
@@ -248,7 +248,7 @@ fn compensated_touch_waits_for_the_main_sample_and_preserves_release_to_read() {
         canonical_revision: 1,
         audio_revision,
         recording_epoch: 1,
-        transport_epoch: control.status.transport_epoch.load(Acquire),
+        transport_epoch: control.status().transport_epoch.load(Acquire),
         gesture_serial: 1,
         sample_rate: 48000,
     };

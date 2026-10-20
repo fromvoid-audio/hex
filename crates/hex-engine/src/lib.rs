@@ -4,6 +4,7 @@ pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
 };
+mod shared_sine;
 pub use hex_devices::compressor::{
     CompressorTransferCurve, transfer_curve as native_compressor_transfer_curve,
 };
@@ -17,7 +18,11 @@ pub use hex_devices::saturator::{
 pub use hex_lattice::ProcessorAuditionSelection;
 pub use hex_lattice::ProcessorChainOwner;
 pub use hex_lattice_contract::DeviceTypeId;
+pub use shared_sine::SharedSineTable;
 pub mod compensation;
+mod effect_resources;
+pub(crate) use effect_resources::EffectRuntimeChain;
+pub use effect_resources::PreparedEffectInstance;
 
 // Historical analytic/import proofs opt into the shared pre-global kernel.
 #[cfg(test)]
@@ -28,18 +33,23 @@ use std::{fmt, sync::Arc};
 
 mod audio_candidate;
 mod audio_storage;
+pub mod sampler_host_fields;
 pub use audio_candidate::{
     AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateConstructorSummary,
-    AudioCandidateDisposalPhase, AudioCandidateDisposed, AudioCandidateDraft,
-    AudioCandidateIdentity, AudioCandidateOwner, AudioCandidatePreparation, AudioCandidateRefusal,
-    AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed, AudioCandidateRuntimeStatus,
-    AudioCandidateSplitRefusal, AudioCandidateTransfer, ClaimedAudioCandidateRuntime,
+    AudioCandidateControlBlock, AudioCandidateControlProgress, AudioCandidateDisposalPhase,
+    AudioCandidateDisposed, AudioCandidateDraft, AudioCandidateIdentity, AudioCandidateOwner,
+    AudioCandidatePreparation, AudioCandidatePreparationOperations, AudioCandidatePreparedSplit,
+    AudioCandidateRefusal, AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed,
+    AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal, AudioCandidateTransfer,
+    ClaimedAudioCandidateRuntime,
 };
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,
     AudioStorageLedgerReservation, AudioStorageRole, StreamedSourceBindingObligation,
-    audio_storage_constructor_layout_supported,
+    audio_storage_constructor_layout_supported, canonical_midi_storage_layout_supported,
+    canonical_native_state_storage_layout_supported, document_file_token_storage_layout_supported,
 };
+mod audio_clip_source;
 mod audio_input_storage;
 mod audio_only_inputs;
 mod audio_preparation;
@@ -68,23 +78,58 @@ pub use audio_input_storage::{
 };
 pub use audio_only_inputs::{
     AudioInputsRefusal, AudioPreparationCapacity, AudioSourceToken, AudioStorageError,
-    AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource, OwnedAudioSourceView,
-    ResidentSourceRefusal, StreamedSourceRefusal,
+    AudioStorageReservation, NativeAudioIngressRefusal, NativeAudioMoveRefusal, OwnedAudioInputs,
+    OwnedAudioSource, OwnedAudioSourceView, ResidentMonoSourceRefusal, ResidentSourceRefusal,
+    StreamedSourceRefusal,
+};
+pub mod native_device_resources;
+#[cfg(feature = "instrument-test-support")]
+#[doc(hidden)]
+pub use mutable_instrument::resource_fixture::MutableResourceHostFixture;
+#[cfg(feature = "instrument-test-support")]
+#[doc(hidden)]
+pub use mutable_instrument::resource_fixture::sampler_runtime_for_allocation_probe;
+#[cfg(feature = "instrument-test-support")]
+#[doc(hidden)]
+pub use mutable_instrument::resource_fixture::{
+    sampler_clean_filter_runtime_for_allocation_probe,
+    sampler_filter_envelope_runtime_for_allocation_probe,
+    sampler_filter_lfo_runtime_for_allocation_probe,
+    sampler_modulated_runtime_for_allocation_probe,
+};
+#[cfg(feature = "instrument-test-support")]
+pub use mutable_instrument::resource_fixture::{
+    sampler_factory_from_state_for_allocation_probe, sampler_slice_state_for_factory_probe,
+};
+#[cfg(feature = "instrument-test-support")]
+#[doc(hidden)]
+pub use shared_analytic::inline_fixture::{
+    InlineResourceFixtureConfiguration, InlineResourceHostFixture,
 };
 mod owned_shared;
+mod retained_control_job;
+pub use retained_control_job::{
+    CancellationQuery, RetainedControlCancellation, RetainedControlCancellationSignal,
+    RetainedControlJob, RetainedControlJobBuildError, RetainedControlJobFault,
+    RetainedControlJobProgress, RetainedControlJobRoute, RetainedControlJobRouteHint,
+    retained_control_job_box_layout_supported,
+};
+mod shared_metadata;
+pub use shared_metadata::{SharedMetadata, SharedMetadataCacheIdentity};
 mod pcm_arc;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
     native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
     native_device_parameter_for_class, native_device_view, native_device_view_for_class,
-    native_effect_frequency_response,
+    native_effect_frequency_response, sampler_parameters_on_control,
 };
 
 mod gain_envelope;
 pub use gain_envelope::{
     GainAutomationCapacity, GainAutomationPreview, GainEnvelopeKnot, GainPreviewSegment,
-    MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS,
+    MAX_PREPARED_GAIN_BYTES, MAX_PREPARED_GAIN_KNOTS, SharedGainAutomationPreview,
+    visit_shared_gain_preview_storage_on_control,
 };
 mod return_feed_plan;
 mod signal_graph;
@@ -254,6 +299,61 @@ pub fn default_native_device_state(
     default_native_device_state_for_class(NativeDeviceClass::Effect, type_id)
 }
 
+/// Control-side Sampler payload preparation for a newly decoded original.
+/// This grants no source custody, registry processing or graph admission.
+pub struct SamplerSampleAssignment {
+    pub state: hex_lattice_contract::NativeDeviceState,
+    pub slot: hex_lattice_contract::DeviceAssetSlot,
+}
+
+/// Restricted borrowed authored queries for sealed snapshot/device panels.
+/// These carry no model, native state, PCM owner or runtime admission authority.
+pub use hex_devices::sampler::GateMode as SamplerGateMode;
+pub use hex_devices::sampler::state::{
+    DeviceStateRead as SamplerDeviceStateRead, SamplerReadMode, SamplerStateRead,
+};
+
+/// Canonical marker edits for the upcoming source-region interaction overlay.
+/// These materialize state on control; the caller still uses one expected-state
+/// transaction/gesture, never a callback mutation or registry bypass.
+pub use hex_devices::sampler::state::SliceEdit as SamplerSliceEdit;
+pub fn edit_sampler_slice_on_control(
+    current: &hex_lattice_contract::NativeDeviceState,
+    edit: SamplerSliceEdit,
+) -> Result<hex_lattice_contract::NativeDeviceState, Invalid> {
+    hex_devices::sampler::state::edit_slice_on_control(current, edit)
+        .map_err(|_| Invalid("sampler slice edit is outside its current source or key range"))
+}
+
+/// Validate current authored Sampler metadata before starting bounded worker
+/// I/O. This does not admit a source, resource graph or registry processing.
+pub fn validate_sampler_state_on_control(
+    state: &hex_lattice_contract::NativeDeviceState,
+) -> Result<(), Invalid> {
+    hex_devices::sampler::state::DeviceStateRead::from_native(state)
+        .map(|_| ())
+        .map_err(|_| Invalid("sampler state is invalid"))
+}
+
+/// Current unbound Sampler metadata, not a registered/selectable device.
+pub fn empty_sampler_state_on_control() -> Result<hex_lattice_contract::NativeDeviceState, Invalid>
+{
+    hex_devices::sampler::state::DeviceState::Empty
+        .to_native()
+        .map_err(|_| Invalid("empty sampler state is invalid"))
+}
+
+pub fn sampler_replacement_state_on_control(
+    current: &hex_lattice_contract::NativeDeviceState,
+    source_frames: usize,
+) -> Result<SamplerSampleAssignment, Invalid> {
+    let state = hex_devices::sampler::state::replacement_state_on_control(current, source_frames)
+        .map_err(|_| Invalid("sampler source replacement state is invalid"))?;
+    let slot = hex_lattice_contract::DeviceAssetSlot::new(hex_devices::sampler::state::SOURCE_SLOT)
+        .map_err(|_| Invalid("sampler source slot is invalid"))?;
+    Ok(SamplerSampleAssignment { state, slot })
+}
+
 /// Construct a metadata-only default from exactly one native class registry.
 pub fn default_native_device_state_for_class(
     class: NativeDeviceClass,
@@ -389,11 +489,26 @@ impl Tempo {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Audio {
     sample_rate: u32,
     frames: Arc<AudioData>,
     pcm_arc_receipt: Option<pcm_arc::PcmArcReceipt>,
+    // Issued only by the native constructor or a lineage-preserving owner fork.
+    // None is unqualified; an ID alone is never ownership/admission proof.
+    native_handle: Option<std::num::NonZeroU64>,
+}
+impl Clone for Audio {
+    fn clone(&self) -> Self {
+        // Existing public clones do not allocate PCM. Unknown origin remains
+        // unknown; identity exhaustion refuses native qualification, not audio
+        // data retention. Native source/clip plans use their PRE-reserved handle.
+        let handle = self
+            .pcm_arc_receipt
+            .and_then(|r| r.checked_native_allocations(self))
+            .and_then(|_| audio_only_inputs::handle().ok());
+        self.clone_with_native_handle_on_control(handle)
+    }
 }
 #[derive(Debug)]
 struct AudioData {
@@ -407,6 +522,19 @@ impl std::ops::Deref for AudioData {
     }
 }
 impl Audio {
+    pub(crate) fn clone_with_native_handle_on_control(&self, handle: Option<u64>) -> Self {
+        let native_handle = self
+            .pcm_arc_receipt
+            .and_then(|r| r.checked_native_allocations(self))
+            .and(handle)
+            .and_then(std::num::NonZeroU64::new);
+        Self {
+            sample_rate: self.sample_rate,
+            frames: Arc::clone(&self.frames),
+            pcm_arc_receipt: self.pcm_arc_receipt,
+            native_handle,
+        }
+    }
     pub(crate) fn from_derived(
         sample_rate: u32,
         frames: Vec<Frame>,
@@ -418,11 +546,55 @@ impl Audio {
         Ok(Self {
             sample_rate,
             pcm_arc_receipt: None,
+            native_handle: None,
             frames: Arc::new(AudioData {
                 values: frames,
                 _derived: Some(reservation),
             }),
         })
+    }
+    /// Fresh worker-produced PCM with an actual retained-capacity reservation.
+    /// Old/raw derived Audio is never relabelled. The distinct prepared origin
+    /// cannot be admitted as an original device resource source.
+    pub(crate) fn from_prepared_derived(
+        sample_rate: u32,
+        frames: Vec<Frame>,
+        reservation: audio_transform::Reservation,
+    ) -> Result<Self, Invalid> {
+        if sample_rate == 0
+            || frames.is_empty()
+            || frames.iter().flatten().any(|sample| !sample.is_finite())
+        {
+            return Err(Invalid(
+                "prepared audio must contain finite samples at a valid rate",
+            ));
+        }
+        let bytes = frames
+            .capacity()
+            .checked_mul(std::mem::size_of::<Frame>())
+            .ok_or(Invalid("prepared audio capacity overflow"))?;
+        if bytes > reservation.reserved_bytes() {
+            return Err(Invalid(
+                "prepared audio capacity exceeds its retained reservation",
+            ));
+        }
+        let receipt =
+            pcm_arc::PcmArcReceipt::prepared_current(frames.len(), frames.capacity(), &reservation);
+        if let Some(receipt) = receipt {
+            let handle = audio_only_inputs::handle()
+                .map_err(|_| Invalid("prepared audio handle exhausted"))?;
+            Ok(Self {
+                sample_rate,
+                pcm_arc_receipt: Some(receipt),
+                native_handle: std::num::NonZeroU64::new(handle),
+                frames: Arc::new(AudioData {
+                    values: frames,
+                    _derived: Some(reservation),
+                }),
+            })
+        } else {
+            Self::from_derived(sample_rate, frames, reservation)
+        }
     }
     /// Source rate; compilation currently requires an exact project-rate match.
     pub fn sample_rate(&self) -> u32 {
@@ -452,6 +624,7 @@ impl Audio {
         Ok(Self {
             sample_rate,
             pcm_arc_receipt: None,
+            native_handle: None,
             frames: Arc::new(AudioData {
                 values: frames,
                 _derived: None,
@@ -717,7 +890,7 @@ pub struct Track {
     instrument_position: usize,
     ordered_prefix: Option<hex_lattice::StereoMatrix>,
     ordered_suffix: Option<hex_lattice::StereoMatrix>,
-    device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    device_chain: std::sync::Arc<[crate::PreparedEffectInstance]>,
     sends: Vec<CompiledSend>,
     instrument_id: Option<hex_project::DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
@@ -745,7 +918,7 @@ pub(crate) struct ReturnBus {
     pub gain: f32,
     pub muted: bool,
     pub matrix: Option<hex_lattice::StereoMatrix>,
-    pub device_chain: std::sync::Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    pub device_chain: std::sync::Arc<[crate::PreparedEffectInstance]>,
 }
 
 /// Validated per-track stereo coefficients shared by independent source paths.
@@ -841,6 +1014,21 @@ impl PreparedTrackMix {
 }
 
 impl Track {
+    /// Hidden unregistered ABI fixture over the ACTUAL prepared effect source
+    /// field and normal Renderer/Session runtime constructors. No native graph
+    /// or resource registry admission is granted by this test-only seam.
+    #[cfg(feature = "instrument-test-support")]
+    #[doc(hidden)]
+    pub fn with_test_effect_scopes_on_control(
+        mut self,
+        effects: Vec<PreparedEffectInstance>,
+    ) -> Result<Self, Invalid> {
+        if effects.len() > hex_project::MAX_DEVICES_PER_TRACK {
+            return Err(Invalid("test effect chain exceeds model bound"));
+        }
+        self.device_chain = Arc::from(effects);
+        Ok(self)
+    }
     /// Overlapping clips are summed in this prototype; Live overlap semantics are unverified.
     pub fn new(clips: Vec<Clip>, gain: f32, muted: bool) -> Result<Self, Invalid> {
         Self::with_balance(clips, gain, muted, 0.0)
@@ -877,79 +1065,6 @@ impl Track {
             mutable_looping_source: false,
             midi_source_index: None,
         })
-    }
-
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn with_audio_instrument_and_effects(
-        clips: Vec<Clip>,
-        gain: f32,
-        muted: bool,
-        balance: f32,
-        instrument: Option<InstrumentTrack>,
-        instrument_position: usize,
-        effects: Option<hex_lattice::StereoMatrix>,
-        ordered_prefix: Option<hex_lattice::StereoMatrix>,
-        ordered_suffix: Option<hex_lattice::StereoMatrix>,
-        device_chain: Vec<hex_lattice::PreparedRuntimeInstance>,
-    ) -> Result<Self, Invalid> {
-        let stateful = !device_chain.is_empty();
-        let ordered = instrument_position != 0;
-        let segmented =
-            stateful || (ordered && (ordered_prefix.is_some() || ordered_suffix.is_some()));
-        let mix_effects = if segmented { None } else { effects };
-        let mix = PreparedTrackMix::with_effects(gain, balance, muted, mix_effects)?;
-        let source_mix = if segmented {
-            PreparedTrackMix::new(1.0, 0.0, false)?
-        } else {
-            mix
-        };
-        Ok(Self {
-            track_id: None,
-            clips,
-            mix,
-            source_mix,
-            gain_envelope: None,
-            instrument,
-            instrument_position,
-            ordered_prefix,
-            ordered_suffix,
-            device_chain: std::sync::Arc::from(device_chain),
-            sends: Vec::new(),
-            instrument_id: None,
-            instrument_state: None,
-            tuning_identity: Default::default(),
-            instrument_bypassed: false,
-            instrument_input_gain: 1.0,
-            instrument_output_gain: 1.0,
-            instrument_latency: Some(0),
-            instrument_runtime_latency: Some(0),
-            instrument_meter: Default::default(),
-            mutable_instrument: false,
-            mutable_looping_source: false,
-            midi_source_index: None,
-        })
-    }
-
-    pub(crate) fn with_instrument_config(
-        mut self,
-        instrument: Option<&hex_project::Device>,
-    ) -> Self {
-        self.instrument_id = instrument.map(hex_project::Device::id);
-        self.instrument_state =
-            instrument.map(|device| device.state().clone().without_host_gains());
-        self.instrument_bypassed = instrument.is_some_and(hex_project::Device::bypassed);
-        self.instrument_input_gain =
-            instrument.map_or(1.0, |device| device.state().input_gain_linear());
-        self.instrument_output_gain =
-            instrument.map_or(1.0, |device| device.state().output_gain_linear());
-        if self.instrument_output_gain != 1.0 || self.instrument_input_gain != 1.0 {
-            self.source_mix = PreparedTrackMix {
-                channel_gain: [1.0; 2],
-                effects: None,
-                muted: false,
-            };
-        }
-        self
     }
 
     pub(crate) fn with_instrument_latency(
@@ -1004,19 +1119,13 @@ impl Track {
 
     pub(crate) fn new_device_runtime(
         &self,
-    ) -> Result<hex_lattice::NativeRuntimeChain, hex_lattice_contract::DeviceContractError> {
-        let mut instances = Vec::new();
-        instances
-            .try_reserve_exact(self.device_chain.len())
-            .map_err(|_| hex_lattice_contract::DeviceContractError::RuntimeAllocation)?;
-        instances.extend(self.device_chain.iter().cloned());
-        hex_lattice::NativeRuntimeChain::new_prepared(instances)
+    ) -> Result<crate::EffectRuntimeChain, hex_lattice_contract::DeviceContractError> {
+        let instances = crate::effect_resources::clone_prepared_on_control(&self.device_chain)?;
+        crate::EffectRuntimeChain::new_prepared(instances)
     }
 
     pub(crate) fn device_runtime_storage_preflight_bytes(&self) -> Option<usize> {
-        hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(
-            &self.device_chain,
-        )
+        crate::EffectRuntimeChain::declared_storage_preflight_bytes_for_scoped(&self.device_chain)
     }
 
     pub(crate) fn with_sends(mut self, sends: Vec<CompiledSend>) -> Self {
@@ -1122,22 +1231,6 @@ impl Track {
         }
     }
 
-    pub(crate) fn with_gain_envelope(
-        mut self,
-        lane: &hex_project::GainLane,
-        tempo: &hex_project::TempoMap,
-        balance: f32,
-        fallback: f32,
-    ) -> Result<Self, Invalid> {
-        let neutral =
-            PreparedTrackMix::with_effects(1.0, balance, self.mix.muted, self.mix.effects)?;
-        self.gain_envelope =
-            gain_envelope::PreparedGainEnvelope::prepare(lane, tempo, neutral, fallback)?;
-        if self.gain_envelope.is_some() {
-            self.source_mix = PreparedTrackMix::identity();
-        }
-        Ok(self)
-    }
     /// Read-only prepared curve metadata. Empty means static fallback; this is not an applied-value acknowledgment.
     pub fn gain_envelope_knots(&self) -> &[GainEnvelopeKnot] {
         self.gain_envelope
@@ -1418,7 +1511,7 @@ impl Track {
     pub(crate) fn for_each_active_midi_span(
         &self,
         frame: u64,
-        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan, midi_note_bank::PreparedMidiNote),
+        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan, midi_note_bank::ScopedMidiNote),
     ) -> Result<(), Invalid> {
         let end = frame
             .checked_add(1)
@@ -1814,8 +1907,9 @@ pub(crate) struct InstrumentTrack {
     pub(crate) nodes: Vec<midi_compile::SpanNode>,
     pub(crate) root: Option<usize>,
     pub(crate) timeline_end: Option<u64>,
-    pub(crate) bank: Arc<midi_note_bank::PreparedMidiNoteBank>,
-    pub(crate) shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
+    pub(crate) bank: owned_shared::OwnedShared<midi_note_bank::PreparedMidiNoteBank>,
+    pub(crate) shared_contexts:
+        owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
     pub(crate) mutable: bool,
 }
 
@@ -1837,12 +1931,12 @@ pub struct Project {
     tracks: Vec<Track>,
     return_buses: Vec<ReturnBus>,
     return_feed_plan: return_feed_plan::ReturnFeedPlan,
-    signal_graph: Option<Arc<signal_graph::SignalGraph>>,
+    signal_graph: Option<owned_shared::OwnedShared<signal_graph::SignalGraph>>,
     tempo_map: Option<hex_project::TempoMap>,
     midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
-    main_device_chain: Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    main_device_chain: Arc<[crate::PreparedEffectInstance]>,
     // Final causal arrival after Main, separate from the pre-Main summing graph.
     main_output_latency_frames: u32,
     audible_end_frame: Option<u64>,
@@ -1852,13 +1946,9 @@ pub struct Project {
 impl Project {
     pub(crate) fn new_main_device_runtime(
         &self,
-    ) -> Result<hex_lattice::NativeRuntimeChain, hex_lattice_contract::DeviceContractError> {
-        let mut instances = Vec::new();
-        instances
-            .try_reserve_exact(self.main_device_chain.len())
-            .map_err(|_| hex_lattice_contract::DeviceContractError::RuntimeAllocation)?;
-        instances.extend(self.main_device_chain.iter().cloned());
-        hex_lattice::NativeRuntimeChain::new_prepared(instances)
+    ) -> Result<crate::EffectRuntimeChain, hex_lattice_contract::DeviceContractError> {
+        let instances = crate::effect_resources::clone_prepared_on_control(&self.main_device_chain)?;
+        crate::EffectRuntimeChain::new_prepared(instances)
     }
 
     /// Worker-only observation of accepted transformed PCM, independent of cache residency.
@@ -1913,10 +2003,48 @@ impl Project {
         loop_region: Option<hex_project::LoopRegion>,
         master_gain: f32,
     ) -> Result<Self, Invalid> {
-        if sample_rate == 0 {
-            return Err(Invalid("sample rate must be positive"));
-        }
-        let master_gain = PreparedMasterGain::new(master_gain)?;
+        Self::assemble_with_children(
+            sample_rate,
+            tracks,
+            Vec::new(),
+            loop_region,
+            master_gain,
+            None,
+        )
+    }
+    /// Same validated field assembly for public legacy and complete compiler
+    /// paths. A supplied actual context moves directly into its destination;
+    /// no default owner is constructed and replaced. This does not qualify any
+    /// previously unknown child or certify aggregate construction/custody.
+    fn assemble_with_children(
+        sample_rate: u32,
+        tracks: Vec<Track>,
+        return_buses: Vec<ReturnBus>,
+        loop_region: Option<hex_project::LoopRegion>,
+        master_gain: f32,
+        shared_contexts: Option<
+            owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
+        >,
+    ) -> Result<Self, Invalid> {
+        let scalars =
+            project_output::CompiledProjectScalars::prepare(sample_rate, master_gain, loop_region)?;
+        let has_streamed_sources = Self::validate_compiled_source_rates(sample_rate, &tracks)?;
+        let mut project = scalars.assemble_empty(shared_contexts.unwrap_or_else(|| {
+            owned_shared::OwnedShared::new_owned(
+                shared_analytic::SharedAnalyticContextTable::default(),
+            )
+        }));
+        project.project_track_ids = project_output::ProjectTrackIds::prepare(&tracks);
+        project.audible_end_frame = tracks
+            .iter()
+            .flat_map(|track| track.clips.iter().map(|clip| clip.end))
+            .max();
+        project.tracks = tracks;
+        project.return_buses = return_buses;
+        project.has_streamed_sources = has_streamed_sources;
+        Ok(project)
+    }
+    fn validate_compiled_source_rates(sample_rate: u32, tracks: &[Track]) -> Result<bool, Invalid> {
         let has_streamed_sources = tracks.iter().any(|track| {
             track.clips.iter().any(|clip| {
                 clip.metadata
@@ -1938,43 +2066,20 @@ impl Project {
                 "prepared audio sources must match the project rate",
             ));
         }
-        Ok(Self {
-            project_track_ids: project_output::ProjectTrackIds::prepare(&tracks),
-            audio_clip_views: Vec::new(),
-            audible_end_frame: tracks
-                .iter()
-                .flat_map(|track| track.clips.iter().map(|clip| clip.end))
-                .max(),
-            sample_rate,
-            tracks,
-            return_buses: Vec::new(),
-            return_feed_plan: return_feed_plan::ReturnFeedPlan::default(),
-            signal_graph: None,
-            tempo_map: None,
-            midi_routing: Vec::new(),
-            loop_region,
-            master_gain,
-            main_device_chain: Arc::from([]),
-            main_output_latency_frames: 0,
-            has_streamed_sources,
-            shared_contexts: owned_shared::OwnedShared::new_owned(
-                shared_analytic::SharedAnalyticContextTable::default(),
-            ),
-        })
+        Ok(has_streamed_sources)
     }
-
-    pub(crate) fn with_compiled_tracks(
-        sample_rate: u32,
-        tracks: Vec<Track>,
-        return_buses: Vec<ReturnBus>,
-        loop_region: Option<hex_project::LoopRegion>,
-        master_gain: f32,
-        shared_contexts: Arc<shared_analytic::SharedAnalyticContextTable>,
-    ) -> Result<Self, Invalid> {
-        let mut project = Self::with_master_gain(sample_rate, tracks, loop_region, master_gain)?;
-        project.return_buses = return_buses;
-        project.shared_contexts = owned_shared::OwnedShared::untracked(shared_contexts);
-        project.audible_end_frame = project
+    /// Finalize derived indexes only after the common compiler has filled all
+    /// actual fields. A retained partial value is not processing-ready on Err.
+    pub(crate) fn finalize_compiled_tracks_on_control(&mut self) -> Result<(), Invalid> {
+        let has_streamed_sources =
+            Self::validate_compiled_source_rates(self.sample_rate, &self.tracks)?;
+        self.has_streamed_sources = has_streamed_sources;
+        self.project_track_ids = project_output::ProjectTrackIds::prepare(&self.tracks);
+        self.refresh_compiled_audible_end();
+        Ok(())
+    }
+    fn refresh_compiled_audible_end(&mut self) {
+        self.audible_end_frame = self
             .tracks
             .iter()
             .flat_map(|track| {
@@ -1990,10 +2095,11 @@ impl Project {
                     }))
             })
             .max();
-        Ok(project)
     }
 
-    pub(crate) fn shared_contexts(&self) -> &Arc<shared_analytic::SharedAnalyticContextTable> {
+    pub(crate) fn shared_contexts(
+        &self,
+    ) -> &owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable> {
         &self.shared_contexts
     }
     pub fn gain_automation_capacity(&self) -> GainAutomationCapacity {
@@ -2047,7 +2153,7 @@ impl Project {
             );
             let hex_lattice::OutputTail::Finite { max_tail_frames } = tail else {
                 return Err(Invalid(
-                    "automatic Main range requires a finite tail; choose an explicit range",
+                    "automatic main range requires a finite tail; choose an explicit range",
                 ));
             };
             drain = drain
@@ -2139,9 +2245,9 @@ impl PreparedMasterGain {
 }
 
 pub(crate) struct RendererRuntime {
-    device_chains: Vec<hex_lattice::NativeRuntimeChain>,
-    return_chains: Vec<hex_lattice::NativeRuntimeChain>,
-    main_chain: hex_lattice::NativeRuntimeChain,
+    device_chains: Vec<crate::EffectRuntimeChain>,
+    return_chains: Vec<crate::EffectRuntimeChain>,
+    main_chain: crate::EffectRuntimeChain,
     return_scratch: Vec<[Frame; 256]>,
     runtime_error: Option<&'static str>,
     compensation: Option<signal_graph::SignalRuntime>,
@@ -2156,14 +2262,14 @@ impl RendererRuntime {
             Ok(chain) => chain,
             Err(_) => {
                 runtime_error = Some("main runtime preparation failed");
-                hex_lattice::NativeRuntimeChain::empty()
+                crate::EffectRuntimeChain::empty()
             }
         };
         let compensation = match project
             .signal_graph
             .as_ref()
             .filter(|graph| graph.needs_runtime())
-            .map(|graph| signal_graph::SignalRuntime::new(Arc::clone(graph)))
+            .map(|graph| signal_graph::SignalRuntime::new(graph.clone_on_control()))
             .transpose()
         {
             Ok(compensation) => compensation,
@@ -2200,20 +2306,23 @@ impl RendererRuntime {
                 runtime_error = Some("return runtime allocation failed");
             } else {
                 for bus in &project.return_buses {
-                    let mut instances = Vec::new();
-                    if instances.try_reserve_exact(bus.device_chain.len()).is_err() {
-                        runtime_error = Some("return device allocation failed");
-                        return Self {
-                            device_chains,
-                            return_chains,
-                            main_chain,
-                            return_scratch,
-                            runtime_error,
-                            compensation,
+                    let instances =
+                        match crate::effect_resources::clone_prepared_on_control(&bus.device_chain)
+                        {
+                            Ok(instances) => instances,
+                            Err(_) => {
+                                runtime_error = Some("return device allocation failed");
+                                return Self {
+                                    device_chains,
+                                    return_chains,
+                                    main_chain,
+                                    return_scratch,
+                                    runtime_error,
+                                    compensation,
+                                };
+                            }
                         };
-                    }
-                    instances.extend(bus.device_chain.iter().cloned());
-                    match hex_lattice::NativeRuntimeChain::new_prepared(instances) {
+                    match crate::EffectRuntimeChain::new_prepared(instances) {
                         Ok(chain) => {
                             return_chains.push(chain);
                             return_scratch.push([[0.0; 2]; 256]);
@@ -2387,14 +2496,13 @@ impl RendererRuntime {
 
     pub(crate) fn has_stateful_processors(&self) -> bool {
         self.main_chain.has_stateful_processors()
-            || self
-                .device_chains
+            || self.device_chains
                 .iter()
-                .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
+                .any(crate::EffectRuntimeChain::has_stateful_processors)
             || self
                 .return_chains
                 .iter()
-                .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
+                .any(crate::EffectRuntimeChain::has_stateful_processors)
     }
 
     pub(crate) fn can_inherit_from(
@@ -3213,8 +3321,11 @@ pub mod compile;
 
 pub mod playback;
 mod project_output;
+mod track_output;
 pub use midi_preview::{
     MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP, MidiArrangementPreview, MidiClipPreview, MidiPreviewSample,
+    SharedMidiArrangementPreview, empty_midi_preview_on_control,
+    visit_shared_midi_preview_storage_on_control,
 };
 pub use midi_template::{
     MIDI_SPAN_BUFFER_CAPACITY, MIDI_TEMPLATE_MAX_EDGES, MIDI_TEMPLATE_MAX_ONSETS,
@@ -3225,8 +3336,10 @@ pub use playback::{
     PlaybackAction, PlaybackActionError, PlaybackActionRejection, PlaybackCommand,
     PlaybackHandoffError, PlaybackHandoffRejection, SessionCapability, SessionCapabilityStatus,
 };
-pub use prepared_revision::PreparedRevision;
 pub use prepared_revision::assembly::{AudioPreparedRevisionMetadata, AudioRevisionRootCapacity};
+pub use prepared_revision::{
+    AudioCompiledRevision, AudioCompiledRevisionIdentity, PreparedRevision,
+};
 pub use prepared_tempo::{
     MAX_PREPARED_TEMPO_POINTS, MidiTiming, PreparedTempoError, PreparedTempoMap,
 };

@@ -1,6 +1,7 @@
 //! Borrowed final-bus processor. Track/Return taps run before this one chain.
+use crate::EffectRuntimeChain as NativeRuntimeChain;
 use crate::{Frame, NodeSignalObserver, PostNodeIdentity};
-use hex_lattice::{NativeInstrumentClock, NativeRuntimeChain};
+use hex_lattice::NativeInstrumentClock;
 
 pub(crate) fn process(
     chain: &mut NativeRuntimeChain,
@@ -33,7 +34,7 @@ pub(crate) fn process(
 /// incoming Track/Return paths; serial Main processing adds no upstream delay.
 pub(crate) fn output_latency(
     pre_main: u32,
-    devices: &[hex_lattice::PreparedRuntimeInstance],
+    devices: &[crate::PreparedEffectInstance],
 ) -> Result<u32, crate::Invalid> {
     let limit = crate::compensation::CompensationLimits::default().max_cumulative_frames;
     let mut arrival = pre_main;

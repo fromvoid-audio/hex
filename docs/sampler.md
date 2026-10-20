@@ -7,14 +7,260 @@ contains the first original playback-kernel prerequisite. Sampler is **not yet
 registered, selectable or usable as a device in Hex**. No reference parity or
 native interaction/listening acceptance is claimed.
 
+## next musical-use candidate
+
+The user's next deliverable is a playable, high-quality **Simpler-style** sampler
+with a clean native panel; the other goal3 devices and Instrument Grid do not
+gate it. Pulse2679 revision17 preserves the full existing feature acceptance.
+PR296 and PR369 remain merged kernel/lifetime prerequisites. PR389 remains the
+canonical resource foundation; selected storage/ABI proofs do not complete it.
+
+Remaining critical path (candidate-local stage/claim guards and selected compiler
+inventory/retirement prerequisites exist; aggregate construction and publication
+are still unfinished in the same canonical implementation):
+
+1. **Ownership and publication blocking registration.** Selected PCM, canonical
+   model/state, waveform, gain/MIDI preview, retained-record and pending-decoder
+   child proofs exist; they do not qualify the whole graph. Finish the approved
+   selected all-slot outer/inner/Vec inventory into final publication (the
+   component guard and backing proofs exist). Join EVERY actual worker/native
+   current/candidate/outgoing/carried/history/pending/unreclaimed owner, including
+   legacy Event/UI/canvas fields still unqualified. Reserve old/new/input/temp
+   construction overlap before work, revalidate actual source/candidate/cancel
+   using existing publication linearization under the native barrier LAST, and
+   prove saturated control/reaper final drop while native retirement stays
+   independent of retained UI reads. Unknown/refusal preserves last valid audio;
+   the registry remains closed until this actual admission proof. No unrelated
+   provider/catalog or new owner/cache framework is a prerequisite.
+2. **Real load and host path.** The compact loaded/empty mutable adapter and
+   actual project/Arrangement/Session retained-factory slice exist. Complete
+   actual keyboard/export host preparation and admit that supported graph.
+   Wire a worker load/replace request through existing bounded original decode,
+   resource bank, waveform and ImportDeviceAsset staging into ONE prepared
+   model/media/audio/Undo transaction. Staging alone is not this commit. Keep
+   missing/error/cancel/stale replacement recoverable and the accepted sample
+   playable. Register/select Sampler only with actual host admission in place.
+3. **DSP/state still missing from the full request.** Classic/One-Shot/Slice,
+   source/loop/reverse, pitch/tuning/gain, ADSR, bounded voices/Trigger/Gate and
+   rollback/partition kernels exist. Canonical manual Slice insert/move/remove
+   now changes real note regions without pitch transposition. Finish real
+   remaining pitch/filter modulation, retrigger/glide/voice behavior,
+   crop and prepared pitch-independent Warp through the implemented stretch
+   boundary. Complete high-quality rate/pitch resampling and independent alias,
+   transient/stereo/loop/partition tests; linear interpolation is not a quality
+   acceptance claim. New parameters must reach current state/preparation/Undo,
+   not just metadata. No historical-alpha conversion is required.
+   One-Shot fades and atomic compound source/loop flag patching now have actual
+   PCM/state regressions; their panel and canonical gesture wiring remain open.
+   The clean filter, per-voice filter ADSR and amplitude/pan LFO now have real
+   mutable-voice DSP, current authored bindings and independent PCM/allocation
+   checks. Their panel and live parameter-transition workflow remain open;
+   this does not complete the remaining modulation or listening acceptance.
+4. **Functional clean native UI is not implemented yet.** Borrowed authored
+   reads, exact source-bound waveform queries, geometry reuse and canonical
+   Slice edit primitives are preparation, not a panel. Build the actual compact
+   and expanded sampler panel using Hex theme/widgets: central waveform,
+   obvious load/drop/replace, mode choice, source/loop/slice handles and legible
+   pitch/amplitude/filter/modulation groups. Use sealed nonowning capabilities;
+   no canvas-owned waveform/PCM. Wire controls and marker gestures to actual DSP
+   and one canonical Undo, with focus protection, Escape/context cancellation,
+   clear empty/loading/missing/disabled/selection/playback states. No decorative
+   selector or unimplemented mode claim.
+5. **Musical workflow qualification and delivery.** Finish Undo/Redo, current
+   save/preset/reopen with assets+tuning, keyboard plus Arrangement/Session MIDI,
+   Stop/seek and matching export. Freeze the combined candidate; run meaningful
+   PCM/lifetime/allocation/UI and dense-voice release checks plus required exact
+   local CI. Coordinator's serial Mac lane owns optimized build/delivery and
+   finite native UI/listening acceptance; launcher keeps combined app ownership.
+
+The next source milestone is the concrete guarded all-family/native admission
+and atomic sample replacement path, alongside the functional source-region
+controls. That enables registration/loading to become a real musical workflow;
+more isolated metadata proofs alone do not make the sampler usable. Full2679
+scope stays open, and remaining goal3 catalog work follows the first usable
+Sampler rather than gating it. No ETA, percentage or acceptance is inferred from
+these intermediate checkpoints.
+
+The next guarded-union checkpoint adds the actual nonstatic Vec field observer
+and a concrete Desktop adapter with separate outer/inner lists. It acquires all
+configured outer slots before concrete Session guards, charges actual list
+capacities, and keeps those guards alive for the ledger continuation. A real
+record insertion invalidates a prior preparation revision. The new three-family
+oracle also checks a protected vacancy, durable release, exact scratch refusal
+and allocation-free repeated visits. Those families are retained Session export
+records, not three admitted Sampler graphs. Desktop compilation and these new
+runtime cases remain unqualified until executed on their exact source; selected
+child union still leaves legacy Event parents and worker/native roots open.
+
+The worker-to-Event preparation route now also has a typed atomic snapshot/read
+operation: it preflights a free physical snapshot record, free read record and
+their generations before consuming the prepared owned view. It roots that view
+and reserves its initial read together; read exhaustion preserves the pending
+view rather than leaving a half-published snapshot. The record becomes eligible
+for existing persistent cleanup only after its initial/derived reads ACK. The
+Desktop helper retains an unbound stamp in the caller's bounded pending cell on
+binding refusal. This is a route component, not production `WorkerEvents::send`
+wiring, a new owner system or admission. Actual caller construction reservation,
+worker/native joining and replacement of the legacy owning Event/UI fields
+remain mandatory before this route enables registration.
+
+The scoped worker model/media visitor now joins actual current, Undo and Redo
+project buffers, canonical state/MIDI fields, retained resident originals and
+optional derivatives, and resident/clip waveform owners. It borrows actual
+history entries, never synthetic snapshots. Embedded transform PCM uses the
+existing same-physical-field dedup path; processed/unknown buffers still refuse.
+The new Mono/Stereo oracle leaves an asset in Redo after Undo and separately
+joins real exported Project/waveform fields. This does not qualify the enclosing
+Session, its cached sine/control-signal owners, transform metadata, other worker
+locals or construction/publication. Those remaining fields stay explicit rather
+than disappearing from the required root union.
+
+The official interaction reference is Live12 manual section31.11/31.11.1,
+[Simpler](https://www.ableton.com/en/live-manual/12/live-instrument-reference/#simpler),
+as verified by the coordinating lane. This cloud's direct request returned403;
+no new installed reference measurements or sonic parity evidence are claimed.
+This target does not add the separate multisample Sampler instrument or zones.
+
+Finite native acceptance on the eventual pinned optimized candidate: load and
+replace an original sample; play from MIDI keyboard and a clip in Arrangement
+and Session; exercise Classic, One-Shot/Trigger and Slice, bounds/loop/reverse,
+envelope/filter/modulation and implemented warp; Undo/Redo; save/reopen a
+disposable current-format project retaining assets+tuning; compare playback and
+export; test missing media/cancel/stale replacement and Stop/seek/retirement.
+Inspect compact/expanded layouts and hear pitch/downsampling/loop/transient
+quality on that same executable. Cloud source tests do not replace this native
+workflow/listening evidence. No other device-family completion is a prerequisite.
+
 ## current source boundary
 
-`hex-devices::sampler` accepts borrowed, validated finite stereo PCM at its
-original rate. Construction happens on control; no decoding, paths, asset IDs,
-project edits, queues, shared-owner clones or resource destruction occur in the
-kernel. `Sample` validation scans PCM once. Preparing another voice does not
-scan or copy the sample. The caller must keep PCM and slice-marker storage alive
-for all borrowed configurations/voices; Rust enforces these lifetimes.
+`hex-devices::sampler` separates scalar source-coordinate preparation from
+borrowed original-rate Mono/Stereo PCM queries. The original `Sample`/`Voice`
+stereo API delegates to that same law. `SampleShape` describes bounded DSP facts;
+it never establishes physical storage, provenance or a source lease.
+
+`PreparedSamplerPlan::bind_source_on_control` checks the actual borrowed view's
+shape/rate and finite PCM once. Its prepared voices carry only copyable scalar
+coefficients, slot and full content/derivation identity; slice marker storage may
+be released after voice preparation. Rendering borrows the retained host
+configuration and refuses missing/replaced identities, rates or layouts with
+silence. There is no per-note PCM scan/copy, owning source handle, forged static
+borrow or second cache. The host must still prove complete admission/custody and
+retain the exact source configuration for current, carried and outgoing voices.
+This adapter boundary does not register the device or open resource processing.
+
+`BoundSamplerPlan::prepare_runtime_on_control` now prepares a fixed 128-key
+step/region table plus shared scalar coefficients against the actual project
+tuning. Every reconstructed key is tested against the full scalar plan across
+modes, reverse and non-neutral tuning. The complete factory remains under the
+existing 4 KiB context cap. A mutable lattice runtime
+uses at most 32 scalar voice slots, caller-bounded events and borrowed original
+PCM; no pitch exponentiation or PCM scan occurs in processing. Its declared twin
+storage includes the complete key table and active state, under the existing
+runtime pair cap. Gate/release and Trigger/source exhaustion are distinct;
+same-offset events retain caller order, and unsupported capacity/source batches
+refuse before the paired runtime or output changes. Speculative rollback and
+history copying use the existing lattice runtime pair. Exact source/configuration
+identity governs history compatibility; identity is never a lease.
+
+The assigned root is calibrated in neutral 12-TET. Effective project frequencies
+retune it, including changes to concert-reference Hz; dividing by a moving
+project-tuned root would incorrectly cancel those changes. Neutral tuning keeps
+the exact original scalar law. Slice keys select regions rather than pitches.
+
+The existing engine `SharedContextOwner` can construct and retain a concrete
+`OwnedShared<PreparedSamplerRuntime>` child beside its actual source configuration.
+Its fixed scalar leaf audit is exhaustive; no arbitrary trait object or old Arc
+receives a declaration. Body/header, marker decode temporary and existing owner
+metadata are quoted before construction under unchanged caps. Selected storage
+traversal includes that physical child and every actual alias. Tests refuse an
+omitted factory alias and exact-minus-one budgets and retain actual PCM after
+source/model retirement. Removing the entire factory visitor fails the negative
+oracle; byte-restored source passes. This constructor is not whole-graph peak,
+custody, publication or saturated-reaper proof and does not open registry access.
+
+The existing shared-context-table preparer now has a closed loaded-Sampler
+branch over actual Project states and a borrowed existing resource bank. It
+constructs the actual concrete factory/configuration owner, quotes its component
+metadata and payload before construction, and reuses an exact existing owner for
+an unchanged configuration. This avoids routing private preparation through the
+public registry that deliberately refuses referenced processing. It neither
+registers Sampler nor permits the ordinary compiler or audio host to publish it;
+whole supported-root construction/admission still has to be completed.
+
+Actual Session source configuration and `PreparedMutableTrackInstrument` fields
+retain that concrete factory receipt through a private sampler/opaque enum.
+Borrowing the runtime trait does not create a different owner. The source-row
+and context-table joint test counts one factory body, charges the actual row
+capacity, refuses missing/raw/opaque owners and preserves PCM after source/model
+retirement. Normal referenced registry processing and the audio-only assembly's
+unsupported MIDI/whole-graph guards remain closed pending complete admission.
+
+The existing Sampler metadata now also implements the native instrument adapter
+for a loaded source. Its prepared instrument selects the fixed mutable runtime,
+reports zero buffering latency, validates MIDI ranges and explicitly refuses
+analytic-note fallback. Source preparation checks actual slot/asset/rate/layout
+facts; the adapter retains coefficients only. Empty or missing/mismatched sources
+refuse rather than creating fake PCM. The native registry remains unchanged and
+still refuses referenced processing. This adapter does not qualify the host graph
+or complete the empty-device loading workflow. Independent Mono/Stereo event PCM
+oracles and the complete sampler kernel tests exercise this source boundary.
+
+This is still an unregistered runtime slice. Voice stealing/retrigger/glide,
+filter/LFO/modulation, high-quality resampling and warp, authored state/loading,
+the functional panel and full graph publication/retirement remain unfinished.
+The 32-slot bound is the current kernel/runtime support envelope, not a measured
+Live limit or permission to silently drop notes. Audio-harness tests measure
+Mono/Stereo processing, events and rollback with zero allocations/frees and
+independent PCM sums; they do not establish whole-root native admission.
+
+The current sampler state codec now retains mode, source-frame bounds, loop and
+slice markers, reverse, pitch/root, gain/pan/velocity, amplitude envelope and voice
+count and One-Shot fade times in a bounded current-v2 payload (112-byte prefix
+plus at most 128 four-byte markers). Old alpha state versions refuse explicitly;
+there is no compatibility reader or automatic conversion.
+Settings edits preserve the actual host gains and asset-reference allocation.
+The unregistered control metadata exposes exact source-frame start/end and
+enabled Classic loop start/end bindings. Finite values round to integer frames;
+every integer through the bounded 2^24 source extent is exactly representable.
+Moving Slice start moves its first marker with the region flag. Edits that cross
+later slice markers or invalidate an existing loop refuse instead of discarding
+markers or silently changing the loop. Actual source extent is revalidated by
+prepared playback before canonical publication. These bindings drive the existing
+PCM kernel; a functional native interaction overlay/panel remains required.
+Only the current version is accepted; truncation, reserved encodings, nonfinite
+values and unsupported versions refuse. No old-alpha conversion is provided.
+Authored preparation requires exactly the matching source slot/asset in the host
+inventory, validates actual source bounds and finite PCM once on control, and
+uses the host's tuning and output rate. Decoded state and marker storage may be
+destroyed after scalar runtime preparation. This does not yet connect file
+loading, canonical device commands, project round-trip or UI interaction.
+
+The neutral `ImportDeviceAsset` canonical command now adds original source
+metadata and assigns one device slot as one prepared edit. It preserves other
+bindings and host gains even when the new DSP payload is reconstructed. An
+expected-state check refuses a stale target; failed playback preparation retains
+the exact source project, allocator and both history stacks. Current snapshot
+round-trip, one Undo/Redo, original/project-rate frame metadata and full binding
+capacity are covered. This model transaction performs no decoding or resource
+admission; the actual worker/media-loading and usable device request remain open.
+
+Session residency now permits an original-only media entry without a project-rate
+stereo derivative. Existing clip constructors continue preparing that derivative;
+device-only originals are omitted from the legacy clip media bank until one is
+prepared. Actual mono/source-waveform ownership tests cover this representation
+without copying PCM. Candidate resource preparation can borrow one pending
+decoded original together with existing media, using the actual candidate Asset
+metadata and unchanged bank/catalog family. It rejects metadata mismatch,
+unrequested pending media and current-entry collisions. The still-live decoded
+temporary must join the selected physical union; a successful catalog alone is
+insufficient. This staging does not commit the model/media or grant playback.
+
+The focused Session library suite and strict all-target Clippy pass. The broader
+cloud Session package run encountered linker SIGBUS while the filesystem had
+63 MiB free; that failed run is retained and is not claimed green. Full current
+integration/native qualification and usable loading remain open. Existing clip
+imports/reopen/batches retain their prepared derivative behavior. A device-only
+asset needs worker-side clip preparation before it can also serve an audio clip.
 
 The kernel implements these original laws, pending reference measurement:
 
@@ -148,3 +394,1598 @@ installed-build/hash check or reference experiment was possible. The existing
 documented reference is Live12.4.6; recheck its build/hash before taking captures.
 Record source settings, original fixture hashes, exact actions, numerical
 tolerances and per-feature results using the repository research template.
+
+### Retained Arrangement and Session preparation
+
+The private Arrangement compiler borrows the concrete Sampler factory from its
+actual retained context owner and reads its mutable limits directly. It does not
+create an opaque replacement factory or ask the asset-free registry to accept a
+referenced state. Arrangement and Session both compare the context against the
+actual track, device, authored state and sample rate before using that factory;
+a stale state refuses preparation. Session retains the same constructor-paired
+factory body beside its existing context/resource owners.
+
+The targeted host oracle constructs real Arrangement and Session MIDI clips,
+checks the compiled mutable note bank and actual Session factory field, and
+compares playback against an independent original PCM fixture. This is a private
+preparation milestone, not full retained-root admission, renderer publication,
+registration, keyboard/export qualification, or a usable native panel. Its runtime
+result must be recorded separately from successful compilation.
+
+### Empty runtime before sample loading
+
+The unbound authored state now prepares the same fixed concrete mutable runtime
+with absent source/coefficient fields and an empty key table. It has no fake
+region, PCM, resource scope or note. Valid MIDI contributes silence to existing
+output; invalid events and unexpected resources refuse before changing it.
+Rollback/commit/reset and empty/loaded history incompatibility remain explicit.
+Loaded preparation scans finite PCM once through the existing bound-plan path.
+The optional fields participate in the exhaustive fixed-leaf audit; actual body
+layout remains computed from the concrete runtime type. The device is still
+unregistered, and this runtime milestone does not establish whole-host admission
+or a complete native empty/load workflow.
+
+Empty authored states also enter the existing retained context table without a
+bank or fabricated resource configuration. The same concrete factory family is
+kept beside its actual canonical state alias. Selected storage traverses that
+alias through the separately gated canonical-state family, not a detached
+fresh-state receipt. Factory/owner construction has a component quote checked
+before allocation under the existing context caps; this is not whole-graph
+construction-peak authority. Arrangement and Session can prepare this silent
+state using the same retained factory route. Registration, full graph publication
+and the musician-facing create/load workflow remain open.
+
+### Borrowed panel queries
+
+Current authored decoding has one validated borrowed path,
+`SamplerStateRead` / `DeviceStateRead`. Bounds, mode, loop, pitch, gain, amplitude
+envelope, voices and slice markers are read from the immutable current payload.
+Validation uses the existing finite plan laws and at most 128 stack markers;
+queries do not clone the native state or allocate a Slice Vec. Control edits
+still explicitly materialize an owned authored state before canonical patching.
+Metadata value/enabled queries use the same borrowed path.
+
+The sealed `SnapshotRead::sampler_state` surface exposes these lifetime-bound
+queries for the exact retained model, including an honest Empty state. It exposes
+no Project, NativeDeviceState, source lease or owning waveform. This does not
+register the instrument, establish resource readiness, or finish the functional
+native panel, filters/modulation/warp, graph admission or musical-use acceptance.
+
+### Canonical Slice marker edit primitive
+
+The current control-side Slice edit helper inserts, moves and removes actual
+source-frame markers in one returned current-format state. The first marker is
+the existing start flag and uses the start control; other markers cannot cross
+neighbours, duplicate another marker or leave the region. Insertion/removal
+renumbers later MIDI slice keys and refuses beyond the actual 128-key/marker
+limit. Host resource binding, gain and other sound controls are retained.
+
+Four focused cloud tests cover refusal without source mutation, current-format
+roundtrip/metadata, exact mapped-key capacity and independent original-PCM note
+regions before/after a marker edit, including partitioned rendering. All 42
+Sampler regressions pass on this source. This is a control primitive for the
+pending waveform interaction overlay, not a wired native panel or an admitted
+registered device. Its caller must still use the existing canonical transaction
+and one completed Undo gesture; production loading/UI and full graph safeguards
+remain open. No automatic slice/transient detection or new media owner is added.
+
+### Pending decoder assignment inventory
+
+PreparedDeviceSample now has a selected child visitor joining its actual
+expected-state field, new assignment-state field, path capacity and original
+Mono/Stereo source owner. Both state fields are visited at their actual locations;
+the same payload allocation may also be retained by current/history or a queued
+ImportDeviceAsset command. Repeating a staging visit does not stand in for these
+other physical fields. A pending command has its own path backing even when its
+bytes equal the decoder path.
+
+The new supported-build oracle joins actual current/Undo/Redo native-state
+fields and the real uncommitted assignment command, proves omitted aliases refuse,
+checks independent header/payload/path totals plus exact-minus-one selected
+budgets, and leaves project assets/source binding unchanged. It awaits native
+runtime qualification. The staging struct/slot and all other roots still belong
+to their actual parent; final capacities cannot recover decode input/temporary
+or old/new construction peak, and this visitor is not a loading commit permit.
+
+### Scoped selected-device waveform lookup
+
+SnapshotRead resolves a selected Sampler's authored asset in that exact retained
+Project and returns only the existing borrowed WaveformRead. It checks original
+source-frame extent rather than project-rate playback length. Empty devices and
+not-yet-prepared summaries return None; missing authored media or inconsistent
+source extent refuses. It never substitutes another snapshot's waveform or
+creates peaks. This is display correlation, not actual PCM/resource admission.
+
+The new supported-build oracle prepares an actual original-rate mono waveform,
+retains it through a prospective device snapshot, retires decoder/bank/model
+producers, and compares exact deep-zoom original samples. A newer snapshot with
+no prepared summary stays empty while the old read remains exact. Runtime
+qualification is pending; the borrowed read cannot escape its snapshot scope.
+
+The first native pending-inventory run at a891 reached supported Mono and refused
+with SourceMismatch: its supposedly embedded traversal repeated the strict
+standalone PCM-root API. That API intentionally rejects duplicate root rows.
+The correction uses actual embedded native source/audio field observers (as
+waveform/source children already do), preserving that strict root rejection.
+Repeated embedded visits deduplicate only the same immutable physical field;
+other physical owners remain required. The new regression explicitly retains a
+negative duplicate-root assertion. Mono/Stereo runtime requalification of the
+repair is required; no cap change, Unknown skip or swallowed mismatch is used.
+
+### Registered worker startup and completion checkpoint
+
+The optional Service constructor now accepts an affine worker control bound by
+the concrete Desktop adapter to the actual registered Session family, physical
+cancellation signal and producer incarnation. The UI Service retains only a
+nonowning stop route. Cancellation advances the existing fixed-slot watermark
+without acquiring the job lock; completion runs after actual Session, transform,
+Event and startup query fields retire. It abandons the producer under a shared
+guard, releases that guard, then takes the completion writer. A failed completion
+is reported once and is not retried by Drop; persistent failed charges remain.
+
+One startup aggregate preserves that order through initialization cancellation
+and fallible startup. Invalid history capacity is checked by the canonical Editor
+validator before Service escape. Successful constructor return means validated
+binding and successful thread spawn, preserving the existing asynchronous device
+initialization/offline fallback. It does not mean device readiness. The export
+busy flag is now inline: it had no actual shared owner or worker clone.
+
+New protocol tests exercise cancellation during initialization with a held family
+read, full Event backpressure, invalid startup input, mismatched bindings, slot
+reuse and completion failure. These use an injected fake native endpoint, not
+CPAL or an installed app. Cloud strict checks compile the Engine/Audio/Session
+paths and the affine privacy doc passes; Desktop tests still require exact-source
+native execution. The default production backend still uses its existing legacy
+constructor. Actual production pre-escape registration, complete worker/native
+owner union and construction peak, atomic sample publication and the functional
+Sampler panel/DSP/workflow remain open. This checkpoint does not open admission.
+
+### One-Shot fade controls
+
+One-Shot fade in/out are authored seconds in the finite 0..60 range, rounded to
+output frames during control preparation. Zero leaves that boundary unchanged.
+Fade in starts at zero on age zero and reaches unity at its configured age;
+fade out reaches zero on the final output frame of the pitched/trimmed region.
+Overlapping fades multiply rather than extending the sample or moving markers.
+The same gain applies to both channels. Reverse changes source order, not fade
+direction. Trigger ignores note-off; Gate retains its existing ADSR note-off law.
+These are independently implemented linear laws, not measured Live parity.
+
+Classic and Slice retain authored values across mode switches but do not apply
+them or enable their controls. Metadata patching and borrowed reads use the same
+current codec; host gains and actual asset binding remain attached. Preparation
+and voices add only fixed scalar storage, covered by the exhaustive leaf audit.
+No new PCM owner, processing history or lookahead is introduced. Tests compare
+independent PCM ramps for trim/reverse/pitch/rate conversion, query/partition
+order, short/overlapping fades, trigger/gate behavior, malformed input, current
+state round trips and actual mutable-pair rollback. These bindings still require
+the admitted host and functional panel before musical-use delivery.
+
+All 46 cloud Sampler regressions pass with these changes. The first run had one
+new fixture failure: it expected an instrument to overwrite a nonzero mix bus.
+The corrected oracle verifies the actual additive mix, then clears a separate
+bus before speculative rollback replay; production mixing is unchanged. Both
+run logs are retained. Devices/Engine/Session all-target strict Clippy also
+passes. The new fixed fields change actual runtime Box size, so native paired
+layout/allocation-probe qualification remains separate from these cloud results.
+
+## compound waveform flag edits
+
+Sampler metadata now applies a parameter snapshot to one private authored state
+and validates source/loop geometry after all flags are present. A valid move from
+`[1, 3)` to `[5, 7)` therefore succeeds even with start before end, while the same
+single start edit still refuses its invalid intermediate region. Loop flag pairs
+follow the same rule. The shared snapshot protocol validates every supplied value
+and current access before mutation; mode-dependent access remains enforced during
+private patching. Invalid final regions or Slice marker order refuse unchanged.
+
+This supplies the existing parameter-snapshot gesture path with an atomic bounds
+law, not a second UI model or an implemented waveform drag. Original PCM tests
+verify disjoint region moves in both orders, loop source phase/block partition,
+Slice key regions, host metadata/reference preservation and malformed/final-geometry
+refusal. Codec, runtime layout, PCM ownership and registry admission are unchanged.
+Functional marker overlay, canonical gesture/Undo wiring and the full panel remain
+required alongside actual admitted loading.
+
+## publication preconstruction
+
+The rooted construction cell now retains its original runtime while the actual
+empty split wrapper and unpublished native State are allocated before the short
+terminal scope. A lifetime-bound split preparation prevents cell mutation and
+leaves the original owner rooted if discarded before transfer. The transfer
+moves the same runtime Box, group and journal allocations into the empty wrapper;
+it does not compile or copy PCM again. Its accepted component proof does not
+qualify a native graph or authorize publication.
+
+Device metering is configured on the still-owned fresh runtime before sealing
+and splitting. An independent Utility test checks actual aggregate input/output
+peaks, identical PCM with metering disabled/enabled, unchanged runtime address,
+valid constructor claims and refusal of setup on a leased anchor. Metering does
+not create an owner or allocation. Native State construction also precreates its
+actual Root/Life handle pairs. Binding moves these handles into claims; a refused
+binding retains them in returned metadata until normal control retirement rather
+than destroying handles in the transfer tail. The enlarged fixed State body is
+charged by its actual size through the existing unchanged reservation ceilings.
+
+The current path still performs candidate-local sealing and legacy both-half
+claim checks. It does **not** yet hold all external and eligible-native guards
+continuously around a full current union/peak inspection and reserved queue
+commit. The private already-held-bank helpers are preparation for that operation,
+not a reusable scalar permit. Actual worker/native enclosing storage, construction
+overlap, cancellation linearization and the final infallible queue tail remain
+required before Sampler registration. The functional panel, complete DSP and
+musical workflow above remain the deliverable.
+
+## clean sampler filter
+
+Sampler's current authored format is version6. It retains bounded clean filter
+settings to version2's controls; historical alpha payloads are explicitly refused
+rather than converted. Current read/patch/save and source replacement preserve
+the filter, source binding and host gains. Empty devices still have no invented
+source or enabled controls.
+
+The implementation reuses Hex's existing Operator clean TPT carrier kernel:
+low-pass, high-pass, band-pass, notch and morph, with12/24db/oct settings,20..20000hz
+authored cutoff,0..100% resonance and morph. Clean is the only circuit offered.
+The default filter is off; default enabled settings use24,1000hz and0% resonance.
+Effective cutoff is clamped to45% of the actual output rate during control
+preparation, retaining the authored value for save/reopen and rate changes.
+No analog circuit or Live sonic/default parity is claimed.
+
+Each voice owns fixed filter history for each stereo lane. Filtering follows source
+interpolation and precedes velocity/pan/gain/ADSR and One-Shot fades, so an amp
+attack does not erase the filter's source onset. Voice end/amp lifetime remains
+the finite existing law; there is no extra unpriced tail, source clone, lookahead
+or callback coefficient design. Reset/rollback/history copy include the actual
+fixed filter states. Preparation and runtime leaf audits exhaustively include
+the reused kernel types, and their actual sized Box bodies grow within existing
+limits. Disabled filters preserve the original prepared sound and PCM exactly.
+
+Independent impulse difference-equation and cutoff-response tests cover both
+slopes, all modes/morph endpoints, stereo separation, amp ordering, partition,
+rollback, reset/history, extreme finite PCM/resonance and rate-clamp/bypass laws.
+Canonical parameter tests check current codec, host references/gains, mode changes
+and malformed/unsupported input. A filtered Mono/Stereo128-query actual pair probe
+compares an independent PCM oracle and measures total/net allocation/free zero.
+This is DSP/state evidence, not native listening, implemented panel, filter-envelope
+or LFO modulation, live parameter smoothing, registered host or graph admission.
+
+## amplitude and pan lfo
+
+Current format4 appends eight validated LFO controls without a historical-alpha
+reader: enable, waveform, free/sync, rate, beat division, retrigger, amplitude
+and pan depth. The five shapes reuse Hex's existing deterministic modulation
+waveforms. The original default is disabled and preserves the prior sound.
+Free rate is0.01..100hz; sync divisions are1/16..16 quarter-note beats per cycle.
+Amplitude depth0..100% attenuates to `(1 + wave)/2` at full depth; pan depth is
+additional linear stereo balance, preserving source channels without crossmix.
+This is an original finite law, not a sonic-parity claim.
+
+Actual runtime phases are fixed scalar state. Retrigger starts each note at
+phase0; free mode continues its global phase through idle frames. Sync consumes
+actual monotonic Q32.32 host performance beats, including tempo changes. Missing
+or backward clocks refuse before transactional PCM/history mutation. Reset,
+rollback/replay and history copies preserve the same phase contract. Compensated
+phase accumulation avoids a one-frame delayed saw wrap for100hz at8khz; that
+independent failing PCM oracle is retained in the checkpoint evidence. Shared
+sample-and-hold cycles remain deterministic. No pitch/duration/source-coordinate
+change, PCM ownership or per-frame allocation is introduced by this modulation.
+
+The current-format codec, borrowed panel reads, parameter snapshots and sample
+replacement preserve the authored settings and actual host gains/asset binding.
+Control-side settings stay inline; no additional state Box is introduced merely
+to accommodate the LFO. The exhaustive prepared/runtime fixed-leaf audits include
+all settings, per-voice phases and the global phase, even with an empty voice bank.
+
+Independent PCM shape/balance, onset/idle, partition, tempo, invalid-clock,
+transaction/reset, zero-depth/bypass, hold/extreme-rate and roundtrip/refusal
+oracles cover this slice. The enabled filter+LFO Mono/Stereo128-query allocation
+probe checks real PCM and rollback/replay/commit with independent recurrence and
+modulation expectations. This is DSP/state evidence only: pitch/filter modulation,
+parameter transitions, actual panel/gestures, registration/admission, Warp, native
+listening and the complete load/play/history/save/reopen/export workflow remain
+open. It does not complete2679/2789 or grant registry admission.
+
+## complete prepared revision resource bridge
+
+The explicit prepare_with_audio_transforms_and_device_resources path now passes
+an existing qualified DeviceResourcePreparation into the same PreparedRevision
+Arrangement/Session pipeline. It retains the actual original leases and shared
+contexts, preserving the existing transform transaction, timing/tuning preparation,
+voice/MIDI/context budgets and previous-session reuse. Existing no-resource entry
+points still pass None and honestly refuse loaded sample state without a bank.
+The explicit bank parameter is not registry registration, native publication or
+a complete old/new/temporary construction-peak receipt; the worker must reserve
+and validate those before using the result in an admitted graph.
+
+The actual loaded Sampler now reaches complete headless Arrangement and Session
+MIDI playback through this revision path, rather than only a detached factory.
+Tests compare the first and reused configuration's PCM address with the actual
+original bank lease, retire the original bank and canonical editor, then render
+independent asymmetric PCM and partitioned playback from retained contexts.
+A real mutable checkpoint captures the playing sample. Metadata-budget refusal
+keeps the prior prepared revision's actual source unchanged. The source API and
+headless tests do not imply a registered/published device, callback construction
+conservation, GUI panel, export acceptance or complete musical workflow.
+
+A subsequent replacement oracle starts the old One-Shot in Arrangement, prepares
+a different asset from an independently allocated original bank, hands off,
+launches the new Session source and carries the still-sounding old trigger
+through a second actual handoff. It drops both superseded hosts, canonical editor
+and both bank handles before finishing. Independent mixed PCM checks cover both
+Mono and Stereo old sources beside the new stereo sample. This exercises audible
+old-law/source continuity; it does not qualify native constructor lineage,
+callback allocation/final-drop, full graph peak or atomic Service publication.
+
+Bypassed Samplers now retain their concrete validated source/factory during
+preparation, while ordinary slot enable checks keep Arrangement and Session
+silent. Previously preparation skipped this context and fell through to the
+unavailable registry type. Both layouts now cover bypass silence, malformed
+state/missing-resource refusal, Undo of invalid replacement, then re-enable with
+the same PCM address and independent playback after editor/bank retirement.
+This fixes headless preparation behavior; it opens no registry/native admission.
+
+## sampler filter envelope
+
+The current format adds a separate linear filter ADSR and bipolar envelope
+amount (-48..48st). Attack, decay and release accept0..60s; sustain is0..1.
+Default amount0 preserves the existing enabled-filter PCM exactly. The envelope
+uses each voice's actual output age and gate, so it follows retrigger, Gate versus
+Trigger and loop behavior without transposing or copying the original sample.
+The amp envelope still controls voice lifetime; a filter release does not invent
+an additional tail after the voice ends. All five controls round-trip through the
+same metadata and preserve sample binding and host gains on edits/replacement.
+Unsupported historical alpha state versions return explicit errors, not migration.
+
+Control preparation builds257 scalar integrator coefficients for the authored
+cutoff/depth/rate law. Callback processing only interpolates that fixed lookup,
+clamped to exact precomputed20hz/rate-ceiling bounds, and runs the existing shared
+clean filter kernel. Packing lookup values as f32 keeps the actual prepared
+factory within the existing4KiB limit; no cap, heap owner, PCM derivative or
+callback coefficient design was added. The compact filter control adapter keeps
+the same shared filter codec, float bits, validation and continuation flag.
+
+Tests use an independent time-varying2x2 nodal PCM oracle for both depth signs,
+Mono/Stereo, ADSR/release and asymmetric lanes; exact partition/rollback/reset
+and amount0 identity; bounded cutoff error across rates/extremes; and strict
+current metadata/binding round-trips. An enabled-envelope128-query pair probe
+checks real PCM and zero total/net allocations/frees. This remains a source/DSP
+component: the functional panel, live parameter transitions, remaining modulation
+and Warp, actual admitted loading/registration and the complete musical workflow
+are still open; native listening/reference parity is not claimed.
+
+
+The private compiler Return-routing admission helper now borrows the actual
+canonical Project rather than reconstructing a snapshot and its model owners.
+It validates the combined audio graph (all sends, Return feeds, typed feeds and
+implicit Main edges) and the separate MIDI graph, including destination
+instruments. Canonical model ownership does not imply that a prepared batch left
+routing valid: both a combined audio cycle and removal of a MIDI destination
+instrument are explicit refusal regressions. The independent model batch fix is
+tracked separately as Pulse2790/PR396; this compiler helper does not change history.
+
+Its scratch consists only of fallibly reserved flat scalar vectors. Counts and a
+checked requested-byte quote precede construction; actual capacities are checked
+against that local reservation. A complete shuffled sixteen-Return DAG and a
+valid 4368-edge send/Main graph are covered, so the authored-route limit is not
+incorrectly imposed on the combined graph. The public untrusted snapshot validator
+and global model-ID checks remain unchanged. This local scratch quote is not a
+whole-compiler construction peak or a native admission permit; the closed entry
+must still reserve the aggregate retained/temporary overlap before construction.
+
+The Return processing plan also reserves its outer rows, each source's exact
+feed count, order and incoming/visited scratch fallibly before filling them.
+Its complete `(destination, route identity)` key uses an allocation-free unstable
+sort with no equal keys, preserving canonical processing order. The full
+sixteen-Return oracle checks actual retained capacities and unchanged propagated
+PCM. These explicit backings still need inclusion in the aggregate closed-entry
+reservation; this change does not replace that reservation.
+
+The Arrangement waveform-sidecar backing now has a checked authored-audio-clip
+upper bound before clip preparation. The first real transformed sidecar reserves
+that whole backing once; later sidecars cannot trigger geometric growth while
+PCM children are live. Ordinary unprocessed clips retain zero sidecar capacity.
+The bound is a possible-backing reservation, not the number of live transformed
+children; actual child fields and capacities still determine retained inventory.
+Split/crop/cache identity and unchanged Sampler host PCM are covered. Aggregate
+compiler peak reservation and native publication remain separate obligations.
+
+The existing persistent MIDI-preview capsule can now inventory, transfer,
+restore and dispose nonempty scalar previews. Its report includes actual nested
+sample-vector capacities (including empty reserved backings) in addition to the
+qualified shared slice's payload/header. Typed visits distinguish physical outer
+aliases from repeated visits to one field; direct duplicate-root registration
+still refuses. Unknown/default outer owners are not upgraded. The payload audit
+is exhaustive scalar clip/sample metadata and Vec backing, with control-only
+terminal disposal through the existing pending/complete protocol.
+
+The new tests place an actual compiler-produced preview into the existing
+capsule to exercise that storage/lifecycle seam; they do not qualify the future
+constructor ingress. The production constructor still refuses MIDI models until
+the aggregate prequoted closed entry exists. Exact/minus-one storage, actual
+aliases, producer retirement, transfer/restore and disposal are component proof;
+nonempty Session/descriptors, whole construction peak and publication remain open.
+
+The private Session MIDI-row visitor now joins actual direct and routed row
+backings, names, canonical source-identity fields, copied native-state fields,
+and cached source/instrument templates. It uses the existing canonical-family
+observers and paired template visitors, without synthesizing model identities
+or duplicating inline row/header charges. The parent custody's existing role is
+forwarded rather than guessing a publication role for those children.
+
+The new old/current Session regression exercises both direct and routed MIDI,
+cached-template reuse, independent row/name backing totals, omitted-field
+refusal, repeated visits, exact/minus-one budgets and old-inventory retirement.
+This traversal is wired behind the existing assembly capacity refusal: production
+nonempty Session construction/cleanup and the aggregate prequoted compiler entry
+remain unfinished. Selected row-field closure is not complete Session/native
+custody, construction peak, callback conservation or publication proof.
+
+
+## sampler cutoff lfo
+
+The existing LFO now also drives clean-filter cutoff with a bipolar -48..48st
+amount, default0. This uses the same actual per-voice retrigger or free-running
+phase and tempo-sync clock as amplitude/pan; it does not transpose/resample the
+source or create another oscillator. The authored depth is saved in current
+version6, with explicit unsupported-version errors and no alpha migrations.
+
+Control preparation combines the filter ADSR and enabled LFO depth into the
+same257-scalar coefficient lookup. Each frame adds their semitone offsets and
+interpolates the fixed table within the prepared cutoff/rate bounds. No callback
+coefficient design, heap allocation or PCM ownership is introduced. Disabled LFO
+and zero-depth paths retain the prior filter PCM exactly. Maximum combined depth
+uses a wider lookup domain; independent rate/extreme tests bound cutoff error
+to0.2 semitones for the sampled grid, without claiming sonic/reference parity.
+
+Independent bipolar nodal PCM, free-phase/retrigger, partition/rollback/reset,
+current-state/binding/refusal and cutoff-bound tests cover the new destination.
+An enabled-cutoff Mono/Stereo128-query allocation probe checks independent PCM
+and zero total/net allocation/free. This is a DSP/state component; registration,
+functional panel, remaining modulation/Warp and the full musical workflow stay
+open alongside actual resource admission and native listening acceptance.
+
+Pending sample preparation checks every actual candidate instrument/effect and
+Return effect binding, including muted and bypassed owners, before preparing a
+resource bank. A checked scalar reference-count quote precedes the temporary
+AssetId backing allocation; actual capacity is checked, then sorted/deduplicated
+without a second collection. Repeated references are construction scratch, not
+additional unique assets. Missing candidate inputs refuse preparation; explicitly
+retained extra inputs remain allowed. This scratch is destroyed before the bank
+producer starts. This local validation does not establish worker/request freshness,
+the aggregate old/new construction reservation, installed-bank waveform custody
+or atomic model/history/media/audio publication. Registration remains closed.
+
+The private Session original-input resolver now returns borrowed source rows,
+not a resource bank. The pending assignment helper reuses its actual source and
+candidate checks before resolving these rows. Both the legacy headless helper
+and the nonextracting Engine install use the same concrete producer. An actual
+editor-transition regression installs Mono/Stereo originals into preparation
+custody, then refuses later preparation: Project/Undo/Redo/media stay unchanged,
+the installed bank remains rooted until explicit control cleanup, and omitted
+bank aliases prevent PCM closure in between. This is a local custody integration
+proof; worker request/incarnation binding, pending waveform placement, aggregate
+preconstruction reservation and final model/history/audio publication stay open.
+
+Native original waveform summaries can retain one existing qualified
+OwnedAudioSource alias directly. The installed resource bank stays inaccessible;
+no second bank, source lease getter, PCM copy or new provenance family is needed.
+Fixed worker constructors borrow actual native Mono/Stereo originals or native
+Audio. Raw/marked-derived/streamed inputs refuse through the existing source
+boundary. A fresh computed native buffer is physically constructor-qualified;
+actual file/sample assignment still belongs to Session's frozen candidate binding,
+not a PCM pointer or this summary constructor.
+
+The local metadata quote precedes alias/summary birth and includes the paired
+outer header/body, leaf capacity, fixed16 outer-level slots and every pyramid
+backing. Actual capacities validate that allowance. The actual source field joins
+the existing embedded-source visitor; repeated outer aliases cannot hide or count
+that field twice. WaveformRead exposes only scalar queries/cache identity. These
+constructors return one paired result for immediate pending placement; the caller
+must retain the destination, complete old/new/source/installed-bank coexistence
+and construction reservation, and failed/cancelled control retirement. This
+representation proof does not establish that complete production route.
+
+PreparedDeviceSample now has a private completed native-waveform destination.
+The same source/candidate assignment check used by the borrowed resource plan
+also checks actual candidate instrument role, slot, path, original rate and frame
+extent. A nonextracting worker method quotes the summary before consuming its
+one construction attempt, then moves success straight into that field. Scoped
+queries expose no owner. Selected pending inventory includes the actual paired
+waveform and its source field; a first caught construction panic stays attached
+to the pending object and refuses observation, retry and successful cleanup.
+Ordinary cancellation retains the decoded original and any already installed
+bank in their separate actual custody. Completed summary retirement is control
+only and limited to this private fixed NativeOriginal/scalar-Vec constructor;
+no generic waveform replacement or opaque destructor is certified.
+
+Tests perform actual editor prepared transitions with Mono/Stereo bank installs
+and successful/cancelled summary scans, then later refusal. Model/Undo/Redo/media
+remain unchanged. Omitted installed-bank aliases refuse closure until its control
+cleanup, after which actual pending/editor/export fields close; an old exported
+summary survives pending, bank and model destruction. These are local custody
+and binding proofs. No actual Service load request, registered failed-parent
+retirement, complete aggregate reservation, compiler admission or final native
+publication has been established by them.
+
+Complete compiled Project assembly now receives its already prepared shared
+context owner directly. The previous compiler constructor called the public
+legacy constructor, allocated an empty default context owner, then replaced it.
+Both paths now share the same validation/field assembly; only the public legacy
+path constructs its own default context. The compiler moves original context and
+Track/Return Vec backings without another `new_owned` birth or owning clone.
+A red/green constructor-route counter (not a general allocator/peak measurement),
+address/capacity checks, independent PCM and validation/Unknown-origin negatives
+cover this removal. Aggregate compiler reservation and selected child births
+remain separate open obligations.
+
+Sampler validation and runtime-factory preparation use the existing validated
+borrowed current-codec reader. Factory preparation copies at most128 Slice
+markers to fixed stack scratch; it no longer materializes an authored marker
+Vec merely to prepare fixed scalar keys. Owned editing/replacement codecs keep
+their existing behavior. The prior conservative factory scratch allowance is
+retained and is not described as an observed heap/aggregate peak.
+
+A red/green control-preparation probe measures128 maximal-Slice preparations:
+the previous path allocated128 temporary vectors; both Mono/Stereo now report
+zero total/net allocations and frees, then independently verify selected-slice
+PCM and end silence. This is preparation work, not an expanded callback or
+publication certificate. Schema6, prepared/runtime layouts, actual binding
+refusals and the public registry gate remain unchanged.
+
+The complete compiler now finishes fallible Track gain-curve preparation in the
+existing mix preflight before final shared chain/meter assembly. The same field
+assembler moves the prepared envelope, including its original knot backing,
+with no new shared child birth or owning clone. Gain preparation still allocates
+its real knot/touch Vecs; those locals and their old/new overlap must remain in
+the aggregate reservation and immediate-custody work. The legacy compiler still
+constructs its unqualified shared children. This change does not select paired
+births, establish complete compiler failure custody or open native admission.
+Independent gain automation/tempo/partition/hybrid/send/tail tests and the actual
+Mono/Stereo Sampler revision host regression cover the changed compiler order.
+
+Track preflight also captures the actual canonical instrument-state alias and
+host gain/bypass metadata before final assembly. The assembler moves that alias
+into its existing Track field rather than cloning after the shared children
+arrive. Tests check one extra actual payload alias during preflight/assembly,
+its original pointer, no additional alias at assembly, preserved independent
+host gains/bypass, and release back to the original count. This alias is a real
+construction owner, not new provenance or a permit; complete compiler custody
+must include its actual field while alive. Existing native-state traversal of
+the final Track is unchanged.
+
+Private revision assembly reserves its fallible monotonic tuning-family ID
+before prepared-child transfer. Previously that request occurred after taking
+three shared children into local bindings, so exhaustion could drop those locals
+instead of retaining them in persistent custody. The scalar reservation now stays
+inline until infallible composition, and normal restore clears it; missing or
+conflicting reservation state refuses before child extraction. No counter reset,
+new shared allocation, owner family or capacity increase is introduced. A
+per-fixture error injection (not process-global counter mutation) reproduces the
+old late refusal, then proves resident/streamed original-bank identity and backing
+are returned before consumption, with normal once-only recovery after clearing
+only that test fault. The same four-root and twelve error/panic checks still pass.
+This closes that local failure frontier, not aggregate compiler admission.
+
+Track cleanup now distinguishes the existing installed gain-copy state from a
+fresh concrete compiled gain curve. Copied knots return to their original
+custody; fresh knots/touch Vecs are destroyed on control through owned exhaustive
+field teardown and scalar-leaf audits. This selects a cleanup destination only,
+not allocation provenance or a graph permit. The existing custody phase is set
+to retiring before removing the actual curve field. An abnormal exit refuses
+storage observation, new reserve, restore, retry and clear, so the parent must
+retain its failure charge. Tests cover actual compiler curves with/without touch,
+spare knot capacity, independent empty-reserved copy backing, unchanged copied
+restoration and a caught fault after concrete destruction. That injected fault
+is not an opaque destructor panic or complete parent/reaper qualification.
+Public nonempty/touch preparation refusals remain until full closed ingress and
+aggregate reservation are implemented.
+
+The common Arrangement compiler can now fill an actual caller-held vacant
+`Option<Project>` rather than returning completed fields only at the end. Scalar
+validation precedes context transfer; the actual context and subsequently
+completed track, sidecar and Return fields remain in that destination if later
+work refuses. Occupied destinations refuse before resolver calls or input
+transfer. The public legacy wrapper still uses a local slot and the same
+transform transaction and musical algorithm. A partial value is never declared
+processing-ready. Tests retain the first completed original PCM owner across a
+second-source refusal and compare success with independent stereo PCM and block
+partitions. Existing context-assembly, transform-cancellation and full headless
+Sampler host regressions remain covered.
+
+This is destination factoring, not the closed private compiler entry: per-track
+locals and effect/provider births, aggregate before-first-owner reservation,
+parent failed-custody retention, actual Session request binding and continuous
+joint publication guards remain unfinished. Registration and full functional
+panel/load/play acceptance remain open. The urgent user-reported Beats click
+repair is frozen separately in Pulse2830/PR434; Sampler implementation continues
+from its preserved compiler destination checkpoint without waiting for that merge.
+
+The prepared Return feed plan now moves into the actual caller-held Project
+immediately after context assembly, before source resolution. Previously it
+remained a compiler local until all Tracks and Returns completed, so a later
+resolver refusal or unwind destroyed its real backings while the partial Project
+remained rooted. The failure regression checks both paths, the actual nonempty
+plan/order/edge values, independent plan allocation, unchanged completed PCM, and
+survival after the model and input media are dropped. The success path still uses
+the same plan and musical algorithm. This is a fixed ownership move, not a new
+constructor family or an aggregate peak/retirement certificate.
+
+The next production step is selecting the existing paired Track/Return child
+constructors in this same compiler, retaining their original declarations in the
+existing rows through partial construction, restore and cleanup. The current
+rows still correlate clips one-to-one with the old original-source bindings;
+transformed or omitted compiled clips require actual correlation before that
+route can be admitted. No generic public compiled-output adoption is allowed.
+Before registration, the complete path must also reserve the whole old/new/temp
+union before the first owner, persist failed parent custody, join the actual
+Service candidate/current-worker source, and retain the final ledger/guards
+through the preflighted native publication move. The first usable milestone
+remains atomic sample load/replace into a registered playable host, followed by
+the functional waveform panel and the full musical workflow above; this local
+compiler step does not deliver it.
+
+
+The common compiler and existing paired Return custody constructor now share
+one fixed-field Return assembler. It consumes the actual supplied chain once;
+there is no constructor call, allocation, owning clone, receipt creation or
+replacement in that assembler. The paired row retains its original declaration;
+legacy output remains unqualified. This removes a duplicated final layout while
+preserving gain/mute/matrix/order semantics. It does not yet select paired
+constructors for the entire common compiler or certify its partial locals.
+The empty qualified-chain identity/alias test and the affected nonempty Utility
+Return custody/PCM regressions distinguish those limits. Sampler registration,
+Service loading, aggregate preconstruction and the functional panel remain open.
+
+The same compiler now has a private borrowed correlation route over actual
+installed Track/Return rows and their original bank. Before context transfer or
+source lookup it verifies the physical original owners, canonical clip/asset
+mapping, row freshness and actual Return configurations. Equal content in a
+separately allocated bank refuses before starting an attempt. The public legacy
+wrapper continues without this optional route.
+
+Each actual resolver result must match the retained original allocation before
+transformation. Copy-only row outcomes distinguish original resident/streamed,
+transformed and omitted clips, including the resulting output index. Per-clip
+outcomes remain provisional until the whole Track enters the actual retained
+Project; first or mid-Track errors and panics never mark it complete. Attempts
+latch before the first lookup and cannot be silently retried. Return observations
+compare the actual owner tag, device/state, bypass, rate and host gains without
+moving old declarations onto fresh legacy output. Existing paired birth safety
+comes from private constructor and conserved ownership, not content equality or
+an address-checking receipt.
+
+Focused tests include resident/streamed failures and caught panics, omitted and
+transformed clips, independent-bank refusal before input transfer, untouched
+canonical history with Undo/Redo, and retained original PCM after model/custody
+retirement. A Return fixture covers memoryless/stateful Utility and bypass while
+keeping old paired owners distinct from new unqualified output. The affected
+Track/Return inventory and retirement tests and retained-destination regressions
+also pass. This is correlation only: provisional compiler locals, fresh paired
+child selection, aggregate reservation before the first owner, failed-parent
+custody, actual Service binding and the final native publication remain open.
+No resource admission, registration, functional panel or delivered Sampler is
+claimed by this checkpoint.
+
+A private common-compiler selection can now consume the actual already-paired
+Return children held in the existing rows. It preflights all Return source facts
+and original custody before context transfer, skips legacy effect construction
+for those selected Returns, checks runtime budgets against their actual chains,
+and moves each whole bus into the compiler's retained Project. The original
+chain/configuration/meter allocations and declarations stay paired across the
+existing root indices and restoration. No legacy chain is constructed and then
+replaced. The legacy wrapper still selects its existing constructor path.
+
+Control disposal now explicitly refuses a Return whose owner remains in an
+external root, before destroying any child declaration. Focused tests exercise
+memoryless/stateful Utility with bypass, exact pointer/alias conservation,
+selected ledger totals before/after move and restore, independent partitioned
+PCM, first-source refusal, injected post-move error/panic, empty Return DAGs,
+source mismatch before input transfer and refusal to select un-restored rows a
+second time. The selected ledger covers its actual Return rows/children and
+root Vec; it is not the whole Project/compiler ledger or a peak measurement.
+The old Return feed custody and freshly compiled plan are distinct live owners
+and both remain an enclosing aggregate accounting obligation.
+
+This selects existing private paired births for Returns only. Track/instrument
+child selection, fresh complete compiler ingress, aggregate reservation before
+the first owner, failed parent retention and Service/native publication remain
+unfinished. Public native construction guards and Sampler registration remain
+closed; no usable device, panel, build or listening acceptance follows from it.
+
+The common compiler also has a private Track-child selection. Its existing row
+reservation creates each original meter and concrete Utility chain once, and
+moves them with their declarations into the actual retained Project. Sends move
+from those same pre-reserved rows. The common compiler prepares the canonical
+gain curve directly; this route does not first build and replace a copied gain
+curve. Existing legacy source/clip constructors remain unchanged.
+
+A present instrument requires the actual retained concrete Sampler preparation
+matching its Track/device/state/rate before Track child births; a type ID alone,
+a missing/stale table, or an opaque provider cannot qualify it. Direct and routed
+MIDI use the existing compiler's note spans, banks and retained context. Actual
+canonical instrument state remains an independently visited alias. Restoration,
+capacity traversal and pending control disposal use the existing Track rows;
+disposal explicitly refuses owners still held in the external Project.
+
+Four new tests cover Utility filter/bypass/gain-automation/sends equivalence,
+selected child aliases and exact budgets, partial error/panic retention,
+unsupported ingress before context transfer, and loaded direct/routed Sampler
+Tracks. The latter join the actual original resource bank, editor native-state
+history, Project context and Track children in a selected ledger, then retain
+factory-driven original PCM after editor/bank retirement. This is selected
+storage and a concrete factory PCM test, not a complete Project/root admission,
+renderer, callback, final-drop-panic or peak certificate.
+
+This private Track route currently refuses authored Arrangement audio clips and
+non-Sampler instrument providers. The ordinary public compiler retains their
+existing behavior. The common compiler now also accepts separate affine loans
+of both actual row fields, so their child selections can populate the same
+persistent root destination without borrowing the whole family twice. This is
+one compiler algorithm; no public output adoption or new child constructor is
+introduced.
+
+The old paired Return construction plan and the fresh active compiler plan are
+independent live allocations. Root inspection charges the fresh plan's actual
+order, outer-vector and nested-vector capacities while Return custody continues
+to visit its original plan. Metadata exposes only the active plan. Restoration
+keeps both plans in their existing destinations; the fresh plan participates in
+pending-before-drop metadata retirement, including reserved empty backings.
+An abnormal retirement refuses inspection and retry while retaining its charge.
+Tests cover combined Track/Return selection, exact selected budgets, original
+child restoration, both feed plans, empty reserved backing and caught retirement
+panic. These are selected storage tests, not an aggregate construction quote.
+
+The aggregate quote before any new owner, complete compiler products/failure
+custody, Service current/pending binding and guarded native publication remain
+required before registration. The full playable UI/loading/music workflow
+remains open.
+
+The same shared-context constructor has an opt-in closed Sampler metadata budget.
+It reads the actual canonical active states and existing resource-scope ceilings
+before the first table backing or child acquisition. Its conservative new-data
+allowance includes the table body/header, all three table-vector destinations,
+every possible fresh concrete owner/factory/configuration/state, and one extra
+scope plus the existing marker-scratch ceiling for construction overlap. It
+reserves and checks all actual table capacities before cloning or preparing the
+first context. The normal legacy provider route keeps its existing behavior.
+
+This allowance excludes the already-owned original bank, previous contexts and
+all other compiler products. The closed caller must join those actual roots and
+all other new costs under the same retained/peak ceilings before construction;
+the allowance is neither observed allocator peak nor native admission. Tests
+check retained/peak minus-one refusal before paired constructor/clone calls,
+actual new metadata versus the allowance, empty/loaded constructors, original
+owner reuse, overflow/class refusal, and loaded direct/routed Track preparation.
+Constructor-call counters count only that route, not every allocation.
+
+Fresh Return feed metadata also prevents reopening its root slot until normal
+guarded retirement completes. A regression first demonstrated that reservation
+incorrectly succeeded while the fresh plan was still retained; the preflight now
+refuses without touching that plan. Successful retirement permits reservation
+again; a caught retirement panic retains the plan and refuses retry.
+
+The existing storage ledger now checks the concrete context allowance against
+its still-borrowed selected old/input union, including its own actual backing
+and prior growth, under the unchanged retained/construction limits. It refuses
+unknown storage, missing selected shared aliases, checked-add overflow or either
+insufficient byte limit before returning the constructor's local cost limits.
+This does not invent declarations for old owners or certify unvisited roots.
+The same private constructor can retain that immutable ledger borrow through
+construction and rechecks it before acquiring any owner. It still independently
+recomputes its new-context allowance. The legacy route selects neither optional
+check; no existing public preparation or admission gate is opened.
+
+One new test retains actual original resources, editor state/history, an old
+context table and its independent retained alias while preparing a fresh outer
+table that reuses the original context body. Both minus-one limits refuse before
+paired births/clones; omitting the retained alias refuses closure. The independent
+Project equality snapshot also holds real state aliases: an initial fixture
+failure correctly returned UnknownStorage until those actual snapshot fields
+were visited. The closure check was preserved. The exact selected reservation
+then succeeds with original owners unchanged. These are selected context costs,
+not a complete compiler prequote, candidate-union observation or native permit.
+
+The aggregate bootstrap is still under construction. Its next two private
+building blocks now expose allocation-free metadata facts. Inspection ledgers
+reject a requested row/body lower bound exceeding either byte limit before the
+first backing reservation; their existing post-allocation actual-capacity check
+remains. This early negative decision is valid even without a supported layout
+upper bound and does not establish any external root binding.
+
+The guarded original-only transform sizing shares its class predicate with the
+actual metadata visitor and includes reserved empty cache/pending capacities.
+It also calculates the additional cache backing requested by the unchanged
+transaction's amortized reservation. The input union must keep the old backing
+charged while adding that replacement. The pinned Rust 1.94.0 commit
+`4a4ef493e3a1488c6e321570238084b38948f6db` uses
+`max(2 * capacity, len + additional, minimum_non_zero_capacity)` in
+`library/alloc/src/raw_vec/mod.rs::grow_amortized`, and `grow_exact` uses the
+requested capacity. These are requested-layout declarations for the existing
+supported native std/Global selector, not allocator RSS measurements.
+
+Tests independently compare five actual transaction capacities, including
+129 -> 258, distinguish reuse and replacement, retain empty pending capacity,
+and prove error/panic releases all inventory guards before the same persistent
+preparation obtains mutable transaction borrows again. No paired owners are
+born or cloned by sizing. Actual current DATA observations do not include the
+predicted future cache allocation. Original ledger/input binding, precharging
+a fresh callback-local ledger alongside the still-live original, remaining
+selector/compiler cost helpers, and the closed pre-selector construction call
+remain required; these components do not open runtime admission or close the
+aggregate quote, unwind custody, Service or native publication work.
+
+The private Track selector now obtains a constructor-local cost from its actual
+vacant row destinations before preparing them. It includes outer row replacement,
+reused nested capacity, new send backing, meters and the existing Utility
+allowances, then compares actual selected backing/growth against that bound.
+The same vacancy predicate remains authoritative for both paths. Six finite
+filtered/unfiltered and fresh/replaced/spare-row cases compare actual post-build
+metadata while sizing preserves row addresses and performs no paired births or
+clones. This is a selector-local bound: a future closed aggregate operation must
+still add it to the actual old/input union before either Track or Return
+selection, context construction, cache reservation or compiler entry.
+
+The paired Return feed constructor and Return selector now have separate local
+additional-backing costs. They read the actual vacant destinations, including
+spare row/header/nested feed capacities, before reservation. Reused backing adds
+no second retained charge; replacement is additional while old backing remains
+in the input union. Return selectors also compose the existing Utility costs.
+Actual reservation/preparation/installation is checked against these local
+bounds. The paired routing constructor uses its existing in-place validation;
+the separate fresh compiler plan still pays its own six-vector validation and
+fresh backing cost. Six feed and twelve Return selector/filter/routing variants,
+and the existing combined restoration tests, exercise these distinct plans.
+These do not complete the combined pre-selector operation or qualify unvisited
+model, resource, compiler scratch, failure-parent or publication contracts.
+
+Prepared gain costs are now available to the private compiler quote from the
+same actual lane/tempo count used by project validation and construction.
+The cost includes tempo-expanded base knots and both touch backings. Construction
+checks its observed backing against that local cost without changing gain values,
+validation order, fallback, base/touch ownership or mix/history behavior. Four
+independent empty/base/touch/combined cases compare real capacities and values;
+existing dense-tempo, touch, partition and transport integration tests remain.
+This component does not charge the canonical input lane or other compiler work
+by itself and supplies no aggregate approval or runtime ownership authority.
+
+The private canonical topology cost now includes graph/table/owner storage and
+conservative builder, typed-key, latency-plan, indegree, Return-input and
+owner-order scratch. Canonical effect counts can overestimate a fused prepared
+chain; actual prepared counts still enforce graph policy. Even a zero-latency
+constructor that returns no graph builds real temporary vectors first. Four
+actual zero/positive-latency and Return-routing cases observe nonzero backing
+before that return and compare retained graph storage against the local bound.
+The observation is partial requested backing, not sampled instantaneous peak.
+The ordinary unsupported-target legacy compiler remains unqualified and keeps
+its behavior; the future private aggregate operation must call the fallible
+cost helper directly and refuse unsupported construction layouts. No selected
+input union, guarded bootstrap or native admission follows from this local cost.
+
+The next private ledger checkpoint implements an explicit arithmetic traversal
+mode in the existing opaque inventory. It does not produce a public summary,
+closed-handle result, permit or admission. Observation-only handles are counted
+without minting global IDs; existing constructor identities remain validated.
+All audited root/field/contents skip policies retain descendants during
+arithmetic traversal. The same actual leaf validators run in both modes.
+The empty-Sampler eligibility check uses borrowed current-state decoding.
+
+A cheap unpruned bound can precede a normal ledger allocation. When alias bytes
+prevent fitting, or an existing-shared declaration requires origin inspection,
+allocation-free replay keeps one borrowed observation key and replays earlier
+DATA declarations. Equal-sized distinct owners stay distinct. Replay refuses
+missing earlier origins, conflicting declarations, overflow or more than
+16,777,216 observation visits. This is a finite work bound, not a measured
+physical deadline. The configured normal DATA/handle/root reservation is never
+enlarged for repeated visits. Its later real inventory still must validate row
+sufficiency, declarations and actual handle closure before compiler construction.
+The cheap arithmetic bound alone does not prove those normal-pass facts.
+
+Finite tests cover a 4 MiB physical PCM allocation with 100 control aliases,
+canonical state aliases, actual retained bank/history/previous-context and
+guarded cancellation inputs, an injected visitor panic and subsequent mutable
+transaction. The original ledger's real inline body/backings and physical DATA
+union have a separate borrowed visitor. Neither that visitor nor arithmetic
+copies, clears or lifetime-converts the original ledger. The normal ledger's
+requested metadata calculation includes its increased inline size.
+
+These are partial ledger primitives. The closed aggregate compiler operation,
+all constructor costs in one retained/peak check, refusal before normal backing
+allocation and both selector preparations, complete failure/cancel restoration,
+Service incarnation/publication and usable registered Sampler remain open.
+The test-only allocator policy exception was subsequently approved for Engine
+dev probes pinned exactly to 0.8.1. Production/build dependencies, other versions
+and disallowed crates remain refused; unrelated dependency guards still apply.
+The original8073 guard failure is retained. This exception does not qualify the
+unfinished aggregate operation or make this checkpoint source-ready,
+full-CI-qualified or native accepted.
+
+A subsequent private closed-operation checkpoint binds the actual editor/history,
+preparation parent, resource bank, previous contexts, selected Track/Return/root
+rows, guarded transform cache/cancellation and still-live original ledger. It
+quotes constructor-local context, both selector, MIDI/gain, fresh Return plan,
+validation/topology, container and tempo costs before either selector prepares.
+Arithmetic includes the prospective normal ledger inline/backing reservation,
+its own inline body, original live growth separately, and cache replacement
+backing alongside existing storage. Mandatory normal visitors precede original
+ledger import; normal row sufficiency and shared-handle closure cannot be skipped
+when the cheap bound fits. The fresh normal ledger dies inside the guarded
+inspection, before the same operation constructs into its persistent fields.
+No approval token or borrowed inventory escapes.
+
+The actual Sampler/MIDI fixture accepts a conservative boundary of 714,314
+retained / 785,860 peak bytes; either ceiling minus one refuses with zero actual
+allocations, handle issues, paired births or clones. Row shortage refuses after
+normal inspection backing allocation but before paired construction. Actual
+100-context aliases fit unchanged configured reservations, with shared payload
+observed once. Two equal-content Return plans retain separate physical storage.
+Tests also preserve a nonzero original growth allowance, reject omitted context
+aliases, failed parents/pending destinations, and exercise real cancelled routes
+and the existing deterministic cancellation-poll seam before and after contexts.
+Injected paired Track error/panic preserves the original ledger and retains new
+owners in persistent destinations; the original assertion panic payload survives.
+These are control-side tests, not callback, native or musical-use acceptance.
+
+At checkpoint `a456846c`, successful generic once-only restoration of the newly
+constructed contexts remained open. Existing `RootAssembly::restore` requires the actual producer's
+`SessionSharedConstruction` arrangement-transfer state. New Sampler contexts
+constructed directly into the persistent root have no such prior empty-context
+transfer. An unrelated/default restore destination refuses before moving owners;
+no transfer state is fabricated. A genuine new-context destination/retirement
+contract, complete unwind custody, Service incarnation, normal selected-summary
+completeness, publication/registration and the usable native panel remain open.
+This closed operation remains private and unconnected to Service.
+
+
+The next focused lifecycle checkpoint keeps compiler-created contexts in the
+existing Arrangement root through Project and revision value moves. A private
+scalar distinguishes no context, a genuine legacy producer transfer, root-owned
+compiler context, pending retirement and completed retirement. This routes
+disposal only; actual fields, constructor receipts, mandatory visitors and closure
+remain the storage authority. Legacy SessionShared transfer/empty-table checks
+are unchanged. The two direct compiler test fixtures explicitly record their
+actual external producer transfer without changing any legacy assertions.
+
+Root-owned restoration validates all current Track/Return destinations and the
+context's supported destructor before unpacking. It restores the same context
+to the vacant existing root slot, with no allocation or clone, and never touches
+an unrelated SessionShared producer. Child retirement precedes context retirement.
+A pending marker precedes take/drop; normal completion is explicit. A destructor
+probe unwind leaves pending irreversible, preserves the parent's first payload
+and remaining tempo storage, and blocks repeat disposal, inspection and reuse.
+Context-only cancellation and partial children are discoverable even while the
+Arrangement or enclosing preparation phase is Vacant. Root-owned contexts use
+the actual embedded resource-table contents visitor and are excluded from the
+legacy empty-table visitor. Exact same-field observations deduplicate while
+separate physical aliases remain separately observed; arithmetic always traverses
+descendants. Omitting a real compiled-child alias still fails normal closure.
+
+Focused tests cover successful compilation, immediate post-install cancellation,
+ordinary Track failure and caught selector panic followed by same-field restore
+and actual parent retirement. Inventory covers context-only, Project, failed,
+restored and revision-value placements; wrong route, occupied slot and opaque
+provider destructor refuse before moving owners. Actual pending unwind retains
+its payload/metadata and invokes the drop probe once. The changed test layout's
+conservative fixture boundary is 714,362 retained / 785,908 peak bytes; both
+minus-one limits still refuse before allocation or paired owner activity. These
+are actual source-bound control-side tests. They do not close every compiler
+constructor/unwind frontier, Service incarnation, complete selected summaries,
+publication/registration, the functional Sampler panel or native musical use.
+
+The next construction-local integration enters through the actual existing
+`AudioPreparationCustody`. Immutable inventory covers that whole parent and its
+embedded Arrangement destinations before any mutation; after the guarded scoped
+ledger is dropped, the same exclusive borrow constructs directly into those
+fields. Standalone Arrangement-plus-unrelated-parent compilation remains only a
+historical test component. No rows are taken out of a parent or installed into a
+new test parent after compilation. The private lifecycle checker validates actual
+restoration destinations, context route/destructor restrictions, pending source
+and metadata disposal and first-panic state. It performs no allocation, clone,
+identity issue or cleanup. Vacant is not evidence of an empty owner tree.
+
+The normal import check requires original roots and DATA to be explained by the
+mandatory actual inputs. Actual borrowed external cancellation aliases may join
+only physical bodies already in those inputs; their real original fields join
+normal handle closure. This supplies construction-scope liveness, not cleanup
+rights over external inputs or later Service retention. Unknown or invalid
+original inventory still refuses. Public scalar summaries remain fail-closed;
+`require_complete` is deliberately unconditional and is not a production failure
+of this private operation.
+
+The nonempty-parent regression exposed nested `mutate()` refusal in the public
+custody wrapper when its children invoke their own visitors. This private closed
+operation composes its actual typed root and child visitor directly. Failure
+aborts and discards the scoped ledger; public wrapper behavior is unchanged.
+A freshly constructed loaded Sampler context (without previous-factory reuse),
+Track and Return remain in that same parent through actual normal inventory,
+restoration and ordered cleanup. Cancellation and ordinary selector failure
+leave actual partial owners discoverable there. A caught constructor panic runs
+existing ordered cleanup once, preserves the original boxed payload even if
+retirement also panics, and leaves FailedIncomplete. Pending retirement cannot
+be retried or interpreted as vacancy.
+
+The same-parent reused-context fixture has a conservative 710,874 retained /
+782,420 peak-byte boundary with the pinned test layout. Either ceiling minus one
+refuses with zero allocations, owner births, clones or handle issues. Row
+shortage refuses before owner construction after allocating only normal inspection
+backing. These bounds differ from the older standalone-row fixture because the
+embedded Arrangement inline body is already charged in the actual parent.
+Normal ledger backing remains charged and mandatory; its existing observation
+mechanism is distinct from the allocation-free lifecycle checker/bootstrap.
+This is construction-local source evidence, not an all-constructor destructor
+proof, a complete public retirement receipt, retained Service/worker incarnation
+integration, native full-live-union admission, registration or usable Sampler UI.
+
+### Qualified compiled readers: Service integration in progress
+
+The next Service deliverable uses an `AudioCompiledRevision` created only from
+the actual `RevisionAssembly` constructor and validated preparation incarnation.
+It retains the paired revision declaration; it cannot adopt a caller Arc or
+return an owning revision/Playback. Explicit duplication registers another
+physical field, with its own ledger observations. Scalar identity and metadata
+queries confer no publication or cleanup authority.
+
+The initial reader checkpoint81 used `std::sync::Mutex<ReaderState>`. The pinned
+Rust1.94 macOS pthread backend lazily allocates a boxed child on first lock;
+charging only its inline body/header was insufficient. Its Linux positives and
+original evidence remain historical, not cross-platform accounting acceptance.
+
+The repair keeps the same declared allocation with one packed `AtomicUsize`:
+low Closed/Failed bits and reader count in units of four. Pointer-atomic support
+and actual body/header layout are checked before birth. Registration reserves
+both observation identities, checks overflow, and tries one strong CAS before
+cloning either paired owner. A collision is `ExternalReadersPending`, a truthful
+retryable control refusal; the producer and reserved slot must remain owned.
+There is no spin/retry lock, hidden OS child or allocation after successful CAS.
+A private reservation guard drops partial clones before latching Failed and
+releasing the count on abnormal unwind.
+
+Reader Drop releases the revision alias before the Release decrement; its
+registration field drops afterward. Retirement permanently sets Closed. While
+count is nonzero it retains all charges and does not reconcile transient Arc
+counts. Acquire-observed zero orders all earlier revision alias drops; actual
+revision strong/Weak and registration Weak fields are then checked. Unexpected
+aliases latch Unknown permanently. A dying registration field can still require
+Pending at zero. Counts do not establish origin or independently clear charges.
+No callback takes a lock or changes this protocol.
+
+The concrete new reader destination checks both retained and peak allowance
+before its one allocation, using the actual remaining revision-root reservation
+after observing the four existing root declarations. Exact and either-minus-one
+probes discriminate that allocation and its body/header. A stronger diagnostic
+against the older legacy revision route separately found seven earlier helper
+owner births before its global cap refusal; its original contract only preserves
+the input bank on refusal. That red source/log is preserved. It is not labeled
+early-all-owner admission: the complete native Service operation still needs the
+mandatory aggregate bootstrap before every producer/helper birth. The local
+reader-body proof does not discharge that later integration obligation.
+
+Candidate/runtime retirement and native preparation/archive cleanup preserve
+`ExternalReadersPending` as a retryable retained state. The mutable runtime is
+disposed once; later ticks retry root retirement only. Once all actual readers
+release, the existing root restores children and retires normally. Panic and
+unknown-alias failures remain terminal. Tests exercise physical omitted-handle
+closure, foreign token refusal, concurrent release, repeat cleanup, and the real
+native preparation slot retaining its incarnation and full reservation until
+release. This additional allocation changes current root-layout costs; historical
+source-bound byte boundaries above are not relabeled for this increment.
+
+At the reader checkpoint, startup still used the legacy compiled/Event path
+and all four opaque Service mpsc queues remained in use. The Request increment
+below replaces one of those queues; the resource-aware complete candidate bridge
+and final joint publication frontier remain closed. The reader checkpoint did
+not qualify the Service path. The next work replaces admitted native transport with
+purpose-specific fixed-capacity records in the same registered Session family,
+including compiled, export, seek and real input ownership. Registered startup,
+exact captured-source/current-history inventory, original-rate loading and
+publication/replacement/terminal retirement must then compose together. No
+Sampler registration, playable Service request, native app or musical acceptance
+is implied by the reader component.
+
+### Registered-family compiled slots (transport integration in progress)
+
+The native compiled reference now has two bounded slots in the existing
+`SessionExportFamily` record lock. There is no per-record lock or second
+registry. Its optional record bodies and the family's persistent retirement
+field are inline and included in the existing constructor's actual body quote.
+This changes the quoted layout even for a family without native slots; it does
+not raise a limit. Actual snapshot/read vector capacities remain checked.
+
+Insertion preserves a producer reader on busy/full/foreign/stale refusal. A
+registered duplicate moves directly into an already reserved same-family field;
+a lost single CAS returns Busy, preserving the source and target reservation.
+Public queries return scalar metadata, not an owning revision/Playback. Inventory
+visits both physical paired handles, and still refuses an omitted constructor
+root. Claim/completion stamps correlate actual fields; they grant no origin or
+publication authority.
+
+Compiled cleanup moves into the enclosing family's persistent destination under
+the existing writer, releases that writer, then latches pending before dropping
+the reader. The registered outer custodian remains responsible for retaining the
+first panic and failed charge. An interrupted step cannot become a vacancy or
+repeat its destructive action; the next inventory/cleanup refuses. This is not a
+new mutex certificate: the accepted existing family exclusion and thread costs
+remain required, and no all-blocking-paths allocation claim is made.
+
+At this compiled-slot checkpoint the four native Service queues were still
+separate. The Request increment below now consumes its actual registered slots.
+Legacy Service startup/Event Playback, event/export/seek payloads, source
+association, the complete original-bank compiler bridge and joint publication
+remain unfinished parts of the same playable Sampler deliverable. The
+current component tests use a real existing nonempty compiled audio-clip owner;
+they do not claim loaded Sampler PCM or native Service admission.
+
+
+### Registered Request transport: actual Service consumer, incomplete vertical
+
+The actual Desktop backend now creates one bounded family in the existing
+retained-family table and starts Service through
+`with_audio_sink_and_worker_control`. Its Request channel uses 32 initialized
+slots under that family's existing record RwLock, with no new per-record lock,
+registry or Request mpsc backing. The unregistered headless adapter retains an
+explicitly unqualified channel; failed registered preparation does not fall back.
+The existing event, export-work and export-result channels remain unqualified.
+
+The family's inline fields, persistent request-retirement destination, existing
+snapshot/read vector capacities and requested Request backing share the existing
+bookkeeping ceiling. Preparation checks remaining capacity before requesting the
+backing and refuses unexpected actual capacity before Service/thread escape.
+The exact/minus-one test covers this metadata composition before Request backing
+allocation; the already constructed base family is not described as unborn.
+This is not a whole Service retained/peak or allocator-platform qualification.
+
+A producer-local submission retains its actual Request through outer route Busy,
+inner writer Busy and full refusal. Only the fixed successful family insertion
+can consume it: no captured owning closure, dummy request or accepted flag is
+used. Generation and FIFO sequence are checked before transfer. The worker takes
+one payload into its actual local delivery; that claimed slot remains occupied
+and inventory refuses it until the worker has consumed the request and explicitly
+ACKed completion. ACK is a durable nonowning correlation, not a child-storage,
+publication or cleanup certificate. Known inline/path/vector variants have actual
+visitors; opaque commands, input Arcs and other unsupported variants still refuse.
+
+Cancellation closes submission, and queued payloads move into the actual
+persistent enclosing retirement field. The inner writer is released before
+payload destruction, with pending set before take/drop. Interrupted disposal
+cannot become vacant or repeat cleanup. An unacknowledged claim is not silently
+freed. Failed startup retains its actual family/key/worker fields through bounded
+Busy retries and uses the existing registered cancellation/completion path.
+
+Component fixtures execute real Service AddTrack/Undo/Redo, full 32-slot terminal
+backpressure, actual outer-lock Busy with unchanged retry request, cancellation,
+full Event queue shutdown and child-before-base completion. They share the real
+startup factory but use a fake audio sink and a private test table. They neither
+open an OS backend nor prove first qualified compiled startup, a complete worker
+root union, loaded Sampler PCM, native ACK/publication or musical acceptance.
+Event/UI borrowed consumption, original-rate Mono/Stereo loading, complete
+Arrangement/Session/runtime construction, joint publication/replacement/retirement
+and export/seek remain required for the same playable Service vertical. Mutable
+Send-only export/seek runtimes have no new Sync/lock workaround in this increment.
+
+### Captured-target qualified constructor bridge (construction-local)
+
+The private original-Sampler compiler now distinguishes its exact paired captured
+Project from the current Editor/history inventory. It selects the original-rate
+device-resource bank inside the same preparation parent. Removing the captured
+track and pruning current history does not substitute the current Project for
+that immutable target. Omitted target aliases and unrelated/missing banks still
+refuse before compiler owner birth. Normal ledger observation IDs are not owner
+births or allocations: the retained regression independently counts the actual
+current/history fields, captured Project fields and transform cancellation field.
+Arithmetic inspection still issues no observation IDs.
+
+For the supported no-ordinary-audio, Stop-only Session-cell configuration, the
+same closed operation prices persistent preview draft/final overlap, Session
+structure/names/tempo/meter, actual Sampler factory aliases, mutable revision
+descriptors, paired revision roots and atomic reader registration before new
+construction. It writes directly into the existing preparation destinations and
+registers the compiled revision at constructor birth; it never adopts a legacy
+prepared Arc. Arrangement and Session share the actual loaded context and its
+constructor-paired factory. All nested resource/metadata aliases join mandatory
+normal inspection. Registered readers delay the same parent's retirement.
+
+The real preview, supported local Utility Return, complete-constructor inventory,
+exact retained/peak and each-minus-one boundaries, row refusal and partial
+Session/revision error/panic cleanup have focused component regressions. These
+do not qualify arbitrary mixed/audio targets, authored Session MIDI, runtime
+publication, Service startup, native playback or export. The ordinary source
+bank has zero source/alias capacity only for this explicitly supported class;
+Sampler PCM stays in the original device-resource bank. The Service/control-work
+bridge, captured mix and Stems, whole live union, productive buffered export and
+all musical/native acceptance remain required. The public whole-host completion
+summary is still unavailable; these constructors do not turn it into permission.
+
+### Captured Sampler runtime consumer boundary
+
+The fresh candidate runtime can now inspect the actual constructor-paired Sampler
+runtime twins and typed signal-compensation buffers. Opaque providers, retained
+tails, live input/expression and unsupported groups remain refused. Compensation
+inspection visits both delay banks, transport-stamp banks, topology alias and
+actual input/output buffers; it refuses an active transaction.
+
+The Engine-private captured-input seal repeats the same mandatory current/history,
+captured Project, original embedded bank, previous-context and guarded transform
+visitors before constructor alias closure. Owner-only inspection cannot account
+for those external fields and continues to refuse them. An unrelated target or
+editor and an omitted physical state alias also refuse. No generic ledger,
+observation-ID, public completion or source-association authority changes.
+
+A focused real-runtime fixture compiles a captured stereo Sampler into its actual
+parent, constructs/seals/splits the candidate, renders exact original PCM through
+both the direct track and a local Utility Return send, and disposes the runtime
+before closing original anchors. Rendering measures zero total/current Rust
+allocations. The compiler-only 16 MiB fixture budget still refuses; the runtime
+fixture separately composes it with the existing 32 MiB runtime allowance.
+This is an in-process component proof, not Service publication, Mono coverage,
+native backend/ACK, export or musical acceptance. The persistent preparation
+consumer still needs a combined before-birth reservation and one captured-target
+loan through compilation and sealing; final Service live-union and source
+association must not be inferred from this private constructor seal.
+
+The Engine-private persistent preparation consumer now holds that single target
+loan across complete compilation, actual draft/runtime construction, fixed owner
+installation and bound-input sealing. Its before-compiler quote separately
+reserves the unchanged runtime ceiling, finite group/archive/journal/split
+metadata and still-live host collection storage. Both ceilings and the normal
+mandatory input/row checks remain required before compiler births.
+
+A real original-rate Mono/Stereo producer fixture keeps its original source
+alive through this operation. This exposed a genuine missing producer-input
+root: the original ledger's source field was absent from mandatory inputs.
+The private traversal now borrows the actual producer plan and visits its Vec
+body/backing and concrete source fields before original-ledger import. The
+original `SourceMismatch` is retained as negative evidence; original-root binding
+was not relaxed. Repeated inspection allocates/clones/mints no IDs, deduplicates
+the same real field and continues to refuse raw/unknown source origin. The
+existing lifetime-bound Vec identity constructor is crate-visible solely to
+charge that actual borrowed Vec body; its identity/provenance semantics and
+public ledger APIs are unchanged.
+
+The fixture verifies persistent candidate ownership and reader-delayed cleanup,
+plus retained/peak/row-shortage refusal before compiler owner births or clones.
+It does not create a scalar SourceContext to impersonate Service association.
+Actual Service/native construction, post-preroll ControlWork, source freshness,
+full live-union admission and all broader musical coverage remain open.
+
+### Main-purpose construction and persistent control work
+
+The private captured constructor now chooses native-fresh or Main-export behavior
+before runtime allocation. Main uses the existing linear Arrangement kernel on
+its actual prepared revision, ignores authored transport wrapping as that kernel
+requires, and omits the native metronome. Native/public defaults keep interactive
+behavior. Actual runtime policy, paired owners, supported classes and mandatory
+input closure are checked; the purpose scalar does not confer storage authority.
+Main cannot obtain native constructor claims or enter the public native split.
+
+The same preparation cell retains Main runtime, original anchors and one bounded
+256-frame output block. Productive irregular turns preserve a completed block
+until its exact runtime/sequence/offset/count acknowledgment; pending reads do
+not render again. Post-work inspection visits actual runtime and retained input
+fields, including scalar note events in already-charged backing. Fresh/native
+inspection still requires empty event/query state; unsupported tails, opaque
+providers and live input/expression remain refused.
+
+Cleanup retires the actual runtime first, records its disposal proof, finishes
+anchor/root retirement, then explicitly disposes original inputs before releasing
+anchors. Persistent subphases preserve reader-Pending retries and first destructor
+failure; consumed root cleanup is not retried. A test-only destructor hook is
+installed in the actual original bank after inspection, is refused by inventory,
+and proves that cancellation and bank destruction failure retain correct custody.
+
+Focused Mono/Stereo direct/Utility-Return tests compare Main PCM to the independent
+existing linear kernel across an authored transport loop and Session tempo change.
+They cover pending-block cancellation, reader-delayed cleanup, measured render
+allocation totals and original-bank destruction exactly once. The initial
+post-render rejection of a scalar buffered note event and earlier prototype
+cleanup defect remain negative history. These are constructor/control-work
+components on the cloud toolchain with a 16 MiB Rust test stack. The conservative
+runtime-envelope refusal tests do not establish exact whole-Service budgets.
+
+The actual Service/file consumer, separate seek post-preroll admission, complete
+captured Audio+MIDI/CapturedMix/Stems coverage, full current/old-source/history/UI
+union, native publication/ACK/reaper and physical musical acceptance remain open.
+This private purpose does not turn a constructor summary into publication proof.
+
+### Explicit File consumer for control-work output
+
+The existing production WAV export path now uses the same concrete staged File
+API intended for productive control work. `StagedWavFile` owns File, paths,
+publication policy and progress; it owns no renderer, Playback or family lock.
+A host copies a completed block under its short custodian loan, releases that
+loan, writes the copy through this API, and separately acknowledges the original
+block. Written-but-not-acknowledged correlation must remain in that host's job;
+this File API does not acknowledge or authorize an audio runtime.
+
+The implicit per-export `BufWriter` is replaced on this path by an explicit
+2048-byte maximum encoding buffer. Existing PCM16 rounding/clipping, Float32
+encoding, nonfinite refusal, header/range validation, flush/sync, atomic
+create-new/confirmed replacement and durability errors are preserved. Offset and
+count guards reject duplicate/wrong blocks; a failed File write cannot retry.
+The production renderer is explicitly retired before filesystem publication,
+matching the original boundary. A focused regression caught an intermediate
+uncommitted refactor extending that lifetime; its negative source/log is retained.
+
+Unpublished cancellation cleans only its own created scratch path. Publication
+is latched before destructive work; subsequent failure or panic cannot repeat an
+exchange. After publication begins, dropping the record cannot remove a possible
+displaced user file. Tests exercise actual File errors and overwrite races,
+including preserved paths after an injected publication panic.
+
+The current qualified Engine ControlWork/Service connection remains pending;
+legacy production export calls use this File API but are not thereby qualified
+compiled roots. Persistent writer bodies, actual destination/temporary/consent
+path allocations and metadata must join the future Service union and before-birth
+quote. If runtime, queued and copied PCM blocks coexist, all three are charged
+in addition to encoding storage. This change introduces no aggregate-cost permit,
+new synchronization primitive or runtime custodian. Stems' separate batch-staging
+path and complete qualified CapturedMix/offline behavior remain explicit work.
+
+Final Main cleanup keeps `DropPending` through anchor/proof metadata destruction
+and records `Disposed` only after both return. The outer preparation catch retains
+first panic/nonretry behavior; this corrects source ordering without claiming a
+newly reproduced final-metadata destructor panic.
+
+### Short preparation loans to a persistent Main File job
+
+`AudioCandidatePreparationOperations` exposes Main construction and bounded
+step/copy/ACK/final-cleanup operations on the same actual existing parent. Main
+uses the captured target separately from current Editor/history; its contexts
+are fresh, while older native products remain mandatory separate live inputs.
+No runtime, resource bank or owning preparation value escapes the loan.
+
+The Session-owned `MainControlFileJob` reserves its concrete staged File, actual
+paths, encoding and separate PCM copy before compiler construction, then binds
+actual runtime identity once. This scalar is correlation only. Each productive
+turn copies under a short parent loan, ends that loan before File I/O, and
+acknowledges the exact retained block under another loan. A Busy ACK keeps the
+written block and retries no File write. Final publication requires genuine
+same-parent cleanup; registered readers leave retirement pending. Closed hosts,
+duplicate invocation, Busy after invocation and caught panic cannot publish or
+retry a consumed step. Reader-pending cannot mask a newer closed-host result.
+
+Focused tests cover real Mono/direct and Stereo/Utility Return Sampler output,
+513 frames each, captured target after current-track removal, Busy before work
+and after writing, reader-delayed cleanup, exact ACK and failure retention. These
+are parent/File pipeline component tests, not an actual native Service export.
+The NativeAudioSink token adapter, actual Request dispatch, complete prospective
+job/path/three-PCM-buffer union, source/incarnation association and final native
+frontier remain open. The direct fixture contains runtime output and copied PCM;
+it does not invent a third queued block or claim that future queue is charged.
+The existing host treats callback errors as terminal refusal, so an adapter must
+preserve a legitimate pending-reader result without returning it as a fatal
+preparation error. No source getter, synchronization primitive or cost permit is
+added by this component. CapturedMix, Stems, seek and complete mixed/offline
+coverage remain required under the original vertical contract.
+
+### Native exact-token bridge and outer-input boundary
+
+The Desktop bridge now runs Main File continuations through the existing actual
+`WorkerPublication` preparation token. Each control borrow ends before concrete
+File I/O. A real `ExternalReadersPending` stays recorded in the continuation,
+while the callback returns nonfatal success to prevent the host from marking
+that same parent terminally refused. `Collecting` describes the preparation cell;
+it never means native installation or file publication. The focused headless
+fixture renders nonzero mono Sampler PCM, repeatedly waits on a registered reader,
+then completes actual same-parent cleanup and File publication. A cancelled token
+cannot invoke a later continuation. This is a token/parent component, not an
+actual admitted Service export.
+
+A separate regression reproduced rendering on the wrong Main parent before the
+job checked its returned block identity. The checked Main step now compares the
+actual parent identity before DSP. The original failing test observed an already
+rendered 256-frame block after requesting one frame; the repaired path refuses
+first and the subsequent valid operation renders only the requested one frame.
+ACK and final-cleanup identity checks remain unchanged.
+
+Reserved File-slot inventory visits actual Vec capacity, including spare inline
+job/copy/encoding bodies, then distinct destination/temporary/consent path
+allocations. It does not count embedded buffers twice or invent a queued PCM
+buffer. Exact and each-minus-one tests cover this selected metadata quote and
+preserved disposable destination/scratch cleanup. Selected bytes confer no
+constructor/retirement permission.
+
+At checkpoint `f574`, joining those outer File rows to the unchanged inner
+compiler's original ledger correctly refused: its mandatory input walk did not
+include File slots or other host roots. That desired whole-union failure and the
+separate required-refusal regression remain preserved. Primary decision 28256
+now selects audited internal, finite borrowed host projections; public visibility
+is not a hostile-consumer sealing claim or an admission certificate.
+
+The first implemented producers are real reserved File slots and captured
+canonical sources. Engine drives every occupied File Vec index, checks actual
+body containment, charges capacity (including spare inline copy/encoding/staged
+bodies) once, and separately observes destination/temp/consent allocations.
+Export and Session project exhaustive fields; failed/pending jobs refuse. The
+captured-source traversal observes the actual paired outer owner, actual nested
+Project and each original resident binding, including a target retained after
+current/history pruning. Foreign fields and unknown children refuse. Borrowed
+physical identities support non-static fields without `Any` in the projection
+interface, unsafe code, reconstructed pointers or caller-supplied byte totals.
+Legacy shared and new borrowed observations use the same actual Arc reference;
+body equality alone grants no lineage, child-absence or retirement proof.
+
+A source architecture guard restricts these internal projections and producer
+accessors to enumerated owning modules. This is an audited-producer policy,
+independent of the Cargo dependency guard, rather than language-level exclusion
+of arbitrary downstream trait implementations. Selected producer tests preserve
+exact/each-minus-one budgets, physical alias accounting, missing/foreign records,
+unknown storage and failed partial-ledger refusal. Ledger row sizes are quoted
+from their changed actual layouts; no byte ceiling is raised.
+
+Complete worker/family/native projections, the Audio same-parent facade and the
+mandatory host walk before original-input binding are still unfinished. Inner
+binding, closure and public summary refusal have not been weakened. Actual
+Service dispatch remains disabled until the whole union, normal startup/typed
+transport and source association are verified. Full native/frontier/seek/mixed/
+offline/CapturedMix/Stems requirements and the complete native-library goal stay
+open. These selected metadata components do not qualify playable Sampler or
+native publication.
+
+### Actual snapshot-family descendant and table traversal
+
+The existing Media waveform visitor and Session snapshot-family visitor now use
+finite Engine-driven borrowed schemas. Every occupied actual snapshot/request
+index, both inline compiled-reference slots, and the read/request/snapshot Vec
+backings remain in the mandatory traversal. The compiled pair is destructured as
+exactly two actual records; no caller count or copied projection list can omit a
+third slot after a capacity change. Existing per-record phase, unresolved-claim,
+cleanup/panic and paired-reader refusals remain in the owning producers.
+
+Paired snapshot records expose their actual local payload, captured source,
+Project, waveform maps (including each actual peak pyramid/PCM field), MIDI and
+gain previews, and document path. The Engine checks physical containment and
+walks those exact descendants. A legacy raw view's selected children do not
+qualify its outer Arc. Original resident Mono/Stereo waveform aliases retain one
+actual PCM child after producer drop; foreign payload/fields and unknown PCM
+refuse. These are actual worker/family consumers, not gallery or unused types.
+
+A Copy audit caught a prior selected-inventory omission: CopyTimeRange and
+CutTimeRange requests own a TimeRange with a private track Vec. A real queued
+128-capacity fixture reproduced both incorrectly returning Ok as inline data.
+They now refuse UnknownStorage rather than inferring capacity from the exposed
+slice; command dispatch, queue transitions and history behavior are unchanged.
+Qualifying those request children later requires the actual Project-owned Vec
+field. Other supported scalar request fields have borrow-only Copy assertions
+and exhaustive patterns, with no large snapshot copy temporary. Unsupported
+request/input/export classes are still refused.
+
+The complete outer-family/worker/native host and safe Audio facade/reborrow are
+still unfinished. No constructor-original binding or full retained/peak union is
+weakened by these selected descendants. Normally present legacy compiled,
+Playback/Event/channel owners, active request/products and native current/
+outgoing/pending/reaper roots must still be qualified and inventoried at their
+actual fields. Main Service dispatch, full Sampler/registration/modes/exports,
+final native publication and complete library acceptance remain open.
+
+#### Actual queued time-range ownership (19 October 2026)
+
+The initial request-schema audit reproduced an omitted owning tracks Vec for
+ordinary Copy/Cut TimeRange requests: the former inline category returned Ok
+while each actual queued range held capacity128 with only one selected track.
+A temporary Unknown refusal preserved custody during diagnosis; it is not the
+final normal-route policy. The Project-owned immutable
+`TimeRange::track_buffer_on_control` now exposes the actual owning Vec borrow,
+without changing range execution or ownership. Engine's finite request schema
+checks actual slot/range/header containment and observes capacity backing once;
+TrackId leaves are Copy and the header is already inside the reserved request
+slot. Two queued equal-content Copy/Cut allocations remain distinct, repeated
+observations dedup, foreign fields refuse, and actual retained/peak exact and
+individual-minus-one limits are checked. These are request-storage component
+checks, not complete Service admission or playable/native Sampler acceptance.
+
+#### Actual dispatch-local borrowed schema (19 October 2026)
+
+The existing WorkerRootChildInventory selected-child consumer now constructs
+Engine's finite SamplerWorkerFields directly from its actual same-dispatch
+references. Exhaustive WorkerDispatchState/Event/preview/export patterns keep
+current/Event/device-preview/tuning-preview views distinct, with actual MIDI
+and media/recovery/export/completion path fields. Engine drives every named
+child visit without an allocated projection list or a ledger callback. Actual
+Session/cache/transform/cancellation visits still precede this selected walk;
+the separate unqualified-parent refusal is unchanged. A pending-Event fixture
+compares all four distinct views and path buffers against explicit actual-field
+visits, demonstrates four omission negatives and repeated-field dedup. This
+record cannot outlive its source borrows. It is not complete worker inventory,
+legacy outer Arc qualification, a whole-constructor quote or publication proof.
+The native same-parent facade and complete Service admission remain open.
+
+#### Native publication Life constructor provenance (19 October 2026)
+
+The existing per-slot atomic Life allocation is paired from its first birth
+through SharedMetadata, including the actual Claims/ClaimHandles clones. No
+raw Arc is adopted after allocation; the cancellation/incarnation/live protocol
+is unchanged. The constructor prequote asks Engine's existing pinned sized
+paired-layout basis for payload plus header before any slot or Life allocation.
+Both requested and actual-capacity metadata cost include it; actual wrapper
+sizes propagate through the existing size_of costs. Unsupported layout refuses
+before birth. This quote certifies physical footprint only, not owning children,
+complete native union, source identity or retirement authority.
+
+The Linux component probe reconciles one48-byte Life allocation; clone and
+nonfinal drop allocate/free nothing. Actual Bank construction totals reconcile
+all seven backing Vecs and two Life payload/header allocations. Retained-minus1
+is rejected by the physical quote before allocations; for this metadata-only
+constructor peak equals retained, so peak-minus1 rejects the pre-existing
+peak>=retained relation (not an independent transient graph-peak proof). Actual
+alias handles must each be visited, sharing one body; omitting a real alias
+refuses. Whole native Work/Bank/current/queued/retiring roots and same-parent
+facade/reborrow remain separate mandatory work. No macOS result is inferred.
+
+#### Five inline custody exclusions (19 October 2026)
+
+Only CandidateRoot Inner bank/execution/returns and its inline eligible Custody
+bank/work now use the private CustodyMutex. It wraps explicit pinned
+spin::mutex::SpinMutex<T, spin::Yield> plus sticky AtomicBool poison. The direct
+Audio dependency is spin0.9.9, default features disabled, with mutex/spin_mutex/std;
+the package was already present transitively. Explicit type selection avoids the
+feature-selected Mutex alias. The pinned source has inline AtomicBool, UnsafeCell
+payload and PhantomData, and supports Send-only payloads without a Sync widening.
+No workspace unsafe, raw access, extraction or new owner family is introduced.
+The lock has no owning children beyond T; every actual T child remains mandatory.
+
+try_lock performs exactly one underlying strong Acquire CAS, checks poison while
+exclusive and releases immediately on poison refusal. It never retries, yields,
+logs, allocates or destroys the payload. The existing control-only helper uses
+yielding acquisition and recovers contents without clearing poison. Guard Drop
+sets sticky poison on a new escaping unwind before its dependency guard releases;
+a caught panic while the guard remains alive and acquisition during unwind keep
+the original std transition law. The Rc PhantomData keeps guards non-Send. All
+existing try/control call choices, release order, panic retention and cleanup
+state machines stay intact; the five prewarm calls are removed. The unrelated,
+never-locked terminal carrier Mutex remains unchanged.
+
+This changes control contention from parking to yield retries. There is no
+fairness, bounded wait, or callback deadline guarantee. Callback try paths remain
+one attempt. Source policy restricts the exact dependency, five fields, private
+wrapper, one-try implementation and audited callback paths; it is a finite source
+guard, not a general Rust callgraph verifier. Actual default/probe features and
+the pinned crate source/checksum are retained with component evidence.
+
+Cloud checks exercise first/repeated/contended acquisitions with zero Rust
+allocator activity, sticky poison/recovery and unwind cases, Send-only Cell and
+an actual non-Send compile negative. Actual five-field construction separates the
+existing Root/slot/two DomainSignal allocations from zero-allocation lock work;
+other-thread contention at each real exclusion refuses the actual nonblocking
+consumer while preserving its owner, then permits control progress after release.
+Changed concrete Inner layout includes all five wrappers once. Guard layout is
+separate overlapping scratch for the later complete operation. Existing metadata
+exact/minus-one tests remain metadata-local, not a whole-Root construction quote;
+CandidateRoot::new still lacks an aggregate before-birth ceiling. Outer raw owners,
+complete actual payload visits, facade scratch, normal binding and retained/peak
+union remain required. No native readiness follows from this primitive change.
+
+Finite coordinator-only macOS follow-up: on the sealed exact source, run the six
+custody_mutex tests, two inline_lock_tests, two actual_native contention cases and
+the changed_inline_custody_body metadata case; require actual positive statuses,
+zero ignored, source identity and allocation diagnostics. Compile the same private
+source guard-negative/Cell-positive probes against its resolved spin artifact.
+These are headless component checks, with no app/backend/device operation. Before
+platform performance acceptance, also exercise the actual qualified Service and
+callback publication/replacement/retirement workload under realistic control
+contention on pinned macOS, recording throughput and latency tails rather than
+inventing a fairness/deadline bound. That whole-Service workload remains open
+until its qualified consumer and complete union exist. Root owns all dispatch.
+
+### Native Root and page-signal paired birth
+
+The native Root and its two page-return signals now use the same existing
+constructor-paired metadata owner as Life, starting at their actual first
+allocation. There is no raw Arc adoption. Page returns still require the exact
+same signal allocation and token; Root equality remains an allocation
+correlation only. Existing callback paths do not clone these Root handles.
+
+The supported-layout check precedes Root/slot/signal construction. Existing
+metadata quotes now include the actual Root header and both signal headers,
+with the changed inline handles included in the concrete Root body once.
+Constructor allocation probes reconcile those bodies/headers and actual slot
+capacity. The factory still has no complete aggregate admission ceiling; this
+change does not claim a before-birth whole-host budget. The exact/minus-one
+publication test covers metadata only and keeps its equal retained/peak limit.
+
+Borrowed inspection proves that omitted physical Root or signal aliases refuse,
+that observing the same field twice deduplicates, and that distinct equal-sized
+owners remain separate. This outer-body inspection still refuses whole-root
+completion: all payload descendants, current/failed/retiring states, actual
+native/family/source union and the same-parent construction facade remain
+mandatory. The new scalar strong-count diagnostic is used by the existing
+callback clone oracle; counts never upgrade provenance or grant admission.

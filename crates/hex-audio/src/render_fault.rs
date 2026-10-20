@@ -86,6 +86,26 @@ impl RenderFaultRecord {
         None
     }
 }
+
+impl RenderFaultRecord {
+    pub(crate) fn audit_scalar_storage(&self) {
+        let Self {
+            sequence,
+            length,
+            truncated,
+            revision,
+            frame,
+            message,
+        } = self;
+        let _: &AtomicU64 = sequence;
+        let _: &AtomicU32 = length;
+        let _: &AtomicU8 = truncated;
+        let _: &AtomicU64 = revision;
+        let _: &AtomicU64 = frame;
+        let _: &[AtomicU8; MESSAGE_BYTES] = message;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

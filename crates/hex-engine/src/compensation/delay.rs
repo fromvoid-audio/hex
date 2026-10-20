@@ -20,6 +20,26 @@ pub(super) struct RingPair<T> {
 }
 
 impl<T: Copy + Default> RingPair<T> {
+    pub(super) fn visit_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            committed,
+            scratch,
+            committed_cursor,
+            scratch_cursor,
+            dirty_start,
+            dirty_len,
+        } = self;
+        fn scalar<T: Copy>(_: &T) {}
+        scalar(committed_cursor);
+        scalar(scratch_cursor);
+        scalar(dirty_start);
+        scalar(dirty_len);
+        ledger.vec(committed)?;
+        ledger.vec(scratch)
+    }
     pub(super) fn new(capacity: usize) -> Result<Self, CompensationError> {
         let mut committed = reserved(capacity)?;
         let mut scratch = reserved(capacity)?;
@@ -152,6 +172,22 @@ pub struct DelayPair {
 }
 
 impl DelayPair {
+    pub(super) fn visit_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            ring,
+            delay_frames,
+            storage_bytes,
+            transaction_active,
+        } = self;
+        let _: (&u32, &usize, &bool) = (delay_frames, storage_bytes, transaction_active);
+        if *transaction_active {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        ring.visit_storage_on_control(ledger)
+    }
     pub fn new(delay_frames: u32, limits: CompensationLimits) -> Result<Self, CompensationError> {
         limits.validate()?;
         if delay_frames > limits.max_cumulative_frames {

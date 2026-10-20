@@ -18,7 +18,7 @@ impl Session {
             return Err(SessionError::Invalid("comparison command required"));
         }
         // Split the existing editor out only as a borrow; never replace its history.
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let table = self.sine_table();
         self.editor
             .execute_prepared_transition(command, |source, target| {
@@ -66,7 +66,7 @@ impl Session {
             &Arc<hex_engine::PreparedRevision>,
         ) -> Result<T, SessionError>,
     ) -> Result<Option<ComparisonTransition<T>>, SessionError> {
-        let media = self.media_bank();
+        let media = self.media_bank()?;
         let table = self.sine_table();
         let prepare = |source: &Project, target: &Project| {
             if let Some(previous) = previous

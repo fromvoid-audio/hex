@@ -9,6 +9,8 @@ use std::fmt;
 
 /// Maximum admitted linear Utility gain, equivalent to +35 dB.
 pub const MAX_UTILITY_GAIN: f32 = 56.234_13;
+/// Current encoded Utility payload size, shared with closed control preparation quotes.
+pub const UTILITY_STATE_PAYLOAD_BYTES: usize = 26;
 pub const UTILITY_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.utility");
 
 pub mod parameter {
@@ -323,7 +325,7 @@ fn decode_state_fields(
     let valid_length = if state.state_version() == 1 {
         bytes.len() == 19
     } else {
-        bytes.len() == 26
+        bytes.len() == UTILITY_STATE_PAYLOAD_BYTES
     };
     if !valid_length || bytes[12] > 3 || bytes[13] & !0x0f != 0 || bytes[14] > 1 {
         return Err(DeviceContractError::MalformedState);
@@ -403,7 +405,7 @@ fn encode_state_fields(
     mid_side_enabled: bool,
     mid_side_balance: f32,
 ) -> Result<NativeDeviceState, DeviceContractError> {
-    let mut bytes = Vec::with_capacity(26);
+    let mut bytes = Vec::with_capacity(UTILITY_STATE_PAYLOAD_BYTES);
     for value in [settings.gain, settings.balance, settings.width] {
         bytes.extend_from_slice(&value.to_le_bytes());
     }

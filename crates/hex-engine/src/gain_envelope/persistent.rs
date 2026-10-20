@@ -6,6 +6,7 @@ pub(crate) enum GainCopyError {
     Capacity,
     Allocation,
     Overflow,
+    Incomplete,
 }
 #[derive(Clone, Copy, Default, PartialEq, Eq)]
 enum Phase {
@@ -15,6 +16,7 @@ enum Phase {
     Preparing,
     Validated,
     Transferred,
+    Retiring,
 }
 #[derive(Default)]
 pub(crate) struct GainCopyCustody {
@@ -29,9 +31,14 @@ pub(crate) struct GainCopyCustody {
     pub(crate) fail_after: Option<usize>,
     #[cfg(test)]
     pub(crate) panic_after: Option<usize>,
+    #[cfg(test)]
+    pub(crate) panic_after_fresh_take: bool,
 }
 impl GainCopyCustody {
     pub(crate) fn bytes(&self) -> Result<usize, GainCopyError> {
+        if self.phase == Phase::Retiring {
+            return Err(GainCopyError::Incomplete);
+        }
         self.knots
             .capacity()
             .checked_mul(std::mem::size_of::<GainEnvelopeKnot>())
@@ -129,6 +136,9 @@ impl GainCopyCustody {
         &mut self,
         source: &mut Option<PreparedGainEnvelope>,
     ) -> Result<(), GainCopyError> {
+        if self.phase == Phase::Retiring {
+            return Err(GainCopyError::Incomplete);
+        }
         if source.is_some() {
             if self.phase != Phase::Transferred
                 || self.knots.capacity() != 0
@@ -153,7 +163,35 @@ impl GainCopyCustody {
         }
         Ok(())
     }
-    pub(crate) fn clear_on_control(&mut self) {
+    /// Existing copy state chooses only the cleanup destination. A copied
+    /// installation returns its original knots; a fresh concrete gain value
+    /// owns only private scalar Vecs and is destroyed on control. This does not
+    /// qualify a factory/provider, establish birth peak or admit the graph.
+    pub(crate) fn retire_prepared_on_control(
+        &mut self,
+        source: &mut Option<PreparedGainEnvelope>,
+    ) -> Result<(), GainCopyError> {
+        if self.phase != Phase::Vacant || source.is_none() {
+            return self.restore(source);
+        }
+        // Latch before removing the actual owning field. An abnormal exit
+        // cannot be observed as disposed, retried, cleared or newly reserved.
+        self.phase = Phase::Retiring;
+        if let Some(value) = source.take() {
+            value.dispose_on_control();
+        }
+        #[cfg(test)]
+        assert!(
+            !self.panic_after_fresh_take,
+            "fresh gain control retirement fault"
+        );
+        self.phase = Phase::Vacant;
+        Ok(())
+    }
+    pub(crate) fn clear_on_control(&mut self) -> Result<(), GainCopyError> {
+        if self.phase == Phase::Retiring {
+            return Err(GainCopyError::Incomplete);
+        }
         // Knots are scalar-only. Exhaustive owning fields stay in this module.
         let Self {
             knots,
@@ -167,12 +205,15 @@ impl GainCopyCustody {
                 fail_after: _,
             #[cfg(test)]
                 panic_after: _,
+            #[cfg(test)]
+                panic_after_fresh_take: _,
         } = self;
         knots.clear();
         *phase = Phase::Vacant;
         *authored = 0;
         *maximum = 0;
         *mix = None;
+        Ok(())
     }
 }
 
@@ -181,6 +222,12 @@ impl GainCopyCustody {
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,
     ) -> Result<(), crate::AudioStorageError> {
+        if self.phase == Phase::Retiring {
+            return ledger.mutate(|ledger| {
+                ledger.unknown()?;
+                Err(crate::AudioStorageError::UnknownStorage)
+            });
+        }
         let Self {
             knots,
             phase: _,
@@ -193,8 +240,13 @@ impl GainCopyCustody {
                 fail_after: _,
             #[cfg(test)]
                 panic_after: _,
+            #[cfg(test)]
+                panic_after_fresh_take: _,
         } = self;
         let _ = growth;
         ledger.vec(knots)
     }
 }
+
+#[cfg(test)]
+mod retirement_tests;

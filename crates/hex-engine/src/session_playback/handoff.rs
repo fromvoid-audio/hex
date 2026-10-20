@@ -2,7 +2,7 @@ use super::*;
 use crate::MidiTiming;
 
 fn validate_tail_suffix(
-    chain: &hex_lattice::NativeRuntimeChain,
+    chain: &crate::EffectRuntimeChain,
     suffix_start: usize,
     sample_rate: u32,
 ) -> Result<usize, SessionPlaybackError> {
@@ -22,7 +22,7 @@ fn validate_tail_suffix(
 }
 
 fn tail_runtime_suffix_start(
-    chain: &hex_lattice::NativeRuntimeChain,
+    chain: &crate::EffectRuntimeChain,
     instrument_position: usize,
 ) -> Result<usize, SessionPlaybackError> {
     if chain.is_empty() {
@@ -532,9 +532,13 @@ impl SessionPlayback {
             self.analytic_continuation_scratch[usize::from(new_context_index)] = transition;
             let same_opted_in_configuration = target.same_configuration(source)
                 && target
-                    .context()
-                    .analytic_continuation()
-                    .zip(source.context().analytic_continuation())
+                    .analytic_context()
+                    .and_then(|context| context.analytic_continuation())
+                    .zip(
+                        source
+                            .analytic_context()
+                            .and_then(|context| context.analytic_continuation()),
+                    )
                     .is_some_and(|(target, source)| target.format() == source.format());
             analytic_owner_matches[usize::from(old_context_index)] =
                 source.id() == target.id() || transition.is_some() || same_opted_in_configuration;
@@ -1648,10 +1652,7 @@ impl SessionPlayback {
                                     previous.gain_recording_override,
                                 ),
                                 continuation: (matching_candidate
-                                    && matches!(
-                                        sampler,
-                                        crate::midi_note_bank::PreparedMidiNote::Inline(_)
-                                    )
+                                    && sampler.inline_without_resources().is_some()
                                     && inline_tuning_owner_matches(old_track, new_track)
                                     && previous.revision.arrangement().shared_contexts().tuning()
                                         != self.revision.arrangement().shared_contexts().tuning())
@@ -1664,10 +1665,7 @@ impl SessionPlayback {
                                     velocity: span.velocity,
                                 }),
                                 inline_tuning_owned: matching_candidate
-                                    && matches!(
-                                        sampler,
-                                        crate::midi_note_bank::PreparedMidiNote::Inline(_)
-                                    )
+                                    && sampler.inline_without_resources().is_some()
                                     && inline_tuning_owner_matches(old_track, new_track)
                                     && previous.revision.arrangement().shared_contexts().tuning()
                                         != self.revision.arrangement().shared_contexts().tuning(),
@@ -2001,10 +1999,7 @@ impl SessionPlayback {
                             mix,
                             continuation,
                             inline_tuning_owned: matches
-                                && matches!(
-                                    voice.sampler(),
-                                    crate::midi_note_bank::PreparedMidiNote::Inline(_)
-                                )
+                                && voice.sampler().inline_without_resources().is_some()
                                 && self
                                     .revision
                                     .arrangement()
@@ -3074,7 +3069,7 @@ impl SessionPlayback {
             {
                 *candidate = Some(std::mem::replace(
                     old_chain,
-                    hex_lattice::NativeRuntimeChain::empty(),
+                    crate::EffectRuntimeChain::empty(),
                 ));
                 self.tail_track_ids[slot] = previous.routes.get(old_index).map(|route| route.id);
                 if let (Some(active), Some(prepared_active)) = (
@@ -3178,7 +3173,7 @@ impl SessionPlayback {
                 // Previous still owns its revision's old graph; delay_graph
                 // independently retains the actual ring/plan interpretation.
                 current
-                    .rebind_graph(Arc::clone(graph))
+                    .rebind_graph(graph.clone_on_control())
                     .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             }
         }
@@ -3279,7 +3274,7 @@ impl SessionPlayback {
                     .retained_contexts
                     .get(usize::from(index))
                     .and_then(Option::as_ref)
-                    .map(Arc::clone),
+                    .cloned(),
             };
             let destination = self.retained_contexts.get_mut(usize::from(plan.target));
             match (source, destination) {
@@ -3579,11 +3574,11 @@ fn retune_inline_release(
             }),
         _ => None,
     };
-    let Some(PreparedMidiNote::Inline(target)) = target_sampler else {
+    let Some(target) = target_sampler.and_then(|sampler| sampler.inline_without_resources()) else {
         release.inline_tuning_owned = false;
         return Ok(());
     };
-    let PreparedMidiNote::Inline(source) = release.voice.sampler() else {
+    let Some(source) = release.voice.sampler().inline_without_resources() else {
         return Err(SessionPlaybackError::SharedAnalyticContext);
     };
     let age = previous
@@ -3595,6 +3590,6 @@ fn retune_inline_release(
         .map_err(|_| SessionPlaybackError::Arrangement("inline tuning continuation was refused"))?;
     release
         .voice
-        .set_sampler(PreparedMidiNote::Inline(continued));
+        .set_sampler(PreparedMidiNote::Inline(continued).into());
     Ok(())
 }

@@ -435,6 +435,9 @@ fn rooted_preparation_retries_actual_publication_pressure_then_installs_and_reco
     let Some(mut first) = candidate() else {
         return;
     };
+    eprintln!(
+        "SUPPORTED actual rooted preallocated stage pressure, callback PCM and original-owner recovery"
+    );
     let limits = reservation(&mut first);
     let (mut control, mut data, errors, mut retirement) = anchored();
     control

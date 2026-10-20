@@ -36,3 +36,10 @@ impl PublicationAdmission {
         self.0.fetch_and(!GAIN, Ordering::Release);
     }
 }
+
+impl PublicationAdmission {
+    pub(super) fn audit_scalar_storage(&self) {
+        let Self(word) = self;
+        let _: &AtomicU8 = word;
+    }
+}

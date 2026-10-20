@@ -53,6 +53,10 @@ pub(super) struct SessionTempoConstruction {
     pub(super) panic_after_copy: bool,
 }
 impl SessionTempoConstruction {
+    /// Cleanup destination state only, never a fresh map's origin proof.
+    pub(crate) fn inventory_map_is_outstanding(&self) -> bool {
+        self.inventory_owns_map
+    }
     pub(super) fn reserve(&mut self, project: &Project) -> Result<(), AudioStorageError> {
         if self.canonical.is_some() || self.prepared.is_some() {
             return Err(AudioStorageError::Capacity);

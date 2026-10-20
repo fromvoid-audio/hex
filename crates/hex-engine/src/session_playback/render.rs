@@ -2010,7 +2010,7 @@ fn render_release_captured(
     release: &super::ReleaseEntry,
     _table: &hex_devices::SineTable,
     contexts: &crate::shared_analytic::SharedAnalyticContextTable,
-    retained: &[Option<Arc<crate::shared_analytic::SharedContextOwner>>],
+    retained: &[Option<crate::shared_analytic::SharedContextLease>],
     continuations: &[Option<hex_lattice::AnalyticContinuation>],
     performance_frame: u64,
     output: &mut [Frame],
@@ -2047,7 +2047,7 @@ fn render_release_raw(
     release: &super::ReleaseEntry,
     _table: &hex_devices::SineTable,
     contexts: &crate::shared_analytic::SharedAnalyticContextTable,
-    retained: &[Option<Arc<crate::shared_analytic::SharedContextOwner>>],
+    retained: &[Option<crate::shared_analytic::SharedContextLease>],
     continuations: &[Option<hex_lattice::AnalyticContinuation>],
     performance_frame: u64,
     output: &mut [Frame],
@@ -2168,7 +2168,7 @@ mod observed_page_tests {
             PreparedRevision::prepare(
                 &project,
                 &std::collections::BTreeMap::new(),
-                Arc::new(crate::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),

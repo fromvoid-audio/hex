@@ -6,12 +6,13 @@ rust-version.workspace = true
 publish.workspace = true
 
 [features]
-instrument-test-support = []
+instrument-test-support = ["hex-lattice/conformance"]
 
 [lints]
 workspace = true
 
 [dependencies]
+sha2 = "=0.10.9"
 hex-warp = { path = "../hex-warp" }
 hex-project = { path = "../hex-project" }
 hex-devices = { path = "../hex-devices" }
@@ -27,5 +28,6 @@ name = "playback_stack"
 required-features = ["instrument-test-support"]
 
 [dev-dependencies]
+allocation-counter = "=0.8.1"
 hex-tuning = { path = "../hex-tuning" }
 hex-lattice = { path = "../hex-lattice", features = ["conformance"] }

@@ -265,7 +265,7 @@ fn mixed_compile_with_gain(millidb: i32) {
             editor.project(),
             &oracle_sources,
             GENERATION,
-            Some(Arc::new(hex_engine::SineTable::new())),
+            Some(hex_engine::SharedSineTable::new_on_control()),
         )
         .expect("resident oracle compile");
 
@@ -286,7 +286,7 @@ fn mixed_compile_with_gain(millidb: i32) {
             editor.project(),
             &stream_map,
             GENERATION,
-            Some(Arc::new(hex_engine::SineTable::new())),
+            Some(hex_engine::SharedSineTable::new_on_control()),
         )
         .expect("mixed-source compile");
     assert_eq!(resident_preview.clips(), streamed_preview.clips());
@@ -589,7 +589,7 @@ fn cold_stream_miss_keeps_resident_and_midi_tracks_rendering_and_clock_moving() 
         editor.project(),
         &sources,
         GENERATION,
-        Some(Arc::new(hex_engine::SineTable::new())),
+        Some(hex_engine::SharedSineTable::new_on_control()),
     )
     .expect("mixed compile");
 
@@ -604,7 +604,7 @@ fn cold_stream_miss_keeps_resident_and_midi_tracks_rendering_and_clock_moving() 
             editor.project(),
             &sources,
             GENERATION,
-            Some(Arc::new(hex_engine::SineTable::new())),
+            Some(hex_engine::SharedSineTable::new_on_control()),
         )
         .expect("resident plus midi oracle");
 

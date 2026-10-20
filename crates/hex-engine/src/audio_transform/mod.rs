@@ -2,18 +2,22 @@
 mod budget;
 mod events;
 mod mapping;
-use crate::{Audio, Clip, Invalid, compile::PreparedAudioSourceRef};
+use crate::{Audio, CancellationQuery, Clip, Invalid, compile::PreparedAudioSourceRef};
 pub(crate) use budget::Reservation;
+#[cfg(test)]
+mod control_storage_tests;
+mod original_sampler;
+mod pcm_inventory;
+pub use original_sampler::OriginalSamplerTransaction;
+pub use pcm_inventory::AudioTransformPcmInventory;
+#[cfg(test)]
+mod prepared_pcm_tests;
 use hex_project::{
     Asset, AudioClipDomain, AudioClipEdit, BeatsTail, Project as CanonicalProject, WarpMode,
 };
 use std::{
     cell::{Cell, RefCell},
-    collections::VecDeque,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Arc, atomic::AtomicBool},
 };
 fn render_mode(domain: &AudioClipDomain) -> Result<hex_warp::Mode, Invalid> {
     Ok(if domain.warp_enabled {
@@ -88,16 +92,19 @@ struct Entry {
     source_bytes: usize,
 }
 struct Cache {
-    entries: VecDeque<Entry>,
+    // At most 256 control-side entries. A capacity-visible Vec keeps FIFO/LRU
+    // order while exposing its ACTUAL backing to the existing storage ledger.
+    // Moving entries shifts handles/metadata, never PCM and never on callback.
+    entries: Vec<Entry>,
     bytes: usize,
     source_bytes: usize,
 }
 impl Cache {
     fn evict_oldest(&mut self) -> Result<(), Invalid> {
-        let old = self
-            .entries
-            .pop_front()
-            .ok_or(Invalid("audio cache accounting is inconsistent"))?;
+        if self.entries.is_empty() {
+            return Err(Invalid("audio cache accounting is inconsistent"));
+        }
+        let old = self.entries.remove(0);
         self.bytes = self
             .bytes
             .checked_sub(old.bytes)
@@ -115,14 +122,42 @@ pub struct AudioTransformPreparation {
     cache: RefCell<Cache>,
     pending: RefCell<Option<Vec<Entry>>>,
     tempo: RefCell<Option<Arc<hex_project::TempoMap>>>,
-    shutdown: Arc<AtomicBool>,
-    budget: Arc<budget::Budget>,
+    shutdown: TransformCancellation,
+    budget: budget::BudgetOwner,
     cache_limit: usize,
     source_limit: usize,
     entry_limit: usize,
     hits: Cell<u64>,
+    failed: Cell<bool>,
     #[cfg(test)]
     cancel_after_polls: Cell<Option<usize>>,
+}
+// No cleanup, borrowing, allocation or catch inside unwinding. Pending owners
+// stay in this actual preparation until its control custodian retires it.
+struct TransactionFailure<'a> {
+    failed: &'a Cell<bool>,
+    completed: bool,
+}
+impl Drop for TransactionFailure<'_> {
+    fn drop(&mut self) {
+        if !self.completed {
+            self.failed.set(true);
+        }
+    }
+}
+// Existing raw callers are preserved but NEVER upgraded by content/counts.
+// The retained branch holds the actual paired worker field, not a cached query.
+enum TransformCancellation {
+    Unqualified(Arc<AtomicBool>),
+    Retained(crate::RetainedControlCancellation),
+}
+impl CancellationQuery for TransformCancellation {
+    fn is_cancelled(&self) -> bool {
+        match self {
+            Self::Unqualified(flag) => flag.is_cancelled(),
+            Self::Retained(worker) => worker.is_cancelled(),
+        }
+    }
 }
 impl Default for AudioTransformPreparation {
     fn default() -> Self {
@@ -131,9 +166,29 @@ impl Default for AudioTransformPreparation {
 }
 impl AudioTransformPreparation {
     pub fn new(shutdown: Arc<AtomicBool>) -> Self {
+        Self::from_cancellation(TransformCancellation::Unqualified(shutdown))
+    }
+    /// Direct construction from the actual prebound worker handle. No temporary
+    /// default flag or family guard is created/held during a scan.
+    pub fn with_retained_cancellation_on_control(
+        worker: crate::RetainedControlCancellation,
+    ) -> Self {
+        Self::from_cancellation(TransformCancellation::Retained(worker))
+    }
+    /// Actual owning cancellation field only, not cache/PCM/whole transform proof.
+    pub fn visit_cancellation_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        match &self.shutdown {
+            TransformCancellation::Retained(worker) => worker.visit_storage_on_control(ledger),
+            TransformCancellation::Unqualified(_) => Err(crate::AudioStorageError::UnknownStorage),
+        }
+    }
+    fn from_cancellation(shutdown: TransformCancellation) -> Self {
         Self {
             cache: RefCell::new(Cache {
-                entries: VecDeque::new(),
+                entries: Vec::new(),
                 bytes: 0,
                 source_bytes: 0,
             }),
@@ -145,6 +200,7 @@ impl AudioTransformPreparation {
             source_limit: MAX_CACHED_SOURCE_BYTES,
             entry_limit: MAX_CACHED_TRANSFORMS,
             hits: Cell::new(0),
+            failed: Cell::new(false),
             #[cfg(test)]
             cancel_after_polls: Cell::new(None),
         }
@@ -157,7 +213,14 @@ impl AudioTransformPreparation {
             }
             self.cancel_after_polls.set(Some(remaining - 1));
         }
-        self.shutdown.load(Ordering::Acquire)
+        self.shutdown.is_cancelled()
+    }
+    #[cfg(test)]
+    pub(crate) fn cancel_after_polls_for_test(&self, polls: usize) {
+        self.cancel_after_polls.set(Some(polls));
+    }
+    pub(crate) fn cancellation_requested_on_control(&self) -> bool {
+        self.cancelled()
     }
     pub fn retained_pcm_bytes(&self) -> usize {
         self.budget.used()
@@ -172,10 +235,25 @@ impl AudioTransformPreparation {
     pub fn cache_hits(&self) -> u64 {
         self.hits.get()
     }
+    /// A failed transaction retains unresolved owners/charges until actual
+    /// control retirement. This observation neither clears nor retries it.
+    pub fn failed_incomplete_on_control(&self) -> bool {
+        self.failed.get()
+    }
+    fn require_usable(&self) -> Result<(), Invalid> {
+        if self.failed.get() {
+            Err(Invalid(
+                "audio preparation requires control retirement after failure",
+            ))
+        } else {
+            Ok(())
+        }
+    }
     pub fn transaction<T>(
         &self,
         prepare: impl FnOnce() -> Result<T, Invalid>,
     ) -> Result<T, Invalid> {
+        self.require_usable()?;
         // Reserve the finite metadata capacity before any candidate PCM exists.
         // Publication can then move entries without a late allocation failure.
         {
@@ -200,7 +278,14 @@ impl AudioTransformPreparation {
             }
             *pending = Some(Vec::new());
         }
+        let mut failure = TransactionFailure {
+            failed: &self.failed,
+            completed: false,
+        };
         let result = prepare();
+        // An inner compiler panic may have been caught by the public outer
+        // closure. Never take/commit its abandoned pending owners in that case.
+        self.require_usable()?;
         let entries = self
             .pending
             .try_borrow_mut()
@@ -212,19 +297,28 @@ impl AudioTransformPreparation {
                 self.insert(entry)?;
             }
         }
+        failure.completed = true;
         result
     }
     pub(crate) fn compile_transaction<T>(
         &self,
         prepare: impl FnOnce() -> Result<T, Invalid>,
     ) -> Result<T, Invalid> {
+        self.require_usable()?;
         let active = self
             .pending
             .try_borrow()
             .map_err(|_| Invalid("audio preparation is already borrowed"))?
             .is_some();
         if active {
-            prepare()
+            let mut failure = TransactionFailure {
+                failed: &self.failed,
+                completed: false,
+            };
+            let result = prepare();
+            self.require_usable()?;
+            failure.completed = true;
+            result
         } else {
             self.transaction(prepare)
         }
@@ -281,7 +375,7 @@ impl AudioTransformPreparation {
             .source_bytes
             .checked_add(entry.source_bytes)
             .ok_or(Invalid("audio source cache byte count overflow"))?;
-        cache.entries.push_back(entry);
+        cache.entries.push(entry);
         Ok(())
     }
     fn retain(&self, entry: Entry) -> Result<(), Invalid> {
@@ -389,12 +483,12 @@ impl AudioTransformPreparation {
         let Some(index) = cache.entries.iter().position(matching) else {
             return Ok(None);
         };
-        let entry = cache
-            .entries
-            .remove(index)
-            .ok_or(Invalid("audio cache entry disappeared"))?;
+        if index >= cache.entries.len() {
+            return Err(Invalid("audio cache entry disappeared"));
+        }
+        let entry = cache.entries.remove(index);
         let audio = entry.prepared.clone();
-        cache.entries.push_back(entry);
+        cache.entries.push(entry);
         self.hits.set(self.hits.get().saturating_add(1));
         Ok(Some(audio))
     }
@@ -532,7 +626,8 @@ impl AudioTransformPreparation {
             project.tempo_map(),
             &self.shutdown,
         )?;
-        let audio = Audio::from_derived(source.sample_rate(), rendered.frames, reservation)?;
+        let audio =
+            Audio::from_prepared_derived(source.sample_rate(), rendered.frames, reservation)?;
         self.retain(Entry {
             source: source.clone(),
             domain: Arc::clone(&edit.domain),
@@ -583,6 +678,7 @@ impl AudioTransformPreparation {
         asset: &Asset,
         source: PreparedAudioSourceRef<'_>,
     ) -> Result<Option<Clip>, Invalid> {
+        self.require_usable()?;
         let Some(edit) = clip.audio_edit() else {
             return direct_clip(clip, source).map(Some);
         };

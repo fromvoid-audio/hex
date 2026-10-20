@@ -1,9 +1,10 @@
 //! Sealed control-only final Session targets. No public inventory/clip reference,
 //! Arc, Deref, raw adoption or mutable graph escape is provided by this package.
 use super::*;
+use crate::audio_clip_source::{ClipSourceKind, OwnedAudioClipSource};
 use crate::{
     AudioStorageError,
-    audio_only_inputs::{OwnedAudioInputs, OwnedAudioSource, SourceKind},
+    audio_only_inputs::{OwnedAudioInputs, SourceKind},
     owned_shared::{OwnedShared, SharedDeclaration},
     session_audio_preparation::SessionSourceConstruction,
     session_shared_preparation::SessionSharedConstruction,
@@ -12,6 +13,9 @@ use crate::{
 };
 use std::mem;
 mod cleanup;
+mod compiler;
+#[cfg(test)]
+mod midi_cleanup_tests;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionAssemblyCapacity {
@@ -22,6 +26,10 @@ pub struct SessionAssemblyCapacity {
     pub range_bytes: usize,
     pub audio_bytes: usize,
     pub pair_bytes: usize,
+    pub midi_bytes: usize,
+    pub routed_midi_bytes: usize,
+    pub midi_source_root_bytes: usize,
+    pub mutable_bytes: usize,
     pub previous_growth_backing_bytes: usize,
     pub meter_copy_bytes: usize,
     pub meter_bytes: usize,
@@ -37,6 +45,10 @@ impl SessionAssemblyCapacity {
             self.range_bytes,
             self.audio_bytes,
             self.pair_bytes,
+            self.midi_bytes,
+            self.routed_midi_bytes,
+            self.midi_source_root_bytes,
+            self.mutable_bytes,
             self.meter_copy_bytes,
             self.meter_bytes,
         ]
@@ -85,11 +97,11 @@ impl AudioTarget {
     pub(crate) fn vacant(&self) -> bool {
         self.clip.is_none() && self.actual_handle.is_none() && self.declaration.is_none()
     }
-    pub(crate) fn commit(&mut self, owner: OwnedAudioSource, name: String) {
-        let OwnedAudioSource { kind, handle } = owner;
+    pub(crate) fn commit(&mut self, owner: OwnedAudioClipSource, name: String) {
+        let OwnedAudioClipSource { kind, handle } = owner;
         let source = match kind {
-            SourceKind::Resident(audio) => PreparedAudioSource::Resident(audio),
-            SourceKind::Streamed(metadata) => {
+            ClipSourceKind::Resident(audio) => PreparedAudioSource::Resident(audio),
+            ClipSourceKind::Streamed(metadata) => {
                 let (arc, declaration) = metadata.into_paired_parts_on_control();
                 self.declaration = Some(declaration);
                 PreparedAudioSource::Streamed(arc)
@@ -177,7 +189,13 @@ pub(crate) struct SessionAssembly {
     phase: AssemblyPhase,
     growth: usize,
     unused_midi: Vec<PreparedSessionMidiClip>,
+    unused_routed_midi: Vec<PreparedSessionMidiClip>,
+    unused_midi_source_roots: Vec<(TrackId, TrackId)>,
     unused_mutable: Vec<PreparedMutableTrackInstrument>,
+    pending_midi: Option<PreparedSessionMidiClip>,
+    pending_mutable: Option<PreparedMutableTrackInstrument>,
+    midi_drop_pending: bool,
+    mutable_drop_pending: bool,
     name_pending: bool,
     scene_cursor: usize,
     track_cursor: usize,
@@ -186,6 +204,8 @@ pub(crate) struct SessionAssembly {
     pending_pair: Option<usize>,
     sine_disposal: Step,
     context_disposal: Step,
+    meter_disposal: Step,
+    timing_disposal: Step,
     #[cfg(test)]
     pub(crate) fail_after_move: Option<usize>,
     #[cfg(test)]
@@ -212,6 +232,34 @@ fn reserve<T>(v: &mut Vec<T>, n: usize, growth: &mut usize) -> Result<(), AudioS
         .map_err(|_| AudioStorageError::Allocation)
 }
 impl SessionAssembly {
+    pub(crate) fn compiler_construction_bytes(
+        project: &hex_project::Project,
+    ) -> Result<usize, AudioStorageError> {
+        fn rows<T>(n: usize) -> Result<usize, AudioStorageError> {
+            std::alloc::Layout::array::<T>(n).map_err(|_| AudioStorageError::Overflow)?;
+            n.checked_mul(mem::size_of::<T>())
+                .ok_or(AudioStorageError::Overflow)
+        }
+        let mut total = project
+            .meter_map()
+            .owned_allocation_layout()
+            .checked_backing_bytes()
+            .ok_or(AudioStorageError::Overflow)?;
+        for bytes in [
+            rows::<PreparedSessionScene>(project.scenes().len())?,
+            rows::<PreparedSessionTrack>(project.tracks().len())?,
+            rows::<PreparedSessionCell>(project.session_cells().len())?,
+            rows::<usize>(project.session_cells().len())?,
+            rows::<PreparedSessionSceneCellRange>(project.scenes().len())?,
+        ] {
+            total = total
+                .checked_add(bytes)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        total
+            .checked_add(Self::compiler_factory_backing_bytes(project)?)
+            .ok_or(AudioStorageError::Overflow)
+    }
     pub(crate) fn shared_storage(
         &self,
     ) -> Result<crate::session_shared_preparation::InventorySharedView<'_>, AudioStorageError> {
@@ -239,7 +287,13 @@ impl SessionAssembly {
             && self.sine.is_none()
             && self.contexts.is_none()
             && self.unused_midi.capacity() == 0
+            && self.unused_routed_midi.capacity() == 0
+            && self.unused_midi_source_roots.capacity() == 0
             && self.unused_mutable.capacity() == 0
+            && self.pending_midi.is_none()
+            && self.pending_mutable.is_none()
+            && !self.midi_drop_pending
+            && !self.mutable_drop_pending
             && self.pending_source.is_none()
             && self.pending_name.is_none()
             && self.pending_pair.is_none()
@@ -248,6 +302,8 @@ impl SessionAssembly {
             && self.track_cursor == 0
             && self.sine_disposal == Step::Unstarted
             && self.context_disposal == Step::Unstarted
+            && self.meter_disposal == Step::Unstarted
+            && self.timing_disposal == Step::Unstarted
     }
     pub(crate) fn transfer_revision(&mut self, target: &mut Option<PreparedSessionInventory>) {
         *target = self.inventory.take();
@@ -262,18 +318,22 @@ impl SessionAssembly {
         if self.inventory.is_some() && external.is_some() {
             return Err(AudioStorageError::SourceMismatch);
         }
+        use crate::session_shared_preparation::InventorySineView;
         let (sine, contexts) = if let Some(i) = self.inventory.as_ref().or(external) {
-            if self.sine.is_some() || self.contexts.is_some() {
+            if self.sine.is_some() || self.contexts.is_some() || self.sine_declaration.is_some() {
                 return Err(AudioStorageError::SourceMismatch);
             }
-            (Some(&i.sine_table), Some(&i.shared_contexts))
+            (
+                Some(InventorySineView::Installed(&i.sine_table)),
+                Some(&i.shared_contexts),
+            )
         } else {
-            (self.sine.as_ref(), self.contexts.as_ref())
-        };
-        let sine = match (sine, self.sine_declaration.as_ref()) {
-            (Some(a), Some(d)) => Some((a, d)),
-            (None, None) => None,
-            _ => return Err(AudioStorageError::SourceMismatch),
+            let sine = match (self.sine.as_ref(), self.sine_declaration.as_ref()) {
+                (Some(owner), Some(receipt)) => Some(InventorySineView::Native(owner, receipt)),
+                (None, None) => None,
+                _ => return Err(AudioStorageError::SourceMismatch),
+            };
+            (sine, self.contexts.as_ref())
         };
         Ok(crate::session_shared_preparation::InventorySharedView { sine, contexts })
     }
@@ -282,7 +342,7 @@ impl SessionAssembly {
         include_growth: bool,
         external: Option<&PreparedSessionInventory>,
     ) -> Result<SessionAssemblyCapacity, AudioStorageError> {
-        // Exhaustive ownership inventory: seven charged Vec backings; names,
+        // Actual scalar/audio/MIDI/factory Vec backings; names,
         // referenced source allocations, tempo and fixed shared data stay in
         // their parent charge groups while their exact paired owning locations
         // move. Optional inventory contains those SAME vectors, never duplicates.
@@ -291,6 +351,7 @@ impl SessionAssembly {
             return Err(AudioStorageError::SourceMismatch);
         }
         if let Some(i) = self.inventory.as_ref().or(external) {
+            i.refuse_opaque_control_drop()?;
             if self.scenes.capacity() != 0
                 || self.tracks.capacity() != 0
                 || self.cells.capacity() != 0
@@ -305,21 +366,21 @@ impl SessionAssembly {
                 || self.pending_pair.is_some()
                 || self.name_pending
                 || self.meter.is_some()
-                || i.routed_midi_clips.capacity() != 0
-                || i.midi_source_roots.capacity() != 0
-                || !i.midi_clips.is_empty()
-                || i.midi_clips.capacity() != 0
-                || !i.mutable_instruments.is_empty()
-                || i.mutable_instruments.capacity() != 0
-                || i.mutable_history_retarget_storage_bytes != 0
-                || i.midi_note_bank_storage_bytes != 0
-                || i.midi_note_bank_reference_count != 0
-                || i.work != SessionWorkEnvelope::default()
+                || self.unused_midi.capacity() != 0
+                || self.unused_routed_midi.capacity() != 0
+                || self.unused_midi_source_roots.capacity() != 0
+                || self.unused_mutable.capacity() != 0
+                || self.pending_midi.is_some()
+                || self.pending_mutable.is_some()
             {
                 return Err(AudioStorageError::UnknownStorage);
             }
         }
-        if self.unused_midi.capacity() != 0 || self.unused_mutable.capacity() != 0 {
+        if self.midi_drop_pending
+            || self.mutable_drop_pending
+            || self.meter_disposal == Step::Pending
+            || self.timing_disposal == Step::Pending
+        {
             return Err(AudioStorageError::UnknownStorage);
         }
         let copy_meter = self.meter_copy.capacity();
@@ -376,6 +437,30 @@ impl SessionAssembly {
             range_bytes: bytes(ranges)?,
             audio_bytes: bytes(audio)?,
             pair_bytes: bytes(&self.pairs)?,
+            midi_bytes: bytes(
+                self.inventory
+                    .as_ref()
+                    .or(external)
+                    .map_or(&self.unused_midi, |i| &i.midi_clips),
+            )?,
+            routed_midi_bytes: bytes(
+                self.inventory
+                    .as_ref()
+                    .or(external)
+                    .map_or(&self.unused_routed_midi, |i| &i.routed_midi_clips),
+            )?,
+            midi_source_root_bytes: bytes(
+                self.inventory
+                    .as_ref()
+                    .or(external)
+                    .map_or(&self.unused_midi_source_roots, |i| &i.midi_source_roots),
+            )?,
+            mutable_bytes: bytes(
+                self.inventory
+                    .as_ref()
+                    .or(external)
+                    .map_or(&self.unused_mutable, |i| &i.mutable_instruments),
+            )?,
             previous_growth_backing_bytes: if include_growth {
                 self.growth
                     .checked_add(copy_meter.previous_growth_backing_bytes)
@@ -410,7 +495,13 @@ impl SessionAssembly {
             || self.track_cursor != 0
             || self.name_pending
             || self.unused_midi.capacity() != 0
+            || self.unused_routed_midi.capacity() != 0
+            || self.unused_midi_source_roots.capacity() != 0
             || self.unused_mutable.capacity() != 0
+            || self.pending_midi.is_some()
+            || self.pending_mutable.is_some()
+            || self.midi_drop_pending
+            || self.mutable_drop_pending
             || self.sine_declaration.is_some()
             || self.sine.is_some()
             || self.contexts.is_some()
@@ -593,11 +684,18 @@ impl SessionAssembly {
             return Err(AudioStorageError::UnknownStorage);
         }
         // No allocation/fallible helper after taking the first final owner.
-        if let (Some(timing), Some(sine_table), Some(shared_contexts), Some(meter_map)) = (
+        if let (
+            Some(timing),
+            Some(sine_table),
+            Some(shared_contexts),
+            Some(meter_map),
+            Some(sine_receipt),
+        ) = (
             self.timing.take(),
             self.sine.take(),
             self.contexts.take(),
             self.meter.take(),
+            self.sine_declaration.take(),
         ) {
             self.inventory = Some(PreparedSessionInventory {
                 meter_map,
@@ -607,14 +705,17 @@ impl SessionAssembly {
                 periodic_tempo: tempo.periodic,
                 periodic_tempo_error: tempo.periodic_error,
                 source_admission_max_micro_bpm: tempo.source_admission_max_micro_bpm,
-                sine_table,
+                sine_table: crate::SharedSineTable::from_native_paired_on_control(
+                    sine_table,
+                    sine_receipt,
+                ),
                 scenes: mem::take(&mut self.scenes),
                 cells: mem::take(&mut self.cells),
                 scene_cell_indices: mem::take(&mut self.indices),
                 scene_cell_ranges: mem::take(&mut self.ranges),
                 tracks: mem::take(&mut self.tracks),
                 midi_clips: Vec::new(),
-                mutable_instruments: Vec::new(),
+                mutable_instruments: mem::take(&mut self.unused_mutable),
                 mutable_history_retarget_storage_bytes: 0,
                 audio_clips: mem::take(&mut self.audio),
                 work: SessionWorkEnvelope::default(),
@@ -762,9 +863,11 @@ impl SessionAssembly {
             return None;
         }
         let inventory = self.inventory.as_ref().or(external)?;
-        self.sine_declaration
-            .as_ref()?
-            .parts(&inventory.sine_table)?;
+        inventory
+            .sine_table
+            .metadata_on_control()
+            .paired_owner_on_control()
+            .parts()?;
         Some(SessionInventoryMetadata { inventory })
     }
 }
@@ -819,6 +922,7 @@ impl SessionAssembly {
         &'a self,
         l: &mut crate::AudioRootStorageLedger<'a>,
         external: Option<&'a PreparedSessionInventory>,
+        role: crate::AudioStorageRole,
     ) -> Result<(), AudioStorageError> {
         use crate::audio_storage::{Location, Owner};
         self.capacity_at(false, external)?;
@@ -841,7 +945,13 @@ impl SessionAssembly {
             phase: _,
             growth,
             unused_midi,
+            unused_routed_midi,
+            unused_midi_source_roots,
             unused_mutable,
+            pending_midi,
+            pending_mutable,
+            midi_drop_pending: _,
+            mutable_drop_pending: _,
             name_pending: _,
             scene_cursor: _,
             track_cursor: _,
@@ -850,6 +960,8 @@ impl SessionAssembly {
             pending_pair: _,
             sine_disposal: _,
             context_disposal: _,
+            meter_disposal: _,
+            timing_disposal: _,
             #[cfg(test)]
                 fail_after_move: _,
             #[cfg(test)]
@@ -868,8 +980,19 @@ impl SessionAssembly {
         l.vec(ranges)?;
         l.vec(audio)?;
         l.vec(pairs)?;
-        l.vec(unused_midi)?;
+        visit_midi_rows(unused_midi, l, role)?;
+        visit_midi_rows(unused_routed_midi, l, role)?;
+        l.vec(unused_midi_source_roots)?;
         l.vec(unused_mutable)?;
+        for instrument in unused_mutable.iter().chain(pending_mutable.iter()) {
+            if instrument.history_retarget_target.is_some() {
+                return Err(AudioStorageError::UnknownStorage);
+            }
+            instrument.factory.visit_storage(l)?;
+        }
+        if let Some(row) = pending_midi {
+            visit_midi_row(row, l, role)?;
+        }
         for scene in scenes {
             l.string(&scene.name)?;
         }
@@ -939,10 +1062,18 @@ impl SessionAssembly {
             l.vec(scene_cell_indices)?;
             l.vec(scene_cell_ranges)?;
             l.vec(tracks)?;
-            l.vec(midi_clips)?;
-            l.vec(routed_midi_clips)?;
+            // Actual closed row fields. Public constructor admission remains
+            // separate from this selected inventory/retirement capability.
+            visit_midi_rows(midi_clips, l, role)?;
+            visit_midi_rows(routed_midi_clips, l, role)?;
             l.vec(midi_source_roots)?;
             l.vec(mutable_instruments)?;
+            for instrument in mutable_instruments {
+                if instrument.history_retarget_target.is_some() {
+                    return Err(AudioStorageError::UnknownStorage);
+                }
+                instrument.factory.visit_storage(l)?;
+            }
             l.vec(audio_clips)?;
             for scene in scenes {
                 l.string(&scene.name)?;

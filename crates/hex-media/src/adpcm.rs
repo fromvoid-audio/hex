@@ -29,21 +29,43 @@ pub(super) fn decode(
         .try_reserve_exact(format.samples_per_block)
         .map_err(|_| ImportError::AllocationFailed)?;
     block_frames.resize(format.samples_per_block, [0.0; 2]);
-    for block in data.chunks_exact(format.block_align) {
-        if format.encoding == 17 {
-            decode_ima(block, format, &mut block_frames)?;
-        } else {
-            decode_ms(block, format, &mut block_frames)?;
-        }
-        let count = (frame_count - frames.len()).min(block_frames.len());
-        frames.extend_from_slice(&block_frames[..count]);
-    }
-    if frames.len() != frame_count {
-        return Err(ImportError::Invalid("inconsistent decoded adpcm length"));
-    }
+    decode_into(data, format, frame_count, &mut block_frames, |block| {
+        frames.extend_from_slice(block);
+        Ok(())
+    })?;
     let audio = Audio::new(format.sample_rate, frames)
         .map_err(|_| ImportError::Invalid("invalid decoded adpcm audio"))?;
     Ok((audio, format.sample_rate, frame_count))
+}
+
+/// Reuse the codec kernels with caller-reserved scratch and output custody.
+pub(super) fn decode_into(
+    data: &[u8],
+    format: Format,
+    frame_count: usize,
+    block_frames: &mut [[f32; 2]],
+    mut emit: impl FnMut(&[[f32; 2]]) -> Result<(), ImportError>,
+) -> Result<(), ImportError> {
+    if block_frames.len() != format.samples_per_block {
+        return Err(ImportError::Invalid("invalid adpcm scratch extent"));
+    }
+    let mut written = 0;
+    for block in data.chunks_exact(format.block_align) {
+        // The empty visit is a cancellation boundary before decoding each block.
+        emit(&[])?;
+        if format.encoding == 17 {
+            decode_ima(block, format, block_frames)?;
+        } else {
+            decode_ms(block, format, block_frames)?;
+        }
+        let count = (frame_count - written).min(block_frames.len());
+        emit(&block_frames[..count])?;
+        written += count;
+    }
+    if written != frame_count {
+        return Err(ImportError::Invalid("inconsistent decoded adpcm length"));
+    }
+    Ok(())
 }
 
 fn decode_ima(block: &[u8], format: Format, output: &mut [[f32; 2]]) -> Result<(), ImportError> {

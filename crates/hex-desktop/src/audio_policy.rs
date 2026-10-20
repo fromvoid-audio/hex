@@ -141,7 +141,7 @@ impl AudioPolicy {
     }
     pub(super) fn configure(
         self,
-        control: &mut hex_audio::prepared::PublicationControl,
+        control: &mut hex_audio::prepared::WorkerPublication<'_>,
     ) -> Result<(), String> {
         // Publication configures the one shared N2 domain bank as well. The
         // domains-only and publication constructors are alternative opt-ins.

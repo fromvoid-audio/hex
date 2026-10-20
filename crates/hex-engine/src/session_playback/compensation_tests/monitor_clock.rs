@@ -1,6 +1,6 @@
 //! An admitted zero-latency routed keyboard monitor still has a signal clock.
 use crate::signal_graph::tests::{Definition, Fixture, fixture, state};
-use crate::{Frame, PreparedRevision, SineTable};
+use crate::{Frame, PreparedRevision};
 use hex_lattice::{
     NativeDeviceDefinition, NativeDeviceRegistry, NativeInstrumentClock, NativeProcessorRuntime,
     OutputTail, PreparedNativeProcessor, StereoMatrix,
@@ -128,7 +128,7 @@ fn monitor(f: &Fixture) -> Vec<Frame> {
         PreparedRevision::prepare_with_registries(
             f.editor.project(),
             &f.media,
-            Arc::new(SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
             &effects,
             &instruments,

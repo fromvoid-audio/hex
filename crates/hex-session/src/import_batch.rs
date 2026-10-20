@@ -90,7 +90,7 @@ impl Session {
             .try_reserve_exact(count)
             .map_err(|_| SessionError::Allocation)?;
         self.media
-            .try_reserve(count)
+            .try_reserve_on_control(count, MAX_ASSETS)
             .map_err(|_| SessionError::Allocation)?;
         let mut total_frames = self.resident_frames;
         let mut total_bins = self.resident_waveform_bins;
@@ -114,7 +114,7 @@ impl Session {
                         self.media
                             .values()
                             .chain(residents.iter())
-                            .flat_map(|m| [&m.source_audio, &m.audio]),
+                            .flat_map(|m| m.pcm()),
                     )?,
                 )
                 .filter(|n| *n <= self.max_resident_frames)
@@ -182,12 +182,12 @@ impl Session {
             }
             residents.push(ResidentAsset {
                 source_audio: member.source_audio,
-                audio: member.audio,
-                waveform: Arc::new(member.waveform),
+                audio: Some(member.audio),
+                waveform: crate::SharedWaveform::new_on_control(member.waveform),
                 frames,
             });
         }
-        let mut candidate_media = self.media_bank();
+        let mut candidate_media = self.media_bank()?;
         let sine_table = self.sine_table();
         let (_, (created, revision)) =
             self.editor
@@ -201,7 +201,16 @@ impl Session {
                             ));
                         };
                         if candidate_media
-                            .insert(*asset, resident.audio.clone())
+                            .insert(
+                                *asset,
+                                resident
+                                    .audio
+                                    .as_ref()
+                                    .ok_or(SessionError::Invalid(
+                                        "audio batch is missing its prepared clip derivative",
+                                    ))?
+                                    .clone(),
+                            )?
                             .is_some()
                         {
                             return Err(SessionError::Invalid(
@@ -220,7 +229,8 @@ impl Session {
         // All fallible work is complete. Created/results correspond one-for-one.
         for (result, resident) in created.iter().zip(residents) {
             if let Created::Imported { asset, .. } = result {
-                self.media.insert(*asset, resident);
+                self.media
+                    .try_insert_on_control(*asset, resident, MAX_ASSETS)?;
             }
         }
         self.resident_frames = total_frames;

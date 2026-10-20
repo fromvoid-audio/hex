@@ -5,6 +5,14 @@ use crate::{
     shared_analytic::SharedAnalyticContextTable,
 };
 use std::sync::Arc;
+mod compiler;
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum ContextRoute {
+    #[default]
+    LegacyEmpty,
+    CompilerSession,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionSharedCapacity {
@@ -47,6 +55,7 @@ pub(super) struct SessionSharedConstruction {
     handles: [u64; 3],
     disposal: [Disposal; 3],
     next: usize,
+    context_route: ContextRoute,
     #[cfg(test)]
     pub(super) fail_after: Option<usize>,
     #[cfg(test)]
@@ -55,19 +64,54 @@ pub(super) struct SessionSharedConstruction {
     pub(super) probes: [Option<crate::audio_preparation::DropProbe>; 3],
 }
 pub(crate) struct InventorySharedView<'a> {
-    pub(crate) sine: Option<(
-        &'a Arc<SineTable>,
-        &'a crate::owned_shared::SharedDeclaration,
-    )>,
+    pub(crate) sine: Option<InventorySineView<'a>>,
     pub(crate) contexts: Option<&'a OwnedShared<SharedAnalyticContextTable>>,
 }
+
+/// Actual pre-install native paired field OR its fixed-moved installed facade.
+/// Private observations only; no raw adoption or public allocation declaration.
+#[derive(Clone, Copy)]
+pub(crate) enum InventorySineView<'a> {
+    Native(
+        &'a Arc<SineTable>,
+        &'a crate::owned_shared::SharedDeclaration,
+    ),
+    Installed(&'a crate::SharedSineTable),
+}
+impl<'a> InventorySineView<'a> {
+    fn arc(self) -> &'a Arc<SineTable> {
+        match self {
+            Self::Native(owner, _) => owner,
+            Self::Installed(owner) => owner.metadata_on_control().paired_owner_on_control().arc(),
+        }
+    }
+    fn parts(self) -> Option<(usize, usize)> {
+        match self {
+            Self::Native(owner, receipt) => receipt.parts(owner),
+            Self::Installed(owner) => owner
+                .metadata_on_control()
+                .paired_owner_on_control()
+                .parts(),
+        }
+    }
+    fn field(self) -> crate::audio_storage::Owner<'a> {
+        match self {
+            Self::Native(owner, _) => crate::audio_storage::Owner::exclusive(owner),
+            Self::Installed(owner) => {
+                crate::audio_storage::Owner::exclusive(owner.metadata_on_control())
+            }
+        }
+    }
+}
+
 impl SessionSharedConstruction {
     pub(super) fn reserve(
         &mut self,
         current_handles: usize,
         limit: usize,
     ) -> Result<(), AudioStorageError> {
-        if self.sine.is_some()
+        if self.context_route != ContextRoute::LegacyEmpty
+            || self.sine.is_some()
             || self.arrangement_contexts.is_some()
             || self.session_contexts.is_some()
             || self.next != 0
@@ -181,10 +225,8 @@ impl SessionSharedConstruction {
             report.unresolved_allocations += 1;
             report.installed_handle_obligations += 1;
         }
-        if let Some((sine, declaration)) = inventory.sine {
-            let (payload, overhead) = declaration
-                .parts(sine)
-                .ok_or(AudioStorageError::UnknownStorage)?;
+        if let Some(sine) = inventory.sine {
+            let (payload, overhead) = sine.parts().ok_or(AudioStorageError::UnknownStorage)?;
             if payload != std::mem::size_of::<SineTable>() {
                 return Err(AudioStorageError::UnknownStorage);
             }
@@ -201,7 +243,10 @@ impl SessionSharedConstruction {
         .into_iter()
         .flatten()
         {
-            contexts.require_empty_owned_storage()?;
+            match self.context_route {
+                ContextRoute::LegacyEmpty => contexts.require_empty_owned_storage()?,
+                ContextRoute::CompilerSession => contexts.refuse_opaque_control_drop()?,
+            }
             let (payload, overhead) = contexts.parts().ok_or(AudioStorageError::UnknownStorage)?;
             if let Some(previous) = previous {
                 if !Arc::ptr_eq(previous.arc(), contexts.arc())
@@ -258,13 +303,15 @@ impl SessionSharedConstruction {
         self.handles = [0; 3];
         self.disposal = [Disposal::Unstarted; 3];
         self.next = 0;
+        self.context_route = ContextRoute::LegacyEmpty;
         Ok(())
     }
     pub(crate) fn preflight_arrangement_transfer(
         &self,
         target: &Option<OwnedShared<SharedAnalyticContextTable>>,
     ) -> Result<(), AudioStorageError> {
-        if target.is_some()
+        if self.context_route != ContextRoute::LegacyEmpty
+            || target.is_some()
             || self.arrangement_contexts.is_none()
             || self.disposal[1] != Disposal::Unstarted
             || self.handles[1] == 0
@@ -285,7 +332,8 @@ impl SessionSharedConstruction {
         self.disposal[1] = Disposal::Transferred;
     }
     pub(crate) fn preflight_arrangement_restore(&self) -> Result<(), AudioStorageError> {
-        if self.arrangement_contexts.is_some()
+        if self.context_route != ContextRoute::LegacyEmpty
+            || self.arrangement_contexts.is_some()
             || self.disposal[1] != Disposal::Transferred
             || self.next != 0
         {
@@ -310,7 +358,11 @@ impl SessionSharedConstruction {
         handles: [u64; 3],
     ) -> Result<(), AudioStorageError> {
         if handles != self.handles
-            || self.observe()?.installed_handle_obligations != 3
+            || self.observe()?.installed_handle_obligations
+                != match self.context_route {
+                    ContextRoute::LegacyEmpty => 3,
+                    ContextRoute::CompilerSession => 2,
+                }
             || self.disposal != [Disposal::Unstarted; 3]
         {
             return Err(AudioStorageError::SourceMismatch);
@@ -382,6 +434,7 @@ impl SessionSharedConstruction {
             handles,
             disposal: _,
             next: _,
+            context_route,
             #[cfg(test)]
                 fail_after: _,
             #[cfg(test)]
@@ -405,21 +458,15 @@ impl SessionSharedConstruction {
                 None,
             )?;
         }
-        if let Some((owner, declaration)) = inventory.sine {
-            if owner.control_storage_declaration()
+        if let Some(owner) = inventory.sine {
+            if owner.arc().control_storage_declaration()
                 != (hex_lattice::PreparedStorageDeclaration::ExclusiveOnly {
                     bytes: std::mem::size_of::<SineTable>(),
                 })
             {
                 return Err(AudioStorageError::UnknownStorage);
             }
-            l.shared(
-                owner,
-                declaration.parts(owner),
-                Owner::exclusive(owner),
-                handles[0],
-                None,
-            )?;
+            l.shared(owner.arc(), owner.parts(), owner.field(), handles[0], None)?;
         }
         for (owner, id) in [
             arrangement_contexts.as_ref().or(arrangement),
@@ -429,6 +476,12 @@ impl SessionSharedConstruction {
         .zip([handles[1], handles[2]])
         {
             if let Some(owner) = owner {
+                if *context_route == ContextRoute::CompilerSession {
+                    // Actual loaded table and every nested resource are visited;
+                    // the route flag cannot qualify an origin or omit aliases.
+                    crate::shared_analytic::resource_storage::visit_table_contents(owner, l)?;
+                    continue;
+                }
                 owner.require_empty_owned_storage()?;
                 l.shared(
                     owner.arc(),

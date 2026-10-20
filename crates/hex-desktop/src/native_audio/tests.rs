@@ -27,10 +27,10 @@ struct ObservedSink {
     observation: Arc<Mutex<Observation>>,
 }
 impl WorkerAudioSink for ObservedSink {
-    fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
+    fn initialize(&mut self, shutdown: &dyn hex_engine::CancellationQuery) -> Result<u32, String> {
         self.inner.initialize(shutdown)
     }
-    fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+    fn canonical_changed(&mut self, source: SharedCanonicalAudioSource) {
         if source
             .required_sources()
             .any(|(_, binding)| matches!(binding, AudioSourceBinding::VerifiedFile(_)))
@@ -962,8 +962,8 @@ fn exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reu
         std::thread::sleep(Duration::from_millis(1));
     };
     let policy = AudioPolicy::new().unwrap();
-    let control = output.publication.control().unwrap();
-    policy.configure(control).unwrap();
+    let mut control = output.publication.control().unwrap();
+    policy.configure(&mut control).unwrap();
     let (events, _receiver) = mpsc::sync_channel(1);
     let mut sink = NativeAudioSink::new(events);
     let mut previous = None;
@@ -999,7 +999,7 @@ fn exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reu
                 std::thread::yield_now();
             }
         } else {
-            domain.request_retirement(control);
+            domain.request_retirement(&mut control);
             assert!(domain.retiring);
         }
         loop {
@@ -1011,16 +1011,16 @@ fn exact_root_domain_retirement_intent_survives_cleaning_and_recovers_before_reu
             std::thread::yield_now();
         }
         // False is not completion, nor a cancellation of local cleanup intent.
-        domain.request_retirement(control);
+        domain.request_retirement(&mut control);
         assert!(
             domain.retiring,
             "retirement intent disappeared during actual Root cleanup"
         );
-        domain.request_retirement(control);
+        domain.request_retirement(&mut control);
         assert!(domain.retiring);
         sink.domains[0] = Some(domain);
         loop {
-            sink.maintain_returns(control);
+            sink.maintain_returns(&mut control);
             if sink.domains[0].is_none() {
                 break;
             }
@@ -1148,3 +1148,7 @@ fn generated_100_track_project_uses_actual_verified_service_and_callback() {
         .unwrap();
     h.render();
 }
+
+mod main_file;
+
+mod closed_original;

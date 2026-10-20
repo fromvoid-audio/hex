@@ -3,10 +3,10 @@
 //! Run with `cargo run -p hex-session --example operator_enable_fixture -- analytic ./operator-analytic.hex`.
 //! The MIDI arrangement holds pitch 48 for 30 seconds, then leaves the three-second
 //! Operator release and additional silence inside the clip.
-use hex_engine::{NativeDeviceClass, PreparedRevision, SineTable};
+use hex_engine::{NativeDeviceClass, PreparedRevision};
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
 use hex_project::{BeatTime, Command, Created, Editor, Project};
-use std::{collections::BTreeMap, error::Error, path::Path, sync::Arc};
+use std::{collections::BTreeMap, error::Error, path::Path};
 
 const SAMPLE_RATE: u32 = 48_000;
 const NOTE_START_BEATS: u64 = 4;
@@ -143,8 +143,12 @@ fn save(mode: Mode, destination: &Path) -> Result<Project, Box<dyn Error>> {
     let project = project(mode)?;
     // Check the authored project through the same built-in registry and
     // Arrangement compiler used by playback before publishing the file.
-    let _prepared =
-        PreparedRevision::prepare(&project, &BTreeMap::new(), Arc::new(SineTable::new()), None)?;
+    let _prepared = PreparedRevision::prepare(
+        &project,
+        &BTreeMap::new(),
+        hex_engine::SharedSineTable::new_on_control(),
+        None,
+    )?;
     hex_storage::save_new(destination, &project)?;
     println!(
         "saved {} operator held-note fixture to {} (48 khz, pitch 48, 30 s gate, 3 s release)",
@@ -280,7 +284,7 @@ mod tests {
                 let revision = Arc::new(PreparedRevision::prepare(
                     &loaded,
                     &BTreeMap::new(),
-                    Arc::new(SineTable::new()),
+                    hex_engine::SharedSineTable::new_on_control(),
                     None,
                 )?);
                 let mut playback = Playback::try_from_prepared_with_session(revision)?;

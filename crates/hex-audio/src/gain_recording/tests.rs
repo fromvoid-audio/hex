@@ -217,12 +217,14 @@ fn delivery_clock_overflow_releases_the_in_hand_value_credit_before_abort() {
 
 #[test]
 fn split_admission_rolls_back_enqueue_failure_and_stale_terminal_cannot_release_new_take() {
-    let status = std::sync::Arc::new(crate::prepared::Status::default());
+    let status = crate::prepared::status_owner::StatusHandle::legacy_fixture(
+        crate::prepared::Status::default(),
+    );
     // The factory's split marker is set by the split boundary; this fixture
     // exercises the same measured Status without cloning an endpoint.
     status.set_split_for_test();
     let (mut control, mut callback) = channel();
-    control.bind_status(status.clone());
+    control.bind_status(status.duplicate_legacy().unwrap());
     for _ in 0..CAPACITY {
         control
             .commands

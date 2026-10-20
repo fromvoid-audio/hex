@@ -1,7 +1,83 @@
 use super::*;
-use crate::audio_only_inputs::{OwnedAudioSource, SourceKind};
+use crate::audio_only_inputs::{SourceStorage, SourceStorageKind};
 impl<'a> AudioRootStorageLedger<'a> {
+    /// Actual native PCM field already embedded in a separately charged body.
+    /// Re-observing the same immutable field is idempotent; another physical
+    /// clone remains a separate handle. This never charges its inline header
+    /// again or upgrades unknown PCM, and is not complete enclosing storage.
+    pub fn borrow_embedded_native_audio_on_control(
+        &mut self,
+        audio: &'a crate::Audio,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| ledger.embedded_native_audio(audio))
+    }
+    pub(crate) fn embedded_native_audio(
+        &mut self,
+        audio: &'a crate::Audio,
+    ) -> Result<(), AudioStorageError> {
+        let handle = audio
+            .native_handle
+            .map(|h| h.get())
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        if self.skip_observed_shared_field(audio) {
+            return Ok(());
+        }
+        self.resident(audio, Owner::exclusive(audio), handle)
+    }
+    /// Actual native source field embedded in an already charged parent.
+    /// Validate its closed constructor, then visit that SAME physical field at
+    /// most once. Another clone remains a separate handle obligation. This
+    /// neither registers a standalone root nor suppresses duplicate-root errors.
+    pub fn borrow_embedded_native_source_on_control(
+        &mut self,
+        source: &'a crate::OwnedAudioSource,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| ledger.embedded_native_source(source))
+    }
+    pub(crate) fn embedded_native_source(
+        &mut self,
+        source: &'a crate::OwnedAudioSource,
+    ) -> Result<(), AudioStorageError> {
+        crate::audio_input_storage::parts(source)?;
+        if self.skip_observed_shared_field(source) {
+            return Ok(());
+        }
+        self.source(source)
+    }
+    /// Visit an actual closed source field retained by a media/control owner.
+    /// This leaf inventory is not a declaration for its enclosing container.
+    pub fn borrow_native_source_on_control(
+        &mut self,
+        source: &'a crate::OwnedAudioSource,
+        role: AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            crate::audio_input_storage::parts(source)?;
+            ledger.root(source, role)?;
+            ledger.source(source)
+        })
+    }
+    /// Actual native original or freshly prepared stereo PCM joins the SAME
+    /// union. Old/raw derived origin remains unknown; IDs/counts cannot mint it.
+    pub fn borrow_native_audio_on_control(
+        &mut self,
+        audio: &'a crate::Audio,
+        role: AudioStorageRole,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| {
+            let handle = audio
+                .native_handle
+                .map(|h| h.get())
+                .ok_or(AudioStorageError::UnknownStorage)?;
+            ledger.root(audio, role)?;
+            ledger.resident(audio, Owner::exclusive(audio), handle)
+        })
+    }
     pub(crate) fn inputs(&mut self, inputs: &'a OwnedAudioInputs) -> Result<(), AudioStorageError> {
+        #[cfg(test)]
+        if inputs.drop_probe.is_some() {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         self.vec(&inputs.sources)?;
         self.vec(&inputs.aliases)?;
         for (_, source) in &inputs.sources {
@@ -32,18 +108,39 @@ impl<'a> AudioRootStorageLedger<'a> {
         }
         Ok(())
     }
-    pub(crate) fn source(&mut self, source: &'a OwnedAudioSource) -> Result<(), AudioStorageError> {
-        match &source.kind {
-            SourceKind::Resident(audio) => {
-                self.resident(audio, Owner::exclusive(source), source.handle)
+    pub(crate) fn source(
+        &mut self,
+        source: &'a impl SourceStorage,
+    ) -> Result<(), AudioStorageError> {
+        match source.storage_kind() {
+            SourceStorageKind::Resident(audio) => {
+                audio
+                    .pcm_arc_receipt
+                    .and_then(|receipt| receipt.checked_allocations(audio))
+                    .ok_or(AudioStorageError::UnknownStorage)?;
+                self.resident(audio, Owner::exclusive(source), source.storage_handle())
             }
-            SourceKind::Streamed(owner) => {
+            SourceStorageKind::ResidentMono(owner) => {
+                self.shared(
+                    owner.arc(),
+                    owner.parts(),
+                    Owner::exclusive(source),
+                    source.storage_handle(),
+                    None,
+                )?;
+                let crate::audio_only_inputs::MonoSourceData {
+                    sample_rate: _,
+                    samples,
+                } = owner.as_ref();
+                self.vec(samples)
+            }
+            SourceStorageKind::Streamed(owner) => {
                 owner.inspect_scalar_owned_storage();
                 self.shared(
                     owner.arc(),
                     owner.parts(),
                     Owner::exclusive(source),
-                    source.handle,
+                    source.storage_handle(),
                     Some(owner.as_ref()),
                 )
             }
@@ -57,8 +154,11 @@ impl<'a> AudioRootStorageLedger<'a> {
     ) -> Result<(), AudioStorageError> {
         let allocations = audio
             .pcm_arc_receipt
-            .and_then(|r| r.checked_allocations(audio))
+            .and_then(|r| r.checked_native_allocations(audio))
             .ok_or(AudioStorageError::UnknownStorage)?;
+        if audio.native_handle.map(|h| h.get()) != Some(handle) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         self.shared(&audio.frames, Some(allocations[0]), field, handle, None)?;
         let (payload, overhead) = allocations[1];
         self.data(

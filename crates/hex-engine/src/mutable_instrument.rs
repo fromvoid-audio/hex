@@ -8,9 +8,16 @@ use crate::midi_compile::MAX_SIMULTANEOUS_VOICES_PER_TRACK;
 use crate::midi_template::MidiOccurrenceSuppression;
 use hex_lattice::{
     NativeInstrumentEvent, NativeInstrumentRuntimeError, NativeInstrumentRuntimeLimits,
-    NativeInstrumentRuntimePair, PreparedMutableInstrumentRuntime,
+    PreparedMutableInstrumentRuntime,
 };
 use hex_project::{BeatTime, ClipId, NoteId, TrackId};
+
+#[cfg(feature = "instrument-test-support")]
+pub(crate) mod resource_fixture;
+mod runtime_pair;
+pub(crate) use runtime_pair::RuntimePair;
+#[cfg(test)]
+mod resource_tests;
 
 pub(crate) const MAX_MUTABLE_NOTE_EVENTS_PER_QUERY: usize = 256;
 pub(crate) const MAX_MUTABLE_EVENTS_PER_QUERY: usize = MAX_MUTABLE_NOTE_EVENTS_PER_QUERY + 3;
@@ -207,7 +214,8 @@ impl MutableOccurrenceKey {
 /// Per-track mutable pair and transactional occurrence ledger. Both ledger
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
-    pair: NativeInstrumentRuntimePair,
+    pair: RuntimePair,
+    resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
     pub(crate) expression_identity: Option<hex_project::DeviceId>,
     pub(crate) expression: Option<crate::live_expression::Snapshot>,
     primary: Vec<MutableOccurrence>,
@@ -224,6 +232,83 @@ pub(crate) struct MutableInstrumentTail {
 }
 
 impl MutableInstrumentTrackRuntime {
+    pub(crate) fn validate_candidate_constructor_class(
+        &self,
+    ) -> Result<(), crate::AudioStorageError> {
+        self.pair.validate_constructor_class()
+    }
+    pub(crate) fn visit_runtime_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            pair,
+            resources: _,
+            expression_identity: _,
+            expression: _,
+            primary,
+            scratch,
+            next_id: _,
+            next_id_scratch: _,
+        } = self;
+        // Parent/containing Vec charges inline fields once. Actual Box bodies
+        // and occurrence backing capacities are separate physical allocations.
+        pair.visit_storage(ledger)?;
+        ledger.vec(primary)?;
+        ledger.vec(scratch)?;
+        // The containing runtime Vec/body already charges the inline
+        // configuration field. Visit its actual shared lease/children, without
+        // registering the same embedded bytes as a separate standalone root.
+        if let Some(configuration) = &self.resources {
+            configuration.visit_storage(ledger)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn visit_resource_owner_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        if let Some(configuration) = &self.resources {
+            ledger.root(configuration, role)?;
+            configuration.visit_storage(ledger)?;
+        }
+        Ok(())
+    }
+    pub(crate) fn resource_scope_storage_bytes(&self) -> Option<usize> {
+        match &self.resources {
+            Some(lease) => lease
+                .declared_metadata_bytes()
+                .ok()?
+                .checked_sub(std::mem::size_of_val(lease)),
+            None => Some(0),
+        }
+    }
+    pub(crate) fn clone_resources_on_control(
+        &self,
+    ) -> Result<
+        Option<crate::native_device_resources::DeviceResourceConfiguration>,
+        MutableInstrumentRuntimeError,
+    > {
+        self.resources
+            .as_ref()
+            .map(|lease| {
+                let bytes = lease
+                    .declared_metadata_bytes()
+                    .map_err(|_| MutableInstrumentRuntimeError::Budget)?;
+                lease
+                    .try_clone_on_control(bytes)
+                    .map_err(|_| MutableInstrumentRuntimeError::Budget)
+            })
+            .transpose()
+    }
+    fn same_resource_configuration(&self, previous: &Self) -> bool {
+        match (&self.resources, &previous.resources) {
+            (None, None) => true,
+            (Some(current), Some(previous)) => current.same_configuration(previous),
+            _ => false,
+        }
+    }
     /// Conservative checkpoint charge derived from the prepared declaration
     /// and both fixed occurrence-ledger buffers. Call before `new` so a store
     /// can reject count/aggregate overages before invoking the runtime factory.
@@ -250,13 +335,45 @@ impl MutableInstrumentTrackRuntime {
         pair_bytes.checked_add(ledger_bytes)
     }
 
+    #[cfg(test)]
     pub(crate) fn new(
         prepared: &dyn PreparedMutableInstrumentRuntime,
         sample_rate: u32,
+        resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+    ) -> Result<Self, MutableInstrumentRuntimeError> {
+        let resources = resources
+            .map(|lease| {
+                let (_, overhead) = crate::owned_shared::OwnedShared::<
+                    crate::native_device_resources::PreparedDeviceResourceLease,
+                >::declared_parts()
+                .ok_or(MutableInstrumentRuntimeError::Budget)?;
+                let bytes = lease
+                    .declared_metadata_bytes()
+                    .map_err(|_| MutableInstrumentRuntimeError::Budget)?
+                    .checked_add(overhead)
+                    .and_then(|bytes| {
+                        bytes.checked_add(std::mem::size_of::<
+                            crate::native_device_resources::DeviceResourceConfiguration,
+                        >())
+                    })
+                    .ok_or(MutableInstrumentRuntimeError::Budget)?;
+                lease
+                    .try_into_configuration_on_control(bytes)
+                    .map_err(|_| MutableInstrumentRuntimeError::Budget)
+            })
+            .transpose()?;
+        Self::new_with_configuration(prepared, sample_rate, resources)
+    }
+
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub(crate) fn new_with_configuration(
+        prepared: &dyn PreparedMutableInstrumentRuntime,
+        sample_rate: u32,
+        resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
     ) -> Result<Self, MutableInstrumentRuntimeError> {
         let max_tail_frames =
             max_mutable_tail_frames(sample_rate).ok_or(MutableInstrumentRuntimeError::Budget)?;
-        let pair = NativeInstrumentRuntimePair::new(
+        let pair = RuntimePair::new(
             prepared,
             NativeInstrumentRuntimeLimits {
                 max_pair_bytes: MAX_STATEFUL_RUNTIME_PAIR_BYTES,
@@ -266,6 +383,47 @@ impl MutableInstrumentTrackRuntime {
             },
         )
         .map_err(map_runtime_error)?;
+        Self::from_pair(pair, resources)
+    }
+
+    pub(crate) fn new_with_factory(
+        factory: &crate::session_inventory::PreparedTrackRuntimeFactory,
+        sample_rate: u32,
+        resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
+    ) -> Result<Self, MutableInstrumentRuntimeError> {
+        let pair = RuntimePair::from_factory(
+            factory,
+            NativeInstrumentRuntimeLimits {
+                max_pair_bytes: MAX_STATEFUL_RUNTIME_PAIR_BYTES,
+                max_events_per_block: MAX_MUTABLE_EVENTS_PER_QUERY,
+                max_active_occurrences: MAX_SIMULTANEOUS_VOICES_PER_TRACK,
+                max_tail_frames: max_mutable_tail_frames(sample_rate)
+                    .ok_or(MutableInstrumentRuntimeError::Budget)?,
+            },
+        )
+        .map_err(map_runtime_error)?;
+        Self::from_pair(pair, resources)
+    }
+
+    fn from_pair(
+        pair: RuntimePair,
+        resources: Option<crate::native_device_resources::DeviceResourceConfiguration>,
+    ) -> Result<Self, MutableInstrumentRuntimeError> {
+        // The sealed concrete Sampler constructor must bind the actual retained
+        // configuration before a host pair can escape. This read-only preflight
+        // checks both fresh twins without rendering or opening a block. Generic
+        // providers retain their existing preparation contract and stay opaque.
+        if pair.qualified_sampler_pair().is_some() {
+            pair.preflight_event_batch(
+                &[],
+                0,
+                resources.as_ref().map_or(
+                    &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+                    |configuration| configuration,
+                ),
+            )
+            .map_err(map_runtime_error)?;
+        }
         let pair_bytes = pair
             .fixed_storage_pair_bytes()
             .ok_or(MutableInstrumentRuntimeError::Budget)?;
@@ -287,6 +445,7 @@ impl MutableInstrumentTrackRuntime {
         }
         Ok(Self {
             pair,
+            resources,
             expression_identity: None,
             expression: None,
             primary,
@@ -303,7 +462,10 @@ impl MutableInstrumentTrackRuntime {
                 .preflight_event_batch(
                     &crate::live_expression::Snapshot::default().events(),
                     1,
-                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    self.resources.as_ref().map_or(
+                        &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+                        |lease| lease,
+                    ),
                 )
                 .is_ok()
     }
@@ -313,7 +475,8 @@ impl MutableInstrumentTrackRuntime {
         history: &hex_lattice::AnalyticInstrumentHistory<'_>,
         occurrences: &[Option<MutableOccurrence>],
     ) -> bool {
-        occurrences.len() == history.voices.len()
+        self.resources.is_none()
+            && occurrences.len() == history.voices.len()
             && occurrences.len() <= self.primary.capacity()
             && occurrences
                 .iter()
@@ -391,7 +554,8 @@ impl MutableInstrumentTrackRuntime {
         &self,
         seeds: &[hex_lattice::NativeInstrumentAnalyticSeed],
     ) -> bool {
-        self.primary.is_empty()
+        self.resources.is_none()
+            && self.primary.is_empty()
             && self.scratch.is_empty()
             && self.primary.capacity() >= seeds.len()
             && self.scratch.capacity() >= seeds.len()
@@ -423,7 +587,8 @@ impl MutableInstrumentTrackRuntime {
     /// owner. The canonical revision descriptor and route checks remain the
     /// caller's responsibility.
     pub(crate) fn can_inherit_from(&self, previous: &Self) -> bool {
-        self.primary.capacity() >= previous.primary.len()
+        self.same_resource_configuration(previous)
+            && self.primary.capacity() >= previous.primary.len()
             && self.scratch.capacity() >= previous.primary.len()
             && self.pair.can_inherit_from(&previous.pair)
     }
@@ -435,10 +600,7 @@ impl MutableInstrumentTrackRuntime {
         &mut self,
         previous: &Self,
     ) -> Result<(), MutableInstrumentRuntimeError> {
-        if self.primary.capacity() < previous.primary.len()
-            || self.scratch.capacity() < previous.primary.len()
-            || !self.pair.can_inherit_from(&previous.pair)
-        {
+        if !self.can_inherit_from(previous) {
             return Err(MutableInstrumentRuntimeError::Runtime(
                 NativeInstrumentRuntimeError::IncompatibleHistory,
             ));
@@ -465,7 +627,8 @@ impl MutableInstrumentTrackRuntime {
         previous: &Self,
         proof: &dyn hex_lattice::PreparedInstrumentHistoryRetarget,
     ) -> bool {
-        self.primary.capacity() >= previous.primary.len()
+        self.same_resource_configuration(previous)
+            && self.primary.capacity() >= previous.primary.len()
             && self.scratch.capacity() >= previous.primary.len()
             && self.pair.can_retarget_from(&previous.pair, proof)
     }
@@ -529,7 +692,8 @@ impl MutableInstrumentTrackRuntime {
                     .checked_add(self.scratch.capacity())?
                     .checked_mul(std::mem::size_of::<MutableOccurrence>())?,
             )?
-            .checked_add(self.pair.fixed_storage_pair_bytes()?)
+            .checked_add(self.pair.fixed_storage_pair_bytes()?)?
+            .checked_add(self.resource_scope_storage_bytes()?)
     }
 
     pub(crate) fn max_active_occurrences(&self) -> usize {
@@ -735,8 +899,12 @@ impl MutableInstrumentTrackRuntime {
             };
             (offset, is_on, occurrence_id)
         });
+        let resources = self.resources.as_ref().map_or(
+            &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+            |lease| lease,
+        );
         self.pair
-            .process_block_with_clock(events, frames, clock, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .process_block_with_clock(events, frames, clock, resources)
             .map_err(map_runtime_error)
     }
 

@@ -2,6 +2,8 @@
 //! tokens are associations with retained pairs, never page/readiness authority.
 use super::*;
 use hex_stream::{ConstructorStreamDomain, PagePoolReport};
+#[cfg(test)]
+mod native_birth_tests;
 pub(super) mod pages;
 mod preparation;
 pub use preparation::{
@@ -53,7 +55,7 @@ struct DomainSlot {
     data: usize,
     peak: usize,
     resources: Option<hex_stream::StreamDomainConstructorSummary>,
-    signal: Arc<pages::DomainSignal>,
+    signal: hex_engine::SharedMetadata<pages::DomainSignal>,
     loan_outstanding: bool,
     returned_pages: Option<DomainEnvelope>,
 }
@@ -73,7 +75,7 @@ impl DomainSlot {
             data: 0,
             peak: 0,
             resources: None,
-            signal: Arc::new(pages::DomainSignal::new()),
+            signal: hex_engine::SharedMetadata::new_on_control(pages::DomainSignal::new()),
             loan_outstanding: false,
             returned_pages: None,
         }
@@ -90,6 +92,17 @@ struct NativeBank {
     closing: bool,
     publication: publication::Bank,
     native: Option<crate::native_callback_owner::NativeCandidateBoundary>,
+    prepared_rings: [Option<hex_engine::sampler_host_fields::NativeFixedRingRegistration>; 9],
+    atomic_signals: [Option<hex_engine::sampler_host_fields::NativeAtomicSignalRegistration>; 8],
+    status: Option<crate::prepared::status_owner::StatusArchive>,
+    carriers: [Option<hex_engine::sampler_host_fields::NativeCarrierStorageRegistration>; 4],
+    spectrum_capture: Option<hex_engine::sampler_host_fields::NativeSpectrumCapturedRegistration>,
+    spectrum_rings: [Option<hex_engine::sampler_host_fields::NativeFixedRingRegistration>; 6],
+    spectrum_stop: Option<hex_engine::sampler_host_fields::NativeAtomicSignalRegistration>,
+    spectrum_results:
+        [Option<hex_engine::sampler_host_fields::NativeSpectrumResultRegistration>; 5],
+    spectrum_packets:
+        [Option<hex_engine::sampler_host_fields::NativeSpectrumPacketRegistration>; 33],
 }
 impl Default for NativeBank {
     fn default() -> Self {
@@ -104,6 +117,15 @@ impl Default for NativeBank {
             closing: false,
             publication: publication::Bank::default(),
             native: None,
+            prepared_rings: std::array::from_fn(|_| None),
+            atomic_signals: std::array::from_fn(|_| None),
+            status: None,
+            carriers: std::array::from_fn(|_| None),
+            spectrum_capture: None,
+            spectrum_rings: std::array::from_fn(|_| None),
+            spectrum_stop: None,
+            spectrum_results: std::array::from_fn(|_| None),
+            spectrum_packets: std::array::from_fn(|_| None),
         }
     }
 }
@@ -123,10 +145,660 @@ struct NativeWork {
 pub(super) struct Custody {
     enabled: AtomicBool,
     closed: AtomicBool,
-    bank: Mutex<NativeBank>,
-    work: Mutex<NativeWork>,
+    bank: CustodyMutex<NativeBank>,
+    work: CustodyMutex<NativeWork>,
 }
 impl Custody {
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn test_native_carrier_facts(
+        &self,
+    ) -> Result<(usize, usize), hex_engine::AudioStorageError> {
+        let bank = lock(&self.bank);
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 64,
+                handle_rows: 64,
+                root_rows: 4,
+                max_retained_bytes: 1 << 20,
+                max_construction_peak_bytes: 1 << 20,
+            },
+        )?;
+        for record in bank.carriers.iter().flatten() {
+            record.visit_storage_on_control(&mut ledger)?;
+        }
+        ledger.validate_selected_shared_handles_on_control()?;
+        Ok((
+            bank.carriers.iter().flatten().count(),
+            ledger.summary()?.data_bytes,
+        ))
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn test_spectrum_capture_facts(
+        &self,
+    ) -> Result<Option<(bool, usize)>, hex_engine::AudioStorageError> {
+        let bank = lock(&self.bank);
+        let Some(record) = bank.spectrum_capture.as_ref() else {
+            return Ok(None);
+        };
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                // metadata + captured frame + fifteen actual buffers
+                data_rows: 17,
+                handle_rows: 8,
+                root_rows: 2,
+                max_retained_bytes: crate::spectrum_worker::MAX_PROJECT_PAYLOAD_BYTES,
+                max_construction_peak_bytes: crate::spectrum_worker::MAX_PROJECT_PAYLOAD_BYTES,
+            },
+        )?;
+        record.visit_storage_on_control(&mut ledger)?;
+        ledger.validate_selected_shared_handles_on_control()?;
+        Ok(Some((
+            record.is_normally_disposed_on_control(),
+            ledger.summary()?.data_bytes,
+        )))
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn test_spectrum_ring_facts(
+        &self,
+    ) -> Result<([bool; 6], usize), hex_engine::AudioStorageError> {
+        let bank = lock(&self.bank);
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 32,
+                handle_rows: 32,
+                root_rows: 4,
+                max_retained_bytes: 1 << 20,
+                max_construction_peak_bytes: 1 << 20,
+            },
+        )?;
+        for record in bank.spectrum_rings.iter().flatten() {
+            record.visit_storage_on_control(&mut ledger)?;
+        }
+        ledger.validate_selected_shared_handles_on_control()?;
+        Ok((
+            bank.spectrum_rings.each_ref().map(|record| {
+                record
+                    .as_ref()
+                    .is_some_and(|record| record.is_normally_disposed_on_control())
+            }),
+            ledger.summary()?.data_bytes,
+        ))
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn test_spectrum_stop_data(&self) -> Result<usize, hex_engine::AudioStorageError> {
+        let bank = lock(&self.bank);
+        let record = bank
+            .spectrum_stop
+            .as_ref()
+            .ok_or(hex_engine::AudioStorageError::SourceMismatch)?;
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 8,
+                handle_rows: 16,
+                root_rows: 2,
+                max_retained_bytes: 1 << 20,
+                max_construction_peak_bytes: 1 << 20,
+            },
+        )?;
+        record.visit_storage_on_control(&mut ledger)?;
+        ledger.validate_selected_shared_handles_on_control()?;
+        Ok(ledger.summary()?.data_bytes)
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn test_spectrum_packet_facts(
+        &self,
+    ) -> Result<(usize, usize, usize), hex_engine::AudioStorageError> {
+        let bank = lock(&self.bank);
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 128,
+                root_rows: 4,
+                max_retained_bytes: 32 * 1024 * 1024,
+                max_construction_peak_bytes: 32 * 1024 * 1024,
+            },
+        )?;
+        let mut count = 0;
+        let mut disposed = 0;
+        for record in bank.spectrum_packets.iter().flatten() {
+            record.visit_storage_on_control(&mut ledger)?;
+            count += 1;
+            disposed += usize::from(record.is_normally_disposed_on_control());
+        }
+        ledger.validate_selected_shared_handles_on_control()?;
+        Ok((count, disposed, ledger.summary()?.data_bytes))
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn test_spectrum_result_facts(
+        &self,
+    ) -> Result<(usize, usize, usize), hex_engine::AudioStorageError> {
+        let bank = lock(&self.bank);
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 256,
+                handle_rows: 128,
+                root_rows: 4,
+                max_retained_bytes: 32 * 1024 * 1024,
+                max_construction_peak_bytes: 32 * 1024 * 1024,
+            },
+        )?;
+        let mut count = 0;
+        let mut disposed = 0;
+        for record in bank.spectrum_results.iter().flatten() {
+            record.visit_storage_on_control(&mut ledger)?;
+            count += 1;
+            disposed += usize::from(record.is_normally_disposed_on_control());
+        }
+        ledger.validate_selected_shared_handles_on_control()?;
+        Ok((count, disposed, ledger.summary()?.data_bytes))
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn test_matches_spectrum_packet(
+        &self,
+        lease: &hex_engine::sampler_host_fields::NativeSpectrumPacketLease,
+    ) -> bool {
+        lock(&self.bank)
+            .spectrum_packets
+            .iter()
+            .flatten()
+            .any(|record| record.matches_actual_lease_on_control(lease))
+    }
+    pub(super) fn pair_spectrum_packet(
+        &self,
+        index: usize,
+        fields: hex_engine::sampler_host_fields::NativeSpectrumPacketFields<'_>,
+    ) -> Result<
+        hex_engine::sampler_host_fields::NativeSpectrumPacketLease,
+        hex_engine::AudioStorageError,
+    > {
+        let mut bank = lock(&self.bank);
+        if bank.closing || bank.spectrum_packets.get(index).is_none_or(Option::is_some) {
+            return Err(hex_engine::AudioStorageError::SourceMismatch);
+        }
+        let (record, lease) = hex_engine::sampler_host_fields::NativeSpectrumPacketRegistration::pair_actual_packet_on_control(fields)?;
+        bank.spectrum_packets[index] = Some(record);
+        Ok(lease)
+    }
+    pub(super) fn pair_spectrum_result(
+        &self,
+        index: usize,
+        fields: hex_engine::sampler_host_fields::NativeSpectrumResultFields<'_>,
+    ) -> Result<
+        (
+            hex_engine::sampler_host_fields::NativeSpectrumResultLease,
+            hex_engine::sampler_host_fields::NativeSpectrumResultHome,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        let mut bank = lock(&self.bank);
+        if bank.closing || bank.spectrum_results.get(index).is_none_or(Option::is_some) {
+            return Err(hex_engine::AudioStorageError::SourceMismatch);
+        }
+        let (record, lease, home) = hex_engine::sampler_host_fields::NativeSpectrumResultRegistration::pair_actual_result_on_control(fields)?;
+        bank.spectrum_results[index] = Some(record);
+        Ok((lease, home))
+    }
+    pub(super) fn spectrum_stop_pair(
+        &self,
+    ) -> Result<
+        [hex_engine::sampler_host_fields::NativeAtomicSignal; 2],
+        hex_engine::AudioStorageError,
+    > {
+        let mut bank = lock(&self.bank);
+        if bank.closing || bank.spectrum_stop.is_some() {
+            return Err(hex_engine::AudioStorageError::SourceMismatch);
+        }
+        let (record, fields) =
+            hex_engine::sampler_host_fields::NativeAtomicSignalRegistration::fresh_pair_on_control(
+                0,
+            )?;
+        bank.spectrum_stop = Some(record);
+        Ok(fields)
+    }
+    pub(super) fn matches_spectrum_stop(
+        &self,
+        stop: &crate::spectrum_worker::SpectrumStop,
+    ) -> bool {
+        let bank = lock(&self.bank);
+        match bank.spectrum_stop.as_ref() {
+            Some(record) => stop.matches_record(record, 0),
+            None => stop.is_legacy(),
+        }
+    }
+    fn spectrum_ring<T>(
+        &self,
+        index: usize,
+        capacity: usize,
+    ) -> Result<
+        (
+            crate::native_callback_owner::NativePreparedProducer<T>,
+            crate::native_callback_owner::NativePreparedConsumer<T>,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        let mut bank = lock(&self.bank);
+        if bank.closing || bank.spectrum_rings.get(index).is_none_or(Option::is_some) {
+            return Err(hex_engine::AudioStorageError::SourceMismatch);
+        }
+        let (producer, consumer, record) =
+            crate::native_callback_owner::registered_prepared_ring(capacity)?;
+        bank.spectrum_rings[index] = Some(record);
+        Ok((producer, consumer))
+    }
+    // Sole audited caller is the existing Project constructor; indices retain
+    // its three actual fixed queues, not a general runtime queue registry.
+    pub(super) fn spectrum_project_ring<T>(
+        &self,
+        index: usize,
+        capacity: usize,
+    ) -> Result<
+        (
+            crate::native_callback_owner::NativePreparedProducer<T>,
+            crate::native_callback_owner::NativePreparedConsumer<T>,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        let expected = match index {
+            0 => crate::spectrum_worker::CAPTURE_QUEUE_CAPACITY,
+            1 => crate::spectrum_worker::CAPTURE_QUEUE_CAPACITY + 1,
+            2 => crate::spectrum_worker::RESULT_QUEUE_CAPACITY,
+            3 => 3,
+            _ => return Err(hex_engine::AudioStorageError::SourceMismatch),
+        };
+        if capacity != expected {
+            return Err(hex_engine::AudioStorageError::SourceMismatch);
+        }
+        self.spectrum_ring(index + 2, capacity)
+    }
+    pub(super) fn spectrum_capture_ring(
+        &self,
+    ) -> Result<
+        (
+            crate::native_callback_owner::NativePreparedProducer<
+                crate::spectrum_worker::CaptureBatch,
+            >,
+            crate::native_callback_owner::NativePreparedConsumer<
+                crate::spectrum_worker::CaptureBatch,
+            >,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.spectrum_ring(0, crate::spectrum_worker::CAPTURE_QUEUE_CAPACITY)
+    }
+    pub(super) fn spectrum_result_ring(
+        &self,
+    ) -> Result<
+        (
+            crate::native_callback_owner::NativePreparedProducer<
+                crate::spectrum_worker::PublishedSpectra,
+            >,
+            crate::native_callback_owner::NativePreparedConsumer<
+                crate::spectrum_worker::PublishedSpectra,
+            >,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.spectrum_ring(1, crate::spectrum_worker::RESULT_QUEUE_CAPACITY)
+    }
+    pub(super) fn matches_spectrum_capture(
+        &self,
+        capture: Option<&crate::spectrum_worker::SpectrumCapture>,
+    ) -> bool {
+        let bank = lock(&self.bank);
+        match (capture, bank.spectrum_rings[0].as_ref()) {
+            (Some(capture), Some(record)) => {
+                capture.matches_capture_ring(record)
+                    && capture.matches_project_rings(
+                        [
+                            bank.spectrum_rings[2].as_ref(),
+                            bank.spectrum_rings[3].as_ref(),
+                            bank.spectrum_rings[4].as_ref(),
+                        ],
+                        &bank.spectrum_packets,
+                    )
+            }
+            (Some(capture), None) => capture.is_legacy_capture(),
+            (None, None) => true,
+            (None, Some(record)) => record.is_normally_disposed_on_control(),
+        }
+    }
+    pub(super) fn matches_spectrum_reader(
+        &self,
+        reader: Option<&crate::spectrum_worker::SpectrumReader>,
+    ) -> bool {
+        let bank = lock(&self.bank);
+        match (reader, bank.spectrum_rings[1].as_ref()) {
+            (Some(reader), Some(record)) => {
+                reader.matches_result_ring(record)
+                    && reader.matches_project_rings(
+                        [
+                            bank.spectrum_rings[2].as_ref(),
+                            bank.spectrum_rings[3].as_ref(),
+                            bank.spectrum_rings[4].as_ref(),
+                            bank.spectrum_rings[5].as_ref(),
+                        ],
+                        &bank.spectrum_results,
+                    )
+            }
+            (Some(reader), None) => reader.is_legacy_reader(),
+            (None, None) => true,
+            (None, Some(record)) => record.is_normally_disposed_on_control(),
+        }
+    }
+    pub(super) fn pair_spectrum_capture(
+        &self,
+        fields: hex_engine::sampler_host_fields::NativeSpectrumCaptureFields<'_>,
+    ) -> Result<
+        (
+            hex_engine::sampler_host_fields::NativeSpectrumCaptureLease,
+            hex_engine::sampler_host_fields::NativeSpectrumJoinLease,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        let mut bank = lock(&self.bank);
+        if bank.closing || bank.spectrum_capture.is_some() {
+            return Err(hex_engine::AudioStorageError::SourceMismatch);
+        }
+        let (registration, capture, join) = hex_engine::sampler_host_fields::NativeSpectrumCapturedRegistration::pair_actual_capture_on_control(fields)?;
+        bank.spectrum_capture = Some(registration);
+        Ok((capture, join))
+    }
+    pub(super) fn finish_spectrum_capture(
+        &self,
+        join: &mut hex_engine::sampler_host_fields::NativeSpectrumJoinLease,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        let bank = lock(&self.bank);
+        bank.spectrum_capture
+            .as_ref()
+            .ok_or(hex_engine::AudioStorageError::SourceMismatch)?
+            .finalize_actual_join_on_control(join)
+    }
+    pub(super) fn abort_spectrum_capture(
+        &self,
+        join: &mut hex_engine::sampler_host_fields::NativeSpectrumJoinLease,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        let bank = lock(&self.bank);
+        bank.spectrum_capture
+            .as_ref()
+            .ok_or(hex_engine::AudioStorageError::SourceMismatch)?
+            .finalize_failed_spawn_on_control(join)
+    }
+    pub(super) fn native_carrier_vacant(&self, index: usize) -> bool {
+        let bank = lock(&self.bank);
+        !self.enabled()
+            && bank.root == 0
+            && !bank.closing
+            && bank.carriers.get(index).is_some_and(Option::is_none)
+    }
+    pub(super) fn retain_native_carrier(
+        &self,
+        index: usize,
+        record: hex_engine::sampler_host_fields::NativeCarrierStorageRegistration,
+    ) -> Result<(), &'static str> {
+        let mut bank = lock(&self.bank);
+        if self.enabled() || bank.root != 0 || bank.closing {
+            return Err("native carrier Root no longer virgin");
+        }
+        let slot = bank
+            .carriers
+            .get_mut(index)
+            .ok_or("native carrier index differs")?;
+        if slot.is_some() {
+            return Err("native carrier record occupied");
+        }
+        *slot = Some(record);
+        Ok(())
+    }
+    pub(super) fn status_guard_bytes() -> usize {
+        size_of::<CustodyMutexGuard<'_, NativeBank>>()
+    }
+    pub(super) fn initialize_status(
+        &self,
+    ) -> Result<crate::prepared::status_owner::InitialFields, hex_engine::Invalid> {
+        let mut bank = lock(&self.bank);
+        if self.enabled() || bank.root != 0 || bank.closing || bank.status.is_some() {
+            return Err(hex_engine::Invalid("status root is no longer virgin"));
+        }
+        let archive = crate::prepared::status_owner::StatusArchive::new()?;
+        let fields = archive.initial()?;
+        bank.status = Some(archive);
+        Ok(fields)
+    }
+    pub(super) fn duplicate_status(
+        &self,
+        field: &crate::prepared::status_owner::StatusHandle,
+        role: usize,
+    ) -> Result<crate::prepared::status_owner::StatusHandle, hex_engine::Invalid> {
+        let bank = lock(&self.bank);
+        if bank.closing || self.closed.load(Ordering::Acquire) {
+            return Err(hex_engine::Invalid("status root is closing"));
+        }
+        if let Some(archive) = &bank.status {
+            archive.duplicate(field, role)
+        } else {
+            field.duplicate_legacy()
+        }
+    }
+
+    pub(super) fn matches_status_field(
+        &self,
+        field: &crate::prepared::status_owner::StatusHandle,
+        role: usize,
+    ) -> bool {
+        let bank = lock(&self.bank);
+        !bank.closing
+            && !self.closed.load(Ordering::Acquire)
+            && bank
+                .status
+                .as_ref()
+                .is_some_and(|archive| archive.matches_actual_field(field, role))
+    }
+    pub(super) fn matches_atomic_signal(
+        &self,
+        index: usize,
+        field: &crate::native_callback_owner::atomic_signal::Signal,
+        endpoint: usize,
+    ) -> bool {
+        let bank = lock(&self.bank);
+        !bank.closing
+            && !self.closed.load(Ordering::Acquire)
+            && bank
+                .atomic_signals
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some_and(|record| field.matches_constructor_record(record, endpoint))
+    }
+    pub(super) fn matches_prepared_producer<T>(
+        &self,
+        index: usize,
+        field: &crate::native_callback_owner::NativePreparedProducer<T>,
+    ) -> bool {
+        let bank = lock(&self.bank);
+        !bank.closing
+            && !self.closed.load(Ordering::Acquire)
+            && bank
+                .prepared_rings
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some_and(|record| field.matches_constructor_record(record))
+    }
+    pub(super) fn matches_prepared_consumer<T>(
+        &self,
+        index: usize,
+        field: &crate::native_callback_owner::NativePreparedConsumer<T>,
+    ) -> bool {
+        let bank = lock(&self.bank);
+        !bank.closing
+            && !self.closed.load(Ordering::Acquire)
+            && bank
+                .prepared_rings
+                .get(index)
+                .and_then(Option::as_ref)
+                .is_some_and(|record| field.matches_constructor_record(record))
+    }
+    pub(super) fn retain_atomic_signal(
+        &self,
+        index: usize,
+        record: hex_engine::sampler_host_fields::NativeAtomicSignalRegistration,
+    ) -> Result<(), &'static str> {
+        let mut bank = lock(&self.bank);
+        if self.enabled() || bank.root != 0 || bank.closing {
+            return Err("atomic signal Root is no longer virgin");
+        }
+        let slot = bank
+            .atomic_signals
+            .get_mut(index)
+            .ok_or("atomic signal index differs")?;
+        if slot.is_some() {
+            return Err("atomic signal record occupied");
+        }
+        *slot = Some(record);
+        Ok(())
+    }
+
+    pub(super) fn retain_prepared_ring(
+        &self,
+        index: usize,
+        record: hex_engine::sampler_host_fields::NativeFixedRingRegistration,
+    ) -> Result<(), &'static str> {
+        let mut bank = lock(&self.bank);
+        if self.enabled() || bank.root != 0 || bank.closing {
+            return Err("prepared queue Root is no longer virgin");
+        }
+        let slot = bank
+            .prepared_rings
+            .get_mut(index)
+            .ok_or("prepared queue index differs")?;
+        if slot.is_some() {
+            return Err("prepared queue record is occupied");
+        }
+        *slot = Some(record);
+        Ok(())
+    }
+    fn prepared_ring_increment(
+        &self,
+        bytes: usize,
+        resident: Option<&crate::prepared::resident_forwarding::ResidentArchive>,
+        root_fields: Option<&hex_engine::sampler_host_fields::NativeRootFieldRegistration>,
+    ) -> Option<usize> {
+        let bank = lock(&self.bank);
+        // Root's inline registration handle is in the Root body; its separate
+        // constructor metadata allocation remains live through actor release.
+        let bytes = match root_fields {
+            Some(fields) => bytes.checked_add(fields.retained_metadata_bytes_on_control().ok()?)?,
+            None => bytes,
+        };
+        let bytes = match resident {
+            Some(archive) => bytes.checked_add(
+                archive.legacy_budget_increment(
+                    bank.native
+                        .as_ref()
+                        .is_some_and(|native| native.has_worker_resident_payload()),
+                )?,
+            )?,
+            None => bytes,
+        };
+        // The existing channel report already includes Status DATA/routes.
+        // Its retained role-registration allocation is separate and stays live
+        // with this actual Root even after all actor fields have retired.
+        let bytes = match &bank.status {
+            Some(status) => bytes.checked_add(status.retained_metadata_bytes().ok()?)?,
+            None => bytes,
+        };
+        let bytes = bank
+            .atomic_signals
+            .iter()
+            .flatten()
+            .try_fold(bytes, |sum, record| {
+                sum.checked_add(record.legacy_payload_budget_increment_on_control().ok()?)
+            })?;
+        let bytes = bank
+            .carriers
+            .iter()
+            .flatten()
+            .try_fold(bytes, |sum, record| {
+                sum.checked_add(record.retained_metadata_bytes_on_control().ok()?)
+            })?;
+        bank.prepared_rings
+            .iter()
+            .enumerate()
+            .try_fold(bytes, |sum, (index, record)| {
+                let Some(record) = record else { return Some(sum) };
+                let legacy = record.legacy_budget_increment_on_control().ok()?;
+                // Original three prepared queues report core bodies/backings.
+                // The six auxiliary queues already use ChannelStorage::ring,
+                // which includes the full core Arc header. Only their new
+                // registration allocation is additional to that existing cost.
+                let extra = if index < 3 { legacy } else {
+                    hex_engine::sampler_host_fields::NativeFixedRingRegistration::metadata_requested_bytes_on_control().ok()?
+                };
+                sum.checked_add(extra)
+            })
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn test_status_data(&self) -> Result<usize, hex_engine::AudioStorageError> {
+        let bank = lock(&self.bank);
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 16,
+                handle_rows: 32,
+                root_rows: 4,
+                max_retained_bytes: 1 << 20,
+                max_construction_peak_bytes: 1 << 20,
+            },
+        )?;
+        let status = bank
+            .status
+            .as_ref()
+            .ok_or(hex_engine::AudioStorageError::SourceMismatch)?;
+        status.fields()?.visit_storage_on_control(&mut ledger)?;
+        ledger.validate_selected_shared_handles_on_control()?;
+        Ok(ledger.summary()?.data_bytes)
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn test_atomic_signal_data(
+        &self,
+    ) -> Result<(usize, usize), hex_engine::AudioStorageError> {
+        let bank = lock(&self.bank);
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 64,
+                handle_rows: 128,
+                root_rows: 4,
+                max_retained_bytes: 1 << 20,
+                max_construction_peak_bytes: 1 << 20,
+            },
+        )?;
+        let mut count = 0;
+        for record in bank.atomic_signals.iter().flatten() {
+            record.visit_storage_on_control(&mut ledger)?;
+            count += 1;
+        }
+        ledger.validate_selected_shared_handles_on_control()?;
+        Ok((count, ledger.summary()?.data_bytes))
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(super) fn test_prepared_ring_data(
+        &self,
+    ) -> Result<(usize, usize), hex_engine::AudioStorageError> {
+        let bank = lock(&self.bank);
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 64,
+                handle_rows: 64,
+                root_rows: 4,
+                max_retained_bytes: 1 << 20,
+                max_construction_peak_bytes: 1 << 20,
+            },
+        )?;
+        let mut count = 0;
+        for record in bank.prepared_rings.iter().flatten() {
+            record.visit_storage_on_control(&mut ledger)?;
+            count += 1;
+        }
+        ledger.validate_selected_shared_handles_on_control()?;
+        Ok((count, ledger.summary()?.data_bytes))
+    }
     fn mark_closing(&self, bank: &mut NativeBank) {
         self.closed.store(true, Ordering::Release);
         bank.closing = true;
@@ -156,11 +828,11 @@ impl Custody {
         &self,
         root: u64,
         terminals: &crate::native_callback_owner::NativeTerminals,
-    ) {
+    ) -> bool {
         let mut bank = lock(&self.bank);
-        if let Some(native) = bank.native.as_mut() {
-            let _ = native.anchor(root, terminals);
-        }
+        bank.native
+            .as_mut()
+            .is_some_and(|native| native.anchor(root, terminals))
     }
     pub(super) fn native_boundary_bytes(&self, root: u64) -> Option<usize> {
         let bank = lock(&self.bank);
@@ -168,7 +840,17 @@ impl Custody {
         native.matches(root).then_some(())?;
         native.data_bytes()
     }
-    pub(super) fn prewarm_on_control(&self) {
+    #[cfg(test)]
+    pub(super) fn test_requires_analyzer_parent(&self) -> bool {
+        lock(&self.bank)
+            .native
+            .as_ref()
+            .is_some_and(|native| native.analysis_workers() != 0)
+    }
+    #[cfg(test)]
+    pub(super) fn test_inline_native_exclusions(&self) {
+        self.bank.try_lock().map(drop).unwrap();
+        self.work.try_lock().map(drop).unwrap();
         drop(lock(&self.bank));
         drop(lock(&self.work));
     }
@@ -180,7 +862,12 @@ impl Custody {
         root: u64,
         reservation: AudioCandidateDomainReservation,
         base_bytes: usize,
+        resident: Option<&crate::prepared::resident_forwarding::ResidentArchive>,
+        root_fields: Option<&hex_engine::sampler_host_fields::NativeRootFieldRegistration>,
     ) -> Result<(), &'static str> {
+        let base_bytes = self
+            .prepared_ring_increment(base_bytes, resident, root_fields)
+            .ok_or("prepared queue metadata overflow")?;
         if self.enabled()
             || reservation.max_construction_peak_data_bytes < reservation.max_retained_data_bytes
         {
@@ -197,16 +884,13 @@ impl Custody {
         if bank.root != 0 || bank.closing {
             return Err("constructor custody already configured");
         }
-        let native = bank.native.take();
-        *bank = NativeBank {
-            root,
-            reservation,
-            domains: std::array::from_fn(|_| DomainSlot::vacant()),
-            metadata_bytes: base_bytes,
-            closing: false,
-            publication: publication::Bank::default(),
-            native,
-        };
+        // These TWO actual signal allocations were born inside this Root.
+        // Preserve their fields/lineages rather than create a new pair while
+        // the old pair is still alive. No payload, signal or native boundary
+        // is taken out of its persistent constructor destination.
+        bank.root = root;
+        bank.reservation = reservation;
+        bank.metadata_bytes = base_bytes;
         self.enabled.store(true, Ordering::Release);
         Ok(())
     }
@@ -335,7 +1019,7 @@ impl Custody {
         } else {
             0
         };
-        let signal = Arc::clone(&lock(&self.bank).domains[token.slot].signal);
+        let signal = lock(&self.bank).domains[token.slot].signal.clone();
         let envelope = loan.map(|loan| DomainEnvelope::new(token, loan, signal));
         let mut guard = lock(&self.bank);
         // Configuration is immutable and only this sole Control registers. The
@@ -434,7 +1118,31 @@ impl Custody {
     }
     pub(super) fn complete(&self) -> bool {
         let guard = lock(&self.bank);
-        guard.domains.iter().all(|s| s.phase == Phase::Vacant) && guard.publication.complete()
+        guard.domains.iter().all(|s| s.phase == Phase::Vacant)
+            && guard.publication.complete()
+            && guard
+                .spectrum_stop
+                .as_ref()
+                .is_none_or(|record| record.legacy_payload_budget_increment_on_control().is_ok())
+            && guard
+                .spectrum_rings
+                .iter()
+                .flatten()
+                .all(|record| record.is_normally_disposed_on_control())
+            && guard
+                .spectrum_packets
+                .iter()
+                .flatten()
+                .all(|record| record.is_normally_disposed_on_control())
+            && guard
+                .spectrum_results
+                .iter()
+                .flatten()
+                .all(|record| record.is_normally_disposed_on_control())
+            && guard
+                .spectrum_capture
+                .as_ref()
+                .is_none_or(|record| record.is_normally_disposed_on_control())
     }
     pub(super) fn advance_on_control(&self, abandoned: bool) {
         let Ok(mut work) = self.work.try_lock() else {
@@ -618,6 +1326,8 @@ mod tests {
                 max_construction_peak_data_bytes: bytes,
             },
             128,
+            None, // This fixture owns only the standalone Custody, no Root archive.
+            None, // No enclosing Root actor registration in this fixture.
         )
         .unwrap();
         root

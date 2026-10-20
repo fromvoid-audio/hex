@@ -1,4 +1,6 @@
 //! Private actual Return buses + feed plan in the existing preparation root.
+use super::tracks::utility::UtilityCustody;
+mod selector_cost;
 use super::*;
 pub use crate::return_feed_plan::persistent::ReturnFeedCapacity;
 use crate::{ReturnBus, owned_shared::OwnedShared, return_feed_plan::persistent::FeedPlanCustody};
@@ -27,13 +29,15 @@ struct Row {
     ordinal: usize,
     gain: f32,
     muted: bool,
-    chain: Option<OwnedShared<[hex_lattice::PreparedRuntimeInstance]>>,
-    bare: Option<Arc<[hex_lattice::PreparedRuntimeInstance]>>,
+    chain: Option<OwnedShared<[crate::PreparedEffectInstance]>>,
+    utility: UtilityCustody,
+    bare: Option<Arc<[crate::PreparedEffectInstance]>>,
     declaration: Option<SharedDeclaration>,
     handle: u64,
     bus: Option<ReturnBus>,
     root_index: Option<usize>,
     disposal: Disposal,
+    compiler_observed: bool,
 }
 #[derive(Default)]
 pub(super) struct ReturnAssembly {
@@ -163,6 +167,23 @@ impl ReturnAssembly {
             ..Default::default()
         };
         for r in &self.rows {
+            let nested = if let Some(bus) = r.actual(root)? {
+                r.utility.bytes(&bus.device_chain)?
+            } else if let Some(chain) = &r.chain {
+                r.utility.bytes(chain.arc())?
+            } else if let Some(chain) = &r.bare {
+                r.utility.bytes(chain)?
+            } else {
+                r.utility.metadata_bytes()?
+            };
+            c.chain_payload_bytes = c
+                .chain_payload_bytes
+                .checked_add(nested)
+                .ok_or(AudioStorageError::Overflow)?;
+            c.reserved_handle_destinations = c
+                .reserved_handle_destinations
+                .checked_add(r.utility.handles())
+                .ok_or(AudioStorageError::Overflow)?;
             let parts = if let Some(bus) = r.actual(root)? {
                 if r.bare.is_some() || r.chain.is_some() {
                     return Err(AudioStorageError::UnknownStorage);
@@ -189,17 +210,14 @@ impl ReturnAssembly {
                     .ok_or(AudioStorageError::Overflow)?;
                 c.independent_handle_obligations = c
                     .independent_handle_obligations
-                    .checked_add(1)
+                    .checked_add(1 + r.utility.handles())
                     .ok_or(AudioStorageError::Overflow)?;
             }
         }
         c.bytes()?;
         Ok(c)
     }
-    pub(super) fn reserve(
-        &mut self,
-        project: &hex_project::Project,
-    ) -> Result<(), AudioStorageError> {
+    fn require_vacant_rows(&self) -> Result<(), AudioStorageError> {
         if self.phase != Phase::Vacant
             || self.rows.iter().any(|r| {
                 r.id.is_some()
@@ -212,11 +230,21 @@ impl ReturnAssembly {
         {
             return Err(AudioStorageError::Capacity);
         }
+        Ok(())
+    }
+    pub(super) fn reserve(
+        &mut self,
+        project: &hex_project::Project,
+    ) -> Result<(), AudioStorageError> {
+        let cost = self.selector_construction_cost(project)?;
+        let before = self.capacity_at(false, &[], None)?.bytes()?;
         if project.return_tracks().len() > hex_project::MAX_RETURN_TRACKS
-            || project
-                .return_tracks()
-                .iter()
-                .any(|b| !b.devices().is_empty())
+            || project.return_tracks().iter().any(|b| {
+                b.devices().iter().any(|device| {
+                    device.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID
+                        || device.state().require_asset_free_processing().is_err()
+                })
+            })
         {
             return Err(AudioStorageError::UnsupportedGraph);
         }
@@ -255,20 +283,48 @@ impl ReturnAssembly {
             r.gain = b.gain();
             r.muted = b.muted();
             r.disposal = Disposal::Unstarted;
+            r.compiler_observed = false;
         }
         // Every active destination has a cleanup state before even scalar
         // handle exhaustion can interrupt acquisition. No owner is created yet.
         for r in &mut self.rows[..self.active] {
             r.handle = handle()?;
         }
-        for r in &mut self.rows[..self.active] {
-            r.chain = Some(OwnedShared::new_owned_empty_slice());
+        for (r, bus) in self.rows[..self.active]
+            .iter_mut()
+            .zip(project.return_tracks())
+        {
+            r.chain = Some(r.utility.prepare(
+                bus.devices(),
+                hex_lattice::ProcessorChainOwner::Return(bus.id().value()),
+                project.sample_rate(),
+            )?);
+            self.growth = self
+                .growth
+                .checked_add(r.utility.construction_overlap())
+                .ok_or(AudioStorageError::Overflow)?;
             r.chain
                 .as_ref()
                 .and_then(OwnedShared::parts)
                 .ok_or(AudioStorageError::UnsupportedConstructor)?;
         }
         self.feed.prepare(project)?;
+        let actual = self.capacity_at(true, &[], None)?;
+        let retained = actual.bytes()?;
+        let peak = retained
+            .checked_add(actual.previous_growth_backing_bytes)
+            .ok_or(AudioStorageError::Overflow)?;
+        if retained
+            > before
+                .checked_add(cost.additional_retained_bytes)
+                .ok_or(AudioStorageError::Overflow)?
+            || peak
+                > before
+                    .checked_add(cost.additional_peak_bytes)
+                    .ok_or(AudioStorageError::Overflow)?
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         Ok(())
     }
     pub(super) fn construct(&mut self) -> Result<(), AudioStorageError> {
@@ -284,10 +340,15 @@ impl ReturnAssembly {
                 || r.declaration.is_some()
                 || r.bus.is_some()
                 || r.disposal != Disposal::Unstarted
-                || r.chain.as_ref().is_some_and(|c| !c.is_empty())
             {
                 return Err(AudioStorageError::SourceMismatch);
             }
+            r.utility.bytes(
+                r.chain
+                    .as_ref()
+                    .ok_or(AudioStorageError::UnknownStorage)?
+                    .arc(),
+            )?;
         }
         for r in &mut self.rows[..self.active] {
             if let Some(chain) = r.chain.take() {
@@ -296,13 +357,13 @@ impl ReturnAssembly {
                 r.bare = Some(arc);
             }
             if let (Some(id), Some(device_chain)) = (r.id, r.bare.take()) {
-                r.bus = Some(ReturnBus {
+                r.bus = Some(ReturnBus::from_compiled_fields(
                     id,
-                    gain: r.gain,
-                    muted: r.muted,
-                    matrix: None,
+                    r.gain,
+                    r.muted,
+                    None,
                     device_chain,
-                });
+                ));
             }
             #[cfg(test)]
             {
@@ -342,6 +403,9 @@ impl ReturnAssembly {
             return Ok(());
         }
         let r = &mut self.rows[self.cursor];
+        if r.root_index.is_some() {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         if let Some(b) = &r.bus {
             if r.bare.is_some()
                 || r.chain.is_some()
@@ -349,12 +413,15 @@ impl ReturnAssembly {
                 || b.gain != r.gain
                 || b.muted != r.muted
                 || b.matrix.is_some()
-                || !b.device_chain.is_empty()
-                || r.declaration.is_none()
+                || r.declaration
+                    .as_ref()
+                    .and_then(|birth| birth.parts(&b.device_chain))
+                    .is_none()
                 || r.disposal != Disposal::Unstarted
             {
                 return Err(AudioStorageError::UnknownStorage);
             }
+            r.utility.bytes(&b.device_chain)?;
             if let Some(ReturnBus {
                 id: _,
                 gain: _,
@@ -372,12 +439,14 @@ impl ReturnAssembly {
         r.disposal = Disposal::Pending;
         drop(r.chain.take());
         drop(r.bare.take());
+        r.utility.clear();
         #[cfg(test)]
         drop(self.probe.take());
         r.disposal = Disposal::Complete;
         r.handle = 0;
         r.id = None;
         r.declaration = None;
+        r.compiler_observed = false;
         self.cursor += 1;
         Ok(())
     }
@@ -436,16 +505,21 @@ impl ArrangementReturnMetadata<'_> {
         })
     }
     pub fn order(&self) -> impl Iterator<Item = usize> + '_ {
-        self.owner.feed.order().chain(
-            self.feed
-                .into_iter()
-                .flat_map(|p| p.order().iter().copied()),
-        )
+        self.owner
+            .feed
+            .order()
+            .filter(|_| self.feed.is_none())
+            .chain(
+                self.feed
+                    .into_iter()
+                    .flat_map(|p| p.order().iter().copied()),
+            )
     }
     pub fn feeds(&self) -> impl Iterator<Item = (usize, usize, u64, f32)> + '_ {
         self.owner
             .feed
             .feeds()
+            .filter(|_| self.feed.is_none())
             .chain(self.feed.into_iter().flat_map(|p| p.edges()))
     }
 }
@@ -461,6 +535,13 @@ impl ReturnAssembly {
         external_feed: Option<&'a crate::return_feed_plan::ReturnFeedPlan>,
     ) -> Result<(), AudioStorageError> {
         use crate::audio_storage::Owner;
+        if self
+            .rows
+            .iter()
+            .any(|row| row.disposal == Disposal::Pending)
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         self.capacity_at(false, root, external_feed)?;
         let Self {
             rows,
@@ -486,13 +567,16 @@ impl ReturnAssembly {
                 gain: _,
                 muted: _,
                 chain,
+                utility,
                 bare,
                 declaration,
                 handle,
                 bus: _,
                 root_index: _,
                 disposal: _,
+                compiler_observed: _,
             } = r;
+            utility.visit_metadata(l)?;
             if let Some(bus) = r.actual(root)? {
                 let ReturnBus {
                     id: _,
@@ -501,9 +585,7 @@ impl ReturnAssembly {
                     matrix: _,
                     device_chain,
                 } = bus;
-                if !device_chain.is_empty() {
-                    return Err(AudioStorageError::UnknownStorage);
-                }
+                utility.visit(device_chain, l)?;
                 l.shared(
                     device_chain,
                     declaration.as_ref().and_then(|d| d.parts(device_chain)),
@@ -513,9 +595,7 @@ impl ReturnAssembly {
                 )?;
             } else {
                 if let Some(owner) = chain {
-                    if !owner.is_empty() {
-                        return Err(AudioStorageError::UnknownStorage);
-                    }
+                    utility.visit(owner.arc(), l)?;
                     l.shared(
                         owner.arc(),
                         owner.parts(),
@@ -525,9 +605,7 @@ impl ReturnAssembly {
                     )?;
                 }
                 if let Some(owner) = bare {
-                    if !owner.is_empty() {
-                        return Err(AudioStorageError::UnknownStorage);
-                    }
+                    utility.visit(owner, l)?;
                     l.shared(
                         owner,
                         declaration.as_ref().and_then(|d| d.parts(owner)),
@@ -536,6 +614,148 @@ impl ReturnAssembly {
                         None,
                     )?;
                 }
+            }
+        }
+        Ok(())
+    }
+}
+
+impl ReturnAssembly {
+    pub(super) fn compiler_preflight(
+        &self,
+        project: &hex_project::Project,
+    ) -> Result<(), AudioStorageError> {
+        if !matches!(self.phase, Phase::Reserved | Phase::Installed)
+            || self.active != project.return_tracks().len()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        for (index, (row, source)) in self.rows[..self.active]
+            .iter()
+            .zip(project.return_tracks())
+            .enumerate()
+        {
+            if row.ordinal != index
+                || row.id != Some(source.id())
+                || row.gain != source.gain()
+                || row.muted != source.muted()
+                || row.compiler_observed
+                || row.root_index.is_some()
+                || row.disposal != Disposal::Unstarted
+            {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            let chain = if let Some(owner) = &row.chain {
+                owner.arc().as_ref()
+            } else if let Some(owner) = &row.bare {
+                owner.as_ref()
+            } else if let Some(bus) = &row.bus {
+                bus.device_chain.as_ref()
+            } else {
+                return Err(AudioStorageError::SourceMismatch);
+            };
+            row.utility.bytes(chain)?;
+            if !compiler_return_source_matches(chain, source, project.sample_rate()) {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn compiler_observe(
+        &mut self,
+        index: usize,
+        source: &hex_project::ReturnTrack,
+        output: &ReturnBus,
+        rate: u32,
+    ) -> Result<(), AudioStorageError> {
+        let row = self
+            .rows
+            .get_mut(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if row.ordinal != index
+            || row.id != Some(source.id())
+            || row.compiler_observed
+            || output.id != source.id()
+            || output.gain != source.gain()
+            || output.muted != source.muted()
+            || output.device_chain.len() != source.devices().len()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        if !compiler_return_source_matches(&output.device_chain, source, rate) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        // Nonowning source correlation ONLY. The fresh common-compiler chain
+        // does not acquire the old row's declarations by matching these IDs.
+        row.compiler_observed = true;
+        Ok(())
+    }
+}
+
+fn compiler_return_source_matches(
+    chain: &[crate::PreparedEffectInstance],
+    source: &hex_project::ReturnTrack,
+    rate: u32,
+) -> bool {
+    chain.len() == source.devices().len()
+        && chain
+            .iter()
+            .zip(source.devices())
+            .all(|(prepared, authored)| {
+                prepared.owner == hex_lattice::ProcessorChainOwner::Return(source.id().value())
+                    && prepared.device_id == authored.id().value()
+                    && prepared.device_type == authored.state().type_id()
+                    && prepared.bypassed == authored.bypassed()
+                    && prepared.sample_rate == rate
+                    && prepared.configuration.as_ref().is_some_and(|state| {
+                        state.as_ref().type_id() == authored.state().type_id()
+                            && state.state_version() == authored.state().state_version()
+                            && state.payload() == authored.state().payload()
+                            && state.input_gain_millidb() == authored.state().input_gain_millidb()
+                            && state.output_gain_millidb() == authored.state().output_gain_millidb()
+                    })
+            })
+}
+
+impl ReturnAssembly {
+    pub(super) fn compiler_chain(
+        &self,
+        index: usize,
+    ) -> Result<&[crate::PreparedEffectInstance], AudioStorageError> {
+        let row = self
+            .rows
+            .get(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if row.ordinal != index || row.root_index.is_some() || row.disposal != Disposal::Unstarted {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        Ok(&row
+            .bus
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .device_chain)
+    }
+    pub(super) fn compiler_install(
+        &mut self,
+        index: usize,
+        target: &mut Vec<ReturnBus>,
+    ) -> Result<(), AudioStorageError> {
+        // All refusal precedes the original owner move. Existing root indices
+        // retain exactly the same restoration and inspection route afterwards.
+        self.compiler_chain(index)?;
+        if target.len() != index || target.len() == target.capacity() {
+            return Err(AudioStorageError::Capacity);
+        }
+        self.move_root_row(index, target);
+        #[cfg(test)]
+        {
+            assert_ne!(
+                self.panic_after,
+                Some(index),
+                "paired compiler Return move panic"
+            );
+            if self.fail_after == Some(index) {
+                return Err(AudioStorageError::Allocation);
             }
         }
         Ok(())

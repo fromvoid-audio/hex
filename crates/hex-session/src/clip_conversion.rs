@@ -41,7 +41,7 @@ impl Session {
         let (project, track, source_gain) = isolated_source(self.project(), clip)?;
         let revision = hex_engine::PreparedRevision::prepare(
             &project,
-            &BTreeMap::new(),
+            &SortedEntries::new(),
             self.sine_table(),
             None,
         )
@@ -70,12 +70,17 @@ impl Session {
             return Err(error.to_string());
         }
         let result = (|| {
-            let decoded = hex_media::decode_wav_file(
+            let prepared = PreparedImport::decode_at_rate(
                 &path,
+                self.project().sample_rate(),
                 hex_media::Limits::new(64 * 1024 * 1024 + 44, MAX_BOUNCE_FRAMES as usize),
+                hex_media::ResampleLimits {
+                    max_source_frames: MAX_BOUNCE_FRAMES as usize,
+                    max_output_frames: MAX_BOUNCE_FRAMES as usize,
+                },
+                &self.shutdown,
             )
             .map_err(|e| e.to_string())?;
-            let prepared = PreparedImport::new(decoded).map_err(|e| e.to_string())?;
             self.import_prepared_audio_clip_revision_mode(
                 prepared,
                 track,

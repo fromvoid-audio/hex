@@ -81,7 +81,7 @@ impl DomainSources {
         &self,
         snapshot: &CanonicalAudioSourceSnapshot,
         token: hex_audio::AudioCandidateDomainToken,
-        control: &hex_audio::prepared::PublicationControl,
+        control: &hex_audio::prepared::WorkerPublication<'_>,
     ) -> bool {
         control.audio_candidate_domain_is_sealed(token)
             && self.matches_snapshot(snapshot)

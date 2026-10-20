@@ -66,6 +66,66 @@ pub enum AudioEventEdit {
         events: Vec<AudioEvent>,
     },
 }
+/// One canonical interior split, shared with the borrowed editable view.
+#[derive(Clone, Copy)]
+pub(crate) struct EventSplit {
+    pub left: AudioEvent,
+    pub right: AudioEvent,
+    pub next_id: u64,
+}
+pub(crate) fn split_event(
+    event: AudioEvent,
+    at: u64,
+    next_id: u64,
+) -> Result<Option<EventSplit>, Invalid> {
+    if event.start >= at || at >= event.end {
+        return Ok(None);
+    }
+    let following = next_id
+        .checked_add(1)
+        .ok_or(Invalid("audio event identity exhausted"))?;
+    Ok(Some(EventSplit {
+        left: AudioEvent { end: at, ..event },
+        right: AudioEvent {
+            id: next_id,
+            start: at,
+            source_start: event.source_start + (at - event.start),
+            ..event
+        },
+        next_id: following,
+    }))
+}
+pub(crate) fn validate_event_geometry(
+    next_id: u64,
+    length: u64,
+    events: impl IntoIterator<Item = Result<AudioEvent, Invalid>>,
+    mut unique: impl FnMut(usize, u64) -> bool,
+) -> Result<(), Invalid> {
+    if next_id == 0 {
+        return Err(Invalid("audio event identity is invalid"));
+    }
+    let mut previous_end = 0;
+    for (index, event) in events.into_iter().enumerate() {
+        let event = event?;
+        if event.id == 0
+            || event.id >= next_id
+            || !unique(index, event.id)
+            || event.start < previous_end
+            || event.start >= event.end
+            || event.end > length
+            || event
+                .source_start
+                .checked_add(event.length())
+                .is_none_or(|end| end > length)
+        {
+            return Err(Invalid(
+                "audio events must have unique identities and bounded nonoverlapping intervals",
+            ));
+        }
+        previous_end = event.end;
+    }
+    Ok(())
+}
 impl AudioEvents {
     pub fn identity(length: u64) -> Self {
         Self {
@@ -82,34 +142,53 @@ impl AudioEvents {
         if self.events.len() > MAX_AUDIO_EVENTS || self.next_id == 0 {
             return Err(Invalid("audio event limit or identity is invalid"));
         }
-        self.validate_geometry(length)
+        self.validate_transformed(length, Ok)
+    }
+    /// Full-domain validation uses bounded stack scratch, including virtual
+    /// affine events. Temporary edit fragments retain their separate validator.
+    /// 1024 (u64, usize) entries occupy 16 KiB on supported 64-bit hosts.
+    pub(crate) fn validate_transformed(
+        &self,
+        length: u64,
+        transform: impl Fn(AudioEvent) -> Result<AudioEvent, Invalid>,
+    ) -> Result<(), Invalid> {
+        if self.events.len() > MAX_AUDIO_EVENTS || self.next_id == 0 {
+            return Err(Invalid("audio event limit or identity is invalid"));
+        }
+        let mut ids = [(0_u64, 0_usize); MAX_AUDIO_EVENTS];
+        for (index, event) in self.events.iter().enumerate() {
+            ids[index] = (event.id, index);
+        }
+        let ids = &mut ids[..self.events.len()];
+        ids.sort_unstable();
+        let duplicate = ids
+            .windows(2)
+            .filter(|pair| pair[0].0 == pair[1].0)
+            .map(|pair| pair[1].1)
+            .min();
+        self.validate_geometry_with(length, transform, |index, _| Some(index) != duplicate)
     }
     fn validate_geometry(&self, length: u64) -> Result<(), Invalid> {
         if self.next_id == 0 {
             return Err(Invalid("audio event identity is invalid"));
         }
         let mut ids = std::collections::BTreeSet::new();
-        let mut previous_end = 0;
-        for event in &self.events {
-            if event.id == 0
-                || event.id >= self.next_id
-                || !ids.insert(event.id)
-                || event.start < previous_end
-                || event.start >= event.end
-                || event.end > length
-                || event
-                    .source_start
-                    .checked_add(event.length())
-                    .is_none_or(|end| end > length)
-            {
-                return Err(Invalid(
-                    "audio events must have unique identities and bounded nonoverlapping intervals",
-                ));
-            }
-            previous_end = event.end;
-        }
-        Ok(())
+        self.validate_geometry_with(length, Ok, |_, id| ids.insert(id))
     }
+    fn validate_geometry_with(
+        &self,
+        length: u64,
+        transform: impl Fn(AudioEvent) -> Result<AudioEvent, Invalid>,
+        unique: impl FnMut(usize, u64) -> bool,
+    ) -> Result<(), Invalid> {
+        validate_event_geometry(
+            self.next_id,
+            length,
+            self.events.iter().copied().map(transform),
+            unique,
+        )
+    }
+
     fn id(&mut self) -> Result<u64, Invalid> {
         let id = self.next_id;
         self.next_id = id
@@ -159,14 +238,11 @@ impl AudioEvents {
             AudioEventEdit::Split { at } => {
                 if let Some(index) = next.events.iter().position(|e| e.start < at && at < e.end) {
                     let event = next.events[index];
-                    let right = AudioEvent {
-                        id: next.id()?,
-                        start: at,
-                        source_start: event.source_start + (at - event.start),
-                        ..event
-                    };
-                    next.events[index].end = at;
-                    next.events.insert(index + 1, right);
+                    if let Some(split) = split_event(event, at, next.next_id)? {
+                        next.next_id = split.next_id;
+                        next.events[index] = split.left;
+                        next.events.insert(index + 1, split.right);
+                    }
                 }
             }
             AudioEventEdit::SplitRange { start, end } => {

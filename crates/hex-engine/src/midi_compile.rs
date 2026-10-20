@@ -1,8 +1,8 @@
 //! Bounded control-side compilation of MIDI edges and stateless note spans.
 use crate::Invalid;
+pub(crate) mod construction;
 use hex_lattice::PreparedNativeInstrument;
 use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, NoteId, Project, Track, TrackId};
-use std::sync::Arc;
 
 pub const MAX_MIDI_EVENT_EDGES: usize = 131_072;
 /// Maximum prepared MIDI note occurrences across the entire project.
@@ -80,7 +80,10 @@ pub fn midi_events(project: &Project) -> Result<Vec<CompiledMidiEvent>, Invalid>
             append_clip(project, track_index, track.id(), clip, &mut ordered)?;
         }
     }
-    ordered.sort_by_key(|(track_index, event)| {
+    // Canonical clip/note IDs and occurrence iteration identify each edge;
+    // kind distinguishes a coincident on/off pair. There are no equal keys,
+    // so unstable sorting preserves the full order without heap scratch.
+    ordered.sort_unstable_by_key(|(track_index, event)| {
         (
             event.frame,
             if event.kind == MidiEventKind::NoteOff {
@@ -238,7 +241,9 @@ pub(crate) fn compile_instrument_track(
     instrument: Option<&dyn PreparedNativeInstrument>,
     mutable_limits: Option<MutableInstrumentLimits>,
     shared_context: Option<(u16, &crate::shared_analytic::SharedContextOwner)>,
-    shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    shared_contexts: crate::owned_shared::OwnedShared<
+        crate::shared_analytic::SharedAnalyticContextTable,
+    >,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
 ) -> Result<Option<crate::InstrumentTrack>, Invalid> {
     // MIDI clip timing and editor previews are project data even when the
@@ -246,7 +251,29 @@ pub(crate) fn compile_instrument_track(
     if track.midi_clips().is_empty() {
         return Ok(None);
     }
-    let mut keys = crate::midi_note_bank::PreparedMidiNoteBank::empty_keys();
+    // The closed mutable/Sampler and silent branches have an empty note bank.
+    // Quote only this constructor's own storage, not the enclosing context or
+    // caller preview Vec and its sample/ordinal buffers (quoted by its owning
+    // compiler destination). Legacy analytic note-bank behavior stays separate.
+    let construction_cost = if mutable_limits.is_some() || instrument.is_none() {
+        Some(construction::quote(track, instrument.is_some())?)
+    } else {
+        None
+    };
+    // Mutable factories never read an analytic note bank. Other instruments
+    // reserve their full authored-key scratch once, before any key is appended.
+    let needs_keys = instrument.is_some() && mutable_limits.is_none();
+    let key_bound = track.midi_clips().iter().try_fold(0usize, |total, clip| {
+        total
+            .checked_add(clip.notes().len())
+            .filter(|count| *count <= hex_project::MAX_NOTES)
+            .ok_or(Invalid("midi note bank key limit reached"))
+    })?;
+    let mut keys = crate::midi_note_bank::PreparedMidiNoteBank::reserved_keys(if needs_keys {
+        key_bound
+    } else {
+        0
+    })?;
     let mut clip_counts = Vec::new();
     clip_counts
         .try_reserve_exact(track.midi_clips().len())
@@ -262,7 +289,7 @@ pub(crate) fn compile_instrument_track(
                 .count();
             let count = usize::try_from(count)
                 .map_err(|_| Invalid("compiled midi occurrence count overflow"))?;
-            if count != 0 && instrument.is_some() {
+            if count != 0 && needs_keys {
                 crate::midi_note_bank::PreparedMidiNoteBank::add_key(
                     &mut keys,
                     note.pitch(),
@@ -403,7 +430,9 @@ pub(crate) fn compile_instrument_track(
             });
         }
     }
-    spans.sort_by_key(|span| {
+    // One span per canonical clip/note/iteration in this track. The complete
+    // key is unique even for simultaneous notes or clipped loop occurrences.
+    spans.sort_unstable_by_key(|span| {
         (
             span.start,
             span.clip.value(),
@@ -412,14 +441,21 @@ pub(crate) fn compile_instrument_track(
         )
     });
     validate_density(&spans, mutable_limits)?;
-    let mut nodes = Vec::with_capacity(spans.len());
+    let mut nodes = Vec::new();
+    nodes
+        .try_reserve_exact(spans.len())
+        .map_err(|_| Invalid("could not reserve instrument span index"))?;
     let root = build_interval_tree(&spans, 0, spans.len(), &mut nodes);
+    let bank = bank.unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty);
+    if let Some(cost) = construction_cost {
+        cost.validate_actual(&spans, &nodes, &bank)?;
+    }
     Ok(Some(crate::InstrumentTrack {
         spans,
         nodes,
         root,
         timeline_end,
-        bank: bank.unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty),
+        bank,
         shared_contexts,
         mutable,
     }))
@@ -447,10 +483,22 @@ fn validate_density<S: DensitySpan>(
     spans: &[S],
     mutable_limits: Option<MutableInstrumentLimits>,
 ) -> Result<(), Invalid> {
-    let onset_frames = spans.iter().map(DensitySpan::start).collect::<Vec<_>>();
+    let mut onset_frames = Vec::new();
+    onset_frames
+        .try_reserve_exact(spans.len())
+        .map_err(|_| Invalid("could not reserve midi onset density"))?;
+    onset_frames.extend(spans.iter().map(DensitySpan::start));
     validate_onset_density(&onset_frames)?;
-
-    let mut edges = Vec::with_capacity(spans.len() * 2);
+    // Only scalar scratch: retire it before reserving the next density backing.
+    drop(onset_frames);
+    let edge_count = spans
+        .len()
+        .checked_mul(2)
+        .ok_or(Invalid("midi voice density edge count overflow"))?;
+    let mut edges = Vec::new();
+    edges
+        .try_reserve_exact(edge_count)
+        .map_err(|_| Invalid("could not reserve midi voice density"))?;
     for span in spans {
         edges.push((span.start(), true));
         edges.push((span.end(), false));

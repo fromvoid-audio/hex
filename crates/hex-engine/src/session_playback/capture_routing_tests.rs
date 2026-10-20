@@ -125,7 +125,7 @@ fn automated_analytic_capture_applies_absolute_gain_once_with_metering() {
             PreparedRevision::prepare_with_instrument_registry(
                 &project,
                 &media,
-                Arc::new(hex_devices::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
                 &registry,
             )

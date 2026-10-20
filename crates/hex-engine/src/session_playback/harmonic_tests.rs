@@ -209,7 +209,7 @@ fn prepared(
         PreparedRevision::prepare(
             project,
             &BTreeMap::new(),
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             previous,
         )
         .unwrap(),
@@ -518,7 +518,7 @@ fn first_paint_capacity_refusal_preserves_old_committed_audio_and_all_occurrence
         PreparedRevision::prepare(
             &custom,
             &BTreeMap::new(),
-            Arc::new(hex_devices::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             Some(old.revision.session())
         )
         .is_err(),

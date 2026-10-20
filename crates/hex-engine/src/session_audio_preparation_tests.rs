@@ -316,3 +316,45 @@ fn retained_session_spare_capacity_is_charged_once_for_reuse_and_arrangement_onl
         "hex Session preparation evidence: session_retained_capacity_reuse; supported-controls=completed"
     );
 }
+
+#[test]
+fn mono_resource_refuses_session_clip_cache_before_alias_construction() {
+    if !supported("mono_resource_session_refusal") {
+        return;
+    }
+    let (project, bank, _) = fixture(false);
+    let mut snapshot = project.snapshot();
+    snapshot.tracks[0].audio_clips_mut().unwrap().clear();
+    let project = hex_project::Project::from_snapshot(snapshot).unwrap();
+    let asset = bank.sources[0].0;
+    let reservation = bank.reservation;
+    drop(bank); // The general Session fixture includes a pre-existing caller alias.
+    let bank = OwnedAudioInputs::try_new(
+        vec![(
+            asset,
+            OwnedAudioSource::try_resident_mono(48_000, vec![0.25; 8])
+                .ok()
+                .unwrap(),
+        )],
+        reservation,
+    )
+    .ok()
+    .unwrap();
+    let identity = bank.test_bank_identity();
+    let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+    let refusal = custody
+        .begin_input_on_control(
+            AudioArrangementInput::new(&project, 11, bank).with_session_sources(),
+        )
+        .err()
+        .unwrap();
+    assert_eq!(refusal.reason, AudioStorageError::UnsupportedGraph);
+    assert_eq!(refusal.inputs.test_bank_identity(), identity);
+    assert!(refusal.inputs.aliases.iter().all(|row| row.owner.is_none()));
+    let SourceKind::ResidentMono(source) = &refusal.inputs.sources[0].1.kind else {
+        panic!("source replaced")
+    };
+    assert_eq!(Arc::strong_count(source.arc()), 1);
+    assert_eq!(source.samples, [0.25; 8]);
+    assert_eq!(custody.installed_session_source_bindings(), (0, 0));
+}

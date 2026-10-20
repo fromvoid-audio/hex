@@ -343,10 +343,10 @@ fn failed_prepared_import_preserves_project_ids_and_resident_media() {
     assert_eq!(session.project().snapshot().next_id, allocator);
     assert_eq!(session.resident_frames(), before_frames);
     assert_eq!(session.resident_waveform_bins(), before_bins);
-    assert!(std::sync::Arc::ptr_eq(
-        &session.waveform(asset).expect("resident waveform remains"),
-        &before_waveform
-    ));
+    assert!(
+        (session.waveform(asset).expect("resident waveform remains"))
+            .shares_owner_with(&before_waveform)
+    );
     assert_eq!(session.project().track(track).expect("track").gain(), 1.0);
 }
 

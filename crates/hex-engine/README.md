@@ -18,8 +18,16 @@ enters the engine. See [controller input](../../docs/controller-input.md).
 
 ## Dependencies
 
-hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract and the Rust standard
-library; no UI/device-stream dependencies.
+hex-project, hex-warp, hex-devices, hex-lattice, hex-lattice-contract, pinned sha2
+and the Rust standard library; no UI/device-stream dependencies. sha2 is used
+only during bounded, cancellable control preparation to identify the actual
+retained original PCM bank. File verification remains in media; hashing is
+never performed by callback resource queries or DSP. A digest is not a lease
+or an ownership/admission proof.
+
+The pinned allocation-counter 0.8.1 is a dev-only exception for private
+bootstrap allocation and observation-ID probes. It is absent from production
+dependencies and supplies no inventory, ownership or admission authority.
 
 ## Does not own
 

@@ -2,7 +2,12 @@
 //! and no owner getter: cancellation must retain this cell until explicit normal
 //! cleanup, while a failed cell remains quarantined by its host.
 use super::*;
+mod control_work;
+mod native_fields;
+mod original_resources;
+pub use control_work::{AudioCandidateControlBlock, AudioCandidateControlProgress};
 use hex_project::{AssetId, Project};
+pub(crate) use original_resources::OriginalSamplerConstruction;
 
 pub struct AudioCandidatePreparation {
     sources: Vec<(AssetId, crate::OwnedAudioSource)>,
@@ -13,7 +18,10 @@ pub struct AudioCandidatePreparation {
     token: Option<AudioPreparationToken>,
     draft: Option<AudioCandidateDraft>,
     owner: Option<AudioCandidateOwner>,
+    control_work: Option<control_work::ControlWork>,
     owner_runtime_done: bool,
+    original_resource_attempted: bool,
+    original_resource_refused: bool,
     cleaning: bool,
     complete: bool,
     failed: bool,
@@ -55,7 +63,10 @@ impl AudioCandidatePreparation {
             token: None,
             draft: Some(AudioCandidateDraft::new_on_control()),
             owner: None,
+            control_work: None,
             owner_runtime_done: false,
+            original_resource_attempted: false,
+            original_resource_refused: false,
             cleaning: false,
             complete: false,
             failed: false,
@@ -69,7 +80,8 @@ impl AudioCandidatePreparation {
         Ok(result)
     }
     fn collecting(&self, asset: AssetId) -> Result<(), AudioStorageError> {
-        if self.failed
+        if self.original_resource_attempted
+            || self.failed
             || self.cleaning
             || self.complete
             || self.bank.is_some()
@@ -84,7 +96,7 @@ impl AudioCandidatePreparation {
         }
         Ok(())
     }
-    fn validate_collection_bytes(&self, additional: usize) -> Result<(), AudioStorageError> {
+    fn collection_bytes(&self) -> Result<usize, AudioStorageError> {
         let data = self.sources.iter().try_fold(0usize, |n, (_, source)| {
             let (payload, overhead) = crate::audio_input_storage::parts(source)?;
             n.checked_add(payload)
@@ -111,8 +123,14 @@ impl AudioCandidatePreparation {
                 )
             })
             .and_then(|n| n.checked_add(data))
-            .and_then(|n| n.checked_add(additional))
             .and_then(|n| n.checked_add(self.reservation.caller_retained_bytes))
+            .ok_or(AudioStorageError::Overflow)?;
+        Ok(total)
+    }
+    fn validate_collection_bytes(&self, additional: usize) -> Result<(), AudioStorageError> {
+        let total = self
+            .collection_bytes()?
+            .checked_add(additional)
             .ok_or(AudioStorageError::Overflow)?;
         let peak = total
             .checked_add(self.reservation.caller_construction_bytes)
@@ -184,7 +202,10 @@ impl AudioCandidatePreparation {
         source_generation: u64,
         context: crate::AudioSourceContext,
     ) -> Result<(), AudioStorageError> {
-        if self.failed
+        // The resource-aware private complete-compiler route is still closed.
+        // Refuse BEFORE allocating/consuming clip inputs on this legacy entry.
+        if self.original_resource_attempted
+            || self.failed
             || self.cleaning
             || self.complete
             || self.owner.is_some()
@@ -233,14 +254,32 @@ impl AudioCandidatePreparation {
     pub fn test_source_collection_identity(&self) -> (usize, usize) {
         (self.sources.as_ptr() as usize, self.sources.capacity())
     }
+    pub(super) fn owner_ref_on_control(&self) -> Option<&AudioCandidateOwner> {
+        self.owner.as_ref()
+    }
     pub(super) fn take_preflighted_owner(&mut self) -> Option<AudioCandidateOwner> {
         self.owner.take()
     }
     pub fn owner_on_control(&mut self) -> Option<&mut AudioCandidateOwner> {
         self.owner.as_mut()
     }
+    pub fn register_compiled_reader_on_control(
+        &self,
+    ) -> Result<crate::AudioCompiledRevision, AudioStorageError> {
+        if self.failed_incomplete() || self.cleaning || self.complete {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.owner
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .register_compiled_reader_on_control()
+    }
     pub fn failed_incomplete(&self) -> bool {
         self.failed
+            || self
+                .control_work
+                .as_ref()
+                .is_some_and(control_work::ControlWork::failed_incomplete)
             || self
                 .draft
                 .as_ref()
@@ -266,6 +305,10 @@ impl AudioCandidatePreparation {
         }
         self.cleaning = true;
         match catch_unwind(AssertUnwindSafe(|| {
+            if let Some(work) = self.control_work.as_mut() {
+                work.cleanup_on_control()?;
+            }
+            drop(self.control_work.take());
             if let Some(owner) = self.owner.as_mut() {
                 if !self.owner_runtime_done {
                     owner.dispose_on_control()?;
@@ -283,6 +326,9 @@ impl AudioCandidatePreparation {
                 custody.cleanup_on_control();
                 if custody.phase() == AudioPreparationPhase::FailedIncomplete {
                     return Err(AudioStorageError::UnknownStorage);
+                }
+                if custody.phase() == AudioPreparationPhase::Cleaning {
+                    return Err(AudioStorageError::ExternalReadersPending);
                 }
                 if let Some(token) = self.token.as_ref() {
                     if self.bank.is_some() {
@@ -308,6 +354,10 @@ impl AudioCandidatePreparation {
                 self.cleaning = false;
                 self.complete = true;
                 Ok(())
+            }
+            Ok(Err(AudioStorageError::ExternalReadersPending)) => {
+                self.cleaning = false;
+                Err(AudioStorageError::ExternalReadersPending)
             }
             Ok(Err(reason)) => {
                 self.failed = true;

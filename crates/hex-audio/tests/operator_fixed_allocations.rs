@@ -4,7 +4,7 @@ use allocation_counter::measure;
 use hex_audio::prepared;
 use hex_audio::spectrum_worker::{SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker};
 use hex_engine::{
-    PreparedRevision, SineTable,
+    PreparedRevision,
     playback::{Playback, PlaybackCommand},
 };
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
@@ -81,7 +81,7 @@ fn fixed_and_velocity_operator_render_seek_and_shutdown_allocate_nothing_on_call
     let graph = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let playback = Playback::try_from_prepared_with_session(Arc::clone(&graph))?;
@@ -294,7 +294,7 @@ fn operator_modulation_allocations(
     let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let playback = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
@@ -362,7 +362,7 @@ fn operator_modulation_allocations(
             let next = Arc::new(PreparedRevision::prepare(
                 editor.project(),
                 &BTreeMap::new(),
-                Arc::new(SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 Some(revision.session()),
             )?);
             let candidate = Playback::try_from_prepared_with_session(Arc::clone(&next))?;
@@ -391,11 +391,11 @@ fn operator_modulation_allocations(
         assert!(
             output == expected,
             "operator callback transfer PCM block={block} accepted={accepted:?} applied={}",
-            control.status.applied_revision.load(Ordering::Acquire)
+            control.status().applied_revision.load(Ordering::Acquire)
         );
         if let Some(accepted) = accepted {
             assert_eq!(
-                control.status.applied_revision.load(Ordering::Acquire),
+                control.status().applied_revision.load(Ordering::Acquire),
                 accepted
             );
         }
@@ -485,11 +485,11 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
         velocity: 100,
     })?;
 
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let mut revision = Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::clone(&table),
+        table.clone(),
         None,
     )?);
     let playback = Playback::try_from_prepared_with_session(Arc::clone(&revision))?;
@@ -616,7 +616,7 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
         let next_revision = Arc::new(PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::clone(&table),
+            table.clone(),
             Some(revision.session()),
         )?);
         let candidate = Playback::try_from_prepared_with_session(Arc::clone(&next_revision))?;
@@ -650,7 +650,7 @@ fn registered_eq8_effect_callback_allocates_and_deallocates_nothing() -> Result<
             "compatible EQ8 parameter handoff callback allocation"
         );
         assert_eq!(
-            control.status.applied_revision.load(Ordering::Acquire),
+            control.status().applied_revision.load(Ordering::Acquire),
             accepted_revision
         );
         assert_eq!(output, expected, "compatible EQ8 handoff changed PCM");

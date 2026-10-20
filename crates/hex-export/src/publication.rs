@@ -17,6 +17,29 @@ pub enum Publication {
 }
 
 impl Publication {
+    pub(super) fn sampler_fields(&self) -> hex_engine::sampler_host_fields::PublicationFields<'_> {
+        use hex_engine::sampler_host_fields::{BodyRef, PublicationFields};
+        match self {
+            Self::CreateNew => PublicationFields::CreateNew,
+            Self::Replace(consent) => {
+                let OverwriteConsent { path, metadata } = consent;
+                PublicationFields::Replace {
+                    body: BodyRef::of(consent),
+                    path,
+                    metadata,
+                }
+            }
+        }
+    }
+    pub(super) fn visit_path_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut hex_engine::AudioRootStorageLedger<'a>,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        if let Self::Replace(consent) = self {
+            ledger.borrow_metadata_path_backing_on_control(&consent.path)?;
+        }
+        Ok(())
+    }
     /// The caller has accepted this concrete path through a native save dialog.
     /// Existing regular files may be replaced; absent paths still publish with
     /// no-replace semantics, so a later collision never truncates another file.

@@ -41,6 +41,27 @@ pub struct LatencyPlan {
 }
 
 impl LatencyPlan {
+    pub(crate) fn visit_storage_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            nodes,
+            edges,
+            topological_order,
+            max_latency_frames,
+        } = self;
+        fn scalar<T: Copy>(_: &T) {}
+        scalar(max_latency_frames);
+        fn elements<T: Copy>(_: &Vec<T>) {}
+        elements(nodes);
+        elements(edges);
+        elements(topological_order);
+        ledger.vec(nodes)?;
+        ledger.vec(edges)?;
+        ledger.vec(topological_order)
+    }
+
     /// Fallible control-side copy for an independently prepared runtime owner.
     /// Exact equality includes stable identities, topology and actual latencies.
     pub fn try_clone(&self) -> Result<Self, CompensationError> {

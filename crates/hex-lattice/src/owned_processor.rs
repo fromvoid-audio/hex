@@ -144,6 +144,27 @@ pub struct PreparedRuntimeInstance {
     pub configuration: Option<Arc<NativeDeviceState>>,
     pub definition: Option<PreparedProcessorFactory>,
 }
+/// The existing prepared processor and its ACTUAL host scope travel together.
+/// This is a host configuration, never provider-owned PCM or a second cache.
+#[derive(Clone, Debug)]
+pub struct PreparedScopedRuntimeInstance<R: crate::HostDeviceResourceScope> {
+    pub instance: PreparedRuntimeInstance,
+    pub resources: R,
+}
+impl<R: crate::HostDeviceResourceScope> std::ops::Deref for PreparedScopedRuntimeInstance<R> {
+    type Target = PreparedRuntimeInstance;
+    fn deref(&self) -> &Self::Target {
+        &self.instance
+    }
+}
+impl From<PreparedRuntimeInstance> for PreparedScopedRuntimeInstance<crate::NoDeviceResourceScope> {
+    fn from(instance: PreparedRuntimeInstance) -> Self {
+        Self {
+            instance,
+            resources: crate::NoDeviceResourceScope,
+        }
+    }
+}
 impl PreparedRuntimeInstance {
     pub fn algorithmic_latency_frames(&self) -> Option<u32> {
         if self.bypassed {

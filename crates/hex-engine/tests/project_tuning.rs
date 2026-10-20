@@ -83,7 +83,7 @@ fn prepare(project: &Project, previous: Option<&PreparedRevision>) -> Arc<Prepar
         PreparedRevision::prepare(
             project,
             &BTreeMap::new(),
-            Arc::new(hex_devices::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             previous.map(|revision| revision.session().as_ref()),
         )
         .unwrap(),

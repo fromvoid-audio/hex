@@ -5,10 +5,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 // Identity allocator only: no owner registry or pointer/content-based identity.
 static NEXT_HANDLE: AtomicU64 = AtomicU64::new(1);
+#[cfg(test)]
+thread_local! {
+    // Successful real global ID issues by this test thread, never a reset or
+    // replacement allocator. Avoids races with unrelated parallel test issuers.
+    pub(crate) static ISSUED_HANDLES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+#[cfg(test)]
+pub(crate) fn next_handle_observation() -> u64 {
+    NEXT_HANDLE.load(Ordering::Relaxed)
+}
 pub(crate) fn handle() -> Result<u64, AudioStorageError> {
-    NEXT_HANDLE
+    let id = NEXT_HANDLE
         .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
-        .map_err(|_| AudioStorageError::HandleExhausted)
+        .map_err(|_| AudioStorageError::HandleExhausted)?;
+    #[cfg(test)]
+    ISSUED_HANDLES.with(|count| count.set(count.get() + 1));
+    Ok(id)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AudioStorageError {
@@ -24,6 +37,8 @@ pub enum AudioStorageError {
     UnsupportedGraph,
     SourceMismatch,
     UnknownStorage,
+    /// Registered immutable readers still retain the constructor root.
+    ExternalReadersPending,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioStorageReservation {
@@ -48,6 +63,22 @@ pub struct ResidentSourceRefusal {
     pub reason: AudioStorageError,
     pub frames: Vec<Frame>,
 }
+pub struct ResidentMonoSourceRefusal {
+    pub reason: AudioStorageError,
+    pub samples: Vec<f32>,
+}
+pub struct NativeAudioMoveRefusal {
+    pub reason: AudioStorageError,
+    pub source: OwnedAudioSource,
+}
+pub struct NativeAudioIngressRefusal {
+    pub reason: AudioStorageError,
+    pub audio: Audio,
+}
+pub(crate) struct MonoSourceData {
+    pub(crate) sample_rate: u32,
+    pub(crate) samples: Vec<f32>,
+}
 pub struct StreamedSourceRefusal {
     pub reason: AudioStorageError,
     pub metadata: StreamedSourceMetadata,
@@ -60,9 +91,183 @@ pub struct OwnedAudioSource {
 }
 pub(crate) enum SourceKind {
     Resident(Audio),
+    ResidentMono(OwnedShared<MonoSourceData>),
     Streamed(OwnedShared<StreamedSourceMetadata>),
 }
+/// Borrowed leaf layout for the existing source/clip custody visitors.
+/// This confers no owner, constructor declaration or retirement authority.
+pub(crate) enum SourceStorageKind<'a> {
+    Resident(&'a Audio),
+    ResidentMono(&'a OwnedShared<MonoSourceData>),
+    Streamed(&'a OwnedShared<StreamedSourceMetadata>),
+}
+pub(crate) trait SourceStorage: std::any::Any {
+    fn storage_kind(&self) -> SourceStorageKind<'_>;
+    fn storage_handle(&self) -> u64;
+}
+impl SourceStorage for OwnedAudioSource {
+    fn storage_kind(&self) -> SourceStorageKind<'_> {
+        match &self.kind {
+            SourceKind::Resident(audio) => SourceStorageKind::Resident(audio),
+            SourceKind::ResidentMono(source) => SourceStorageKind::ResidentMono(source),
+            SourceKind::Streamed(source) => SourceStorageKind::Streamed(source),
+        }
+    }
+    fn storage_handle(&self) -> u64 {
+        self.handle
+    }
+}
 impl OwnedAudioSource {
+    /// Borrow an actual constructor-qualified Audio owner and reserve a closed
+    /// source header/identity BEFORE its control-side alias is created.
+    pub fn alias_native_audio_on_control(
+        audio: &Audio,
+        max_metadata_bytes: usize,
+    ) -> Result<Self, AudioStorageError> {
+        if std::mem::size_of::<Self>() > max_metadata_bytes {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
+        audio
+            .pcm_arc_receipt
+            .and_then(|receipt| receipt.checked_allocations(audio))
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        if std::sync::Arc::weak_count(&audio.frames) != 0 {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        let handle = handle()?;
+        Ok(Self {
+            kind: SourceKind::Resident(audio.clone_with_native_handle_on_control(Some(handle))),
+            handle,
+        })
+    }
+    /// Quote the actual source header before creating a closed native control
+    /// alias. Both physical owners must join coexistence/retirement accounting.
+    /// This never adopts raw/derived Audio or grants graph publication.
+    pub fn alias_for_resource_plan_on_control(
+        &self,
+        max_metadata_bytes: usize,
+    ) -> Result<Self, AudioStorageError> {
+        if std::mem::size_of::<Self>() > max_metadata_bytes {
+            return Err(AudioStorageError::ReservationExceeded);
+        }
+        if matches!(self.kind, SourceKind::Streamed(_)) {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        crate::audio_input_storage::parts(self)?;
+        let handle = handle()?;
+        let kind = match &self.kind {
+            SourceKind::Resident(audio) => {
+                SourceKind::Resident(audio.clone_with_native_handle_on_control(Some(handle)))
+            }
+            SourceKind::ResidentMono(source) => SourceKind::ResidentMono(source.clone_on_control()),
+            SourceKind::Streamed(_) => return Err(AudioStorageError::UnsupportedGraph),
+        };
+        Ok(Self { kind, handle })
+    }
+    /// Actual retained PCM capacity, in source frames. This is a control-side
+    /// observation, not a complete graph memory or lifetime declaration.
+    pub fn resident_pcm_capacity_frames(&self) -> Option<usize> {
+        match &self.kind {
+            SourceKind::Resident(audio) => Some(audio.pcm_capacity_frames()),
+            SourceKind::ResidentMono(source) => Some(source.samples.capacity()),
+            SourceKind::Streamed(_) => None,
+        }
+    }
+    /// Borrow this actual unbound decoded owner before an AssetId/bank exists.
+    pub fn view(&self) -> OwnedAudioSourceView<'_> {
+        OwnedAudioSourceView { kind: &self.kind }
+    }
+    /// Move a known native stereo owner into the existing clip/media Audio
+    /// representation, conserving the same physical owning handle and PCM.
+    /// Mono/streamed/refused owners return intact; no raw Arc escapes.
+    pub fn try_into_native_audio_on_control(self) -> Result<Audio, Box<NativeAudioMoveRefusal>> {
+        let known = match &self.kind {
+            SourceKind::Resident(audio) => {
+                audio.native_handle.map(|h| h.get()) == Some(self.handle)
+                    && audio
+                        .pcm_arc_receipt
+                        .and_then(|r| r.checked_allocations(audio))
+                        .is_some()
+            }
+            _ => false,
+        };
+        if !known {
+            let reason = if matches!(&self.kind, SourceKind::Resident(_)) {
+                AudioStorageError::UnknownStorage
+            } else {
+                AudioStorageError::UnsupportedGraph
+            };
+            return Err(Box::new(NativeAudioMoveRefusal {
+                reason,
+                source: self,
+            }));
+        }
+        match self.kind {
+            SourceKind::Resident(audio) => Ok(audio),
+            kind => Err(Box::new(NativeAudioMoveRefusal {
+                reason: AudioStorageError::UnsupportedGraph,
+                source: Self {
+                    kind,
+                    handle: self.handle,
+                },
+            })),
+        }
+    }
+    /// Consume actual native Audio lineage. Unknown/caller-created Arc values
+    /// are never adopted, and Arc counts cannot establish this provenance.
+    pub fn try_from_native_audio_on_control(
+        audio: Audio,
+    ) -> Result<Self, Box<NativeAudioIngressRefusal>> {
+        let handle = audio.native_handle.map(|h| h.get()).filter(|_| {
+            audio
+                .pcm_arc_receipt
+                .and_then(|r| r.checked_allocations(&audio))
+                .is_some()
+                && std::sync::Arc::weak_count(&audio.frames) == 0
+        });
+        match handle {
+            Some(handle) => Ok(Self {
+                kind: SourceKind::Resident(audio),
+                handle,
+            }),
+            None => Err(Box::new(NativeAudioIngressRefusal {
+                reason: AudioStorageError::UnknownStorage,
+                audio,
+            })),
+        }
+    }
+    /// Exact mono custody in the existing native source/bank ownership family.
+    /// Refusals precede the owning wrapper allocation and return the same Vec.
+    pub fn try_resident_mono(
+        sample_rate: u32,
+        samples: Vec<f32>,
+    ) -> Result<Self, ResidentMonoSourceRefusal> {
+        let checked = (|| {
+            if sample_rate == 0 {
+                return Err(AudioStorageError::InvalidRate);
+            }
+            if samples.is_empty() || samples.iter().any(|v| !v.is_finite()) {
+                return Err(AudioStorageError::InvalidSamples);
+            }
+            OwnedShared::<MonoSourceData>::declared_parts()
+                .ok_or(AudioStorageError::UnsupportedConstructor)?;
+            samples
+                .capacity()
+                .checked_mul(std::mem::size_of::<f32>())
+                .ok_or(AudioStorageError::Overflow)?;
+            handle()
+        })();
+        match checked {
+            Err(reason) => Err(ResidentMonoSourceRefusal { reason, samples }),
+            Ok(handle) => Ok(Self {
+                kind: SourceKind::ResidentMono(OwnedShared::new_owned(MonoSourceData {
+                    sample_rate,
+                    samples,
+                })),
+                handle,
+            }),
+        }
+    }
     /// All reported refusals precede the Arc wrapper allocation; original pointer/capacity survive.
     /// Process-fatal allocator OOM/abort is outside API-reported recovery.
     pub fn try_resident(rate: u32, frames: Vec<Frame>) -> Result<Self, ResidentSourceRefusal> {
@@ -98,6 +303,7 @@ impl OwnedAudioSource {
                         _derived: None,
                     }),
                     pcm_arc_receipt: Some(receipt),
+                    native_handle: std::num::NonZeroU64::new(handle),
                 }),
                 handle,
             }),
@@ -123,17 +329,20 @@ impl OwnedAudioSource {
             }),
         }
     }
-    // Owning alias creation intentionally absent until bounded caller custody
-    // is decided. A bare clone would escape the consumed bank's handle ledger.
+    // No public bare owning clone. OriginalSourceLease's bounded control-only
+    // plan alias returns this same closed source type, with a distinct handle;
+    // both banks must be included in the real coexistence ledger.
     pub fn sample_rate(&self) -> u32 {
         match &self.kind {
             SourceKind::Resident(a) => a.sample_rate(),
+            SourceKind::ResidentMono(source) => source.sample_rate,
             SourceKind::Streamed(s) => s.project_rate(),
         }
     }
     pub fn frames(&self) -> u64 {
         match &self.kind {
             SourceKind::Resident(a) => a.frames.len() as u64,
+            SourceKind::ResidentMono(source) => source.samples.len() as u64,
             SourceKind::Streamed(s) => s.playback_frames(),
         }
     }
@@ -158,16 +367,23 @@ pub struct AudioSourceToken {
 pub struct OwnedAudioSourceView<'a> {
     kind: &'a SourceKind,
 }
-impl OwnedAudioSourceView<'_> {
+impl<'a> OwnedAudioSourceView<'a> {
     pub fn sample_rate(&self) -> u32 {
         match self.kind {
             SourceKind::Resident(a) => a.sample_rate(),
+            SourceKind::ResidentMono(source) => source.sample_rate,
             SourceKind::Streamed(s) => s.project_rate(),
         }
     }
-    pub fn resident_frames(&self) -> Option<&[Frame]> {
+    pub fn resident_frames(&self) -> Option<&'a [Frame]> {
         match self.kind {
             SourceKind::Resident(a) => Some(a.frames()),
+            _ => None,
+        }
+    }
+    pub fn resident_mono_samples(&self) -> Option<&'a [f32]> {
+        match self.kind {
+            SourceKind::ResidentMono(source) => Some(&source.samples),
             _ => None,
         }
     }
@@ -178,7 +394,19 @@ impl OwnedAudioSourceView<'_> {
         }
     }
 }
+#[cfg(test)]
+pub(crate) struct OriginalInputDropProbe(pub(crate) Option<Box<dyn FnOnce() + Send + Sync>>);
+#[cfg(test)]
+impl Drop for OriginalInputDropProbe {
+    fn drop(&mut self) {
+        if let Some(f) = self.0.take() {
+            f();
+        }
+    }
+}
 pub struct OwnedAudioInputs {
+    #[cfg(test)]
+    pub(crate) drop_probe: Option<OriginalInputDropProbe>,
     bank: u64,
     custodian: u64,
     pub(crate) aliases: Vec<AliasRow>,
@@ -213,6 +441,8 @@ impl OwnedAudioInputs {
         };
         match Self::prepare_sources(&sources, reservation, &mut capacity) {
             Ok((aliases, bank)) => Ok(Self {
+                #[cfg(test)]
+                drop_probe: None,
                 sources,
                 capacity,
                 bank,
@@ -246,6 +476,8 @@ impl OwnedAudioInputs {
         };
         let (aliases, bank) = Self::prepare_sources(sources, reservation, &mut capacity)?;
         *destination = Some(Self {
+            #[cfg(test)]
+            drop_probe: None,
             sources: std::mem::take(sources),
             capacity,
             bank,
@@ -317,7 +549,7 @@ impl OwnedAudioInputs {
             {
                 allocation_count = allocation_count
                     .checked_add(match &source.kind {
-                        SourceKind::Resident(_) => 2,
+                        SourceKind::Resident(_) | SourceKind::ResidentMono(_) => 2,
                         SourceKind::Streamed(_) => 1,
                     })
                     .ok_or(AudioStorageError::Overflow)?;
@@ -359,7 +591,7 @@ impl OwnedAudioInputs {
             alias: None,
         })
     }
-    fn checked_source(
+    pub(crate) fn checked_source(
         &self,
         token: &AudioSourceToken,
     ) -> Result<&OwnedAudioSource, AudioStorageError> {
@@ -409,7 +641,10 @@ impl OwnedAudioInputs {
             .ok_or(AudioStorageError::HandleExhausted)?;
         let handle = handle()?;
         let kind = match &self.checked_source(token)?.kind {
-            SourceKind::Resident(audio) => SourceKind::Resident(audio.clone()),
+            SourceKind::Resident(audio) => {
+                SourceKind::Resident(audio.clone_with_native_handle_on_control(Some(handle)))
+            }
+            SourceKind::ResidentMono(source) => SourceKind::ResidentMono(source.clone_on_control()),
             SourceKind::Streamed(source) => SourceKind::Streamed(source.clone_on_control()),
         };
         self.aliases[index] = AliasRow {

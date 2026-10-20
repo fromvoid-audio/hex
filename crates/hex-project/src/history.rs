@@ -1,5 +1,10 @@
 use crate::{Command, Created, Invalid, Project};
 use std::collections::VecDeque;
+mod original_sampler;
+pub use original_sampler::{
+    OriginalSamplerEditorTransition, OriginalSamplerPending, OriginalSamplerTransitionRequest,
+    OriginalSamplerTransitionResult,
+};
 
 /// Bounded snapshot history on the control thread. Oldest edits expire at capacity.
 /// IDs never rewind across undo, redo or branching, so stale references stay stale.
@@ -8,21 +13,45 @@ pub struct Editor {
     undo: VecDeque<Project>,
     redo: Vec<Project>,
     capacity: usize,
+    original_sampler_pending: std::cell::RefCell<OriginalSamplerPending>,
 }
 impl Editor {
-    pub fn new(project: Project, capacity: usize) -> Result<Self, Invalid> {
+    /// Validate before worker startup without allocating a disposable project.
+    pub fn validate_history_capacity(capacity: usize) -> Result<(), Invalid> {
         if !(1..=128).contains(&capacity) {
             return Err(Invalid("history capacity must be 1..128"));
         }
+        Ok(())
+    }
+    pub fn new(project: Project, capacity: usize) -> Result<Self, Invalid> {
+        Self::validate_history_capacity(capacity)?;
         Ok(Self {
             project,
             undo: VecDeque::new(),
             redo: Vec::new(),
             capacity,
+            original_sampler_pending: std::cell::RefCell::default(),
         })
     }
     pub fn project(&self) -> &Project {
         &self.project
+    }
+    /// Borrow the actual current, Undo and Redo projects without snapshots,
+    /// synthetic source identities, owning clones or allocation. The returned
+    /// borrow excludes history mutation; publication still needs root custody.
+    pub fn retained_projects_on_control(&self) -> impl Iterator<Item = &Project> {
+        std::iter::once(&self.project)
+            .chain(self.undo.iter())
+            .chain(self.redo.iter())
+    }
+    /// Actual immutable history backings, including spare/empty capacity.
+    /// No project snapshot/owner is cloned; borrowing excludes mutation.
+    /// These fields alone establish neither complete model storage nor peak.
+    pub fn undo_storage_on_control(&self) -> &VecDeque<Project> {
+        &self.undo
+    }
+    pub fn redo_storage_on_control(&self) -> &Vec<Project> {
+        &self.redo
     }
     pub fn can_undo(&self) -> bool {
         !self.undo.is_empty()
@@ -62,10 +91,17 @@ impl Editor {
         command: Command,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<(Created, T), E> {
+        self.require_original_sampler_idle()?;
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
         candidate.validate_device_asset_references()?;
         candidate.validate_playable_routes()?;
+        // Keep publication/commit inside the already reserved history backing.
+        // At the history limit the oldest slot is reused, so no growth is
+        // needed. A refusal may retain reservation capacity, never a new edit.
+        self.undo
+            .try_reserve_exact(usize::from(self.undo.len() < self.capacity))
+            .map_err(|_| E::from(Invalid("could not reserve undo history")))?;
         let prepared = prepare(&self.project, &candidate)?;
         // No-op controls should neither add history nor erase a redo branch.
         if candidate == self.project {
@@ -88,6 +124,7 @@ impl Editor {
         commands: Vec<Command>,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
+        self.require_original_sampler_idle()?;
         if commands.len() > crate::MAX_CLIPS {
             return Err(E::from(Invalid("batch command limit reached")));
         }
@@ -103,7 +140,7 @@ impl Editor {
         candidate.validate_playable_routes()?;
         // Reserve before preparation/commit. No history allocation follows it.
         self.undo
-            .try_reserve(1)
+            .try_reserve_exact(usize::from(self.undo.len() < self.capacity))
             .map_err(|_| E::from(Invalid("could not reserve batch history")))?;
         let prepared = prepare(&candidate, &results)?;
         if candidate != self.project {
@@ -118,6 +155,9 @@ impl Editor {
     }
 
     pub fn undo(&mut self) -> bool {
+        if self.require_original_sampler_idle().is_err() {
+            return false;
+        }
         let Some(mut previous) = self.undo.pop_back() else {
             return false;
         };
@@ -142,6 +182,7 @@ impl Editor {
         &mut self,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<Option<T>, E> {
+        self.require_original_sampler_idle()?;
         let Some(previous) = self.undo.back() else {
             return Ok(None);
         };
@@ -161,6 +202,9 @@ impl Editor {
     }
 
     pub fn redo(&mut self) -> bool {
+        if self.require_original_sampler_idle().is_err() {
+            return false;
+        }
         let Some(mut next) = self.redo.pop() else {
             return false;
         };
@@ -185,6 +229,7 @@ impl Editor {
         &mut self,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<Option<T>, E> {
+        self.require_original_sampler_idle()?;
         let Some(next) = self.redo.last() else {
             return Ok(None);
         };
@@ -192,7 +237,7 @@ impl Editor {
         candidate.next_id = candidate.next_id.max(self.project.next_id);
         candidate.retain_gain_touch_epochs_from(&self.project);
         self.undo
-            .try_reserve(1)
+            .try_reserve_exact(usize::from(self.undo.len() < self.capacity))
             .map_err(|_| E::from(Invalid("could not reserve undo history")))?;
         let prepared = prepare(&self.project, &candidate)?;
         let Some(_) = self.redo.pop() else {
@@ -282,6 +327,55 @@ mod gain_touch_epoch_tests {
 #[cfg(test)]
 mod batch_tests {
     use super::*;
+    #[test]
+    fn prepared_single_and_batch_reuse_saturated_backing_and_refusal_preserves_history() {
+        let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
+        editor
+            .execute(Command::AddTrack {
+                name: "first".into(),
+            })
+            .unwrap();
+        let capacity = editor.undo_storage_on_control().capacity();
+        editor
+            .execute_prepared(
+                Command::AddTrack {
+                    name: "second".into(),
+                },
+                |_| Ok::<_, Invalid>(()),
+            )
+            .unwrap();
+        assert_eq!(editor.undo_storage_on_control().capacity(), capacity);
+        assert_eq!(editor.undo_storage_on_control().len(), 1);
+        let before = editor.project().clone();
+        assert!(
+            editor
+                .execute_prepared(
+                    Command::AddTrack {
+                        name: "refuse".into()
+                    },
+                    |_| Err::<(), _>(Invalid("refuse preparation"))
+                )
+                .is_err()
+        );
+        assert_eq!(*editor.project(), before);
+        assert_eq!(editor.undo_storage_on_control().capacity(), capacity);
+        editor
+            .execute_many_prepared(
+                vec![Command::AddTrack {
+                    name: "third".into(),
+                }],
+                |_, _| Ok::<_, Invalid>(()),
+            )
+            .unwrap();
+        assert_eq!(editor.undo_storage_on_control().capacity(), capacity);
+        assert!(editor.undo());
+        assert_eq!(editor.project().tracks().len(), 2);
+        assert!(editor.redo_storage_on_control().capacity() > 0);
+        assert!(editor.redo());
+        assert!(editor.redo_storage_on_control().is_empty());
+        assert!(editor.redo_storage_on_control().capacity() > 0);
+        assert_eq!(editor.project().tracks().len(), 3);
+    }
     #[test]
     fn batch_prepares_once_and_one_undo_restores_all_commands() {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();

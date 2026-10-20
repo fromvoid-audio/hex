@@ -98,6 +98,29 @@ impl<'a> AudioViewProjection<'a> {
         musical_start: Option<BeatTime>,
         placement: Option<AudioViewPlacement>,
     ) -> Result<Self, Invalid> {
+        Self::from_preview_parts(
+            clip,
+            tempo,
+            clip.start,
+            clock,
+            view_start,
+            view_end,
+            musical_start,
+            placement,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn from_preview_parts(
+        clip: &'a Clip,
+        tempo: &'a TempoMap,
+        frame_start: u64,
+        clock: AudioDomainClock,
+        view_start: u64,
+        view_end: u64,
+        musical_start: Option<BeatTime>,
+        placement: Option<AudioViewPlacement>,
+    ) -> Result<Self, Invalid> {
         let cycle = view_end
             .checked_sub(view_start)
             .filter(|n| *n > 0)
@@ -109,7 +132,7 @@ impl<'a> AudioViewProjection<'a> {
         if beat_clock != musical_start.is_some() {
             return Err(Invalid("audio clock and placement disagree"));
         }
-        let start = musical_start.map_or(clip.start, BeatTime::raw);
+        let start = musical_start.map_or(frame_start, BeatTime::raw);
         let (length, phase, mode) = if let Some(p) = placement {
             if matches!(p.outer_length, AudioDomainClock::Beats(_)) != beat_clock {
                 return Err(Invalid("audio outer length must use its domain clock"));
@@ -377,69 +400,6 @@ pub fn preview_view_resize(
         frame_start,
         frame_end,
     })
-}
-
-pub(super) fn trim_placement(
-    clip: &Clip,
-    edge: TrimEdge,
-    frame: u64,
-    tempo: &TempoMap,
-) -> Result<Clip, Invalid> {
-    let edit = clip
-        .audio_edit()
-        .ok_or(Invalid("audio placement has no root"))?;
-    let mut placement = edit.placement.ok_or(Invalid("audio placement missing"))?;
-    AudioViewProjection::new(clip, tempo)?;
-    let old_start = edit.musical_start.map_or(clip.start, BeatTime::raw);
-    let position = if edit.musical_start.is_some() {
-        tempo.frame_to_beat(frame)?.raw()
-    } else {
-        frame
-    };
-    let old_end = old_start
-        .checked_add(placement.outer_length.length())
-        .ok_or(Invalid("audio outer end overflow"))?;
-    let (new_start, new_length) = match edge {
-        TrimEdge::Right => (
-            old_start,
-            position
-                .checked_sub(old_start)
-                .filter(|n| *n > 0)
-                .ok_or(Invalid("audio trim must retain positive length"))?,
-        ),
-        TrimEdge::Left => {
-            let length = old_end
-                .checked_sub(position)
-                .filter(|n| *n > 0)
-                .ok_or(Invalid("audio trim must retain positive length"))?;
-            let phase =
-                i128::from(placement.cycle_phase) + i128::from(position) - i128::from(old_start);
-            let cycle = edit.view_end - edit.view_start;
-            placement.cycle_phase = if placement.mode == AudioViewMode::Repeat {
-                phase.rem_euclid(i128::from(cycle)) as u64
-            } else {
-                u64::try_from(phase)
-                    .map_err(|_| Invalid("once trim consumed offset exceeds range"))?
-            };
-            (position, length)
-        }
-    };
-    placement.outer_length = match edit.domain.clock {
-        AudioDomainClock::Frames(_) => AudioDomainClock::Frames(new_length),
-        AudioDomainClock::Beats(_) => AudioDomainClock::Beats(BeatTime::from_raw(new_length)),
-    };
-    let mut result = clip.clone();
-    let next = result
-        .audio_edit_mut()
-        .ok_or(Invalid("audio placement has no root"))?;
-    next.placement = Some(placement);
-    if edit.musical_start.is_some() {
-        next.musical_start = Some(BeatTime::from_raw(new_start));
-    } else {
-        result.start = new_start;
-    }
-    super::commands::project_clip(&mut result, tempo)?;
-    Ok(result)
 }
 
 /// Materialize a checked metadata preview for the existing trim display owner.

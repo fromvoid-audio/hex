@@ -1,5 +1,119 @@
 use super::*;
 
+#[test]
+fn one_shot_fades_follow_output_time_trim_reverse_pitch_and_random_queries() {
+    let pcm: Vec<_> = (0..10).map(|n| [n as f32, -2.0 * n as f32]).collect();
+    for reverse in [false, true] {
+        for (rate, note, source_step) in [(8_000, 60, 1), (8_000, 72, 2), (16_000, 72, 1)] {
+            let mut settings = Settings::new(Region { start: 1, end: 9 });
+            settings.mode = Mode::OneShot {
+                gate: GateMode::Trigger,
+            };
+            settings.reverse = reverse;
+            settings.one_shot_fades_seconds = [2.0 / f64::from(rate); 2];
+            let sampler =
+                PreparedSampler::new(Sample::new(&pcm, 8_000).unwrap(), rate, settings).unwrap();
+            let voice = voice(sampler, note);
+            let weights: &[f32] = if source_step == 2 {
+                &[0.0, 0.5, 0.5, 0.0]
+            } else {
+                &[0.0, 0.5, 1.0, 1.0, 1.0, 1.0, 0.5, 0.0]
+            };
+            let expected: Vec<_> = weights
+                .iter()
+                .enumerate()
+                .map(|(age, weight)| {
+                    let index = if reverse {
+                        8 - age * source_step
+                    } else {
+                        1 + age * source_step
+                    };
+                    [pcm[index][0] * weight, pcm[index][1] * weight]
+                })
+                .collect();
+            let mut whole = vec![[99.0; 2]; expected.len()];
+            voice.render(0, 0, &mut whole); // Trigger ignores note-off at onset.
+            assert_eq!(whole, expected);
+            let mut split = whole.clone();
+            split.fill([99.0; 2]);
+            voice.render(0, 0, &mut split[..1]);
+            voice.render(1, 0, &mut split[1..3]);
+            voice.render(3, 0, &mut split[3..]);
+            assert_eq!(split, expected);
+            for age in (0..expected.len()).rev() {
+                assert_eq!(voice.sample(age as u64, 0), expected[age]);
+            }
+            assert_eq!(voice.sample(expected.len() as u64, 0), [0.0; 2]);
+            assert_eq!(voice.sample(u64::MAX, 0), [0.0; 2]);
+        }
+    }
+}
+
+#[test]
+fn one_shot_fades_keep_zero_identity_modes_gate_and_short_overlap_finite() {
+    let pcm = [[1.0, -0.5]; 8];
+    let mut settings = Settings::new(Region { start: 0, end: 8 });
+    settings.mode = Mode::OneShot {
+        gate: GateMode::Trigger,
+    };
+    let unchanged = voice(prepare(&pcm, 8_000, settings), 60);
+    for age in 0..8 {
+        assert_eq!(unchanged.sample(age, 0), pcm[0]);
+    }
+    settings.one_shot_fades_seconds = [60.0; 2];
+    for mode in [
+        Mode::Classic {
+            loop_region: Some(Region { start: 0, end: 8 }),
+        },
+        Mode::Slice {
+            starts: &[0],
+            base_note: 60,
+            gate: GateMode::Trigger,
+        },
+    ] {
+        settings.mode = mode;
+        assert_eq!(
+            voice(prepare(&pcm, 8_000, settings), 60).sample(0, 8),
+            pcm[0]
+        );
+    }
+    settings.mode = Mode::OneShot {
+        gate: GateMode::Gate,
+    };
+    settings.one_shot_fades_seconds = [0.0, 2.0 / 8_000.0];
+    settings.envelope.release_seconds = 2.0 / 8_000.0;
+    let gated = voice(prepare(&pcm, 8_000, settings), 60);
+    assert_eq!(gated.sample(3, 3), pcm[0]);
+    assert_eq!(gated.sample(4, 3), [0.5, -0.25]);
+    assert_eq!(gated.sample(5, 3), [0.0; 2]);
+    for frames in [1, 2, 8] {
+        settings.region.end = frames;
+        settings.mode = Mode::OneShot {
+            gate: GateMode::Trigger,
+        };
+        settings.one_shot_fades_seconds = [60.0; 2];
+        let v = voice(prepare(&pcm, 8_000, settings), 60);
+        assert_eq!(v.sample(0, 0), [0.0; 2]);
+        assert_eq!(v.sample(frames as u64 - 1, 0), [0.0; 2]);
+        for age in 0..frames {
+            assert!(
+                v.sample(age as u64, 0)
+                    .iter()
+                    .all(|v| v.is_finite() && v.abs() <= 1.0)
+            );
+        }
+    }
+    for bad in [f64::NAN, f64::INFINITY, -0.001, 60.001] {
+        for side in 0..2 {
+            settings.one_shot_fades_seconds = [0.0; 2];
+            settings.one_shot_fades_seconds[side] = bad;
+            assert!(
+                PreparedSampler::new(Sample::new(&pcm, 8_000).unwrap(), 8_000, settings).is_err()
+            );
+        }
+    }
+}
+
 fn prepare<'a>(pcm: &'a [StereoFrame], rate: u32, settings: Settings<'a>) -> PreparedSampler<'a> {
     PreparedSampler::new(Sample::new(pcm, rate).unwrap(), rate, settings).unwrap()
 }

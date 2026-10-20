@@ -64,7 +64,7 @@ fn project_with_saturators_bypassed(
 
 fn render_project(project: &Project) -> Vec<[f32; 2]> {
     let mut playback =
-        SessionPlayback::new(revision(project, Arc::new(hex_devices::SineTable::new())))
+        SessionPlayback::new(revision(project, crate::SharedSineTable::new_on_control()))
             .expect("prepared playback");
     playback
         .apply(SessionPlaybackCommand::Play)
@@ -126,9 +126,9 @@ fn saturator_runs_on_track_and_return_chains_and_bypass_is_transparent() {
 
 #[test]
 fn saturator_parameter_revision_retargets_live_track_and_return_processors() {
-    let table = Arc::new(hex_devices::SineTable::new());
+    let table = crate::SharedSineTable::new_on_control();
     let original = project_with_saturators(0.0, 0.0);
-    let original_revision = revision(&original, Arc::clone(&table));
+    let original_revision = revision(&original, table.clone());
     let track_device = original.tracks()[0].devices()[0].id();
     let return_device = original.return_tracks()[0].devices()[0].id();
 
@@ -178,7 +178,7 @@ fn saturator_parameter_revision_retargets_live_track_and_return_processors() {
         PreparedRevision::prepare(
             editor.project(),
             &BTreeMap::new(),
-            Arc::clone(&table),
+            table.clone(),
             Some(original_revision.session()),
         )
         .expect("prepare live parameter revision"),

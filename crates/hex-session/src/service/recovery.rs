@@ -129,7 +129,7 @@ pub(super) fn open_source_with_mode(
             Some(reservation),
         )
         .map_err(|e| e.to_string())?
-        .with_shutdown(Arc::clone(&current.shutdown));
+        .with_shutdown(current.shutdown.clone());
         // Verify every retained asset, including unused records, without decoding PCM.
         for asset in project.assets() {
             let path = if asset.path().is_absolute() {
@@ -141,7 +141,10 @@ pub(super) fn open_source_with_mode(
             if !source.matches_asset(asset, project.sample_rate()) {
                 return Err("verified media differs from project metadata".into());
             }
-            candidate.verified_sources.insert(asset.id(), source);
+            candidate
+                .verified_sources
+                .try_insert_on_control(asset.id(), source, hex_project::MAX_ASSETS)
+                .map_err(|error| error.to_string())?;
         }
         candidate.editor =
             hex_project::Editor::new(project, history_capacity).map_err(|e| e.to_string())?;
@@ -164,9 +167,10 @@ pub(super) fn open_source_with_mode(
         if asset.playback_frames() > remaining_frames {
             return Err("project media exceeds resident audio frame limit".into());
         }
-        let decoded = decode_wav_file(
+        let decoded = crate::DecodedOriginal::decode_file(
             media_path,
             Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+            &current.shutdown,
         )
         .map_err(|error| error.to_string().to_lowercase())?;
         if decoded.sample_rate() != asset.source_sample_rate()
@@ -177,16 +181,16 @@ pub(super) fn open_source_with_mode(
                 asset.path().display()
             ));
         }
-        let prepared = PreparedImport::at_rate(
-            decoded,
-            project.sample_rate(),
-            ResampleLimits {
-                max_source_frames: IMPORT_FRAME_LIMIT,
-                max_output_frames: usize::try_from(remaining_frames)
-                    .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
-            },
-        )
-        .map_err(|error| error.to_string().to_lowercase())?;
+        let prepared = decoded
+            .at_rate(
+                project.sample_rate(),
+                ResampleLimits {
+                    max_source_frames: IMPORT_FRAME_LIMIT,
+                    max_output_frames: usize::try_from(remaining_frames)
+                        .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
+                },
+            )
+            .map_err(|error| error.to_string().to_lowercase())?;
         remaining_frames = remaining_frames
             .checked_sub(
                 prepared
@@ -205,7 +209,7 @@ pub(super) fn open_source_with_mode(
     )
     .map_err(|error| error.to_string().to_lowercase())?;
     Ok((
-        session.with_shutdown(Arc::clone(&current.shutdown)),
+        session.with_shutdown(current.shutdown.clone()),
         project_dir,
         document,
         dirty,

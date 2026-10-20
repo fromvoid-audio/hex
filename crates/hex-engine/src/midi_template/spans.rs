@@ -4,7 +4,9 @@ use super::{
     require_positive_frame_advance,
 };
 mod density;
-use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote};
+#[cfg(test)]
+mod storage_tests;
+use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::ScopedMidiNote};
 use density::admit_voice_density;
 use hex_devices::SineTable;
 use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};
@@ -77,8 +79,9 @@ pub struct PreparedMidiInstrumentTemplate {
     max_span_hits: usize,
     max_query_visits: usize,
     max_period_windows: usize,
-    bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
-    shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    bank: crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>,
+    shared_contexts:
+        crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
     release_frames: u64,
     event_source: bool,
 }
@@ -124,11 +127,11 @@ pub struct MidiRenderSpan {
     pub clip: hex_project::ClipId,
     pub note: hex_project::NoteId,
     pub iteration: u64,
-    pub(crate) voice: Option<crate::midi_note_bank::PreparedMidiNote>,
+    pub(crate) voice: Option<crate::midi_note_bank::ScopedMidiNote>,
 }
 
 impl MidiRenderSpan {
-    pub(crate) fn prepared_voice(&self) -> Option<crate::midi_note_bank::PreparedMidiNote> {
+    pub(crate) fn prepared_voice(&self) -> Option<crate::midi_note_bank::ScopedMidiNote> {
         self.voice
     }
 }
@@ -230,7 +233,7 @@ pub struct MidiReleaseVoice {
     start_frame: u64,
     gate_end_frame: u64,
     end_frame: u64,
-    voice: crate::midi_note_bank::PreparedMidiNote,
+    voice: crate::midi_note_bank::ScopedMidiNote,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -311,11 +314,11 @@ impl MidiReleaseVoice {
         self.voice = self.voice.with_context_ref(context);
     }
 
-    pub(crate) fn sampler(&self) -> PreparedMidiNote {
+    pub(crate) fn sampler(&self) -> ScopedMidiNote {
         self.voice
     }
 
-    pub(crate) fn set_sampler(&mut self, sampler: PreparedMidiNote) {
+    pub(crate) fn set_sampler(&mut self, sampler: ScopedMidiNote) {
         self.voice = sampler;
     }
 
@@ -327,7 +330,7 @@ impl MidiReleaseVoice {
         &self,
         frame: u64,
         contexts: &crate::shared_analytic::SharedAnalyticContextTable,
-        retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
+        retained: &[Option<crate::shared_analytic::SharedContextLease>],
         transitions: &[Option<hex_lattice::AnalyticContinuation>],
     ) -> Result<Option<[f32; 2]>, crate::Invalid> {
         if frame < self.start_frame || frame >= self.end_frame {
@@ -389,7 +392,7 @@ impl MidiReleaseVoice {
         start_frame: u64,
         gate_end_frame: u64,
         end_frame: u64,
-        voice: PreparedMidiNote,
+        voice: ScopedMidiNote,
         source_cut: u64,
         performance_cut: u64,
     ) -> Result<Option<Self>, ReleaseVoiceError> {
@@ -420,7 +423,7 @@ impl MidiReleaseVoice {
         start_frame: u64,
         gate_end_frame: u64,
         end_frame: u64,
-        voice: PreparedMidiNote,
+        voice: ScopedMidiNote,
         source_cut: u64,
         performance_cut: u64,
     ) -> Result<Option<Self>, ReleaseVoiceError> {
@@ -478,7 +481,7 @@ impl MidiReleaseVoice {
         &self,
         frame: u64,
         contexts: &crate::shared_analytic::SharedAnalyticContextTable,
-        retained: &[Option<std::sync::Arc<crate::shared_analytic::SharedContextOwner>>],
+        retained: &[Option<crate::shared_analytic::SharedContextLease>],
     ) -> Option<[f32; 2]> {
         if frame < self.start_frame || frame >= self.end_frame {
             return None;
@@ -609,6 +612,92 @@ impl MidiSpanBuffer {
 }
 
 impl PreparedMidiInstrumentTemplate {
+    pub(crate) fn refuse_opaque_control_drop(&self) -> Result<(), crate::AudioStorageError> {
+        // Reused templates may retain an older table than the current Session.
+        self.shared_contexts.refuse_opaque_control_drop()
+    }
+
+    pub(crate) fn visit_storage_contents_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            track,
+            clip,
+            sample_rate,
+            admitted_max_micro_bpm,
+            first_pass,
+            period,
+            release_raw,
+            intro,
+            repeats,
+            intro_nodes,
+            repeat_nodes,
+            intro_root,
+            repeat_root,
+            max_active_voices,
+            max_query_onsets,
+            max_span_hits,
+            max_query_visits,
+            max_period_windows,
+            bank,
+            shared_contexts,
+            release_frames,
+            event_source,
+        } = self;
+        let _: (
+            &hex_project::TrackId,
+            &hex_project::ClipId,
+            &u32,
+            &u64,
+            &u64,
+            &Option<u64>,
+            &u64,
+        ) = (
+            track,
+            clip,
+            sample_rate,
+            admitted_max_micro_bpm,
+            first_pass,
+            period,
+            release_raw,
+        );
+        let _: (&Option<usize>, &Option<usize>) = (intro_root, repeat_root);
+        let _: (&usize, &usize, &usize, &usize, &usize) = (
+            max_active_voices,
+            max_query_onsets,
+            max_span_hits,
+            max_query_visits,
+            max_period_windows,
+        );
+        let _: (&u64, &bool) = (release_frames, event_source);
+        ledger.vec(intro)?;
+        ledger.vec(repeats)?;
+        ledger.vec(intro_nodes)?;
+        ledger.vec(repeat_nodes)?;
+        for span in intro.iter().chain(repeats) {
+            let _: VoiceSpan = *span;
+        }
+        for node in intro_nodes.iter().chain(repeat_nodes) {
+            let _: IntervalNode = *node;
+        }
+        crate::midi_note_bank::storage::visit_contents(bank, ledger)?;
+        crate::shared_analytic::resource_storage::visit_table_contents(shared_contexts, ledger)
+    }
+    pub(crate) fn visit_note_bank_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        crate::midi_note_bank::storage::visit(&self.bank, ledger, role)
+    }
+    pub(crate) fn visit_context_table_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        role: crate::AudioStorageRole,
+    ) -> Result<(), crate::AudioStorageError> {
+        crate::shared_analytic::resource_storage::visit_table(&self.shared_contexts, ledger, role)
+    }
     /// Prepare original sine voices and interval indexes from an already
     /// admitted ongoing source template. Authored notes are never rescanned.
     pub fn prepare(
@@ -652,7 +741,7 @@ impl PreparedMidiInstrumentTemplate {
     /// caller owns a bank scoped to this track, state and sample rate.
     pub(crate) fn prepare_with_bank(
         source: &PreparedMidiSourceTemplate,
-        bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
+        bank: crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>,
     ) -> Result<Self, MidiTemplateError> {
         Self::prepare_with_bank_and_contexts(
             source,
@@ -663,8 +752,10 @@ impl PreparedMidiInstrumentTemplate {
 
     pub(crate) fn prepare_with_bank_and_contexts(
         source: &PreparedMidiSourceTemplate,
-        bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
-        shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        bank: crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
     ) -> Result<Self, MidiTemplateError> {
         Self::prepare_with_bank_mode(source, bank, shared_contexts, None, false, None)
     }
@@ -693,8 +784,10 @@ impl PreparedMidiInstrumentTemplate {
 
     fn prepare_with_bank_mode(
         source: &PreparedMidiSourceTemplate,
-        bank: std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
-        shared_contexts: std::sync::Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        bank: crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank>,
+        shared_contexts: crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
         event_release_frames: Option<u64>,
         event_source: bool,
         mutable_limits: Option<crate::midi_compile::MutableInstrumentLimits>,
@@ -838,7 +931,9 @@ impl PreparedMidiInstrumentTemplate {
         self.max_active_voices
     }
 
-    pub(crate) fn note_bank(&self) -> &std::sync::Arc<crate::midi_note_bank::PreparedMidiNoteBank> {
+    pub(crate) fn note_bank(
+        &self,
+    ) -> &crate::owned_shared::OwnedShared<crate::midi_note_bank::PreparedMidiNoteBank> {
         &self.bank
     }
 

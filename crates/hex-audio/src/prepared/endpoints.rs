@@ -2,7 +2,7 @@
 //! transfer whole endpoint Boxes to lifecycle custody; closing a client never
 //! destroys a ring, preview PCM, or a native stream on the caller's thread.
 use super::*;
-use crate::native_callback_owner::{Guard, Terminal, reserve};
+use crate::native_callback_owner::{Guard, Terminal, reserve_for_root};
 
 pub struct Client {
     endpoints: Guard<ClientEndpoints>,
@@ -13,13 +13,13 @@ pub struct WorkerControl {
 pub(crate) struct ClientEndpoints {
     output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
-    pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
+    pub(super) resident_forwarding: resident_forwarding::ResidentHandle,
     spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
     commands: Producer<QueuedCommand>,
     spectrum_target: spectrum_target::SpectrumTargetControl,
     processor_audition: processor_audition::ProcessorAuditionTargetControl,
     gain_recording: crate::gain_recording::Control,
-    pub(super) status: Arc<Status>,
+    pub(super) status: status_owner::StatusHandle,
     command_ticket: u64,
     #[cfg(all(test, feature = "allocation-probe"))]
     probe: Option<crate::native_callback_owner::DropProbe>,
@@ -32,7 +32,7 @@ impl Control {
     pub(crate) fn reserve_worker_endpoints(
         self,
         spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
-    ) -> (Client, WorkerControl, EndpointTerminals) {
+    ) -> Result<(Client, WorkerControl, EndpointTerminals), Invalid> {
         let Self {
             sample_preview,
             commands,
@@ -44,32 +44,39 @@ impl Control {
         } = self;
         publication.status.split_endpoints.store(true, Release);
         let output_identity = publication.candidate_root.root_id();
-        let status = Arc::clone(&publication.status);
-        let resident_forwarding = resident_forwarding::ResidentForwarding::new();
-        publication.resident_forwarding = Some(Arc::clone(&resident_forwarding));
-        let (endpoints, client) = reserve(ClientEndpoints {
-            output_identity,
-            sample_preview,
-            resident_forwarding,
-            spectrum_reader,
-            commands,
-            spectrum_target,
-            processor_audition,
-            gain_recording,
-            status,
-            command_ticket,
-            #[cfg(all(test, feature = "allocation-probe"))]
-            probe: None,
-        });
-        let (endpoint, publication) = reserve(publication);
-        (
+        let status = publication
+            .candidate_root
+            .duplicate_status(&publication.status, status_owner::CLIENT)?;
+        let [resident_forwarding, worker_forwarding] =
+            publication.candidate_root.resident_fields()?;
+        publication.resident_forwarding = Some(worker_forwarding);
+        let root = publication.candidate_root.clone();
+        let (endpoints, client) = reserve_for_root(
+            &root,
+            ClientEndpoints {
+                output_identity,
+                sample_preview,
+                resident_forwarding,
+                spectrum_reader,
+                commands,
+                spectrum_target,
+                processor_audition,
+                gain_recording,
+                status,
+                command_ticket,
+                #[cfg(all(test, feature = "allocation-probe"))]
+                probe: None,
+            },
+        )?;
+        let (endpoint, publication) = reserve_for_root(&root, publication)?;
+        Ok((
             Client { endpoints },
             WorkerControl { endpoint },
             EndpointTerminals {
                 client,
                 publication,
             },
-        )
+        ))
     }
 }
 impl WorkerControl {
@@ -81,8 +88,8 @@ impl WorkerControl {
     }
 
     /// Worker-side access only. The UI receives Client, never this endpoint.
-    pub fn control(&mut self) -> Option<&mut PublicationControl> {
-        self.endpoint.owner_mut()
+    pub fn control(&mut self) -> Option<WorkerPublication<'_>> {
+        self.endpoint.owner_mut().map(WorkerPublication::new)
     }
     pub fn close(&mut self) {
         if let Some(control) = self.endpoint.owner_mut() {
@@ -319,19 +326,29 @@ impl Client {
             .read()
             .filter(|s| s.active)
     }
-    pub fn project_spectrum_latest(
+    /// Refresh the actual UI slot from constructor-owned buffers. No owning
+    /// Clone/Box escape. None/clear/stale recycles same-root owners immediately.
+    pub fn refresh_project_spectrum(
         &mut self,
-    ) -> Option<crate::spectrum_worker::PublishedProjectSpectrum> {
-        let endpoints = self.endpoints.owner_mut()?;
+        slot: &mut Option<crate::spectrum_worker::PublishedProjectSpectrum>,
+        display: bool,
+    ) -> crate::spectrum_worker::ProjectSpectrumRefresh {
+        let Some(endpoints) = self.endpoints.owner_mut() else {
+            drop(slot.take());
+            return crate::spectrum_worker::ProjectSpectrumRefresh::Cleared;
+        };
         let selection = endpoints
             .status
             .project_spectrum
             .read()
-            .filter(|s| s.active)?;
-        endpoints
-            .spectrum_reader
-            .as_mut()?
-            .try_latest_project_at(Instant::now(), selection)
+            .filter(|s| display && s.active);
+        match endpoints.spectrum_reader.as_mut() {
+            Some(reader) => reader.refresh_project(slot, Instant::now(), selection),
+            None => {
+                drop(slot.take());
+                crate::spectrum_worker::ProjectSpectrumRefresh::Cleared
+            }
+        }
     }
     /// One fresh, aligned pair; input is absent for legacy output-only captures.
     pub fn spectrum_latest_pair(&mut self) -> Option<crate::spectrum_worker::PublishedSpectra> {
@@ -431,6 +448,57 @@ impl Drop for Client {
     }
 }
 impl ClientEndpoints {
+    pub(crate) fn matches_fresh_registered_payload_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        let Self {
+            output_identity: _,
+            sample_preview,
+            resident_forwarding: _,
+            spectrum_reader: _,
+            commands: _,
+            spectrum_target: _,
+            processor_audition: _,
+            gain_recording: _,
+            status,
+            command_ticket,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            probe,
+        } = self;
+        #[cfg(all(test, feature = "allocation-probe"))]
+        if probe.is_some() {
+            return false;
+        }
+        self.matches_constructor_channel_fields_on_control(root)
+            && sample_preview.matches_fresh_registered_payload_on_control(root)
+            && *command_ticket == 0
+            && status.preview_unused()
+            && !status.client_exposed.load(Acquire)
+    }
+
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        root.matches_status_field(&self.status, status_owner::CLIENT)
+            && root.matches_spectrum_reader(self.spectrum_reader.as_ref())
+            && root.matches_resident_field(&self.resident_forwarding, 0)
+            && root.matches_prepared_producer(2, &self.commands)
+            && self
+                .sample_preview
+                .matches_constructor_channel_fields_on_control(root)
+            && self
+                .spectrum_target
+                .matches_constructor_channel_fields_on_control(root)
+            && self
+                .processor_audition
+                .matches_constructor_channel_fields_on_control(root)
+            && self
+                .gain_recording
+                .matches_constructor_channel_fields_on_control(root)
+    }
+
     fn stop(&self) {
         self.status
             .pending_stop_marker
@@ -444,8 +512,8 @@ impl ClientEndpoints {
             .as_ref()
             .map_or(Some(None), |reader| reader.native_identity().map(Some))
     }
-    pub(crate) fn matches(&self, status: &Arc<Status>) -> bool {
-        Arc::ptr_eq(&self.status, status)
+    pub(crate) fn matches(&self, status: &status_owner::StatusHandle) -> bool {
+        self.status.shares_owner_with(status)
     }
 }
 fn enqueue_action(

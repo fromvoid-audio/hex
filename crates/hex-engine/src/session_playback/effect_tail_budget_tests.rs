@@ -1,7 +1,7 @@
 use super::*;
 use hex_lattice::{
-    NativeProcessorRuntime, NativeRuntimeChain, OutputTail, PreparedNativeProcessor,
-    PreparedProcessorInstance, ProcessorChainOwner, StereoMatrix,
+    NativeProcessorRuntime, OutputTail, PreparedNativeProcessor, PreparedProcessorInstance,
+    ProcessorChainOwner, StereoMatrix,
 };
 use hex_lattice_contract::DeviceTypeId;
 use std::any::Any;
@@ -73,8 +73,8 @@ impl NativeProcessorRuntime for HoldRuntime {
         self
     }
 }
-fn chain(entries: usize, bounds: &[u64]) -> NativeRuntimeChain {
-    let mut chain = NativeRuntimeChain::new(
+fn chain(entries: usize, bounds: &[u64]) -> crate::EffectRuntimeChain {
+    let mut chain = crate::effect_resources::new_legacy(
         (0..entries)
             .map(|index| PreparedProcessorInstance {
                 meter: Default::default(),
@@ -99,7 +99,8 @@ fn chain(entries: usize, bounds: &[u64]) -> NativeRuntimeChain {
 }
 fn playback() -> SessionPlayback {
     let project = super::super::tests::project(0.5, 0, 8 << 32);
-    let revision = super::super::tests::revision(&project, Arc::new(hex_devices::SineTable::new()));
+    let revision =
+        super::super::tests::revision(&project, crate::SharedSineTable::new_on_control());
     let mut playback = SessionPlayback::new(revision).unwrap();
     playback.apply(SessionPlaybackCommand::Play).unwrap();
     playback

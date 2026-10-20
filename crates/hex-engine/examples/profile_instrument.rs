@@ -311,14 +311,14 @@ fn main() -> Result<(), Box<dyn Error>> {
         measured_blocks,
     );
     let editable = fixture(workload)?;
-    let project = compile::project(&editable, &Default::default())?;
+    let project = compile::project(&editable, &hex_project::SortedEntries::new())?;
     let prepare_started = Instant::now();
     let prepared = prepared_runtime
         .then(|| {
             PreparedRevision::prepare(
                 &editable,
                 &BTreeMap::new(),
-                Arc::new(hex_devices::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .map(Arc::new)

@@ -120,7 +120,7 @@ fn revision(f: &Fixture) -> Arc<PreparedRevision> {
         PreparedRevision::prepare(
             f.editor.project(),
             &BTreeMap::new(),
-            Arc::new(crate::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),

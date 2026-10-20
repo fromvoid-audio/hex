@@ -4,7 +4,7 @@
 use allocation_counter::{AllocationInfo, measure};
 use hex_engine::{
     Clip, LaunchQuantization, MediaPages, PreparedRevision, Project as EngineProject, Renderer,
-    STREAM_PAGE_FRAMES, SessionPlayback, SessionPlaybackCommand, SineTable, StreamSourceKey,
+    STREAM_PAGE_FRAMES, SessionPlayback, SessionPlaybackCommand, StreamSourceKey,
     StreamedSourceMetadata, Track,
 };
 use hex_media::{VerifiedWavReader, VerifiedWavReaderLimits, WavReaderLimits};
@@ -256,7 +256,7 @@ fn warmed_render_page_lookup_and_pending_request_coalescing_are_allocation_free(
                 editor.project(),
                 &bank,
                 91,
-                Arc::new(SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .expect("prepared Session"),

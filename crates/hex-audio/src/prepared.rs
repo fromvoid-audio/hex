@@ -1,6 +1,9 @@
 //! Bounded ownership handoff for compiled arrangement playback.
 //! Control constructs/drops graphs; callback swaps at most one per block and returns
 //! old ownership through a reserved retirement queue. Used by the native prepared output.
+use crate::native_callback_owner::{
+    NativePreparedConsumer as Consumer, NativePreparedProducer as Producer, native_prepared_ring,
+};
 use crate::{
     processor_audition, spectrum_target,
     spectrum_worker::{SpectrumCapture, SpectrumStamp},
@@ -10,7 +13,7 @@ use hex_engine::{
     PlaybackCommand, PlaybackHandoffRejection, PostNodeIdentity, SessionCapabilityStatus,
     playback::Playback,
 };
-use rtrb::{Consumer, Producer, PushError, RingBuffer};
+use rtrb::PushError;
 use std::sync::{
     Arc,
     atomic::{
@@ -27,7 +30,10 @@ const COMMANDS: usize = 32;
 mod admission;
 mod eligible_publication;
 mod endpoints;
-mod resident_forwarding;
+pub(crate) mod factory;
+mod worker_publication;
+pub use worker_publication::WorkerPublication;
+pub(crate) mod resident_forwarding;
 pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
@@ -347,6 +353,11 @@ impl FreshRuntimeFence {
     }
 }
 
+pub(crate) mod status_owner;
+mod status_storage;
+use status_owner::StatusHandle;
+pub(crate) use status_storage::NativeStatusAllocation;
+
 pub struct Status {
     project_spectrum: crate::spectrum_worker::ProjectSelectionMailbox,
     pending_stop_marker: AtomicU64,
@@ -411,15 +422,14 @@ pub struct Status {
     route_capability: AtomicU32,
     route_generation: AtomicU64,
     route_performance_at_update: AtomicU64,
-    route_slots: Box<[AtomicRouteSlot]>,
+    route_slots: Vec<AtomicRouteSlot>,
 }
 
 impl Default for Status {
     fn default() -> Self {
         let route_slots = (0..MAX_TRACKS)
             .map(|_| AtomicRouteSlot::new())
-            .collect::<Vec<_>>()
-            .into_boxed_slice();
+            .collect::<Vec<_>>();
         Self::with_route_slots(route_slots)
     }
 }
@@ -468,13 +478,7 @@ impl Status {
     pub(crate) fn gain_end(&self) {
         self.publication_pending.gain_finished();
     }
-    pub(crate) fn candidate_boundary_data_bytes(&self) -> Option<usize> {
-        self.route_slots
-            .len()
-            .checked_mul(std::mem::size_of::<AtomicRouteSlot>())
-            .and_then(|bytes| bytes.checked_add(std::mem::size_of_val(self)))
-    }
-    fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
+    fn with_route_slots(route_slots: Vec<AtomicRouteSlot>) -> Self {
         Self {
             project_spectrum: Default::default(),
             pending_stop_marker: AtomicU64::new(0),
@@ -549,7 +553,7 @@ impl Status {
             .try_reserve_exact(MAX_TRACKS)
             .map_err(|_| Invalid("could not allocate Session route telemetry"))?;
         slots.extend((0..MAX_TRACKS).map(|_| AtomicRouteSlot::new()));
-        Ok(Self::with_route_slots(slots.into_boxed_slice()))
+        Ok(Self::with_route_slots(slots))
     }
 
     /// Read one coherent bounded route snapshot into caller-owned storage.
@@ -807,17 +811,59 @@ pub struct Control {
 pub struct PublicationControl {
     publications: Producer<QueuedPublication>,
     retired: Option<Consumer<ReturnedPublication>>,
-    candidate_root: crate::candidate_custody::CandidateRoot,
+    candidate_root: crate::candidate_custody::RootActor,
     native_custody: bool,
     held_control_return: Option<ReturnedPublication>,
-    pub status: Arc<Status>,
+    pub(crate) status: StatusHandle,
     rate: u32,
     revision: u64,
     command_storage_bytes: usize,
-    resident_forwarding: Option<Arc<resident_forwarding::ResidentForwarding>>,
+    resident_forwarding: Option<resident_forwarding::ResidentHandle>,
     #[cfg(all(test, feature = "allocation-probe"))]
     endpoint_probe: Option<crate::native_callback_owner::DropProbe>,
     latest_fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
+}
+impl Control {
+    pub(crate) fn matches_fresh_registered_payload_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        let Self {
+            sample_preview,
+            commands: _,
+            spectrum_target: _,
+            processor_audition: _,
+            gain_recording: _,
+            command_ticket,
+            publication,
+        } = self;
+        self.matches_constructor_channel_fields_on_control(root)
+            && publication.matches_fresh_owned_destinations_on_control()
+            && publication.resident_forwarding.is_none()
+            && sample_preview.matches_fresh_registered_payload_on_control(root)
+            && *command_ticket == 0
+    }
+
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        self.publication
+            .matches_constructor_channel_fields_on_control(root)
+            && root.matches_prepared_producer(2, &self.commands)
+            && self
+                .sample_preview
+                .matches_constructor_channel_fields_on_control(root)
+            && self
+                .spectrum_target
+                .matches_constructor_channel_fields_on_control(root)
+            && self
+                .processor_audition
+                .matches_constructor_channel_fields_on_control(root)
+            && self
+                .gain_recording
+                .matches_constructor_channel_fields_on_control(root)
+    }
 }
 impl std::ops::Deref for Control {
     type Target = PublicationControl;
@@ -835,9 +881,9 @@ pub struct Callback {
     sample_preview: crate::sample_preview::Callback,
     publications: Consumer<QueuedPublication>,
     retired: Producer<ReturnedPublication>,
-    candidate_root: crate::candidate_custody::CandidateRoot,
+    candidate_root: crate::candidate_custody::RootActor,
     commands: Consumer<QueuedCommand>,
-    status: Arc<Status>,
+    status: StatusHandle,
     rate: u32,
     spectrum_target: spectrum_target::SpectrumTargetCallback,
     processor_audition: processor_audition::ProcessorAuditionTargetCallback,
@@ -886,20 +932,42 @@ pub fn channel_with_spectrum(
     rate: u32,
     capture: Option<SpectrumCapture>,
 ) -> Result<(Control, Callback), Invalid> {
+    channel_with_factory_reservation(rate, capture, None)
+}
+pub(crate) fn channel_with_factory_reservation(
+    rate: u32,
+    capture: Option<SpectrumCapture>,
+    reservation: Option<crate::AudioCandidatePublicationReservation>,
+) -> Result<(Control, Callback), Invalid> {
     if !(8_000..=192_000).contains(&rate) {
         return Err(Invalid("unsupported playback sample rate"));
     }
-    let (mut sample_preview, callback_preview) = crate::sample_preview::channel(rate);
-    let (publications, incoming) = RingBuffer::new(1);
-    let (returning, retired) = RingBuffer::new(RETIRED);
-    let (commands, events) = RingBuffer::new(COMMANDS);
-    let status = Arc::new(Status::try_new()?);
-    let (spectrum_target, callback_target) = spectrum_target::channel();
-    let (processor_audition, callback_audition) = processor_audition::channel();
-    let (mut gain_recording, callback_gain_recording) = crate::gain_recording::channel();
-    sample_preview.bind_status(status.clone());
-    gain_recording.bind_status(status.clone());
-    let candidate_root = crate::candidate_custody::CandidateRoot::new(RETIRED).map_err(Invalid)?;
+    let factory::Queues {
+        status,
+        spectrum,
+        audition,
+        preview,
+        gain,
+        root: candidate_root,
+        publications,
+        incoming,
+        returning,
+        retired,
+        commands,
+        events,
+    } = factory::construct(reservation, rate)?;
+    let (mut sample_preview, callback_preview) = preview;
+    let (spectrum_target, callback_target) = spectrum;
+    let (processor_audition, callback_audition) = audition;
+    let (mut gain_recording, callback_gain_recording) = gain;
+    let status_owner::InitialFields {
+        publication: publication_status,
+        callback: callback_status,
+        preview: preview_status,
+        gain: gain_status,
+    } = status;
+    sample_preview.bind_status(preview_status);
+    gain_recording.bind_status(gain_status);
     let command_storage_bytes = commands
         .buffer()
         .capacity()
@@ -915,12 +983,12 @@ pub fn channel_with_spectrum(
             gain_recording,
             command_ticket: 0,
             publication: PublicationControl {
-                candidate_root: candidate_root.clone(),
+                candidate_root: candidate_root.publication_root_field()?,
                 native_custody: false,
                 held_control_return: None,
                 publications,
                 retired: Some(retired),
-                status: status.clone(),
+                status: publication_status,
                 rate,
                 revision: 0,
                 command_storage_bytes,
@@ -932,11 +1000,11 @@ pub fn channel_with_spectrum(
         },
         Callback {
             sample_preview: callback_preview,
-            candidate_root,
+            candidate_root: candidate_root.callback_root_field()?,
             publications: incoming,
             retired: returning,
             commands: events,
-            status,
+            status: callback_status,
             rate,
             spectrum_target: callback_target,
             processor_audition: callback_audition,
@@ -972,6 +1040,44 @@ pub fn channel_with_spectrum(
             test_after_spectrum_target_boundary: None,
         },
     ))
+}
+
+// One combined fixed-cohort bound, before any Root/queue/analyzer constructor.
+// This is not a host-union/Service admission: actual retained external families
+// still require the separate mandatory normal/bootstrap host traversal.
+pub(crate) fn native_worker_birth_bound(native_mode: bool) -> Option<(usize, usize)> {
+    let (channel, channel_peak) = factory::native_birth_bound()?;
+    let (spectrum, spectrum_peak) = crate::spectrum_worker::constructor_cost(native_mode)?;
+    let parent = crate::device::prepared_open_stage_body_bytes();
+    Some((
+        channel.checked_add(spectrum)?.checked_add(parent)?,
+        channel_peak
+            .checked_add(spectrum_peak)?
+            .checked_add(parent)?
+            .checked_add(size_of::<(Control, Callback)>())?
+            .checked_add(size_of::<(
+                crate::native_callback_owner::NativeTerminals,
+                crate::native_callback_owner::NativeRetirement,
+            )>())?
+            .checked_add(size_of::<crate::lifecycle::ConstructedChannel>())?
+            .checked_add(crate::device::prepared_open_stage_scratch_bytes()?)?,
+    ))
+}
+pub(crate) fn preflight_native_worker_birth(
+    native_mode: bool,
+    reservation: Option<crate::AudioCandidatePublicationReservation>,
+) -> Result<(), Invalid> {
+    if let Some(reservation) = reservation {
+        reservation.validate_shape().map_err(Invalid)?;
+        let (retained, peak) = native_worker_birth_bound(native_mode)
+            .ok_or(Invalid("native worker constructor layout is unknown"))?;
+        if retained > reservation.max_retained_data_bytes
+            || peak > reservation.max_construction_peak_data_bytes
+        {
+            return Err(Invalid("native worker cohort birth reservation exceeded"));
+        }
+    }
+    Ok(())
 }
 
 struct SpectrumStage {
@@ -1089,6 +1195,74 @@ fn capture_runtime_fence(status: &Status) -> Option<FreshRuntimeFence> {
 }
 
 impl PublicationControl {
+    pub(crate) fn matches_fresh_registered_payload_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        self.matches_constructor_worker_fields_on_control(root)
+            && self.matches_fresh_owned_destinations_on_control()
+    }
+
+    fn matches_fresh_owned_destinations_on_control(&self) -> bool {
+        let Self {
+            publications: _,
+            retired: _,
+            candidate_root: _,
+            native_custody: _,
+            held_control_return,
+            status,
+            rate: _,
+            revision,
+            command_storage_bytes: _,
+            resident_forwarding: _,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            endpoint_probe,
+            latest_fresh_runtime_cancellation,
+        } = self;
+        #[cfg(all(test, feature = "allocation-probe"))]
+        if endpoint_probe.is_some() {
+            return false;
+        }
+        held_control_return.is_none()
+            && latest_fresh_runtime_cancellation.is_none()
+            && *revision == 0
+            && status.preview_unused()
+            && !status.client_exposed.load(Acquire)
+    }
+
+    pub(crate) fn matches_constructor_worker_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        // Unlike the still-unsplit Control input, a boxed worker MUST own the
+        // actual registered worker field. No owning getter or field exposure.
+        self.resident_forwarding
+            .as_ref()
+            .is_some_and(|field| root.matches_resident_field(field, 1))
+            && self.matches_constructor_channel_fields_on_control(root)
+    }
+
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        self.candidate_root.is_publication_field()
+            && self.candidate_root.same_constructor_as(root)
+            && root.matches_status_field(&self.status, status_owner::PUBLICATION)
+            // This is actually None before the one-time worker endpoint split.
+            // A present value must already belong to this exact Root/role.
+            && self.resident_forwarding.as_ref().is_none_or(|field| root.matches_resident_field(field, 1))
+            && root.matches_prepared_producer(0, &self.publications)
+            && self
+                .retired
+                .as_ref()
+                .is_some_and(|field| root.matches_prepared_consumer(1, field))
+    }
+
+    /// Borrow telemetry without exposing its owning shared handle.
+    pub fn status(&self) -> &Status {
+        &self.status
+    }
     /// Correlation for nonowning client/view metadata, never custody authority.
     pub fn output_identity(&self) -> Option<u64> {
         Some(self.candidate_root.root_id())
@@ -1422,6 +1596,141 @@ impl Drop for PublicationControl {
 }
 
 impl Callback {
+    /// Fresh registered-carrier birth only. This checks the actual owning
+    /// destinations before this value escapes; it is not a later snapshot or
+    /// permission to adopt a legacy graph. Every allowed later Eligible owner
+    /// stays paired with the same Root's State/graph registrations.
+    pub(crate) fn matches_fresh_registered_payload_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        let Self {
+            sample_preview,
+            publications: _,
+            retired: _,
+            candidate_root: _,
+            commands: _,
+            status,
+            rate: _,
+            spectrum_target: _,
+            processor_audition: _,
+            processor_audition_lease,
+            processor_audition_rejected_epoch: _,
+            gain_recording: _,
+            spectrum_capture: _,
+            spectrum_stage: _,
+            active,
+            #[cfg(test)]
+            test_admit_candidate,
+            deferred,
+            deferred_eligible,
+            domain_pages,
+            stream_pending_play,
+            stream_prefix: _,
+            held_retirement,
+            terminal_disposal_pending,
+            published_route_key,
+            #[cfg(test)]
+                route_slot_visits: _,
+            #[cfg(test)]
+                test_transient_handoff_refusals: _,
+            #[cfg(all(test, feature = "allocation-probe"))]
+            test_eligible_transfer_allowance,
+            #[cfg(test)]
+            test_after_fresh_fence_validation,
+            #[cfg(test)]
+            test_before_fresh_runtime_apply,
+            #[cfg(test)]
+            test_after_fresh_runtime_apply_decision,
+            #[cfg(test)]
+            test_after_spectrum_target_boundary,
+        } = self;
+        #[cfg(test)]
+        if *test_admit_candidate
+            || test_after_fresh_fence_validation.is_some()
+            || test_before_fresh_runtime_apply.is_some()
+            || test_after_fresh_runtime_apply_decision.is_some()
+            || test_after_spectrum_target_boundary.is_some()
+        {
+            return false;
+        }
+        #[cfg(all(test, feature = "allocation-probe"))]
+        if test_eligible_transfer_allowance.is_some() {
+            return false;
+        }
+        self.matches_constructor_channel_fields_on_control(root)
+            && sample_preview.matches_fresh_registered_payload_on_control(root)
+            && status.preview_unused()
+            && !status.client_exposed.load(Acquire)
+            && status.applied_revision.load(Acquire) == 0
+            && !status.publication_pending.load(Acquire)
+            && active.is_none()
+            && deferred.is_none()
+            && deferred_eligible.is_none()
+            && domain_pages.iter().all(Option::is_none)
+            && held_retirement.is_none()
+            && processor_audition_lease.is_none()
+            && stream_pending_play.is_none()
+            && !*terminal_disposal_pending
+            && published_route_key.is_none()
+    }
+
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_submit_project_capture(
+        &mut self,
+        selection: crate::spectrum_worker::ProjectSelection,
+        frames: &[Frame],
+    ) -> Option<crate::spectrum_worker::CaptureOutcome> {
+        let project = self.spectrum_capture.as_mut()?.project.as_mut()?;
+        project.begin(Some(selection), frames.len(), true);
+        project.observe(hex_engine::ProjectSignal::Master, 0, frames);
+        project.finish(Instant::now(), 1, true)
+    }
+    pub(crate) fn attach_constructor_capture_on_control(
+        &mut self,
+        incoming: &mut Option<SpectrumCapture>,
+    ) -> Result<(), ()> {
+        if incoming.is_none()
+            || self.spectrum_capture.is_some()
+            || self.active.is_some()
+            || self.deferred.is_some()
+            || self.deferred_eligible.is_some()
+            || self.held_retirement.is_some()
+            || self.domain_pages.iter().any(Option::is_some)
+            || self.status.closing.load(Acquire)
+            || self.status.applied_revision.load(Acquire) != 0
+            || self.published_route_key.is_some()
+        {
+            return Err(());
+        }
+        self.spectrum_capture = incoming.take();
+        Ok(())
+    }
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        self.candidate_root.is_callback_field()
+            && self.candidate_root.same_constructor_as(root)
+            && root.matches_status_field(&self.status, status_owner::CALLBACK)
+            && root.matches_spectrum_capture(self.spectrum_capture.as_ref())
+            && root.matches_prepared_consumer(0, &self.publications)
+            && root.matches_prepared_producer(1, &self.retired)
+            && root.matches_prepared_consumer(2, &self.commands)
+            && self
+                .sample_preview
+                .matches_constructor_channel_fields_on_control(root)
+            && self
+                .spectrum_target
+                .matches_constructor_channel_fields_on_control(root)
+            && self
+                .processor_audition
+                .matches_constructor_channel_fields_on_control(root)
+            && self
+                .gain_recording
+                .matches_constructor_channel_fields_on_control(root)
+    }
+
     pub(crate) fn native_spectrum_receipt(
         &self,
     ) -> Option<Option<crate::spectrum_worker::NativeSpectrumReceipt>> {
@@ -1460,8 +1769,8 @@ impl Callback {
         self.status.publication_pending.store(false, Release);
         Ok(())
     }
-    pub(crate) fn matches_native_status(&self, status: &Arc<Status>) -> bool {
-        Arc::ptr_eq(&self.status, status)
+    pub(crate) fn matches_native_status(&self, status: &StatusHandle) -> bool {
+        self.status.shares_owner_with(status)
     }
     pub(crate) fn candidate_root_for_native_boundary(
         &self,
@@ -2963,12 +3272,12 @@ mod tests {
         .unwrap();
         let asset = project.assets().next().unwrap().id();
         let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.4]; FRAMES as usize]).unwrap();
-        let media = [(asset, audio)].into_iter().collect();
+        let media: std::collections::BTreeMap<_, _> = [(asset, audio)].into_iter().collect();
         let revision = Arc::new(
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),
@@ -3102,14 +3411,15 @@ mod tests {
         .expect("valid track and Return graph");
         let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.4]; FRAMES as usize])
             .expect("audio fixture");
-        let media = [(project.assets().next().expect("asset").id(), audio)]
-            .into_iter()
-            .collect();
+        let media: std::collections::BTreeMap<hex_project::AssetId, hex_engine::Audio> =
+            [(project.assets().next().expect("asset").id(), audio)]
+                .into_iter()
+                .collect();
         let revision = Arc::new(
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .expect("prepared track and Return chain"),
@@ -3226,14 +3536,15 @@ mod tests {
         .expect("valid compressor track and Return graph");
         let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.4]; FRAMES as usize])
             .expect("audio fixture");
-        let media = [(project.assets().next().expect("asset").id(), audio)]
-            .into_iter()
-            .collect();
+        let media: std::collections::BTreeMap<hex_project::AssetId, hex_engine::Audio> =
+            [(project.assets().next().expect("asset").id(), audio)]
+                .into_iter()
+                .collect();
         let revision = Arc::new(
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .expect("prepared compressor track and Return chain"),
@@ -3362,14 +3673,15 @@ mod tests {
         .expect("valid track and Return Gate graph");
         let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.4]; FRAMES as usize])
             .expect("audio fixture");
-        let media = [(project.assets().next().expect("asset").id(), audio)]
-            .into_iter()
-            .collect();
+        let media: std::collections::BTreeMap<hex_project::AssetId, hex_engine::Audio> =
+            [(project.assets().next().expect("asset").id(), audio)]
+                .into_iter()
+                .collect();
         let revision = Arc::new(
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .expect("prepared Gate track and Return chain"),
@@ -3440,7 +3752,7 @@ mod tests {
         let revision = hex_engine::PreparedRevision::prepare(
             &hex_project::Project::from_snapshot(project).unwrap(),
             &std::collections::BTreeMap::new(),
-            Arc::new(hex_engine::SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap();
@@ -3670,7 +3982,7 @@ mod tests {
             let revision = hex_engine::PreparedRevision::prepare(
                 editor.project(),
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap();
@@ -5955,7 +6267,7 @@ mod tests {
                 hex_engine::PreparedRevision::prepare(
                     editor.project(),
                     &std::collections::BTreeMap::from([(asset, audio)]),
-                    Arc::new(hex_engine::SineTable::new()),
+                    hex_engine::SharedSineTable::new_on_control(),
                     None,
                 )
                 .unwrap(),
@@ -6168,14 +6480,15 @@ mod tests {
         })
         .unwrap();
         let audio = hex_engine::Audio::new(48_000, vec![[0.25, -0.5], [0.75, -1.0]]).unwrap();
-        let media = [(project.assets().next().unwrap().id(), audio)]
-            .into_iter()
-            .collect();
+        let media: std::collections::BTreeMap<_, _> =
+            [(project.assets().next().unwrap().id(), audio)]
+                .into_iter()
+                .collect();
         let revision = Arc::new(
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &media,
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),
@@ -6613,7 +6926,7 @@ mod tests {
             hex_engine::PreparedRevision::prepare(
                 &project,
                 &std::collections::BTreeMap::new(),
-                Arc::new(hex_engine::SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 None,
             )
             .unwrap(),
@@ -6673,7 +6986,7 @@ mod tests {
         use std::thread;
 
         let (mut control, mut callback) = channel(48_000).unwrap();
-        let status = Arc::clone(&control.status);
+        let status = control.status.duplicate_legacy().unwrap();
         let done = Arc::new(AtomicBool::new(false));
         let reader_done = Arc::clone(&done);
         let reader = thread::spawn(move || {
@@ -6787,7 +7100,7 @@ mod tests {
                 hex_engine::PreparedRevision::prepare(
                     editor.project(),
                     &std::collections::BTreeMap::new(),
-                    Arc::new(hex_engine::SineTable::new()),
+                    hex_engine::SharedSineTable::new_on_control(),
                     None,
                 )
                 .unwrap(),

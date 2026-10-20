@@ -7,7 +7,9 @@ pub use journal::{Journal, journal_path, load_journal};
 mod audio_edit;
 mod replacement;
 mod schema;
-pub use files::{FileToken, load, load_with_token, save_new, save_new_with_token};
+pub use files::{
+    FileToken, FileTokenStorageObservation, load, load_with_token, save_new, save_new_with_token,
+};
 use hex_project::Project;
 pub use replacement::{
     RecoveryDocument, ReplaceOutcome, ReplaceWarning, load_recovery, recovery_path,

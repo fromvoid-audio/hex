@@ -4,7 +4,7 @@
 use allocation_counter::{AllocationInfo, measure};
 use hex_audio::prepared::{self, PublicationPolicy};
 use hex_engine::{
-    PreparedRevision, SineTable,
+    PreparedRevision,
     playback::{Playback, PlaybackCommand},
 };
 use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
@@ -30,7 +30,7 @@ fn prepare(editor: &Editor) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
     Ok(Arc::new(PreparedRevision::prepare(
         editor.project(),
         &BTreeMap::new(),
-        Arc::new(SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?))
 }
@@ -239,7 +239,7 @@ fn audition_callback_allocations(on_return: bool) -> Result<(), Box<dyn Error>> 
     control.reclaim();
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         revision,
@@ -293,7 +293,7 @@ fn audition_callback_allocations(on_return: bool) -> Result<(), Box<dyn Error>> 
     control.reclaim();
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         second_edit_revision,
@@ -347,7 +347,7 @@ fn audition_callback_allocations(on_return: bool) -> Result<(), Box<dyn Error>> 
     control.reclaim();
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         edited_revision,
@@ -399,7 +399,7 @@ fn audition_callback_allocations(on_return: bool) -> Result<(), Box<dyn Error>> 
     );
     assert_eq!(
         control
-            .status
+            .status()
             .applied_revision
             .load(std::sync::atomic::Ordering::Acquire),
         release_candidate_revision,

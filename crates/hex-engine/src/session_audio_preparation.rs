@@ -1,6 +1,7 @@
 //! Private preparation cache and Session audio source/name destinations. Every
 //! owner belongs to the parent's persistent custody; no previous raw inventory
 //! or unreported media map is accepted here. This is not a Session runtime.
+use crate::audio_clip_source::{ClipSourceKind, OwnedAudioClipSource};
 use crate::audio_only_inputs::*;
 use hex_project::{Project, SessionCellContent};
 use std::mem;
@@ -36,7 +37,7 @@ enum Disposal {
 struct CacheSlot {
     source: usize,
     handle: u64,
-    owner: Option<OwnedAudioSource>,
+    owner: Option<OwnedAudioClipSource>,
     disposal: Disposal,
 }
 struct CellSlot {
@@ -50,7 +51,7 @@ struct CellSlot {
     end: u64,
     gain: hex_project::ClipGain,
     name: String,
-    owner: Option<OwnedAudioSource>,
+    owner: Option<OwnedAudioClipSource>,
     disposal: Disposal,
     #[cfg(test)]
     test_index: usize,
@@ -235,6 +236,9 @@ impl SessionSourceConstruction {
                 .asset(clip.asset())
                 .ok_or(AudioStorageError::SourceMismatch)?;
             let owner = &bank.sources[source].1;
+            if matches!(&owner.kind, SourceKind::ResidentMono(_)) {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
             if owner.sample_rate() != project.sample_rate()
                 || owner.frames() != asset.playback_frames()
                 || clip.source_start() >= clip.source_end()
@@ -341,8 +345,8 @@ impl SessionSourceConstruction {
                 .get(row.source)
                 .ok_or(AudioStorageError::SourceMismatch)?
                 .1;
-            let kind = clone_kind(&source.kind);
-            row.owner = Some(OwnedAudioSource {
+            let kind = ClipSourceKind::try_clone_source_on_control(&source.kind, row.handle)?;
+            row.owner = Some(OwnedAudioClipSource {
                 kind,
                 handle: row.handle,
             });
@@ -353,8 +357,8 @@ impl SessionSourceConstruction {
                 .get(row.cache)
                 .and_then(|c| c.owner.as_ref())
                 .ok_or(AudioStorageError::SourceMismatch)?;
-            let kind = clone_kind(&cache.kind);
-            row.owner = Some(OwnedAudioSource {
+            let kind = cache.kind.clone_on_control(row.handle);
+            row.owner = Some(OwnedAudioClipSource {
                 kind,
                 handle: row.handle,
             });
@@ -476,12 +480,6 @@ impl SessionSourceConstruction {
     #[cfg(test)]
     pub(super) fn names(&self) -> impl Iterator<Item = &str> {
         self.cells.iter().map(|row| row.name.as_str())
-    }
-}
-fn clone_kind(kind: &SourceKind) -> SourceKind {
-    match kind {
-        SourceKind::Resident(audio) => SourceKind::Resident(audio.clone()),
-        SourceKind::Streamed(metadata) => SourceKind::Streamed(metadata.clone_on_control()),
     }
 }
 

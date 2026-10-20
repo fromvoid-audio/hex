@@ -1,7 +1,7 @@
 //! Bounded ownership and rendering for residual output from replaced Returns.
 use super::{Frame, MAX_FINITE_EFFECT_TAIL_SECONDS, SessionPlaybackError};
 use crate::ReturnBus;
-use hex_lattice::{NativeRuntimeChain, OutputTail, StereoMatrix};
+use hex_lattice::{OutputTail, StereoMatrix};
 use hex_project::{MAX_RETURN_TRACKS, ReturnId};
 use std::fmt;
 
@@ -17,7 +17,7 @@ enum TailDestination {
 }
 
 pub(super) struct ReturnEffectTail {
-    pub(super) chain: NativeRuntimeChain,
+    pub(super) chain: crate::EffectRuntimeChain,
     destination: TailDestination,
     matrix: Option<StereoMatrix>,
     gain: f32,
@@ -43,7 +43,7 @@ impl ReturnEffectTail {
         }
     }
 
-    pub(super) fn new(chain: NativeRuntimeChain, bus: &ReturnBus) -> Self {
+    pub(super) fn new(chain: crate::EffectRuntimeChain, bus: &ReturnBus) -> Self {
         Self {
             chain,
             destination: TailDestination::Return(bus.id),
@@ -290,10 +290,10 @@ impl ReturnEffectTailPlan {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn preflight(
         old_buses: &[ReturnBus],
-        old_chains: &[NativeRuntimeChain],
+        old_chains: &[crate::EffectRuntimeChain],
         old_tails: &ReturnEffectTailBank,
         new_buses: &[ReturnBus],
-        new_chains: &[NativeRuntimeChain],
+        new_chains: &[crate::EffectRuntimeChain],
         sample_rate: u32,
         processor_count: &mut usize,
         runtime_bytes: &mut usize,
@@ -399,8 +399,8 @@ impl ReturnEffectTailPlan {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn preflight_main(
         &mut self,
-        old: &NativeRuntimeChain,
-        current: &NativeRuntimeChain,
+        old: &crate::EffectRuntimeChain,
+        current: &crate::EffectRuntimeChain,
         pre_main_arrival: u32,
         sample_rate: u32,
         processor_count: &mut usize,
@@ -461,7 +461,7 @@ impl ReturnEffectTailPlan {
     pub(super) fn validate_main(
         &self,
         bank: &ReturnEffectTailBank,
-        old: &NativeRuntimeChain,
+        old: &crate::EffectRuntimeChain,
     ) -> Result<(), SessionPlaybackError> {
         if let Some((target, start, _)) = self.main_capture
             && (start >= old.len() || !bank.slots.get(target).is_some_and(Option::is_none))
@@ -473,15 +473,15 @@ impl ReturnEffectTailPlan {
     pub(super) fn capture_main(
         &self,
         bank: &mut ReturnEffectTailBank,
-        current: &mut NativeRuntimeChain,
-        old: &mut NativeRuntimeChain,
+        current: &mut crate::EffectRuntimeChain,
+        old: &mut crate::EffectRuntimeChain,
     ) -> Result<(), SessionPlaybackError> {
         self.validate_main(bank, old)?;
         if let Some((target, start, arrival)) = self.main_capture {
             current
                 .inherit_from_excluding_old_range(old, start..old.len())
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
-            let chain = std::mem::replace(old, NativeRuntimeChain::empty());
+            let chain = std::mem::replace(old, crate::EffectRuntimeChain::empty());
             bank.slots[target] = Some(ReturnEffectTail {
                 chain,
                 destination: TailDestination::Main {
@@ -501,8 +501,8 @@ impl ReturnEffectTailPlan {
     pub(super) fn retained_storage_bytes(
         &self,
         old: &ReturnEffectTailBank,
-        returns: &[NativeRuntimeChain],
-        main: &NativeRuntimeChain,
+        returns: &[crate::EffectRuntimeChain],
+        main: &crate::EffectRuntimeChain,
     ) -> Option<usize> {
         let mut bytes = 0_usize;
         for (source, _) in self.carry.iter().flatten() {
@@ -535,7 +535,7 @@ impl ReturnEffectTailPlan {
         &self,
         candidate: &ReturnEffectTailBank,
         previous: &ReturnEffectTailBank,
-        previous_chains: &[NativeRuntimeChain],
+        previous_chains: &[crate::EffectRuntimeChain],
         previous_buses: &[ReturnBus],
     ) -> Result<(), SessionPlaybackError> {
         for (source, target) in self.carry.iter().flatten().copied() {
@@ -586,7 +586,7 @@ impl ReturnEffectTailPlan {
     pub(super) fn capture_buses(
         &self,
         candidate: &mut ReturnEffectTailBank,
-        previous_chains: &mut [NativeRuntimeChain],
+        previous_chains: &mut [crate::EffectRuntimeChain],
         previous_buses: &[ReturnBus],
     ) -> Result<(), SessionPlaybackError> {
         for (source, target) in self.capture.iter().flatten().copied() {
@@ -617,7 +617,7 @@ impl ReturnEffectTailPlan {
             if slot.is_some() {
                 return Err(SessionPlaybackError::DeviceRuntime);
             }
-            let owned = std::mem::replace(chain, NativeRuntimeChain::empty());
+            let owned = std::mem::replace(chain, crate::EffectRuntimeChain::empty());
             *slot = Some(ReturnEffectTail::new(owned, bus));
         }
         Ok(())
@@ -625,7 +625,7 @@ impl ReturnEffectTailPlan {
 }
 
 fn reserve_chain(
-    chain: &NativeRuntimeChain,
+    chain: &crate::EffectRuntimeChain,
     sample_rate: u32,
     processor_count: &mut usize,
     runtime_bytes: &mut usize,

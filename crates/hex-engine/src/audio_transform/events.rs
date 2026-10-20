@@ -1,13 +1,12 @@
 //! Worker-side event composition before the container fade. No callback work.
 use crate::{Frame, Invalid};
 use hex_project::{AudioClipEdit, AudioDomainClock, TempoMap};
-use std::sync::atomic::{AtomicBool, Ordering};
 
 pub(super) fn compose(
     source: &[Frame],
     edit: &AudioClipEdit,
     tempo: &TempoMap,
-    cancelled: &AtomicBool,
+    cancelled: &dyn crate::CancellationQuery,
 ) -> Result<Vec<Frame>, Invalid> {
     let events = edit
         .domain
@@ -47,7 +46,7 @@ pub(super) fn compose(
             );
         } else {
             for (index, sample) in destination.iter_mut().enumerate() {
-                if index % 4096 == 0 && cancelled.load(Ordering::Relaxed) {
+                if index % 4096 == 0 && cancelled.is_cancelled() {
                     return Err(Invalid("audio event preparation cancelled"));
                 }
                 let position = edit.root_position_at((start + index) as u64, tempo)?;
@@ -61,7 +60,7 @@ pub(super) fn compose(
                     .ok_or(Invalid("audio event sample exceeds prepared root"))?;
             }
         }
-        if cancelled.load(Ordering::Relaxed) {
+        if cancelled.is_cancelled() {
             return Err(Invalid("audio event preparation cancelled"));
         }
     }

@@ -55,7 +55,7 @@ fn builtin_fm4_and_operator_custom_tuning_handoff_and_release_allocate_nothing()
                     PreparedRevision::prepare_tuning_from(
                         &project,
                         &BTreeMap::new(),
-                        Arc::new(SineTable::new()),
+                        hex_engine::SharedSineTable::new_on_control(),
                         source,
                         old,
                     )
@@ -63,7 +63,7 @@ fn builtin_fm4_and_operator_custom_tuning_handoff_and_release_allocate_nothing()
                     PreparedRevision::prepare(
                         &project,
                         &BTreeMap::new(),
-                        Arc::new(SineTable::new()),
+                        hex_engine::SharedSineTable::new_on_control(),
                         None,
                     )
                 }
@@ -88,9 +88,9 @@ fn builtin_fm4_and_operator_custom_tuning_handoff_and_release_allocate_nothing()
             let mut output = [[0.0; 2]; 137];
             measured_block(&mut callback, &mut output);
             assert!(
-                control.status.rejected_revision().is_none(),
+                control.status().rejected_revision().is_none(),
                 "{kind} at {index}: {:?}",
-                control.status.rejected_revision()
+                control.status().rejected_revision()
             );
             assert!(!input.is_cancelled(), "{kind}");
             assert!(output.iter().flatten().all(|sample| sample.is_finite()));
@@ -127,7 +127,7 @@ fn held_keyboard_tuning_publication_and_retirement_allocate_nothing() {
         PreparedRevision::prepare(
             &source_project,
             &BTreeMap::new(),
-            Arc::new(SineTable::new()),
+            hex_engine::SharedSineTable::new_on_control(),
             None,
         )
         .unwrap(),
@@ -160,7 +160,7 @@ fn held_keyboard_tuning_publication_and_retirement_allocate_nothing() {
             PreparedRevision::prepare_tuning_from(
                 &project,
                 &BTreeMap::new(),
-                Arc::new(SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 &old_project,
                 &old_revision,
             )
@@ -171,7 +171,7 @@ fn held_keyboard_tuning_publication_and_retirement_allocate_nothing() {
             .unwrap();
         control.publish(next).unwrap();
         measured_block(&mut callback, &mut output);
-        assert!(control.status.rejected_revision().is_none());
+        assert!(control.status().rejected_revision().is_none());
         assert!(!input.is_cancelled());
         for (offset, frame) in output.iter().enumerate() {
             let expected = (std::f64::consts::TAU * (phase + hz * offset as f64 / f64::from(RATE)))
@@ -216,7 +216,7 @@ fn reference_audition_retargets_with_exact_phase_envelope_and_zero_callback_allo
             PreparedRevision::prepare(
                 editor.project(),
                 &BTreeMap::new(),
-                Arc::new(SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 previous.as_ref().map(|r| r.session().as_ref()),
             )
             .unwrap(),
@@ -229,7 +229,7 @@ fn reference_audition_retargets_with_exact_phase_envelope_and_zero_callback_allo
         control.publish(candidate).unwrap();
         let mut output = [[0.0; 2]; 137];
         measured_block(&mut callback, &mut output);
-        assert!(control.status.rejected_revision().is_none());
+        assert!(control.status().rejected_revision().is_none());
         assert!(!input.is_cancelled());
         assert_ne!(input.held_keys()[0] & (1 << 60), 0);
         for frame in output {
@@ -258,7 +258,7 @@ fn reference_audition_retargets_with_exact_phase_envelope_and_zero_callback_allo
             PreparedRevision::prepare(
                 editor.project(),
                 &BTreeMap::new(),
-                Arc::new(SineTable::new()),
+                hex_engine::SharedSineTable::new_on_control(),
                 previous
                     .as_ref()
                     .map(|revision| revision.session().as_ref()),
@@ -273,7 +273,7 @@ fn reference_audition_retargets_with_exact_phase_envelope_and_zero_callback_allo
         control.publish(candidate).unwrap();
         let mut output = [[0.0; 2]; 137];
         measured_block(&mut callback, &mut output);
-        assert!(control.status.rejected_revision().is_none());
+        assert!(control.status().rejected_revision().is_none());
         assert!(!input.is_cancelled());
         if unsupported {
             assert_eq!(input.held_keys(), [0; 2]);

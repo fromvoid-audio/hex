@@ -225,7 +225,7 @@ pub fn export_project(args: &[std::ffi::OsString]) -> Result<(), Box<dyn Error>>
     let prepared = std::sync::Arc::new(hex_engine::PreparedRevision::prepare(
         &project,
         &media,
-        std::sync::Arc::new(hex_engine::SineTable::new()),
+        hex_engine::SharedSineTable::new_on_control(),
         None,
     )?);
     let path = Path::new(&args[2]);

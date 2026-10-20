@@ -3,7 +3,7 @@ use hex_project::{
     BeatTime, Command, Created, Editor, Project, SourceGainPoint, Tempo, WarpMode,
     default_audio_warp,
 };
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::atomic::Ordering};
 
 fn fixture(
     looping: bool,
@@ -60,7 +60,7 @@ fn prepare(
     crate::PreparedRevision::prepare_with_audio_transforms(
         editor.project(),
         media,
-        Arc::new(crate::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
         context,
     )
@@ -83,11 +83,50 @@ fn render(
 }
 fn isolated(limit: usize, cache: usize, entries: usize) -> AudioTransformPreparation {
     AudioTransformPreparation {
-        budget: Arc::new(budget::Budget::new(limit)),
+        budget: budget::BudgetOwner::local(limit),
         cache_limit: cache,
         entry_limit: entries,
         ..AudioTransformPreparation::default()
     }
+}
+
+#[test]
+fn capacity_visible_transform_fifo_preserves_lru_hits_and_bounded_eviction() {
+    let (mut editor, clip, media) = fixture(false);
+    let context = isolated(512_000, 128_000, 2);
+    let mut retained = Vec::new();
+    for cents in [100, 200] {
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents })
+            .unwrap();
+        retained.push(prepare(&editor, &media, &context));
+    }
+    assert_eq!(context.cache.borrow().entries.len(), 2);
+    let reserved_capacity = context.cache.borrow().entries.capacity();
+    let hits = context.cache_hits();
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 100 })
+        .unwrap();
+    retained.push(prepare(&editor, &media, &context));
+    assert!(context.cache_hits() > hits); // Move first entry to most recent.
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 300 })
+        .unwrap();
+    retained.push(prepare(&editor, &media, &context));
+    assert_eq!(context.cache.borrow().entries.len(), 2);
+    assert_eq!(context.cache.borrow().entries.capacity(), reserved_capacity);
+    let before_miss = context.cache_hits();
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 200 })
+        .unwrap();
+    retained.push(prepare(&editor, &media, &context));
+    assert_eq!(context.cache_hits(), before_miss); // 200 was the oldest, not 100.
+    assert_eq!(context.cache.borrow().entries.len(), 2);
+    // Control metadata moves did not alter the still-audible prepared buffers.
+    assert_eq!(
+        render(&retained[0], 0, 64, 17),
+        render(&retained[2], 0, 64, 31)
+    );
 }
 #[test]
 fn every_mode_split_recombines_exactly_with_root_pitch_phase_envelope_fades_and_tempo() {
@@ -199,7 +238,7 @@ fn reservation_covers_audible_owners_after_cache_eviction_and_releases_on_failur
         crate::PreparedRevision::prepare_with_audio_transforms(
             editor.project(),
             &media,
-            Arc::new(crate::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
             &context
         )
@@ -287,17 +326,158 @@ fn failed_preparation_transaction_does_not_cache_candidate_and_gain_reuses_pcm()
     for (a, b) in a.iter().zip(b) {
         assert_eq!(b, a.map(|x| x * gain));
     }
-    context.shutdown.store(true, Ordering::Release);
+    match &context.shutdown {
+        TransformCancellation::Unqualified(flag) => flag.store(true, Ordering::Release),
+        TransformCancellation::Retained(_) => {
+            panic!("fixture must use its original raw shutdown input")
+        }
+    }
     assert!(
         crate::PreparedRevision::prepare_with_audio_transforms(
             editor.project(),
             &media,
-            Arc::new(crate::SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
             &context
         )
         .is_err()
     );
+}
+
+#[test]
+fn unwound_transform_transaction_retains_pending_charge_and_refuses_compiler_reentry() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    for has_pcm in [false, true] {
+        let (mut editor, clip, media) = fixture(false);
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+            .unwrap();
+        let context = isolated(256_000, 256_000, 2);
+        let budget = context.budget.clone();
+        let asset = editor
+            .project()
+            .asset(editor.project().clip(clip).unwrap().asset())
+            .unwrap();
+        let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+        let failure = catch_unwind(AssertUnwindSafe(|| {
+            let _: Result<(), Invalid> = context.transaction(|| {
+                if has_pcm {
+                    let _candidate = context.prepare_audio(
+                        editor.project(),
+                        edit,
+                        asset,
+                        &media[&asset.id()],
+                    )?;
+                }
+                panic!("injected closed compiler preparation failure");
+            });
+        }));
+        assert!(failure.is_err());
+        assert!(context.failed_incomplete_on_control());
+        let expected_bytes = if has_pcm { 64_000 } else { 0 };
+        assert_eq!(context.retained_pcm_bytes(), expected_bytes);
+        assert_eq!(context.cached_pcm_bytes().unwrap(), 0);
+        assert_eq!(
+            context.pending.borrow().as_ref().unwrap().len(),
+            usize::from(has_pcm)
+        );
+        let calls = Cell::new(0);
+        for _ in 0..2 {
+            assert!(
+                context
+                    .compile_transaction(|| {
+                        calls.set(calls.get() + 1);
+                        Ok(())
+                    })
+                    .is_err()
+            );
+            assert!(
+                context
+                    .transaction(|| {
+                        calls.set(calls.get() + 1);
+                        Ok(())
+                    })
+                    .is_err()
+            );
+        }
+        assert_eq!(calls.get(), 0);
+        assert_eq!(budget.used(), expected_bytes);
+        // Explicit control teardown only. A surrounding failed native custody
+        // must retain this owner/charge until its actual retirement contract.
+        drop(context);
+        assert_eq!(budget.used(), 0);
+        eprintln!(
+            "actual failed transform custody has_pcm={has_pcm}, retained={expected_bytes}, repeated compiler closures uninvoked until explicit control teardown"
+        );
+    }
+}
+
+#[test]
+fn caught_nested_transform_failure_refuses_outer_commit_and_retains_actual_pending_pcm() {
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    for check_reentry in [false, true] {
+        let (mut editor, clip, media) = fixture(false);
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+            .unwrap();
+        let context = isolated(256_000, 256_000, 2);
+        let budget = context.budget.clone();
+        let asset = editor
+            .project()
+            .asset(editor.project().clip(clip).unwrap().asset())
+            .unwrap();
+        let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+        let calls = Cell::new(0);
+        let outer: Result<(), Invalid> = context.transaction(|| {
+            let nested = catch_unwind(AssertUnwindSafe(|| {
+                let _: Result<(), Invalid> = context.compile_transaction(|| {
+                    let _candidate = context.prepare_audio(
+                        editor.project(),
+                        edit,
+                        asset,
+                        &media[&asset.id()],
+                    )?;
+                    panic!("injected nested compiler failure caught inside outer transaction");
+                });
+            }));
+            assert!(nested.is_err());
+            if check_reentry {
+                for _ in 0..2 {
+                    assert!(
+                        context
+                            .compile_transaction(|| {
+                                calls.set(calls.get() + 1);
+                                Ok(())
+                            })
+                            .is_err()
+                    );
+                }
+            }
+            // Swallowing the panic and returning Ok must NOT authorize the
+            // public outer transaction to take/commit the pending owners.
+            Ok(())
+        });
+        assert!(outer.is_err());
+        assert!(context.failed_incomplete_on_control());
+        assert_eq!(calls.get(), 0);
+        assert_eq!(context.retained_pcm_bytes(), 64_000);
+        assert_eq!(context.cached_pcm_bytes().unwrap(), 0);
+        assert_eq!(context.pending.borrow().as_ref().unwrap().len(), 1);
+        assert!(
+            context
+                .transaction(|| {
+                    calls.set(1);
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert_eq!(calls.get(), 0);
+        drop(context);
+        assert_eq!(budget.used(), 0);
+        eprintln!(
+            "actual caught nested transform failure check_reentry={check_reentry}: outer refused, pending64000 retained until explicit control teardown"
+        );
+    }
 }
 
 #[test]
@@ -319,6 +499,7 @@ fn accepted_audio_sidecar_survives_tiny_cache_and_preserves_split_crop_identity(
     let prepared = prepare(&editor, &media, &context);
     let views = prepared.arrangement().audio_clip_views();
     assert_eq!(views.len(), 2);
+    assert_eq!(prepared.arrangement().audio_clip_views.capacity(), 2);
     assert!(!views[0].audio.shares_pcm_with(&views[1].audio));
     assert_eq!(context.cached_pcm_bytes().unwrap(), 64_000);
     editor
@@ -327,6 +508,7 @@ fn accepted_audio_sidecar_survives_tiny_cache_and_preserves_split_crop_identity(
     let split = prepare(&editor, &media, &context);
     let views = split.arrangement().audio_clip_views();
     assert_eq!(views.len(), 3);
+    assert_eq!(split.arrangement().audio_clip_views.capacity(), 3);
     assert!(views[0].audio.shares_pcm_with(&views[1].audio));
     assert_eq!(views[1].offset, 3_137);
     assert_eq!(views[1].length, 4_863);
@@ -343,7 +525,7 @@ fn injected_mid_render_cancellation_releases_candidate_reservation() {
     let result = crate::PreparedRevision::prepare_with_audio_transforms(
         editor.project(),
         &media,
-        Arc::new(crate::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
         &context,
     );
@@ -746,7 +928,7 @@ fn projected_fade_samples_match_prepared_pcm_after_crop_and_tempo_change() {
 
 #[test]
 fn derived_and_raw_audio_never_gain_private_constructor_provenance() {
-    let budget = Arc::new(budget::Budget::new(1024));
+    let budget = budget::BudgetOwner::local(1024);
     let reservation = budget.reserve(64).unwrap();
     let mut audio = Audio::from_derived(48_000, vec![[0.0; 2]; 8], reservation).unwrap();
     // Even a deliberately forged test receipt cannot relabel a derived owner.
@@ -944,7 +1126,7 @@ fn event_scratch_reclaims_unused_committed_and_pending_cache() {
             let accepted = crate::PreparedRevision::prepare_with_audio_transforms(
                 next.project(),
                 &media,
-                Arc::new(crate::SineTable::new()),
+                crate::SharedSineTable::new_on_control(),
                 None,
                 &context,
             )
@@ -1705,7 +1887,7 @@ fn preview_matches_preparation(
     let actual = crate::PreparedRevision::prepare_with_audio_transforms(
         editor.project(),
         media,
-        Arc::new(crate::SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
         &AudioTransformPreparation::default(),
     );
@@ -1875,4 +2057,152 @@ fn warp_preview_valid_endpoints_can_be_disconnected_by_marker_tempo_crossings() 
             "endpoint {end}"
         );
     }
+}
+
+fn retained_cancel_fixture() -> (
+    crate::RetainedControlCancellationSignal,
+    crate::RetainedControlJobRoute,
+    crate::RetainedControlCancellation,
+) {
+    let signal = crate::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
+    let job = crate::RetainedControlJob::try_from_owned_on_control(
+        &mut Some(0_u8),
+        usize::MAX,
+        |_: &mut u8| Ok::<_, ()>(crate::RetainedControlJobProgress::Pending),
+    )
+    .unwrap();
+    let route = job.route();
+    let worker = signal.bind_worker_on_control(route);
+    (signal, route, worker)
+}
+#[test]
+fn retained_transform_owns_actual_worker_field_and_cancellation_preserves_accepted_pcm() {
+    if !crate::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    eprintln!("SUPPORTED actual transform worker field and cancellation preserving accepted PCM");
+    let (signal, route, worker) = retained_cancel_fixture();
+    let context = AudioTransformPreparation {
+        budget: budget::BudgetOwner::local(256_000),
+        cache_limit: 256_000,
+        entry_limit: 2,
+        ..AudioTransformPreparation::with_retained_cancellation_on_control(worker.clone())
+    };
+    let mut ledger =
+        crate::AudioRootStorageLedger::try_new_on_control(crate::AudioStorageLedgerReservation {
+            data_rows: 32,
+            handle_rows: 32,
+            root_rows: 8,
+            max_retained_bytes: 65_536,
+            max_construction_peak_bytes: 65_536,
+        })
+        .unwrap();
+    signal.visit_storage_on_control(&mut ledger).unwrap();
+    worker.visit_storage_on_control(&mut ledger).unwrap();
+    assert!(
+        ledger
+            .validate_selected_shared_handles_on_control()
+            .is_err()
+    );
+    context
+        .visit_cancellation_storage_on_control(&mut ledger)
+        .unwrap();
+    ledger
+        .validate_selected_shared_handles_on_control()
+        .unwrap();
+    assert_eq!(ledger.summary().unwrap().data_allocations, 1);
+    drop(ledger);
+    let (mut editor, clip, media) = fixture(false);
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let accepted = prepare(&editor, &media, &context);
+    let pcm = render(&accepted, 0, 8000, 97);
+    assert!(pcm.iter().flatten().any(|x| x.abs() > 0.01));
+    assert!(pcm.iter().flatten().all(|x| x.is_finite()));
+    let bytes = context.retained_pcm_bytes();
+    signal.cancel(route);
+    assert!(
+        crate::PreparedRevision::prepare_with_audio_transforms(
+            editor.project(),
+            &media,
+            crate::SharedSineTable::new_on_control(),
+            None,
+            &context
+        )
+        .is_err()
+    );
+    assert_eq!(context.retained_pcm_bytes(), bytes);
+    assert_eq!(render(&accepted, 0, 8000, 53), pcm);
+    assert!(!AudioTransformPreparation::default().cancelled());
+    let raw = AudioTransformPreparation::default();
+    let mut ledger =
+        crate::AudioRootStorageLedger::try_new_on_control(crate::AudioStorageLedgerReservation {
+            data_rows: 32,
+            handle_rows: 32,
+            root_rows: 8,
+            max_retained_bytes: 65_536,
+            max_construction_peak_bytes: 65_536,
+        })
+        .unwrap();
+    assert_eq!(
+        raw.visit_cancellation_storage_on_control(&mut ledger),
+        Err(crate::AudioStorageError::UnknownStorage)
+    );
+}
+#[test]
+fn retained_transform_long_fade_scan_observes_direct_query_without_lookup_guard() {
+    if !crate::audio_storage_constructor_layout_supported() {
+        return;
+    }
+    eprintln!("SUPPORTED direct bound worker query during actual long fade scan");
+    let (signal, route, worker) = retained_cancel_fixture();
+    struct CancelDuringScan<'a> {
+        signal: &'a crate::RetainedControlCancellationSignal,
+        route: crate::RetainedControlJobRoute,
+        worker: &'a crate::RetainedControlCancellation,
+        polls: Cell<usize>,
+    }
+    impl crate::CancellationQuery for CancelDuringScan<'_> {
+        fn is_cancelled(&self) -> bool {
+            let polls = self.polls.get() + 1;
+            self.polls.set(polls);
+            if polls == 4 {
+                self.signal.cancel(self.route);
+            }
+            self.worker.is_cancelled()
+        }
+    }
+    let query = CancelDuringScan {
+        signal: &signal,
+        route,
+        worker: &worker,
+        polls: Cell::new(0),
+    };
+    let (mut editor, clip, _) = fixture(false);
+    // Ordinary container fades do not create an authored root edit. Use the
+    // canonical nonzero pitch edit, which captures the existing fade domain.
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    let edit = editor.project().clip(clip).unwrap().audio_edit().unwrap();
+    let mut frames = vec![[1.0, 1.0]; 8000];
+    assert_eq!(
+        mapping::apply_fade(&mut frames, edit, editor.project().tempo_map(), &query),
+        Err(Invalid("audio preparation cancelled"))
+    );
+    assert_eq!(query.polls.get(), 4);
+    assert_eq!(frames[0], [0.0, 0.0]);
+    assert!(frames[3072..].iter().all(|frame| *frame == [1.0, 1.0]));
+    assert!(worker.is_cancelled());
+}
+
+#[test]
+fn unprocessed_audio_sidecar_bound_does_not_allocate_unused_backing() {
+    let (editor, _, media) = fixture(false);
+    let context = isolated(512_000, 64_000, 1);
+    let prepared = prepare(&editor, &media, &context);
+    assert!(prepared.arrangement().audio_clip_views.is_empty());
+    assert_eq!(prepared.arrangement().audio_clip_views.capacity(), 0);
+    assert_eq!(prepared.arrangement().tracks()[0].clips.len(), 1);
 }

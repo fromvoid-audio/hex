@@ -2,7 +2,17 @@
 //! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
 mod audio_events;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
+mod audio_event_read;
+pub use audio_event_read::{
+    AudioClipDomainFacts, AudioClipRootFacts, AudioClipRootRead, AudioFadeProjectionFacts,
+    EditableAudioEventsRead,
+};
 mod audio_edit;
+mod audio_preview;
+pub use audio_preview::{
+    AudioClipPreview, AudioClipPreviewOperation, AudioClipPreviewRead,
+    AudioPreviewWaveformPosition, default_audio_warp_markers,
+};
 mod clip_fade_trim;
 mod clip_name;
 pub use audio_edit::{
@@ -40,6 +50,8 @@ pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };
 mod history;
+mod storage_buffers;
+pub use storage_buffers::{ProjectStorageBuffers, TrackStorageBuffers};
 mod provenance;
 pub use provenance::{ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES};
 mod time_range;
@@ -51,6 +63,7 @@ pub use gain_touch::{
     MAX_GAIN_TOUCH_SPANS_PER_TRACK, MAX_GAIN_TOUCH_STEPS_PER_SPAN, validate_gain_lane_parts,
 };
 mod midi;
+pub use midi::MidiSourceStorageObservation;
 mod midi_batch;
 mod midi_playback;
 pub use gain_envelope::{
@@ -76,7 +89,11 @@ pub use session::{
 };
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
-pub use history::Editor;
+pub use history::{
+    Editor, OriginalSamplerEditorTransition, OriginalSamplerPending,
+    OriginalSamplerTransitionRequest, OriginalSamplerTransitionResult,
+};
+mod sorted_entries;
 pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
@@ -88,7 +105,8 @@ pub use snapshot::{
     SessionAudioClipSnapshot, SessionCellContentSnapshot, SessionCellSnapshot,
     SessionMidiClipSnapshot, SessionSnapshot, Snapshot, TrackContentSnapshot, TrackSnapshot,
 };
-use std::{collections::BTreeMap, fmt, path::PathBuf, sync::Arc};
+pub use sorted_entries::SortedEntries;
+use std::{fmt, path::PathBuf, sync::Arc};
 pub use timebase::{
     BeatPulse, BeatTime, MAX_METER_POINTS, MAX_TEMPO_POINTS, Meter, MeterMap, MeterMapCopyCustody,
     MeterMapCopyError, MeterMapCopyPhase, MeterMapOwnedAllocationLayout, MeterPoint, MeterPosition,
@@ -177,6 +195,11 @@ impl Asset {
         self.id
     }
     pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+    /// Actual owning path field for control-side capacity inventory. Borrowing
+    /// it creates no path clone and grants no whole-root storage qualification.
+    pub fn path_buffer_on_control(&self) -> &PathBuf {
         &self.path
     }
     pub fn frames(&self) -> u64 {
@@ -474,7 +497,7 @@ pub struct Project {
     pub(crate) import_provenance: Option<ImportProvenance>,
     pub(crate) sample_rate: u32,
     pub(crate) next_id: u64,
-    pub(crate) assets: BTreeMap<AssetId, Asset>,
+    pub(crate) assets: SortedEntries<AssetId, Asset>,
     pub(crate) tracks: Vec<Track>,
     pub(crate) returns: Vec<ReturnTrack>,
     pub(crate) session: SessionGrid,
@@ -497,7 +520,7 @@ impl Project {
             sample_rate,
             next_id: 1,
             import_provenance: None,
-            assets: BTreeMap::new(),
+            assets: SortedEntries::new(),
             tracks: Vec::new(),
             returns: Vec::new(),
             session: SessionGrid::default(),
@@ -663,6 +686,11 @@ impl Project {
     }
     pub fn assets(&self) -> impl Iterator<Item = &Asset> {
         self.assets.values()
+    }
+    /// Borrow actual canonical backing, including spare capacity. This is not
+    /// a snapshot/clone or qualification for any child allocation or graph.
+    pub fn asset_entries_on_control(&self) -> &SortedEntries<AssetId, Asset> {
+        &self.assets
     }
     pub fn asset(&self, id: AssetId) -> Option<&Asset> {
         self.assets.get(&id)

@@ -1,8 +1,6 @@
 //! Original delayed processors enter through the normal registry/compiler seam.
 use super::*;
-use crate::{
-    Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, SineTable,
-};
+use crate::{Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand};
 use hex_lattice::{
     NativeDeviceDefinition, NativeDeviceRegistry, NativeProcessorRuntime, OutputTail,
     PreparedNativeProcessor, StereoMatrix,
@@ -12,7 +10,7 @@ use hex_lattice_contract::{
     ParameterDescriptor, ParameterId, ParameterValue,
 };
 use hex_project::{Command, Created, Editor};
-use std::any::Any;
+use std::{any::Any, collections::BTreeMap};
 
 #[path = "tests/eq_automation.rs"]
 mod eq_automation;
@@ -204,7 +202,7 @@ pub(crate) fn prepare(f: &Fixture) -> Result<Arc<PreparedRevision>, Invalid> {
     PreparedRevision::prepare_with_registries(
         f.editor.project(),
         &f.media,
-        Arc::new(SineTable::new()),
+        crate::SharedSineTable::new_on_control(),
         None,
         &effects,
         &instruments,
@@ -509,7 +507,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
         PreparedRevision::prepare_with_registries(
             f.editor.project(),
             &f.media,
-            Arc::new(SineTable::new()),
+            crate::SharedSineTable::new_on_control(),
             None,
             &effects,
             &instruments,

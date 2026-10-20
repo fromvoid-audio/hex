@@ -1,7 +1,7 @@
 //! Original linear ADSR law in output-frame units, not measured Live curves.
 use super::{Invalid, finite_range};
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Envelope {
     pub attack_seconds: f64,
     pub decay_seconds: f64,
@@ -39,7 +39,7 @@ impl Envelope {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct PreparedEnvelope {
     attack: u64,
     decay: u64,
@@ -48,6 +48,15 @@ pub(super) struct PreparedEnvelope {
 }
 
 impl PreparedEnvelope {
+    pub(super) fn audit_scalar_storage(&self) {
+        let Self {
+            attack,
+            decay,
+            sustain,
+            release,
+        } = self;
+        let _: (&u64, &u64, &f64, &u64) = (attack, decay, sustain, release);
+    }
     pub(super) const fn release_frames(self) -> u64 {
         self.release
     }

@@ -7,7 +7,7 @@
 //! Failed small-stack trials run in child processes: a Rust stack overflow aborts
 //! its process, so it must never take down the invoking shell or test runner.
 
-use hex_devices::{SINE_INSTRUMENT_TYPE_ID, SineTable, utility::UTILITY_DEFINITION};
+use hex_devices::{SINE_INSTRUMENT_TYPE_ID, utility::UTILITY_DEFINITION};
 use hex_engine::{PreparedRevision, SessionPlayback};
 use hex_lattice::{NativeInstrumentDefinition, NativeInstrumentRegistry};
 use hex_lattice_contract::{DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterValue};
@@ -270,7 +270,7 @@ fn render_preroll(revision: Arc<PreparedRevision>, target: u64) -> Result<u64, S
 
 fn prepare_fixture(fixture: Fixture) -> Result<Arc<PreparedRevision>, Box<dyn Error>> {
     let (project, definition) = project_fixture(fixture)?;
-    let sine_table = Arc::new(SineTable::new());
+    let sine_table = hex_engine::SharedSineTable::new_on_control();
     let revision = match definition {
         Some(definition) => {
             let definitions: [&dyn NativeInstrumentDefinition; 1] = [definition];

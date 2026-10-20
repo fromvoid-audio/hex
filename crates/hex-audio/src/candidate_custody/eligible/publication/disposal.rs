@@ -171,6 +171,7 @@ impl Custody {
                     && let Some(returned) = slot.returned.take()
                 {
                     work.executions[index] = Some(Execution {
+                        state_drop: None,
                         returned,
                         proof: None,
                         proof_recorded: false,
@@ -238,9 +239,29 @@ impl Custody {
                         workspace.clear();
                         slot.streaming = Some(workspace);
                     }
+                    let registration = slot.state_storage.as_ref().ok_or(())?;
+                    registration
+                        .begin_actual_state_drop_on_control(
+                            hex_engine::sampler_host_fields::BodyRef::of(state.as_ref()),
+                            state.storage_lease.as_ref().ok_or(())?,
+                        )
+                        .map_err(|_| ())?;
+                    if execution.state_drop.is_some() {
+                        return Err(());
+                    }
+                    execution.state_drop = state.storage_lease.take();
                     drop(bank);
                     execution.pending = true;
                     drop(execution.returned.state.take());
+                    // SAME non-Clone lease stays in existing Execution across
+                    // the destructive step; panic retains it and first payload.
+                    execution
+                        .state_drop
+                        .as_mut()
+                        .ok_or(())?
+                        .complete_actual_state_drop_on_control()
+                        .map_err(|_| ())?;
+                    drop(execution.state_drop.take());
                     drop(execution.proof.take());
                     drop(execution.metadata_tokens.take());
                     execution.pending = false;
@@ -250,6 +271,14 @@ impl Custody {
                     let slot = bank.publication.slots.get(stamp.slot).ok_or(())?;
                     if slot.life.successor_dependencies.load(Ordering::Acquire) != 0 {
                         return Ok(false);
+                    }
+                    if slot
+                        .claim_storage
+                        .iter()
+                        .flatten()
+                        .any(|r| !r.is_normally_disposed_on_control())
+                    {
+                        return Err(());
                     }
                     slot.archive
                 };
@@ -262,7 +291,14 @@ impl Custody {
                 }
                 if execution.disposed.is_none() {
                     execution.pending = true;
-                    execution.disposed = Some(anchor.finish_disposal_on_control().map_err(|_| ())?);
+                    match anchor.finish_disposal_on_control() {
+                        Ok(disposed) => execution.disposed = Some(disposed),
+                        Err(hex_engine::AudioStorageError::ExternalReadersPending) => {
+                            execution.pending = false;
+                            return Ok(false);
+                        }
+                        Err(_) => return Err(()),
+                    }
                     execution.pending = false;
                 }
                 if execution.inputs.is_none() {
@@ -420,6 +456,21 @@ fn can_release_slot(bank: &NativeBank, stamp: Stamp, phase: Phase) -> bool {
     {
         return false;
     }
+    if slot
+        .state_storage
+        .as_ref()
+        .is_some_and(|record| !record.is_normally_disposed_on_control())
+    {
+        return false;
+    }
+    if slot
+        .claim_storage
+        .iter()
+        .flatten()
+        .any(|r| !r.is_normally_disposed_on_control())
+    {
+        return false;
+    }
     let refs = slot.domain_refs;
     !(refs[0].is_some() && refs[0] == refs[1])
         && refs.into_iter().flatten().all(|token| {
@@ -437,6 +488,8 @@ fn release_slot(bank: &mut NativeBank, stamp: Stamp, phase: Phase) -> bool {
     let slot = &mut bank.publication.slots[stamp.slot];
     let archive = slot.archive;
     let domains = slot.domain_refs;
+    slot.state_storage = None;
+    slot.claim_storage = [None, None];
     slot.phase = Phase::Vacant;
     slot.identity = None;
     slot.summary = None;

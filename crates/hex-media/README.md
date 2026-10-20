@@ -6,7 +6,10 @@ Bounded control-side import of supported RIFF/WAVE audio into validated engine
 audio buffers, plus versioned sample-rate conversion. The decoder accepts PCM
 8/16/24/32-bit, IEEE float32/64, extensible PCM/float, G.711 A-law/mu-law and
 Microsoft/IMA ADPCM, mono or stereo, at sample rates from 8 kHz through 192 kHz.
-Mono is duplicated to stereo. Extensible files validate their subtype GUID,
+The normalized Audio API duplicates mono to stereo. Native original-source file
+decoding retains the actual mono buffer; only the required project-rate clip
+derivative expands it, directly through the same indexed resampling kernel.
+Extensible files validate their subtype GUID,
 valid-bit count and mono/stereo channel mask (including an unspecified mask).
 Broadcast metadata/unknown RIFF chunks are skipped with bounded header scanning.
 ADPCM validates block dimensions, predictor headers and file-supplied Microsoft

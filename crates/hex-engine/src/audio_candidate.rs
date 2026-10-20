@@ -1,11 +1,20 @@
 //! Constructor-owned runtime custody, independent of cost/admission authority.
 //! Teardown follows original177 claims_teardown's Pending-before-take protocol.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConstructorPurpose {
+    NativeFresh,
+    MainExport,
+}
 mod claimed;
 mod draft;
 mod preparation;
+mod preparation_operations;
+pub use preparation_operations::AudioCandidatePreparationOperations;
 mod reservation;
 pub use draft::AudioCandidateDraft;
-pub use preparation::AudioCandidatePreparation;
+pub use preparation::{
+    AudioCandidateControlBlock, AudioCandidateControlProgress, AudioCandidatePreparation,
+};
 pub use reservation::AudioCandidateReservationQuote;
 mod storage;
 pub use storage::AudioCandidateConstructorSummary;
@@ -15,8 +24,8 @@ use crate::{
     OwnedAudioInputs, playback::Playback,
 };
 pub use claimed::{
-    AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidateRuntimeStatus,
-    AudioCandidateSplitRefusal, ClaimedAudioCandidateRuntime,
+    AudioCandidateAnchors, AudioCandidateConstructorClaims, AudioCandidatePreparedSplit,
+    AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal, ClaimedAudioCandidateRuntime,
 };
 pub use groups::{AudioCandidateRuntimeDisposed, AudioCandidateTransfer};
 use std::{
@@ -270,11 +279,21 @@ impl AudioCandidateDisposed {
         self.closed_groups
     }
 }
-struct Group {
+pub(crate) struct Group {
     location: (u8, usize),
     present: bool,
     closed: bool,
     origin: Option<groups::Origin>,
+    lease: Option<groups::GroupLease>,
+}
+impl Group {
+    fn lease_matches_origin(&self) -> bool {
+        match (self.origin, &self.lease) {
+            (Some(origin), Some(lease)) => lease.matches_origin(origin),
+            (None, None) => true,
+            _ => false,
+        }
+    }
 }
 struct RuntimeOwner {
     playback: Playback,
@@ -300,6 +319,17 @@ pub struct AudioCandidateOwner {
     inner: Box<CandidateState>,
 }
 impl AudioCandidateOwner {
+    /// Register a real immutable field against this candidate's sealed root.
+    pub fn register_compiled_reader_on_control(
+        &self,
+    ) -> Result<crate::AudioCompiledRevision, AudioStorageError> {
+        if self.inner.phase != AudioCandidateDisposalPhase::Owned || self.inner.receipt_taken {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        self.inner
+            .custody
+            .register_compiled_reader_on_control(&self.inner.token)
+    }
     /// Control-only headless observer on the actual nested Runtime Box Drop.
     /// Returns a scalar address only; no pointer, Playback or owning handle escapes.
     #[cfg(any(test, feature = "instrument-test-support"))]
@@ -410,8 +440,9 @@ struct CandidateState {
     custody: AudioPreparationCustody,
     token: AudioPreparationToken,
     runtime: Option<Box<RuntimeOwner>>,
-    groups: Vec<Group>,
-    journal: Vec<groups::TransferRow>,
+    runtime_lease: Option<groups::RuntimeStorageLease>,
+    groups: groups::GroupBook,
+    journal: groups::TransferJournal,
     archive: groups::Archive,
     runtime_receipt: Option<AudioCandidateRuntimeDisposed>,
     phase: AudioCandidateDisposalPhase,
@@ -454,6 +485,7 @@ impl CandidateState {
                     custody,
                     token,
                     runtime: draft.runtime.take(),
+                    runtime_lease: draft.runtime_lease.take(),
                     groups: std::mem::take(&mut draft.groups),
                     journal: std::mem::take(&mut draft.journal),
                     archive,
@@ -500,6 +532,13 @@ impl CandidateState {
             .runtime
             .as_ref()
             .ok_or(AudioStorageError::SourceMismatch)?;
+        if self
+            .runtime_lease
+            .as_ref()
+            .is_none_or(|lease| !lease.matches_identity(self.identity))
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         validate_runtime_groups(runtime, &self.groups)
     }
 
@@ -521,12 +560,20 @@ impl CandidateState {
             self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
             return Err(AudioStorageError::UnknownStorage);
         }
+        let runtime_lease = self
+            .runtime_lease
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        groups::begin_disposal(&self.groups)?;
+        runtime_lease.begin_disposal();
         self.phase = AudioCandidateDisposalPhase::RuntimePending;
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(self.runtime.take()))) {
             self.first_panic = Some(payload);
             self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
             return Err(AudioStorageError::UnknownStorage);
         }
+        groups::complete_disposal(&self.groups);
+        runtime_lease.complete_disposal();
         self.phase = AudioCandidateDisposalPhase::RootsCleaning;
         for group in &mut self.groups {
             group.closed = group.present;
@@ -534,6 +581,7 @@ impl CandidateState {
         Ok(AudioCandidateRuntimeDisposed {
             runtime: self.identity,
             groups: std::mem::take(&mut self.groups),
+            runtime_lease: self.runtime_lease.take(),
         })
     }
     pub fn dispose_on_control(&mut self) -> Result<AudioCandidateDisposed, AudioStorageError> {
@@ -567,8 +615,17 @@ impl CandidateState {
         if self.phase != AudioCandidateDisposalPhase::RootsCleaning || !self.archive.all_closed() {
             return Err(AudioStorageError::UnknownStorage);
         }
+        if let Err(error) = self.archive.retire_physical_anchor(&mut self.first_panic) {
+            if error != AudioStorageError::ExternalReadersPending {
+                self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
+            }
+            return Err(error);
+        }
         self.custody.close_on_control();
         self.custody.cleanup_on_control();
+        if self.custody.phase() == AudioPreparationPhase::Cleaning {
+            return Err(AudioStorageError::ExternalReadersPending);
+        }
         if self.custody.phase() != AudioPreparationPhase::Recoverable {
             self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
             return Err(AudioStorageError::UnknownStorage);
@@ -634,6 +691,7 @@ fn validate_runtime_groups(
                 g.location != (kind, member)
                     || g.present != present
                     || g.closed
+                    || !g.lease_matches_origin()
                     || (kind == 1 && present && g.origin.is_none())
             }) {
                 return Err(AudioStorageError::SourceMismatch);
@@ -647,14 +705,17 @@ fn validate_runtime_groups(
     Ok(())
 }
 
-// Closed constructor class: no effects/instruments/MIDI, no retained tails or
-// analytic-context fanout, and no signal-graph compensation. Enumeration includes
+// Closed fresh constructors: existing Utility plus actual constructor-paired
+// Sampler runtime and typed signal compensation. Opaque providers, retained
+// tails and analytic-context fanout remain refused. Enumeration includes
 // every vacant slot; absence is validated, never converted into an owner group.
 fn validate_supported_location(kind: u8, present: bool) -> Result<(), AudioStorageError> {
     match kind {
-        0 | 4 | 7 | 9..=12 => Ok(()),
-        1 | 2 | 3 | 5 | 6 | 8 | 13 if !present => Ok(()),
-        1 | 2 | 3 | 5 | 6 | 8 | 13 => Err(AudioStorageError::UnsupportedGraph),
+        0 | 2 | 4 | 7 | 8 | 9..=12 => Ok(()),
+        1 | 3 | 5 | 6 | 13 if !present => Ok(()),
+        1 | 3 | 5 | 6 | 13 => Err(AudioStorageError::UnsupportedGraph),
         _ => Err(AudioStorageError::SourceMismatch),
     }
 }
+
+pub(crate) use groups::TransferRow;

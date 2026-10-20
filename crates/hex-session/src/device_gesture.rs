@@ -1,7 +1,7 @@
 //! One worker-owned, typed native parameter overlay. No callback ownership.
 use crate::{Session, SessionError};
 use hex_engine::{NativeDeviceClass, PreparedRevision};
-use hex_project::{DeviceId, Project, ReturnId, TrackId};
+use hex_project::{DeviceId, ReturnId, TrackId};
 use std::sync::Arc;
 #[cfg(test)]
 mod snapshot_tests;
@@ -815,7 +815,7 @@ mod client_tests {
 pub(crate) struct GestureOutcome {
     pub ack: GestureAck,
     pub playback: Option<Arc<PreparedRevision>>,
-    pub preview_project: Option<Arc<Project>>,
+    pub preview_project: Option<crate::SharedProject>,
     pub canonical_changed: bool,
 }
 
@@ -840,6 +840,24 @@ enum ActiveKind {
 pub(crate) struct GestureMachine {
     active: Option<Active>,
     last_key: Option<GestureKey>,
+}
+
+impl GestureMachine {
+    /// These exact private fields contain inline Copy state. The exhaustive
+    /// patterns/Copy checks are the source contract; BodyRef proves footprint
+    /// only and supplies no constructor or retirement authority.
+    pub(crate) fn inline_worker_gesture_frame_on_control(
+        &self,
+    ) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        fn inline_copy<T: Copy>(_: &T) {}
+        let Self { active, last_key } = self;
+        if let Some(Active { snapshot, kind }) = active {
+            inline_copy(snapshot);
+            inline_copy(kind);
+        }
+        inline_copy(last_key);
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
 }
 
 impl GestureRequest {
@@ -1446,7 +1464,7 @@ fn preview_target(
     target: GestureTarget,
     value: ParameterValue,
     previous: Option<&PreparedRevision>,
-) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
+) -> Result<(crate::SharedProject, Arc<PreparedRevision>), SessionError> {
     match target {
         GestureTarget::TrackBalance { track } => {
             session.preview_track_balance(track, mix_value(value, -1.0, 1.0)?, previous)
@@ -1506,7 +1524,7 @@ fn preview_pair_target(
     target: GestureTarget,
     value: ParameterPairValue,
     previous: Option<&PreparedRevision>,
-) -> Result<(Arc<Project>, Arc<PreparedRevision>), SessionError> {
+) -> Result<(crate::SharedProject, Arc<PreparedRevision>), SessionError> {
     match target {
         GestureTarget::DeviceParameterPair {
             device,

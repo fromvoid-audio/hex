@@ -119,7 +119,16 @@ fn real_ordered_mixed_rate_import_progress_paths_and_undo_redo_without_reopen() 
     assert_eq!(progress.phase, AudioBatchPhase::Completed);
     assert_eq!(progress.completed_members, 2);
     assert_eq!(control.request_cancel(), AudioBatchCancel::TooLate);
-    assert_eq!(s.resident_frames(), 22);
+    // Converted mono: 5 original + 10 project frames. Identity mono:
+    // 7 original + 7 stereo project frames, rather than a normalized source alias.
+    assert_eq!(
+        s.resident_frames(),
+        if hex_engine::audio_storage_constructor_layout_supported() {
+            29
+        } else {
+            22
+        }
+    );
     for (i, result) in created.iter().enumerate() {
         let id = asset(*result);
         let metadata = s.project().assets().find(|a| a.id() == id).unwrap();
@@ -324,7 +333,14 @@ fn aggregate_budget_counts_retained_undo_media_and_converted_lengths() {
     let files = Files::new();
     let ten = files.wav("ten.wav", 48_000, 10, 1);
     let six = files.wav("six.wav", 24_000, 3, 2);
-    let mut s = Session::new(48_000, 16, 20).unwrap();
+    // Keep exactly ten free frame-capacity units after the held Undo asset,
+    // accounting both native mono original and its required stereo derivative.
+    let retained = if hex_engine::audio_storage_constructor_layout_supported() {
+        20
+    } else {
+        10
+    };
+    let mut s = Session::new(48_000, 16, retained + 10).unwrap();
     capture(&s, vec![ten]).run(&mut s, None, context).unwrap();
     assert!(s.undo());
     let before = s.project().clone();
@@ -334,7 +350,7 @@ fn aggregate_budget_counts_retained_undo_media_and_converted_lengths() {
         op.run(&mut s, None, context),
         Err(AudioBatchError::Member { member: 2, .. })
     ));
-    unchanged(&s, &before, 1, 10);
+    unchanged(&s, &before, 1, retained);
     assert!(s.editor.can_redo());
     assert!(!s.editor.can_undo());
     assert_eq!(control.progress().completed_members, 1);

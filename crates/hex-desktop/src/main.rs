@@ -5,6 +5,7 @@ use std::io::Write;
 mod audio_policy;
 mod native_audio;
 mod native_sources;
+pub mod snapshot_transport;
 mod time_selection_profile;
 
 fn main() {

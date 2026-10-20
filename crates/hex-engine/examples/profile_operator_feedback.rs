@@ -4,7 +4,7 @@
 mod fixture;
 
 use fixture::Fixture;
-use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand, SineTable};
+use hex_engine::{PreparedRevision, SessionPlayback, SessionPlaybackCommand};
 use hex_lattice::InstrumentHistoryRetargetPreparation;
 use hex_project::{Command, Editor};
 use std::{collections::BTreeMap, error::Error, hint::black_box, sync::Arc, time::Instant};
@@ -68,12 +68,12 @@ fn main() -> Result<(), Box<dyn Error>> {
         LEVEL_A,
         options.all_operators,
     )?;
-    let table = Arc::new(SineTable::new());
+    let table = hex_engine::SharedSineTable::new_on_control();
     let initial_revision = Arc::new(prepare_revision(&initial.project, &table, None)?);
     verify_partition_checksum(Arc::clone(&initial_revision))?;
 
     if options.density_check {
-        verify_density_refusal(Arc::clone(&table), options.all_operators)?;
+        verify_density_refusal(table.clone(), options.all_operators)?;
     }
 
     match options.scenario {
@@ -89,7 +89,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 
 fn run_steady(
     initial: &Fixture,
-    table: &Arc<SineTable>,
+    table: &hex_engine::SharedSineTable,
     options: Options,
 ) -> Result<(), Box<dyn Error>> {
     let setup_started = Instant::now();
@@ -123,7 +123,7 @@ fn run_steady(
 
 fn run_retarget(
     initial: &Fixture,
-    table: &Arc<SineTable>,
+    table: &hex_engine::SharedSineTable,
     options: Options,
 ) -> Result<(), Box<dyn Error>> {
     let initial_setup_started = Instant::now();
@@ -215,13 +215,13 @@ fn run_retarget(
 
 fn prepare_revision(
     project: &hex_project::Project,
-    table: &Arc<SineTable>,
+    table: &hex_engine::SharedSineTable,
     previous_session: Option<&hex_engine::PreparedSessionInventory>,
 ) -> Result<PreparedRevision, Box<dyn Error>> {
     Ok(PreparedRevision::prepare(
         project,
         &BTreeMap::new(),
-        Arc::clone(table),
+        table.clone(),
         previous_session,
     )?)
 }
@@ -312,7 +312,7 @@ mod tests {
 }
 
 fn verify_density_refusal(
-    table: Arc<SineTable>,
+    table: hex_engine::SharedSineTable,
     all_operators: bool,
 ) -> Result<(), Box<dyn Error>> {
     let overfull = if all_operators {
