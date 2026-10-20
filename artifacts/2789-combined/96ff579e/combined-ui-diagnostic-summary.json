@@ -1,0 +1,18 @@
+{
+  "source": "96ff579e5b7dedb343f82e02ebabe268c52a0112",
+  "tree": "465b1068a3613a5f753b7337914b2964d36edf22",
+  "archive": "artifacts/2789-combined/96ff579e/combined-ui-diagnostic-evidence.tar.gz",
+  "bytes": 57727,
+  "sha256": "3b1d540ed47c5834801cc4360a33a3f0e665632643b7ea6701637a20d282bf12",
+  "safe_members": 6,
+  "payloads": 5,
+  "session": 22589,
+  "pid_pgid": 2946283,
+  "exit": 1,
+  "seconds": 22.153,
+  "actual_errors": 462,
+  "group_empty": true,
+  "same_lock_reacquired": true,
+  "content_sha256": "3a10bf74b99751f4b16b2ac9f34b86fabf6e4477235b58c55aad81dc5325eec8",
+  "scope": "FAILED currentcombined UI compile diagnostic; source unchanged; no runtime/full/native/merge qualification"
+}
