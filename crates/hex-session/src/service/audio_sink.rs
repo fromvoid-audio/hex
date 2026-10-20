@@ -85,7 +85,11 @@ impl WorkerEvents {
             audio.poll();
         }
     }
-    pub(super) fn send(&mut self, mut event: Event) -> bool {
+    pub(super) fn send_with_control_poll(
+        &mut self,
+        mut event: Event,
+        mut control_poll: impl FnMut(),
+    ) -> bool {
         if let Some(source) = &event.state.canonical_audio_source {
             if self.last_context != Some(source.context()) {
                 if let Some(audio) = self.audio.as_mut() {
@@ -99,6 +103,7 @@ impl WorkerEvents {
                 return false;
             }
             self.poll();
+            control_poll();
             match self.sender.try_send(event) {
                 Ok(()) => return true,
                 Err(TrySendError::Disconnected(_)) => return false,
@@ -109,17 +114,29 @@ impl WorkerEvents {
             thread::sleep(Duration::from_millis(5));
         }
     }
-    pub(super) fn next_request(&mut self, requests: &Receiver<Request>) -> Option<Request> {
-        if self.audio.is_none() {
-            return requests.recv().ok();
+    pub(super) fn next_request_with_control_poll(
+        &mut self,
+        requests: &Receiver<Request>,
+        bounded: bool,
+        mut control_poll: impl FnMut(),
+    ) -> Option<Request> {
+        control_poll();
+        if self.audio.is_none() && !bounded {
+            let result = requests.recv().ok();
+            control_poll();
+            return result;
         }
         loop {
             if self.shutdown.load(Ordering::Acquire) {
                 return None;
             }
             self.poll();
+            control_poll();
             match requests.recv_timeout(Duration::from_millis(5)) {
-                Ok(request) => return Some(request),
+                Ok(request) => {
+                    control_poll();
+                    return Some(request);
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }

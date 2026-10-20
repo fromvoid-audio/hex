@@ -193,6 +193,28 @@ pub struct Session {
     resident_waveform_bytes: usize,
 }
 
+/// Public and private editing paths share the same media-custody boundary.
+/// These commands require an owned prepared import/bounce transaction instead.
+fn validate_command_media(command: &Command) -> Result<(), SessionError> {
+    if matches!(
+        command,
+        Command::AddAsset { .. }
+            | Command::ImportDeviceAsset { .. }
+            | Command::ImportAudioTrack { .. }
+            | Command::ImportPreparedAudioTrack { .. }
+            | Command::ImportPreparedAudioTrackAt { .. }
+            | Command::ImportPreparedAudioClip { .. }
+            | Command::ImportPreparedAudioClipWithOverwrite { .. }
+            | Command::ImportPreparedSessionAudioClip { .. }
+            | Command::ConvertMidiClipToAudio { .. }
+    ) {
+        return Err(SessionError::Invalid(
+            "audio media must be committed through a prepared import",
+        ));
+    }
+    Ok(())
+}
+
 impl Session {
     pub fn new(
         sample_rate: u32,
@@ -231,6 +253,12 @@ impl Session {
         max_resident_frames: u64,
         decoded_assets: Vec<(AssetId, DecodedAudio)>,
     ) -> Result<Self, SessionError> {
+        if hex_engine::native_device_resources::requires_private_sampler_sources(&project) {
+            return Err(SessionError::Invalid(
+                "sampler reopening requires qualified original source reconstruction",
+            ));
+        }
+
         let mut prepared_assets: Vec<(AssetId, PreparedImport)> = Vec::new();
         prepared_assets
             .try_reserve_exact(decoded_assets.len())
@@ -314,6 +342,35 @@ impl Session {
         prepared_assets: Vec<(AssetId, PreparedImport)>,
         sine_table: Arc<hex_engine::SineTable>,
     ) -> Result<Self, SessionError> {
+        Self::from_prepared_with_native_limits(
+            project,
+            history_capacity,
+            max_resident_frames,
+            prepared_assets,
+            sine_table,
+            None,
+        )
+    }
+    pub(crate) fn from_prepared_with_native_limits(
+        project: Project,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        prepared_assets: Vec<(AssetId, PreparedImport)>,
+        sine_table: Arc<hex_engine::SineTable>,
+        native: Option<ResidentNativeReservation>,
+    ) -> Result<Self, SessionError> {
+        if hex_engine::native_device_resources::requires_private_sampler_sources(&project) {
+            return Err(SessionError::Invalid(
+                "sampler reopening requires qualified original source reconstruction",
+            ));
+        }
+        let native_assets = hex_engine::native_device_resources::ResidentDeviceAssets::default();
+        if let Some(limits) = native {
+            native_assets
+                .storage_on_control(0, limits.storage)
+                .map_err(hex_engine::native_device_resources::ResourcePreparationError::from)?;
+        }
+
         device_comparison::validate_project(&project)?;
         let asset_count = project.assets().count();
         let editor = Editor::new(project, history_capacity)?;
@@ -392,8 +449,8 @@ impl Session {
             editor,
             sine_table,
             media,
-            native_assets: hex_engine::native_device_resources::ResidentDeviceAssets::default(),
-            native_reservation: None,
+            native_assets,
+            native_reservation: native,
             verified_sources: BTreeMap::new(),
             semantic_source_epoch: 0,
             audio_mode: DocumentAudioMode::Resident,
@@ -542,21 +599,6 @@ impl Session {
         &mut self,
         command: Command,
     ) -> Result<(Created, PlaybackProject), SessionError> {
-        if matches!(
-            &command,
-            Command::AddAsset { .. }
-                | Command::ImportDeviceAsset { .. }
-                | Command::ImportAudioTrack { .. }
-                | Command::ImportPreparedAudioTrack { .. }
-                | Command::ImportPreparedAudioTrackAt { .. }
-                | Command::ImportPreparedAudioClip { .. }
-                | Command::ImportPreparedAudioClipWithOverwrite { .. }
-                | Command::ImportPreparedSessionAudioClip { .. }
-        ) {
-            return Err(SessionError::Invalid(
-                "audio media must be committed through a prepared import",
-            ));
-        }
         let (created, prepared) = self.command_prepared_revision(command, None)?;
         Ok((created, prepared.arrangement().as_ref().clone()))
     }
@@ -574,20 +616,6 @@ impl Session {
         ),
         SessionError,
     > {
-        if matches!(
-            &command,
-            Command::AddAsset { .. }
-                | Command::ImportDeviceAsset { .. }
-                | Command::ImportAudioTrack { .. }
-                | Command::ImportPreparedAudioTrack { .. }
-                | Command::ImportPreparedAudioTrackAt { .. }
-                | Command::ImportPreparedAudioClip { .. }
-                | Command::ImportPreparedAudioClipWithOverwrite { .. }
-        ) {
-            return Err(SessionError::Invalid(
-                "audio media must be committed through a prepared import",
-            ));
-        }
         let (created, prepared) = self.command_prepared_revision(command, None)?;
         Ok((
             created,
@@ -616,20 +644,7 @@ impl Session {
             &Arc<hex_engine::PreparedRevision>,
         ) -> Result<T, SessionError>,
     ) -> Result<(Created, (Arc<hex_engine::PreparedRevision>, T)), SessionError> {
-        if matches!(
-            &command,
-            Command::AddAsset { .. }
-                | Command::ImportDeviceAsset { .. }
-                | Command::ImportAudioTrack { .. }
-                | Command::ImportPreparedAudioTrack { .. }
-                | Command::ImportPreparedAudioTrackAt { .. }
-                | Command::ImportPreparedAudioClip { .. }
-                | Command::ImportPreparedAudioClipWithOverwrite { .. }
-        ) {
-            return Err(SessionError::Invalid(
-                "audio media must be committed through a prepared import",
-            ));
-        }
+        validate_command_media(&command)?;
         if let Command::PlaceClip { asset, .. } = &command
             && self.native_assets.contains(*asset)
         {

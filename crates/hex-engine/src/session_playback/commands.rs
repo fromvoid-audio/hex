@@ -3,6 +3,18 @@ use crate::MidiTiming;
 
 impl SessionPlayback {
     pub fn apply(&mut self, command: SessionPlaybackCommand) -> Result<(), SessionPlaybackError> {
+        if self.revision.requires_control_sampler_sources()
+            && !matches!(
+                &command,
+                SessionPlaybackCommand::Play
+                    | SessionPlaybackCommand::Stop
+                    | SessionPlaybackCommand::Seek(0)
+            )
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler supports frame-zero offline export only",
+            ));
+        }
         self.candidate_admission_open = false;
         if self.linear_arrangement_export
             && matches!(

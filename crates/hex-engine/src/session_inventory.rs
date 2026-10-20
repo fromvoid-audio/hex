@@ -364,24 +364,6 @@ impl PreparedSessionInventory {
         )
     }
 
-    pub(crate) fn prepare_with_media_and_shared_contexts(
-        project: &Project,
-        media: &BTreeMap<AssetId, Audio>,
-        sine_table: Arc<SineTable>,
-        previous: Option<&Self>,
-        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
-        shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
-    ) -> Result<Self, crate::Invalid> {
-        Self::prepare_with_resolver(
-            project,
-            sine_table,
-            previous,
-            instruments,
-            Some(shared_contexts),
-            |asset, project_rate| resolve_resident(asset, project_rate, media),
-        )
-    }
-
     pub fn prepare_with_prepared_audio_sources(
         project: &Project,
         sources: &BTreeMap<AssetId, PreparedAudioSource>,
@@ -430,7 +412,51 @@ impl PreparedSessionInventory {
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_with_sampler_sources(
+        project: &Project,
+        media: &BTreeMap<AssetId, Audio>,
+        sine_table: Arc<SineTable>,
+        previous: Option<&Self>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+        shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+        samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+    ) -> Result<Self, crate::Invalid> {
+        Self::prepare_with_resolver_scoped(
+            project,
+            sine_table,
+            previous,
+            instruments,
+            Some(shared_contexts),
+            |asset, rate| resolve_resident(asset, rate, media),
+            samplers,
+        )
+    }
+
     fn prepare_with_resolver<'a>(
+        project: &'a Project,
+        sine_table: Arc<SineTable>,
+        previous: Option<&Self>,
+        instrument_registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+        shared_contexts: Option<Arc<crate::shared_analytic::SharedAnalyticContextTable>>,
+        resolve_source: impl FnMut(
+            &'a hex_project::Asset,
+            u32,
+        ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
+    ) -> Result<Self, crate::Invalid> {
+        Self::prepare_with_resolver_scoped(
+            project,
+            sine_table,
+            previous,
+            instrument_registry,
+            shared_contexts,
+            resolve_source,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_with_resolver_scoped<'a>(
         project: &'a Project,
         sine_table: Arc<SineTable>,
         previous: Option<&Self>,
@@ -440,16 +466,18 @@ impl PreparedSessionInventory {
             &'a hex_project::Asset,
             u32,
         ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
+        samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
     ) -> Result<Self, crate::Invalid> {
         crate::gain_envelope::validate_project(project)?;
         let routed_plan = RoutedMidiPlan::prepare(project)?;
         crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
         let shared_contexts = match shared_contexts {
             Some(contexts) => contexts,
-            None => crate::shared_analytic::SharedAnalyticContextTable::prepare(
+            None => crate::shared_analytic::SharedAnalyticContextTable::prepare_scoped(
                 project,
                 instrument_registry,
                 previous.map(|old| old.shared_contexts.as_ref()),
+                samplers,
             )?,
         };
         let timing = PreparedTempoMap::prepare(project.tempo_map().clone(), project.sample_rate())
@@ -474,16 +502,18 @@ impl PreparedSessionInventory {
             let slot = track.instrument();
             let config = slot
                 .map(|device| {
-                    instrument_registry
-                        .prepare_instrument(
-                            device.state(),
-                            &hex_lattice::DevicePreparationContext {
-                                sample_rate: project.sample_rate(),
-                                tuning: shared_contexts.tuning(),
-                                resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-                            },
-                        )
-                        .map_err(|_| crate::Invalid("track instrument state is unsupported"))
+                    crate::native_device_resources::prepare_instrument(
+                        instrument_registry,
+                        device.id(),
+                        device.state(),
+                        &hex_lattice::DevicePreparationContext {
+                            sample_rate: project.sample_rate(),
+                            tuning: shared_contexts.tuning(),
+                            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                        },
+                        samplers,
+                    )
+                    .map_err(|_| crate::Invalid("track instrument state is unsupported"))
                 })
                 .transpose()?;
             let mutable_runtime = if slot.is_some_and(|device| !device.bypassed()) {
@@ -1111,6 +1141,37 @@ impl PreparedSessionInventory {
 
     pub fn scenes(&self) -> &[PreparedSessionScene] {
         &self.scenes
+    }
+
+    /// Actual private offline sampler factory backing, without source owners.
+    pub(crate) fn visit_control_sampler_factories<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        sources: &crate::native_device_resources::ControlSamplerSources,
+    ) -> Result<(), crate::AudioStorageError> {
+        if !ledger.native_payload_once(self)? {
+            return Ok(());
+        }
+        ledger.vec(&self.mutable_instruments)?;
+        for factory in self
+            .mutable_instruments
+            .iter()
+            .filter(|f| sources.has_track(f.track))
+        {
+            if !factory
+                .factory
+                .as_any()
+                .is::<hex_devices::sampler::PreparedSamplerRuntime>()
+            {
+                return Err(crate::AudioStorageError::UnknownStorage);
+            }
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(&factory.factory),
+                crate::audio_storage::Location("control-sampler-factory", 0),
+                std::mem::size_of_val(factory.factory.as_ref()),
+            )?;
+        }
+        Ok(())
     }
 
     /// Sparse stored cells in canonical project order; absent keys remain empty.

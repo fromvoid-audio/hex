@@ -596,6 +596,31 @@ impl MutableInstrumentTrackRuntime {
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
     ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.process_segment_with_resources(
+            track,
+            performance_start,
+            source_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_segment_with_resources(
+        &mut self,
+        track: TrackId,
+        performance_start: u64,
+        source_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
         let performance_end = performance_start
@@ -736,7 +761,7 @@ impl MutableInstrumentTrackRuntime {
             (offset, is_on, occurrence_id)
         });
         self.pair
-            .process_block_with_clock(events, frames, clock, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .process_block_with_clock(events, frames, clock, resources)
             .map_err(map_runtime_error)
     }
 

@@ -74,6 +74,41 @@ impl Session {
         previous: Option<&hex_engine::PreparedRevision>,
         admit: impl FnOnce() -> Result<(), SessionError>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        if hex_engine::native_device_resources::requires_private_sampler_sources(self.project()) {
+            return Err(SessionError::Invalid(
+                "sampler prepared snapshots are private to offline export",
+            ));
+        }
+        self.import_device_asset_prepared(
+            decoded,
+            cancel,
+            |candidate, media, table, transforms, waveforms, _stage| {
+                let prepared = prepare_with_waveforms(
+                    candidate,
+                    media,
+                    table,
+                    previous.map(|p| p.session().as_ref()),
+                    transforms,
+                    waveforms,
+                )?;
+                admit()?;
+                Ok(Arc::new(prepared))
+            },
+        )
+    }
+    pub(crate) fn import_device_asset_prepared<T>(
+        &mut self,
+        decoded: DecodedAudio,
+        cancel: &AtomicBool,
+        prepare: impl FnOnce(
+            &Project,
+            &MediaBank,
+            Arc<hex_engine::SineTable>,
+            &hex_engine::audio_transform::AudioTransformPreparation,
+            &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
+            &hex_engine::native_device_resources::StagedNativeAssetView<'_>,
+        ) -> Result<T, SessionError>,
+    ) -> Result<(Created, T), SessionError> {
         let reservation = self.native_reservation.ok_or(SessionError::Invalid(
             "native source import requires an explicit resident reservation",
         ))?;
@@ -137,26 +172,19 @@ impl Session {
                     .ok_or(SessionError::Invalid(
                         "native import candidate has no asset",
                     ))?;
-                native_assets.insert_on_control(
+                native_assets.insert_checked_on_control(
                     (id, source),
                     legacy,
                     reservation.storage,
                     reservation.max_scan_frames,
                     cancel,
-                    || {
-                        let prepared = prepare_with_waveforms(
-                            candidate,
-                            &media,
-                            table,
-                            previous.map(|p| p.session().as_ref()),
-                            transforms,
-                            waveforms,
-                        )?;
-                        admit()?;
+                    |stage| {
+                        let prepared =
+                            prepare(candidate, &media, table, transforms, waveforms, stage)?;
                         if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
                             return Err(ResourcePreparationError::Cancelled.into());
                         }
-                        Ok::<_, SessionError>(Arc::new(prepared))
+                        Ok::<_, SessionError>(prepared)
                     },
                 )
             },
