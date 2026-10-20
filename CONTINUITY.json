@@ -1,0 +1,662 @@
+{
+  "canonical_head": "b94b0e2f6fbec0932d422c00d4584739c192cb9a",
+  "canonical_tree": "9e3bc6d0e1c8f17457775b1bce684a09cd6aafc9",
+  "prior_evidence_commit": "ea5ccc796ed60c4ce0c7f677a7378429d6b87460",
+  "sources": [
+    {
+      "path": "crates/hex-audio/build.rs",
+      "bytes": 7399,
+      "sha256": "093ef7ba3acb00390756cb23de8658d0e77cd02bb203d85afbd29456b5fdfe0e"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody.rs",
+      "bytes": 59703,
+      "sha256": "1bc582872e75f4fb8471047850425fa0e988d0750b1b52bc95610e85af14f332"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/custody_mutex.rs",
+      "bytes": 2829,
+      "sha256": "2720624b69eda78eb8e3a0ea9e84782fcd5d7f953101924d20309c23cf975211"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible.rs",
+      "bytes": 40787,
+      "sha256": "337fdbbd43d774df8b08cf07778e3224b4059fdcde8fc9b855da28db9ba99192"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/native_birth_tests.rs",
+      "bytes": 6480,
+      "sha256": "a7401b116a8604b368a5e7caf205c78de54c8583e6337217cc290a1b709ec606"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/pages.rs",
+      "bytes": 7290,
+      "sha256": "f3123960635702e66e89a5318ad53129aafdfdf962cf82d2237d9912b29a1d22"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication.rs",
+      "bytes": 47766,
+      "sha256": "d8aa2b702e9418e2e8fc0a9997a319a273431502556f17ef2581e67ab37b8025"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/disposal.rs",
+      "bytes": 20469,
+      "sha256": "f684eec56415731dd182cf4a611df12fec48f613ddd3759b46f1c0d9068bd3e3"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/native_host.rs",
+      "bytes": 15961,
+      "sha256": "869815f8e8ae11c19cf4cd343d11ca1db2dabf3dcd9daf466f2a26350b26c82b"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/native_host/tests.rs",
+      "bytes": 16364,
+      "sha256": "0ef13b283579bc656f553df0a72922f09dceefc48b9023a74ba6ed9158319d67"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/preparation.rs",
+      "bytes": 62811,
+      "sha256": "d05569925b65f4629dd5fdd7a8ceb112e9f8b0a270710fca6227cd02f6725bd0"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/resources.rs",
+      "bytes": 6649,
+      "sha256": "dea45de74e00feb151c061aa27266fd71dceb549c7e5766c2bbf1c4af289bcdf"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/tests.rs",
+      "bytes": 27486,
+      "sha256": "c22441a93fb935dfdc6e2e575f6b376fe3f4a16f084ecfae3b8991d54ec2c9d9"
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/root_fields.rs",
+      "bytes": 9111,
+      "sha256": "f306367e1de05995c6c21846e988700df994e15ea02554ffff37ba656b3bfcfd"
+    },
+    {
+      "path": "crates/hex-audio/src/device.rs",
+      "bytes": 44580,
+      "sha256": "d7167e083742a0cde49a4e79298bb40eddaaf0bbfe108e856afa26dc2cd84074"
+    },
+    {
+      "path": "crates/hex-audio/src/gain_recording.rs",
+      "bytes": 18210,
+      "sha256": "3798f2c7ef0e36325bcc34fd4873a561ccd3a2838ea51b4b1deda1dc91c5917c"
+    },
+    {
+      "path": "crates/hex-audio/src/gain_recording/tests.rs",
+      "bytes": 8973,
+      "sha256": "521b7ed3b60ada3aff839558cc5828db7040ae6ae24298d3106f50a5aa518c8e"
+    },
+    {
+      "path": "crates/hex-audio/src/lib.rs",
+      "bytes": 8674,
+      "sha256": "3872765a0736850c619b7d6df129d9e6ee312e1a735c4690c7fee9df91cf6e88"
+    },
+    {
+      "path": "crates/hex-audio/src/lifecycle.rs",
+      "bytes": 84067,
+      "sha256": "9d54a6e2a282f04e44e964c67f3f164efe7eb42bb1de00ea61864c47ac9a562e"
+    },
+    {
+      "path": "crates/hex-audio/src/lifecycle/retained_families/tests.rs",
+      "bytes": 33169,
+      "sha256": "da1db8f9618a973cd32261110251d9533d85c218eb5bbb636ea13fcff3aa2a98"
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner.rs",
+      "bytes": 31230,
+      "sha256": "7965f5cb82ccec100caa1bde1dd8389d64afa974047795b814db64f5abb6bf76"
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/atomic_signal.rs",
+      "bytes": 1751,
+      "sha256": "391d669d9b3b86a38d53d06c297dc72567880fcada00b85cca991c3dfd681092"
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/endpoint_tests.rs",
+      "bytes": 18779,
+      "sha256": "8d05947943b3913a3b79fc36b30eb6765425c3625756d706d25927cdfc8e674c"
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/registered.rs",
+      "bytes": 4724,
+      "sha256": "612415fc1f5fa6ddd1fbb5b62c703deaa42082729a667f7d1c56b462080320b5"
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/resources.rs",
+      "bytes": 8264,
+      "sha256": "4bca0ceabe076e3c70dfa62820cd90216049c33a0fa0303410bdf01cf29f6481"
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/ring_storage.rs",
+      "bytes": 4218,
+      "sha256": "10b213c3e5f6c19208abe047e7915ae51d63f26f312e48d48199bb484791f950"
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/ring_storage/registered_tests.rs",
+      "bytes": 9946,
+      "sha256": "be881091d20b4035516279807b062c2688a5f87deb94a3e73aedf9f9e30b4760"
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/ring_storage/transport.rs",
+      "bytes": 6609,
+      "sha256": "75314ee251beb5080ddc67cd84dc30b6a4d500a3f180901b6c18865c810fe492"
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/storage_tests.rs",
+      "bytes": 15790,
+      "sha256": "0735400505543919d284bac86495c0a9859d374ae4a24648ed750b40b3c2a239"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared.rs",
+      "bytes": 277474,
+      "sha256": "362c3e4baddda7a1324feece0cd66e4b9c9030f868be103f023fa15a900516d0"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/candidate_tests.rs",
+      "bytes": 21858,
+      "sha256": "fe8bbb1ca113f4879dc2d08f792d674bfab61bbd895716f448296d950dc89cb3"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/endpoints.rs",
+      "bytes": 17962,
+      "sha256": "783b73d38d4fe581ec4fe7262796e4183ffa440430f3bbdaa4a150c1c695d919"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/factory.rs",
+      "bytes": 7812,
+      "sha256": "9b6b7ca06fd277ab011dcf7e8847189f3b0300cc268590f03e215d9d949967ea"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/factory/tests.rs",
+      "bytes": 30584,
+      "sha256": "a7cd63e25f5a2bf633638afd9b0f396862f50a44a5c541ae58f6b6c2ebaae528"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/final_active_tests.rs",
+      "bytes": 17189,
+      "sha256": "f107da29750173224988571f1281720e16148167d52b3789a1f10107aa3d33ae"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/resident_forwarding.rs",
+      "bytes": 17502,
+      "sha256": "0caf5288f3678c53624fd2bdfb594998aaf38115ba1ada47bd1b6048726ba19a"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/resident_forwarding/tests.rs",
+      "bytes": 19222,
+      "sha256": "fd7b387a1022c01e42fbc6b295a730ed11371ffa63dcbecff85e2c239e90c236"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/status_owner.rs",
+      "bytes": 7408,
+      "sha256": "5ca06b634daad04e11b96f34f40d0e095174cdb215cd89e6a673fe63629df24f"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/status_owner/tests.rs",
+      "bytes": 5019,
+      "sha256": "65554f13bcdfd9860c0b8231e48fc473b0e32371d46e4ef7ef6970cd87db661f"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/status_storage.rs",
+      "bytes": 11373,
+      "sha256": "a537652ee614aa1d2f7e85be342c6bfd574449eb724a3621cfd23f5ad5146e5c"
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/worker_publication/tests.rs",
+      "bytes": 7993,
+      "sha256": "8fa25af2ae4951241dec5b147178f1f5a35497c0d9805bc3caf146d1136d2cdf"
+    },
+    {
+      "path": "crates/hex-audio/src/processor_audition.rs",
+      "bytes": 23213,
+      "sha256": "9f7435f028b13fe7896be370d97b82d587ae30f2bb47003e8bd2dcdbc4798b65"
+    },
+    {
+      "path": "crates/hex-audio/src/sample_preview.rs",
+      "bytes": 30236,
+      "sha256": "ee1b9057c3c4461cab4f184ef70563824f82618b56ba60c9db56b3816efc050c"
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum.rs",
+      "bytes": 17502,
+      "sha256": "69969faf076a0eb8c260b737723c9f90aba168fb1fc5ef68597808c9476cdd71"
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_target.rs",
+      "bytes": 20266,
+      "sha256": "566ea6f8307479ecc73ed03dde25ba4e44cb051948c71d7864ed51e0d767b2c9"
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_worker.rs",
+      "bytes": 46695,
+      "sha256": "4f4e1c6e6c26378a81cc4e488997a22e2e47a5b182de3601028654dceb050908"
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_worker/native.rs",
+      "bytes": 14925,
+      "sha256": "7a8eb029d4927478f4c5d7b79f061008fe6f0f078d8dd139d9f84f44c238805d"
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_worker/project.rs",
+      "bytes": 63052,
+      "sha256": "d4f20b8097a59f64d0e23f71b9e03ca02ff029d95f0bd6cedf9b21877f8eb8e3"
+    },
+    {
+      "path": "crates/hex-desktop/src/native_audio.rs",
+      "bytes": 31650,
+      "sha256": "eb60a69c0fb2c04d8034f7837dbae14f3f815e447d1fcdcb2e4676e4dde92462"
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport/worker_control.rs",
+      "bytes": 36769,
+      "sha256": "6270d061ba2de1363497e4c0b58b6129dcf170d698bdd03234536c9c0a5b8ce1"
+    },
+    {
+      "path": "crates/hex-engine/build.rs",
+      "bytes": 13075,
+      "sha256": "86c7b52dddba2560b40a415e8d3dae137f6d429a46ab8c800313439105afe6c9"
+    },
+    {
+      "path": "crates/hex-engine/build_support/document_token_gate.rs",
+      "bytes": 2691,
+      "sha256": "d45a6344b12d0803ba48daa8c7770eb33acd1db84d36b11f9f3a6bfdc33303b8"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate.rs",
+      "bytes": 28667,
+      "sha256": "89ede8f4636a8508a017805e6a5675676a63d84eba5114a58784f14a7bca73b4"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/claimed.rs",
+      "bytes": 52160,
+      "sha256": "51b4998ce46f0f97d00a7e4003048bf1c44bf77a96ff80dac3d4c18a1071cfdc"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/draft.rs",
+      "bytes": 21571,
+      "sha256": "3be7b1adcb815cc7c6b72d97ba6e0346098db6f3363e6141428ffb104f227dae"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/groups.rs",
+      "bytes": 43423,
+      "sha256": "7293d49729d1901d1d725c0bdd323c3e4e4fd8f1000fe8a57e166a31797166ca"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/groups/retained.rs",
+      "bytes": 21264,
+      "sha256": "c2edea42e9ca6087f6abc64ebea5e15015597ea1eaf22fb2bd28eefbacda59e3"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation.rs",
+      "bytes": 20351,
+      "sha256": "7494bec65fa4c8a801fa4fc6693238712d224249fa1b045d6825d9f3a732b886"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation/control_work.rs",
+      "bytes": 17232,
+      "sha256": "1866acd1ae99d74af079de2f4078f895861b53bcc2858d582c21ed4ab34b04cf"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation/native_fields.rs",
+      "bytes": 1786,
+      "sha256": "f0fdeaeb415eda103e7f3a30e707fc501feaa5c202e9f460e30232d120af1af7"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources.rs",
+      "bytes": 17025,
+      "sha256": "a2418adffc58842c473045d1b03d32c22b164d786418a8824eca3805903d5583"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources/tests/runtime.rs",
+      "bytes": 23385,
+      "sha256": "17ac31a29f892dfae7e8da7b847970850a97f8d01e87391a3e3577522113ebe6"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation_operations.rs",
+      "bytes": 11148,
+      "sha256": "7ea7550659e0fb4dbd095f42adff227cc4db2f84b430460d4675b126efc1a703"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/storage.rs",
+      "bytes": 33175,
+      "sha256": "e8940b7f1e973bddd0e7b6c741f00ef7473974fdb76d34a08b5902b5c5dc96ec"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation.rs",
+      "bytes": 73598,
+      "sha256": "deddc1ea63af1f319d55b0c3a0c8ee05c18bae7c99c6a1cbdff87a57566979a9"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips.rs",
+      "bytes": 28265,
+      "sha256": "1eaf0ac3087ab217aa2eb8375c37f6e737c180b6311c55b1390799148ec6c980"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
+      "bytes": 26536,
+      "sha256": "6fbb0ebf684f19e70ba83e4d6d2fba1676c5895cb192c5d8fc0abe29482f16e1"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs",
+      "bytes": 12241,
+      "sha256": "c984ec26d814cb3939d2f0a3069a69643ffa0667ae49db1fdc63271245b9ddc3"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs",
+      "bytes": 28953,
+      "sha256": "bd2fc79134495849bc93350d9bd5e4a3fe66019edbfb91a79e2aa06e9b860b57"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs",
+      "bytes": 37400,
+      "sha256": "8dba02f8febdc2b64292c9ef4cedf2b8e49090752a93099150ebcde4530dec29"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs",
+      "bytes": 24459,
+      "sha256": "8eb6fa59977d8a1a06dde6556edb730ddf3ce602a0ba0db1588d6def6768ec18"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage.rs",
+      "bytes": 34659,
+      "sha256": "8a8ccc4e7f42a2f6b18915b80ed0439f6a5732b2a147884d73a5245f71b91aad"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/arithmetic.rs",
+      "bytes": 13984,
+      "sha256": "cfd469da39cafa18a24ba740b962a8f0bc9d24a7c13f1424055ae14c3d228a6c"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/document_token.rs",
+      "bytes": 7634,
+      "sha256": "ba51b2426c754ad76684b3d229164bc3ee47073bc55de8d4178104b1d34efcce"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_atomic_signal.rs",
+      "bytes": 7524,
+      "sha256": "a296744ebb6ac51a2e5b54294edf403fc01536efb4d19976bdb028f0ea82f758"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_atomic_signal/tests.rs",
+      "bytes": 7909,
+      "sha256": "58dbbf9e046caf7505b7836ddef7d0fc46cb56b704307f5c3fb7c9137de611d0"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_carrier.rs",
+      "bytes": 20963,
+      "sha256": "7fe59d7b0f91d3fb9f4919cd5048f1db2d8bf871b7396d588d054fb7200ec420"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_fixed_ring.rs",
+      "bytes": 9809,
+      "sha256": "492b0d460fbb52a02c1ae78b05ab4aed85fa3f4fc2b0fd91938a08dcb4196e7c"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_group_book.rs",
+      "bytes": 12469,
+      "sha256": "825e3c59e5ef759bab02dc2dbdf5ded4a86e927e6c3e0760f4cc053d29447dd8"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_journal.rs",
+      "bytes": 12176,
+      "sha256": "eb6d4a8a20faa52ffa794cc60f42b8e14af64397e86f6b8b8cd75f4928f2efb0"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_resident.rs",
+      "bytes": 9534,
+      "sha256": "3a0d32478e631ba937223952f6d39c6956a6103e9391cab3f5ed2a6131b50638"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_retained.rs",
+      "bytes": 16945,
+      "sha256": "29645ab9f3799113e7114c6e1278cc5054ebe9b9ec12545b2eacc8e4916073c3"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_root_fields.rs",
+      "bytes": 8097,
+      "sha256": "a50543f6f14a03931c3f56723135e0aa130461b63047ae95566f1fd015633c21"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_state.rs",
+      "bytes": 16684,
+      "sha256": "84859648ddb93685f5e64fb686e110bd4150928e798033542582fff24d0cfec7"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_status.rs",
+      "bytes": 11399,
+      "sha256": "9a6ad19dc4cbff721a05291a7f24fe76761386dbf14eaba37af313358f212610"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/mod.rs",
+      "bytes": 28930,
+      "sha256": "4118fb8aeaf0691041834715012a166a597ec6f56a0cae597b870e62a0060049"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/original_sampler.rs",
+      "bytes": 8342,
+      "sha256": "4abd61adc31d46aa588f0e62ca720dd381b8c3b01ea4ad01c8b496ca750b720c"
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/pcm_inventory.rs",
+      "bytes": 8466,
+      "sha256": "469704e53465ff2af2a8669b1be707845c7351a086795536b6da082c8f48c5d6"
+    },
+    {
+      "path": "crates/hex-engine/src/lib.rs",
+      "bytes": 122219,
+      "sha256": "6f5f6addd22e9df17c59f63f2746e97fb3f448cf5f3d88a6a127389ae230d3f8"
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources/producer.rs",
+      "bytes": 16244,
+      "sha256": "48780284c806aa0fa0968a92f18b0d2955c60186b65d89c6db2921ad215776f7"
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources/producer/tests.rs",
+      "bytes": 9996,
+      "sha256": "483cd80059e4099b85454c295ab855bcd7f739eeea54d16dbd13495a278e6ebd"
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources/retained.rs",
+      "bytes": 21718,
+      "sha256": "29444530fecbd3de63c535dea3971709056673c6617d91299665b3ec9ba4ea74"
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_revision/compiled_reader.rs",
+      "bytes": 31255,
+      "sha256": "14c31b5440b0f4ff2512fb796c6f85f13ebecf9903bd8e5bb18a3139c09c6fdc"
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields.rs",
+      "bytes": 2712,
+      "sha256": "d996f3a7a47e1ff5623909bc894db6857aca63e6478329b98212b717839b8fc9"
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/event.rs",
+      "bytes": 3569,
+      "sha256": "f2a910a4ab89ad7137c7836bae47c2690023d81ec72e5bbc5a59f2545ea18ebb"
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/family.rs",
+      "bytes": 9485,
+      "sha256": "5c3bb6d30178bac610f3c6d25e7717bc7cc72f2a7b1a4ece0a835e262f09f71c"
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/native.rs",
+      "bytes": 6113,
+      "sha256": "b99e02169546e57ddd9edaa41314c9e5fceaf412b97075ec0be5f7d8e99d3822"
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/original_driver.rs",
+      "bytes": 1845,
+      "sha256": "fe937fb150ac840876cac00507cbd52cf8663c6c30791eebcd36ad4ead2d9541"
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/physical.rs",
+      "bytes": 6908,
+      "sha256": "20d368fc3d1ac00930bee8c6b6964250050db58e8fdc0bb0ffbeb5988a30854a"
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/resident.rs",
+      "bytes": 5119,
+      "sha256": "bcba33850d6a63ca1d7d3503bb7c0709370cce1d556449e583f224706ee313fe"
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/worker.rs",
+      "bytes": 7489,
+      "sha256": "6e9a9f5b6ed818138fadcf25b8cdb6ec40ff73c8b398d9dd8ca6d602b5ff32e4"
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/candidate_storage.rs",
+      "bytes": 11032,
+      "sha256": "0349530d39aed2ac951d03fcb700d6fe0ceac9d2a5f421f1c18ab3db78d8e4eb"
+    },
+    {
+      "path": "crates/hex-session/src/lib.rs",
+      "bytes": 64791,
+      "sha256": "42ef49a9e6eaa9e123ff486306fadea668c5dc08cda3120439861204b12219eb"
+    },
+    {
+      "path": "crates/hex-session/src/resource_plan.rs",
+      "bytes": 10515,
+      "sha256": "dc7813064bf411428a337f5d91b821d9ccd6021bd767d868ef221e08fd16319d"
+    },
+    {
+      "path": "crates/hex-session/src/resource_plan/original_sampler.rs",
+      "bytes": 9002,
+      "sha256": "c8330e92b60564a71279e9cb18fb5f109b11bdb0861195f11d8ac80e5ecc769e"
+    },
+    {
+      "path": "crates/hex-session/src/resource_plan/tests.rs",
+      "bytes": 51122,
+      "sha256": "79a0ab897cd1a5a166bf8a9cd8bed095d465bbc8c4846ab85f61945be4364b0a"
+    },
+    {
+      "path": "crates/hex-session/src/service.rs",
+      "bytes": 306445,
+      "sha256": "863d0fc29a0e2b96f7af909ffd81330a958a589a4f004b7d49c17c4e251588d7"
+    },
+    {
+      "path": "crates/hex-session/src/service/audio_sink.rs",
+      "bytes": 30069,
+      "sha256": "d01f7d060cab81e863d489bb867dbd16b22bdcf4a8153ba5383aa917e4161409"
+    },
+    {
+      "path": "crates/hex-session/src/service/event_fields.rs",
+      "bytes": 4392,
+      "sha256": "b17e923d99726581f952b76c0da0fd6ba67a9bdd07a8087c15fd009f59ad6929"
+    },
+    {
+      "path": "crates/hex-session/src/service/export_renderer.rs",
+      "bytes": 847,
+      "sha256": "50a88e68d4ee15ba452d05b98798040db6215dfa5e22b561b1c19f38c5e8044a"
+    },
+    {
+      "path": "crates/hex-session/src/service/export_result_transport.rs",
+      "bytes": 3368,
+      "sha256": "8535c51dd77d76f2cd0d5c0c64e00f10cd054b30c8acacc79286bcd41b797ca8"
+    },
+    {
+      "path": "crates/hex-session/src/service/worker_roots.rs",
+      "bytes": 41318,
+      "sha256": "431420f42f295a45b771d13bf2c8438b4f9164bb220858082e881da1738b3db7"
+    },
+    {
+      "path": "crates/hex-session/src/service/worker_startup.rs",
+      "bytes": 7446,
+      "sha256": "0bc7f48cdb20948dd7dd88f7255a5cfeebd3e0bd9ad1f4cb8a3770c419814881"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports.rs",
+      "bytes": 19902,
+      "sha256": "bec9cac2af937567e401ab104b1c0d1734e1ad33a832bc61d95b78107e6e80dd"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/family.rs",
+      "bytes": 38487,
+      "sha256": "879c94056046efa023b850397f6235d8e0a9072465f889e5f842b88c87d08201"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/native_export_results.rs",
+      "bytes": 8694,
+      "sha256": "3fe1b3836f0b8a76ea7f83a82d4379d04d0201b4f7e60a2f80497dbb0a2317d6"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/native_export_results/tests.rs",
+      "bytes": 10921,
+      "sha256": "6a98c24ecc73a76c0bcd67b03662726a4bcd78a5a22a8693dc789d741f1687b4"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/native_requests.rs",
+      "bytes": 37206,
+      "sha256": "01d989ce7dfca492d6092092a277b3013c30e2fcea98666fcab2f2bea0185a4e"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/storage.rs",
+      "bytes": 22669,
+      "sha256": "b2944e627f37e0e93c14303abad6777806fa85f6ff5c2e80babecd64df9700cf"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/worker_control.rs",
+      "bytes": 9183,
+      "sha256": "b75d37fcf9f81ae0d68adb6841a8ed8fdb1a9036c042cb8e3b399a85da8b573b"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/worker_export_results.rs",
+      "bytes": 3850,
+      "sha256": "3aedf84842ea735bd1ef7a0e02a67f25a02e0795a45cc2c56e01c9469a5236d6"
+    },
+    {
+      "path": "crates/hex-storage/src/files.rs",
+      "bytes": 22305,
+      "sha256": "a36dcbfaf20d7295b25b3cae5f2209c8d77d1bf914e17a7b31f23f1fc94a9ba8"
+    },
+    {
+      "path": "crates/hex-storage/src/journal.rs",
+      "bytes": 28313,
+      "sha256": "70b7efa89456e48579038674078d32d6e1796a7c86745d6d1ff78443822aafb7"
+    },
+    {
+      "path": "crates/hex-storage/src/lib.rs",
+      "bytes": 7369,
+      "sha256": "090c576369c84cc5d12648fdf965b73c99f4033797b7f52a5580af17825a2e1d"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/export.rs",
+      "bytes": 14550,
+      "sha256": "338265adcf2825bcd38efc24fc9b176f5ab010fca54c618fad9cb66f298455ed"
+    },
+    {
+      "path": "docs/native-device-resource-host.md",
+      "bytes": 61832,
+      "sha256": "d7b0f835c513ee18f27ae763d751838542b7b98b5486b3fc5e1c42337a397f59"
+    },
+    {
+      "path": "docs/native-document-token-storage.md",
+      "bytes": 3910,
+      "sha256": "f95d550d384704b5d3db3651c88bd3f3f60b1b32dbf5685f9acbbbcc6a99770e"
+    },
+    {
+      "path": "scripts/custody_mutex_policy.py",
+      "bytes": 7197,
+      "sha256": "ac4daf79b6407263b9ecbf21fc34fec379f43169fd385b25d871acfa241a3344"
+    },
+    {
+      "path": "scripts/sampler_host_policy.py",
+      "bytes": 21839,
+      "sha256": "ead38d1e2a41706eb39b2ca8de5bf86dcb0ce0fca40fd431031ca0238d9adc2c"
+    },
+    {
+      "path": "scripts/tests/test_custody_mutex_policy.py",
+      "bytes": 4636,
+      "sha256": "f6061b20aa23744bd1d345c828565a19d04fe343cd06497bd4b6d0b2ba63f26b"
+    },
+    {
+      "path": "scripts/tests/test_sampler_host_policy.py",
+      "bytes": 14157,
+      "sha256": "eec493d9c8f571aea3566588c3df9c6217404f1731a75f6dc8650e6ed5da76fa"
+    }
+  ]
+}
