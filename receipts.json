@@ -1,0 +1,55 @@
+[
+  {
+    "run_id": "20261020T060740Z-4edcf1c9",
+    "exit_code": 1,
+    "duration_seconds": 44.611,
+    "source": {
+      "commit": "59054702cc2ff17c12259d7c8e7613b357619694",
+      "content_sha256": "9311815630da66720c2e623aa4daf308c3fb5c6a3f1db77b64891f658fc50f2e",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-ui/src/editor/track_gain/tests.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "4740c8445c692c7e846f76419232e7c59e249520dd96052bbd2614f858693111",
+    "partial": "failed"
+  },
+  {
+    "run_id": "20261020T060934Z-83b25b79",
+    "exit_code": 0,
+    "duration_seconds": 60.78,
+    "source": {
+      "commit": "59054702cc2ff17c12259d7c8e7613b357619694",
+      "content_sha256": "adf2ee08d1b678572cb9a598736a10ed4368b179d32f9c98258ec4e605d45d90",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-ui/src/editor/track_gain.rs",
+        " M crates/hex-ui/src/editor/track_gain/tests.rs",
+        " M crates/hex-widgets/src/lib.rs",
+        " M crates/hex-widgets/src/numeric_control.rs",
+        " M crates/hex-widgets/src/numeric_control/compact_slider_tests.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "825f556402abfbc8df749ce65eefe06e62f4bea84b16d76e4413da3649b94eb4",
+    "partial": "partial"
+  },
+  {
+    "run_id": "20261020T061203Z-0aa7724d",
+    "exit_code": 0,
+    "duration_seconds": 140.116,
+    "source": {
+      "commit": "f27c027e353764abade88043c8986f5427aad5e8",
+      "content_sha256": "b1b4d4273c65895af2318ab5c967e8cac6def147eb4b0335a9fd7c1bf368331e",
+      "dirty": false,
+      "dirty_files": [],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "82ec75c67583d91ed6b69492b971fd887fa4ba0233a1d36582234906d29dc1ce",
+    "partial": "partial"
+  }
+]

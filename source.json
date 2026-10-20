@@ -1,0 +1,64 @@
+{
+  "source": "f27c027e353764abade88043c8986f5427aad5e8",
+  "tree": "362cfc5bf2f1fc9457523e888594b5dcf38b84fe",
+  "direct_parent": "59054702cc2ff17c12259d7c8e7613b357619694",
+  "main_base": "1d1797bb0e22a9f3f7871f9782162ca1e5abcc34",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/track_gain.rs",
+      "before_sha256": "9b6c297d8ba5783796c5cdcabdaafd720d31d0f586bb2c08043fd955b724a36c",
+      "after_sha256": "0204dc0ed565b97e50465b5e6a46c94af43a72f4abed24be6911f9370482118a",
+      "before_blob": "bad06576ff5c03954405cbda42094d0eb3386e3e",
+      "after_blob": "53a8c294a2507a3ea71204d723c17834855ea27b"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/track_gain/tests.rs",
+      "before_sha256": "bf6f42e733c626af821c9ccda92a3bb5ceb63246e701123e8f7c12de45f697d9",
+      "after_sha256": "ca0e4f6e7f6bd28f641c55f7a910a99c3bbf5579a149226cbec47b2298c8a4e0",
+      "before_blob": "df1cee4dc2f2c6eb54426b84de5910f8417f95c8",
+      "after_blob": "7f42388bdfc0ce91517325c32dfab7f3275f23f3"
+    },
+    {
+      "path": "crates/hex-widgets/README.md",
+      "before_sha256": "64a346557c0114f05e0667156b793ec6de7d182d1fe6b90aa06e3d55bcfa1ba9",
+      "after_sha256": "e443cd40b7b0423c2df28b9e48577eb98cf9955cad68f8063b9df7925fa8adcd",
+      "before_blob": "389d74c2ad616255d4686e7637f1b758c998edda",
+      "after_blob": "2989a533c1d0c22f3a670d06711b58e44e03304c"
+    },
+    {
+      "path": "crates/hex-widgets/src/lib.rs",
+      "before_sha256": "544e16d3777268fba5cb7de3fed3d6fedcd2aedc093d84e1c8c713bab0f06a85",
+      "after_sha256": "1a359c9741231ac4b218e88018a422df44c854aa4d68581cd26595f5438f5c70",
+      "before_blob": "e2450b42b46caa7fb3500ae7bcf86456eafeb7bb",
+      "after_blob": "f42b94968ca4fb8a49c03db25f5a0376f87fd1da"
+    },
+    {
+      "path": "crates/hex-widgets/src/numeric_control.rs",
+      "before_sha256": "b779b08b271e9ed7e5e1dc0f8cb36dd9a2ce022943369128a561d181e660c3cb",
+      "after_sha256": "2e50602fd4410132df0019d8d37aba8ab262f56da5dd68fcd6808936a2859249",
+      "before_blob": "424f9237b3f39c168ae6ebd2ee3bd8239b576bfe",
+      "after_blob": "25eb051fd1ff8bdb627a47f0d7f7518239c79b4a"
+    },
+    {
+      "path": "crates/hex-widgets/src/numeric_control/compact_slider_tests.rs",
+      "before_sha256": "959a6c6c9ef3f7e3f99e5482e39b152d3f25d378112ec5d328719f44495f2672",
+      "after_sha256": "79ab06f8297dc9842e395997eb316fc824cf237292a2ca10a745f1ae61c3b3c4",
+      "before_blob": "468932bf459ce655503207a7f10627c3680cae90",
+      "after_blob": "058d2dbcd875ae0ef810d016cfc704db8d4a25b0"
+    },
+    {
+      "path": "docs/track-header-volume.md",
+      "before_sha256": "2e99ab7d36ab0ae8b9412db563169c1485fe837eb2e8eb778972aaf897258359",
+      "after_sha256": "1e5a338d948925e462ee88207beb8f7f494b4d21304050ad4ddbfb168afa8f46",
+      "before_blob": "17390d353fab95ea3b0ef91f7ae07a0a8b3accc0",
+      "after_blob": "1e6731e2777c1d0e8b5795dcafb43dac6cf52be8"
+    },
+    {
+      "path": "todo.md",
+      "before_sha256": "22dd68006635b4f9156a9279aa51d7ff023624565013d685dde242dc70ec8d33",
+      "after_sha256": "9d309670a8a313cfb7c4fbc3ba244d04e8cd495008d3ad7bee22f7ce474c82df",
+      "before_blob": "1bb2c15d98fa5c1d9a7765f00eae25940fd1d9a1",
+      "after_blob": "c5753a726b9423504cecabade9502d7f738c8cca"
+    }
+  ]
+}
