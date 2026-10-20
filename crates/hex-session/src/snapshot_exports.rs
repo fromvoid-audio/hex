@@ -7,6 +7,11 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 static NEXT_FAMILY: AtomicU64 = AtomicU64::new(1);
 
 mod event;
+mod model_read;
+pub use model_read::{
+    SnapshotClipRead, SnapshotDeviceRead, SnapshotProjectRead, SnapshotReturnRead,
+    SnapshotTrackRead,
+};
 mod family;
 // Record transitions are independent of the platform exclusion primitive. The
 // existing family supplies structural exclusion; Service wiring is in progress.
