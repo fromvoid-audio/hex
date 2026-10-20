@@ -420,3 +420,98 @@ fn browser_builtin_source_all_first_and_command_f_uses_existing_global_scope(
                 .top()
     );
 }
+
+#[gpui::test]
+fn browser_hidden_source_picker_restores_same_path_visibility_and_preferences(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::super::super::bind_editor_keys);
+    let directory = PreferencesTestDirectory::new();
+    let config = directory.0.join("picker-browser.json");
+    let recent = directory.0.join("recent.json");
+    let custom = directory.0.join("custom-picker");
+    std::fs::create_dir(&custom).unwrap();
+    let wav = custom.join("keep.wav");
+    let bytes = mono_pcm_wav(24);
+    std::fs::write(&wav, &bytes).unwrap();
+    let mut saved = hex_preferences::BrowserPlaces::new([custom.clone()]).unwrap();
+    saved.set_icon(&custom, Some("waveform")).unwrap();
+    hex_preferences::save(&config, &saved).unwrap();
+    let (handle, editor) = place_icon_preferences_window(cx, &directory, &config, &recent);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let (roots, home, music) = editor.read_with(visual, |view, _| {
+        (
+            view.sample_roots(),
+            view.browser.home.clone(),
+            view.browser.music.clone(),
+        )
+    });
+    for (row, path) in [
+        ("browser-place-2", custom.clone()),
+        ("browser-place-0", music),
+        ("browser-place-1", home),
+    ] {
+        let bounds = visual.debug_bounds(row).unwrap();
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        right_click(visual, row);
+        choose(visual, 8);
+        editor.read_with(visual, |view, _| {
+            assert!(!view.browser_place_visible(&path));
+            assert_eq!(view.browser.section, BrowserSection::All);
+        });
+        assert!(visual.debug_bounds(row).is_none());
+        editor.update(visual, |view, cx| view.open_browser_folder(cx));
+        assert!(
+            visual.did_prompt_for_paths(),
+            "actual picker request must exist"
+        );
+        visual.simulate_paths_selection(Some(vec![path.clone()]));
+        visual.run_until_parked();
+        editor.read_with(visual, |view, _| {
+            assert!(
+                view.browser_place_visible(&path),
+                "picked hidden source must be visible: {path:?}"
+            );
+            assert_eq!(view.browser.section, BrowserSection::Place(path.clone()));
+            assert_eq!(view.sample_roots(), roots);
+            assert_eq!(view.browser_place_glyph(&custom), "≋");
+            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        });
+        assert!(visual.debug_bounds(row).is_some());
+        assert_eq!(std::fs::read(&wav).unwrap(), bytes);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            visual.run_until_parked();
+            let saved = hex_preferences::load(&config).unwrap();
+            let visible = editor.read_with(visual, |view, _| {
+                if path == view.browser.home {
+                    !saved.builtin_hidden(hex_preferences::BrowserBuiltin::Home)
+                } else if path == view.browser.music {
+                    !saved.builtin_hidden(hex_preferences::BrowserBuiltin::Music)
+                } else {
+                    !saved.place_hidden(&path)
+                }
+            });
+            if visible {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "restored preference save timed out"
+            );
+            std::thread::yield_now();
+        }
+        let (reopened_handle, reopened) =
+            place_icon_preferences_window(cx, &directory, &config, &recent);
+        let reopened_visual = &mut VisualTestContext::from_window(reopened_handle, cx);
+        reopened_visual.run_until_parked();
+        reopened.read_with(reopened_visual, |view, _| {
+            assert!(view.browser_place_visible(&path));
+            assert_eq!(view.sample_roots(), roots);
+            assert_eq!(view.browser_place_glyph(&custom), "≋");
+        });
+        assert!(reopened_visual.debug_bounds(row).is_some());
+        eprintln!("ACTUAL_HIDDEN_PICKER_RESTORED {row}");
+    }
+}
