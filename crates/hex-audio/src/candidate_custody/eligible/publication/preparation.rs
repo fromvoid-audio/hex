@@ -27,12 +27,12 @@ pub struct AudioCandidatePreparationRefusal {
     pub domains: Vec<AudioCandidateDomainToken>,
 }
 pub(super) struct PreparationExecution {
-    token: AudioCandidatePreparationToken,
-    cell: Option<hex_engine::AudioCandidatePreparation>,
-    domains: Vec<AudioCandidateDomainToken>,
-    pending: bool,
-    failed: bool,
-    refusal: Option<&'static str>,
+    pub(super) token: AudioCandidatePreparationToken,
+    pub(super) cell: Option<hex_engine::AudioCandidatePreparation>,
+    pub(super) domains: Vec<AudioCandidateDomainToken>,
+    pub(super) pending: bool,
+    pub(super) failed: bool,
+    pub(super) refusal: Option<&'static str>,
 }
 #[cfg(test)]
 impl PreparationExecution {
@@ -77,7 +77,11 @@ impl Custody {
                 .publication
                 .slots
                 .iter()
-                .position(|s| s.phase == Phase::Vacant)
+                .position(|s| {
+                    s.phase == Phase::Vacant
+                        && s.state_storage.is_none()
+                        && s.claim_storage.iter().all(Option::is_none)
+                })
                 .ok_or("candidate runtime cells are full")?;
             let archive = bank
                 .publication
@@ -477,7 +481,7 @@ impl Custody {
                 .domains
                 .capacity()
                 .checked_mul(std::mem::size_of::<AudioCandidateDomainToken>())
-                .and_then(|n| n.checked_add(std::mem::size_of::<State>()))
+                .and_then(|n| n.checked_add(state_peak_storage_bytes(bank.native.is_some())?))
                 .and_then(|n| {
                     n.checked_add(
                         slot.streaming
@@ -580,6 +584,8 @@ impl Custody {
             self.preconstruct_publication_state(root, &preliminary, &execution.domains, header)?;
         let barrier = lock(&root.0.bank);
         if barrier.closing || barrier.retiring {
+            drop(barrier);
+            self.discard_unpublished_state_on_control(state);
             return Err("candidate Root is closing");
         }
         // Preserve the existing outer-root -> eligible-bank order, retaining
@@ -587,21 +593,33 @@ impl Custody {
         // External family/worker inspection will precede these native guards;
         // this candidate-local operation does not yet provide that joint proof.
         let mut bank = lock(&self.bank);
-        let owner = split
-            .owner_on_control()
-            .ok_or("candidate preparation is not ready")?;
-        let plan = Self::preflight_stage_with_bank(
-            &bank,
-            root,
-            owner,
-            &execution.domains,
-            header,
-            summary,
-            Some(token),
-        )?;
-        if plan.stamp != state.stamp {
-            return Err("candidate preallocated publication stamp differs");
-        }
+        let final_plan = (|| {
+            let owner = split
+                .owner_on_control()
+                .ok_or("candidate preparation is not ready")?;
+            let plan = Self::preflight_stage_with_bank(
+                &bank,
+                root,
+                owner,
+                &execution.domains,
+                header,
+                summary,
+                Some(token),
+            )?;
+            if plan.stamp != state.stamp {
+                return Err("candidate preallocated publication stamp differs");
+            }
+            Ok(plan)
+        })();
+        let plan = match final_plan {
+            Ok(plan) => plan,
+            Err(reason) => {
+                drop(bank);
+                drop(barrier);
+                self.discard_unpublished_state_on_control(state);
+                return Err(reason);
+            }
+        };
         execution.pending = true;
         // Only the preallocated transfer moves owners. This remains the legacy
         // candidate-local stage: the actual joint ledger/source/cancel frontier
@@ -612,6 +630,9 @@ impl Custody {
             Ok(Ok(parts)) => parts,
             Ok(Err(_)) => {
                 execution.pending = false;
+                drop(bank);
+                drop(barrier);
+                self.discard_unpublished_state_on_control(state);
                 return Err("candidate constructor split refused");
             }
             Err(payload) => {
@@ -619,6 +640,9 @@ impl Custody {
                 work.publication.failed_payloads[token.slot] = Some(payload);
                 bank.publication.slots[token.slot].phase = Phase::Failed;
                 self.mark_closing(&mut bank);
+                drop(bank);
+                drop(barrier);
+                self.discard_unpublished_state_on_control(state);
                 return Err("candidate preparation is incomplete");
             }
         };
@@ -772,6 +796,11 @@ impl Custody {
             let slot = &mut bank.publication.slots[index];
             slot.preparation_reservation = None;
             slot.preparation_retiring = false;
+            if slot.state_storage.is_some() || slot.claim_storage.iter().any(Option::is_some) {
+                slot.phase = Phase::Failed;
+                self.mark_closing(&mut bank);
+                continue;
+            }
             slot.phase = Phase::Vacant;
             slot.retained = 0;
             slot.peak = 0;
@@ -804,6 +833,8 @@ mod tests {
                     max_construction_peak_data_bytes: 64 * 1024 * 1024,
                 },
                 std::mem::size_of::<Inner>() + 2 * std::mem::size_of::<Slot>(),
+                root.0.resident.as_ref(),
+                root.0.root_fields.as_ref(),
             )
             .unwrap();
         root
@@ -1120,6 +1151,22 @@ mod tests {
         let mut anchors = [Some(anchor)];
         proof.record_anchor_cells_on_control(&mut anchors).unwrap();
         let anchor = anchors[0].as_mut().unwrap();
+        assert!(
+            matches!(
+                anchor.finish_disposal_on_control(),
+                Err(hex_engine::AudioStorageError::ExternalReadersPending)
+            ),
+            "actual proof still owns its constructor group-book backing"
+        );
+        drop(proof); // Same actual proof, only after complete origin fanout.
+        assert!(
+            matches!(
+                anchor.finish_disposal_on_control(),
+                Err(hex_engine::AudioStorageError::ExternalReadersPending)
+            ),
+            "actual claimed Box remains separate from DSP/proof destruction"
+        );
+        drop(runtime);
         anchor.finish_disposal_on_control().unwrap();
         drop(anchor.recover_inputs_on_control().unwrap());
         cell.cleanup_on_control().unwrap();

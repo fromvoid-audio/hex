@@ -1,4 +1,6 @@
 //! Build-only declared-layout evidence; unsupported observations remain Unknown.
+#[path = "build_support/document_token_gate.rs"]
+mod document_token_gate;
 #[path = "build_support/midi_gate.rs"]
 mod midi_gate;
 #[path = "build_support/pcm_gate.rs"]
@@ -76,6 +78,7 @@ fn main() {
     println!("cargo:rerun-if-changed=build_support/pcm_gate.rs");
     println!("cargo:rerun-if-changed=build_support/midi_gate.rs");
     println!("cargo:rerun-if-changed=build_support/state_gate.rs");
+    println!("cargo:rerun-if-changed=build_support/document_token_gate.rs");
     println!("cargo:rerun-if-changed=build_support/runtime_box_gate.rs");
     println!("cargo:rerun-if-changed=build_support/retained_job_box_gate.rs");
     let host = env::var("HOST").unwrap_or_default();
@@ -137,6 +140,7 @@ fn main() {
         "contract: pinned-std-arc-audiodata-retained-vec-v1\nhost: {host}\ntarget: {target}\n"
     );
     let mut state_decision = Err("missing_compiler_observation");
+    let mut document_token_decision = Err("missing_compiler_observation");
     let mut midi_decision = Err("missing_compiler_observation");
     let mut box_decision = Err("missing_compiler_observation");
     let mut retained_job_decision = Err("missing_compiler_observation");
@@ -158,6 +162,7 @@ fn main() {
                 unsupported_inputs: unsupported,
             };
             state_decision = state_gate::decide(observed);
+            document_token_decision = document_token_gate::decide(observed);
             midi_decision = midi_gate::decide(observed);
             box_decision = runtime_box_gate::decide(observed);
             retained_job_decision = retained_job_box_gate::decide(observed);
@@ -271,6 +276,34 @@ fn main() {
     println!(
         "cargo:rustc-env=HEX_CANONICAL_STATE_ARC_CONSTRUCTOR_FAMILY={}",
         state_gate::FAMILY
+    );
+    let document_token_evidence = format!(
+        "{evidence}\ncontract: {}\ncompiler: {}\npinned source: library/alloc/src/sync.rs SHA256 {}\nconstructors: closed Storage FileToken Arc::from(Vec<u8>) and Arc::from(&[u8])\nlayout: ArcInner two atomic counters extended by actual byte-slice Layout and padded; old input Vec/recovery buffer and construction overlap remain separate\ndecision: {document_token_decision:?}\nrequested native layout only; no retrospective birth/custody/publication/allocator-RSS certificate\n",
+        document_token_gate::FAMILY,
+        pcm_gate::COMMIT,
+        document_token_gate::SOURCE_SHA256,
+    );
+    let document_token_saved = env::var_os("OUT_DIR")
+        .map(PathBuf::from)
+        .is_some_and(|path| {
+            fs::write(
+                path.join("document-token-arc-build-evidence.txt"),
+                document_token_evidence,
+            )
+            .is_ok()
+        });
+    println!(
+        "cargo:rustc-env=HEX_DOCUMENT_TOKEN_ARC_LAYOUT_KNOWN={}",
+        if document_token_decision.is_ok() && saved && document_token_saved {
+            "1"
+        } else {
+            "0"
+        }
+    );
+    println!("cargo:rustc-env=HEX_DOCUMENT_TOKEN_ARC_LAYOUT_TARGET={target}");
+    println!(
+        "cargo:rustc-env=HEX_DOCUMENT_TOKEN_ARC_CONSTRUCTOR_FAMILY={}",
+        document_token_gate::FAMILY
     );
     // Always override any caller text; unsupported builds retain legacy Audio.
     println!(

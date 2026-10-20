@@ -19,6 +19,58 @@ static OPERATIONS: SnapshotReadOperations = SnapshotReadOperations::new_unqualif
     report,
     follows_source,
 );
+static SOURCE_EVENT_OPERATIONS: hex_session::snapshot_exports::SnapshotSourceEventOperations =
+    hex_session::snapshot_exports::SnapshotSourceEventOperations::new_unqualified(
+        inspect_source_head,
+        claim_source_head,
+    );
+fn inspect_source_head(
+    route: RetainedControlJobRoute,
+    read: &mut dyn hex_session::snapshot_exports::SourceEventHeadContinuation,
+) -> Result<bool, Error> {
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family
+            .read_source_event_head_on_control(|head, snapshot| read.read(head, snapshot))
+            .map(|result| result.is_some())
+            .map_err(record_error)
+    })
+    .map_err(family_error)?
+}
+fn claim_source_head(
+    route: RetainedControlJobRoute,
+    head: hex_session::snapshot_exports::SourceEventHead,
+    canonical_pending: bool,
+    destination: &mut Option<hex_session::snapshot_exports::SourceEventDelivery>,
+) -> Result<(), Error> {
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family
+            .receive_source_event_on_control(head, canonical_pending, destination)
+            .map_err(record_error)
+    })
+    .map_err(family_error)?
+}
+/// Actual registered family route, not a profile/native admission. The closed
+/// startup must construct/quote the receiver and all actual queue/read storage
+/// before escape; this adapter never imports a legacy owning Event.
+pub fn bind_source_event_receiver_on_control(
+    family: RetainedFamilyId<SessionExportFamily>,
+) -> Result<hex_session::snapshot_exports::SnapshotSourceEventReceiver, Error> {
+    let route = hex_audio::retained_family_route_on_control(family).map_err(family_error)?;
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family
+            .source_event_head_on_control()
+            .map(|_| ())
+            .map_err(record_error)
+    })
+    .map_err(family_error)??;
+    Ok(
+        hex_session::snapshot_exports::SnapshotSourceEventReceiver::new_unqualified_on_control(
+            route,
+            &SOURCE_EVENT_OPERATIONS,
+            &OPERATIONS,
+        ),
+    )
+}
 fn family_error(error: RetainedFamilyError) -> Error {
     match error {
         RetainedFamilyError::Reservation
@@ -200,3 +252,6 @@ pub use worker_control::bind_registered_worker_on_control;
 pub(super) use worker_startup::{
     configure_native_table_on_control, worker_from_existing_table_on_control,
 };
+
+#[cfg(all(test, feature = "allocation-probe"))]
+pub(crate) use tests::{TABLE_TEST_GATE, initialize_test_table};

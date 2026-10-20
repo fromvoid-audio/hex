@@ -116,6 +116,7 @@ impl<'a> AudioRootStorageLedger<'a> {
             growth: 0,
             unknown: 0,
             valid: true,
+            native_partition: None,
             arithmetic: Some(Arithmetic::new(Pass::Count)),
         }
     }

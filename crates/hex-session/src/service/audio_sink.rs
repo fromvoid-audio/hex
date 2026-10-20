@@ -3,6 +3,32 @@
 use super::*;
 use std::time::Duration;
 
+/// Negotiation can refuse BEFORE a native request/flag/channel allocation.
+/// Typed native refusals need no allocated explanation in the pre-Session
+/// phase. Existing unqualified adapters retain their actual owned error.
+#[derive(Debug)]
+pub enum WorkerAudioInitializationError {
+    Adapter(String),
+    Storage(hex_engine::AudioStorageError),
+    Cancelled,
+    InvalidRate(u32),
+    Unavailable,
+}
+impl fmt::Display for WorkerAudioInitializationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Adapter(error) => formatter.write_str(error),
+            Self::Storage(_) => formatter.write_str("native startup input storage is unavailable"),
+            Self::Cancelled => formatter.write_str("audio startup cancelled"),
+            Self::InvalidRate(rate) => {
+                write!(formatter, "unsupported negotiated audio rate: {rate} hz")
+            }
+            Self::Unavailable => formatter.write_str("audio adapter unavailable"),
+        }
+    }
+}
+impl std::error::Error for WorkerAudioInitializationError {}
+
 /// A single worker-owned desktop adapter. Initialization and every method run
 /// on the existing Session worker, including while the UI event queue is full.
 /// Construction must not start device work or hold an opened output: a failed
@@ -12,6 +38,22 @@ pub trait WorkerAudioSink: Send {
     /// editing available at the explicit offline rate of 48000 Hz. Observe the
     /// shutdown flag while awaiting that lane; never wait for a UI response.
     fn initialize(&mut self, shutdown: &dyn hex_engine::CancellationQuery) -> Result<u32, String>;
+    /// Real constructor-phase operands for rate negotiation. The default is
+    /// explicitly unqualified and preserves existing adapters;
+    /// it cannot grant storage admission to the native implementation.
+    fn initialize_with_startup_roots(
+        &mut self,
+        roots: &WorkerStartupView<'_>,
+    ) -> Result<u32, WorkerAudioInitializationError> {
+        self.initialize(roots.cancellation_on_control())
+            .map_err(WorkerAudioInitializationError::Adapter)
+    }
+    /// Called exactly once with the REAL negotiated/supplied Session before
+    /// first current/compiled/Event birth. The legacy default does no work and
+    /// grants no admission. Native's initial constructor must use this fresh
+    /// scope, never retain it or adopt a subsequently allocated legacy view.
+    fn initialize_session_with_startup_roots(&mut self, _roots: &mut WorkerInitialSessionView<'_>) {
+    }
     /// Called before the corresponding canonical event can block on UI delivery.
     /// On generation replacement relinquish the previous publication/output
     /// first. Replacement opening must be polled, not awaited in this method.
@@ -45,6 +87,7 @@ pub(super) struct WorkerEvents {
         hex_engine::SharedMetadataCacheIdentity,
     )>,
     startup_error: Option<String>,
+    initial_snapshot_phase: worker_startup::InitialSnapshotPhase,
 }
 impl WorkerEvents {
     pub(super) fn cancelled(&self) -> bool {
@@ -64,23 +107,84 @@ impl WorkerEvents {
             audio,
             last_source: None,
             startup_error: None,
+            initial_snapshot_phase: Default::default(),
         }
     }
-    pub(super) fn initialize(&mut self) -> Result<u32, String> {
-        let rate = self
-            .audio
+    pub(super) fn initialize(
+        &mut self,
+        startup: &WorkerStartup,
+        queues: &worker_startup::WorkerStartupQueues,
+        recovery: &Option<PathBuf>,
+    ) -> Result<u32, WorkerAudioInitializationError> {
+        // Split the ACTUAL fields. No immutable borrow of the whole Events or
+        // adapter overlaps its mutable negotiation operation.
+        let Self {
+            sender,
+            shutdown,
+            audio,
+            last_source,
+            startup_error,
+            initial_snapshot_phase: _,
+        } = self;
+        let roots = WorkerStartupView {
+            startup,
+            queues,
+            event_sender: sender,
+            recovery,
+            cancellation: shutdown,
+            last_source,
+            startup_error,
+        };
+        let rate = audio
             .as_mut()
-            .ok_or("audio adapter unavailable")?
-            .initialize(&self.shutdown)?;
+            .ok_or(WorkerAudioInitializationError::Unavailable)?
+            .initialize_with_startup_roots(&roots)?;
         if !(8_000..=192_000).contains(&rate) {
-            if let Some(audio) = self.audio.as_mut() {
+            if let Some(audio) = audio.as_mut() {
                 audio.close();
             }
-            return Err("unsupported negotiated audio rate".into());
+            return Err(WorkerAudioInitializationError::InvalidRate(rate));
         }
         Ok(rate)
     }
-    pub(super) fn startup_failed(&mut self, error: String) {
+    pub(super) fn initialize_session(
+        &mut self,
+        startup: &WorkerStartup,
+        queues: &worker_startup::WorkerStartupQueues,
+        recovery: &Option<PathBuf>,
+    ) {
+        let Self {
+            sender,
+            shutdown,
+            audio,
+            last_source,
+            startup_error,
+            initial_snapshot_phase,
+        } = self;
+        if let Some(audio) = audio.as_mut() {
+            let mut roots = WorkerInitialSessionView {
+                startup,
+                queues,
+                event_sender: sender,
+                recovery,
+                cancellation: shutdown,
+                last_source,
+                startup_error,
+                phase: initial_snapshot_phase,
+            };
+            audio.initialize_session_with_startup_roots(&mut roots);
+        }
+    }
+    // The currently unqualified legacy startup cannot later claim the initial
+    // constructor phase. This is called BEFORE its first raw view allocation.
+    pub(super) fn enter_legacy_initial(&mut self) -> bool {
+        if self.initial_snapshot_phase != worker_startup::InitialSnapshotPhase::Fresh {
+            return false;
+        }
+        self.initial_snapshot_phase = worker_startup::InitialSnapshotPhase::Legacy;
+        true
+    }
+    pub(super) fn startup_failed(&mut self, error: WorkerAudioInitializationError) {
         self.startup_error = Some(format!("audio unavailable: {error}"));
     }
     pub(super) fn take_startup_error(&mut self) -> Option<String> {
@@ -137,6 +241,29 @@ impl WorkerEvents {
             }
             // Control-side event backpressure retains this exact event. It does
             // not strand native returns or require dropping a canonical ACK.
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+    pub(super) fn send_export_result(
+        &mut self,
+        sender: &ExportResultSender,
+        mut event: ExportEvent,
+        state: &WorkerDispatchState<'_>,
+    ) -> bool {
+        loop {
+            if self.cancelled() {
+                return false;
+            }
+            {
+                let pending = state.with_export_completion(&event);
+                self.poll(&pending, None, WorkerRootDispatch::PendingExportResult);
+            }
+            // Every borrowed view is gone before this exact fixed transfer.
+            match sender.try_send(event) {
+                Ok(()) => return true,
+                Err(TrySendError::Disconnected(_)) => return false,
+                Err(TrySendError::Full(returned)) => event = returned,
+            }
             thread::sleep(Duration::from_millis(5));
         }
     }
@@ -201,6 +328,8 @@ mod tests {
     use std::time::Instant;
     #[derive(Default)]
     struct Observation {
+        startup: Mutex<Vec<thread::ThreadId>>,
+        initial_sessions: Mutex<Vec<(u32, thread::ThreadId)>>,
         sources: Mutex<Vec<(u64, u64, thread::ThreadId)>>,
         polls: AtomicUsize,
         closed: Mutex<Option<thread::ThreadId>>,
@@ -211,6 +340,37 @@ mod tests {
         fail: bool,
     }
     impl WorkerAudioSink for Sink {
+        fn initialize_with_startup_roots(
+            &mut self,
+            roots: &WorkerStartupView<'_>,
+        ) -> Result<u32, WorkerAudioInitializationError> {
+            assert!(!roots.has_session_on_control());
+            assert!(!roots.cancellation_on_control().is_cancelled());
+            assert_eq!(
+                roots.require_complete_storage_on_control(),
+                Err(hex_engine::AudioStorageError::UnknownStorage)
+            );
+            self.observed
+                .startup
+                .lock()
+                .unwrap()
+                .push(thread::current().id());
+            self.initialize(roots.cancellation_on_control())
+                .map_err(WorkerAudioInitializationError::Adapter)
+        }
+        fn initialize_session_with_startup_roots(
+            &mut self,
+            roots: &mut WorkerInitialSessionView<'_>,
+        ) {
+            assert_eq!(
+                roots.require_complete_storage_on_control(),
+                Err(hex_engine::AudioStorageError::UnknownStorage)
+            );
+            self.observed.initial_sessions.lock().unwrap().push((
+                roots.sample_rate_on_control().unwrap(),
+                thread::current().id(),
+            ));
+        }
         fn initialize(&mut self, _: &dyn hex_engine::CancellationQuery) -> Result<u32, String> {
             if self.fail {
                 Err("device unavailable".into())
@@ -270,6 +430,12 @@ mod tests {
                 .unwrap();
         }
         wait(|| observed.sources.lock().unwrap().len() == 3);
+        assert_eq!(observed.startup.lock().unwrap().len(), 1);
+        assert_ne!(observed.startup.lock().unwrap()[0], caller);
+        assert_eq!(
+            *observed.initial_sessions.lock().unwrap(),
+            [(44100, observed.startup.lock().unwrap()[0])]
+        );
         let polls = observed.polls.load(Ordering::SeqCst);
         wait(|| observed.polls.load(Ordering::SeqCst) > polls + 2);
         for revision in 0..=2 {
@@ -356,6 +522,8 @@ mod tests {
         .unwrap();
         let event = service.events.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(event.state.project.sample_rate(), 48000);
+        assert_eq!(observed.initial_sessions.lock().unwrap().len(), 1);
+        assert_eq!(observed.initial_sessions.lock().unwrap()[0].0, 48000);
         assert_eq!(
             event.error.as_deref(),
             Some("audio unavailable: device unavailable")

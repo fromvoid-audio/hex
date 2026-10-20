@@ -40,7 +40,9 @@ fn original_plan_inspection_covers_actual_input_backing_aliases_without_births()
     );
     assert_eq!(
         ledger.summary().unwrap().data_bytes - before,
-        size_of_val(&entries) + entries.capacity() * size_of::<OriginalResourceInput<'_>>()
+        size_of_val(&plan)
+            + size_of_val(&entries)
+            + entries.capacity() * size_of::<OriginalResourceInput<'_>>()
     );
     ledger.validate_closed_shared_handles().unwrap();
     let measured = allocation_counter::measure(|| {
@@ -170,11 +172,12 @@ fn typed_original_producer_preserves_raw_refusal_and_charges_reserved_input_capa
     assert_eq!(raw.frames(), &[[0.25, -0.5]; 4]);
     let empty = Vec::<OriginalResourceInput<'_>>::with_capacity(17);
     let plan = OriginalResourceBankPlan::borrow(&empty);
-    let input_bytes = OriginalResourceBankPlan::input_bytes(&empty).unwrap();
+    let input_bytes = plan.input_bytes().unwrap();
     assert_eq!(
         input_bytes,
         empty.capacity() * size_of::<OriginalResourceInput<'_>>()
             + size_of::<Vec<OriginalResourceInput<'_>>>()
+            + size_of_val(&plan)
     );
     let minimum = input_bytes
         + size_of::<Vec<(AssetId, OwnedAudioSource)>>()
@@ -193,4 +196,65 @@ fn typed_original_producer_preserves_raw_refusal_and_charges_reserved_input_capa
         plan.prepare_on_control(limits(), &cancelled),
         Err(ResourcePreparationError::Cancelled)
     ));
+}
+
+#[test]
+fn original_plan_reuses_exact_embedded_fields_but_not_unseen_aliases() {
+    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
+    struct Holder {
+        source: OwnedAudioSource,
+    }
+    for stereo in [false, true] {
+        let holder = Holder {
+            source: if stereo {
+                OwnedAudioSource::try_resident(44100, vec![[0.25, -0.5]; 4])
+                    .ok()
+                    .unwrap()
+            } else {
+                OwnedAudioSource::try_resident_mono(44100, vec![0.25; 4])
+                    .ok()
+                    .unwrap()
+            },
+        };
+        let alias = holder
+            .source
+            .alias_for_resource_plan_on_control(size_of::<OwnedAudioSource>())
+            .unwrap();
+        let entries = vec![OriginalResourceInput::native(
+            crate::native_device_resources::tests::ids()[0],
+            &holder.source,
+        )];
+        let plan = OriginalResourceBankPlan::borrow(&entries);
+        let reservation = AudioStorageLedgerReservation {
+            data_rows: 64,
+            handle_rows: 16,
+            root_rows: 8,
+            max_retained_bytes: 1_000_000,
+            max_construction_peak_bytes: 1_000_000,
+        };
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+        ledger.root(&holder, AudioStorageRole::Caller).unwrap();
+        ledger
+            .borrow_embedded_native_source_on_control(&holder.source)
+            .unwrap();
+        let before = ledger.summary().unwrap();
+        let measured = allocation_counter::measure(|| {
+            plan.visit_storage_on_control(&mut ledger).unwrap();
+            plan.visit_storage_on_control(&mut ledger).unwrap();
+        });
+        assert_eq!((measured.count_total, measured.count_current), (0, 0));
+        let after = ledger.summary().unwrap();
+        assert_eq!(
+            after.data_bytes - before.data_bytes,
+            size_of_val(&plan)
+                + size_of_val(&entries)
+                + entries.capacity() * size_of::<OriginalResourceInput<'_>>()
+        );
+        // Matching DATA never explains another physical owning handle.
+        assert!(ledger.validate_closed_shared_handles().is_err());
+        ledger
+            .borrow_native_source_on_control(&alias, AudioStorageRole::Caller)
+            .unwrap();
+        ledger.validate_closed_shared_handles().unwrap();
+    }
 }

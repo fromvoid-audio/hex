@@ -3,9 +3,11 @@
 //! cleanup, while a failed cell remains quarantined by its host.
 use super::*;
 mod control_work;
+mod native_fields;
 mod original_resources;
 pub use control_work::{AudioCandidateControlBlock, AudioCandidateControlProgress};
 use hex_project::{AssetId, Project};
+pub(crate) use original_resources::OriginalSamplerConstruction;
 
 pub struct AudioCandidatePreparation {
     sources: Vec<(AssetId, crate::OwnedAudioSource)>,

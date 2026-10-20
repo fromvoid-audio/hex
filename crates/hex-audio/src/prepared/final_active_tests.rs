@@ -413,7 +413,7 @@ fn foreign_terminal_root_refuses_without_taking_the_actual_active_constructor_ow
     };
     let (mut control, callback) = channel(48_000).unwrap();
     let (mut data, errors, terminals) =
-        crate::native_callback_owner::reserve_native(callback, control.status.clone());
+        crate::native_callback_owner::reserve_native(callback, &control.status).unwrap();
     control.enable_native_custody().unwrap();
     data.owner_mut()
         .unwrap()

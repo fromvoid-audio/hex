@@ -176,6 +176,17 @@ impl AudioCompiledRevision {
     pub fn identity(&self) -> AudioCompiledRevisionIdentity {
         self.identity
     }
+    // Only the closed Engine constructor resolves this actual paired reader.
+    // No raw revision/context owner is exposed at the integration boundary.
+    pub(crate) fn original_sampler_previous_contexts(
+        &self,
+    ) -> Result<&OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>, Error> {
+        if self.registration.word.load(Ordering::Acquire) & FAILED != 0 {
+            return Err(Error::UnknownStorage);
+        }
+        let revision = self.revision.as_ref().ok_or(Error::UnknownStorage)?;
+        Ok(revision.arrangement.shared_contexts())
+    }
     pub fn metadata(&self) -> AudioPreparedRevisionMetadata {
         let revision = self.revision.as_ref().expect("live registered revision");
         AudioPreparedRevisionMetadata {
@@ -184,6 +195,15 @@ impl AudioCompiledRevision {
             return_count: revision.arrangement.return_buses.len(),
             contains_streamed_sources: revision.contains_streamed_sources(),
         }
+    }
+    // Actual paired immutable revision retained by THIS registered reader.
+    // Resolution remains inside Engine's finite native shared-field schema.
+    pub(crate) fn native_constructor_owner(
+        &self,
+        key: crate::audio_storage::NativeSharedKey,
+    ) -> Result<crate::audio_storage::Owner<'_>, Error> {
+        let revision = self.revision.as_ref().ok_or(Error::UnknownStorage)?;
+        crate::audio_storage::native_shared_revision_owner(revision.arc(), key)
     }
     /// Observe BOTH physical paired handles at their actual retained location.
     /// Root/child declarations and lifetime closure still require the actual

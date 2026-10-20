@@ -14,7 +14,7 @@ fn add(a: usize, b: usize) -> Result<usize, AudioStorageError> {
     a.checked_add(b).ok_or(AudioStorageError::Overflow)
 }
 #[derive(Clone, Copy)]
-struct Construction {
+pub(crate) struct Construction {
     retained: usize,
     peak: usize,
     contexts: SamplerContextConstructionLimits,
@@ -82,7 +82,9 @@ impl ArrangementClips {
         })
     }
 }
-struct Inputs<'a> {
+struct Inputs<'a, 'files: 'a> {
+    host: Option<&'a crate::sampler_host_fields::OriginalSamplerConstructionHost<'a, 'files>>,
+    resident: Option<&'a dyn crate::sampler_host_fields::OriginalSamplerResidentFields>,
     producer: Option<&'a crate::native_device_resources::OriginalResourceBankPlan<'a>>,
     rows: &'a ArrangementClips,
     preparation: &'a crate::AudioPreparationCustody,
@@ -92,7 +94,7 @@ struct Inputs<'a> {
     previous: Option<&'a OwnedShared<SharedAnalyticContextTable>>,
     original: &'a AudioRootStorageLedger<'a>,
 }
-impl<'a> Inputs<'a> {
+impl<'a, 'files: 'a> Inputs<'a, 'files> {
     fn visit<'scope>(
         &self,
         inventory: &'scope AudioTransformPcmInventory<'scope>,
@@ -112,6 +114,17 @@ impl<'a> Inputs<'a> {
     where
         'a: 'scope,
     {
+        if let Some(host) = self.host {
+            host.visit(self.preparation, self.target, ledger)?;
+        }
+        if let Some(resident) = self.resident {
+            if !std::ptr::eq(resident.editor(), self.editor) {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            crate::sampler_host_fields::visit_original_sampler_resident(
+                resident, inventory, ledger,
+            )?;
+        }
         // Mandatory actual inputs FIRST. Importing old roots before these
         // visitors can turn legitimate repeated observations into root errors.
         if !matches!(
@@ -136,11 +149,17 @@ impl<'a> Inputs<'a> {
             ledger.root(self.rows, AudioStorageRole::FailedConstruction)?;
             self.rows.visit_audio_storage(ledger, None, None)?;
         }
-        ledger.root(self.editor, AudioStorageRole::Caller)?;
-        ledger.borrow_editor_history_buffers_on_control(self.editor)?;
-        ledger.borrow_editor_exclusive_buffers_on_control(self.editor)?;
-        ledger.borrow_editor_midi_sources_on_control(self.editor)?;
-        ledger.borrow_editor_native_states_on_control(self.editor)?;
+        if self.resident.is_none() {
+            ledger.root(self.editor, AudioStorageRole::Caller)?;
+        }
+        if let Some(resident) = self.resident {
+            crate::sampler_host_fields::visit_original_sampler_resident_editor(resident, ledger)?;
+        } else {
+            ledger.borrow_editor_history_buffers_on_control(self.editor)?;
+            ledger.borrow_editor_exclusive_buffers_on_control(self.editor)?;
+            ledger.borrow_editor_midi_sources_on_control(self.editor)?;
+            ledger.borrow_editor_native_states_on_control(self.editor)?;
+        }
         // A bank field already inside the mandatory preparation body has its
         // header charged there. A standalone bank needs its own actual root.
         if !self
@@ -172,7 +191,9 @@ impl<'a> Inputs<'a> {
         }
         // Charge the actual enclosing preparation body, its cache/pending
         // backing and cancellation; do not confuse PCM-only visitation with it.
-        inventory.visit_original_only_body_on_control(ledger)?;
+        if self.resident.is_none() {
+            inventory.visit_original_only_body_on_control(ledger)?;
+        }
         if std::ptr::eq(self.rows, &self.preparation.arrangement_clips) {
             ledger.require_original_inputs_bound(self.original)?;
         }
@@ -196,6 +217,8 @@ impl ArrangementClips {
         reservation: AudioStorageLedgerReservation,
     ) -> Result<(), AudioStorageError> {
         let construction = Inputs {
+            host: None,
+            resident: None,
             producer: None,
             rows: self,
             preparation,
@@ -216,98 +239,112 @@ impl ArrangementClips {
         transforms: &AudioTransformPreparation,
         construction: Construction,
     ) -> Result<(), AudioStorageError> {
+        if transforms.cancellation_requested_on_control() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        transforms
+            .compile_transaction(|| {
+                self.construct_original_sampler_body(
+                    project,
+                    bank,
+                    previous,
+                    transforms,
+                    construction,
+                )
+            })
+            .map_err(|_| AudioStorageError::UnsupportedGraph)
+    }
+    fn construct_original_sampler_body(
+        &mut self,
+        project: &hex_project::Project,
+        bank: &DeviceResourceBank,
+        previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
+        transforms: &AudioTransformPreparation,
+        construction: Construction,
+    ) -> Result<(), crate::Invalid> {
         let resources = DeviceResourcePreparation {
             bank,
             max_scope_metadata_bytes: 65_536,
         };
         // No arbitrary caller callback, exported quote or field mutation
         // intervenes before this same operation uses its persistent fields.
-        if transforms.cancellation_requested_on_control() {
-            return Err(AudioStorageError::SourceMismatch);
-        }
-        let effects =
-            hex_devices::native_registry().map_err(|_| AudioStorageError::UnsupportedGraph)?;
+        let effects = hex_devices::native_registry()
+            .map_err(|_| crate::Invalid("native effect registry unavailable"))?;
         let instruments = hex_devices::native_instrument_registry()
-            .map_err(|_| AudioStorageError::UnsupportedGraph)?;
-        let result = transforms.compile_transaction(|| {
-            self.root
-                .begin_compiler_context()
-                .map_err(|_| crate::Invalid("sampler context destination is occupied"))?;
-            if construction.preview {
-                self.preview
-                    .reserve_compiler(project)
-                    .map_err(|_| crate::Invalid("sampler preview reservation refused"))?;
-            }
-            let (destination, contexts) = self.root.compiler_destinations();
-            *contexts = Some(
-                SharedAnalyticContextTable::prepare_with_sampler_construction_limits(
-                    project,
-                    &instruments,
-                    previous.map(|table| table.as_ref()),
-                    Some(resources),
-                    Some(construction.contexts),
-                    None,
-                )?,
-            );
-            if transforms.cancellation_requested_on_control() {
-                return Err(crate::Invalid("audio preparation cancelled"));
-            }
-            self.returns
-                .reserve(project)
-                .map_err(|_| crate::Invalid("sampler paired Return preparation refused"))?;
-            self.returns
-                .construct()
-                .map_err(|_| crate::Invalid("sampler paired Return construction refused"))?;
-            let returns =
-                super::super::CompilerReturnChildren::from_rows(&mut self.returns, project)
-                    .map_err(|_| crate::Invalid("sampler paired Return selector refused"))?;
-            let tracks = crate::audio_preparation::CompilerTrackChildren::prepare(
-                &mut self.tracks,
-                project,
-                contexts.as_ref().map(|table| table.as_ref()),
-            )
-            .map_err(|_| crate::Invalid("sampler paired Track selector refused"))?;
-            crate::compile::compile_project_into_selected_children(
-                project,
-                |_, _| {
-                    Err(crate::Invalid(
-                        "audio clips are outside sampler compiler class",
-                    ))
-                },
-                if construction.preview {
-                    Some(
-                        self.preview
-                            .compiler_destination()
-                            .map_err(|_| crate::Invalid("sampler preview destination refused"))?,
-                    )
-                } else {
-                    None
-                },
-                &effects,
-                &instruments,
-                contexts,
-                transforms,
-                destination,
-                None,
-                Some(returns),
-                Some(tracks),
-            )?;
-            if construction.preview {
-                self.preview
-                    .finish_compiler()
-                    .map_err(|_| crate::Invalid("sampler preview completion refused"))?;
-            }
-            Ok(())
-        });
-        #[cfg(test)]
-        if let Err(error) = &result {
-            eprintln!("closed sampler constructor error: {error:?}");
+            .map_err(|_| crate::Invalid("native instrument registry unavailable"))?;
+
+        self.root
+            .begin_compiler_context()
+            .map_err(|_| crate::Invalid("sampler context destination is occupied"))?;
+        if construction.preview {
+            self.preview
+                .reserve_compiler(project)
+                .map_err(|_| crate::Invalid("sampler preview reservation refused"))?;
         }
-        result.map_err(|_| AudioStorageError::UnsupportedGraph)
+        let (destination, contexts) = self.root.compiler_destinations();
+        *contexts = Some(
+            SharedAnalyticContextTable::prepare_with_sampler_construction_limits(
+                project,
+                &instruments,
+                previous.map(|table| table.as_ref()),
+                Some(resources),
+                Some(construction.contexts),
+                None,
+            )?,
+        );
+        if transforms.cancellation_requested_on_control() {
+            return Err(crate::Invalid("audio preparation cancelled"));
+        }
+        self.returns
+            .reserve(project)
+            .map_err(|_| crate::Invalid("sampler paired Return preparation refused"))?;
+        self.returns
+            .construct()
+            .map_err(|_| crate::Invalid("sampler paired Return construction refused"))?;
+        let returns = super::super::CompilerReturnChildren::from_rows(&mut self.returns, project)
+            .map_err(|_| crate::Invalid("sampler paired Return selector refused"))?;
+        let tracks = crate::audio_preparation::CompilerTrackChildren::prepare(
+            &mut self.tracks,
+            project,
+            contexts.as_ref().map(|table| table.as_ref()),
+        )
+        .map_err(|_| crate::Invalid("sampler paired Track selector refused"))?;
+        crate::compile::compile_project_into_selected_children(
+            project,
+            |_, _| {
+                Err(crate::Invalid(
+                    "audio clips are outside sampler compiler class",
+                ))
+            },
+            if construction.preview {
+                Some(
+                    self.preview
+                        .compiler_destination()
+                        .map_err(|_| crate::Invalid("sampler preview destination refused"))?,
+                )
+            } else {
+                None
+            },
+            &effects,
+            &instruments,
+            contexts,
+            transforms,
+            destination,
+            None,
+            Some(returns),
+            Some(tracks),
+        )?;
+        if construction.preview {
+            self.preview
+                .finish_compiler()
+                .map_err(|_| crate::Invalid("sampler preview completion refused"))?;
+        }
+        Ok(())
     }
 }
 
-impl Inputs<'_> {
+impl Inputs<'_, '_> {
+    #[cfg(test)]
     fn inspect(
         &self,
         transforms: &AudioTransformPreparation,
@@ -321,6 +358,18 @@ impl Inputs<'_> {
         reservation: AudioStorageLedgerReservation,
         complete: bool,
     ) -> Result<Construction, AudioStorageError> {
+        transforms.with_pcm_inventory_on_control(|inventory| {
+            self.inspect_guarded_original_sampler(inventory, reservation, complete, 0)
+        })
+    }
+    fn inspect_guarded_original_sampler(
+        &self,
+        inventory: &AudioTransformPcmInventory<'_>,
+        reservation: AudioStorageLedgerReservation,
+        complete: bool,
+        lending_scratch: usize,
+    ) -> Result<Construction, AudioStorageError> {
+        let transforms = inventory.preparation();
         if transforms.cancellation_requested_on_control() {
             return Err(AudioStorageError::SourceMismatch);
         }
@@ -343,11 +392,11 @@ impl Inputs<'_> {
             construction.peak = add(construction.peak, extra)?;
         }
         let ledger_bytes = AudioRootStorageLedger::requested_metadata_bytes(reservation)?;
-        let arithmetic_inline = size_of::<AudioRootStorageLedger<'_>>();
+        let arithmetic_inline = add(size_of::<AudioRootStorageLedger<'_>>(), lending_scratch)?;
         // The original ledger's physical body/backings are DATA via Inputs;
         // its still-required live growth is a SEPARATE peak allowance.
         let original_growth = original.original_live_growth_allowance()?;
-        transforms.with_pcm_inventory_on_control(|inventory| {
+        {
             let cache = inventory.original_only_storage_cost()?;
             let retained_extra = add(
                 add(construction.retained, ledger_bytes)?,
@@ -396,8 +445,7 @@ impl Inputs<'_> {
                 return Err(AudioStorageError::ReservationExceeded);
             }
             // Scoped ledger and borrowed records die WITHIN the three guards.
-            Ok(())
-        })?;
+        }
         Ok(construction)
     }
 }
@@ -406,9 +454,13 @@ impl crate::AudioPreparationCustody {
         clippy::too_many_arguments,
         reason = "closed mandatory actual-input visitor"
     )]
-    pub(crate) fn visit_sampler_candidate_inputs<'scope>(
+    pub(crate) fn visit_sampler_candidate_inputs<'scope, 'files: 'scope>(
         &'scope self,
+        host: Option<
+            &'scope crate::sampler_host_fields::OriginalSamplerConstructionHost<'scope, 'files>,
+        >,
         target: &'scope crate::SharedMetadata<hex_project::Project>,
+        resident: Option<&'scope dyn crate::sampler_host_fields::OriginalSamplerResidentFields>,
         producer: Option<&'scope crate::native_device_resources::OriginalResourceBankPlan<'scope>>,
         editor: &'scope hex_project::Editor,
         previous: Option<&'scope OwnedShared<SharedAnalyticContextTable>>,
@@ -417,6 +469,8 @@ impl crate::AudioPreparationCustody {
         ledger: &mut AudioRootStorageLedger<'scope>,
     ) -> Result<(), AudioStorageError> {
         let inputs = Inputs {
+            host,
+            resident,
             producer,
             rows: &self.arrangement_clips,
             preparation: self,
@@ -448,6 +502,8 @@ impl crate::AudioPreparationCustody {
     ) -> Result<(), AudioStorageError> {
         self.inspect_sampler_destination()?;
         let construction = Inputs {
+            host: None,
+            resident: None,
             producer: None,
             rows: &self.arrangement_clips,
             preparation: self,
@@ -497,36 +553,70 @@ impl crate::AudioPreparationCustody {
         editor: &hex_project::Editor,
         previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
         original: &AudioRootStorageLedger<'_>,
-        transforms: &AudioTransformPreparation,
+        writers: &mut crate::audio_transform::OriginalSamplerTransaction<'_>,
+        reservation: AudioStorageLedgerReservation,
+    ) -> Result<(), AudioStorageError> {
+        // Engine retains the exact previous owning input internally. No private
+        // owner type becomes a public boundary and no previous field is erased.
+        self.compile_original_sampler_lent_on_control(
+            editor,
+            target,
+            previous,
+            original,
+            writers,
+            reservation,
+        )
+    }
+    pub(crate) fn compile_original_sampler_lent_on_control(
+        &mut self,
+        editor: &hex_project::Editor,
+        target: &crate::SharedMetadata<hex_project::Project>,
+        previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
+        original: &AudioRootStorageLedger<'_>,
+        transaction: &mut crate::audio_transform::OriginalSamplerTransaction<'_>,
         reservation: AudioStorageLedgerReservation,
     ) -> Result<(), AudioStorageError> {
         self.inspect_sampler_destination()?;
-        let construction = Inputs {
-            producer: None,
-            rows: &self.arrangement_clips,
-            preparation: self,
-            editor,
-            target: Some(target),
-            resources: self
-                .original_resources
-                .as_ref()
-                .ok_or(AudioStorageError::SourceMismatch)?,
-            previous,
-            original,
-        }
-        .inspect(transforms, reservation)?;
-        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let bank = self
-                .original_resources
-                .as_ref()
-                .ok_or(AudioStorageError::SourceMismatch)?;
-            self.arrangement_clips.construct_original_sampler(
-                target,
-                bank,
+        let construction = {
+            let inventory = transaction.inventory();
+            Inputs {
+                host: None,
+                resident: None,
+                producer: None,
+                rows: &self.arrangement_clips,
+                preparation: self,
+                editor,
+                target: Some(target),
+                resources: self
+                    .original_resources
+                    .as_ref()
+                    .ok_or(AudioStorageError::SourceMismatch)?,
                 previous,
-                transforms,
-                construction,
-            )
+                original,
+            }
+            .inspect_guarded_original_sampler(
+                &inventory,
+                reservation,
+                false,
+                size_of::<crate::audio_transform::OriginalSamplerTransaction<'_>>(),
+            )?
+        };
+        // All borrowed records/ledgers are gone. The SAME parent and writers
+        // remain physically in place; there is no guard release or callback.
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            transaction
+                .construct(|transforms| {
+                    self.arrangement_clips.construct_original_sampler_body(
+                        target,
+                        self.original_resources
+                            .as_ref()
+                            .ok_or(crate::Invalid("missing sampler resources"))?,
+                        previous,
+                        transforms,
+                        construction,
+                    )
+                })
+                .map_err(|_| AudioStorageError::UnsupportedGraph)
         }));
         match outcome {
             Ok(result) => result,

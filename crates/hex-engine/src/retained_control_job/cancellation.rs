@@ -91,6 +91,17 @@ impl RetainedControlCancellationSignal {
     ) -> Result<(), AudioStorageError> {
         visit(&self.state, ledger)
     }
+    // ONE Engine-driven family traversal already owns mutate(). The public
+    // standalone wrapper above keeps its original fail-closed behavior.
+    pub(crate) fn visit_family_field_on_control<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        let Self { state } = self;
+        let Watermark { cancelled_through } = state.as_ref();
+        let _: &AtomicU64 = cancelled_through;
+        crate::sampler_host_fields::SharedMetadataRef::of(state).observe(ledger)
+    }
 }
 impl CancellationQuery for RetainedControlCancellation {
     fn is_cancelled(&self) -> bool {

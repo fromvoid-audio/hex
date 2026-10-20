@@ -3,11 +3,27 @@
 use crate::{AudioPreparationCustody, AudioStorageError, OwnedAudioInputs, StreamedSourceMetadata};
 use std::{any::Any, sync::Arc};
 mod arithmetic;
+pub(crate) mod native_atomic_signal;
+pub(crate) mod native_carrier;
+pub(crate) mod native_fixed_ring;
+pub(crate) mod native_resident;
+mod native_retained;
+pub(crate) mod native_root_fields;
+pub(crate) mod native_state;
+pub(crate) mod native_status;
+pub(crate) use native_retained::{
+    NativeArchiveAnchorFields, NativePhysicalCapture, NativeRuntimePartition, NativeSharedKey,
+    native_shared_revision_owner,
+};
 mod canonical_state;
 pub use canonical_state::canonical_native_state_storage_layout_supported;
+pub(crate) mod document_token;
+pub use document_token::document_file_token_storage_layout_supported;
 mod model_buffers;
 mod models;
+mod original_sampler_pending;
 pub use models::canonical_midi_storage_layout_supported;
+pub use original_sampler_pending::OriginalSamplerPendingModelFields;
 #[cfg(test)]
 mod construction_tests;
 mod sources;
@@ -73,6 +89,7 @@ enum OwnerDomain {
     CanonicalMidiSource,
     CanonicalMidiField,
     ExclusiveVec,
+    RetainedNative,
 }
 // Actual borrowed Vec OBJECT identity only. This private trait permits element
 // types containing non-static guards without widening Any or copying a header.
@@ -227,7 +244,7 @@ impl<'a> Owner<'a> {
     fn allocation_address(self) -> Option<*const ()> {
         self.shared_field.map(|field| field.allocation_address())
     }
-    fn same(self, other: Self) -> bool {
+    pub(crate) fn same(self, other: Self) -> bool {
         if self.domain != other.domain {
             return false;
         }
@@ -264,12 +281,14 @@ struct Data<'a> {
     location: Location,
     declaration: Declaration,
     streamed: Option<&'a StreamedSourceMetadata>,
+    native_partition: Option<NativeRuntimePartition>,
 }
 struct Handle<'a> {
     owner: Owner<'a>,
     field: Owner<'a>,
     location: Location,
     id: u64,
+    native_partition: Option<NativeRuntimePartition>,
 }
 struct Root<'a> {
     owner: Owner<'a>,
@@ -294,6 +313,7 @@ pub struct AudioRootStorageLedger<'a> {
     unknown: usize,
     valid: bool,
     arithmetic: Option<arithmetic::Arithmetic<'a>>,
+    native_partition: Option<NativeRuntimePartition>,
 }
 impl<'a> AudioRootStorageLedger<'a> {
     pub fn try_new_on_control(
@@ -318,6 +338,7 @@ impl<'a> AudioRootStorageLedger<'a> {
             unknown: 0,
             valid: false,
             arithmetic: None,
+            native_partition: None,
         };
         #[cfg(test)]
         BACKING_RESERVATIONS.with(|count| count.set(count.get() + 1));
@@ -598,6 +619,7 @@ impl<'a> AudioRootStorageLedger<'a> {
             location,
             declaration,
             streamed,
+            native_partition: self.native_partition,
         });
         Ok(())
     }
@@ -822,6 +844,7 @@ impl<'a> AudioRootStorageLedger<'a> {
             field,
             location,
             id,
+            native_partition: self.native_partition,
         });
         Ok(())
     }
@@ -926,3 +949,9 @@ mod state_metadata_tests;
 
 #[cfg(test)]
 mod vec_backing_tests;
+
+pub(crate) mod native_journal;
+
+pub(crate) mod native_group_book;
+
+pub(crate) mod native_spectrum;

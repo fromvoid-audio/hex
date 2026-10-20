@@ -59,7 +59,9 @@ fn captured_sampler_target_survives_current_editor_history_pruning() {
             &editor,
             None,
             &original,
-            &transforms,
+            &mut transforms
+                .original_sampler_transaction_on_control()
+                .unwrap(),
             limits(),
         )
         .expect("compile actual captured sampler target, not current authoring project");
@@ -205,6 +207,8 @@ fn captured_sampler_complete_revision_is_registered_at_birth_and_retires_in_same
         .with_pcm_inventory_on_control(|inventory| {
             let mut ledger = AudioRootStorageLedger::try_new_on_control(limits())?;
             let inputs = Inputs {
+                host: None,
+                resident: None,
                 producer: None,
                 rows: &preparation.arrangement_clips,
                 preparation: &preparation,
@@ -271,6 +275,8 @@ fn captured_complete_revision_exact_and_minus_one_refuse_before_constructor_birt
         let (retained, peak) = transforms
             .with_pcm_inventory_on_control(|inventory| {
                 let inputs = Inputs {
+                    host: None,
+                    resident: None,
                     producer: None,
                     rows: &preparation.arrangement_clips,
                     preparation: &preparation,
@@ -633,6 +639,18 @@ fn captured_sampler_complete_revision_enters_actual_candidate_runtime() {
         let anchors = anchors[0].as_mut().unwrap();
         assert!(anchors.original_runtime_disposed());
         assert!(anchors.all_origins_closed());
+        assert_eq!(
+            anchors.finish_disposal_on_control().err(),
+            Some(AudioStorageError::ExternalReadersPending),
+            "proof and actual disposed runtime wrapper still retain physical fields"
+        );
+        drop(proof);
+        assert_eq!(
+            anchors.finish_disposal_on_control().err(),
+            Some(AudioStorageError::ExternalReadersPending),
+            "DSP disposal does not destroy the actual wrapper"
+        );
+        drop(runtime);
         anchors.finish_disposal_on_control().unwrap();
     }
 }
@@ -729,7 +747,9 @@ fn captured_target_alias_and_unrelated_bank_refuse_before_compiler_birth() {
                     &editor,
                     None,
                     &original,
-                    &transforms,
+                    &mut transforms
+                        .original_sampler_transaction_on_control()
+                        .unwrap(),
                     limits(),
                 )
             };
@@ -768,4 +788,198 @@ fn captured_target_alias_and_unrelated_bank_refuse_before_compiler_birth() {
         preparation.cleanup_on_control();
         assert_ne!(preparation.phase(), AudioPreparationPhase::FailedIncomplete);
     }
+}
+
+#[test]
+fn original_sampler_same_writers_bind_actual_parent_before_birth_and_both_caps() {
+    for minus in 0..3 {
+        let Fixture {
+            bank,
+            editor,
+            previous,
+            mut preparation,
+            signal,
+            worker,
+            job: _job,
+            transforms,
+        } = Fixture::new();
+        drop(previous);
+        let target = crate::SharedMetadata::new_on_control(editor.project().clone());
+        preparation.original_resources = Some(bank);
+        let mut original = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
+        signal.visit_storage_on_control(&mut original).unwrap();
+        worker.visit_storage_on_control(&mut original).unwrap();
+        original
+            .borrow_shared_metadata_body_on_control(&target)
+            .unwrap();
+        original
+            .borrow_project_exclusive_buffers_on_control(&target)
+            .unwrap();
+        original
+            .borrow_project_midi_sources_on_control(&target)
+            .unwrap();
+        original
+            .borrow_project_native_states_on_control(&target)
+            .unwrap();
+        let mut writers = transforms
+            .original_sampler_transaction_on_control()
+            .unwrap();
+        // Independent normal inventory and concrete constructor helpers; no
+        // arithmetic result or exported construction token supplies this bound.
+        let (retained, peak) = {
+            let inventory = writers.inventory();
+            let resources = preparation.original_resources.as_ref().unwrap();
+            let construction = preparation
+                .arrangement_clips
+                .sampler_construction_with_preview(
+                    &target,
+                    DeviceResourcePreparation {
+                        bank: resources,
+                        max_scope_metadata_bytes: 65_536,
+                    },
+                    true,
+                )
+                .unwrap();
+            let inputs = Inputs {
+                host: None,
+                resident: None,
+                producer: None,
+                rows: &preparation.arrangement_clips,
+                preparation: &preparation,
+                editor: &editor,
+                target: Some(&target),
+                resources,
+                previous: None,
+                original: &original,
+            };
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
+            inputs.visit(&inventory, &mut ledger).unwrap();
+            ledger
+                .validate_selected_shared_handles_on_control()
+                .unwrap();
+            let actual = ledger.summary().unwrap();
+            let metadata = AudioRootStorageLedger::requested_metadata_bytes(limits()).unwrap()
+                + size_of::<AudioRootStorageLedger<'_>>()
+                + size_of::<crate::audio_transform::OriginalSamplerTransaction<'_>>()
+                + inventory
+                    .original_only_storage_cost()
+                    .unwrap()
+                    .transaction_new_backing_bytes;
+            (
+                actual.data_bytes + construction.retained + metadata,
+                actual.data_bytes + actual.construction_peak_bytes - actual.retained_bytes
+                    + construction.peak
+                    + metadata
+                    + original.original_live_growth_allowance().unwrap(),
+            )
+        };
+        let mut exact = limits();
+        exact.max_retained_bytes = retained;
+        exact.max_construction_peak_bytes = peak;
+        if minus == 1 {
+            exact.max_retained_bytes -= 1;
+        }
+        if minus == 2 {
+            exact.max_construction_peak_bytes -= 1;
+        }
+        crate::owned_shared::reset_birth_count();
+        crate::owned_shared::reset_clone_count();
+        let address = std::ptr::from_ref(&preparation).addr();
+        let mut result = Ok(());
+        let measured = allocation_counter::measure(|| {
+            result = preparation.compile_original_sampler_lent_on_control(
+                &editor,
+                &target,
+                None,
+                &original,
+                &mut writers,
+                exact,
+            );
+        });
+        assert_eq!(std::ptr::from_ref(&preparation).addr(), address);
+        if minus == 0 {
+            result.unwrap();
+            let actual = preparation.arrangement_clips.root.project().unwrap();
+            assert_eq!(actual.tracks.len(), 1);
+            assert!(actual.tracks[0].mutable_instrument);
+            assert_eq!(actual.shared_contexts.owners().count(), 1);
+        } else {
+            assert_eq!(result, Err(AudioStorageError::ReservationExceeded));
+            assert_eq!(measured.count_total, 0);
+            assert_eq!(crate::owned_shared::birth_count(), 0);
+            assert_eq!(crate::owned_shared::clone_count(), 0);
+            assert!(!preparation.arrangement_clips.has_next());
+        }
+        assert!(!transforms.failed_incomplete_on_control());
+        drop(writers);
+        preparation.cleanup_on_control();
+    }
+}
+
+#[test]
+fn original_sampler_lending_preserves_exact_previous_owning_input() {
+    let Fixture {
+        bank,
+        editor,
+        previous,
+        mut preparation,
+        signal,
+        worker,
+        job: _job,
+        transforms,
+    } = Fixture::new();
+    let target = crate::SharedMetadata::new_on_control(editor.project().clone());
+    preparation.original_resources = Some(bank);
+    let mut original = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
+    signal.visit_storage_on_control(&mut original).unwrap();
+    worker.visit_storage_on_control(&mut original).unwrap();
+    original
+        .borrow_shared_metadata_body_on_control(&target)
+        .unwrap();
+    original
+        .borrow_project_exclusive_buffers_on_control(&target)
+        .unwrap();
+    original
+        .borrow_project_midi_sources_on_control(&target)
+        .unwrap();
+    original
+        .borrow_project_native_states_on_control(&target)
+        .unwrap();
+    crate::shared_analytic::resource_storage::visit_table(
+        &previous,
+        &mut original,
+        AudioStorageRole::Predecessor,
+    )
+    .unwrap();
+    // The original ledger contains THIS real previous table. Erasing the
+    // constructor input must refuse instead of adopting imported rows.
+    assert!(
+        preparation
+            .compile_original_sampler_target_on_control(
+                &target,
+                &editor,
+                None,
+                &original,
+                &mut transforms
+                    .original_sampler_transaction_on_control()
+                    .unwrap(),
+                limits(),
+            )
+            .is_err()
+    );
+    assert!(!preparation.arrangement_clips.has_next());
+    preparation
+        .compile_original_sampler_target_on_control(
+            &target,
+            &editor,
+            Some(&previous),
+            &original,
+            &mut transforms
+                .original_sampler_transaction_on_control()
+                .unwrap(),
+            limits(),
+        )
+        .unwrap();
+    assert!(preparation.arrangement_clips.root.project().unwrap().tracks[0].mutable_instrument);
+    preparation.cleanup_on_control();
 }

@@ -107,6 +107,10 @@ struct ReservedFileSlots<'a> {
     slots: &'a Vec<MainControlFileJob>,
 }
 impl<'a> hex_engine::sampler_host_fields::FileSlotsFields<'a> for ReservedFileSlots<'a> {
+    fn borrowed_frame(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
+
     fn slots(&self) -> hex_engine::sampler_host_fields::VecRef<'a> {
         hex_engine::sampler_host_fields::VecRef::of(self.slots)
     }
@@ -141,6 +145,14 @@ impl<'a> hex_engine::sampler_host_fields::FileSlotsFields<'a> for ReservedFileSl
     }
 }
 impl MainControlFileJob {
+    /// Borrow this actual reserved destination, including spare element bodies.
+    /// The opaque projection owns nothing and may not outlive the real Vec.
+    pub fn reserved_slots_fields_on_control<'a>(
+        slots: &'a Vec<Self>,
+    ) -> impl hex_engine::sampler_host_fields::FileSlotsFields<'a> + 'a {
+        ReservedFileSlots { slots }
+    }
+
     /// Join ACTUAL worker-local reserved slot storage before compiler birth.
     /// Vec capacity covers the inline File/job/PCM/encoding buffers, including
     /// spare slots. Path children are visited at their real owning fields.

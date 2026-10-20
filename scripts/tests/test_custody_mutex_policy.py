@@ -47,6 +47,24 @@ class CustodyMutexPolicyTests(unittest.TestCase):
         self.assertTrue(source_violations(WRAPPER, body.replace('SpinMutex<T, spin::Yield>', 'spin::Mutex<T>')))
         self.assertTrue(source_violations(WRAPPER, body.replace('let value = self', 'loop {}\n        let value = self', 1)))
 
+    def test_sixth_field_is_only_actual_resident_slot_and_worker_recovery(self):
+        from custody_mutex_policy import RESIDENT
+        body = (Path(__file__).resolve().parents[2] / RESIDENT).read_text()
+        self.assertEqual(source_violations(RESIDENT, body), [])
+        self.assertTrue(source_violations('crates/hex-audio/src/prepared/other.rs', body))
+        self.assertTrue(source_violations(RESIDENT, body.replace('slot: CustodyMutex<Slot>,', 'slot: CustodyMutex<Slot>,\nextra: CustodyMutex<u32>,')))
+        self.assertTrue(source_violations(RESIDENT, body.replace('slot: CustodyMutex<Slot>,', 'slot: CustodyMutex<Slot>,\nslot: CustodyMutex<Slot>,')))
+        self.assertTrue(source_violations(RESIDENT, body.replace('slot: CustodyMutex<Slot>,', 'slot: CustodyMutex<u32>,')))
+        self.assertTrue(source_violations(RESIDENT, body.replace('self.slot.try_lock()', 'self.slot.lock_recover_on_control()', 1)))
+        self.assertTrue(source_violations(RESIDENT, body.replace('bridge.slot.lock_recover_on_control()', 'bridge.slot.try_lock().unwrap()', 1)))
+
+    def test_inspection_only_sixth_order_refuses_swapped_or_repeated_guards(self):
+        from custody_mutex_policy import GUARDED_HOST
+        body = (Path(__file__).resolve().parents[2] / GUARDED_HOST).read_text()
+        self.assertEqual(source_violations(GUARDED_HOST, body), [])
+        self.assertTrue(source_violations(GUARDED_HOST, body.replace('root.0.bank.try_lock()', 'root.0.execution.try_lock()', 1)))
+        self.assertTrue(source_violations(GUARDED_HOST, body.replace('archive.try_read_on_control()', 'archive.try_read_on_control(); archive.try_read_on_control()', 1)))
+
     def test_actual_repository_contract(self):
         from custody_mutex_policy import repository_violations
         self.assertEqual(repository_violations(Path(__file__).resolve().parents[2]), [])

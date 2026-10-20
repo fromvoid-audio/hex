@@ -1,4 +1,4 @@
-//! Actual private Callback constructor's Status Arc and fixed route Box.
+//! Actual private Callback constructor's Status Arc and fixed route Vec.
 //! Neither a generic Arc adoption API nor complete native-root admission.
 use super::{AtomicRouteSlot, Callback, MAX_TRACKS, Status};
 use std::{
@@ -26,11 +26,37 @@ fn supported() -> bool {
     target && option_env!("HEX_NATIVE_STATUS_LAYOUT_KNOWN") == Some("1")
 }
 
+// Cost of this one fresh, private constructor, not a declaration for an
+// arbitrary Arc or proof that its individual transported handles were visited.
+pub(super) fn fresh_requested_bytes() -> Option<usize> {
+    if !supported() {
+        return None;
+    }
+    shared_layout()?
+        .size()
+        .checked_add(Layout::array::<AtomicRouteSlot>(MAX_TRACKS).ok()?.size())
+}
+
+fn shared_layout() -> Option<Layout> {
+    Some(
+        Layout::array::<AtomicUsize>(2)
+            .ok()?
+            .extend(Layout::new::<Status>())
+            .ok()?
+            .0
+            .pad_to_align(),
+    )
+}
+
 // The actual Callback's private status field is initialized only by
 // channel_with_spectrum's fresh Arc::new(Status::try_new()). Shared status
 // equality below correlates the other constructor fields, not provenance.
 pub(super) fn capture(callback: &Callback) -> Option<NativeStatusAllocation> {
     capture_callback_status(callback.status.as_ref(), supported())
+}
+#[cfg(all(test, feature = "allocation-probe"))]
+pub(super) fn capture_callback_status_for_factory(status: &Status) -> Option<usize> {
+    capture_callback_status(status, supported())?.requested_bytes()
 }
 fn capture_callback_status(status: &Status, qualified: bool) -> Option<NativeStatusAllocation> {
     if !qualified || status.route_slots.len() != MAX_TRACKS {
@@ -40,13 +66,8 @@ fn capture_callback_status(status: &Status, qualified: bool) -> Option<NativeSta
     Some(NativeStatusAllocation {
         body: status as *const Status as usize,
         routes: status.route_slots.as_ptr() as usize,
-        shared: Layout::array::<AtomicUsize>(2)
-            .ok()?
-            .extend(Layout::new::<Status>())
-            .ok()?
-            .0
-            .pad_to_align(),
-        backing: Layout::array::<AtomicRouteSlot>(status.route_slots.len()).ok()?,
+        shared: shared_layout()?,
+        backing: Layout::array::<AtomicRouteSlot>(status.route_slots.capacity()).ok()?,
     })
 }
 impl NativeStatusAllocation {
@@ -56,7 +77,8 @@ impl NativeStatusAllocation {
     pub(crate) fn matches(self, status: &Status) -> bool {
         self.body == status as *const Status as usize
             && self.routes == status.route_slots.as_ptr() as usize
-            && self.backing == Layout::for_value(status.route_slots.as_ref())
+            && Some(self.backing)
+                == Layout::array::<AtomicRouteSlot>(status.route_slots.capacity()).ok()
     }
 }
 
@@ -254,7 +276,7 @@ mod tests {
         assert!(receipt.matches(&control.status));
         let root = control.native_candidate_root();
         let (mut data, errors, terminals) =
-            crate::native_callback_owner::reserve_native(callback, control.status.clone());
+            crate::native_callback_owner::reserve_native(callback, &control.status).unwrap();
         let mut retirement =
             crate::native_callback_owner::NativeRetirement::new(terminals, root.clone());
         assert!(root.native_boundary_bytes().unwrap() >= receipt.requested_bytes().unwrap());

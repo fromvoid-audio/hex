@@ -22,6 +22,9 @@ impl<'a> AudioRootStorageLedger<'a> {
         &mut self,
         editor: &'a hex_project::Editor,
     ) -> Result<(), AudioStorageError> {
+        editor
+            .require_no_original_sampler_pending_on_control()
+            .map_err(|_| AudioStorageError::UnknownStorage)?;
         for project in editor.retained_projects_on_control() {
             self.project_exclusive_buffers(project)?;
         }

@@ -8,10 +8,14 @@ use std::{
 
 pub(crate) trait BodyLayout {
     fn bytes(&self) -> usize;
+    fn alignment(&self) -> usize;
 }
 impl<T> BodyLayout for T {
     fn bytes(&self) -> usize {
         size_of_val(self)
+    }
+    fn alignment(&self) -> usize {
+        std::mem::align_of_val(self)
     }
 }
 #[derive(Clone, Copy)]
@@ -19,6 +23,13 @@ pub struct BodyRef<'a> {
     value: &'a dyn BodyLayout,
 }
 impl<'a> BodyRef<'a> {
+    pub(crate) fn layout_bytes(self) -> usize {
+        self.value.bytes()
+    }
+    pub(crate) fn layout(self) -> Result<std::alloc::Layout, AudioStorageError> {
+        std::alloc::Layout::from_size_align(self.value.bytes(), self.value.alignment())
+            .map_err(|_| AudioStorageError::Overflow)
+    }
     pub fn of<T>(value: &'a T) -> Self {
         Self { value }
     }
@@ -99,6 +110,14 @@ pub struct VecRef<'a> {
     value: &'a dyn VecLayout,
 }
 impl<'a> VecRef<'a> {
+    pub(crate) fn requested_backing_for_capacity(
+        self,
+        capacity: usize,
+    ) -> Result<usize, AudioStorageError> {
+        capacity
+            .checked_mul(self.value.element_bytes())
+            .ok_or(AudioStorageError::Overflow)
+    }
     pub fn of<T>(value: &'a Vec<T>) -> Self {
         Self { value }
     }
@@ -169,6 +188,22 @@ pub struct SharedMetadataRef<'a> {
     value: &'a dyn SharedMetadataLayout,
 }
 impl<'a> SharedMetadataRef<'a> {
+    /// Same concrete audited producer payload family only, not arbitrary
+    /// adoption or a caller-selected new layout. Unsupported receipts refuse.
+    pub(crate) fn same_payload_constructor_bytes(self) -> Result<usize, AudioStorageError> {
+        let (body, header) = self
+            .value
+            .parts()
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        body.checked_add(header).ok_or(AudioStorageError::Overflow)
+    }
+    pub(crate) fn constructor_owner(self) -> Result<Owner<'a>, AudioStorageError> {
+        self.value
+            .parts()
+            .ok_or(AudioStorageError::UnknownStorage)?;
+        Ok(Owner::borrowed_shared(self.value.allocation()))
+    }
+
     /// A borrowed diagnostic count, never an origin, closure or admission proof.
     /// The actual physical field must still be observed by mandatory traversal.
     pub fn strong_handles_on_control(self) -> usize {

@@ -5,6 +5,7 @@ mod preview_tests;
 pub(super) mod returns;
 mod root;
 mod sampler_compile;
+pub(crate) use sampler_compile::Construction as OriginalSamplerConstruction;
 pub(super) mod tracks;
 use super::*;
 use crate::{Clip, ClipMetadata, owned_shared::SharedDeclaration};

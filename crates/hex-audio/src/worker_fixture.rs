@@ -51,6 +51,16 @@ pub fn open(rate: u32) -> Result<(crate::WorkerPreparedOutput, HeadlessBackend),
     crate::device::headless_worker_output(rate)
 }
 
+/// Actual constructor-paired fields for cross-crate integration controls. The
+/// backend has no analyzer by construction, and makes no OS/device claim.
+/// Whole caller/native union and publication remain the real consumer's work.
+pub fn open_with_reservation(
+    rate: u32,
+    reservation: crate::AudioCandidatePublicationReservation,
+) -> Result<(crate::WorkerPreparedOutput, HeadlessBackend), String> {
+    crate::device::headless_reserved_worker_output(rate, reservation)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

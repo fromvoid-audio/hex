@@ -17,6 +17,7 @@ pub struct SnapshotWorkerOperations {
     finish: Finish,
     report: Report,
     requests: Option<&'static super::SnapshotRequestOperations>,
+    export_results: Option<&'static super::SnapshotExportResultOperations>,
 }
 impl SnapshotWorkerOperations {
     pub const fn new_unqualified(
@@ -31,6 +32,7 @@ impl SnapshotWorkerOperations {
             finish,
             report,
             requests: None,
+            export_results: None,
         }
     }
     pub const fn with_native_requests(
@@ -38,6 +40,13 @@ impl SnapshotWorkerOperations {
         requests: &'static super::SnapshotRequestOperations,
     ) -> Self {
         self.requests = Some(requests);
+        self
+    }
+    pub const fn with_native_export_results(
+        mut self,
+        operations: &'static super::SnapshotExportResultOperations,
+    ) -> Self {
+        self.export_results = Some(operations);
         self
     }
 }
@@ -105,6 +114,12 @@ impl SnapshotWorkerControl {
     ) -> Result<super::SnapshotRequestEndpoint, Error> {
         let operations = self.stop.operations.requests.ok_or(Error::Protocol)?;
         super::SnapshotRequestEndpoint::prepare(self.stop.route, operations)
+    }
+    pub(crate) fn prepare_export_results_on_control(
+        &self,
+    ) -> Result<super::SnapshotExportResultEndpoint, Error> {
+        let operations = self.stop.operations.export_results.ok_or(Error::Protocol)?;
+        super::SnapshotExportResultEndpoint::prepare(self.stop.route, operations)
     }
     pub fn stop_endpoint(&self) -> SnapshotWorkerStop {
         self.stop

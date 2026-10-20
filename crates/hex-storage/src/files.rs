@@ -20,6 +20,27 @@ pub fn load(path: impl AsRef<Path>) -> Result<Project, StorageError> {
 #[derive(Clone)]
 pub struct FileToken(pub(super) Arc<[u8]>);
 
+/// Borrow of the ACTUAL private FileToken field. The four Storage constructors
+/// remain the only source of tokens; this observation adopts no caller Arc.
+/// Public internal integration is source-audited, not hostile-client sealing.
+/// No mutable/owning handle, Weak, clone or constructor receipt is returned.
+/// ```compile_fail
+/// let raw = std::sync::Arc::<[u8]>::from(&b"not a token"[..]);
+/// let _: hex_storage::FileTokenStorageObservation<'_> = raw.into();
+/// ```
+pub struct FileTokenStorageObservation<'a> {
+    token: &'a FileToken,
+}
+impl<'a> FileTokenStorageObservation<'a> {
+    /// Read-only actual owning FIELD for the audited Session -> Engine bridge.
+    /// Its lifetime stays bound to the token and therefore its owning guard.
+    /// Counts/allocation equality are closure observations only, not origin.
+    pub fn borrowed_file_token_arc_field_on_control(&self) -> &'a Arc<[u8]> {
+        let FileToken(owner) = self.token;
+        owner
+    }
+}
+
 impl std::fmt::Debug for FileToken {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("FileToken")
@@ -29,6 +50,15 @@ impl std::fmt::Debug for FileToken {
 }
 
 impl FileToken {
+    /// No IO, allocation, serialization or ownership transfer.
+    /// ```compile_fail
+    /// fn escape(token: &hex_storage::FileToken) -> &'static std::sync::Arc<[u8]> {
+    ///     token.file_token_storage_on_control().borrowed_file_token_arc_field_on_control()
+    /// }
+    /// ```
+    pub fn file_token_storage_on_control(&self) -> FileTokenStorageObservation<'_> {
+        FileTokenStorageObservation { token: self }
+    }
     /// Compare the current document with the captured bytes without modifying it.
     /// Byte-identical replacement is accepted. A later noncooperating write can
     /// still race any future publication; this method is not a compare-and-swap.

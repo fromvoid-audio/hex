@@ -88,23 +88,36 @@ impl SnapshotFamilyInventory<'_> {
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
-        self.outer.visit_backings_on_control(ledger)?;
-        // This is the REAL non-static Vec of real borrowed inner guards, using
-        // the same exclusive Vec field domain as ordinary static Vec backing.
-        ledger.borrow_metadata_vec_backing_on_control(self.inner)?;
-        for slot in self.outer.slots() {
-            slot.validate_intact_custody_on_control()
-                .map_err(|_| AudioStorageError::UnknownStorage)?;
-            if let Some(job) = slot.job() {
-                job.visit_outer_storage_on_control(ledger)?;
-            }
-        }
-        for guard in self.inner {
-            guard.visit_selected_storage_on_control(ledger)?;
-        }
-        Ok(())
+        ledger.borrow_sampler_family_inventory_fields_on_control(self)
     }
 }
+impl hex_engine::sampler_host_fields::SamplerFamilyInventoryFields for SnapshotFamilyInventory<'_> {
+    fn body(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        let Self {
+            outer: _,
+            inner: _,
+            scratch_bytes: _,
+        } = self;
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
+    fn outer(&self) -> &dyn hex_engine::sampler_host_fields::SamplerOuterFamilyFields {
+        self.outer
+    }
+    fn guards(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
+        hex_engine::sampler_host_fields::VecRef::of(self.inner)
+    }
+    fn family(
+        &self,
+        index: usize,
+    ) -> Result<hex_engine::sampler_host_fields::SamplerFamilyGuardFields<'_>, AudioStorageError>
+    {
+        self.inner
+            .get(index)
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .sampler_family_fields_on_control()
+    }
+}
+
 fn inner_scratch(capacity: usize) -> Result<usize, SnapshotFamilyInventoryError> {
     capacity
         .checked_mul(std::mem::size_of::<SnapshotFamilyInventoryGuard<'_>>())

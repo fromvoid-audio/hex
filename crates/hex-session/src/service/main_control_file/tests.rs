@@ -601,6 +601,10 @@ fn typed_file_projection_visits_two_occupied_slots_and_rejects_omission_foreign_
         omit: bool,
     }
     impl<'a> FileSlotsFields<'a> for Invalid<'a> {
+        fn borrowed_frame(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+            hex_engine::sampler_host_fields::BodyRef::of(self)
+        }
+
         fn slots(&self) -> VecRef<'a> {
             self.actual.slots()
         }

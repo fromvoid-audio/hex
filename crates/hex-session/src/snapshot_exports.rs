@@ -7,16 +7,27 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 static NEXT_FAMILY: AtomicU64 = AtomicU64::new(1);
 
 mod event;
+mod snapshot_retirement;
+mod source_event;
+mod source_queue;
+pub use source_event::{
+    SourceBatchFailureRead, SourceEventFacts, SourceEventMetadata, SourceEventRead,
+    SourceGestureAckRead, SourceTuningGestureAckRead, SourceTuningLibraryRead,
+    SourceTuningSlotRead,
+};
+pub use source_queue::{SourceEventDelivery, SourceEventHead};
+mod family;
 mod model_read;
 pub use model_read::ui_consumers;
 pub use model_read::{
     SnapshotClipRead, SnapshotDeviceRead, SnapshotProjectRead, SnapshotReturnRead,
     SnapshotTrackRead,
 };
-mod family;
 // Record transitions are independent of the platform exclusion primitive. The
 // existing family supplies structural exclusion; Service wiring is in progress.
+mod native_export_results;
 mod native_requests;
+pub use native_export_results::{ExportReportRead, ExportResultRead};
 #[cfg_attr(
     not(test),
     expect(dead_code, reason = "native Service transport integration in progress")
@@ -27,16 +38,22 @@ pub use native_transport::CompiledStamp as NativeCompiledStamp;
 mod storage;
 mod transport;
 mod worker_control;
+mod worker_export_results;
 mod worker_requests;
 pub use family::{
-    SessionExportFamily, SnapshotFamilyCleanup, SnapshotFamilyInventoryGuard,
-    SnapshotFamilyQueries, SnapshotProducerKey,
+    SessionExportFamily, SnapshotEventConstruction, SnapshotFamilyCleanup,
+    SnapshotFamilyInventoryGuard, SnapshotFamilyQueries, SnapshotProducerKey,
 };
 pub use transport::{
     SnapshotEventReads, SnapshotReadCapability, SnapshotReadContinuation, SnapshotReadOperations,
-    SnapshotTransportError,
+    SnapshotSourceEventOperations, SnapshotSourceEventReceiver, SnapshotTransportError,
+    SourceEventHeadContinuation, SourceEventReadDelivery,
 };
 pub use worker_control::{SnapshotWorkerControl, SnapshotWorkerOperations, SnapshotWorkerStop};
+pub(crate) use worker_export_results::SnapshotExportResultEndpoint;
+pub use worker_export_results::{
+    ExportResultContinuation, NativeExportResultSubmission, SnapshotExportResultOperations,
+};
 pub(crate) use worker_requests::SnapshotRequestEndpoint;
 pub use worker_requests::{NativeRequestSubmission, SnapshotRequestOperations};
 
@@ -77,6 +94,7 @@ pub struct SnapshotReadStamp {
 struct SnapshotRecord {
     generation: u64,
     snapshot: Option<SharedMetadata<ViewState>>,
+    event_metadata: Option<SharedMetadata<source_event::SourceEventMetadata>>,
     retired: bool,
     readers: AtomicUsize,
     cleanup_started: bool,
@@ -110,6 +128,8 @@ pub struct SnapshotExportRecords {
     reads: Vec<ReadRecord>,
     native_compiled: Option<native_transport::NativeCompiledRecords>,
     native_requests: native_requests::NativeRequests,
+    native_export_result: native_export_results::NativeExportResult,
+    source_events: source_queue::SourceEventQueue,
     max_bookkeeping_bytes: usize,
 }
 /// A scoped read surface; even the underlying ViewState cannot be extracted.
@@ -117,6 +137,7 @@ pub struct SnapshotExportRecords {
 #[derive(Clone, Copy)]
 pub struct SnapshotRead<'a> {
     snapshot: &'a ViewState,
+    event: Option<&'a source_event::SourceEventMetadata>,
 }
 impl<'a> SnapshotRead<'a> {
     pub fn revision(self) -> u64 {
@@ -201,6 +222,7 @@ impl<'a> SnapshotRead<'a> {
             .state();
         hex_engine::SamplerDeviceStateRead::from_native(state)
     }
+
     /// Fixed Copy control facts from this EXACT retained Sampler. Finish the
     /// read before GPUI/render/submit/ACK; no state, model or resource escapes.
     /// This metadata query does not open the instrument registry or processing.
@@ -282,6 +304,7 @@ impl SnapshotExportRecords {
         snapshots.resize_with(limits.snapshot_records, || SnapshotRecord {
             generation: 0,
             snapshot: None,
+            event_metadata: None,
             retired: false,
             readers: AtomicUsize::new(0),
             cleanup_started: false,
@@ -298,6 +321,8 @@ impl SnapshotExportRecords {
             reads,
             native_compiled: None,
             native_requests: Default::default(),
+            native_export_result: Default::default(),
+            source_events: Default::default(),
             max_bookkeeping_bytes: limits.max_bookkeeping_bytes,
         })
     }
@@ -319,7 +344,11 @@ impl SnapshotExportRecords {
         let index = self
             .snapshots
             .iter()
-            .position(|record| record.snapshot.is_none())
+            .position(|record| {
+                record.snapshot.is_none()
+                    && record.event_metadata.is_none()
+                    && !record.cleanup_started
+            })
             .ok_or(ExportRecordError::Reservation)?;
         let generation = self.snapshots[index]
             .generation
@@ -445,6 +474,7 @@ impl SnapshotExportRecords {
     ) -> Result<R, ExportRecordError> {
         Ok(read(SnapshotRead {
             snapshot: self.snapshot_for_read(stamp)?,
+            event: self.record(stamp.snapshot)?.event_metadata.as_deref(),
         }))
     }
     fn snapshot_for_read(

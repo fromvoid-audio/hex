@@ -111,3 +111,59 @@ fn actual_root_and_signal_alias_fields_are_mandatory_distinct_roots_stay_distinc
         "SUPPORTED actual Root/signal aliases mandatory, repeated samefield dedup, equal-size distinct Root/signal DATA distinct; no raw Arc adoption or complete graph declaration"
     );
 }
+
+#[test]
+fn actual_configuration_keeps_constructor_born_signals_without_rebirth_or_free() {
+    let root = CandidateRoot::new(3).unwrap();
+    let signals = {
+        let bank = lock(&root.0.eligible.bank);
+        [
+            bank.domains[0].signal.clone(),
+            bank.domains[1].signal.clone(),
+        ]
+    };
+    let measured = allocation_counter::measure(|| {
+        root.configure_domains(AudioCandidateDomainReservation {
+            max_retained_data_bytes: 1_000_000,
+            max_construction_peak_data_bytes: 1_000_000,
+        })
+        .unwrap();
+    });
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.count_current,
+            measured.bytes_total,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0),
+        "configuration must preserve actual constructor allocations"
+    );
+    let bank = lock(&root.0.eligible.bank);
+    assert_eq!(bank.root, root.root_id());
+    for (slot, original) in bank.domains.iter().zip(&signals) {
+        assert!(slot.signal.shares_owner_with(original));
+        assert!(!slot.signal.return_requested.load(Ordering::Acquire));
+        assert!(slot.owner.is_none() && slot.preparing.is_none());
+    }
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(limits()).unwrap();
+    for (slot, original) in bank.domains.iter().zip(&signals) {
+        ledger
+            .borrow_shared_metadata_body_on_control(&slot.signal)
+            .unwrap();
+        ledger
+            .borrow_shared_metadata_body_on_control(original)
+            .unwrap();
+    }
+    ledger
+        .validate_selected_shared_handles_on_control()
+        .unwrap();
+    assert_eq!(
+        ledger.summary().unwrap().data_bytes,
+        pages::signal_data_bytes().unwrap()
+    );
+    assert_eq!(ledger.selected_shared_counts_on_control(), (2, 4));
+    eprintln!(
+        "SUPPORTED actual domain configuration0alloc/free: same TWO constructor-born signals and actual alias fields, no replacement table or new signal incarnation"
+    );
+}

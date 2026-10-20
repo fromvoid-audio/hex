@@ -4,6 +4,7 @@ use crate::{Audio, AudioRootStorageLedger, AudioStorageError, SharedMetadata};
 /// Audited local canonical-source payload. Every actual binding is required;
 /// verified/unknown source storage refuses, never a missing optional record.
 pub trait CapturedSourcePayload {
+    fn context(&self) -> crate::AudioSourceContext;
     fn body(&self) -> BodyRef<'_>;
     fn project(&self) -> &SharedMetadata<hex_project::Project>;
     fn bindings(&self) -> VecRef<'_>;

@@ -1,7 +1,101 @@
 //! Concrete Session adapter payload for the existing lifecycle family hook.
 //! No audio/GPUI edge, owning child export, registry admission or byte release.
 use super::*;
-use std::sync::{RwLock, RwLockReadGuard, TryLockError};
+use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError};
+
+/// One actual existing family writer, acquired before preparing an Event view.
+/// This owns no snapshot or approval. Its private destination cannot escape;
+/// normal release without insertion changes no table, generation or reader.
+/// Complete before-birth DATA/peak inspection and all other guards remain the
+/// closed caller's obligations. End every immutable projection before insert,
+/// and release this writer before read binding, ACK, enqueue, DSP or file I/O.
+/// ```compile_fail
+/// fn escape(family: &hex_session::snapshot_exports::SessionExportFamily,
+///     key: &hex_session::snapshot_exports::SnapshotProducerKey)
+///     -> hex_session::snapshot_exports::SnapshotEventConstruction<'static> {
+///     family.try_event_construction_on_control(key).unwrap()
+/// }
+/// ```
+/// ```compile_fail
+/// fn send(loan: hex_session::snapshot_exports::SnapshotEventConstruction<'static>) {
+///     std::thread::spawn(move || drop(loan));
+/// }
+/// ```
+/// ```compile_fail
+/// fn overlap(loan: hex_session::snapshot_exports::SnapshotEventConstruction<'_>,
+///     source: &mut Option<hex_session::service::ViewState>) {
+///     let observed = loan.sampler_family_fields_on_control().unwrap();
+///     let _ = loan.insert_on_control(source);
+///     drop(observed);
+/// }
+/// ```
+pub struct SnapshotEventConstruction<'a> {
+    owner: &'a SessionExportFamily,
+    records: RwLockWriteGuard<'a, SnapshotExportRecords>,
+    destination: super::event::EventDestination,
+}
+impl SnapshotEventConstruction<'_> {
+    /// Mandatory actual family/retiring storage under this SAME writer. The
+    /// projection cannot survive the loan or overlap its consuming insertion.
+    /// ```compile_fail
+    /// fn escape<'a>(loan: hex_session::snapshot_exports::SnapshotEventConstruction<'a>)
+    ///     -> hex_engine::sampler_host_fields::SamplerFamilyGuardFields<'a> {
+    ///     loan.sampler_family_fields_on_control().unwrap()
+    /// }
+    /// ```
+    pub fn sampler_family_fields_on_control(
+        &self,
+    ) -> Result<
+        hex_engine::sampler_host_fields::SamplerFamilyGuardFields<'_>,
+        hex_engine::AudioStorageError,
+    > {
+        self.owner.retiring_request.visit()?;
+        self.owner.retiring_snapshot.require_vacant_storage()?;
+        Ok(hex_engine::sampler_host_fields::SamplerFamilyGuardFields {
+            guard: hex_engine::sampler_host_fields::BodyRef::of(self),
+            owner: hex_engine::sampler_host_fields::BodyRef::of(self.owner),
+            records: &*self.records,
+            retiring_compiled: self.owner.retiring_compiled.sampler_fields()?,
+            retiring_export: self.owner.retiring_export_result.sampler_fields()?,
+        })
+    }
+    /// No body is extracted. Refusal preserves the actual pending view; a
+    /// successful fresh paired snapshot and initial read become visible when
+    /// this actual writer releases. This operation supplies no native seal.
+    /// Attach worker-only immutable metadata to the SAME view/read record.
+    /// Both fresh paired constructors and all children require the closed
+    /// caller's before-birth normal/bootstrap and retained/peak preflight.
+    /// This is not a native admission/publication or legacy adoption API.
+    pub fn insert_source_on_control(
+        self,
+        source: &mut Option<ViewState>,
+        metadata: &mut Option<super::SourceEventMetadata>,
+    ) -> Result<SnapshotReadStamp, ExportRecordError> {
+        let Self {
+            owner,
+            mut records,
+            destination,
+        } = self;
+        if owner.abandoned.load(Ordering::Acquire) {
+            return Err(ExportRecordError::Closed);
+        }
+        records.insert_source_event_at_destination_on_control(destination, source, metadata)
+    }
+    pub fn insert_on_control(
+        self,
+        source: &mut Option<ViewState>,
+    ) -> Result<SnapshotReadStamp, ExportRecordError> {
+        let Self {
+            owner,
+            mut records,
+            destination,
+        } = self;
+        if owner.abandoned.load(Ordering::Acquire) {
+            return Err(ExportRecordError::Closed);
+        }
+        records.insert_event_at_destination_on_control(destination, source)
+    }
+}
 
 /// Exactly one active producer receives this correlation at construction.
 /// It carries no family/snapshot owner and cannot fabricate a read capability.
@@ -23,6 +117,8 @@ pub struct SessionExportFamily {
     abandoned: AtomicBool,
     retiring_compiled: native_transport::CompiledRetirement,
     retiring_request: native_requests::RequestRetirement,
+    retiring_export_result: native_export_results::ExportResultRetirement,
+    retiring_snapshot: super::snapshot_retirement::SnapshotRetirement,
 }
 /// Control-only structural inventory guard. No records, model, waveform owner
 /// or mutable payload escapes. Atomics for ACK/derive/abandon are NOT frozen.
@@ -43,11 +139,42 @@ pub struct SessionExportFamily {
 /// }
 /// ```
 pub struct SnapshotFamilyInventoryGuard<'a> {
+    owner: &'a SessionExportFamily,
     records: RwLockReadGuard<'a, SnapshotExportRecords>,
     retiring_compiled: &'a native_transport::CompiledRetirement,
     retiring_request: &'a native_requests::RequestRetirement,
+    retiring_export_result: &'a native_export_results::ExportResultRetirement,
 }
 impl SnapshotFamilyInventoryGuard<'_> {
+    /// The fields cannot outlive the ACTUAL inner exclusion or its parent.
+    /// ```compile_fail
+    /// fn escape<'a>(guard: hex_session::snapshot_exports::SnapshotFamilyInventoryGuard<'a>)
+    ///     -> hex_engine::sampler_host_fields::SamplerFamilyGuardFields<'a> {
+    ///     guard.sampler_family_fields_on_control().unwrap()
+    /// }
+    /// ```
+    pub fn sampler_family_fields_on_control(
+        &self,
+    ) -> Result<
+        hex_engine::sampler_host_fields::SamplerFamilyGuardFields<'_>,
+        hex_engine::AudioStorageError,
+    > {
+        let Self {
+            owner,
+            records,
+            retiring_compiled,
+            retiring_request,
+            retiring_export_result,
+        } = self;
+        retiring_request.visit()?;
+        Ok(hex_engine::sampler_host_fields::SamplerFamilyGuardFields {
+            guard: hex_engine::sampler_host_fields::BodyRef::of(self),
+            owner: hex_engine::sampler_host_fields::BodyRef::of(*owner),
+            records: &**records,
+            retiring_compiled: retiring_compiled.sampler_fields()?,
+            retiring_export: retiring_export_result.sampler_fields()?,
+        })
+    }
     pub fn inventory_revision(&self) -> u64 {
         self.records.inventory_revision()
     }
@@ -64,10 +191,36 @@ impl SnapshotFamilyInventoryGuard<'_> {
     ) -> Result<(), hex_engine::AudioStorageError> {
         self.records.visit_selected_storage_on_control(ledger)?;
         self.retiring_compiled.visit(ledger)?;
-        self.retiring_request.visit()
+        self.retiring_request.visit()?;
+        self.retiring_export_result.visit(ledger)
     }
 }
 impl SessionExportFamily {
+    /// Single-try structural exclusion and destination check, with no reserve,
+    /// record mutation, metadata allocation or payload construction. Hold the
+    /// existing outer family custody first. This is not a transferable permit.
+    pub fn try_event_construction_on_control(
+        &self,
+        key: &SnapshotProducerKey,
+    ) -> Result<SnapshotEventConstruction<'_>, ExportRecordError> {
+        self.validate_producer_on_control(key)?;
+        if !self.retiring_snapshot.vacant() {
+            return Err(ExportRecordError::Stale);
+        }
+        let records = self.records.try_write().map_err(|error| match error {
+            TryLockError::WouldBlock => ExportRecordError::Busy,
+            TryLockError::Poisoned(_) => ExportRecordError::Stale,
+        })?;
+        if self.abandoned.load(Ordering::Acquire) {
+            return Err(ExportRecordError::Closed);
+        }
+        let destination = records.event_destination_on_control()?;
+        Ok(SnapshotEventConstruction {
+            owner: self,
+            records,
+            destination,
+        })
+    }
     /// Correlation/liveness check under the actual outer holder guard; it does
     /// not freeze later cancellation, inventory or publication.
     pub fn validate_producer_on_control(
@@ -94,22 +247,32 @@ impl SessionExportFamily {
     pub fn try_inventory_guard_on_control(
         &self,
     ) -> Result<SnapshotFamilyInventoryGuard<'_>, ExportRecordError> {
+        if !self.retiring_snapshot.vacant() {
+            return Err(ExportRecordError::Stale);
+        }
         let Self {
             identity,
             records,
             abandoned,
             retiring_compiled,
             retiring_request,
+            retiring_export_result,
+            retiring_snapshot,
         } = self;
+        retiring_snapshot
+            .require_vacant_storage()
+            .map_err(|_| ExportRecordError::Stale)?;
         let _: (&u64, &AtomicBool) = (identity, abandoned);
         let records = records.try_read().map_err(|error| match error {
             TryLockError::WouldBlock => ExportRecordError::Busy,
             TryLockError::Poisoned(_) => ExportRecordError::Stale,
         })?;
         Ok(SnapshotFamilyInventoryGuard {
+            owner: self,
             records,
             retiring_compiled,
             retiring_request,
+            retiring_export_result,
         })
     }
     pub fn try_new_on_control(
@@ -134,6 +297,8 @@ impl SessionExportFamily {
                 abandoned: AtomicBool::new(false),
                 retiring_compiled: native_transport::CompiledRetirement::default(),
                 retiring_request: Default::default(),
+                retiring_export_result: Default::default(),
+                retiring_snapshot: Default::default(),
             },
             key,
         ))
@@ -287,6 +452,55 @@ impl SessionExportFamily {
         }
         records.native_requests.send(source)
     }
+    pub fn prepare_export_results_on_control(&self) -> Result<(), ExportRecordError> {
+        let mut records = self
+            .records
+            .try_write()
+            .map_err(|_| ExportRecordError::Busy)?;
+        if self.abandoned.load(Ordering::Acquire) || records.closed {
+            return Err(ExportRecordError::Closed);
+        }
+        // Inline capacity ONE is already in the actual family constructor quote.
+        records.native_export_result.prepare()
+    }
+    pub fn send_export_result_on_control(
+        &self,
+        source: &mut Option<crate::service::ExportEvent>,
+    ) -> Result<(), ExportRecordError> {
+        let mut records = self
+            .records
+            .try_write()
+            .map_err(|_| ExportRecordError::Busy)?;
+        if self.abandoned.load(Ordering::Acquire) || records.closed {
+            return Err(ExportRecordError::Closed);
+        }
+        let revision = records
+            .revision
+            .checked_add(1)
+            .ok_or(ExportRecordError::Exhausted)?;
+        records.native_export_result.send(source)?;
+        records.revision = revision;
+        Ok(())
+    }
+    /// No owning result escapes. The actual read completes before durable ACK.
+    /// ```compile_fail
+    /// fn escape(f: &hex_session::snapshot_exports::SessionExportFamily) {
+    ///     let _ = f.read_export_result_on_control(|result| result.path());
+    /// }
+    /// ```
+    pub fn read_export_result_on_control<R>(
+        &self,
+        read: impl for<'a> FnOnce(ExportResultRead<'a>) -> R,
+    ) -> Result<Option<R>, ExportRecordError> {
+        let records = self
+            .records
+            .try_read()
+            .map_err(|_| ExportRecordError::Busy)?;
+        if self.abandoned.load(Ordering::Acquire) || records.closed {
+            return Err(ExportRecordError::Closed);
+        }
+        records.native_export_result.read(read)
+    }
     pub fn receive_request_on_control(
         &self,
         destination: &mut Option<NativeRequestDelivery>,
@@ -364,20 +578,73 @@ impl SessionExportFamily {
         key: &SnapshotProducerKey,
         source: &mut Option<ViewState>,
     ) -> Result<SnapshotReadStamp, ExportRecordError> {
-        if key.family != self.identity {
-            return Err(ExportRecordError::Stale);
+        self.try_event_construction_on_control(key)?
+            .insert_on_control(source)
+    }
+
+    /// Transfer already registered actual Event reads into the same fixed
+    /// capacity-two family table. Full/Busy preserves ALL producer fields.
+    pub fn enqueue_source_event_on_control(
+        &self,
+        key: &SnapshotProducerKey,
+        canonical: &mut Option<SnapshotReadStamp>,
+        device: &mut Option<SnapshotReadStamp>,
+        tuning: &mut Option<SnapshotReadStamp>,
+    ) -> Result<(), ExportRecordError> {
+        let mut records = self
+            .records
+            .try_write()
+            .map_err(|_| ExportRecordError::Busy)?;
+        if self.abandoned.load(Ordering::Acquire) || key.family != records.family {
+            return Err(ExportRecordError::Closed);
         }
+        records.enqueue_source_event(canonical, device, tuning)
+    }
+    /// Inspect the actual retained head before any UI receive effects. This
+    /// scalar is correlation only; receive rechecks the actual SAME entry.
+    pub fn source_event_head_on_control(
+        &self,
+    ) -> Result<Option<SourceEventHead>, ExportRecordError> {
+        let records = self
+            .records
+            .try_read()
+            .map_err(|_| ExportRecordError::Busy)?;
         if self.abandoned.load(Ordering::Acquire) {
             return Err(ExportRecordError::Closed);
         }
-        let mut records = self.records.try_write().map_err(|error| match error {
-            TryLockError::WouldBlock => ExportRecordError::Busy,
-            TryLockError::Poisoned(_) => ExportRecordError::Stale,
-        })?;
+        records.source_event_head()
+    }
+    /// Borrow canonical facts/metadata of the SAME retained queue head. End
+    /// this scope before receive, derive, ACK, submission or GPUI callbacks.
+    pub fn read_source_event_head_on_control<R>(
+        &self,
+        read: impl for<'a> FnOnce(SourceEventHead, SnapshotRead<'a>) -> R,
+    ) -> Result<Option<R>, ExportRecordError> {
+        let records = self
+            .records
+            .try_read()
+            .map_err(|_| ExportRecordError::Busy)?;
         if self.abandoned.load(Ordering::Acquire) {
             return Err(ExportRecordError::Closed);
         }
-        records.insert_event_read_on_control(source)
+        records.read_source_event_head(read)
+    }
+    /// Reserve the requested extra canonical role BEFORE removing the head.
+    /// Refusal retains it, including when durable ACKs have not yet collected.
+    pub fn receive_source_event_on_control(
+        &self,
+        head: SourceEventHead,
+        canonical_pending: bool,
+        destination: &mut Option<SourceEventDelivery>,
+    ) -> Result<(), ExportRecordError> {
+        let mut records = self
+            .records
+            .try_write()
+            .map_err(|_| ExportRecordError::Busy)?;
+        if self.abandoned.load(Ordering::Acquire) {
+            return Err(ExportRecordError::Closed);
+        }
+        records.receive_source_event(head, canonical_pending, destination)
     }
     pub fn retire_on_control(
         &self,
@@ -464,6 +731,7 @@ impl SessionExportFamily {
             records: &records,
             retiring_compiled: &self.retiring_compiled,
             retiring_request: &self.retiring_request,
+            retiring_export_result: &self.retiring_export_result,
         }))
     }
     /// Called only by the already-registered persistent control adapter. One
@@ -471,13 +739,37 @@ impl SessionExportFamily {
     /// must catch a destructor panic and freeze the exact family slot/charge.
     /// A pre-Drop latch prevents retries even outside that registered caller.
     pub fn cleanup_one_on_control(&mut self) -> Result<SnapshotFamilyCleanup, ExportRecordError> {
+        if !self.retiring_snapshot.vacant() {
+            return Err(ExportRecordError::Stale);
+        }
         let mut records = match self.records.try_write() {
             Ok(records) => records,
             Err(TryLockError::WouldBlock) => return Ok(SnapshotFamilyCleanup::Pending),
             Err(TryLockError::Poisoned(_)) => return Err(ExportRecordError::Stale),
         };
         if self.abandoned.load(Ordering::Acquire) {
+            records.abandon_source_events()?;
             records.close_on_control()?;
+        }
+        if !self.retiring_export_result.vacant() {
+            return Err(ExportRecordError::Stale);
+        }
+        let family = records.family;
+        if records.native_export_result.begin_cleanup(
+            family,
+            self.abandoned.load(Ordering::Acquire),
+            &mut self.retiring_export_result,
+        )? {
+            drop(records);
+            self.retiring_export_result.release();
+            let records = self
+                .records
+                .get_mut()
+                .map_err(|_| ExportRecordError::Stale)?;
+            records
+                .native_export_result
+                .finish_cleanup(family, &mut self.retiring_export_result)?;
+            return Ok(SnapshotFamilyCleanup::Pending);
         }
         if !self.retiring_request.vacant() {
             return Err(ExportRecordError::Stale);
@@ -527,29 +819,24 @@ impl SessionExportFamily {
             }
         }
         records.collect_releases_on_control()?;
-        if records
-            .snapshots
-            .iter()
-            .any(|record| record.cleanup_started && record.snapshot.is_none())
-        {
-            return Err(ExportRecordError::Stale);
+        if self.retiring_snapshot.begin(&mut records)? {
+            drop(records);
+            self.retiring_snapshot.release();
+            let detached_records = self
+                .records
+                .get_mut()
+                .map_err(|_| ExportRecordError::Stale)?;
+            self.retiring_snapshot.finish(detached_records)?;
+            // Only the original completion predicate follows normal disposal.
+            // No owner destruction or admission occurs under this new guard.
+            records = self
+                .records
+                .try_write()
+                .map_err(|_| ExportRecordError::Stale)?;
         }
-        let eligible = records.snapshots.iter().position(|record| {
-            record.retired
-                && record.snapshot.is_some()
-                && record.readers.load(Ordering::Acquire) == 0
-        });
-        if let Some(index) = eligible {
-            let revision = records
-                .revision
-                .checked_add(1)
-                .ok_or(ExportRecordError::Exhausted)?;
-            records.revision = revision;
-            records.snapshots[index].cleanup_started = true;
-            drop(records.snapshots[index].snapshot.take());
-            records.snapshots[index].cleanup_started = false;
-        }
-        if self.retiring_request.vacant()
+        if self.retiring_export_result.vacant()
+            && records.native_export_result.vacant()
+            && self.retiring_request.vacant()
             && records.native_requests.disposed()
             && self.retiring_compiled.vacant()
             && records
@@ -557,10 +844,11 @@ impl SessionExportFamily {
                 .as_ref()
                 .is_none_or(|native| native.disposed())
             && records.closed
-            && records
-                .snapshots
-                .iter()
-                .all(|record| record.snapshot.is_none())
+            && records.snapshots.iter().all(|record| {
+                record.snapshot.is_none()
+                    && record.event_metadata.is_none()
+                    && !record.cleanup_started
+            })
             && records
                 .reads
                 .iter()
@@ -577,6 +865,7 @@ pub struct SnapshotFamilyQueries<'a> {
     records: &'a SnapshotExportRecords,
     retiring_compiled: &'a native_transport::CompiledRetirement,
     retiring_request: &'a native_requests::RequestRetirement,
+    retiring_export_result: &'a native_export_results::ExportResultRetirement,
 }
 impl SnapshotFamilyQueries<'_> {
     /// Actual nested records while the enclosing family read guard stays held.
@@ -588,7 +877,8 @@ impl SnapshotFamilyQueries<'_> {
     ) -> Result<(), hex_engine::AudioStorageError> {
         self.records.visit_selected_storage_on_control(ledger)?;
         self.retiring_compiled.visit(ledger)?;
-        self.retiring_request.visit()
+        self.retiring_request.visit()?;
+        self.retiring_export_result.visit(ledger)
     }
 
     pub fn inventory_revision(&self) -> u64 {
@@ -788,6 +1078,98 @@ mod inventory_guard_tests {
 }
 
 #[cfg(test)]
+mod source_retirement_tests {
+    use super::*;
+    #[test]
+    fn actual_source_metadata_cleanup_unwind_keeps_same_destination_and_never_retries() {
+        let (mut family, key) =
+            SessionExportFamily::try_new_on_control(SnapshotExportReservation {
+                snapshot_records: 2,
+                read_records: 4,
+                max_bookkeeping_bytes: 16_384,
+            })
+            .unwrap();
+        let session = crate::Session::new(48_000, 1, 1024).unwrap();
+        let mut view = Some(crate::service::view_state_owned(
+            &session,
+            hex_engine::empty_midi_preview_on_control(),
+            7,
+            1,
+            false,
+            None,
+        ));
+        let mut metadata = Some(super::source_event::SourceEventMetadata {
+            facts: super::SourceEventFacts::default(),
+            status: Some("still owned".into()),
+            error: None,
+            audio_batch_failure: None,
+            gesture_ack: None,
+            tuning_gesture_ack: None,
+            tuning_library: None,
+        });
+        let read = family
+            .try_event_construction_on_control(&key)
+            .unwrap()
+            .insert_source_on_control(&mut view, &mut metadata)
+            .unwrap();
+        family.abandon_on_control(&key).unwrap();
+        family.release_read(read).unwrap();
+        family.retiring_snapshot.panic_after_view = true;
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            family.cleanup_one_on_control()
+        }))
+        .unwrap_err();
+        assert_eq!(
+            panic.downcast_ref::<&str>(),
+            Some(&"injected snapshot boundary after view disposal")
+        );
+        assert!(family.retiring_snapshot.retains_metadata());
+        assert!(matches!(
+            family.try_inventory_guard_on_control(),
+            Err(ExportRecordError::Stale)
+        ));
+        assert_eq!(
+            family.cleanup_one_on_control(),
+            Err(ExportRecordError::Stale)
+        );
+        assert!(family.retiring_snapshot.retains_metadata());
+        assert!(
+            !family.records.is_poisoned(),
+            "destruction was outside the inner writer"
+        );
+    }
+
+    #[test]
+    fn concrete_candidate_queue_profile_shape_is_measured_inside_unchanged_bookkeeping_limit() {
+        // Measurement only, NOT the final producer/receiver admission profile.
+        // UI36 + independent worker-current1 + queued6 + producer3 + UI-head3.
+        let snapshots = 36 + 1 + 2 * 3 + 3 + 3;
+        // UI36 + queued6 + producer3 + bounded in-flight/late derivations4.
+        let reads = 36 + 2 * 3 + 3 + 4;
+        let limits = SnapshotExportReservation {
+            snapshot_records: snapshots,
+            read_records: reads,
+            max_bookkeeping_bytes: 65_536,
+        };
+        let quote = SnapshotExportRecords::reservation_quote(limits).unwrap();
+        let (family, _) = SessionExportFamily::try_new_native_on_control(limits).unwrap();
+        family.prepare_requests_on_control().unwrap();
+        let records = family.records.try_read().unwrap();
+        let actual = std::mem::size_of::<SessionExportFamily>()
+            + records.snapshots.capacity() * std::mem::size_of::<SnapshotRecord>()
+            + records.reads.capacity() * std::mem::size_of::<ReadRecord>()
+            + super::native_requests::NativeRequests::requested_backing().unwrap();
+        println!(
+            "MEASUREMENT_ONLY snapshot_records={snapshots} read_records={reads} record_body={} read_body={} family_body={} table_quote={quote} total_actual_with_requests={actual} unchanged_limit=65536",
+            std::mem::size_of::<SnapshotRecord>(),
+            std::mem::size_of::<ReadRecord>(),
+            std::mem::size_of::<SessionExportFamily>()
+        );
+        assert!(actual <= limits.max_bookkeeping_bytes);
+    }
+}
+
+#[cfg(test)]
 mod nonstatic_vec_tests {
     use super::*;
     #[test]
@@ -902,3 +1284,7 @@ mod request_budget_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "native_export_results/tests.rs"]
+mod native_export_result_tests;

@@ -25,16 +25,20 @@ pub use main_control_file::{
     MainControlFileError, MainControlFileJob, MainControlFileLoan, MainControlFileProgress,
     MainControlHostError,
 };
+mod event_fields;
+mod export_renderer;
+use export_renderer::ExportRenderer;
 mod request_transport;
 use request_transport::{RequestReceiver, RequestSender};
 pub(crate) mod canonical_audio_source;
-pub use audio_sink::WorkerAudioSink;
 use audio_sink::WorkerEvents;
+pub use audio_sink::{WorkerAudioInitializationError, WorkerAudioSink};
 mod worker_roots;
 use worker_roots::WorkerDispatchState;
 pub use worker_roots::{WorkerRootChildInventory, WorkerRootDispatch, WorkerRootView};
 mod worker_startup;
 use worker_startup::{ServiceStop, WorkerStartup};
+pub use worker_startup::{WorkerInitialSessionView, WorkerStartupView};
 mod comparison_audio;
 pub mod preset;
 mod recovery;
@@ -42,6 +46,7 @@ mod recovery;
 mod verified_source_tests;
 pub use canonical_audio_source::{
     CanonicalAudioSourceSnapshot, SharedCanonicalAudioSource,
+    sampler_fields_on_control as sampler_captured_source_fields_on_control,
     visit_canonical_source_selected_storage_on_control,
 };
 pub use comparison_audio::ComparisonAudioBinding;
@@ -70,6 +75,8 @@ const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
 const IMPORT_FRAME_LIMIT: usize = 8_000_000;
 const BROWSER_PREVIEW_BINS: usize = 48;
 const EXPORT_EVENT_CAPACITY: usize = 1;
+mod export_result_transport;
+use export_result_transport::{ExportResultReceiver, ExportResultSender};
 
 #[derive(Clone)]
 pub struct AudioClipWaveform {
@@ -603,7 +610,7 @@ impl std::error::Error for ServiceError {
 pub struct Service {
     requests: RequestSender,
     events: Receiver<Event>,
-    export_events: Receiver<ExportEvent>,
+    export_events: ExportResultReceiver,
     export_busy: AtomicBool,
     shutdown: ServiceStop,
     arrangement_seek: Option<ArrangementSeekWorker>,
@@ -617,6 +624,7 @@ impl Drop for Service {
     }
 }
 
+#[cfg(test)]
 type Exporter = Arc<
     dyn Fn(&Path, &Arc<PreparedRevision>, u64, u64) -> Result<ExportReport, String> + Send + Sync,
 >;
@@ -649,10 +657,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             None,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
-            }),
+            ExportRenderer::Wav,
         )
     }
 
@@ -668,10 +673,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             Some(untitled_path),
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
-            }),
+            ExportRenderer::Wav,
         )
     }
 
@@ -687,7 +689,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             None,
-            exporter,
+            ExportRenderer::Injected(exporter),
         )
     }
 
@@ -705,10 +707,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             recovery,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
-            }),
+            ExportRenderer::Wav,
             Some(audio),
             None,
         )
@@ -730,10 +729,7 @@ impl Service {
             history_capacity,
             max_resident_frames,
             recovery,
-            Arc::new(|path, prepared, start, frames| {
-                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
-                    .map_err(|error| error.to_string().to_lowercase())
-            }),
+            ExportRenderer::Wav,
             Some(audio),
             Some(control),
         )
@@ -744,7 +740,7 @@ impl Service {
         history_capacity: usize,
         max_resident_frames: u64,
         recovery: Option<PathBuf>,
-        exporter: Exporter,
+        exporter: ExportRenderer,
     ) -> Result<Self, ServiceError> {
         Self::start_with_audio(
             sample_rate,
@@ -762,7 +758,7 @@ impl Service {
         history_capacity: usize,
         max_resident_frames: u64,
         recovery: Option<PathBuf>,
-        exporter: Exporter,
+        exporter: ExportRenderer,
         audio: Option<Box<dyn WorkerAudioSink>>,
         control: Option<crate::snapshot_exports::SnapshotWorkerControl>,
     ) -> Result<Self, ServiceError> {
@@ -830,7 +826,23 @@ impl Service {
         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
-        let (export_event_tx, export_event_rx) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
+        let (export_event_tx, export_event_rx) = match startup.control() {
+            Some(control) => {
+                let endpoint = control.prepare_export_results_on_control().map_err(|_| {
+                    ServiceError::Session(SessionError::Invalid(
+                        "registered export result storage is unavailable",
+                    ))
+                })?;
+                (
+                    ExportResultSender::Registered(endpoint),
+                    ExportResultReceiver::Registered(endpoint),
+                )
+            }
+            None => {
+                let (sender, receiver) = mpsc::sync_channel(EXPORT_EVENT_CAPACITY);
+                (sender.into(), receiver.into())
+            }
+        };
         let actor_export_events = export_event_tx.clone();
         let export_busy = AtomicBool::new(false);
         let worker_shutdown =
@@ -840,6 +852,16 @@ impl Service {
                     "document worker cancellation is unavailable",
                 )))?;
         startup.install_events(WorkerEvents::new(event_tx, worker_shutdown, audio));
+        let mut pending_queues = Some(worker_startup::WorkerStartupQueues {
+            requests: request_rx,
+            export_work: export_work_tx,
+            export_events: actor_export_events,
+        });
+        if !startup.install_queues(&mut pending_queues) {
+            return Err(ServiceError::Session(SessionError::Invalid(
+                "worker startup queue destination is occupied",
+            )));
+        }
         let export_worker = thread::Builder::new()
             .name("hex-export".into())
             .stack_size(8 * 1024 * 1024)
@@ -854,36 +876,51 @@ impl Service {
                 if events.cancelled() {
                     return;
                 }
-                let session = match startup.take_session() {
-                    Some(session) => session,
-                    None => {
-                        let (rate, error) = match events.initialize() {
-                            Ok(rate) => (rate, None),
-                            Err(error) => (48_000, Some(error)),
-                        };
-                        if events.cancelled() {
-                            return;
-                        }
-                        let Ok(session) = Session::new_with_cancellation(
-                            rate,
-                            history_capacity,
-                            max_resident_frames,
-                            events.cancellation_on_control().clone(),
-                        ) else {
-                            return;
-                        };
-                        if let Some(error) = error {
-                            events.startup_failed(error);
-                        }
-                        session
-                    }
+                let Some(queues) = startup.take_queues() else {
+                    return;
                 };
+                if !startup.has_session() {
+                    let (rate, error) = match events.initialize(&startup, &queues, &recovery) {
+                        Ok(rate) => (rate, None),
+                        Err(error) => (48_000, Some(error)),
+                    };
+                    if events.cancelled() {
+                        return;
+                    }
+                    let Ok(session) = Session::new_with_cancellation(
+                        rate,
+                        history_capacity,
+                        max_resident_frames,
+                        events.cancellation_on_control().clone(),
+                    ) else {
+                        return;
+                    };
+                    let mut incoming = Some(session);
+                    if !startup.install_negotiated_session(&mut incoming) {
+                        return;
+                    }
+                    if let Some(error) = error {
+                        events.startup_failed(error);
+                    }
+                }
+                // Keep the REAL Session in its existing startup parent until
+                // the pre-first-current native operation has returned. This
+                // creates no second Session or temporary legacy snapshot.
+                events.initialize_session(&startup, &queues, &recovery);
+                let Some(session) = startup.take_session() else {
+                    return;
+                };
+                let worker_startup::WorkerStartupQueues {
+                    requests,
+                    export_work,
+                    export_events,
+                } = queues;
                 run_worker(
                     session,
-                    request_rx,
+                    requests,
                     events,
-                    export_work_tx,
-                    actor_export_events,
+                    export_work,
+                    export_events,
                     WorkerRunContext {
                         history_capacity,
                         recovery,
@@ -932,12 +969,37 @@ impl Service {
         self.events.try_recv()
     }
 
-    /// Consume one separate export result and release the single-job reservation.
+    /// Consume a legacy headless export result and release its reservation.
+    /// Registered native clients must use `with_export_event`; this owning
+    /// query returns Empty and does not acknowledge their pending result.
     pub fn try_export_event(&self) -> Result<ExportEvent, TryRecvError> {
         match self.export_events.try_recv() {
             Ok(event) => {
                 self.export_busy.store(false, Ordering::Release);
                 Ok(event)
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.export_busy.store(false, Ordering::Release);
+                Err(TryRecvError::Disconnected)
+            }
+            Err(TryRecvError::Empty) => Err(TryRecvError::Empty),
+        }
+    }
+    /// Scoped native completion metadata; no owning renderer/graph/result
+    /// escapes. The read returns before ACK; busy retains the exact record.
+    /// ```compile_fail
+    /// fn escape(service: &hex_session::service::Service) {
+    ///     let _ = service.with_export_event(|event| event.path());
+    /// }
+    /// ```
+    pub fn with_export_event<R>(
+        &self,
+        read: impl for<'a> FnOnce(crate::snapshot_exports::ExportResultRead<'a>) -> R,
+    ) -> Result<R, TryRecvError> {
+        match self.export_events.with_read(read) {
+            Ok(result) => {
+                self.export_busy.store(false, Ordering::Release);
+                Ok(result)
             }
             Err(TryRecvError::Disconnected) => {
                 self.export_busy.store(false, Ordering::Release);
@@ -1374,7 +1436,7 @@ fn run_worker(
     requests: RequestReceiver,
     mut events: WorkerEvents,
     export_work: SyncSender<ExportWork>,
-    export_events: SyncSender<ExportEvent>,
+    export_events: ExportResultSender,
     context: WorkerRunContext<'_>,
 ) {
     let WorkerRunContext {
@@ -1382,6 +1444,11 @@ fn run_worker(
         recovery,
         control: worker_control,
     } = context;
+    if !events.enter_legacy_initial() {
+        // An entered initial closed operation owns its actual pending fields;
+        // it cannot fall through to a raw legacy snapshot or model commit.
+        return;
+    }
     let mut revision = 0_u64;
     let mut unsaved = false;
     let mut range_clipboard: Option<ArrangementClipboard> = None;
@@ -3265,16 +3332,32 @@ fn run_worker(
                 Ok(()) => {}
                 Err(TrySendError::Full(ExportWork::Render(job)))
                 | Err(TrySendError::Disconnected(ExportWork::Render(job))) => {
-                    let _ = export_events.try_send(ExportEvent {
-                        revision: job.revision,
-                        path: job.path,
-                        result: Err("export worker is unavailable".into()),
-                    });
+                    let ExportJob {
+                        revision,
+                        path,
+                        prepared,
+                        frames: _,
+                        controlled,
+                    } = job;
+                    drop((prepared, controlled));
+                    if !events.send_export_result(
+                        &export_events,
+                        ExportEvent {
+                            revision,
+                            path,
+                            result: Err("export worker is unavailable".into()),
+                        },
+                        &dispatch_state!(None, None),
+                    ) {
+                        return;
+                    }
                 }
             }
         }
         if let Some(event) = export_completion {
-            let _ = export_events.try_send(event);
+            if !events.send_export_result(&export_events, event, &dispatch_state!(None, None)) {
+                return;
+            }
         }
     }
 }
@@ -3305,8 +3388,8 @@ fn latest_clip_end(project: &Project) -> u64 {
 
 fn run_export_worker(
     work: Receiver<ExportWork>,
-    events: SyncSender<ExportEvent>,
-    exporter: Exporter,
+    events: ExportResultSender,
+    exporter: ExportRenderer,
 ) {
     while let Ok(work) = work.recv() {
         let event = match work {
@@ -3333,7 +3416,7 @@ fn run_export_worker(
                         })
                         .map_err(|error| error.to_string())
                 } else {
-                    exporter(&job.path, &job.prepared, 0, job.frames)
+                    exporter.render(&job.path, &job.prepared, 0, job.frames)
                 },
             },
         };
@@ -6635,7 +6718,7 @@ mod service_tests {
         let service = Service {
             requests: requests.into(),
             events,
-            export_events,
+            export_events: export_events.into(),
             export_busy: AtomicBool::new(false),
             shutdown: ServiceStop::Unqualified(Arc::new(AtomicBool::new(false))),
             arrangement_seek: None,

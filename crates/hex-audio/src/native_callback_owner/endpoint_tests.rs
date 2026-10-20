@@ -60,7 +60,7 @@ fn actual_four_terminal_factory_cleans_graph_without_client_poll_but_keeps_lease
         let (control, callback) = prepared::channel_with_spectrum(48_000, Some(capture)).unwrap();
         let root = control.native_candidate_root();
         let (mut data, errors, terminals, mut client, mut publication) =
-            reserve_native_worker(control, callback, Some(reader));
+            reserve_native_worker(control, callback, Some(reader)).unwrap();
         let client_address = client.owner_ref().unwrap() as *const _ as usize;
         let publication_address = publication.owner_ref().unwrap() as *const _ as usize;
         let observed = Arc::clone(&records);
@@ -209,7 +209,7 @@ fn worker_and_client_endpoints_return_in_either_order_and_unexposed_open_abandon
         let (control, callback) = prepared::channel(48_000).unwrap();
         let root = control.native_candidate_root();
         let (data, errors, terminals, client, publication) =
-            reserve_native_worker(control, callback, None);
+            reserve_native_worker(control, callback, None).unwrap();
         let mut client = Some(client);
         let mut publication = Some(publication);
         let mut retirement = NativeRetirement::new(terminals, root.clone());
@@ -242,7 +242,7 @@ fn publication_destructor_failure_keeps_other_actual_endpoint_and_first_payload_
     let (control, callback) = prepared::channel(48_000).unwrap();
     let root = control.native_candidate_root();
     let (data, errors, terminals, mut client, mut publication) =
-        reserve_native_worker(control, callback, None);
+        reserve_native_worker(control, callback, None).unwrap();
     let mut retirement = NativeRetirement::new(terminals, root);
     publication
         .control()
@@ -293,7 +293,7 @@ fn exposed_resident_client_permanently_refuses_later_constructor_conversion() {
     let (control, callback) = prepared::channel(48_000).unwrap();
     let root = control.native_candidate_root();
     let (data, errors, terminals, mut client, mut publication) =
-        reserve_native_worker(control, callback, None);
+        reserve_native_worker(control, callback, None).unwrap();
     let mut retirement = NativeRetirement::new(terminals, root);
     let mut control = publication.control().unwrap();
     control.enable_native_custody().unwrap();
@@ -346,7 +346,7 @@ fn unrelated_spectrum_reader_or_reaper_cannot_cover_the_actual_capture_construct
         let (control, callback) = prepared::channel_with_spectrum(48000, Some(capture)).unwrap();
         let root = control.native_candidate_root();
         let (data, errors, terminals, mut client, mut publication) =
-            reserve_native_worker(control, callback, Some(reader));
+            reserve_native_worker(control, callback, Some(reader)).unwrap();
         let mut retirement = NativeRetirement::new(terminals, root.clone());
         // Wrong Reader is refused at the four-terminal constructor; wrong
         // Reaper is refused when persistent lifecycle custody is paired.
@@ -372,7 +372,20 @@ fn unrelated_spectrum_reader_or_reaper_cannot_cover_the_actual_capture_construct
         drop(unused_reader);
         reaper.shutdown_and_join().unwrap();
         other_reaper.shutdown_and_join().unwrap();
-        crate::prepared::candidate_tests::finish(&mut retirement);
+        if wrong_reader {
+            // The four-terminal report was never bound: the checked install
+            // now retains this actual mismatched cohort as FailedIncomplete.
+            // Joining unrelated workers cannot upgrade its original lineage.
+            assert!(retirement.construction == ConstructionPhase::FailedIncomplete);
+            assert!(retirement.terminals.is_some());
+            assert!(retirement.advance().is_err());
+            drop(retirement); // explicit failed-fixture teardown, not completion
+        } else {
+            // A standalone no-analyzer fixture helper cannot turn an actual
+            // analyzer binding into a completed-parent/join certificate.
+            assert!(retirement.advance().is_err());
+            drop(retirement); // same explicit negative-fixture teardown
+        }
     }
 }
 
@@ -383,9 +396,9 @@ fn affine_worker_publication_swap_keeps_actual_endpoint_root_status_and_terminal
     let (control_a, callback_a) = prepared::channel(48_000).unwrap();
     let (control_b, callback_b) = prepared::channel(48_000).unwrap();
     let (data_a, errors_a, mut terminals_a, mut client_a, mut worker_a) =
-        reserve_native_worker(control_a, callback_a, None);
+        reserve_native_worker(control_a, callback_a, None).unwrap();
     let (data_b, errors_b, mut terminals_b, mut client_b, mut worker_b) =
-        reserve_native_worker(control_b, callback_b, None);
+        reserve_native_worker(control_b, callback_b, None).unwrap();
     let before = |worker: &prepared::WorkerControl| {
         let owner = worker.owner_ref().unwrap();
         (

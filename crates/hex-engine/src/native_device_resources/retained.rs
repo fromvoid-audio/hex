@@ -435,6 +435,11 @@ impl std::fmt::Debug for DeviceResourceConfiguration {
     }
 }
 impl DeviceResourceConfiguration {
+    // Finite Engine constructor binding only. This borrows the ACTUAL paired
+    // immutable lease field; no owning/raw Arc getter or adoption is exposed.
+    pub(crate) fn native_constructor_owner(&self) -> crate::audio_storage::Owner<'_> {
+        crate::audio_storage::Owner::shared(self.lease.arc())
+    }
     /// Quote this physical alias header before taking another owning handle.
     /// Keep and retire the resulting handle through the host's existing paths.
     pub fn try_clone_on_control(

@@ -24,7 +24,10 @@ mod device_sample;
 pub use device_sample::{DeviceSampleWaveformLimits, PreparedDeviceSample};
 mod original_audio;
 mod resource_plan;
-pub use resource_plan::{ResidentPcmInventory, ResidentResourcePlanReservation};
+pub use resource_plan::{
+    OriginalSamplerResidentView, OriginalSamplerSessionLoan, ResidentPcmInventory,
+    ResidentResourcePlanReservation,
+};
 mod resident_pcm;
 pub use original_audio::DecodedOriginal;
 use original_audio::{OriginalAudio, ResidentPcm};
@@ -199,6 +202,7 @@ struct ResidentImportAccounting {
 /// Canonical project controller plus retained, bounded decoded assets.
 pub struct Session {
     editor: Editor,
+    original_sampler_source: std::cell::RefCell<resource_plan::original_sampler::PendingSource>,
     audio_transforms: hex_engine::audio_transform::AudioTransformPreparation,
     audio_clip_waveforms:
         std::cell::RefCell<SortedEntries<hex_project::ClipId, service::AudioClipWaveform>>,
@@ -251,6 +255,7 @@ impl Session {
     ) -> Result<Self, SessionError> {
         Ok(Self {
             audio_transforms: shutdown.transform(),
+            original_sampler_source: std::cell::RefCell::default(),
             audio_clip_waveforms: std::cell::RefCell::new(SortedEntries::new()),
             shutdown,
             editor: Editor::new(Project::new(sample_rate)?, history_capacity)?,
@@ -428,6 +433,7 @@ impl Session {
             SessionCancellation::Unqualified(Arc::new(std::sync::atomic::AtomicBool::new(false)));
         Ok(Self {
             audio_transforms: shutdown.transform(),
+            original_sampler_source: std::cell::RefCell::default(),
             audio_clip_waveforms: std::cell::RefCell::new(SortedEntries::new()),
             shutdown,
             editor,

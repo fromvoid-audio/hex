@@ -247,7 +247,10 @@ fn lifecycle_retire_and_reopen_dispatch_complete_while_a_family_read_is_held() {
                 run_lifecycle_with_control_jobs(
                     receiver,
                     || observed.load(Ordering::Acquire),
-                    |_, _| (!opening.load(Ordering::Acquire)).then_some(Ok(())),
+                    |_, _, _, prepared| {
+                        assert!(prepared.is_none());
+                        (!opening.load(Ordering::Acquire)).then_some(Ok(()))
+                    },
                     |_| occupied.store(false, Ordering::Release),
                     || scanning.advance_one(),
                 );
@@ -523,7 +526,10 @@ fn review_correction_final_payload_drop_panic_retains_failed_slot_and_native_dis
         run_lifecycle_with_control_jobs(
             receiver,
             || observing.load(Ordering::Acquire),
-            |_, _| (!opening.load(Ordering::Acquire)).then_some(Ok(())),
+            |_, _, _, prepared| {
+                assert!(prepared.is_none());
+                (!opening.load(Ordering::Acquire)).then_some(Ok(()))
+            },
             |_| occupied.store(false, Ordering::Release),
             || scanning.advance_one(),
         )

@@ -2,8 +2,10 @@
 use super::*;
 use hex_engine::{RetainedControlCancellation as Worker, RetainedControlJobRoute as Route};
 use hex_session::snapshot_exports::{
-    NativeRequestDelivery, NativeRequestStamp, NativeRequestSubmission, SnapshotProducerKey,
-    SnapshotRequestOperations, SnapshotWorkerControl, SnapshotWorkerOperations,
+    ExportResultContinuation, NativeExportResultSubmission, NativeRequestDelivery,
+    NativeRequestStamp, NativeRequestSubmission, SnapshotExportResultOperations,
+    SnapshotProducerKey, SnapshotRequestOperations, SnapshotWorkerControl,
+    SnapshotWorkerOperations,
 };
 static WORKER_FAILURES: AtomicUsize = AtomicUsize::new(0);
 static WORKER_OPERATIONS: SnapshotWorkerOperations = SnapshotWorkerOperations::new_unqualified(
@@ -12,7 +14,43 @@ static WORKER_OPERATIONS: SnapshotWorkerOperations = SnapshotWorkerOperations::n
     finish_worker,
     report_worker,
 )
-.with_native_requests(&REQUEST_OPERATIONS);
+.with_native_requests(&REQUEST_OPERATIONS)
+.with_native_export_results(&EXPORT_RESULT_OPERATIONS);
+static EXPORT_RESULT_OPERATIONS: SnapshotExportResultOperations =
+    SnapshotExportResultOperations::new_unqualified(
+        prepare_export_results,
+        send_export_result,
+        read_export_result,
+    );
+fn prepare_export_results(route: Route) -> Result<(), Error> {
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family
+            .prepare_export_results_on_control()
+            .map_err(record_error)
+    })
+    .map_err(family_error)?
+}
+fn send_export_result(route: Route, pending: &mut NativeExportResultSubmission) {
+    if let Err(error) =
+        hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+            pending.dispatch_on_control(family)
+        })
+    {
+        pending.refuse_lookup_on_control(family_error(error));
+    }
+}
+fn read_export_result(
+    route: Route,
+    read: &mut dyn ExportResultContinuation,
+) -> Result<bool, Error> {
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family
+            .read_export_result_on_control(|result| read.read(result))
+            .map(|result| result.is_some())
+            .map_err(record_error)
+    })
+    .map_err(family_error)?
+}
 static REQUEST_OPERATIONS: SnapshotRequestOperations = SnapshotRequestOperations::new_unqualified(
     prepare_requests,
     submit_request,
@@ -166,7 +204,8 @@ mod tests {
             inspect_finished_children,
             report_worker,
         )
-        .with_native_requests(&REQUEST_OPERATIONS);
+        .with_native_requests(&REQUEST_OPERATIONS)
+        .with_native_export_results(&EXPORT_RESULT_OPERATIONS);
     fn inspect_finished_children(
         route: Route,
         key: &SnapshotProducerKey,
@@ -223,6 +262,7 @@ mod tests {
     struct ObservedStartup {
         initialized: AtomicUsize,
         sources: AtomicUsize,
+        pending_export_polls: AtomicUsize,
         closed: std::sync::mpsc::SyncSender<()>,
     }
     struct CancellationSink {
@@ -244,6 +284,13 @@ mod tests {
             self.observed.sources.fetch_add(1, Ordering::Release);
         }
         fn poll(&mut self) {}
+        fn poll_with_worker_roots(&mut self, roots: &hex_session::service::WorkerRootView<'_>) {
+            if roots.has_pending_export() {
+                self.observed
+                    .pending_export_polls
+                    .fetch_add(1, Ordering::Release);
+            }
+        }
         fn close(&mut self) {
             let _ = self.observed.closed.try_send(());
         }
@@ -259,6 +306,7 @@ mod tests {
         let observed = std::sync::Arc::new(ObservedStartup {
             initialized: AtomicUsize::new(0),
             sources: AtomicUsize::new(0),
+            pending_export_polls: AtomicUsize::new(0),
             closed,
         });
         (
@@ -279,6 +327,177 @@ mod tests {
     }
     fn wait_retired(stop: hex_session::snapshot_exports::SnapshotWorkerStop) {
         wait_until(|| matches!(stop.request_cancel(), Err(Error::Stale)));
+    }
+    #[test]
+    fn registered_service_export_completion_uses_scoped_query_and_exact_job_reservation() {
+        let _serial = super::super::tests::TABLE_TEST_GATE.lock().unwrap();
+        super::super::tests::initialize_test_table();
+        let (_, control) = inspected_control();
+        let stop = control.stop_endpoint();
+        let before = FINISHED_SIGNAL_CLOSURES.load(Ordering::Relaxed);
+        let (_, closed, sink) = observed_sink(false);
+        let service = hex_session::service::Service::with_audio_sink_and_worker_control(
+            8, 1024, None, sink, control,
+        )
+        .unwrap();
+        // Actual Service actor -> registered family -> Desktop route -> scoped
+        // consumer. Empty export refuses before file IO; this is transport
+        // evidence with a fake native sink, not Sampler/native admission.
+        for index in 0..2 {
+            let path = std::path::PathBuf::from(format!("registered-empty-{index}.wav"));
+            service
+                .submit(hex_session::service::Request::Export(path.clone()))
+                .unwrap();
+            assert!(matches!(
+                service.try_export_event(),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+            assert!(matches!(
+                service.submit(hex_session::service::Request::Export(path.clone())),
+                Err(hex_session::service::SubmitError::Busy(_))
+            ));
+            let mut reads = 0;
+            wait_until(|| {
+                // Keep the actual normal Event queue flowing independently.
+                while service.try_event().is_ok() {}
+                match service.with_export_event(|event| {
+                    reads += 1;
+                    assert_eq!(event.revision(), 0);
+                    assert_eq!(event.path(), path);
+                    assert_eq!(event.result().err(), Some("nothing to export"));
+                }) {
+                    Ok(()) => true,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => false,
+                    Err(error) => panic!("registered completion disconnected: {error}"),
+                }
+            });
+            assert_eq!(reads, 1);
+            assert!(matches!(
+                service.with_export_event(|_| panic!("ACKed result replayed")),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+        }
+        drop(service);
+        closed.recv_timeout(Duration::from_secs(2)).unwrap();
+        wait_retired(stop);
+        assert_eq!(FINISHED_SIGNAL_CLOSURES.load(Ordering::Relaxed), before + 1);
+    }
+    #[test]
+    fn registered_export_result_transfer_and_borrow_do_not_allocate_or_free_payload() {
+        let _serial = super::super::tests::TABLE_TEST_GATE.lock().unwrap();
+        super::super::tests::initialize_test_table();
+        let (id, control) = inspected_control();
+        let stop = control.stop_endpoint();
+        let before = FINISHED_SIGNAL_CLOSURES.load(Ordering::Relaxed);
+        let route = hex_audio::retained_family_route_on_control(id).unwrap();
+        prepare_export_results(route).unwrap();
+        let mut path = std::path::PathBuf::from("Reserved/Case.WAV");
+        path.reserve(307);
+        let mut error = String::from("original retained error");
+        error.reserve(509);
+        let mut pending = Some(hex_session::service::ExportEvent {
+            revision: 73,
+            path,
+            result: Err(error),
+        });
+        let mut sent = false;
+        let measured = allocation_counter::measure(|| {
+            sent = hex_audio::read_retained_family(id, |family| {
+                family.send_export_result_on_control(&mut pending)
+            })
+            .unwrap()
+            .is_ok();
+        });
+        assert!(sent && pending.is_none());
+        assert_eq!(measured.count_total, 0);
+        assert_eq!(measured.count_current, 0);
+        assert_eq!(measured.bytes_total, 0);
+        assert_eq!(measured.bytes_current, 0);
+        // Keep the actual outer guard through the scoped query: the lifecycle
+        // cannot retire its owning buffers until after this measurement.
+        hex_audio::read_retained_family(id, |family| {
+            let mut reads = 0;
+            let measured = allocation_counter::measure(|| {
+                family
+                    .read_export_result_on_control(|event| {
+                        reads += 1;
+                        assert_eq!(event.revision(), 73);
+                        assert_eq!(event.path(), std::path::Path::new("Reserved/Case.WAV"));
+                        assert_eq!(event.result().err(), Some("original retained error"));
+                    })
+                    .unwrap()
+                    .unwrap();
+            });
+            assert_eq!(reads, 1);
+            assert_eq!(measured.count_total, 0);
+            assert_eq!(measured.count_current, 0);
+            assert_eq!(measured.bytes_total, 0);
+            assert_eq!(measured.bytes_current, 0);
+        })
+        .unwrap();
+        drop(control);
+        wait_retired(stop);
+        assert_eq!(FINISHED_SIGNAL_CLOSURES.load(Ordering::Relaxed), before + 1);
+    }
+    #[test]
+    fn registered_service_full_export_result_keeps_fresh_worker_polls_and_exact_completion() {
+        let _serial = super::super::tests::TABLE_TEST_GATE.lock().unwrap();
+        super::super::tests::initialize_test_table();
+        let (id, control) = inspected_control();
+        let stop = control.stop_endpoint();
+        let before = FINISHED_SIGNAL_CLOSURES.load(Ordering::Relaxed);
+        let (observed, closed, sink) = observed_sink(false);
+        let service = hex_session::service::Service::with_audio_sink_and_worker_control(
+            8, 1024, None, sink, control,
+        )
+        .unwrap();
+        // Outer read excludes owning lifecycle cleanup, NOT the actor's inner
+        // fixed transfers/metadata reads. ACK first, then keep its actual slot
+        // charged so the second completion has to remain producer-pending.
+        hex_audio::read_retained_family(id, |_| {
+            service
+                .submit(hex_session::service::Request::Export("first.WAV".into()))
+                .unwrap();
+            wait_until(|| {
+                while service.try_event().is_ok() {}
+                service
+                    .with_export_event(|event| {
+                        assert_eq!(event.path(), std::path::Path::new("first.WAV"));
+                    })
+                    .is_ok()
+            });
+            let prior = observed.pending_export_polls.load(Ordering::Acquire);
+            service
+                .submit(hex_session::service::Request::Export("SECOND.WAV".into()))
+                .unwrap();
+            wait_until(|| {
+                while service.try_event().is_ok() {}
+                observed.pending_export_polls.load(Ordering::Acquire) >= prior + 2
+            });
+            assert!(matches!(
+                service.with_export_event(|_| panic!("first completion replayed")),
+                Err(std::sync::mpsc::TryRecvError::Empty)
+            ));
+        })
+        .unwrap();
+        // Actual normal retirement now releases the first metadata. The same
+        // pending second payload is delivered, not rerendered or substituted.
+        let mut reads = 0;
+        wait_until(|| {
+            while service.try_event().is_ok() {}
+            service
+                .with_export_event(|event| {
+                    reads += 1;
+                    assert_eq!(event.path(), std::path::Path::new("SECOND.WAV"));
+                    assert_eq!(event.result().err(), Some("nothing to export"));
+                })
+                .is_ok()
+        });
+        assert_eq!(reads, 1);
+        drop(service);
+        closed.recv_timeout(Duration::from_secs(2)).unwrap();
+        wait_retired(stop);
+        assert_eq!(FINISHED_SIGNAL_CLOSURES.load(Ordering::Relaxed), before + 1);
     }
     #[test]
     fn registered_worker_service_cancel_during_initialize_closes_before_family_writer_completion() {

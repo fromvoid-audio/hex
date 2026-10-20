@@ -24,7 +24,7 @@ pub fn visit_canonical_source_selected_storage_on_control<'a>(
     ledger.borrow_sampler_captured_source_fields_on_control(&sampler_fields_on_control(owner))
 }
 // Actual paired field and local payload only; no temporary projection owner.
-pub(crate) fn sampler_fields_on_control(
+pub fn sampler_fields_on_control(
     owner: &SharedCanonicalAudioSource,
 ) -> hex_engine::sampler_host_fields::CapturedSourceFields<'_> {
     hex_engine::sampler_host_fields::CapturedSourceFields {
@@ -33,6 +33,9 @@ pub(crate) fn sampler_fields_on_control(
     }
 }
 impl hex_engine::sampler_host_fields::CapturedSourcePayload for CanonicalAudioSourceSnapshot {
+    fn context(&self) -> hex_engine::AudioSourceContext {
+        self.context
+    }
     fn body(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
         hex_engine::sampler_host_fields::BodyRef::of(self)
     }
@@ -77,6 +80,33 @@ pub struct CanonicalAudioSourceSnapshot {
     sources: SortedEntries<hex_project::AssetId, crate::AudioSourceBinding>,
 }
 impl CanonicalAudioSourceSnapshot {
+    /// The sole staged Session producer has already filled/reserved the actual
+    /// persistent binding field. All fallible checks precede its fixed move;
+    /// the enclosing closed operation has quoted both paired constructors.
+    pub(crate) fn from_pending_original_on_control(
+        project: &crate::SharedProject,
+        context: hex_engine::AudioSourceContext,
+        bindings: &mut Option<SortedEntries<hex_project::AssetId, crate::AudioSourceBinding>>,
+    ) -> Result<Self, hex_engine::AudioStorageError> {
+        if bindings.as_ref().is_none_or(|entries| {
+            entries.len() != project.asset_entries_on_control().len()
+                || entries.iter().any(|(id, source)| {
+                    project.asset(*id).is_none()
+                        || !matches!(source, crate::AudioSourceBinding::Resident(_))
+                })
+        }) {
+            return Err(hex_engine::AudioStorageError::SourceMismatch);
+        }
+        let Some(sources) = bindings.take() else {
+            return Err(hex_engine::AudioStorageError::SourceMismatch);
+        };
+        Ok(Self {
+            project: project.clone(),
+            context,
+            mode: crate::DocumentAudioMode::Resident,
+            sources,
+        })
+    }
     pub(super) fn capture(
         project: &crate::SharedProject,
         project_generation: u64,
@@ -384,6 +414,9 @@ mod tests {
             bindings: bool,
         }
         impl CapturedSourcePayload for Invalid<'_> {
+            fn context(&self) -> hex_engine::AudioSourceContext {
+                self.actual.payload.context()
+            }
             fn body(&self) -> BodyRef<'_> {
                 self.actual.payload.body()
             }

@@ -72,15 +72,29 @@ impl<'a> AudioRootStorageLedger<'a> {
         editor: &'a hex_project::Editor,
     ) -> Result<(), AudioStorageError> {
         self.mutate(|ledger| {
-            let undo = editor.undo_storage_on_control();
-            ledger.allocation(
-                Owner::exclusive(undo),
-                Location("vec-deque-buffer", 0),
-                undo.capacity(),
-                std::mem::size_of::<hex_project::Project>(),
-            )?;
-            ledger.vec(editor.redo_storage_on_control())
+            editor
+                .require_no_original_sampler_pending_on_control()
+                .map_err(|_| AudioStorageError::UnknownStorage)?;
+            ledger.editor_history_buffers(editor)
         })
+    }
+    pub(super) fn editor_history_buffers(
+        &mut self,
+        editor: &'a hex_project::Editor,
+    ) -> Result<(), AudioStorageError> {
+        self.project_deque(editor.undo_storage_on_control())?;
+        self.vec(editor.redo_storage_on_control())
+    }
+    pub(super) fn project_deque(
+        &mut self,
+        values: &'a std::collections::VecDeque<hex_project::Project>,
+    ) -> Result<(), AudioStorageError> {
+        self.allocation(
+            Owner::exclusive(values),
+            Location("vec-deque-buffer", 0),
+            values.capacity(),
+            std::mem::size_of::<hex_project::Project>(),
+        )
     }
     /// Actual asset-container backing and each live path backing only. The
     /// inline container/path headers belong to their enclosing Project/entry.
@@ -115,6 +129,9 @@ impl<'a> AudioRootStorageLedger<'a> {
         editor: &'a hex_project::Editor,
     ) -> Result<(), AudioStorageError> {
         self.mutate(|ledger| {
+            editor
+                .require_no_original_sampler_pending_on_control()
+                .map_err(|_| AudioStorageError::UnknownStorage)?;
             for project in editor.retained_projects_on_control() {
                 ledger.project_asset_storage(project)?;
             }
@@ -220,6 +237,9 @@ impl<'a> AudioRootStorageLedger<'a> {
         editor: &'a hex_project::Editor,
     ) -> Result<(), AudioStorageError> {
         self.mutate(|ledger| {
+            editor
+                .require_no_original_sampler_pending_on_control()
+                .map_err(|_| AudioStorageError::UnknownStorage)?;
             for project in editor.retained_projects_on_control() {
                 ledger.project_midi_sources(project)?;
             }

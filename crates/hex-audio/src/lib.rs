@@ -20,7 +20,7 @@ pub use lifecycle::retained_families::{
 };
 pub use lifecycle::{
     RecoveryOpen, RecoveryOpenError, WorkerRecoveryOpen, request_initial_open,
-    request_recovery_open, request_worker_open,
+    request_recovery_open, request_worker_open, request_worker_open_with_reservation,
 };
 pub use render_fault::RenderFaultSnapshot;
 mod candidate_catalog;

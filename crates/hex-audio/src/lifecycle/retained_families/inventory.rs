@@ -153,6 +153,77 @@ impl RetainedFamilyInventory {
         Ok(())
     }
 }
+impl hex_engine::sampler_host_fields::SamplerOuterFamilyFields for RetainedFamilyInventory {
+    fn body(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        let Self {
+            table: _,
+            guards: _,
+        } = self;
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
+    fn table(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        let RetainedFamilies {
+            identity: _,
+            slots: _,
+            next_scan: _,
+        } = self.table;
+        hex_engine::sampler_host_fields::BodyRef::of(self.table)
+    }
+    fn slots(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
+        hex_engine::sampler_host_fields::VecRef::of(&self.table.slots)
+    }
+    fn guards(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
+        hex_engine::sampler_host_fields::VecRef::of(&self.guards)
+    }
+    fn slot(
+        &self,
+        index: usize,
+    ) -> Result<
+        hex_engine::sampler_host_fields::SamplerOuterFamilySlotFields<'_>,
+        hex_engine::AudioStorageError,
+    > {
+        use hex_engine::{
+            AudioStorageError,
+            sampler_host_fields::{BodyRef, SamplerOuterFamilySlotFields},
+        };
+        let cell = self
+            .table
+            .slots
+            .get(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        let SlotCell {
+            cancellation,
+            hint: _,
+            slot: _,
+        } = cell;
+        let slot = self
+            .guards
+            .get(index)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        RetainedFamilyInventorySlot {
+            table: self.table.identity,
+            index,
+            slot,
+        }
+        .validate_intact_custody_on_control()
+        .map_err(|_| AudioStorageError::UnknownStorage)?;
+        let Slot {
+            generation: _,
+            phase: _,
+            job,
+            first_panic: _,
+            body_reservation_bytes: _,
+            worker_route: _,
+            job_disposed: _,
+        } = &**slot;
+        Ok(SamplerOuterFamilySlotFields {
+            body: BodyRef::of(cell),
+            cancellation,
+            job: job.as_ref(),
+        })
+    }
+}
+
 /// max_scratch_bytes is a component reservation from EXISTING retained/peak
 /// allowance, not added DATA. No native barrier/readiness gate is acquired.
 pub fn try_retained_family_inventory_on_control(

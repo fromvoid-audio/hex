@@ -7,6 +7,7 @@ use crate::{
 use std::path::PathBuf;
 
 pub trait SnapshotViewPayload {
+    fn revision_field(&self) -> &u64;
     fn body(&self) -> BodyRef<'_>;
     fn source(&self) -> Option<CapturedSourceFields<'_>>;
     fn comparison_source(&self) -> Option<CapturedSourceFields<'_>>;

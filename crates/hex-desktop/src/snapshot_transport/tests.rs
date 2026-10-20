@@ -9,9 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub(super) static TABLE_TEST_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static TABLE_TEST_GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-pub(super) fn initialize_test_table() {
+pub(crate) fn initialize_test_table() {
     static INIT: std::sync::OnceLock<()> = std::sync::OnceLock::new();
     INIT.get_or_init(|| {
         hex_audio::reserve_retained_families_on_control(hex_audio::RetainedFamilyReservation {

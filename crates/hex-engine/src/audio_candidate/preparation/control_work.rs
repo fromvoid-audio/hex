@@ -45,7 +45,7 @@ enum Phase {
     Failed,
 }
 pub(super) struct ControlWork {
-    runtime: ClaimedAudioCandidateRuntime,
+    runtime: Option<ClaimedAudioCandidateRuntime>,
     anchors: [Option<AudioCandidateAnchors>; 1],
     proof: Option<AudioCandidateRuntimeDisposed>,
     first_panic: Option<Box<dyn Any + Send>>,
@@ -64,7 +64,7 @@ impl ControlWork {
         total: u64,
     ) -> Self {
         Self {
-            runtime,
+            runtime: Some(runtime),
             anchors: [Some(anchors)],
             proof: None,
             first_panic: None,
@@ -111,7 +111,11 @@ impl ControlWork {
         let anchor = self.anchors[0]
             .as_ref()
             .ok_or(AudioStorageError::UnknownStorage)?;
-        if !anchor.matches_current(&self.runtime) {
+        if !anchor.matches_current(
+            self.runtime
+                .as_ref()
+                .ok_or(AudioStorageError::UnknownStorage)?,
+        ) {
             return Err(AudioStorageError::SourceMismatch);
         }
         ledger.bytes(
@@ -123,10 +127,14 @@ impl ControlWork {
         // external inputs. Re-entering its root visitor would duplicate roots.
         // The runtime below requires those real prior declarations/aliases.
 
-        ledger.vec(&anchor.owner.inner.groups)?;
-        ledger.vec(&anchor.owner.inner.journal)?;
+        anchor.owner.inner.groups.visit(ledger)?;
+        anchor.owner.inner.journal.visit(ledger)?;
         ledger.vec(&anchor.owner.inner.archive.groups)?;
-        self.runtime.visit_main_control_storage(ledger)
+        anchor.owner.inner.archive.visit_registrations(ledger)?;
+        self.runtime
+            .as_ref()
+            .ok_or(AudioStorageError::UnknownStorage)?
+            .visit_main_control_storage(ledger)
     }
     fn step(&mut self, maximum: usize) -> Result<AudioCandidateControlProgress, AudioStorageError> {
         if maximum == 0 || maximum > 256 {
@@ -157,6 +165,8 @@ impl ControlWork {
         let result = catch_unwind(AssertUnwindSafe(|| {
             if !self.started {
                 self.runtime
+                    .as_mut()
+                    .ok_or(AudioStorageError::UnknownStorage)?
                     .apply_action(crate::PlaybackAction::Transport(
                         crate::PlaybackCommand::Play,
                     ))
@@ -164,13 +174,19 @@ impl ControlWork {
                 self.started = true;
             }
             self.runtime
+                .as_mut()
+                .ok_or(AudioStorageError::UnknownStorage)?
                 .render(&mut self.output[..frames])
                 .map_err(|_| AudioStorageError::UnknownStorage)
         }));
         match result {
             Ok(Ok(())) => {
                 let block = AudioCandidateControlBlock {
-                    runtime: self.runtime.identity(),
+                    runtime: self
+                        .runtime
+                        .as_ref()
+                        .ok_or(AudioStorageError::UnknownStorage)?
+                        .identity(),
                     sequence: self.sequence,
                     offset: self.offset,
                     frames,
@@ -239,7 +255,12 @@ impl ControlWork {
             Phase::Working | Phase::Complete | Phase::Refused
         ) {
             self.phase = Phase::DropPending;
-            self.proof = match self.runtime.dispose_on_control() {
+            self.proof = match self
+                .runtime
+                .as_mut()
+                .ok_or(AudioStorageError::UnknownStorage)?
+                .dispose_on_control()
+            {
                 Ok(proof) => Some(proof),
                 Err(reason) => {
                     self.phase = Phase::Failed;
@@ -258,6 +279,11 @@ impl ControlWork {
                 self.phase = Phase::Failed;
                 return Err(reason);
             }
+            // The same existing custodian retains the actual Box through
+            // proof fanout. Its irreversible destruction precedes anchor
+            // retirement; a panic leaves DropPending and cannot be retried.
+            self.phase = Phase::DropPending;
+            drop(self.runtime.take());
             self.phase = Phase::AnchorsRetiring;
         }
         if self.phase == Phase::AnchorsRetiring {
@@ -326,7 +352,10 @@ impl AudioCandidatePreparation {
             .control_work
             .as_mut()
             .ok_or(AudioStorageError::SourceMismatch)?;
-        if work.runtime.identity() != expected {
+        if work.anchors[0]
+            .as_ref()
+            .is_none_or(|anchor| anchor.identity() != expected)
+        {
             return Err(AudioStorageError::SourceMismatch);
         }
         work.step(maximum)
@@ -344,11 +373,12 @@ impl AudioCandidatePreparation {
         &mut self,
         expected: AudioCandidateIdentity,
     ) -> Result<(), AudioStorageError> {
-        if self
-            .control_work
-            .as_ref()
-            .is_none_or(|work| work.runtime.identity() != expected || !work.can_finish_main())
-        {
+        if self.control_work.as_ref().is_none_or(|work| {
+            work.anchors[0]
+                .as_ref()
+                .is_none_or(|anchor| anchor.identity() != expected)
+                || !work.can_finish_main()
+        }) {
             return Err(AudioStorageError::SourceMismatch);
         }
         self.cleanup_on_control()
@@ -381,7 +411,7 @@ impl AudioCandidatePreparation {
         work.anchors[0]
             .as_ref()
             .unwrap()
-            .constructor_claims(&work.runtime)
+            .constructor_claims(work.runtime.as_ref().unwrap())
             .is_none()
     }
     pub(super) fn test_work_original_drop(&mut self, call: Box<dyn FnOnce() + Send + Sync>) {
@@ -431,7 +461,9 @@ impl AudioCandidatePreparation {
                 .inner
                 .custody
                 .visit_sampler_candidate_inputs(
+                    None,
                     target,
+                    None,
                     Some(producer),
                     editor,
                     None,

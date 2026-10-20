@@ -8,8 +8,10 @@ use hex_engine::{
 use hex_project::{AssetId, ClipId, SortedEntries};
 #[cfg(test)]
 use std::sync::atomic::{AtomicBool, Ordering};
+pub(crate) mod original_sampler;
 pub(crate) mod producer;
 mod required_assets;
+pub use original_sampler::{OriginalSamplerResidentView, OriginalSamplerSessionLoan};
 pub(crate) use required_assets::validate_candidate_assets;
 #[cfg(test)]
 mod tests;
@@ -20,6 +22,8 @@ pub use hex_engine::native_device_resources::OriginalResourcePlanReservation as 
 /// their fields. It owns no PCM; no RefCell guard escapes into a callback.
 pub struct ResidentPcmInventory<'a> {
     session: &'a Session,
+    pending_source: &'a original_sampler::PendingSource,
+    pending_model: Option<hex_engine::sampler_host_fields::OriginalSamplerPendingModelFields<'a>>,
     waveforms: &'a SortedEntries<ClipId, AudioClipWaveform>,
     transforms: &'a hex_engine::audio_transform::AudioTransformPcmInventory<'a>,
 }
@@ -57,9 +61,22 @@ impl ResidentPcmInventory<'_> {
         if !self.session.verified_sources.is_empty() {
             return Err(AudioStorageError::UnknownStorage);
         }
-        ledger.borrow_editor_history_buffers_on_control(&self.session.editor)?;
-        for project in self.session.editor.retained_projects_on_control() {
-            crate::shared_project::visit_project_selected_storage_on_control(project, ledger)?;
+        if let Some(pending) = &self.pending_model {
+            ledger.borrow_original_sampler_pending_model_projection_on_control(pending)?;
+        } else {
+            ledger.borrow_editor_history_buffers_on_control(&self.session.editor)?;
+            for project in self.session.editor.retained_projects_on_control() {
+                crate::shared_project::visit_project_selected_storage_on_control(project, ledger)?;
+            }
+        }
+        let pending_source = self.pending_source.inspect()?;
+        if let Some(project) = pending_source.project {
+            crate::shared_project::visit_shared_project_selected_storage_on_control(
+                project, ledger,
+            )?;
+        }
+        if let Some(source) = &pending_source.source {
+            ledger.borrow_sampler_captured_source_fields_on_control(source)?;
         }
         self.visit_waveform_storage_on_control(ledger)?;
         for resident in self.session.media.values() {
@@ -165,6 +182,13 @@ impl Session {
             &'scope ResidentPcmInventory<'scope>,
         ) -> Result<T, AudioStorageError>,
     ) -> Result<T, AudioStorageError> {
+        let pending_source = self
+            .original_sampler_source
+            .try_borrow()
+            .map_err(|_| AudioStorageError::ExternalReadersPending)?;
+        if !pending_source.vacant() {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         let waveforms = self
             .audio_clip_waveforms
             .try_borrow()
@@ -173,6 +197,8 @@ impl Session {
             .with_pcm_inventory_on_control(|transforms| {
                 let inventory = ResidentPcmInventory {
                     session: self,
+                    pending_source: &pending_source,
+                    pending_model: None,
                     waveforms: &waveforms,
                     transforms,
                 };

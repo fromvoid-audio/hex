@@ -4,6 +4,24 @@
 use super::*;
 
 impl AudioPreparationCustody {
+    /// Constructor class only. Actual parent/field identity and all bank
+    /// children are still mandatory in the same closed compiler traversal.
+    pub(crate) fn original_sampler_resources_installed(&self) -> bool {
+        self.phase == AudioPreparationPhase::Vacant
+            && self.bank.is_none()
+            && self.original_sampler_resources_retained()
+    }
+    pub(crate) fn original_sampler_resources_retained(&self) -> bool {
+        matches!(
+            self.phase,
+            AudioPreparationPhase::Vacant
+                | AudioPreparationPhase::ArrangementSources
+                | AudioPreparationPhase::ArrangementAndSessionSources
+        ) && self.original_resources.is_some()
+            && !self.original_resources_drop_pending
+            && self.first_panic.is_none()
+    }
+
     pub(crate) fn original_resource_destination_vacant(&self) -> bool {
         self.phase == AudioPreparationPhase::Vacant
             && self.bank.is_none()
