@@ -6418,3 +6418,13 @@ fixtures retain their 48 kHz default. No production UI or DSP behavior changes.
 The two original full-audit deadline failures and exact repair validation remain
 recorded with PR510/Pulse2924; Sampler PR509 requires fresh qualification after
 this prerequisite merges.
+
+## bounded resize boundary fixture workload — pulse2924 / PR510
+
+The large expansion test keeps its two-second source, timeline geometry and 8x
+cap at a supported 8khz rate, preserving real Beats preparation, release and
+Undo under the same ten-second deadline. Other stretch-limit fixtures remain
+48khz. Read-only sampling identified actual Beats synthesis in the previous
+48khz worker; isolated success alone did not qualify the failed full UI run.
+The separate EQ capacity deadline remains under diagnosis; no production or
+queue-capacity change is included.
