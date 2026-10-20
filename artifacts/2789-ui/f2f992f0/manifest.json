@@ -1,0 +1,65 @@
+{
+  "source": "f2f992f0",
+  "tree": "cf82390b710a39786de607a36ecdd312013a4d9a",
+  "parent": "2c8516fc64807739e860dc9897f08ec424cc7669",
+  "qualification": "INCOMPLETE/UNQUALIFIED; no cleanUI/test/strict/merge/full/native/delivery result",
+  "diagnostic": {
+    "before": {
+      "head": "42ae45622b039d2fc71f1b253dea4f639dec1b12",
+      "source_sha256": "b030cf2cf5f8b1992de55e9dba4d309f92041e29802bb9ccc0bce5acec38ee9d",
+      "status": " M crates/hex-engine/src/audio_transform/mapping.rs\n M crates/hex-engine/src/audio_transform/mod.rs\n M crates/hex-engine/src/audio_transform/tests.rs\n M crates/hex-project/src/audio_preview.rs\n M crates/hex-project/src/lib.rs\n M crates/hex-project/src/timebase/tempo.rs\n M crates/hex-session/src/snapshot_exports/model_read/ui_consumers.rs\n M crates/hex-ui/src/editor/controller.rs\n M crates/hex-ui/src/editor/device_panel.rs\n M crates/hex-ui/src/editor/device_panel/effect_bus.rs\n M crates/hex-ui/src/editor/device_panel/eq_panel.rs\n M crates/hex-ui/src/editor/device_panel/eq_panel/spectrum.rs\n M crates/hex-warp/src/lib.rs\n?? crates/hex-engine/src/audio_transform/mapping/\n?? crates/hex-engine/src/audio_transform/tests/\n?? crates/hex-project/src/audio_preview/warp_read.rs\n?? crates/hex-project/src/clip_content.rs\n?? crates/hex-project/src/clip_content/\n?? crates/hex-session/src/snapshot_exports/model_read/ui_consumers/\n?? docs/sampler-trim-facades-2789.md\n"
+    },
+    "after": {
+      "head": "42ae45622b039d2fc71f1b253dea4f639dec1b12",
+      "source_sha256": "b030cf2cf5f8b1992de55e9dba4d309f92041e29802bb9ccc0bce5acec38ee9d",
+      "status": " M crates/hex-engine/src/audio_transform/mapping.rs\n M crates/hex-engine/src/audio_transform/mod.rs\n M crates/hex-engine/src/audio_transform/tests.rs\n M crates/hex-project/src/audio_preview.rs\n M crates/hex-project/src/lib.rs\n M crates/hex-project/src/timebase/tempo.rs\n M crates/hex-session/src/snapshot_exports/model_read/ui_consumers.rs\n M crates/hex-ui/src/editor/controller.rs\n M crates/hex-ui/src/editor/device_panel.rs\n M crates/hex-ui/src/editor/device_panel/effect_bus.rs\n M crates/hex-ui/src/editor/device_panel/eq_panel.rs\n M crates/hex-ui/src/editor/device_panel/eq_panel/spectrum.rs\n M crates/hex-warp/src/lib.rs\n?? crates/hex-engine/src/audio_transform/mapping/\n?? crates/hex-engine/src/audio_transform/tests/\n?? crates/hex-project/src/audio_preview/warp_read.rs\n?? crates/hex-project/src/clip_content.rs\n?? crates/hex-project/src/clip_content/\n?? crates/hex-session/src/snapshot_exports/model_read/ui_consumers/\n?? docs/sampler-trim-facades-2789.md\n"
+    },
+    "command": [
+      "cargo",
+      "check",
+      "-p",
+      "hex-ui",
+      "--locked",
+      "--lib"
+    ],
+    "env": {
+      "CARGO_INCREMENTAL": "0",
+      "CARGO_PROFILE_DEV_DEBUG": "0",
+      "CARGO_PROFILE_TEST_DEBUG": "0"
+    },
+    "started": "2026-10-20T16:08:59.245915+00:00",
+    "elapsed_seconds": 10.262077792,
+    "exit_code": 101,
+    "qualification": "PARTIAL DIAGNOSTIC ONLY; migration/startup incomplete, no test/strict/merge/full/native qualification",
+    "fingerprint_method": "sorted tracked and unignored untracked path NUL bytes NUL SHA256",
+    "patch_sha256": "671a3b2974566037de7b379da368a194ae96f787f329f58c687908a231c66775",
+    "log_sha256": "ae037fed77203994ec99dd6cc7287299cd68ee02f0246e6a0ed90bb8b6148a84",
+    "actual_error_codes": 401,
+    "error_headings": 402
+  },
+  "checks": [
+    "scopedrustfmtPASS",
+    "gitdiffcheckPASS",
+    "actualcheck-device-layout.pyPASS"
+  ],
+  "remaining": [
+    "actual registered UI pressure/release/ACK tests unexecuted",
+    "other legacy UI consumers/shared Trim+group facades",
+    "Native paired head comparison/startup/backend/meters/EQ ACK",
+    "exact frozen fullqualification and optimizeddelivery"
+  ],
+  "archive": {
+    "bytes": 18281,
+    "sha256": "9ad12e8e3a1f70773463517f94a7001af5f3b912d8ea7a255a09d1524f87c93e"
+  },
+  "files": {
+    "artifacts/sampler-ui-migration/modern-spectrum-trim-core.log": {
+      "bytes": 163306,
+      "sha256": "ae037fed77203994ec99dd6cc7287299cd68ee02f0246e6a0ed90bb8b6148a84"
+    },
+    "artifacts/sampler-ui-migration/modern-spectrum-trim-core.json": {
+      "bytes": 3092,
+      "sha256": "4ab6b54f159fd9e7de7162d12471e7c1c87a257ce0f312b81835671a96cf80ce"
+    }
+  }
+}
