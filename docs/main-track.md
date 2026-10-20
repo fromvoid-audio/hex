@@ -218,3 +218,13 @@ cancellation, refusal, replacement and invalidated destinations retire the
 addition visibly. Direct stale requests remain worker-refused. Generic deferred
 Save/export/tuning/edit FIFO behavior is unchanged. Main Utility uses the same
 identity/type validation as Track and Return for its width/mid-side popup.
+
+The integration regressions retain the actual worker event while deliberately
+misdelivering old-key, sequence and phase ACKs at the local protocol boundary;
+only the dependent catalog additions retire, and the generic Undo remains FIFO.
+Other controls use real Service cancellation/refusal, an interposed canonical
+edit and two document replacements returning to reused device IDs. Invalid
+catalog/owner/stamp admission cannot finish an unrelated live control. Utility
+popup controls cover actual action/history and retirement after type change or
+removal. These portable checks do not establish native visual or listening
+acceptance.

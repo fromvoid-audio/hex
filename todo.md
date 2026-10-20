@@ -6315,3 +6315,10 @@ source-scoped. The two new review regressions (deferred Add revision and Main
 Utility popup) were reproduced and now pass through actual Service/UI paths,
 including changed/no-op gesture history. Final refusal controls, exact required
 plan and current review remain pending; no merge or native acceptance claimed.
+
+PR484 finite review controls: 10 Main/Return UI cases and the five retained
+barrier FIFO/retirement cases pass on stable source; rejected/canceled terminal,
+old/unmatched ACK, interposed canonical edit, document replacement/identity ABA,
+invalid intent and Utility missing/wrong-type controls are included. Earlier
+fixture/compiler and product-regression negatives remain retained separately.
+Final clean candidate required plan/review/merge audit remains pending.

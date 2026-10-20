@@ -1,4 +1,5 @@
 //! Actual Main header/add-menu input and Service ownership.
+mod barrier_tests;
 use super::*;
 use crate::editor::test_environment::Environment;
 
@@ -423,6 +424,55 @@ fn main_utility_width_popup_dispatches_actual_mode_action_and_history(cx: &mut T
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project, after)
     });
+    for wrong_type in [true, false] {
+        let selector = format!("utility-width-dial-{}", device.value());
+        let target = visual
+            .debug_bounds(Box::leak(selector.into_boxed_str()))
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(target, MouseButton::Right, Modifiers::default());
+        visual.simulate_mouse_up(target, MouseButton::Right, Modifiers::default());
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("context-menu-item").is_some());
+        editor.update(&mut visual, |v, _| {
+            let command = if wrong_type {
+                Command::ReplaceDeviceState {
+                    device,
+                    state: hex_engine::default_native_device_state_for_class(
+                        NativeDeviceClass::Effect,
+                        hex_lattice_contract::DeviceTypeId::from_static("hex.saturator"),
+                    )
+                    .unwrap(),
+                }
+            } else {
+                Command::RemoveDevice(device)
+            };
+            assert!(v.enqueue(Request::Edit(command)));
+        });
+        pump(&editor, &mut visual);
+        assert!(
+            visual.debug_bounds("context-menu-item").is_none(),
+            "stale Utility popup retires on type/removal"
+        );
+        editor.read_with(&visual, |v, _| {
+            assert!(v.context_menu.is_none());
+            let project = &v.state.as_ref().unwrap().project;
+            assert_eq!(project.next_identity(), after.next_identity());
+            if wrong_type {
+                assert_eq!(
+                    project.device(device).unwrap().state().type_id().as_str(),
+                    Ok("hex.saturator")
+                );
+            } else {
+                assert!(project.device(device).is_none());
+            }
+        });
+        editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project, after)
+        });
+    }
 }
 
 fn pump_control(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
