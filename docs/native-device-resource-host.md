@@ -46,6 +46,9 @@ Derivation version is1; its digest is SHA256 of that prefix including the NUL.
 This describes normalized original-rate decoded stereo PCM, not encoded file bytes.
 Native file verification remains the media owner's separate responsibility.
 The exact existing sha2 0.10.9 dependency is reused; no new hashing algorithm.
+The architecture policy explicitly registers this engine control-preparation
+use. Hashing stays outside sample/process callbacks; the guard still refuses
+sha2 in unrelated runtime crates and preserves stream's build-only exception.
 
 An independent Python hashlib/struct oracle pins the content digest. Actual
 native-constructor tests check stereo samples/rate, configuration slot reuse,
