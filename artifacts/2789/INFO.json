@@ -1,0 +1,11 @@
+{
+  "source": "62960eef105bc3e4734e0ea6a31ae90dbded8e83",
+  "tree": "9057f2335dff1d690416f85821378baa7437ffed",
+  "parent": "7bba01953a19d3ba29de36facbd0a37307d69dd6",
+  "source_ref": "refs/heads/evidence/hex395-borrowed-device-336-source",
+  "canonical_base": "b94b0e2f6fbec0932d422c00d4584739c192cb9a",
+  "bytes": 116009,
+  "sha256": "b0555ac8a698678fa957e542afa770c7982561f0a0d479be4c03b6cbf7194e00",
+  "payloads": 41,
+  "paths": 12
+}
