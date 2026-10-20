@@ -6454,6 +6454,9 @@ shared device test pump and production behavior remain unchanged.
 
 The device-only mutable runtime prepares tuned key coefficients on control and
 processes borrowed mono/stereo PCM through the existing Lattice runtime pair.
+The authored root uses A440 12-TET, so absolute project retuning affects root
+playback; slice keys retain region selection. An independent actual-pair PCM
+regression fails with the previous cancelled-retune law and passes with this law.
 Fixed voices/events, caller ceilings, Trigger natural end, Gate release, exact
 source checks and transactional history stay explicit. Owning tests cover actual
 pair PCM, refusal/rollback, tuning/velocity, reset and quiescence. Exact source,

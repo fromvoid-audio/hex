@@ -332,3 +332,55 @@ fn preparation_and_pair_caller_limits_refuse_without_rendering() {
         ));
     }
 }
+
+#[test]
+fn absolute_project_retune_moves_authored_root_but_not_slice_selection() {
+    let pcm = [1.0, 3.0, 5.0, 7.0, 9.0, 11.0];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let mut frequencies = *hex_lattice::TuningTable::default().frequencies();
+    // Uniform octave retuning must move the authored root itself. Expected PCM
+    // is literal source indices, independent of the coefficient implementation.
+    for hz in &mut frequencies {
+        *hz *= 2.0;
+    }
+    let tuning = hex_lattice::TuningTable::new(frequencies).unwrap();
+    for (mode, expected) in [
+        (Mode::Classic { loop_region: None }, [1.0, 5.0, 9.0, 0.0]),
+        (
+            Mode::OneShot {
+                gate: GateMode::Trigger,
+            },
+            [1.0, 5.0, 9.0, 0.0],
+        ),
+        (
+            Mode::Slice {
+                starts: &[0, 3],
+                base_note: 60,
+                gate: GateMode::Trigger,
+            },
+            [1.0, 3.0, 5.0, 0.0],
+        ),
+    ] {
+        let mut settings = Settings::new(Region {
+            start: 0,
+            end: pcm.len(),
+        });
+        settings.mode = mode;
+        let prepared = PreparedSamplerPlan::new(
+            SampleShape::new(pcm.len(), 8_000, SampleChannels::Mono).unwrap(),
+            8_000,
+            settings,
+        )
+        .unwrap()
+        .bind_source_on_control(views[0])
+        .unwrap()
+        .prepare_runtime_on_control(1, 259, &tuning)
+        .unwrap();
+        let mut runtime = pair(&prepared);
+        let mut output = [[0.0; 2]; 4];
+        process(&mut runtime, &[on(0, 1, 60)], &mut output, &resources);
+        assert_eq!(output, expected.map(|sample| [sample; 2]));
+        assert!(runtime.committed_is_quiescent());
+    }
+}

@@ -94,9 +94,14 @@ or native/listening evidence.
 ## bounded event-driven runtime prerequisite
 
 `BoundSamplerPlan::prepare_runtime_on_control` prepares all 128 key coefficients
-against project tuning and the exact borrowed source identity. Slice keys retain
-their region-selection law. `PreparedSamplerRuntime` implements the existing
-Lattice mutable-instrument factory: at most 32 fixed voice slots and 1,024 events
+against project tuning and the exact borrowed source identity. Classic and
+One-Shot interpret the authored root note in A440 12-TET and divide each absolute
+project note frequency by that fixed root frequency. Uniform project retuning
+therefore changes root playback too; it is not cancelled by a tuned denominator.
+Authored transpose/detune and source/output-rate conversion still apply. This is
+an original contract, without a measured Live parity claim. Slice keys retain
+their region-selection law and ignore project pitch retuning.
+`PreparedSamplerRuntime` implements the existing Lattice mutable-instrument factory: at most 32 fixed voice slots and 1,024 events
 per block, further restricted by the caller's voice/event/byte/tail ceilings.
 The prepared factory and its two runtime twins retain scalar data only, without
 owning PCM or marker storage. Fixed buffering latency is zero.
@@ -112,8 +117,9 @@ Valid expression events are currently ignored; modulation is not implemented.
 
 Owning tests process original mono/stereo PCM through the actual
 `NativeInstrumentRuntimePair`, including short-note Trigger retirement,
-partitions, capacity refusal/rollback, source/slice refusal, tuning, velocity,
-gated release, reset/quiescence and caller-budget refusal. Allocation-free
+partitions, capacity refusal/rollback, source/slice refusal, absolute and
+nonuniform tuning, velocity, gated release, reset/quiescence and caller-budget
+refusal. Allocation-free
 processing is checked by source inspection of fixed arrays and borrowed views;
 this is not an instrumented callback or physical deadline result. No new native
 audio allocation fixture, host publication, registration or UI is added here.

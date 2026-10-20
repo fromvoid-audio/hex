@@ -109,8 +109,9 @@ impl<'a> PreparedSamplerPlan<'a> {
         self.prepare_voice_with_transpose(note, velocity, None)
     }
 
-    /// Project tuning changes the pitch ratio relative to the authored root
-    /// note. Slice keys continue selecting source regions rather than pitches.
+    /// Project absolute note Hz is relative to the authored A440 12-TET root.
+    /// Uniform retuning therefore moves the root itself. Slice keys continue
+    /// selecting source regions rather than pitches.
     pub fn prepare_tuned_voice_coefficients(
         self,
         note: u8,
@@ -120,7 +121,7 @@ impl<'a> PreparedSamplerPlan<'a> {
         let frequency = tuning
             .frequency(note)
             .map_err(|_| Invalid("sampler tuning note unavailable"))?;
-        let root = tuning
+        let root = hex_lattice::TuningTable::default()
             .frequency(self.settings.root_note)
             .map_err(|_| Invalid("sampler tuning root unavailable"))?;
         let transpose = 12.0 * (frequency / root).log2();
