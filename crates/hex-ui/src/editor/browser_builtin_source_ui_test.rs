@@ -535,6 +535,8 @@ fn browser_hidden_source_picker_cancel_and_refusal_keep_visible_selection(cx: &m
     let (handle, editor) = place_icon_preferences_window(cx, &directory, &config, &recent);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    let custom_row = visual.debug_bounds("browser-place-2").unwrap();
+    visual.simulate_click(custom_row.center(), Modifiers::default());
     right_click(visual, "browser-place-2");
     choose(visual, 8);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
