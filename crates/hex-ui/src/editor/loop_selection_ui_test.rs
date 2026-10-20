@@ -3,7 +3,10 @@ use super::{EditorMode, EditorView, time_selection::TimeSelection};
 use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, ClipId, Command, Created};
 use hex_session::service::{Event, Request, Service};
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 fn next(service: &Service) -> Event {
     let until = Instant::now() + Duration::from_secs(5);
@@ -40,14 +43,31 @@ fn fixture(
     Entity<EditorView>,
     ClipId,
     ClipId,
-    super::external_audio_drop_ui_test::BatchFiles,
+    Arc<super::test_environment::Environment>,
 ) {
     cx.update(super::bind_editor_keys);
-    let files = super::external_audio_drop_ui_test::BatchFiles::new();
-    let wav = files.wav("loop.wav", 48_000, 48_000);
-    // Own discovery and every preferences/cache path before constructor startup.
-    let directory = wav.parent().unwrap().to_path_buf();
-    std::fs::create_dir(directory.join("samples")).unwrap();
+    let files = super::test_environment::Environment::new().unwrap();
+    let directory = files.root().to_owned();
+    std::fs::create_dir_all(directory.join("samples")).unwrap();
+    let wav = directory.join("samples/loop.wav");
+    let count = 48_000_u32;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + count * 2).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&96_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&2_u16.to_le_bytes());
+    bytes.extend_from_slice(&16_u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(count * 2).to_le_bytes());
+    for _ in 0..count {
+        bytes.extend_from_slice(&8192_i16.to_le_bytes());
+    }
+    std::fs::write(&wav, bytes).unwrap();
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav)).unwrap();
@@ -75,9 +95,18 @@ fn fixture(
     let editor = cx
         .update_window(handle, |_, window, cx| {
             let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test_with_browser_directory(window, cx, service, &directory)
+                EditorView::new_for_test_with_environment(window, cx, service, Arc::clone(&files))
             });
             editor.update(cx, |view, cx| {
+                assert!(Arc::ptr_eq(&files, &view.test_environment));
+                for (path, name) in [
+                    (view.browser.test_preferences_path(), "browser.json"),
+                    (view.recent_projects.test_path(), "recent-projects.json"),
+                    (view.theme_settings.test_path(), "theme.json"),
+                    (view.project_directory.test_path(), "project-directory.json"),
+                ] {
+                    assert_eq!(path, directory.join("config").join(name));
+                }
                 assert_eq!(view.browser.directory, directory.join("samples"));
                 assert_eq!(view.browser.places, vec![directory.join("samples")]);
                 view.state = Some(event.state);
@@ -807,5 +836,122 @@ fn loop_review_retained_editor_focus_does_not_edit_during_browser_or_device_drag
                 assert!(v.state.as_ref().unwrap().project.loop_region().is_none());
             });
         }
+    }
+}
+
+#[gpui::test]
+fn loop_review_held_middle_pan_refuses_l_and_command_l_until_release(cx: &mut TestAppContext) {
+    for key in ["l", "cmd-l"] {
+        let cx = &mut cx.new_app();
+        let (handle, editor, audio, midi, _files) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        click(&mut visual, audio, false);
+        click(&mut visual, midi, true);
+        visual.update(|window, cx| {
+            window.activate_window();
+            editor.update(cx, |view, cx| {
+                let horizon = view.state.as_ref().unwrap().timeline_frames;
+                let fit = super::viewport::Viewport::fit(horizon);
+                let zoom = fit.zoom(horizon, 0, true);
+                assert!(zoom.length < fit.length);
+                view.viewport = Some(zoom);
+                view.focus.focus(window);
+                cx.notify();
+            });
+        });
+        visual.run_until_parked();
+        let body = visual.debug_bounds("arrangement-content").unwrap();
+        let start = body.origin + gpui::point(body.size.width * 0.65, gpui::px(30.0));
+        let end = start - gpui::point(gpui::px(24.0), gpui::px(0.0));
+        let initial = editor.read_with(&visual, |view, _| view.viewport);
+        visual.simulate_mouse_down(start, MouseButton::Middle, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Middle, Modifiers::default());
+        visual.run_until_parked();
+        let (before, selection, viewport, owner) = editor.read_with(&visual, |view, _| {
+            let pan = view.arrangement_pan.expect("real middle-button owner");
+            assert_ne!(view.viewport, initial, "actual held pointer movement pans");
+            assert!(!view.computer_keyboard.enabled);
+            assert_eq!(view.selected_clip_ids().len(), 2);
+            (
+                view.state.as_ref().unwrap().clone(),
+                view.selected_clip_ids(),
+                view.viewport,
+                (
+                    pan.generation,
+                    pan.revision,
+                    pan.last_x,
+                    pan.last_y,
+                    pan.timeline_width,
+                ),
+            )
+        });
+        assert!(visual.update(|window, cx| editor.read(cx).focus.is_focused(window)));
+        visual.simulate_keystrokes(key);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.worker_requests_pending, 0,
+                "held {key} must not enqueue"
+            );
+            assert!(view.pending_requests.is_empty());
+        });
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            let pan = view
+                .arrangement_pan
+                .expect("shortcut retains actual pan until release");
+            assert_eq!(
+                (
+                    pan.generation,
+                    pan.revision,
+                    pan.last_x,
+                    pan.last_y,
+                    pan.timeline_width
+                ),
+                owner
+            );
+            assert_eq!(view.viewport, viewport);
+            assert_eq!(view.selected_clip_ids(), selection);
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(state.project.snapshot(), before.project.snapshot());
+            assert_eq!(state.revision, before.revision);
+            assert_eq!(
+                (state.can_undo, state.can_redo),
+                (before.can_undo, before.can_redo)
+            );
+        });
+        visual.simulate_mouse_up(end, MouseButton::Middle, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| assert!(view.arrangement_pan.is_none()));
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let region = project
+                .loop_region()
+                .expect("same key works after pan release");
+            assert_eq!(
+                (region.start(), region.end(), region.enabled()),
+                (0, 120_000, true)
+            );
+            let mut expected = before.project.snapshot();
+            expected.loop_region = project.loop_region();
+            assert_eq!(project.snapshot(), expected);
+            assert_eq!(view.selected_clip_ids(), selection);
+            project.snapshot()
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.state.as_ref().unwrap().project.snapshot(),
+                before.project.snapshot()
+            )
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
+        });
     }
 }
