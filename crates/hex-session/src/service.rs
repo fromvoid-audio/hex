@@ -1660,9 +1660,9 @@ fn run_worker(
                     }
                 }
                 Request::InsertBrowserInstrumentTrack { .. } => {
-                    unreachable!(
-                        "browser instrument request is normalized or refused before dispatch"
-                    )
+                    error = Some(
+                        "instrument insertion request was not prepared; select it again".into(),
+                    );
                 }
                 Request::DropBrowserDeviceOnArrangement {
                     project_generation: expected_generation,
