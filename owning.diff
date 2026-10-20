@@ -1,0 +1,1115 @@
+--- before/crates/hex-engine/src/audio_candidate/preparation/original_resources.rs
++++ source/crates/hex-engine/src/audio_candidate/preparation/original_resources.rs
+@@ -66,6 +66,7 @@
+             reservation,
+             purpose,
+             None,
++            None,
+         )
+     }
+     #[expect(
+@@ -85,6 +86,7 @@
+         reservation: crate::AudioStorageLedgerReservation,
+         purpose: ConstructorPurpose,
+         mut writers: Option<&mut crate::audio_transform::OriginalSamplerTransaction<'_>>,
++        resident: Option<&dyn crate::sampler_host_fields::OriginalSamplerResidentFields>,
+     ) -> Result<(), AudioStorageError> {
+         if self.failed_incomplete()
+             || self.cleaning
+@@ -164,6 +166,7 @@
+             }
+             custody.compile_original_sampler_revision_with_writers_on_control(
+                 target,
++                resident,
+                 Some(producer),
+                 editor,
+                 previous,
+@@ -202,6 +205,7 @@
+         if let Some(transaction) = writers.as_deref() {
+             owner.seal_sampler_constructor_with_writers_on_control(
+                 target,
++                resident,
+                 Some(producer),
+                 editor,
+                 previous,
+--- before/crates/hex-engine/src/audio_candidate/preparation/original_resources/tests/runtime.rs
++++ source/crates/hex-engine/src/audio_candidate/preparation/original_resources/tests/runtime.rs
+@@ -187,15 +187,18 @@
+                 let mut writers = transforms
+                     .original_sampler_transaction_on_control()
+                     .unwrap();
+-                cell.operations_on_control()
+-                    .prepare_main_original_sampler_with_writers_on_control(
+-                        &target,
+-                        &plan,
+-                        &editor,
+-                        &original,
+-                        &mut writers,
+-                        too_small,
+-                    )
++                cell.prepare_original_sampler_with_writers_on_control(
++                    &target,
++                    &plan,
++                    &editor,
++                    None,
++                    &original,
++                    &transforms,
++                    too_small,
++                    ConstructorPurpose::MainExport,
++                    Some(&mut writers),
++                    None,
++                )
+             } else {
+                 cell.prepare_original_sampler_for_purpose_on_control(
+                     &target,
+@@ -228,16 +231,19 @@
+             let mut writers = transforms
+                 .original_sampler_transaction_on_control()
+                 .unwrap();
+-            cell.operations_on_control()
+-                .prepare_main_original_sampler_with_writers_on_control(
+-                    &target,
+-                    &plan,
+-                    &editor,
+-                    &original,
+-                    &mut writers,
+-                    limits,
+-                )
+-                .unwrap();
++            cell.prepare_original_sampler_with_writers_on_control(
++                &target,
++                &plan,
++                &editor,
++                None,
++                &original,
++                &transforms,
++                limits,
++                ConstructorPurpose::MainExport,
++                Some(&mut writers),
++                None,
++            )
++            .unwrap();
+             // End the SAME writers before runtime loans, DSP or File turns.
+             drop(writers);
+         } else {
+@@ -308,6 +314,7 @@
+                     let mut ledger = AudioRootStorageLedger::try_new_on_control(limits)?;
+                     anchor.owner.inner.custody.visit_sampler_candidate_inputs(
+                         &target,
++                        None,
+                         Some(&plan),
+                         &editor,
+                         None,
+--- before/crates/hex-engine/src/audio_candidate/preparation_operations.rs
++++ source/crates/hex-engine/src/audio_candidate/preparation_operations.rs
+@@ -130,8 +130,8 @@
+     pub fn prepare_main_original_sampler_with_writers_on_control(
+         &mut self,
+         target: &crate::SharedMetadata<Project>,
++        resident: &dyn crate::sampler_host_fields::OriginalSamplerResidentFields,
+         producer: &crate::native_device_resources::OriginalResourceBankPlan<'_>,
+-        editor: &hex_project::Editor,
+         original: &crate::AudioRootStorageLedger<'_>,
+         writers: &mut crate::audio_transform::OriginalSamplerTransaction<'_>,
+         reservation: crate::AudioStorageLedgerReservation,
+@@ -141,13 +141,14 @@
+             .prepare_original_sampler_with_writers_on_control(
+                 target,
+                 producer,
+-                editor,
++                resident.editor(),
+                 None,
+                 original,
+                 transforms,
+                 reservation,
+                 ConstructorPurpose::MainExport,
+                 Some(writers),
++                Some(resident),
+             )
+     }
+ 
+--- before/crates/hex-engine/src/audio_candidate/storage.rs
++++ source/crates/hex-engine/src/audio_candidate/storage.rs
+@@ -237,6 +237,7 @@
+         transforms.with_pcm_inventory_on_control(|inventory| {
+             self.seal_sampler_constructor_with_inventory_on_control(
+                 target,
++                None,
+                 producer,
+                 editor,
+                 previous,
+@@ -254,6 +255,7 @@
+     pub(super) fn seal_sampler_constructor_with_writers_on_control(
+         &mut self,
+         target: &crate::SharedMetadata<hex_project::Project>,
++        resident: Option<&dyn crate::sampler_host_fields::OriginalSamplerResidentFields>,
+         producer: Option<&crate::native_device_resources::OriginalResourceBankPlan<'_>>,
+         editor: &hex_project::Editor,
+         previous: Option<
+@@ -267,6 +269,7 @@
+         let inventory = writers.inventory();
+         self.seal_sampler_constructor_with_inventory_on_control(
+             target,
++            resident,
+             producer,
+             editor,
+             previous,
+@@ -283,6 +286,7 @@
+     pub(super) fn seal_sampler_constructor_with_inventory_on_control(
+         &mut self,
+         target: &crate::SharedMetadata<hex_project::Project>,
++        resident: Option<&dyn crate::sampler_host_fields::OriginalSamplerResidentFields>,
+         producer: Option<&crate::native_device_resources::OriginalResourceBankPlan<'_>>,
+         editor: &hex_project::Editor,
+         previous: Option<
+@@ -311,6 +315,7 @@
+             ledger.root(self, crate::AudioStorageRole::Current)?;
+             self.inner.custody.visit_sampler_candidate_inputs(
+                 target,
++                resident,
+                 producer,
+                 editor,
+                 previous,
+@@ -344,6 +349,7 @@
+             self.inner.archive.install_physical(physical)?;
+             return self.seal_sampler_constructor_with_inventory_on_control(
+                 target,
++                resident,
+                 producer,
+                 editor,
+                 previous,
+--- before/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs
++++ source/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs
+@@ -83,6 +83,7 @@
+     }
+ }
+ struct Inputs<'a> {
++    resident: Option<&'a dyn crate::sampler_host_fields::OriginalSamplerResidentFields>,
+     producer: Option<&'a crate::native_device_resources::OriginalResourceBankPlan<'a>>,
+     rows: &'a ArrangementClips,
+     preparation: &'a crate::AudioPreparationCustody,
+@@ -112,6 +113,14 @@
+     where
+         'a: 'scope,
+     {
++        if let Some(resident) = self.resident {
++            if !std::ptr::eq(resident.editor(), self.editor) {
++                return Err(AudioStorageError::SourceMismatch);
++            }
++            crate::sampler_host_fields::visit_original_sampler_resident(
++                resident, inventory, ledger,
++            )?;
++        }
+         // Mandatory actual inputs FIRST. Importing old roots before these
+         // visitors can turn legitimate repeated observations into root errors.
+         if !matches!(
+@@ -136,7 +145,9 @@
+             ledger.root(self.rows, AudioStorageRole::FailedConstruction)?;
+             self.rows.visit_audio_storage(ledger, None, None)?;
+         }
+-        ledger.root(self.editor, AudioStorageRole::Caller)?;
++        if self.resident.is_none() {
++            ledger.root(self.editor, AudioStorageRole::Caller)?;
++        }
+         ledger.borrow_editor_history_buffers_on_control(self.editor)?;
+         ledger.borrow_editor_exclusive_buffers_on_control(self.editor)?;
+         ledger.borrow_editor_midi_sources_on_control(self.editor)?;
+@@ -172,7 +183,9 @@
+         }
+         // Charge the actual enclosing preparation body, its cache/pending
+         // backing and cancellation; do not confuse PCM-only visitation with it.
+-        inventory.visit_original_only_body_on_control(ledger)?;
++        if self.resident.is_none() {
++            inventory.visit_original_only_body_on_control(ledger)?;
++        }
+         if std::ptr::eq(self.rows, &self.preparation.arrangement_clips) {
+             ledger.require_original_inputs_bound(self.original)?;
+         }
+@@ -196,6 +209,7 @@
+         reservation: AudioStorageLedgerReservation,
+     ) -> Result<(), AudioStorageError> {
+         let construction = Inputs {
++            resident: None,
+             producer: None,
+             rows: self,
+             preparation,
+@@ -434,6 +448,7 @@
+     pub(crate) fn visit_sampler_candidate_inputs<'scope>(
+         &'scope self,
+         target: &'scope crate::SharedMetadata<hex_project::Project>,
++        resident: Option<&'scope dyn crate::sampler_host_fields::OriginalSamplerResidentFields>,
+         producer: Option<&'scope crate::native_device_resources::OriginalResourceBankPlan<'scope>>,
+         editor: &'scope hex_project::Editor,
+         previous: Option<&'scope OwnedShared<SharedAnalyticContextTable>>,
+@@ -442,6 +457,7 @@
+         ledger: &mut AudioRootStorageLedger<'scope>,
+     ) -> Result<(), AudioStorageError> {
+         let inputs = Inputs {
++            resident,
+             producer,
+             rows: &self.arrangement_clips,
+             preparation: self,
+@@ -473,6 +489,7 @@
+     ) -> Result<(), AudioStorageError> {
+         self.inspect_sampler_destination()?;
+         let construction = Inputs {
++            resident: None,
+             producer: None,
+             rows: &self.arrangement_clips,
+             preparation: self,
+@@ -549,6 +566,7 @@
+         let construction = {
+             let inventory = transaction.inventory();
+             Inputs {
++                resident: None,
+                 producer: None,
+                 rows: &self.arrangement_clips,
+                 preparation: self,
+--- before/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs
++++ source/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs
+@@ -79,6 +79,7 @@
+             .checked_add(1)
+             .ok_or(AudioStorageError::Overflow)?;
+         let construction = Inputs {
++            resident: None,
+             producer,
+             rows: &self.arrangement_clips,
+             preparation: self,
+@@ -136,6 +137,7 @@
+     pub(crate) fn compile_original_sampler_revision_with_writers_on_control(
+         &mut self,
+         target: &crate::SharedMetadata<hex_project::Project>,
++        resident: Option<&dyn crate::sampler_host_fields::OriginalSamplerResidentFields>,
+         producer: Option<&crate::native_device_resources::OriginalResourceBankPlan<'_>>,
+         editor: &hex_project::Editor,
+         previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
+@@ -151,6 +153,7 @@
+         let construction = {
+             let inventory = transaction.inventory();
+             Inputs {
++                resident,
+                 producer,
+                 rows: &self.arrangement_clips,
+                 preparation: self,
+--- before/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs
++++ source/crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs
+@@ -207,6 +207,7 @@
+         .with_pcm_inventory_on_control(|inventory| {
+             let mut ledger = AudioRootStorageLedger::try_new_on_control(limits())?;
+             let inputs = Inputs {
++                resident: None,
+                 producer: None,
+                 rows: &preparation.arrangement_clips,
+                 preparation: &preparation,
+@@ -273,6 +274,7 @@
+         let (retained, peak) = transforms
+             .with_pcm_inventory_on_control(|inventory| {
+                 let inputs = Inputs {
++                    resident: None,
+                     producer: None,
+                     rows: &preparation.arrangement_clips,
+                     preparation: &preparation,
+@@ -837,6 +839,7 @@
+                 )
+                 .unwrap();
+             let inputs = Inputs {
++                resident: None,
+                 producer: None,
+                 rows: &preparation.arrangement_clips,
+                 preparation: &preparation,
+--- before/crates/hex-engine/src/native_device_resources/producer.rs
++++ source/crates/hex-engine/src/native_device_resources/producer.rs
+@@ -108,7 +108,13 @@
+         for entry in self.entries {
+             match &entry.source {
+                 Source::Native(source) => {
+-                    if !ledger.skip_observed_root(*source) {
++                    // A mandatory resident-owner walk may already cover this
++                    // exact embedded owning field. Reuse that observation, not
++                    // another handle or an unobserved enclosing-body claim.
++                    // Arithmetic membership never prunes descendants.
++                    if !ledger.skip_observed_root(*source)
++                        && !ledger.skip_observed_shared_field(*source)
++                    {
+                         ledger.borrow_native_source_on_control(
+                             source,
+                             crate::AudioStorageRole::Caller,
+@@ -116,7 +122,13 @@
+                     }
+                 }
+                 Source::Stereo(source) => {
+-                    if !ledger.skip_observed_root(*source) {
++                    // A mandatory resident-owner walk may already cover this
++                    // exact embedded owning field. Reuse that observation, not
++                    // another handle or an unobserved enclosing-body claim.
++                    // Arithmetic membership never prunes descendants.
++                    if !ledger.skip_observed_root(*source)
++                        && !ledger.skip_observed_shared_field(*source)
++                    {
+                         ledger.borrow_native_audio_on_control(
+                             source,
+                             crate::AudioStorageRole::Caller,
+--- before/crates/hex-engine/src/native_device_resources/producer/tests.rs
++++ source/crates/hex-engine/src/native_device_resources/producer/tests.rs
+@@ -194,3 +194,62 @@
+         Err(ResourcePreparationError::Cancelled)
+     ));
+ }
++
++#[test]
++fn original_plan_reuses_exact_embedded_fields_but_not_unseen_aliases() {
++    use crate::{AudioRootStorageLedger, AudioStorageLedgerReservation, AudioStorageRole};
++    struct Holder {
++        source: OwnedAudioSource,
++    }
++    for stereo in [false, true] {
++        let holder = Holder {
++            source: if stereo {
++                OwnedAudioSource::try_resident(44100, vec![[0.25, -0.5]; 4])
++                    .ok()
++                    .unwrap()
++            } else {
++                OwnedAudioSource::try_resident_mono(44100, vec![0.25; 4])
++                    .ok()
++                    .unwrap()
++            },
++        };
++        let alias = holder
++            .source
++            .alias_for_resource_plan_on_control(size_of::<OwnedAudioSource>())
++            .unwrap();
++        let entries = vec![OriginalResourceInput::native(
++            crate::native_device_resources::tests::ids()[0],
++            &holder.source,
++        )];
++        let plan = OriginalResourceBankPlan::borrow(&entries);
++        let reservation = AudioStorageLedgerReservation {
++            data_rows: 64,
++            handle_rows: 16,
++            root_rows: 8,
++            max_retained_bytes: 1_000_000,
++            max_construction_peak_bytes: 1_000_000,
++        };
++        let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
++        ledger.root(&holder, AudioStorageRole::Caller).unwrap();
++        ledger
++            .borrow_embedded_native_source_on_control(&holder.source)
++            .unwrap();
++        let before = ledger.summary().unwrap();
++        let measured = allocation_counter::measure(|| {
++            plan.visit_storage_on_control(&mut ledger).unwrap();
++            plan.visit_storage_on_control(&mut ledger).unwrap();
++        });
++        assert_eq!((measured.count_total, measured.count_current), (0, 0));
++        let after = ledger.summary().unwrap();
++        assert_eq!(
++            after.data_bytes - before.data_bytes,
++            size_of_val(&entries) + entries.capacity() * size_of::<OriginalResourceInput<'_>>()
++        );
++        // Matching DATA never explains another physical owning handle.
++        assert!(ledger.validate_closed_shared_handles().is_err());
++        ledger
++            .borrow_native_source_on_control(&alias, AudioStorageRole::Caller)
++            .unwrap();
++        ledger.validate_closed_shared_handles().unwrap();
++    }
++}
+--- before/crates/hex-engine/src/sampler_host_fields.rs
++++ source/crates/hex-engine/src/sampler_host_fields.rs
+@@ -23,9 +23,55 @@
+ 
+ mod family;
+ pub use family::{
+-    FamilyCompiledFields, FamilyCompiledRecordFields, FamilyFields, FamilyRequestFields,
++    ExportResultOutcomeFields, ExportResultPayloadFields, FamilyCompiledFields,
++    FamilyCompiledRecordFields, FamilyExportResultFields, FamilyFields, FamilyRequestFields,
+     FamilyRequestPayload, FamilyRequestRecords, FamilySnapshotFields,
+ };
+ 
+ mod worker;
+-pub use worker::SamplerWorkerFields;
++pub use worker::{DocumentFields, DocumentTokenFields, JournalFields, SamplerWorkerFields};
++mod event;
++pub use event::{
++    EventBatchFailureFields, EventMetadataFields, EventReasonFields, TuningLibraryMetadataPayload,
++    TuningSlotMetadataFields,
++};
++
++mod native;
++pub use native::{NativeFields, NativePreparationFields, NativeRuntimeFields};
++
++pub use crate::audio_storage::native_state::{
++    NativeStateStorageLease, NativeStateStorageRegistration,
++};
++
++pub use crate::audio_storage::native_state::{
++    NativeClaimBirthFields, NativeClaimStorageLease, NativeClaimStorageRegistration,
++};
++
++pub use crate::audio_storage::native_carrier::{
++    NativeCarrierStorageLease, NativeCarrierStorageRegistration,
++};
++pub use crate::audio_storage::native_fixed_ring::{
++    NativeFixedRingFields, NativeFixedRingLease, NativeFixedRingRegistration,
++};
++
++pub use crate::audio_storage::native_atomic_signal::{
++    NativeAtomicSignal, NativeAtomicSignalRegistration,
++};
++
++pub use crate::audio_storage::native_resident::{
++    NativeResidentFieldLease, NativeResidentFields, NativeResidentRegistration,
++};
++pub use crate::audio_storage::native_status::{
++    NativeStatusFieldLease, NativeStatusFields, NativeStatusRegistration,
++};
++
++pub use crate::audio_storage::native_root_fields::{
++    NativeRootFieldLease, NativeRootFieldRegistration,
++};
++
++mod resident;
++pub(crate) use resident::visit_resident as visit_original_sampler_resident;
++pub use resident::{
++    OriginalSamplerResidentFields, ResidentAssetFields, ResidentClipWaveformFields,
++    ResidentOriginalFields,
++};
+--- before/crates/hex-engine/src/sampler_host_fields/resident.rs
++++ source/crates/hex-engine/src/sampler_host_fields/resident.rs
+@@ -0,0 +1,122 @@
++//! Actual Session fields under existing waveform/cache writers. Finite schema,
++//! not a callback, source adoption, owner registry or completeness certificate.
++use super::{BodyRef, VecRef, WaveformFields};
++use crate::{Audio, AudioRootStorageLedger, AudioStorageError, OwnedAudioSource};
++
++pub enum ResidentOriginalFields<'a> {
++    Stereo(&'a Audio),
++    Mono(&'a OwnedAudioSource),
++}
++pub struct ResidentAssetFields<'a> {
++    pub body: BodyRef<'a>,
++    pub original_body: BodyRef<'a>,
++    pub original: ResidentOriginalFields<'a>,
++    pub rendered: Option<&'a Audio>,
++    pub waveform: WaveformFields<'a>,
++}
++pub struct ResidentClipWaveformFields<'a> {
++    pub body: BodyRef<'a>,
++    pub waveform: WaveformFields<'a>,
++}
++pub trait OriginalSamplerResidentFields {
++    fn body(&self) -> BodyRef<'_>;
++    fn frame(&self) -> [BodyRef<'_>; 3];
++    fn editor(&self) -> &hex_project::Editor;
++    fn transforms(&self) -> &crate::audio_transform::AudioTransformPreparation;
++    fn cancellation(&self) -> Result<&crate::RetainedControlCancellation, AudioStorageError>;
++    fn sine(&self) -> &crate::SharedSineTable;
++    fn media(&self) -> VecRef<'_>;
++    fn asset(&self, index: usize) -> Result<ResidentAssetFields<'_>, AudioStorageError>;
++    fn waveforms(&self) -> VecRef<'_>;
++    fn clip_waveform(
++        &self,
++        index: usize,
++    ) -> Result<ResidentClipWaveformFields<'_>, AudioStorageError>;
++    fn verified_sources(&self) -> VecRef<'_>;
++    fn validate_remaining_fields(&self) -> Result<(), AudioStorageError>;
++}
++fn contains(parent: BodyRef<'_>, child: BodyRef<'_>) -> Result<(), AudioStorageError> {
++    parent
++        .contains(child)
++        .then_some(())
++        .ok_or(AudioStorageError::SourceMismatch)
++}
++pub(crate) fn visit_resident<'a>(
++    fields: &'a dyn OriginalSamplerResidentFields,
++    inventory: &'a crate::audio_transform::AudioTransformPcmInventory<'a>,
++    ledger: &mut AudioRootStorageLedger<'a>,
++) -> Result<(), AudioStorageError> {
++    fields.validate_remaining_fields()?;
++    if !std::ptr::eq(fields.transforms(), inventory.preparation()) {
++        return Err(AudioStorageError::SourceMismatch);
++    }
++
++    for frame in fields.frame() {
++        ledger.bytes(
++            frame.owner(),
++            crate::audio_storage::Location("original-sampler-loan-frame", 0),
++            frame.layout_bytes(),
++        )?;
++    }
++    let body = fields.body();
++    // Footprint only. Owning children and their actual constructor lineage are
++    // independently mandatory below; no root/retirement authority is issued.
++    ledger.bytes(
++        body.owner(),
++        crate::audio_storage::Location("root-inline", 0),
++        body.layout_bytes(),
++    )?;
++    contains(body, BodyRef::of(fields.editor()))?;
++    contains(body, BodyRef::of(fields.transforms()))?;
++    contains(body, BodyRef::of(fields.sine()))?;
++    contains(body, BodyRef::of(fields.cancellation()?))?;
++    let media = fields.media();
++    let waveforms = fields.waveforms();
++    let verified = fields.verified_sources();
++    for backing in [media, waveforms, verified] {
++        contains(body, backing.body())?;
++        backing.observe(ledger)?;
++    }
++    // Verified file descriptors have owning children not yet in this original
++    // resident class. Their ordinary production route remains an open class.
++    if !verified.is_empty() {
++        return Err(AudioStorageError::UnknownStorage);
++    }
++    fields.cancellation()?.visit_storage_on_control(ledger)?;
++    fields.sine().visit_storage_on_control(ledger)?;
++    let editor = fields.editor();
++    ledger.borrow_editor_history_buffers_on_control(editor)?;
++    ledger.borrow_editor_exclusive_buffers_on_control(editor)?;
++    ledger.borrow_editor_midi_sources_on_control(editor)?;
++    ledger.borrow_editor_native_states_on_control(editor)?;
++    inventory.visit_original_only_control_storage_on_control(ledger)?;
++
++    for index in 0..media.len() {
++        let asset = fields.asset(index)?;
++        contains(media.element(index)?, asset.body)?;
++        contains(asset.body, asset.original_body)?;
++        contains(asset.body, asset.waveform.owner.body())?;
++        match asset.original {
++            ResidentOriginalFields::Stereo(audio) => {
++                contains(asset.original_body, BodyRef::of(audio))?;
++                ledger.borrow_embedded_native_audio_on_control(audio)?;
++            }
++            ResidentOriginalFields::Mono(source) => {
++                contains(asset.original_body, BodyRef::of(source))?;
++                ledger.borrow_embedded_native_source_on_control(source)?;
++            }
++        }
++        if let Some(audio) = asset.rendered {
++            contains(asset.body, BodyRef::of(audio))?;
++            ledger.borrow_embedded_native_audio_on_control(audio)?;
++        }
++        super::waveform::visit_waveform(&asset.waveform, ledger)?;
++    }
++    for index in 0..waveforms.len() {
++        let clip = fields.clip_waveform(index)?;
++        contains(waveforms.element(index)?, clip.body)?;
++        contains(clip.body, clip.waveform.owner.body())?;
++        super::waveform::visit_waveform(&clip.waveform, ledger)?;
++    }
++    Ok(())
++}
+--- before/crates/hex-session/src/lib.rs
++++ source/crates/hex-session/src/lib.rs
+@@ -25,7 +25,8 @@
+ mod original_audio;
+ mod resource_plan;
+ pub use resource_plan::{
+-    OriginalSamplerSessionLoan, ResidentPcmInventory, ResidentResourcePlanReservation,
++    OriginalSamplerResidentView, OriginalSamplerSessionLoan, ResidentPcmInventory,
++    ResidentResourcePlanReservation,
+ };
+ mod resident_pcm;
+ pub use original_audio::DecodedOriginal;
+--- before/crates/hex-session/src/resource_plan.rs
++++ source/crates/hex-session/src/resource_plan.rs
+@@ -11,7 +11,7 @@
+ mod original_sampler;
+ pub(crate) mod producer;
+ mod required_assets;
+-pub use original_sampler::OriginalSamplerSessionLoan;
++pub use original_sampler::{OriginalSamplerResidentView, OriginalSamplerSessionLoan};
+ pub(crate) use required_assets::validate_candidate_assets;
+ #[cfg(test)]
+ mod tests;
+--- before/crates/hex-session/src/resource_plan/original_sampler.rs
++++ source/crates/hex-session/src/resource_plan/original_sampler.rs
+@@ -60,3 +60,176 @@
+         &mut self.transaction
+     }
+ }
++
++/// Borrowed real Session fields, produced only from held Session writers.
++/// It owns no media, cache, waveform, source snapshot or admission receipt.
++/// ```compile_fail
++/// let session = hex_session::Session::new(48000, 16, 1024).unwrap();
++/// let fields = {
++///     let mut loan = session.original_sampler_session_loan_on_control().unwrap();
++///     let (fields, _writers) = loan.resident_fields_and_writer_on_control();
++///     fields
++/// };
++/// let _ = hex_engine::sampler_host_fields::OriginalSamplerResidentFields::media(&fields);
++/// ```
++pub struct OriginalSamplerResidentView<'a> {
++    session: &'a Session,
++    waveforms: &'a SortedEntries<ClipId, AudioClipWaveform>,
++    session_frame: hex_engine::sampler_host_fields::BodyRef<'a>,
++    waveform_frame: hex_engine::sampler_host_fields::BodyRef<'a>,
++}
++impl<'owner> OriginalSamplerSessionLoan<'owner> {
++    /// Disjoint safe loans: waveform observations and actual cache writers.
++    /// The readonly view never borrows cache payload through its RefCell.
++    pub fn resident_fields_and_writer_on_control(
++        &mut self,
++    ) -> (
++        OriginalSamplerResidentView<'_>,
++        &mut hex_engine::audio_transform::OriginalSamplerTransaction<'owner>,
++    ) {
++        (
++            OriginalSamplerResidentView {
++                session: self.session,
++                waveforms: &self.waveforms,
++                session_frame: hex_engine::sampler_host_fields::BodyRef::of(&self.session),
++                waveform_frame: hex_engine::sampler_host_fields::BodyRef::of(&self.waveforms),
++            },
++            &mut self.transaction,
++        )
++    }
++}
++impl hex_engine::sampler_host_fields::OriginalSamplerResidentFields
++    for OriginalSamplerResidentView<'_>
++{
++    fn body(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
++        hex_engine::sampler_host_fields::BodyRef::of(self.session)
++    }
++    fn frame(&self) -> [hex_engine::sampler_host_fields::BodyRef<'_>; 3] {
++        [
++            hex_engine::sampler_host_fields::BodyRef::of(self),
++            self.session_frame,
++            self.waveform_frame,
++        ]
++    }
++    fn editor(&self) -> &hex_project::Editor {
++        &self.session.editor
++    }
++    fn transforms(&self) -> &hex_engine::audio_transform::AudioTransformPreparation {
++        &self.session.audio_transforms
++    }
++    fn cancellation(&self) -> Result<&hex_engine::RetainedControlCancellation, AudioStorageError> {
++        match &self.session.shutdown {
++            crate::session_cancellation::SessionCancellation::Retained(worker) => Ok(worker),
++            crate::session_cancellation::SessionCancellation::Unqualified(_) => {
++                Err(AudioStorageError::UnknownStorage)
++            }
++        }
++    }
++    fn sine(&self) -> &hex_engine::SharedSineTable {
++        &self.session.sine_table
++    }
++    fn media(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
++        hex_engine::sampler_host_fields::VecRef::entries(&self.session.media)
++    }
++    fn asset(
++        &self,
++        index: usize,
++    ) -> Result<hex_engine::sampler_host_fields::ResidentAssetFields<'_>, AudioStorageError> {
++        use hex_engine::sampler_host_fields::{
++            BodyRef, ResidentAssetFields, ResidentOriginalFields,
++        };
++        let (_, resident) = self
++            .session
++            .media
++            .as_slice()
++            .get(index)
++            .ok_or(AudioStorageError::SourceMismatch)?;
++        let crate::ResidentAsset {
++            source_audio,
++            audio,
++            waveform,
++            frames,
++        } = resident;
++        let _: &u64 = frames;
++        Ok(ResidentAssetFields {
++            body: BodyRef::of(resident),
++            original_body: BodyRef::of(source_audio),
++            original: match source_audio {
++                OriginalAudio::Stereo(audio) => ResidentOriginalFields::Stereo(audio),
++                OriginalAudio::Mono(source) => ResidentOriginalFields::Mono(source),
++            },
++            rendered: audio.as_ref(),
++            waveform: hex_media::waveform::sampler_fields_on_control(waveform),
++        })
++    }
++    fn waveforms(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
++        hex_engine::sampler_host_fields::VecRef::entries(self.waveforms)
++    }
++    fn clip_waveform(
++        &self,
++        index: usize,
++    ) -> Result<hex_engine::sampler_host_fields::ResidentClipWaveformFields<'_>, AudioStorageError>
++    {
++        let (_, clip) = self
++            .waveforms
++            .as_slice()
++            .get(index)
++            .ok_or(AudioStorageError::SourceMismatch)?;
++        let AudioClipWaveform {
++            waveform,
++            offset,
++            length,
++        } = clip;
++        let _: (&u64, &u64) = (offset, length);
++        Ok(
++            hex_engine::sampler_host_fields::ResidentClipWaveformFields {
++                body: hex_engine::sampler_host_fields::BodyRef::of(clip),
++                waveform: hex_media::waveform::sampler_fields_on_control(waveform),
++            },
++        )
++    }
++    fn verified_sources(&self) -> hex_engine::sampler_host_fields::VecRef<'_> {
++        hex_engine::sampler_host_fields::VecRef::entries(&self.session.verified_sources)
++    }
++    fn validate_remaining_fields(&self) -> Result<(), AudioStorageError> {
++        let Session {
++            editor: _,
++            audio_transforms: _,
++            audio_clip_waveforms: _,
++            shutdown: _,
++            sine_table: _,
++            media: _,
++            verified_sources,
++            semantic_source_epoch,
++            audio_mode,
++            source_reservation,
++            resident_frames,
++            max_resident_frames,
++            resident_waveform_bins,
++            resident_waveform_bytes,
++        } = self.session;
++        // Actual scalar-only current types; no ownership is inferred from a
++        // counter, and every owning field is mandatory in the finite schema.
++        let _: (
++            u64,
++            crate::DocumentAudioMode,
++            Option<crate::SourcePlanReservation>,
++            u64,
++            u64,
++            usize,
++            usize,
++        ) = (
++            *semantic_source_epoch,
++            *audio_mode,
++            *source_reservation,
++            *resident_frames,
++            *max_resident_frames,
++            *resident_waveform_bins,
++            *resident_waveform_bytes,
++        );
++        if !verified_sources.is_empty() {
++            return Err(AudioStorageError::UnknownStorage);
++        }
++        Ok(())
++    }
++}
+--- before/crates/hex-session/src/resource_plan/tests.rs
++++ source/crates/hex-session/src/resource_plan/tests.rs
+@@ -1129,3 +1129,234 @@
+     drop(loan);
+     session.compile_prepared_revision(None).unwrap();
+ }
++
++#[test]
++fn actual_loaded_session_resident_same_writers_construct_render_ack_and_retire() {
++    use hex_engine::{AudioCandidateControlProgress, AudioCandidatePreparation};
++    use hex_project::{BeatTime, Command, Created};
++    for stereo in [false, true] {
++        let signal =
++            hex_engine::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
++        let job = hex_engine::RetainedControlJob::try_from_owned_on_control(
++            &mut Some(0_u8),
++            usize::MAX,
++            |_: &mut u8| Ok::<_, ()>(hex_engine::RetainedControlJobProgress::Pending),
++        )
++        .unwrap();
++        let session = Session::new_with_retained_cancellation_on_control(
++            48_000,
++            16,
++            1024,
++            signal.bind_worker_on_control(job.route()),
++        )
++        .unwrap();
++        let (mut session, assets) = fixture_in(session).unwrap();
++        let audio_tracks: Vec<_> = session
++            .project()
++            .tracks()
++            .iter()
++            .map(|track| track.id())
++            .collect();
++        for track in audio_tracks {
++            session.editor.execute(Command::RemoveTrack(track)).unwrap();
++        }
++        let Created::Track(track) = session
++            .editor
++            .execute(Command::AddMidiTrack {
++                name: "sampler".into(),
++            })
++            .unwrap()
++        else {
++            panic!("track")
++        };
++        let device = session
++            .project()
++            .track(track)
++            .unwrap()
++            .instrument()
++            .unwrap()
++            .id();
++        let assignment = hex_engine::sampler_replacement_state_on_control(
++            &hex_engine::empty_sampler_state_on_control().unwrap(),
++            4,
++        )
++        .unwrap();
++        let asset = assets[usize::from(stereo)];
++        let state = assignment
++            .state
++            .with_asset_references(vec![DeviceAssetReference {
++                slot: assignment.slot,
++                asset: DeviceAssetKey::new(asset.value()).unwrap(),
++            }])
++            .unwrap();
++        session
++            .editor
++            .execute(Command::ReplaceDeviceState { device, state })
++            .unwrap();
++        let Created::Clip(clip) = session
++            .editor
++            .execute(Command::PlaceMidiClip {
++                track,
++                start: BeatTime::ZERO,
++                length: BeatTime::ONE,
++            })
++            .unwrap()
++        else {
++            panic!("clip")
++        };
++        session
++            .editor
++            .execute(Command::AddMidiNote {
++                clip,
++                start: BeatTime::ZERO,
++                duration: BeatTime::ONE,
++                pitch: 60,
++                channel: 0,
++                velocity: 127,
++            })
++            .unwrap();
++        let target = crate::SharedProject::new_on_control(session.project().clone());
++        session.editor.execute(Command::RemoveTrack(track)).unwrap();
++        // The captured target remains real while current authoring and history
++        // move on. Media and waveform owners remain in this actual Session.
++        for n in 0..16 {
++            session
++                .editor
++                .execute(Command::SetTempoPoint {
++                    beat: BeatTime::ZERO,
++                    tempo: hex_project::Tempo::new(100_000_000 + n * 1_000_000).unwrap(),
++                })
++                .unwrap();
++        }
++        let sources = producer::ResidentResourceSources::new(&session.media);
++        let resolved = sources
++            .resolve(
++                &[asset],
++                None,
++                limits().max_preparation_metadata_bytes,
++                &session.shutdown,
++            )
++            .unwrap();
++        let plan = resolved.as_engine_plan();
++        let storage = AudioStorageReservation {
++            allocation_items: 256,
++            handle_obligations: 1024,
++            max_prepared_data_bytes: 64 * 1024 * 1024,
++            max_construction_data_bytes: 64 * 1024 * 1024,
++            caller_retained_bytes: 0,
++            caller_construction_bytes: 0,
++        };
++        let mut cell = AudioCandidatePreparation::try_new_on_control(0, storage).unwrap();
++        cell.operations_on_control()
++            .install_original_resources_on_control(&plan, limits(), &session.shutdown)
++            .unwrap();
++        let reservation = AudioStorageLedgerReservation {
++            data_rows: 2048,
++            handle_rows: 2048,
++            root_rows: 128,
++            max_retained_bytes: 64 * 1024 * 1024,
++            max_construction_peak_bytes: 64 * 1024 * 1024,
++        };
++        let mut original = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
++        signal.visit_storage_on_control(&mut original).unwrap();
++        original
++            .borrow_shared_metadata_body_on_control(&target)
++            .unwrap();
++        original
++            .borrow_project_exclusive_buffers_on_control(&target)
++            .unwrap();
++        original
++            .borrow_project_midi_sources_on_control(&target)
++            .unwrap();
++        original
++            .borrow_project_native_states_on_control(&target)
++            .unwrap();
++        // A real external owning field cannot disappear merely because its
++        // physical body is already present through the Session's sine field.
++        let sine_alias = session.sine_table();
++        let mut loan = session.original_sampler_session_loan_on_control().unwrap();
++        {
++            let (fields, writers) = loan.resident_fields_and_writer_on_control();
++            assert!(
++                cell.operations_on_control()
++                    .prepare_main_original_sampler_with_writers_on_control(
++                        &target,
++                        &fields,
++                        &plan,
++                        &original,
++                        writers,
++                        reservation,
++                    )
++                    .is_err(),
++                "actual omitted sine handle must refuse"
++            );
++            assert!(cell.operations_on_control().prepared_identity().is_none());
++            assert!(!cell.failed_incomplete());
++        }
++        // Bind the ACTUAL omitted owning field; this imports no unrelated DATA
++        // and produces no allocation/admission/retirement certificate.
++        sine_alias.visit_storage_on_control(&mut original).unwrap();
++        {
++            let (fields, writers) = loan.resident_fields_and_writer_on_control();
++            cell.operations_on_control()
++                .prepare_main_original_sampler_with_writers_on_control(
++                    &target,
++                    &fields,
++                    &plan,
++                    &original,
++                    writers,
++                    reservation,
++                )
++                .unwrap();
++        }
++        drop(loan);
++        let reader = cell
++            .operations_on_control()
++            .register_compiled_reader_on_control()
++            .unwrap();
++        cell.operations_on_control()
++            .begin_main_control_work_on_control(16)
++            .unwrap();
++        let mut output = Vec::new();
++        loop {
++            let progress = cell
++                .operations_on_control()
++                .step_main_control_work_on_control(8)
++                .unwrap();
++            let AudioCandidateControlProgress::Block(block) = progress else {
++                break;
++            };
++            let mut copy = [[0.0; 2]; 256];
++            cell.operations_on_control()
++                .copy_main_control_block_on_control(block, &mut copy)
++                .unwrap();
++            output.extend_from_slice(&copy[..block.frames()]);
++            cell.operations_on_control()
++                .acknowledge_main_control_block_on_control(block)
++                .unwrap();
++            assert_eq!(
++                cell.operations_on_control()
++                    .acknowledge_main_control_block_on_control(block),
++                Err(AudioStorageError::SourceMismatch)
++            );
++        }
++        assert_eq!(output.len(), 16);
++        assert!(
++            output.iter().flatten().any(|sample| *sample != 0.0),
++            "loaded stereo={stereo}"
++        );
++        if stereo {
++            assert!(output.iter().any(|frame| frame[0] != frame[1]));
++        } else {
++            assert!(output.iter().all(|frame| frame[0] == frame[1]));
++        }
++        drop(original);
++        assert_eq!(
++            cell.cleanup_on_control(),
++            Err(AudioStorageError::ExternalReadersPending)
++        );
++        drop(reader);
++        cell.cleanup_on_control().unwrap();
++        session.compile_prepared_revision(None).unwrap();
++    }
++}
+--- before/scripts/sampler_host_policy.py
++++ source/scripts/sampler_host_policy.py
+@@ -8,7 +8,14 @@
+ 
+ 
+ EXACT = {
++    # Existing closed original-Sampler constructor readers; no new producer.
++    'crates/hex-engine/src/audio_candidate/preparation/original_resources.rs',
++    'crates/hex-engine/src/audio_candidate/preparation_operations.rs',
++    'crates/hex-engine/src/audio_candidate/storage.rs',
++    'crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs',
++    'crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs',
+     'crates/hex-session/src/service/event_fields.rs',
++    'crates/hex-session/src/resource_plan/original_sampler.rs',
+     'crates/hex-storage/src/files.rs',
+     'crates/hex-storage/src/lib.rs',
+     'crates/hex-engine/src/audio_storage/document_token.rs',
+@@ -80,6 +87,25 @@
+ 
+ 
+ def violations(path: str, source: str) -> list[str]:
++    resident_names = re.search(r'\b(?:OriginalSamplerResidentFields|OriginalSamplerResidentView|ResidentAssetFields|ResidentClipWaveformFields|ResidentOriginalFields|resident_fields_and_writer_on_control|visit_original_sampler_resident)\b', source)
++    if resident_names:
++        resident_paths = {
++            'crates/hex-session/src/lib.rs', 'crates/hex-session/src/resource_plan.rs',
++            'crates/hex-session/src/resource_plan/original_sampler.rs',
++            'crates/hex-session/src/resource_plan/tests.rs',
++            'crates/hex-engine/src/sampler_host_fields.rs',
++            'crates/hex-engine/src/audio_candidate/storage.rs',
++            'crates/hex-engine/src/audio_candidate/preparation_operations.rs',
++            'crates/hex-engine/src/audio_candidate/preparation/original_resources.rs',
++            'crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs',
++            'crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs',
++            'crates/hex-audio/src/candidate_custody/eligible/publication/native_host.rs',
++        }
++        if path not in resident_paths and not path.startswith('crates/hex-engine/src/sampler_host_fields/'):
++            return [f'{path}: original-Sampler resident fields require the audited owning Session view']
++        impls = re.findall(r'\bimpl(?:<[^>]*>)?\s+(?:[\w:]+::)?OriginalSamplerResidentFields\s+for\s+(\w+)', source)
++        if impls and (path != 'crates/hex-session/src/resource_plan/original_sampler.rs' or impls != ['OriginalSamplerResidentView']):
++            return [f'{path}: exactly one actual Session producer implements resident fields']
+     lending_names = re.search(r'\b(?:OriginalSamplerTransaction|OriginalSamplerSessionLoan|original_sampler_transaction_on_control|original_sampler_session_loan_on_control|original_sampler_writer_on_control|compile_original_sampler_lent_on_control)\b', source)
+     if lending_names:
+         lending_paths = {
+--- before/scripts/tests/test_sampler_host_policy.py
++++ source/scripts/tests/test_sampler_host_policy.py
+@@ -24,6 +24,29 @@
+         self.assertEqual(violations(path, source), [])
+         self.assertTrue(violations(path, source + '\nfn extra() { context.original_sampler_transaction_on_control(); }'))
+         self.assertTrue(violations(path, source + '\nimpl OriginalSamplerTransaction {}'))
++
++    def test_original_sampler_resident_fields_have_one_actual_session_producer(self):
++        for path in ['crates/hex-ui/src/random.rs', 'crates/hex-session/src/random.rs',
++                     'crates/hex-audio/src/prepared.rs']:
++            self.assertTrue(violations(path, 'OriginalSamplerResidentFields'))
++        path = 'crates/hex-session/src/resource_plan/original_sampler.rs'
++        source = (Path(__file__).resolve().parents[2] / path).read_text()
++        self.assertEqual(violations(path, source), [])
++        self.assertTrue(violations(path, source + '\nimpl OriginalSamplerResidentFields for Foreign {}'))
++        self.assertTrue(violations('crates/hex-engine/src/sampler_host_fields/resident.rs',
++                                   'impl OriginalSamplerResidentFields for Foreign {}'))
++
++    def test_closed_original_constructor_readers_do_not_enable_other_engine_modules(self):
++        for path in [
++            'crates/hex-engine/src/audio_candidate/preparation/original_resources.rs',
++            'crates/hex-engine/src/audio_candidate/preparation_operations.rs',
++            'crates/hex-engine/src/audio_candidate/storage.rs',
++            'crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs',
++            'crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs',
++        ]:
++            self.assertEqual(violations(path, 'hex_engine::sampler_host_fields::OriginalSamplerResidentFields'), [])
++            self.assertTrue(violations(path, 'impl OriginalSamplerResidentFields for Foreign {}'))
++        self.assertTrue(violations('crates/hex-engine/src/foreign.rs', 'hex_engine::sampler_host_fields::OriginalSamplerResidentFields'))
+ 
+     def test_event_metadata_projection_has_one_owning_session_adapter(self):
+         for name in ['EventMetadataFields', 'EventReasonFields', 'EventBatchFailureFields',
