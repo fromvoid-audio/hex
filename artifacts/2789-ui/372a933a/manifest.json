@@ -1,0 +1,83 @@
+{
+  "source": "372a933a7c3d49d86613f82dfb9287027e375ea0",
+  "tree": "334ce57f86fc4a11dafd62f75140f7f5bababa44",
+  "ui_component_commit": "b2de13b079dae1850209b38e05187661c28014b2",
+  "ui_paths": 64,
+  "ui_summary": "7576 insertions,3714 deletions; current Main composition, ephemeral scalar recipes, actual Sampler mount, owner-free audio-event/nominal-waveform and pressure-aware project actions",
+  "restored_leaf_source": "ee14b363fafb3d8e25f451601907b0a64ee935f6",
+  "qualification": "INCOMPLETE/UNQUALIFIED SOURCE CHECKPOINT; no clean UI/strict/merge/full/native/playback/build/delivery result",
+  "partial_ui_diagnostics": {
+    "initial": 647,
+    "nominal_waveform": 581,
+    "connected_parent": 560
+  },
+  "post_last_diagnostic": [
+    "3 mechanical connection repairs",
+    "owner-switch checked-finalizer refusal returns nonmutating busy/unavailable panel",
+    "event waveform initial and paint reads match actual opaque source key",
+    "owning docs precise current vs historical status"
+  ],
+  "core_scoped_checks": {
+    "12": "Session library compiler PASS for finite UI scalar queries",
+    "13": "wrong filter, ZERO tests, no behavioral pass claimed",
+    "14": "actual source-key transport test1PASS",
+    "15": "composed pure worker EQ structural helper6PASS, not DSP/resource/worker/ACK admission"
+  },
+  "remaining": [
+    "controller/Event/backend reader port and actual registered startup/Initial/producer/backend closure",
+    "specialized S/C/EQ and audible meter paths, legacy cache/comparison and remaining clip/trim/fade consumers",
+    "real nominal-cap UI fixtures and unexecuted UI regressions",
+    "one coherent load/play/edit/Undo/save/reopen candidate, exact frozen full local CI and optimized delivery"
+  ],
+  "preserved": [
+    "modern Main selection epochs/adaptive-grid and current EQ code",
+    "original checkout/running app and historical review bundles",
+    "old UI tracks two-hunk WIP in its original worktree"
+  ],
+  "logs": {
+    "artifacts/sampler-ui-migration/modern-composition-initial-check.log": {
+      "bytes": 273473,
+      "sha256": "00fe93287f3d089ccfa00f9bb1d043168703e579e045e46e7ba512624a365629"
+    },
+    "artifacts/sampler-ui-migration/modern-composition-initial-check.json": {
+      "bytes": 5635,
+      "sha256": "64c324e467180d62a43d142928ea3f8a45fe0d11723f75673c78caafb3f13609"
+    },
+    "artifacts/sampler-ui-migration/modern-nominal-waveform-check.log": {
+      "bytes": 229246,
+      "sha256": "77a81489ee895d9e0279a5078eac770444d370994a3d12c8c460aeafd5213ac7"
+    },
+    "artifacts/sampler-ui-migration/modern-nominal-waveform-check.json": {
+      "bytes": 6043,
+      "sha256": "198add49352e0b05ad8a5317d92462d233e76601e72e15d710b08a8db3953151"
+    },
+    "artifacts/sampler-ui-migration/modern-parent-recipe.log": {
+      "bytes": 224565,
+      "sha256": "7d52dbbd1b712264ea7cd9087cfe0e7ef180fa74d9bb068aa7ee8d530395a844"
+    },
+    "artifacts/sampler-ui-migration/modern-parent-recipe.json": {
+      "bytes": 6934,
+      "sha256": "fe67b3cced51eaefbb04734c930fe2169fd4b49f92574c2919bdd3fa89269aa4"
+    },
+    "artifacts/sampler-ui-migration/modern-parent-recipe-acceptance.json": {
+      "bytes": 7232,
+      "sha256": "249a26aa0b6e2795b06a0f77c1214388de09b38a5a9655c172bbea8ed2e7fd44"
+    },
+    "artifacts/core-query-composition/12-modern-ui-scalar-query-check.log": {
+      "bytes": 639,
+      "sha256": "22fc5376d1c7bb2987a364019291f00b3662b9370882dbf363fb4e77e6d50006"
+    },
+    "artifacts/core-query-composition/13-source-key-transport-test.log": {
+      "bytes": 724,
+      "sha256": "9c61400d0598c2acbf5e6e4595b19d72c3e35cc3fe7b198eb637ed0ed465f12d"
+    },
+    "artifacts/core-query-composition/14-source-key-transport-actual-test.log": {
+      "bytes": 406,
+      "sha256": "dc8ac43b8de984b7922b308737ea4f06a46e37a73d51ecdcf5667a32a925ae53"
+    },
+    "artifacts/core-query-composition/15-eq-structural-composed-tests.log": {
+      "bytes": 1115,
+      "sha256": "3d4773dda8edb6bfc1a199018fc257bde923e6d3ee2f057771c264eb77922918"
+    }
+  }
+}
