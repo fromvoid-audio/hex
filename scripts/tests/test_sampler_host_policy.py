@@ -11,6 +11,22 @@ violations = policy.violations
 
 
 class SamplerHostPolicyTests(unittest.TestCase):
+    def test_captured_main_has_finite_same_parent_and_lifecycle_producers(self):
+        root = Path(__file__).resolve().parents[2]
+        path = 'crates/hex-audio/src/candidate_custody/eligible/publication/preparation/captured_main.rs'
+        source = (root / path).read_text()
+        self.assertEqual(violations(path, source), [])
+        for step in ['tail.captured_data_tail_matches_on_control(self)',
+                     'require_captured_main_data_only_on_control(identity)',
+                     'slot.incarnation != self.token.incarnation',
+                     'lineage.complete_actual_field_drop_on_control()']:
+            self.assertTrue(violations(path, source.replace(step, 'omitted()')), step)
+        for foreign in ['crates/hex-ui/src/foreign.rs', 'crates/hex-session/src/foreign.rs']:
+            self.assertTrue(violations(foreign, 'record.reserve_captured_main_field_on_control()'))
+            self.assertTrue(violations(foreign, 'impl CapturedMainControl for Foreign {}'))
+            self.assertTrue(violations(foreign, 'root.retain_captured_main_native_tail()'))
+        self.assertTrue(violations(path, source + '\nimpl CapturedMainControl for Foreign {}'))
+
     def test_ordered_source_query_keeps_actual_binding_and_all_owning_fields(self):
         root = Path(__file__).resolve().parents[2]
         path = 'crates/hex-session/src/service/comparison_audio.rs'
@@ -182,7 +198,7 @@ class SamplerHostPolicyTests(unittest.TestCase):
         root = Path(__file__).resolve().parents[2]
         for path, steps in {
             'crates/hex-engine/src/audio_candidate/preparation/native_fields.rs': ['.visit_transferred_host_shell(ledger, owner)?', 'owner.visit_unpublished_native_host_fields(ledger)'],
-            'crates/hex-engine/src/audio_candidate/draft.rs': ['*phase != Phase::Transferred', '*identity != Some(owner.identity())'],
+            'crates/hex-engine/src/audio_candidate/draft.rs': ['*phase != Phase::Transferred', '*identity != Some(owner.identity())', '*purpose != expected', 'ConstructorPurpose::MainExport)'],
             'crates/hex-engine/src/audio_candidate/storage.rs': ['inner.visit_fresh_storage(ledger)', 'runtime.playback.is_main_control_runtime()'],
         }.items():
             actual = (root / path).read_text()

@@ -28,7 +28,8 @@ pub use eligible::{
     AudioCandidateDomainUsage, AudioCandidateEligibleStageRefusal,
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
     AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
-    AudioCandidatePublicationReservation,
+    AudioCandidatePublicationReservation, CapturedMainFile, CapturedMainFileError,
+    CapturedMainFileLoan,
 };
 pub(crate) use root_fields::RootActor;
 static NEXT_ROOT: AtomicU64 = AtomicU64::new(1);
@@ -129,6 +130,8 @@ struct Work {
     bank_drop_pending: bool,
     metadata_drop_pending: bool,
     first_panic: Option<Box<dyn Any + Send>>,
+    captured_native_tail: Option<crate::native_callback_owner::NativeRetirement>,
+    captured_native_tail_pending: bool,
     #[cfg(test)]
     last_thread: Option<std::thread::ThreadId>,
 }
@@ -1009,6 +1012,35 @@ impl CandidateRoot {
         if work.bank_drop_pending || work.metadata_drop_pending || work.first_panic.is_some() {
             return;
         }
+        if work.captured_native_tail_pending {
+            return;
+        }
+        if let Some(tail) = work.captured_native_tail.as_mut() {
+            match catch_unwind(AssertUnwindSafe(|| {
+                tail.advance_captured_data_endpoints_on_control()
+            })) {
+                Ok(Ok(true)) => {
+                    work.captured_native_tail_pending = true;
+                    let result =
+                        catch_unwind(AssertUnwindSafe(|| drop(work.captured_native_tail.take())));
+                    if let Err(payload) = result {
+                        work.first_panic = Some(payload);
+                        return;
+                    }
+                    work.captured_native_tail_pending = false;
+                }
+                Ok(Ok(false)) => {}
+                Ok(Err(())) => {
+                    work.captured_native_tail_pending = true;
+                    return;
+                }
+                Err(payload) => {
+                    work.first_panic = Some(payload);
+                    work.captured_native_tail_pending = true;
+                    return;
+                }
+            }
+        }
         if work.current.is_none() && work.bank_drop.is_none() {
             let mut bank = lock(&self.0.bank);
             for (index, slot) in bank.slots.iter_mut().enumerate() {
@@ -1365,6 +1397,11 @@ impl CandidateRoot {
             .iter()
             .all(|s| s.phase == Phase::Vacant)
             && self.0.eligible.complete()
+            && self.0.execution.try_lock().is_ok_and(|work| {
+                work.captured_native_tail.is_none()
+                    && !work.captured_native_tail_pending
+                    && work.first_panic.is_none()
+            })
     }
     pub(crate) fn same_root(&self, other: &Self) -> bool {
         self.0.shares_owner_with(&other.0)

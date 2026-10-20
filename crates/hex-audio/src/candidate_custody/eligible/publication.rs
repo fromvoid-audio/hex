@@ -28,6 +28,7 @@ mod native_host;
 mod preparation;
 use preparation::PreparationExecution;
 pub use preparation::{
+    CapturedMainFile, CapturedMainFileError, CapturedMainFileLoan,
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
     AudioCandidatePreparationReservation, AudioCandidatePreparationToken,
 };

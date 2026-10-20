@@ -30,6 +30,59 @@ pub enum AudioCandidateControlProgress {
     Block(AudioCandidateControlBlock),
     Complete,
 }
+/// Finite access to already-captured Main work. Unlike preparation operations,
+/// this interface cannot construct, publish, replace or extract an owner.
+pub trait CapturedMainControl {
+    fn step_main_control_work_for_identity_on_control(
+        &mut self,
+        expected: AudioCandidateIdentity,
+        maximum: usize,
+    ) -> Result<AudioCandidateControlProgress, AudioStorageError>;
+    fn copy_main_control_block_on_control(
+        &self,
+        block: AudioCandidateControlBlock,
+        output: &mut [crate::Frame; 256],
+    ) -> Result<(), AudioStorageError>;
+    fn acknowledge_main_control_block_on_control(
+        &mut self,
+        block: AudioCandidateControlBlock,
+    ) -> Result<(), AudioStorageError>;
+    fn finish_main_control_work_on_control(
+        &mut self,
+        expected: AudioCandidateIdentity,
+    ) -> Result<(), AudioStorageError>;
+}
+
+impl CapturedMainControl for AudioCandidatePreparationOperations<'_> {
+    fn step_main_control_work_for_identity_on_control(
+        &mut self,
+        expected: AudioCandidateIdentity,
+        maximum: usize,
+    ) -> Result<AudioCandidateControlProgress, AudioStorageError> {
+        AudioCandidatePreparationOperations::step_main_control_work_for_identity_on_control(
+            self, expected, maximum,
+        )
+    }
+    fn copy_main_control_block_on_control(
+        &self,
+        block: AudioCandidateControlBlock,
+        output: &mut [crate::Frame; 256],
+    ) -> Result<(), AudioStorageError> {
+        AudioCandidatePreparationOperations::copy_main_control_block_on_control(self, block, output)
+    }
+    fn acknowledge_main_control_block_on_control(
+        &mut self,
+        block: AudioCandidateControlBlock,
+    ) -> Result<(), AudioStorageError> {
+        AudioCandidatePreparationOperations::acknowledge_main_control_block_on_control(self, block)
+    }
+    fn finish_main_control_work_on_control(
+        &mut self,
+        expected: AudioCandidateIdentity,
+    ) -> Result<(), AudioStorageError> {
+        AudioCandidatePreparationOperations::finish_main_control_work_on_control(self, expected)
+    }
+}
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Working,
@@ -91,10 +144,6 @@ impl ControlWork {
             Phase::StepPending | Phase::DropPending | Phase::OriginalInputsPending | Phase::Failed
         )
     }
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "post-work host inventory consumer in progress")
-    )]
     pub(super) fn visit_storage<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,
@@ -316,6 +365,91 @@ impl ControlWork {
     }
 }
 impl AudioCandidatePreparation {
+    /// Rewalk the actual closed original-Sampler Main descendants. This proves
+    /// only their resource class, never aggregate admission or handle closure.
+    /// Opaque/provider/native/streaming classes remain refused by the SAME
+    /// mandatory typed validators; a Main-purpose label alone is insufficient.
+    pub fn require_captured_main_data_only_on_control(
+        &self,
+        expected: AudioCandidateIdentity,
+    ) -> Result<(), AudioStorageError> {
+        if self.failed_incomplete()
+            || self.cleaning
+            || self.complete
+            || self.owner.is_some()
+            || self.bank.is_some()
+            || self.custody.is_some()
+            || self.token.is_some()
+            || !self.sources.is_empty()
+            || !self.resident_draft.is_empty()
+            || self.first_panic.is_some()
+            || self.original_resource_refused
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        let work = self
+            .control_work
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        let anchor = work.anchors[0]
+            .as_ref()
+            .filter(|a| a.identity() == expected)
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        if !anchor
+            .owner
+            .inner
+            .custody
+            .original_sampler_resources_retained()
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        let limits = crate::AudioStorageLedgerReservation {
+            data_rows: self.reservation.allocation_items,
+            handle_rows: self.reservation.handle_obligations,
+            root_rows: 1,
+            max_retained_bytes: self.reservation.max_prepared_data_bytes,
+            max_construction_peak_bytes: self.reservation.max_construction_data_bytes,
+        };
+        crate::AudioRootStorageLedger::arithmetic_cost_for_limits(
+            limits,
+            limits.max_retained_bytes,
+            limits.max_construction_peak_bytes,
+            |ledger| {
+                ledger.vec(&self.sources)?;
+                ledger.vec(&self.resident_draft)?;
+                // Same closed typed traversal used by compiler Inputs: the public
+                // wrapper invalidates its ledger during mutation and cannot
+                // contain these nested descendants. No wrapper gate changes.
+                ledger.root(
+                    &anchor.owner.inner.custody,
+                    crate::AudioStorageRole::Current,
+                )?;
+                let result = anchor
+                    .owner
+                    .inner
+                    .custody
+                    .visit_audio_storage(ledger, crate::AudioStorageRole::Current);
+                result?;
+                let result = self
+                    .draft
+                    .as_ref()
+                    .ok_or(AudioStorageError::UnknownStorage)?
+                    .visit_transferred_main_shell(ledger, &anchor.owner);
+                result?;
+                work.visit_storage(ledger)
+            },
+        )?;
+        Ok(())
+    }
+    /// Exact retained Main block copy, without exposing construction operations
+    /// or any runtime owner. The block is checked against the actual parent.
+    pub fn copy_captured_main_block_on_control(
+        &self,
+        block: AudioCandidateControlBlock,
+        output: &mut [crate::Frame; 256],
+    ) -> Result<(), AudioStorageError> {
+        self.copy_main_control_block_on_control(block, output)
+    }
     pub(in crate::audio_candidate) fn begin_main_control_work_on_control(
         &mut self,
         frames: u64,

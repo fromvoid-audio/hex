@@ -137,6 +137,7 @@ pub struct WorkerRootView<'a> {
     cancellation: &'a SessionCancellation,
     event: Option<&'a Event>,
     dispatch: WorkerRootDispatch,
+    main_files: Option<&'a NativeMainFiles>,
 }
 impl<'a> WorkerRootView<'a> {
     /// Begin the actual worker Session's pending transition. The next source
@@ -181,7 +182,25 @@ impl<'a> WorkerRootView<'a> {
             cancellation,
             event,
             dispatch,
+            main_files: None,
         }
+    }
+    pub(super) fn with_actual_main_files(mut self, files: Option<&'a NativeMainFiles>) -> Self {
+        self.main_files = files;
+        self
+    }
+    /// The actual persistent worker destination, including real Vec capacity
+    /// and occupied File children. This is neither a saved quote nor an empty
+    /// substitute for an unqualified channel. It cannot outlive this dispatch.
+    pub fn main_file_slots_on_control(
+        &self,
+    ) -> Result<
+        impl hex_engine::sampler_host_fields::FileSlotsFields<'_>,
+        hex_engine::AudioStorageError,
+    > {
+        self.main_files
+            .map(NativeMainFiles::fields)
+            .ok_or(hex_engine::AudioStorageError::UnknownStorage)
     }
     pub fn dispatch(&self) -> WorkerRootDispatch {
         self.dispatch

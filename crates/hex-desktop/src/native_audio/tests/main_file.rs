@@ -14,20 +14,64 @@ use std::sync::atomic::AtomicBool;
 
 #[test]
 fn real_worker_token_main_file_reader_pending_is_nonfatal_and_stale_token_refuses() {
-    exercise(false);
+    assert!(exercise(false, false).is_some());
 }
 
 #[test]
 fn outer_file_rows_cannot_be_smuggled_into_inner_compiler_original_ledger() {
-    exercise(true);
+    assert!(exercise(true, false).is_none());
 }
 
-fn exercise(include_unbound_file_rows: bool) {
+#[test]
+fn captured_main_file_continues_after_actual_publication_endpoint_retirement() {
+    let reference = exercise(false, false).unwrap();
+    let replaced = exercise(false, true).unwrap();
+    assert_eq!(
+        reference, replaced,
+        "replacement must preserve exact captured PCM and encoding"
+    );
+}
+
+fn exercise(
+    include_unbound_file_rows: bool,
+    retire_publication_after_block: bool,
+) -> Option<Vec<u8>> {
     let _serial = super::super::tests::NATIVE_FIXTURE.lock().unwrap();
     let dir = super::super::tests::Files::new();
     let path = dir.0.join("actual-main-token.wav");
     let mut jobs = vec![MainControlFileJob::create_new_on_control(&path, 44_100, 513).unwrap()];
-    let (mut output, mut backend) = hex_audio::worker_fixture::open(44_100).unwrap();
+    let publication = hex_audio::AudioCandidatePublicationReservation {
+        runtime_slots: 3,
+        archive_slots: 3,
+        member_rows: 16384,
+        transfer_rows: 16384,
+        receipt_rows: 8,
+        data_rows: 4096,
+        handle_rows: 4096,
+        max_retained_data_bytes: 256 * 1024 * 1024,
+        max_construction_peak_data_bytes: 256 * 1024 * 1024,
+    };
+    // Each prior fixture retires on the actual lifecycle lane. Serializing
+    // callers does not synchronously complete that retirement or free its lease.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let (mut output, mut backend) = loop {
+        let opened = if retire_publication_after_block {
+            hex_audio::worker_fixture::open_with_reservation(44_100, publication)
+        } else {
+            hex_audio::worker_fixture::open(44_100)
+        };
+        match opened {
+            Ok(output) => break output,
+            Err(error) => {
+                assert_eq!(error, "audio output is open or still shutting down");
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "prior fixture did not retire"
+                );
+                std::thread::yield_now();
+            }
+        }
+    };
     let storage = AudioStorageReservation {
         allocation_items: 256,
         handle_obligations: 128,
@@ -39,19 +83,7 @@ fn exercise(include_unbound_file_rows: bool) {
     let token = {
         let mut control = output.publication.control().unwrap();
         control
-            .configure_audio_candidate_publication(
-                hex_audio::AudioCandidatePublicationReservation {
-                    runtime_slots: 3,
-                    archive_slots: 3,
-                    member_rows: 16384,
-                    transfer_rows: 16384,
-                    receipt_rows: 8,
-                    data_rows: 4096,
-                    handle_rows: 4096,
-                    max_retained_data_bytes: 256 * 1024 * 1024,
-                    max_construction_peak_data_bytes: 256 * 1024 * 1024,
-                },
-            )
+            .configure_audio_candidate_publication(publication)
             .unwrap();
         control
             .reserve_audio_candidate_preparation(
@@ -200,7 +232,11 @@ fn exercise(include_unbound_file_rows: bool) {
             }
             identity = operations.prepared_identity();
             reader = Some(operations.register_compiled_reader_on_control()?);
-            operations.begin_main_control_work_on_control(513)
+            if retire_publication_after_block {
+                Ok(())
+            } else {
+                operations.begin_main_control_work_on_control(513)
+            }
         })
         .unwrap();
     if include_unbound_file_rows {
@@ -220,12 +256,145 @@ fn exercise(include_unbound_file_rows: bool) {
         drop(client);
         backend.close();
         drop(output);
-        return;
+        return None;
     }
-    assert_eq!(progress, AudioCandidatePreparationProgress::Collecting);
+    assert_eq!(
+        progress,
+        if retire_publication_after_block {
+            AudioCandidatePreparationProgress::Ready
+        } else {
+            AudioCandidatePreparationProgress::Collecting
+        }
+    );
     drop(original);
     let job = &mut jobs[0];
     job.bind_main_on_control(identity.unwrap()).unwrap();
+    if retire_publication_after_block {
+        let mut captured = output
+            .publication
+            .control()
+            .unwrap()
+            .begin_captured_main_file_on_control(token, identity.unwrap(), 513)
+            .unwrap();
+        let mut forbidden = false;
+        assert!(
+            output
+                .publication
+                .control()
+                .unwrap()
+                .prepare_audio_candidate_on_control(token, |_| {
+                    forbidden = true;
+                    Ok(())
+                })
+                .is_err()
+        );
+        assert!(
+            !forbidden,
+            "ordinary preparation cannot enter the obligated Main parent"
+        );
+        assert!(
+            output
+                .publication
+                .control()
+                .unwrap()
+                .begin_captured_main_file_on_control(token, identity.unwrap(), 513)
+                .is_err()
+        );
+        let mut callback = [[0.0; 2]; 32];
+        let measured = allocation_counter::measure(|| backend.render(&mut callback).unwrap());
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.count_current,
+                measured.bytes_total,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        let mut turn = |job: &mut MainControlFileJob| {
+            let _ = captured.poll_retirement_on_control();
+            job.advance_on_control(|continuation| {
+                let mut loan = captured
+                    .try_loan_on_control()
+                    .map_err(|error| match error {
+                        hex_audio::CapturedMainFileError::Busy => {
+                            hex_session::service::MainControlHostError::Busy
+                        }
+                        _ => hex_session::service::MainControlHostError::Refused,
+                    })?;
+                match continuation.run(&mut loan) {
+                    Ok(()) | Err(hex_engine::AudioStorageError::ExternalReadersPending) => Ok(()),
+                    Err(_) => Err(hex_session::service::MainControlHostError::Refused),
+                }
+            })
+        };
+        assert!(matches!(
+            turn(job).unwrap(),
+            MainControlFileProgress::Progress { .. }
+        ));
+        // Output replacement drops this same WorkerControl, whose Drop closes
+        // the publication endpoint. Keep the captured File job and its exact
+        // preparation token alive: a later turn must still render its target.
+        output.publication.close();
+        backend.close();
+        drop(output); // actual StreamOwner retirement, not a caller join flag
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let (replacement, mut replacement_backend) = loop {
+            match hex_audio::worker_fixture::open(44_100) {
+                Ok(output) => break output,
+                Err(error) => {
+                    assert!(
+                        std::time::Instant::now() < deadline,
+                        "native frontier did not release lease while captured DATA remained: {error}"
+                    );
+                    std::thread::yield_now();
+                }
+            }
+        };
+        match turn(job) {
+            Ok(MainControlFileProgress::Progress { .. }) => {}
+            Err(error) => panic!("captured export lost its actual parent: {error:?}"),
+            Ok(_) => panic!("captured export made no progress after endpoint retirement"),
+        }
+        assert!(matches!(
+            turn(job).unwrap(),
+            MainControlFileProgress::Progress { .. }
+        ));
+        assert!(matches!(turn(job).unwrap(), MainControlFileProgress::Busy));
+        assert!(
+            !path.exists(),
+            "actual retained reader must prevent final publication"
+        );
+        drop(reader.take());
+        assert!(
+            matches!(turn(job).unwrap(), MainControlFileProgress::Published(report) if report.frames==513)
+        );
+        assert!(
+            turn(job).is_err(),
+            "successful publication cannot run twice"
+        );
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(bytes.len(), 44 + 513 * 4);
+        assert!(bytes[44..].iter().any(|byte| *byte != 0));
+        drop(turn);
+        assert!(matches!(
+            captured.try_loan_on_control(),
+            Err(hex_audio::CapturedMainFileError::Stale)
+        ));
+        drop(client);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !captured.poll_retirement_on_control() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actual Main DATA tail failed normal retirement"
+            );
+            std::thread::yield_now();
+        }
+        drop(captured);
+        replacement_backend.close();
+        drop(replacement);
+        return Some(bytes);
+    }
     for _ in 0..3 {
         assert!(matches!(
             advance(&mut output, token, job).unwrap(),
@@ -282,4 +451,5 @@ fn exercise(include_unbound_file_rows: bool) {
     drop(client);
     backend.close();
     drop(output);
+    Some(bytes)
 }

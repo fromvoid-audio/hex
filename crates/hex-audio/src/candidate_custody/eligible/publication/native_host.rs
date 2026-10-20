@@ -528,7 +528,11 @@ impl NativeFields for NativePreparationHost<'_> {
             refusal,
             cell,
             domains,
+            captured_main,
         } = execution;
+        if captured_main.is_some() {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         if *pending
             || *failed
             || refusal.is_some()
@@ -615,6 +619,8 @@ impl NativeFields for NativePreparationHost<'_> {
             bank_drop_pending,
             metadata_drop_pending,
             first_panic,
+            captured_native_tail,
+            captured_native_tail_pending,
             #[cfg(test)]
                 last_thread: _,
         } = &*self.outer_work;
@@ -648,6 +654,8 @@ impl NativeFields for NativePreparationHost<'_> {
             || *bank_drop_pending
             || *metadata_drop_pending
             || first_panic.is_some()
+            || captured_native_tail.is_some()
+            || *captured_native_tail_pending
             || self.returns.is_some()
             || domains.iter().any(Option::is_some)
             || self.work.publication.anchors.iter().any(Option::is_some)

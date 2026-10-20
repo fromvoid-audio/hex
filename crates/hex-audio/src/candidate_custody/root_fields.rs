@@ -111,6 +111,37 @@ mod tests {
     use super::*;
     use hex_engine::{AudioRootStorageLedger, AudioStorageError, AudioStorageLedgerReservation};
     #[test]
+    fn actual_captured_main_root_pair_counts_each_alias_and_recycles_only_after_normal_drop() {
+        let root = CandidateRoot::new_registered(1).unwrap();
+        for _ in 0..2 {
+            let mut lease = root
+                .0
+                .root_fields
+                .as_ref()
+                .unwrap()
+                .reserve_captured_main_field_on_control()
+                .unwrap();
+            let actual = root.clone();
+            assert!(
+                root.0
+                    .root_fields
+                    .as_ref()
+                    .unwrap()
+                    .reserve_captured_main_field_on_control()
+                    .is_err()
+            );
+            root.test_native_root_header_fields().unwrap();
+            let free = allocation_counter::measure(|| {
+                lease.begin_actual_field_drop_on_control().unwrap();
+                drop(actual);
+                lease.complete_actual_field_drop_on_control().unwrap();
+                drop(lease);
+            });
+            assert_eq!((free.count_total, free.count_current), (0, 0));
+            root.test_native_root_header_fields().unwrap();
+        }
+    }
+    #[test]
     fn actual_root_field_move_release_and_duplicate_refusal_do_not_allocate() {
         let root = CandidateRoot::new_registered(1).unwrap();
         root.test_native_root_header_fields().unwrap();

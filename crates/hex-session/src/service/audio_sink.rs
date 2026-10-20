@@ -88,6 +88,7 @@ pub(super) struct WorkerEvents {
     )>,
     startup_error: Option<String>,
     initial_snapshot_phase: worker_startup::InitialSnapshotPhase,
+    main_files: Option<NativeMainFiles>,
 }
 impl WorkerEvents {
     pub(super) fn cancelled(&self) -> bool {
@@ -108,6 +109,7 @@ impl WorkerEvents {
             last_source: None,
             startup_error: None,
             initial_snapshot_phase: Default::default(),
+            main_files: None,
         }
     }
     pub(super) fn initialize(
@@ -125,6 +127,7 @@ impl WorkerEvents {
             last_source,
             startup_error,
             initial_snapshot_phase: _,
+            main_files,
         } = self;
         let roots = WorkerStartupView {
             startup,
@@ -134,6 +137,7 @@ impl WorkerEvents {
             cancellation: shutdown,
             last_source,
             startup_error,
+            main_files,
         };
         let rate = audio
             .as_mut()
@@ -160,6 +164,7 @@ impl WorkerEvents {
             last_source,
             startup_error,
             initial_snapshot_phase,
+            main_files,
         } = self;
         if let Some(audio) = audio.as_mut() {
             let mut roots = WorkerInitialSessionView {
@@ -171,6 +176,7 @@ impl WorkerEvents {
                 last_source,
                 startup_error,
                 phase: initial_snapshot_phase,
+                main_files,
             };
             audio.initialize_session_with_startup_roots(&mut roots);
         }
@@ -183,6 +189,11 @@ impl WorkerEvents {
         }
         self.initial_snapshot_phase = worker_startup::InitialSnapshotPhase::Legacy;
         true
+    }
+    pub(super) fn install_native_main_files(&mut self) {
+        // The actual Service constructor selected registered events and omitted
+        // its legacy work channel/thread. This creates no backing allocation.
+        self.main_files = Some(NativeMainFiles::new());
     }
     pub(super) fn startup_failed(&mut self, error: WorkerAudioInitializationError) {
         self.startup_error = Some(format!("audio unavailable: {error}"));
@@ -207,7 +218,8 @@ impl WorkerEvents {
         dispatch: WorkerRootDispatch,
     ) {
         if let Some(audio) = self.audio.as_mut() {
-            let roots = WorkerRootView::new(state, &self.shutdown, event, dispatch);
+            let roots = WorkerRootView::new(state, &self.shutdown, event, dispatch)
+                .with_actual_main_files(self.main_files.as_ref());
             audio.poll_with_worker_roots(&roots);
         }
     }

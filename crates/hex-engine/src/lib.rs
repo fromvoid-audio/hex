@@ -39,7 +39,7 @@ pub use audio_candidate::{
     AudioCandidatePreparation, AudioCandidatePreparationOperations, AudioCandidatePreparedSplit,
     AudioCandidateRefusal, AudioCandidateReservationQuote, AudioCandidateRuntimeDisposed,
     AudioCandidateRuntimeStatus, AudioCandidateSplitRefusal, AudioCandidateTransfer,
-    ClaimedAudioCandidateRuntime,
+    ClaimedAudioCandidateRuntime, CapturedMainControl,
 };
 pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,

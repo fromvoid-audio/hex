@@ -6,7 +6,9 @@ use crate::{
     SharedMetadata,
     sampler_host_fields::{BodyRef, SharedMetadataRef},
 };
-use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+mod captured_main;
+pub use captured_main::NativeCapturedMainRootLease;
 const VACANT: u8 = 0;
 const LIVE: u8 = 1;
 const DROP_PENDING: u8 = 2;
@@ -16,6 +18,9 @@ const ROLES: usize = 3;
 struct Fields {
     phases: [AtomicU8; ROLES],
     lineages: [[u64; 2]; ROLES],
+    main_phase: AtomicU8,
+    main_generation: AtomicU64,
+    main_lineages: [AtomicU64; 2],
 }
 pub struct NativeRootFieldRegistration {
     fields: SharedMetadata<Fields>,
@@ -44,6 +49,10 @@ impl NativeRootFieldRegistration {
             .phases
             .iter()
             .any(|phase| !matches!(phase.load(Ordering::Acquire), VACANT | LIVE | DISPOSED))
+            || !matches!(
+                self.fields.main_phase.load(Ordering::Acquire),
+                VACANT | LIVE | DISPOSED
+            )
         {
             return Err(AudioStorageError::UnknownStorage);
         }
@@ -68,6 +77,9 @@ impl NativeRootFieldRegistration {
             fields: SharedMetadata::new_on_control(Fields {
                 phases: std::array::from_fn(|_| AtomicU8::new(VACANT)),
                 lineages,
+                main_phase: AtomicU8::new(VACANT),
+                main_generation: AtomicU64::new(0),
+                main_lineages: [AtomicU64::new(0), AtomicU64::new(0)],
             }),
         })
     }
@@ -120,7 +132,13 @@ impl NativeRootFieldRegistration {
         owner: SharedMetadataRef<'a>,
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<(), AudioStorageError> {
-        let Fields { phases, lineages } = self.fields.as_ref();
+        let Fields {
+            phases,
+            lineages,
+            main_phase,
+            main_generation: _,
+            main_lineages,
+        } = self.fields.as_ref();
         let phases = phases.each_ref().map(|p| p.load(Ordering::Acquire));
         if phases
             .iter()
@@ -149,6 +167,23 @@ impl NativeRootFieldRegistration {
                     lineages[role][field],
                 )?;
             }
+        }
+        match main_phase.load(Ordering::Acquire) {
+            LIVE => {
+                for (field, owner) in [data, metadata].into_iter().enumerate() {
+                    if let Some(arithmetic) = &mut ledger.arithmetic {
+                        arithmetic.existing(owner)?;
+                    }
+                    ledger.handle_at(
+                        owner,
+                        Owner::exclusive(&main_lineages[field]),
+                        Location("captured-main-root-field", field),
+                        main_lineages[field].load(Ordering::Relaxed),
+                    )?;
+                }
+            }
+            VACANT | DISPOSED => {}
+            _ => return Err(AudioStorageError::UnknownStorage),
         }
         Ok(())
     }

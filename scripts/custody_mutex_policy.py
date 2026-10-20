@@ -60,7 +60,7 @@ def source_violations(path, source):
     uses = re.search(r'\b(?:spin\s*::|CustodyMutex\b|CustodyMutexGuard\b|lock_recover_on_control\b)', source)
     diagnostic_test = (path == BASE + '/eligible/publication/tests.rs'
                        and not re.search(r'\bCustodyMutex\b|\bspin\s*::|lock_recover_on_control', source))
-    guarded_host = (path == GUARDED_HOST and not re.search(r'\bCustodyMutex\b|\bspin\s*::|lock_recover_on_control', source))
+    guarded_host = (path in {GUARDED_HOST, BASE + '/eligible/publication/preparation/captured_main.rs'} and not re.search(r'\bCustodyMutex\b|\bspin\s*::|lock_recover_on_control', source))
     allowed = (guarded_host or path in {ROOT, ELIGIBLE, RESIDENT, WRAPPER, BASE + '/inline_lock_tests.rs'}
                or path.startswith(BASE + '/custody_mutex/')
                or path == 'crates/hex-audio/src/prepared/resident_forwarding/tests.rs' or diagnostic_test)

@@ -2,8 +2,7 @@
 //! No Runtime, lock, owner callback or source/cost permit is stored in this job.
 use hex_engine::{
     AudioCandidateControlBlock as Block, AudioCandidateControlProgress as Progress,
-    AudioCandidateIdentity, AudioCandidatePreparationOperations as Operations, AudioStorageError,
-    Frame,
+    AudioCandidateIdentity, AudioStorageError, CapturedMainControl as Operations, Frame,
 };
 use hex_export::{ExportError, ExportReport, StagedWavFile};
 use std::any::Any;
@@ -19,7 +18,7 @@ pub enum MainControlHostError {
 /// Stack-scoped continuation; the actual adapter invokes it once under its
 /// existing generation-checked preparation token. It cannot return an owner.
 pub trait MainControlFileLoan {
-    fn run(&mut self, operations: &mut Operations<'_>) -> Result<(), AudioStorageError>;
+    fn run(&mut self, operations: &mut dyn Operations) -> Result<(), AudioStorageError>;
 }
 
 #[derive(Debug)]
@@ -61,7 +60,7 @@ struct Loan<'a> {
     invoked: bool,
 }
 impl MainControlFileLoan for Loan<'_> {
-    fn run(&mut self, operations: &mut Operations<'_>) -> Result<(), AudioStorageError> {
+    fn run(&mut self, operations: &mut dyn Operations) -> Result<(), AudioStorageError> {
         if self.invoked {
             self.duplicate = true;
             return Err(AudioStorageError::SourceMismatch);

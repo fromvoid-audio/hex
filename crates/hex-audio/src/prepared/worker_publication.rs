@@ -318,6 +318,16 @@ impl WorkerPublication<'_> {
             .bind_audio_candidate_preparation_domains(token, domains)
     }
 
+    /// Bind only this actual pre-close Main preparation. The returned affine
+    /// continuation cannot perform later construction or audible publication.
+    pub fn begin_captured_main_file_on_control(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        expected: hex_engine::AudioCandidateIdentity,
+        frames: u64,
+    ) -> Result<crate::CapturedMainFile, crate::CapturedMainFileError> {
+        self.control.begin_captured_main_file_on_control(token, expected, frames)
+    }
     /// Operate on the actual rooted child without exposing its owning value.
     /// The host retains reservation, cancellation, refusal and cleanup custody.
     /// A callback cannot retain the preparation loan beyond the guarded call.

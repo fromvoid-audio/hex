@@ -37,6 +37,8 @@ EXACT = {
     'crates/hex-engine/src/audio_storage/document_token.rs',
     'crates/hex-storage/src/journal.rs',
     'crates/hex-engine/src/audio_storage/native_root_fields.rs',
+    'crates/hex-engine/src/audio_storage/native_root_fields/captured_main.rs',
+    'crates/hex-audio/src/candidate_custody/eligible/publication/preparation/captured_main.rs',
     'crates/hex-audio/src/candidate_custody/root_fields.rs',
     'crates/hex-engine/src/audio_storage/native_status.rs',
     'crates/hex-engine/src/audio_storage/native_resident.rs',
@@ -101,6 +103,7 @@ EXACT = {
     'crates/hex-export/src/publication.rs',
     'crates/hex-export/src/buffered_file.rs',
     'crates/hex-session/src/service/main_control_file.rs',
+    'crates/hex-session/src/service/worker_export_lane.rs',
     'crates/hex-session/src/service/canonical_audio_source.rs',
     'crates/hex-session/src/service/comparison_audio.rs',
     'crates/hex-session/src/snapshot_exports/event.rs',
@@ -115,6 +118,36 @@ NAMES = re.compile(r'\b(?:EventMetadataFields|EventReasonFields|EventBatchFailur
 
 
 def violations(path: str, source: str) -> list[str]:
+    captured_audio = 'crates/hex-audio/src/candidate_custody/eligible/publication/preparation/captured_main.rs'
+    captured_engine = 'crates/hex-engine/src/audio_storage/native_root_fields/captured_main.rs'
+    if 'reserve_captured_main_field_on_control' in source and path not in {
+            captured_audio, captured_engine, 'crates/hex-audio/src/candidate_custody/root_fields.rs'}:
+        return [f'{path}: captured Main alias is paired only by the actual Root constructor']
+    if re.search(r'impl CapturedMainControl for ', source):
+        expected = {
+            captured_audio: "impl CapturedMainControl for CapturedMainFileLoan<'_>",
+            'crates/hex-engine/src/audio_candidate/preparation/control_work.rs':
+                "impl CapturedMainControl for AudioCandidatePreparationOperations<'_>",
+        }
+        implementations = re.findall(r'impl CapturedMainControl for [^{]+', source)
+        if path not in expected or len(implementations) != 1 or implementations[0].strip() != expected[path]:
+            return [f'{path}: Main continuation has exactly two finite owning implementations']
+    if 'retain_captured_main_native_tail' in source and path not in {
+            captured_audio, 'crates/hex-audio/src/lifecycle.rs'}:
+        return [f'{path}: only the actual lifecycle parent transfers the captured DATA tail']
+    if path == captured_audio:
+        required = ['tail.captured_data_tail_matches_on_control(self)',
+                    'execution.captured_main', 'require_captured_main_data_only_on_control(identity)',
+                    'outer_work.captured_native_tail = native.take()',
+                    'slot.incarnation != self.token.incarnation',
+                    'p.token == self.token && p.captured_main == Some(self.identity)',
+                    'root: Option<CandidateRoot>', 'NativeCapturedMainRootLease',
+                    'drop(self.root.take())', 'lineage.complete_actual_field_drop_on_control()']
+        if any(step not in source for step in required):
+            return [f'{path}: actual same Root/cell/affine aliases and DATA frontier remain mandatory']
+        production = re.sub(r'///[^\n]*', '', source)
+        if re.search(r'\bunsafe\b|\.expect\(|\.unwrap\(|Arc::|mem::take|force_unlock', production):
+            return [f'{path}: no runtime panic, raw adoption, owner extraction or forced unlock']
     if 'ComparisonAudioBinding::advance' in source and path not in {
             'crates/hex-session/src/service.rs',
             'crates/hex-session/src/service/comparison_audio.rs'}:
@@ -165,7 +198,15 @@ def violations(path: str, source: str) -> list[str]:
         return [f'{path}: initial Session purpose has only the actual startup/Session/native integration owners']
     if path == 'crates/hex-session/src/service/worker_startup.rs':
         production = source.split('#[cfg(test)]\nmod tests {', 1)[0]
-        if NAMES.search(production):
+        # Exactly two forwarding accessors borrow actual worker-owned slots;
+        # startup still constructs/implements no arbitrary projection.
+        accessor = r'pub fn main_file_slots_on_control\(.*?\n    }'
+        forwards = re.findall(accessor, production, re.S)
+        if len(forwards) != 2 or any(any(step not in value for step in [
+                'self.main_files', '.map(NativeMainFiles::fields)',
+                '.ok_or(hex_engine::AudioStorageError::UnknownStorage)']) for value in forwards):
+            return [f'{path}: both startup phases forward the actual File slots or refuse']
+        if NAMES.search(re.sub(accessor, '', production, flags=re.S)):
             return [f'{path}: startup phase does not grant generic host projection authority']
         compact = re.sub(r'\s+', '', production)
         for step in ['*self.phase!=InitialSnapshotPhase::Fresh',
@@ -376,7 +417,9 @@ def violations(path: str, source: str) -> list[str]:
         if '.visit_transferred_host_shell(ledger, owner)?' not in source or 'owner.visit_unpublished_native_host_fields(ledger)' not in source:
             return [f'{path}: owned preparation requires both actual transferred shell and owned descendants']
     if path == 'crates/hex-engine/src/audio_candidate/draft.rs':
-        for step in ['*phase != Phase::Transferred', '*identity != Some(owner.identity())', '*purpose != ConstructorPurpose::NativeFresh']:
+        for step in ['*phase != Phase::Transferred', '*identity != Some(owner.identity())', '*purpose != expected',
+                     'self.visit_transferred_shell_for_purpose(ledger, owner, ConstructorPurpose::NativeFresh)',
+                     'self.visit_transferred_shell_for_purpose(ledger, owner, ConstructorPurpose::MainExport)']:
             if step not in source:
                 return [f'{path}: transferred shell must match actual destination owner and purpose']
     construction_host_paths = {

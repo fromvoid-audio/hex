@@ -1,6 +1,8 @@
 //! One pre-publication phase in the already reserved runtime cells. The worker
 //! borrows rooted construction storage; the adapter retains only this token.
 use super::*;
+mod captured_main;
+pub use captured_main::{CapturedMainFile, CapturedMainFileError, CapturedMainFileLoan};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AudioCandidatePreparationToken {
     pub(super) root: u64,
@@ -33,6 +35,7 @@ pub(super) struct PreparationExecution {
     pub(super) pending: bool,
     pub(super) failed: bool,
     pub(super) refusal: Option<&'static str>,
+    pub(super) captured_main: Option<hex_engine::AudioCandidateIdentity>,
 }
 #[cfg(test)]
 impl PreparationExecution {
@@ -198,6 +201,7 @@ impl Custody {
             pending: false,
             failed: false,
             refusal: None,
+            captured_main: None,
         });
         let Some(execution) = work.publication.preparations[token.slot].as_mut() else {
             let mut bank = lock(&self.bank);
@@ -375,6 +379,9 @@ impl Custody {
             .ok_or("candidate preparation storage differs")?;
         if let Some(reason) = execution.refusal {
             return Ok(AudioCandidatePreparationProgress::Refused(reason));
+        }
+        if execution.captured_main.is_some() {
+            return Err("candidate preparation belongs to captured Main work");
         }
         if retiring {
             return Ok(AudioCandidatePreparationProgress::Retiring);
@@ -696,7 +703,11 @@ impl Custody {
             let Some(execution) = work.preparations[index].as_mut() else {
                 continue;
             };
-            if execution.pending || execution.failed || work.failed_payloads[index].is_some() {
+            if execution.pending
+                || execution.failed
+                || execution.captured_main.is_some()
+                || work.failed_payloads[index].is_some()
+            {
                 continue;
             }
             let metadata_only = {

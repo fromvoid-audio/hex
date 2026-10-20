@@ -26,8 +26,20 @@ pub struct WorkerStartupView<'a> {
         hex_engine::SharedMetadataCacheIdentity,
     )>,
     pub(super) startup_error: &'a Option<String>,
+    pub(super) main_files: &'a Option<NativeMainFiles>,
 }
 impl WorkerStartupView<'_> {
+    pub fn main_file_slots_on_control(
+        &self,
+    ) -> Result<
+        impl hex_engine::sampler_host_fields::FileSlotsFields<'_>,
+        hex_engine::AudioStorageError,
+    > {
+        self.main_files
+            .as_ref()
+            .map(NativeMainFiles::fields)
+            .ok_or(hex_engine::AudioStorageError::UnknownStorage)
+    }
     pub fn cancellation_on_control(&self) -> &dyn hex_engine::CancellationQuery {
         self.cancellation
     }
@@ -50,6 +62,7 @@ impl WorkerStartupView<'_> {
             cancellation,
             last_source,
             startup_error,
+            main_files,
         } = self;
         let _ = (
             startup,
@@ -59,6 +72,7 @@ impl WorkerStartupView<'_> {
             cancellation,
             last_source,
             startup_error,
+            main_files,
         );
         Err(hex_engine::AudioStorageError::UnknownStorage)
     }
@@ -97,9 +111,21 @@ pub struct WorkerInitialSessionView<'a> {
         hex_engine::SharedMetadataCacheIdentity,
     )>,
     pub(super) startup_error: &'a Option<String>,
+    pub(super) main_files: &'a Option<NativeMainFiles>,
     pub(super) phase: &'a mut InitialSnapshotPhase,
 }
 impl WorkerInitialSessionView<'_> {
+    pub fn main_file_slots_on_control(
+        &self,
+    ) -> Result<
+        impl hex_engine::sampler_host_fields::FileSlotsFields<'_>,
+        hex_engine::AudioStorageError,
+    > {
+        self.main_files
+            .as_ref()
+            .map(NativeMainFiles::fields)
+            .ok_or(hex_engine::AudioStorageError::UnknownStorage)
+    }
     /// Actual transport class only. This is no storage/native certificate.
     pub fn has_registered_event_transport_on_control(&self) -> bool {
         self.event_sender.is_registered()
@@ -185,6 +211,7 @@ impl WorkerInitialSessionView<'_> {
             cancellation,
             last_source,
             startup_error,
+            main_files,
             phase,
         } = self;
         let _ = (
@@ -195,6 +222,7 @@ impl WorkerInitialSessionView<'_> {
             cancellation,
             last_source,
             startup_error,
+            main_files,
             phase,
         );
         Err(hex_engine::AudioStorageError::UnknownStorage)
@@ -205,7 +233,7 @@ impl WorkerInitialSessionView<'_> {
 /// They are moved once into run_worker; no receiver/queue clone is fabricated.
 pub(super) struct WorkerStartupQueues {
     pub(super) requests: RequestReceiver,
-    pub(super) export_work: SyncSender<ExportWork>,
+    pub(super) export_work: WorkerExportSender,
     pub(super) export_events: ExportResultSender,
 }
 pub(super) enum ServiceStop {
@@ -322,7 +350,7 @@ mod tests {
         let (export_events, _exports) = mpsc::sync_channel(1);
         let queues = WorkerStartupQueues {
             requests: RequestReceiver::Unqualified(requests),
-            export_work,
+            export_work: export_work.into(),
             export_events: export_events.into(),
         };
         let (event_sender, _events) = mpsc::sync_channel(1);
@@ -340,6 +368,7 @@ mod tests {
                 cancellation: &shutdown,
                 last_source: &last_source,
                 startup_error: &startup_error,
+                main_files: &None,
                 phase: &mut phase,
             };
             assert_eq!(roots.sample_rate_on_control(), Ok(44_100));
@@ -399,7 +428,7 @@ mod tests {
             (
                 Some(WorkerStartupQueues {
                     requests: RequestReceiver::Unqualified(requests),
-                    export_work,
+                    export_work: export_work.into(),
                     export_events: export_events.into(),
                 }),
                 request_sender,

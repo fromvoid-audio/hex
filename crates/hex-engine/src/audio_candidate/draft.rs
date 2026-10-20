@@ -340,6 +340,21 @@ impl AudioCandidateDraft {
         ledger: &mut crate::AudioRootStorageLedger<'a>,
         owner: &AudioCandidateOwner,
     ) -> Result<(), AudioStorageError> {
+        self.visit_transferred_shell_for_purpose(ledger, owner, ConstructorPurpose::NativeFresh)
+    }
+    pub(super) fn visit_transferred_main_shell<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        owner: &AudioCandidateOwner,
+    ) -> Result<(), AudioStorageError> {
+        self.visit_transferred_shell_for_purpose(ledger, owner, ConstructorPurpose::MainExport)
+    }
+    fn visit_transferred_shell_for_purpose<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        owner: &AudioCandidateOwner,
+        expected: ConstructorPurpose,
+    ) -> Result<(), AudioStorageError> {
         let Self {
             identity,
             sample_rate,
@@ -355,7 +370,7 @@ impl AudioCandidateDraft {
         if *phase != Phase::Transferred
             || *identity != Some(owner.identity())
             || *sample_rate != owner.sample_rate()
-            || *purpose != ConstructorPurpose::NativeFresh
+            || *purpose != expected
             || runtime.is_some()
             || runtime_lease.is_some()
             || archive.is_some()

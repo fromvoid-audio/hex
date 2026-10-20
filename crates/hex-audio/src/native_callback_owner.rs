@@ -525,6 +525,39 @@ pub(crate) struct NativeRetirement {
     root: crate::candidate_custody::RootActor,
 }
 impl NativeRetirement {
+    // This only inspects this actual parent's completed native fields. The
+    // lifecycle caller must ALSO have joined/dropped its actual Reaper before
+    // moving this DATA-only tail; no caller-supplied frontier flag is accepted.
+    pub(crate) fn captured_data_tail_matches_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        self.completed_stream_handle
+            && self.states == [Disposal::Complete; 2]
+            && self.data.is_none()
+            && self.errors.is_none()
+            && self.domain_pages.iter().all(Option::is_none)
+            && self.final_active.is_none()
+            && self.root.is_retirement_field()
+            && self.root.same_root(root)
+    }
+    pub(crate) fn advance_captured_data_endpoints_on_control(&mut self) -> Result<bool, ()> {
+        if !self.completed_stream_handle
+            || self.states != [Disposal::Complete; 2]
+            || self.data.is_some()
+            || self.errors.is_some()
+            || self.domain_pages.iter().any(Option::is_some)
+            || self.final_active.is_some()
+        {
+            return Err(());
+        }
+        self.advance_endpoints()?;
+        let complete = self.endpoint_states == [Disposal::Complete; 2];
+        if complete {
+            self.terminals = None;
+        }
+        Ok(complete)
+    }
     #[cfg(any(test, feature = "allocation-probe"))]
     pub(crate) fn new(
         terminals: NativeTerminals,

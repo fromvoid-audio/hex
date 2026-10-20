@@ -13,6 +13,7 @@ pub use preparation::{
 pub(super) mod publication;
 pub(crate) use pages::DomainEnvelope;
 pub use publication::{
+    CapturedMainFile, CapturedMainFileError, CapturedMainFileLoan,
     AudioCandidateCancellationResult, AudioCandidateEligibleStageRefusal,
     AudioCandidatePreparationProgress, AudioCandidatePreparationRefusal,
     AudioCandidatePreparationReservation, AudioCandidatePreparationToken,

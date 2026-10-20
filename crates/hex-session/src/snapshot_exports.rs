@@ -49,7 +49,7 @@ pub use family::{
 pub(crate) use transport::SnapshotSourceEventSender;
 pub use transport::{
     SnapshotEventReads, SnapshotReadCapability, SnapshotReadContinuation, SnapshotReadOperations,
-    SnapshotSourceEventOperations, SnapshotSourceEventReceiver, SnapshotTransportError,
+    SnapshotSourceEventOperations, SnapshotSourceEventReceiver, SnapshotSourceKey, SnapshotTransportError,
     SourceEventHeadContinuation, SourceEventReadDelivery,
 };
 pub use worker_control::{SnapshotWorkerControl, SnapshotWorkerOperations, SnapshotWorkerStop};

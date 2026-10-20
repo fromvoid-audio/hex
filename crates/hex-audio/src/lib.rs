@@ -30,6 +30,7 @@ mod lifecycle;
 mod native_callback_owner;
 pub use candidate_catalog::CandidateDomain;
 pub use candidate_custody::{
+    CapturedMainFile, CapturedMainFileError, CapturedMainFileLoan,
     AudioCandidateCancellationResult, AudioCandidateCustodyReport,
     AudioCandidateDomainPreparationFailure, AudioCandidateDomainPreparationProgress,
     AudioCandidateDomainRefusal, AudioCandidateDomainReservation, AudioCandidateDomainStartError,

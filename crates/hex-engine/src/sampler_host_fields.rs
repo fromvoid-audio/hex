@@ -72,7 +72,7 @@ pub use crate::audio_storage::native_status::{
 };
 
 pub use crate::audio_storage::native_root_fields::{
-    NativeRootFieldLease, NativeRootFieldRegistration,
+    NativeRootFieldLease, NativeRootFieldRegistration, NativeCapturedMainRootLease,
 };
 
 mod resident;

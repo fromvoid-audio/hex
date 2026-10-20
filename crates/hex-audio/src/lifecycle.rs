@@ -91,7 +91,7 @@ struct Retirement {
     spectrum_construction: SpectrumConstruction,
     #[cfg(all(test, feature = "allocation-probe"))]
     spectrum_test_entry: Option<fn()>,
-    _lease: Lease,
+    _lease: Option<Lease>,
     native: Option<crate::native_callback_owner::NativeRetirement>,
     backend_exposed: bool,
     stream_drop_pending: bool,
@@ -183,7 +183,7 @@ impl StreamOwner {
                 spectrum_reaper,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 spectrum_test_entry: None,
-                _lease: lease,
+                _lease: Some(lease),
                 native: None,
                 backend_exposed: true,
                 stream_drop_pending: false,
@@ -297,7 +297,7 @@ impl StreamOwner {
                 spectrum_reaper,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 spectrum_test_entry: None,
-                _lease: lease,
+                _lease: Some(lease),
                 native,
                 backend_exposed: false,
                 stream_drop_pending: false,
@@ -990,6 +990,18 @@ impl Retirement {
         if let Some(native) = self.native.as_mut()
             && !native.finish_root_after_native_fields_on_control()?
         {
+            // Main alone may continue as DATA after the actual native frontier.
+            // Drop the joined reaper (including std thread bookkeeping) HERE,
+            // before releasing the exclusive backend lease. A panic is caught
+            // by the SAME parent and prevents lease release/retry.
+            if let Some(native) = self.native.as_ref() {
+                let root = native.root();
+                if root.retain_captured_main_native_tail(&mut self.native)? {
+                    drop(self.spectrum_reaper.take());
+                    drop(self._lease.take());
+                    return Ok(true);
+                }
+            }
             return Ok(false);
         }
         // Keep the completed Reaper in its actual parent until that parent

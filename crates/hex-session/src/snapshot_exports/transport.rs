@@ -91,6 +91,15 @@ pub struct SnapshotReadCapability {
     operations: &'static SnapshotReadOperations,
 }
 
+/// Exact installed-snapshot correlation for UI gestures. This owns no read or
+/// source and proves neither liveness nor admission. Derived reads share a key;
+/// recycled family/snapshot incarnations do not. No raw identity is exposed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SnapshotSourceKey {
+    route: RetainedControlJobRoute,
+    snapshot: super::SnapshotStamp,
+}
+
 /// Slots in an actual Event. Each preview has a distinct reserved read.
 /// Legacy owning view fields remain separately unqualified until migrated.
 #[derive(Default)]
@@ -377,6 +386,12 @@ impl super::SourceEventDelivery {
     }
 }
 impl SnapshotReadCapability {
+    pub fn source_key(&self) -> Option<SnapshotSourceKey> {
+        self.stamp.as_ref().map(|stamp| SnapshotSourceKey {
+            route: self.route,
+            snapshot: stamp.snapshot,
+        })
+    }
     /// The concrete binder validates actual route/type/record/read incarnations
     /// before escape. A refusal leaves the unexported read in its caller's
     /// actual pending cell, which must durably release or retain/report it.

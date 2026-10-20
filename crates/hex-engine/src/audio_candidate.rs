@@ -13,7 +13,7 @@ pub use preparation_operations::AudioCandidatePreparationOperations;
 mod reservation;
 pub use draft::AudioCandidateDraft;
 pub use preparation::{
-    AudioCandidateControlBlock, AudioCandidateControlProgress, AudioCandidatePreparation,
+    AudioCandidateControlBlock, AudioCandidateControlProgress, AudioCandidatePreparation, CapturedMainControl,
 };
 pub use reservation::AudioCandidateReservationQuote;
 mod storage;

@@ -5,7 +5,7 @@ use super::*;
 mod control_work;
 mod native_fields;
 mod original_resources;
-pub use control_work::{AudioCandidateControlBlock, AudioCandidateControlProgress};
+pub use control_work::{AudioCandidateControlBlock, AudioCandidateControlProgress, CapturedMainControl};
 use hex_project::{AssetId, Project};
 pub(crate) use original_resources::OriginalSamplerConstruction;
 

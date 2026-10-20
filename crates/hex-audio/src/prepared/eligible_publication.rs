@@ -200,6 +200,20 @@ impl PublicationControl {
     ) -> Result<crate::AudioCandidatePreparationProgress, &'static str> {
         self.candidate_root.with_runtime_preparation(token, prepare)
     }
+    /// Begin the already-constructed Main parent and bind its affine File
+    /// continuation inside the SAME selected-cell exclusion. This cannot be
+    /// called after publication closes or on native-purpose preparation.
+    pub fn begin_captured_main_file_on_control(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        expected: hex_engine::AudioCandidateIdentity,
+        frames: u64,
+    ) -> Result<crate::CapturedMainFile, crate::CapturedMainFileError> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err(crate::CapturedMainFileError::Stale);
+        }
+        self.candidate_root.begin_captured_main_file(token, expected, frames)
+    }
     /// Queue this exact rooted, completed preparation without returning an owner
     /// to the adapter or releasing/reacquiring its reserved runtime/archive cell.
     /// Busy/refusal retains all construction custody under the same token.

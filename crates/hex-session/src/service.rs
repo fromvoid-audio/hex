@@ -21,10 +21,12 @@ use hex_tuning::ProjectTuning;
 mod audio_batch_tests;
 mod audio_sink;
 mod main_control_file;
+mod worker_export_lane;
 pub use main_control_file::{
     MainControlFileError, MainControlFileJob, MainControlFileLoan, MainControlFileProgress,
     MainControlHostError,
 };
+use worker_export_lane::{NativeMainFiles, WorkerExportSender};
 mod event_fields;
 mod export_renderer;
 use export_renderer::ExportRenderer;
@@ -617,7 +619,7 @@ pub struct Service {
     shutdown: ServiceStop,
     arrangement_seek: Option<ArrangementSeekWorker>,
     _worker: JoinHandle<()>,
-    _export_worker: JoinHandle<()>,
+    _export_worker: Option<JoinHandle<()>>,
 }
 
 impl Drop for Service {
@@ -836,6 +838,7 @@ impl Service {
                 ))
             })?
             .flatten();
+        let registered_native = source_endpoints.is_some();
         let (event_tx, event_rx) = match source_endpoints {
             Some((sender, receiver)) => (
                 EventSender::Registered(sender),
@@ -849,7 +852,14 @@ impl Service {
                 )
             }
         };
-        let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
+        // Real constructor-selected absence: Native File work remains in the
+        // Session worker, never an opaque channel or a separate export thread.
+        let (export_work_tx, export_work_rx) = if registered_native {
+            (WorkerExportSender::NativeInline, None)
+        } else {
+            let (sender, receiver) = mpsc::sync_channel(1);
+            (WorkerExportSender::Unqualified(sender), Some(receiver))
+        };
         let (export_event_tx, export_event_rx) = match startup.control() {
             Some(control) => {
                 let endpoint = control.prepare_export_results_on_control().map_err(|_| {
@@ -875,7 +885,11 @@ impl Service {
                 .ok_or(ServiceError::Session(SessionError::Invalid(
                     "document worker cancellation is unavailable",
                 )))?;
-        startup.install_events(WorkerEvents::new(event_tx, worker_shutdown, audio));
+        let mut worker_events = WorkerEvents::new(event_tx, worker_shutdown, audio);
+        if registered_native {
+            worker_events.install_native_main_files();
+        }
+        startup.install_events(worker_events);
         let mut pending_queues = Some(worker_startup::WorkerStartupQueues {
             requests: request_rx,
             export_work: export_work_tx,
@@ -886,11 +900,16 @@ impl Service {
                 "worker startup queue destination is occupied",
             )));
         }
-        let export_worker = thread::Builder::new()
-            .name("hex-export".into())
-            .stack_size(8 * 1024 * 1024)
-            .spawn(move || run_export_worker(export_work_rx, export_event_tx, exporter))
-            .map_err(ServiceError::Worker)?;
+        let export_worker = match export_work_rx {
+            Some(receiver) => Some(
+                thread::Builder::new()
+                    .name("hex-export".into())
+                    .stack_size(8 * 1024 * 1024)
+                    .spawn(move || run_export_worker(receiver, export_event_tx, exporter))
+                    .map_err(ServiceError::Worker)?,
+            ),
+            None => None,
+        };
         let worker = thread::Builder::new()
             .name("hex-session".into())
             .spawn(move || {
@@ -1459,7 +1478,7 @@ fn run_worker(
     mut session: Session,
     requests: RequestReceiver,
     mut events: WorkerEvents,
-    export_work: SyncSender<ExportWork>,
+    export_work: WorkerExportSender,
     export_events: ExportResultSender,
     context: WorkerRunContext<'_>,
 ) {
@@ -3353,9 +3372,8 @@ fn run_worker(
         }
         if let Some(job) = export_job {
             match export_work.try_send(ExportWork::Render(job)) {
-                Ok(()) => {}
-                Err(TrySendError::Full(ExportWork::Render(job)))
-                | Err(TrySendError::Disconnected(ExportWork::Render(job))) => {
+                None => {}
+                Some(ExportWork::Render(job)) => {
                     let ExportJob {
                         revision,
                         path,
@@ -6747,7 +6765,7 @@ mod service_tests {
             shutdown: ServiceStop::Unqualified(Arc::new(AtomicBool::new(false))),
             arrangement_seek: None,
             _worker: thread::spawn(|| {}),
-            _export_worker: thread::spawn(|| {}),
+            _export_worker: Some(thread::spawn(|| {})),
         };
         assert!(matches!(
             service.submit(Request::Export(PathBuf::from("busy.wav"))),
