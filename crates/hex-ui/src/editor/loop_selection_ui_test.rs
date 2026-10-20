@@ -958,3 +958,125 @@ fn loop_review_held_middle_pan_refuses_l_and_command_l_until_release(cx: &mut Te
         });
     }
 }
+
+#[gpui::test]
+fn loop_review_ruler_scrub_keeps_held_and_released_targets_until_refusal(cx: &mut TestAppContext) {
+    for key in ["l", "cmd-l"] {
+        let cx = &mut cx.new_app();
+        let (handle, editor, _, midi, _files) = fixture(cx);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        click(&mut visual, midi, false);
+        // Existing offline scrub tests hold this real seek-ack gate. No audio
+        // device or fake publication is constructed; actual ruler callbacks own
+        // the scrub and coalesce the final target behind the gate.
+        editor.update(&mut visual, |view, _| view.pending_seek_ticket = Some(1));
+        let bounds = visual.debug_bounds("timeline-ruler").unwrap();
+        let start = bounds.center();
+        let end = start + gpui::point(gpui::px(10.0), gpui::px(0.0));
+        visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+        editor.update(&mut visual, |view, _| {
+            assert!(view.update_scrub(f32::from(end.x), false));
+            assert!(view.scrub_active(), "actual held ruler owner");
+            assert!(!view.tick_scrub(), "seek-ack gate holds the target");
+        });
+        assert!(visual.update(|window, cx| editor.read(cx).focus.is_focused(window)));
+        let (before, selection, viewport) = editor.read_with(&visual, |view, _| {
+            assert_eq!(view.selected_clip, Some(midi));
+            (
+                view.state.as_ref().unwrap().clone(),
+                view.selected_clip_ids(),
+                view.viewport,
+            )
+        });
+        for released in [false, true] {
+            if released {
+                visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+                visual.run_until_parked();
+                editor.read_with(&visual, |view, _| {
+                    assert!(
+                        view.scrub_active(),
+                        "released final target awaits admission"
+                    );
+                });
+            }
+            visual.simulate_keystrokes(key);
+            editor.read_with(&visual, |view, _| {
+                assert_eq!(
+                    view.worker_requests_pending, 0,
+                    "{key} during scrub released={released} must not enqueue"
+                );
+                assert!(view.pending_requests.is_empty());
+            });
+            pump(&editor, &mut visual);
+            editor.update(&mut visual, |view, _| {
+                assert!(
+                    view.scrub_active(),
+                    "shortcut must retain actual ruler target"
+                );
+                assert!(
+                    !view.tick_scrub(),
+                    "same pending target remains behind seek ACK"
+                );
+                assert_eq!(view.pending_seek_ticket, Some(1));
+                assert_eq!(view.viewport, viewport);
+                assert_eq!(view.selected_clip_ids(), selection);
+                let state = view.state.as_ref().unwrap();
+                assert_eq!(state.project.snapshot(), before.project.snapshot());
+                assert_eq!(state.revision, before.revision);
+                assert_eq!(
+                    (state.can_undo, state.can_redo),
+                    (before.can_undo, before.can_redo)
+                );
+            });
+        }
+        editor.update(&mut visual, |view, _| {
+            view.pending_seek_ticket = None;
+            assert!(
+                view.tick_scrub(),
+                "retained released target reaches existing offline admission/refusal"
+            );
+            assert!(
+                view.error
+                    .as_deref()
+                    .is_some_and(|e| e.contains("audio output"))
+            );
+            assert!(!view.scrub_active());
+            assert_eq!(
+                view.state.as_ref().unwrap().project.snapshot(),
+                before.project.snapshot()
+            );
+        });
+        visual.simulate_keystrokes(key);
+        pump(&editor, &mut visual);
+        let after = editor.read_with(&visual, |view, _| {
+            let project = &view.state.as_ref().unwrap().project;
+            let region = project
+                .loop_region()
+                .expect("same shortcut works after scrub retirement");
+            assert_eq!(
+                (region.start(), region.end(), region.enabled()),
+                (72_000, 120_000, true)
+            );
+            let mut expected = before.project.snapshot();
+            expected.loop_region = project.loop_region();
+            assert_eq!(project.snapshot(), expected);
+            assert_eq!(view.selected_clip_ids(), selection);
+            project.snapshot()
+        });
+        visual.simulate_keystrokes("cmd-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.state.as_ref().unwrap().project.snapshot(),
+                before.project.snapshot()
+            )
+        });
+        visual.simulate_keystrokes("cmd-shift-z");
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project.snapshot(), after)
+        });
+    }
+}
