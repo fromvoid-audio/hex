@@ -271,11 +271,21 @@ impl AudioCandidateDisposed {
         self.closed_groups
     }
 }
-struct Group {
+pub(crate) struct Group {
     location: (u8, usize),
     present: bool,
     closed: bool,
     origin: Option<groups::Origin>,
+    lease: Option<groups::GroupLease>,
+}
+impl Group {
+    fn lease_matches_origin(&self) -> bool {
+        match (self.origin, &self.lease) {
+            (Some(origin), Some(lease)) => lease.matches_origin(origin),
+            (None, None) => true,
+            _ => false,
+        }
+    }
 }
 struct RuntimeOwner {
     playback: Playback,
@@ -422,8 +432,9 @@ struct CandidateState {
     custody: AudioPreparationCustody,
     token: AudioPreparationToken,
     runtime: Option<Box<RuntimeOwner>>,
-    groups: Vec<Group>,
-    journal: Vec<groups::TransferRow>,
+    runtime_lease: Option<groups::RuntimeStorageLease>,
+    groups: groups::GroupBook,
+    journal: groups::TransferJournal,
     archive: groups::Archive,
     runtime_receipt: Option<AudioCandidateRuntimeDisposed>,
     phase: AudioCandidateDisposalPhase,
@@ -466,6 +477,7 @@ impl CandidateState {
                     custody,
                     token,
                     runtime: draft.runtime.take(),
+                    runtime_lease: draft.runtime_lease.take(),
                     groups: std::mem::take(&mut draft.groups),
                     journal: std::mem::take(&mut draft.journal),
                     archive,
@@ -512,6 +524,13 @@ impl CandidateState {
             .runtime
             .as_ref()
             .ok_or(AudioStorageError::SourceMismatch)?;
+        if self
+            .runtime_lease
+            .as_ref()
+            .is_none_or(|lease| !lease.matches_identity(self.identity))
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         validate_runtime_groups(runtime, &self.groups)
     }
 
@@ -533,12 +552,20 @@ impl CandidateState {
             self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
             return Err(AudioStorageError::UnknownStorage);
         }
+        let runtime_lease = self
+            .runtime_lease
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        groups::begin_disposal(&self.groups)?;
+        runtime_lease.begin_disposal();
         self.phase = AudioCandidateDisposalPhase::RuntimePending;
         if let Err(payload) = catch_unwind(AssertUnwindSafe(|| drop(self.runtime.take()))) {
             self.first_panic = Some(payload);
             self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
             return Err(AudioStorageError::UnknownStorage);
         }
+        groups::complete_disposal(&self.groups);
+        runtime_lease.complete_disposal();
         self.phase = AudioCandidateDisposalPhase::RootsCleaning;
         for group in &mut self.groups {
             group.closed = group.present;
@@ -546,6 +573,7 @@ impl CandidateState {
         Ok(AudioCandidateRuntimeDisposed {
             runtime: self.identity,
             groups: std::mem::take(&mut self.groups),
+            runtime_lease: self.runtime_lease.take(),
         })
     }
     pub fn dispose_on_control(&mut self) -> Result<AudioCandidateDisposed, AudioStorageError> {
@@ -578,6 +606,12 @@ impl CandidateState {
         }
         if self.phase != AudioCandidateDisposalPhase::RootsCleaning || !self.archive.all_closed() {
             return Err(AudioStorageError::UnknownStorage);
+        }
+        if let Err(error) = self.archive.retire_physical_anchor(&mut self.first_panic) {
+            if error != AudioStorageError::ExternalReadersPending {
+                self.phase = AudioCandidateDisposalPhase::FailedIncomplete;
+            }
+            return Err(error);
         }
         self.custody.close_on_control();
         self.custody.cleanup_on_control();
@@ -649,6 +683,7 @@ fn validate_runtime_groups(
                 g.location != (kind, member)
                     || g.present != present
                     || g.closed
+                    || !g.lease_matches_origin()
                     || (kind == 1 && present && g.origin.is_none())
             }) {
                 return Err(AudioStorageError::SourceMismatch);
@@ -674,3 +709,5 @@ fn validate_supported_location(kind: u8, present: bool) -> Result<(), AudioStora
         _ => Err(AudioStorageError::SourceMismatch),
     }
 }
+
+pub(crate) use groups::TransferRow;

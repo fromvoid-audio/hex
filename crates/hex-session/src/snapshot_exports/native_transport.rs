@@ -337,6 +337,25 @@ impl CompiledRetirement {
         retirement_test_hook();
         self.cleanup_pending = false;
     }
+    pub(super) fn sampler_fields(
+        &self,
+    ) -> Result<hex_engine::sampler_host_fields::FamilyCompiledRecordFields<'_>, AudioStorageError>
+    {
+        let Self {
+            stamp,
+            payload,
+            cleanup_pending,
+        } = self;
+        if *cleanup_pending || (stamp.is_none() && payload.is_some()) {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        Ok(
+            hex_engine::sampler_host_fields::FamilyCompiledRecordFields {
+                body: hex_engine::sampler_host_fields::BodyRef::of(self),
+                reader: payload.as_ref(),
+            },
+        )
+    }
     pub(super) fn visit<'a>(
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,

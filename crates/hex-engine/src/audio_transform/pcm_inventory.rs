@@ -1,13 +1,12 @@
 //! Borrow actual committed/pending cache PCM without cloning owning fields.
 use super::*;
 use crate::{AudioRootStorageLedger, AudioStorageError, AudioStorageRole};
-use std::cell::Ref;
 
 pub struct AudioTransformPcmInventory<'a> {
-    owner: &'a AudioTransformPreparation,
-    cache: Ref<'a, Cache>,
-    pending: Ref<'a, Option<Vec<Entry>>>,
-    tempo: Ref<'a, Option<Arc<hex_project::TempoMap>>>,
+    pub(super) owner: &'a AudioTransformPreparation,
+    pub(super) cache: &'a Cache,
+    pub(super) pending: &'a Option<Vec<Entry>>,
+    pub(super) tempo: &'a Option<Arc<hex_project::TempoMap>>,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct OriginalOnlyStorageCost {
@@ -28,25 +27,31 @@ impl AudioTransformPreparation {
             &'scope AudioTransformPcmInventory<'scope>,
         ) -> Result<T, AudioStorageError>,
     ) -> Result<T, AudioStorageError> {
+        let cache = self
+            .cache
+            .try_borrow()
+            .map_err(|_| AudioStorageError::UnknownStorage)?;
+        let pending = self
+            .pending
+            .try_borrow()
+            .map_err(|_| AudioStorageError::UnknownStorage)?;
+        let tempo = self
+            .tempo
+            .try_borrow()
+            .map_err(|_| AudioStorageError::UnknownStorage)?;
         let inventory = AudioTransformPcmInventory {
             owner: self,
-            cache: self
-                .cache
-                .try_borrow()
-                .map_err(|_| AudioStorageError::UnknownStorage)?,
-            pending: self
-                .pending
-                .try_borrow()
-                .map_err(|_| AudioStorageError::UnknownStorage)?,
-            tempo: self
-                .tempo
-                .try_borrow()
-                .map_err(|_| AudioStorageError::UnknownStorage)?,
+            cache: &cache,
+            pending: &pending,
+            tempo: &tempo,
         };
         visit(&inventory)
     }
 }
 impl AudioTransformPcmInventory<'_> {
+    pub(crate) fn preparation(&self) -> &AudioTransformPreparation {
+        self.owner
+    }
     /// Allocation-free facts from the SAME guarded fields subsequently visited.
     /// Cache-growth size follows the pinned std RawVec::grow_amortized policy
     /// used by transaction(), not an estimate derived from entry count alone.
@@ -149,7 +154,7 @@ impl AudioTransformPcmInventory<'_> {
             entries,
             bytes,
             source_bytes,
-        } = &*self.cache;
+        } = self.cache;
         if failed.get()
             || !entries.is_empty()
             || *bytes != 0

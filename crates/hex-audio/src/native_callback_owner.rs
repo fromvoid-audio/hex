@@ -1,13 +1,24 @@
 //! Once-only, coupled native closure custody, adapted from original177
 //! 8d444c06. Backend guard destruction moves a carrier; only lifecycle control
 //! destroys its contents. Receiving a carrier is not final-active quiescence.
-use crate::prepared::{Callback, Status};
+use crate::prepared::{
+    Callback, Status,
+    status_owner::{self, StatusHandle},
+};
 mod allocations;
+mod registered;
+pub(crate) use registered::{carrier_constructor_bound, reserve_for_root};
+pub(crate) mod atomic_signal;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod endpoint_tests;
 mod resources;
 mod ring_storage;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod storage_tests;
 pub(crate) use resources::{ChannelStorage, NativeCandidateBoundary};
+pub(crate) use ring_storage::transport::{
+    NativePreparedConsumer, NativePreparedProducer, native_prepared_ring, registered_prepared_ring,
+};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// Sealed application-callback nonrenderability authority. It is not an OS
@@ -22,7 +33,7 @@ impl FinalReleaseAuthority {
 }
 pub(crate) struct NativeCallbackOwner {
     pub(crate) callback: Callback,
-    status: Arc<Status>,
+    status: StatusHandle,
     #[cfg(test)]
     probe: Option<DropProbe>,
 }
@@ -42,7 +53,7 @@ impl NativeCallbackOwner {
     }
 }
 pub(crate) struct ErrorCallbackOwner {
-    status: Arc<Status>,
+    status: StatusHandle,
     #[cfg(test)]
     probe: Option<DropProbe>,
 }
@@ -75,9 +86,12 @@ enum GuardState<T> {
 }
 pub(crate) struct Guard<T> {
     state: GuardState<T>,
+    storage: Option<hex_engine::sampler_host_fields::NativeCarrierStorageLease>,
 }
 pub(crate) struct Terminal<T> {
     cell: Option<Arc<OnceLock<Mutex<Box<T>>>>>,
+    cell_storage: Option<hex_engine::sampler_host_fields::NativeCarrierStorageLease>,
+    body_storage: Option<hex_engine::sampler_host_fields::NativeCarrierStorageLease>,
 }
 pub(crate) fn reserve<T>(value: T) -> (Guard<T>, Terminal<T>) {
     let cell = Arc::new(OnceLock::new());
@@ -87,8 +101,13 @@ pub(crate) fn reserve<T>(value: T) -> (Guard<T>, Terminal<T>) {
                 owner: Box::new(value),
                 cell: Arc::clone(&cell),
             },
+            storage: None,
         },
-        Terminal { cell: Some(cell) },
+        Terminal {
+            cell: Some(cell),
+            cell_storage: None,
+            body_storage: None,
+        },
     )
 }
 impl<T> Guard<T> {
@@ -104,7 +123,7 @@ impl<T> Guard<T> {
             GuardState::Published(_) | GuardState::Closed => None,
         }
     }
-    pub(crate) fn shared_cell(&self) -> Option<&Arc<OnceLock<Mutex<Box<T>>>>> {
+    fn shared_cell(&self) -> Option<&Arc<OnceLock<Mutex<Box<T>>>>> {
         match &self.state {
             GuardState::Live { cell, .. } | GuardState::Published(cell) => Some(cell),
             GuardState::Closed => None,
@@ -114,7 +133,16 @@ impl<T> Guard<T> {
     /// Only the constructor-paired terminal may later destroy the whole bundle.
     pub(crate) fn close(&mut self) {
         self.publish_for_drop();
+        let mut storage = self.storage.take();
+        if let Some(storage) = storage.as_mut() {
+            // No wait, allocation or payload destruction is added to close.
+            // A failed internal transition stays sticky in the Root record.
+            let _ = storage.begin_actual_field_drop_on_control();
+        }
         self.state = GuardState::Closed;
+        if let Some(storage) = storage.as_mut() {
+            let _ = storage.complete_actual_field_drop_on_control();
+        }
     }
     fn publish_for_drop(&mut self) {
         self.state = match std::mem::replace(&mut self.state, GuardState::Closed) {
@@ -144,15 +172,43 @@ impl<T> Terminal<T> {
             return None;
         }
         let cell = self.cell.take()?;
+        if let Some(storage) = self.cell_storage.as_mut() {
+            // Actual unique terminal cell, BEFORE its Arc allocation is freed.
+            if storage.begin_actual_field_drop_on_control().is_err() {
+                self.cell = Some(cell);
+                return None;
+            }
+        }
         match Arc::try_unwrap(cell) {
-            Ok(cell) => cell
-                .into_inner()
-                .map(|owner| owner.into_inner().unwrap_or_else(PoisonError::into_inner)),
+            Ok(cell) => {
+                let owner = cell
+                    .into_inner()
+                    .map(|owner| owner.into_inner().unwrap_or_else(PoisonError::into_inner));
+                if let Some(storage) = self.cell_storage.as_mut() {
+                    let _ = storage.complete_actual_field_drop_on_control();
+                }
+                drop(self.cell_storage.take());
+                owner
+            }
             Err(cell) => {
                 self.cell = Some(cell);
                 None
             }
         }
+    }
+    fn begin_body_drop(&mut self) -> Result<(), ()> {
+        self.body_storage.as_mut().map_or(Ok(()), |storage| {
+            storage.begin_actual_field_drop_on_control().map_err(|_| ())
+        })
+    }
+    fn complete_body_drop(&mut self) -> Result<(), ()> {
+        if let Some(storage) = self.body_storage.as_mut() {
+            storage
+                .complete_actual_field_drop_on_control()
+                .map_err(|_| ())?;
+        }
+        drop(self.body_storage.take());
+        Ok(())
     }
 }
 pub(crate) struct NativeTerminals {
@@ -162,62 +218,103 @@ pub(crate) struct NativeTerminals {
 }
 pub(crate) fn reserve_native(
     callback: Callback,
-    status: Arc<Status>,
-) -> (
-    Guard<NativeCallbackOwner>,
-    Guard<ErrorCallbackOwner>,
-    NativeTerminals,
-) {
+    status: &StatusHandle,
+) -> Result<
+    (
+        Guard<NativeCallbackOwner>,
+        Guard<ErrorCallbackOwner>,
+        NativeTerminals,
+    ),
+    hex_engine::Invalid,
+> {
     let root = callback.candidate_root_for_native_boundary();
-    let (mut data, mut errors, terminals) = reserve_carriers(callback, status, None);
+    if root.native_carrier_birth_limits().is_some() {
+        registered::validate_birth_limits(&root)?;
+        if !callback.matches_constructor_channel_fields_on_control(&root) {
+            return Err(hex_engine::Invalid("native prepared queue fields differ"));
+        }
+    }
+    // Every fallible role reservation precedes ANY native carrier allocation.
+    let data_status = root.duplicate_status(status, status_owner::NATIVE_DATA)?;
+    let error_status = root.duplicate_status(status, status_owner::NATIVE_ERROR)?;
+    let (mut data, mut errors, terminals) =
+        reserve_carriers(callback, data_status, error_status, None, &root)?;
     if let Some(boundary) = NativeCandidateBoundary::from_reserved(&root, &mut data, &mut errors) {
         root.record_native_boundary(boundary);
     }
-    (data, errors, terminals)
+    Ok((data, errors, terminals))
 }
-pub(crate) fn reserve_native_worker(
-    control: crate::prepared::Control,
-    callback: Callback,
-    reader: Option<crate::spectrum_worker::SpectrumReader>,
-) -> (
+type NativeWorkerEndpoints = (
     Guard<NativeCallbackOwner>,
     Guard<ErrorCallbackOwner>,
     NativeTerminals,
     crate::prepared::Client,
     crate::prepared::WorkerControl,
-) {
+);
+pub(crate) fn reserve_native_worker(
+    control: crate::prepared::Control,
+    callback: Callback,
+    reader: Option<crate::spectrum_worker::SpectrumReader>,
+) -> Result<NativeWorkerEndpoints, hex_engine::Invalid> {
     let root = control.native_candidate_root();
-    let status = Arc::clone(&control.status);
-    let (client, publication, endpoints) = control.reserve_worker_endpoints(reader);
-    let (mut data, mut errors, terminals) = reserve_carriers(callback, status, Some(endpoints));
+    if !root.same_constructor_as(&callback.candidate_root_for_native_boundary()) {
+        return Err(hex_engine::Invalid("native worker callback source differs"));
+    }
+    // The two input owners are still borrowed here. Validate BOTH before the
+    // first client/publication Box, not later when wrapping the data callback.
+    if root.native_carrier_birth_limits().is_some() {
+        registered::validate_birth_limits(&root)?;
+        if !control.matches_fresh_registered_payload_on_control(&root)
+            || !callback.matches_fresh_registered_payload_on_control(&root)
+        {
+            return Err(hex_engine::Invalid("native prepared queue fields differ"));
+        }
+    }
+    let data_status = root.duplicate_status(&control.status, status_owner::NATIVE_DATA)?;
+    let error_status = root.duplicate_status(&control.status, status_owner::NATIVE_ERROR)?;
+    // Client role is also reserved before either endpoint carrier is born.
+    let (client, publication, endpoints) = control.reserve_worker_endpoints(reader)?;
+    let (mut data, mut errors, terminals) =
+        reserve_carriers(callback, data_status, error_status, Some(endpoints), &root)?;
     if let Some(boundary) = NativeCandidateBoundary::from_reserved(&root, &mut data, &mut errors)
         .and_then(|boundary| boundary.with_worker_endpoints(&client, &publication))
     {
         root.record_native_boundary(boundary);
     }
-    (data, errors, terminals, client, publication)
+    Ok((data, errors, terminals, client, publication))
 }
 fn reserve_carriers(
     callback: Callback,
-    status: Arc<Status>,
+    data_status: StatusHandle,
+    error_status: StatusHandle,
     endpoints: Option<crate::prepared::EndpointTerminals>,
-) -> (
-    Guard<NativeCallbackOwner>,
-    Guard<ErrorCallbackOwner>,
-    NativeTerminals,
-) {
-    let (data, data_terminal) = reserve(NativeCallbackOwner {
-        callback,
-        status: Arc::clone(&status),
-        #[cfg(test)]
-        probe: None,
-    });
-    let (errors, error_terminal) = reserve(ErrorCallbackOwner {
-        status,
-        #[cfg(test)]
-        probe: None,
-    });
+    root: &crate::candidate_custody::CandidateRoot,
+) -> Result<
     (
+        Guard<NativeCallbackOwner>,
+        Guard<ErrorCallbackOwner>,
+        NativeTerminals,
+    ),
+    hex_engine::Invalid,
+> {
+    let (data, data_terminal) = reserve_for_root(
+        root,
+        NativeCallbackOwner {
+            callback,
+            status: data_status,
+            #[cfg(test)]
+            probe: None,
+        },
+    )?;
+    let (errors, error_terminal) = reserve_for_root(
+        root,
+        ErrorCallbackOwner {
+            status: error_status,
+            #[cfg(test)]
+            probe: None,
+        },
+    )?;
+    Ok((
         data,
         errors,
         NativeTerminals {
@@ -225,7 +322,7 @@ fn reserve_carriers(
             errors: error_terminal,
             endpoints,
         },
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -405,7 +502,16 @@ enum Disposal {
     Complete,
 }
 /// Persistent lifecycle fields, always outside the execution unwind boundary.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConstructionPhase {
+    Preparing,
+    CarriersStored,
+    Installed,
+    Aborted,
+    FailedIncomplete,
+}
 pub(crate) struct NativeRetirement {
+    construction: ConstructionPhase,
     terminals: Option<NativeTerminals>,
     data: Option<Box<NativeCallbackOwner>>,
     errors: Option<Box<ErrorCallbackOwner>>,
@@ -416,25 +522,27 @@ pub(crate) struct NativeRetirement {
     completed_stream_handle: bool,
     domain_pages: [Option<crate::candidate_custody::DomainEnvelope>; 2],
     final_active: Option<crate::candidate_custody::FinalActiveReturn>,
-    root: crate::candidate_custody::CandidateRoot,
+    root: crate::candidate_custody::RootActor,
 }
 impl NativeRetirement {
+    #[cfg(any(test, feature = "allocation-probe"))]
     pub(crate) fn new(
         terminals: NativeTerminals,
         root: crate::candidate_custody::CandidateRoot,
     ) -> Self {
-        root.anchor_native_boundary(&terminals);
-        let endpoint_states = if terminals.endpoints.is_some() {
-            [Disposal::Unreceived; 2]
-        } else {
-            [Disposal::Complete; 2]
-        };
+        let mut owner = Self::begin_construction(root);
+        let _installed = owner.install_constructed_carriers(&mut Some(terminals));
+        owner
+    }
+    pub(crate) fn begin_construction(root: crate::candidate_custody::CandidateRoot) -> Self {
+        let root = root.retirement_root_field();
         Self {
-            terminals: Some(terminals),
+            construction: ConstructionPhase::Preparing,
+            terminals: None,
             data: None,
             errors: None,
             states: [Disposal::Unreceived; 2],
-            endpoint_states,
+            endpoint_states: [Disposal::Unreceived; 2],
             client: None,
             publication: None,
             completed_stream_handle: false,
@@ -442,6 +550,39 @@ impl NativeRetirement {
             final_active: None,
             root,
         }
+    }
+    pub(crate) fn install_constructed_carriers(
+        &mut self,
+        incoming: &mut Option<NativeTerminals>,
+    ) -> Result<(), ()> {
+        if self.construction != ConstructionPhase::Preparing || self.terminals.is_some() {
+            return Err(());
+        }
+        self.terminals = Some(incoming.take().ok_or(())?);
+        self.construction = ConstructionPhase::CarriersStored;
+        let terminals = self.terminals.as_ref().ok_or(())?;
+        if !self.root.anchor_native_boundary(terminals) {
+            self.construction = ConstructionPhase::FailedIncomplete;
+            return Err(());
+        }
+        self.endpoint_states = if terminals.endpoints.is_some() {
+            [Disposal::Unreceived; 2]
+        } else {
+            [Disposal::Complete; 2]
+        };
+        self.construction = ConstructionPhase::Installed;
+        Ok(())
+    }
+    // Only the constructor's proven pre-carrier failure route calls this after
+    // its actual unsplit channel/capture values have been normally destroyed.
+    pub(crate) fn abort_before_carriers(&mut self) -> Result<(), ()> {
+        if self.construction != ConstructionPhase::Preparing || self.terminals.is_some() {
+            return Err(());
+        }
+        self.construction = ConstructionPhase::Aborted;
+        self.states = [Disposal::Complete; 2];
+        self.endpoint_states = [Disposal::Complete; 2];
+        Ok(())
     }
     #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn test_extracted_identity(&self) -> Option<hex_engine::AudioCandidateIdentity> {
@@ -461,12 +602,109 @@ impl NativeRetirement {
         self.root
             .anchor_native_spectrum(reaper.and_then(|reaper| reaper.native_identity()));
     }
+    pub(crate) fn pair_spectrum_packet_on_control(
+        &self,
+        index: usize,
+        fields: hex_engine::sampler_host_fields::NativeSpectrumPacketFields<'_>,
+    ) -> Result<
+        hex_engine::sampler_host_fields::NativeSpectrumPacketLease,
+        hex_engine::AudioStorageError,
+    > {
+        self.root.pair_spectrum_packet_on_control(index, fields)
+    }
+    pub(crate) fn pair_spectrum_result_on_control(
+        &self,
+        index: usize,
+        fields: hex_engine::sampler_host_fields::NativeSpectrumResultFields<'_>,
+    ) -> Result<
+        (
+            hex_engine::sampler_host_fields::NativeSpectrumResultLease,
+            hex_engine::sampler_host_fields::NativeSpectrumResultHome,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.root.pair_spectrum_result_on_control(index, fields)
+    }
+    pub(crate) fn spectrum_stop_pair_on_control(
+        &self,
+    ) -> Result<
+        [hex_engine::sampler_host_fields::NativeAtomicSignal; 2],
+        hex_engine::AudioStorageError,
+    > {
+        self.root.spectrum_stop_pair_on_control()
+    }
+    pub(crate) fn matches_spectrum_stop(
+        &self,
+        stop: &crate::spectrum_worker::SpectrumStop,
+    ) -> bool {
+        self.root.matches_spectrum_stop(stop)
+    }
+    pub(crate) fn spectrum_project_ring_on_control<T>(
+        &self,
+        index: usize,
+        capacity: usize,
+    ) -> Result<
+        (
+            crate::native_callback_owner::NativePreparedProducer<T>,
+            crate::native_callback_owner::NativePreparedConsumer<T>,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.root.spectrum_project_ring_on_control(index, capacity)
+    }
+    pub(crate) fn spectrum_capture_ring_on_control(
+        &self,
+    ) -> Result<
+        (
+            NativePreparedProducer<crate::spectrum_worker::CaptureBatch>,
+            NativePreparedConsumer<crate::spectrum_worker::CaptureBatch>,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.root.spectrum_capture_ring_on_control()
+    }
+    pub(crate) fn spectrum_result_ring_on_control(
+        &self,
+    ) -> Result<
+        (
+            NativePreparedProducer<crate::spectrum_worker::PublishedSpectra>,
+            NativePreparedConsumer<crate::spectrum_worker::PublishedSpectra>,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.root.spectrum_result_ring_on_control()
+    }
+    pub(crate) fn pair_spectrum_capture_on_control(
+        &self,
+        fields: hex_engine::sampler_host_fields::NativeSpectrumCaptureFields<'_>,
+    ) -> Result<
+        (
+            hex_engine::sampler_host_fields::NativeSpectrumCaptureLease,
+            hex_engine::sampler_host_fields::NativeSpectrumJoinLease,
+        ),
+        hex_engine::AudioStorageError,
+    > {
+        self.root.pair_spectrum_capture_on_control(fields)
+    }
+    pub(crate) fn finish_spectrum_capture_on_control(
+        &self,
+        join: &mut hex_engine::sampler_host_fields::NativeSpectrumJoinLease,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        self.root.finish_spectrum_capture_on_control(join)
+    }
+    pub(crate) fn abort_spectrum_capture_on_control(
+        &self,
+        join: &mut hex_engine::sampler_host_fields::NativeSpectrumJoinLease,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        self.root.abort_spectrum_capture_on_control(join)
+    }
     pub(crate) fn root(&self) -> crate::candidate_custody::CandidateRoot {
         self.root.clone()
     }
     /// Supply the exact completed-handle frontier from the owning lifecycle
     /// bundle. This plus both final guard releases permits application-only
     /// nonrenderability; native stop/dispose-success is never inferred.
+    #[cfg(all(test, feature = "allocation-probe"))]
     pub(crate) fn advance_after_stream_disposal(
         &mut self,
         completed: &crate::lifecycle::CompletedStreamHandle,
@@ -476,6 +714,26 @@ impl NativeRetirement {
         }
         self.completed_stream_handle = true;
         self.advance()
+    }
+    /// Retire only the actual native callback/capture/error paths. Control
+    /// endpoints deliberately remain untouched until the owning parent joins
+    /// its analyzer; independently live UI/producer fields cannot block join.
+    pub(crate) fn advance_native_fields_after_stream_disposal(
+        &mut self,
+        completed: &crate::lifecycle::CompletedStreamHandle,
+    ) -> Result<bool, ()> {
+        if !completed.matches(self.root.root_id()) {
+            return Err(());
+        }
+        self.completed_stream_handle = true;
+        self.advance_native_fields()
+    }
+    pub(crate) fn finish_root_after_native_fields_on_control(&mut self) -> Result<bool, ()> {
+        if self.states != [Disposal::Complete; 2] {
+            return Err(());
+        }
+        self.advance_endpoints()?;
+        self.finish_root_on_control()
     }
     fn advance_endpoints(&mut self) -> Result<(), ()> {
         if self.endpoint_states == [Disposal::Complete; 2] {
@@ -496,8 +754,10 @@ impl NativeRetirement {
             self.endpoint_states[1] = Disposal::Received;
         }
         if self.endpoint_states[1] == Disposal::Received {
+            terminals.publication.begin_body_drop()?;
             self.endpoint_states[1] = Disposal::Pending;
             drop(self.publication.take());
+            terminals.publication.complete_body_drop()?;
             self.endpoint_states[1] = Disposal::Complete;
         }
         if self.endpoint_states[0] == Disposal::Unreceived && terminals.client.ready() {
@@ -508,19 +768,45 @@ impl NativeRetirement {
             self.endpoint_states[0] = Disposal::Received;
         }
         if self.endpoint_states[0] == Disposal::Received {
+            terminals.client.begin_body_drop()?;
             self.endpoint_states[0] = Disposal::Pending;
             drop(self.client.take());
+            terminals.client.complete_body_drop()?;
             self.endpoint_states[0] = Disposal::Complete;
         }
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn advance(&mut self) -> Result<bool, ()> {
+        // Standalone no-analyzer fixture progress never becomes a join bypass.
+        // This negative gate grants no positive resource/identity authority.
+        if self.root.test_requires_analyzer_parent() {
+            return Err(());
+        }
+        if !self.root.is_retirement_field() {
+            return Err(());
+        }
         if self.states.contains(&Disposal::Pending)
             || self.endpoint_states.contains(&Disposal::Pending)
         {
             return Err(());
         }
         self.advance_endpoints()?;
+        if !self.advance_native_fields()? {
+            return Ok(false);
+        }
+        self.finish_root_on_control()
+    }
+    fn advance_native_fields(&mut self) -> Result<bool, ()> {
+        if !matches!(
+            self.construction,
+            ConstructionPhase::Installed | ConstructionPhase::Aborted
+        ) || !self.root.is_retirement_field()
+            || self.states.contains(&Disposal::Pending)
+            || self.endpoint_states.contains(&Disposal::Pending)
+        {
+            return Err(());
+        }
         if self.states[0] == Disposal::Unreceived {
             if self.data.is_some() || self.errors.is_some() {
                 return Err(());
@@ -570,16 +856,32 @@ impl NativeRetirement {
                     return Err(());
                 }
             }
+            self.terminals.as_mut().ok_or(())?.data.begin_body_drop()?;
             self.states[0] = Disposal::Pending;
             drop(self.data.take());
+            self.terminals
+                .as_mut()
+                .ok_or(())?
+                .data
+                .complete_body_drop()?;
             self.states[0] = Disposal::Complete;
         }
         if self.states[1] == Disposal::Received {
             if self.errors.is_none() {
                 return Err(());
             }
+            self.terminals
+                .as_mut()
+                .ok_or(())?
+                .errors
+                .begin_body_drop()?;
             self.states[1] = Disposal::Pending;
             drop(self.errors.take());
+            self.terminals
+                .as_mut()
+                .ok_or(())?
+                .errors
+                .complete_body_drop()?;
             self.states[1] = Disposal::Complete;
         }
         if self.states != [Disposal::Complete; 2] {
@@ -601,6 +903,9 @@ impl NativeRetirement {
                 return Err(());
             }
         }
+        Ok(true)
+    }
+    fn finish_root_on_control(&mut self) -> Result<bool, ()> {
         // Graph/domain work progresses even while the UI client remains live.
         // Only complete normal endpoint destruction can release the whole
         // native resource extent and its exclusive device lease.

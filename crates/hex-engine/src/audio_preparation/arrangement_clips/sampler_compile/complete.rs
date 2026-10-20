@@ -79,6 +79,8 @@ impl crate::AudioPreparationCustody {
             .checked_add(1)
             .ok_or(AudioStorageError::Overflow)?;
         let construction = Inputs {
+            host: None,
+            resident: None,
             producer,
             rows: &self.arrangement_clips,
             preparation: self,
@@ -104,65 +106,7 @@ impl crate::AudioPreparationCustody {
                 transforms,
                 construction,
             )?;
-            // The supported constructor has no ordinary audio sources. Its
-            // real empty bank still receives the ordinary constructor identity;
-            // no pending device PCM is copied into legacy Frame storage.
-            crate::OwnedAudioInputs::try_new_in_place(
-                &mut Vec::new(),
-                crate::AudioStorageReservation {
-                    // No ordinary audio sources: do not reserve an unrelated
-                    // alias Vec from the global inspection row budget.
-                    allocation_items: 0,
-                    handle_obligations: 0,
-                    max_prepared_data_bytes: reservation.max_retained_bytes,
-                    max_construction_data_bytes: reservation.max_construction_peak_bytes,
-                    caller_retained_bytes: 0,
-                    caller_construction_bytes: 0,
-                },
-                &mut self.bank,
-            )?;
-            let bank = self
-                .bank
-                .as_ref()
-                .ok_or(AudioStorageError::SourceMismatch)?;
-            self.session.reserve(target, next, bank, 0)?;
-            self.structure.reserve(target, &self.session)?;
-            self.tempo.reserve(target)?;
-            self.tempo.construct()?;
-            self.session.construct(bank)?;
-            let contexts = self
-                .arrangement_clips
-                .root_context()
-                .ok_or(AudioStorageError::SourceMismatch)?;
-            self.shared.construct_compiler_session(contexts)?;
-            self.assembly.reserve(
-                target,
-                &self.structure,
-                &self.session,
-                self.shared.inventory_handles(),
-            )?;
-            self.shared
-                .validate_compiler_pair(contexts, self.assembly.shared_storage_at(None)?)?;
-            self.assembly
-                .construct_compiler_factories(target, contexts)?;
-            self.assembly.construct(
-                &mut self.session,
-                &mut self.structure,
-                &mut self.tempo,
-                &mut self.shared,
-                bank,
-            )?;
-            self.shared
-                .validate_compiler_pair(contexts, self.assembly.shared_storage_at(None)?)?;
-            let arrangement = self
-                .arrangement_clips
-                .root
-                .project()
-                .ok_or(AudioStorageError::SourceMismatch)?;
-            self.revision.reserve_compiled(target, arrangement)?;
-            self.revision
-                .construct(&mut self.arrangement_clips, &mut self.assembly)?;
-            Ok(())
+            self.finish_original_sampler_revision_fields(target, next, reservation)
         }));
         match outcome {
             Ok(Ok(())) => {
@@ -186,5 +130,181 @@ impl crate::AudioPreparationCustody {
                 Err(AudioStorageError::UnknownStorage)
             }
         }
+    }
+    // Engine-internal only. No quote, borrowed ledger or Construction value is
+    // exposed to Audio/Session; the owning closed driver calls both phases.
+    #[expect(clippy::too_many_arguments, reason = "same mandatory closed inputs")]
+    pub(crate) fn inspect_original_sampler_revision_with_writers_on_control(
+        &self,
+        host: Option<&crate::sampler_host_fields::OriginalSamplerConstructionHost<'_, '_>>,
+        target: &crate::SharedMetadata<hex_project::Project>,
+        resident: Option<&dyn crate::sampler_host_fields::OriginalSamplerResidentFields>,
+        producer: Option<&crate::native_device_resources::OriginalResourceBankPlan<'_>>,
+        editor: &hex_project::Editor,
+        previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
+        original: &AudioRootStorageLedger<'_>,
+        transaction: &crate::audio_transform::OriginalSamplerTransaction<'_>,
+        reservation: AudioStorageLedgerReservation,
+    ) -> Result<Construction, AudioStorageError> {
+        self.inspect_sampler_destination()?;
+        {
+            let inventory = transaction.inventory();
+            Inputs {
+                host,
+                resident,
+                producer,
+                rows: &self.arrangement_clips,
+                preparation: self,
+                editor,
+                target: Some(target),
+                resources: self
+                    .original_resources
+                    .as_ref()
+                    .ok_or(AudioStorageError::SourceMismatch)?,
+                previous,
+                original,
+            }
+            .inspect_guarded_original_sampler(
+                &inventory,
+                reservation,
+                true,
+                size_of::<crate::audio_transform::OriginalSamplerTransaction<'_>>(),
+            )
+        }
+    }
+    pub(crate) fn construct_original_sampler_revision_with_writers_on_control(
+        &mut self,
+        target: &crate::SharedMetadata<hex_project::Project>,
+        previous: Option<&OwnedShared<SharedAnalyticContextTable>>,
+        transaction: &mut crate::audio_transform::OriginalSamplerTransaction<'_>,
+        reservation: AudioStorageLedgerReservation,
+        construction: Construction,
+        retire_after_native_guards: bool,
+    ) -> Result<crate::AudioPreparationToken, AudioStorageError> {
+        // SAME persistent destination; no owner extraction, guard release,
+        // caller callback or exported approval can intervene in this operation.
+        self.inspect_sampler_destination()?;
+        let next = self
+            .incarnation
+            .checked_add(1)
+            .ok_or(AudioStorageError::Overflow)?;
+        self.incarnation = next;
+        self.phase = AudioPreparationPhase::Constructing;
+        let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            transaction
+                .construct(|transforms| {
+                    self.arrangement_clips.construct_original_sampler_body(
+                        target,
+                        self.original_resources
+                            .as_ref()
+                            .ok_or(crate::Invalid("missing sampler resources"))?,
+                        previous,
+                        transforms,
+                        construction,
+                    )
+                })
+                .map_err(|_| AudioStorageError::UnsupportedGraph)?;
+            self.finish_original_sampler_revision_fields(target, next, reservation)
+        }));
+        match outcome {
+            Ok(Ok(())) => {
+                self.phase = AudioPreparationPhase::ArrangementAndSessionSources;
+                Ok(crate::AudioPreparationToken {
+                    root: self.root,
+                    incarnation: next,
+                })
+            }
+            Ok(Err(error)) => {
+                self.reason = Some(error);
+                self.phase = AudioPreparationPhase::Cleaning;
+                Err(error)
+            }
+            Err(payload) if retire_after_native_guards => {
+                // The private closed-host construction value selected this
+                // route before mutation. SAME native exclusions are still held:
+                // retain every actual child and the first payload for the
+                // existing control custodian, never destruct owners here.
+                // inspect_sampler_destination proved first_panic vacant, and
+                // no external callback or mutable parent loan intervenes.
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                self.reason = Some(AudioStorageError::UnknownStorage);
+                self.first_panic = Some(payload);
+                Err(AudioStorageError::UnknownStorage)
+            }
+            Err(payload) => {
+                self.phase = AudioPreparationPhase::Cleaning;
+                self.cleanup_on_control();
+                self.phase = AudioPreparationPhase::FailedIncomplete;
+                let secondary = self.first_panic.replace(payload);
+                drop(secondary);
+                Err(AudioStorageError::UnknownStorage)
+            }
+        }
+    }
+    fn finish_original_sampler_revision_fields(
+        &mut self,
+        target: &hex_project::Project,
+        next: u64,
+        reservation: AudioStorageLedgerReservation,
+    ) -> Result<(), AudioStorageError> {
+        // The supported constructor has no ordinary audio sources. Its
+        // real empty bank still receives the ordinary constructor identity;
+        // no pending device PCM is copied into legacy Frame storage.
+        crate::OwnedAudioInputs::try_new_in_place(
+            &mut Vec::new(),
+            crate::AudioStorageReservation {
+                // No ordinary audio sources: do not reserve an unrelated
+                // alias Vec from the global inspection row budget.
+                allocation_items: 0,
+                handle_obligations: 0,
+                max_prepared_data_bytes: reservation.max_retained_bytes,
+                max_construction_data_bytes: reservation.max_construction_peak_bytes,
+                caller_retained_bytes: 0,
+                caller_construction_bytes: 0,
+            },
+            &mut self.bank,
+        )?;
+        let bank = self
+            .bank
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        self.session.reserve(target, next, bank, 0)?;
+        self.structure.reserve(target, &self.session)?;
+        self.tempo.reserve(target)?;
+        self.tempo.construct()?;
+        self.session.construct(bank)?;
+        let contexts = self
+            .arrangement_clips
+            .root_context()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        self.shared.construct_compiler_session(contexts)?;
+        self.assembly.reserve(
+            target,
+            &self.structure,
+            &self.session,
+            self.shared.inventory_handles(),
+        )?;
+        self.shared
+            .validate_compiler_pair(contexts, self.assembly.shared_storage_at(None)?)?;
+        self.assembly
+            .construct_compiler_factories(target, contexts)?;
+        self.assembly.construct(
+            &mut self.session,
+            &mut self.structure,
+            &mut self.tempo,
+            &mut self.shared,
+            bank,
+        )?;
+        self.shared
+            .validate_compiler_pair(contexts, self.assembly.shared_storage_at(None)?)?;
+        let arrangement = self
+            .arrangement_clips
+            .root
+            .project()
+            .ok_or(AudioStorageError::SourceMismatch)?;
+        self.revision.reserve_compiled(target, arrangement)?;
+        self.revision
+            .construct(&mut self.arrangement_clips, &mut self.assembly)?;
+        Ok(())
     }
 }

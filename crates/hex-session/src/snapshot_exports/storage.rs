@@ -3,6 +3,58 @@
 use super::*;
 use hex_engine::{AudioRootStorageLedger, AudioStorageError};
 
+pub(super) fn export_result_fields<'a, T>(
+    body: &'a T,
+    event: Option<&'a crate::service::ExportEvent>,
+) -> hex_engine::sampler_host_fields::FamilyExportResultFields<'a> {
+    use hex_engine::sampler_host_fields::{BodyRef, FamilyExportResultFields};
+    FamilyExportResultFields {
+        body: BodyRef::of(body),
+        payload: event.map(crate::service::ExportEvent::sampler_fields_on_control),
+    }
+}
+
+impl crate::service::ExportEvent {
+    pub(crate) fn sampler_fields_on_control(
+        &self,
+    ) -> hex_engine::sampler_host_fields::ExportResultPayloadFields<'_> {
+        use hex_engine::sampler_host_fields::{
+            BodyRef, ExportResultOutcomeFields, ExportResultPayloadFields,
+        };
+
+        let crate::service::ExportEvent {
+            revision: _,
+            path,
+            result,
+        } = self;
+        let outcome = match result {
+            Ok(report) => {
+                let hex_export::ExportReport {
+                    path,
+                    sample_rate: _,
+                    frames: _,
+                    data_bytes: _,
+                    recovery_path,
+                } = report;
+                ExportResultOutcomeFields::Success {
+                    body: BodyRef::of(report),
+                    path,
+                    recovery: recovery_path.as_ref(),
+                }
+            }
+            Err(message) => ExportResultOutcomeFields::Error {
+                body: BodyRef::of(message),
+                message,
+            },
+        };
+        ExportResultPayloadFields {
+            body: BodyRef::of(self),
+            path,
+            outcome,
+        }
+    }
+}
+
 impl ViewState {
     /// Actual children of this view, including every paired physical field.
     /// The enclosing inline/shared view body is charged by its actual parent.
@@ -17,6 +69,7 @@ impl ViewState {
 // Actual fields under the existing family/worker borrow. This helper is
 // exhaustive on every owning ViewState field and allocates no projection list.
 struct ViewParts<'a> {
+    comparison: &'a Option<crate::service::ComparisonAudioBinding>,
     source: &'a Option<crate::service::SharedCanonicalAudioSource>,
     project: &'a crate::SharedProject,
     waveforms: &'a hex_project::SortedEntries<hex_project::AssetId, crate::SharedWaveform>,
@@ -28,6 +81,7 @@ struct ViewParts<'a> {
 fn view_parts(view: &ViewState) -> ViewParts<'_> {
     let ViewState {
         canonical_audio_source,
+        comparison_audio,
         project,
         waveforms,
         audio_clip_waveforms,
@@ -41,6 +95,7 @@ fn view_parts(view: &ViewState) -> ViewParts<'_> {
         document_path,
     } = view;
     ViewParts {
+        comparison: comparison_audio,
         source: canonical_audio_source,
         project,
         waveforms,
@@ -51,6 +106,9 @@ fn view_parts(view: &ViewState) -> ViewParts<'_> {
     }
 }
 impl hex_engine::sampler_host_fields::SnapshotViewPayload for ViewState {
+    fn revision_field(&self) -> &u64 {
+        &self.revision
+    }
     fn body(&self) -> hex_engine::sampler_host_fields::BodyRef<'_> {
         hex_engine::sampler_host_fields::BodyRef::of(self)
     }
@@ -59,6 +117,14 @@ impl hex_engine::sampler_host_fields::SnapshotViewPayload for ViewState {
             .source
             .as_ref()
             .map(crate::service::canonical_audio_source::sampler_fields_on_control)
+    }
+    fn comparison_source(
+        &self,
+    ) -> Option<hex_engine::sampler_host_fields::CapturedSourceFields<'_>> {
+        view_parts(self)
+            .comparison
+            .as_ref()
+            .map(|binding| binding.sampler_source_fields_on_control())
     }
     fn project(&self) -> &crate::SharedProject {
         view_parts(self).project
@@ -135,6 +201,8 @@ impl hex_engine::sampler_host_fields::FamilyFields for SnapshotExportRecords {
             reads: _,
             native_compiled: _,
             native_requests: _,
+            native_export_result: _,
+            source_events: _,
             max_bookkeeping_bytes: _,
         } = self;
         hex_engine::sampler_host_fields::VecRef::of(snapshots)
@@ -153,12 +221,22 @@ impl hex_engine::sampler_host_fields::FamilyFields for SnapshotExportRecords {
         let SnapshotRecord {
             generation: _,
             snapshot,
+            event_metadata,
             retired: _,
             readers: _,
-            cleanup_started: _,
+            cleanup_started,
         } = record;
+        if *cleanup_started || (snapshot.is_none() && event_metadata.is_some()) {
+            return Err(AudioStorageError::UnknownStorage);
+        }
         Ok(FamilySnapshotFields {
             body: BodyRef::of(record),
+            event_metadata: event_metadata.as_ref().map(|metadata| {
+                hex_engine::sampler_host_fields::FamilyEventMetadataFields {
+                    owner: SharedMetadataRef::of(metadata),
+                    metadata: metadata.fields(),
+                }
+            }),
             view: snapshot.as_ref().map(|owner| SnapshotViewFields {
                 owner: SharedMetadataRef::of(owner),
                 payload: owner.as_ref(),
@@ -179,10 +257,18 @@ impl hex_engine::sampler_host_fields::FamilyFields for SnapshotExportRecords {
     fn requests(&self) -> &dyn hex_engine::sampler_host_fields::FamilyRequestRecords {
         &self.native_requests
     }
+    fn export_result(
+        &self,
+    ) -> Result<hex_engine::sampler_host_fields::FamilyExportResultFields<'_>, AudioStorageError>
+    {
+        self.native_export_result.fields()
+    }
     fn compiled(
         &self,
     ) -> Result<Option<hex_engine::sampler_host_fields::FamilyCompiledFields<'_>>, AudioStorageError>
     {
+        self.validate_source_events_on_control()
+            .map_err(|_| AudioStorageError::UnknownStorage)?;
         self.native_compiled
             .as_ref()
             .map(|records| records.fields())
@@ -259,6 +345,9 @@ mod tests {
             kind: u8,
         }
         impl SnapshotViewPayload for Wrong<'_> {
+            fn revision_field(&self) -> &u64 {
+                self.actual.revision_field()
+            }
             fn body(&self) -> BodyRef<'_> {
                 self.actual.body()
             }
@@ -268,6 +357,9 @@ mod tests {
                 } else {
                     self.actual.source()
                 }
+            }
+            fn comparison_source(&self) -> Option<CapturedSourceFields<'_>> {
+                self.actual.comparison_source()
             }
             fn project(&self) -> &crate::SharedProject {
                 if self.kind == 1 {

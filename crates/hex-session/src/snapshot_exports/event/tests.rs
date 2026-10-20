@@ -20,6 +20,97 @@ fn limits() -> SnapshotExportReservation {
 }
 
 #[test]
+fn event_constructor_keeps_same_family_writer_and_cancel_preserves_pending_view() {
+    let (family, producer) = SessionExportFamily::try_new_on_control(limits()).unwrap();
+    let (_, foreign) = SessionExportFamily::try_new_on_control(limits()).unwrap();
+    let mut source = pending(23);
+    let original = std::ptr::from_ref(&source.as_ref().unwrap().project);
+    let before = family
+        .try_inventory_guard_on_control()
+        .unwrap()
+        .inventory_revision();
+    assert!(matches!(
+        family.try_event_construction_on_control(&foreign),
+        Err(ExportRecordError::Stale)
+    ));
+    let read_guard = family.try_inventory_guard_on_control().unwrap();
+    assert!(matches!(
+        family.try_event_construction_on_control(&producer),
+        Err(ExportRecordError::Busy)
+    ));
+    drop(read_guard);
+    let loan = family.try_event_construction_on_control(&producer).unwrap();
+    assert!(matches!(
+        family.try_event_construction_on_control(&producer),
+        Err(ExportRecordError::Busy)
+    ));
+    assert!(matches!(
+        family.try_inventory_guard_on_control(),
+        Err(ExportRecordError::Busy)
+    ));
+    {
+        let fields = loan.sampler_family_fields_on_control().unwrap();
+        assert_eq!(fields.records.snapshots().len(), 2);
+        assert!(fields.records.snapshot(0).unwrap().view.is_none());
+        assert!(fields.records.snapshot(1).unwrap().view.is_none());
+        // The projection points into this actual enclosing family; footprint
+        // and backing accounting remain the Engine visitor's responsibility.
+        assert!(fields.owner.contains(fields.records.body()));
+    }
+    // Cancellation need not acquire the held writer; insertion must observe it
+    // and leave the exact already prepared source in its actual producer field.
+    family.abandon_on_control(&producer).unwrap();
+    assert!(matches!(
+        loan.insert_on_control(&mut source),
+        Err(ExportRecordError::Closed)
+    ));
+    assert_eq!(
+        std::ptr::from_ref(&source.as_ref().unwrap().project),
+        original
+    );
+    let after = family.try_inventory_guard_on_control().unwrap();
+    assert_eq!(after.inventory_revision(), before);
+    assert_eq!(after.snapshot_count(), 0);
+}
+
+#[test]
+fn event_constructor_released_without_birth_changes_no_records_and_inserts_once() {
+    let (family, producer) = SessionExportFamily::try_new_on_control(limits()).unwrap();
+    let before = family
+        .try_inventory_guard_on_control()
+        .unwrap()
+        .inventory_revision();
+    drop(family.try_event_construction_on_control(&producer).unwrap());
+    assert_eq!(
+        family
+            .try_inventory_guard_on_control()
+            .unwrap()
+            .inventory_revision(),
+        before
+    );
+    let loan = family.try_event_construction_on_control(&producer).unwrap();
+    let mut source = pending(29);
+    let read = loan.insert_on_control(&mut source).unwrap();
+    assert!(source.is_none());
+    let held_writer = family.try_event_construction_on_control(&producer).unwrap();
+    assert_eq!(
+        family.follows_source(&read, &read, 1),
+        Err(ExportRecordError::Busy)
+    );
+    drop(held_writer);
+    assert_eq!(family.follows_source(&read, &read, 1), Ok(false));
+    assert_eq!(
+        family.read_with(&read, |snapshot| snapshot.revision()),
+        Ok(29)
+    );
+    let after = family.try_inventory_guard_on_control().unwrap();
+    assert_eq!(after.inventory_revision(), before + 1);
+    assert_eq!(after.snapshot_count(), 1);
+    drop(after);
+    family.release_read(read).unwrap();
+}
+
+#[test]
 fn worker_event_snapshot_and_read_publish_together_or_keep_exact_pending_owner() {
     let (mut family, producer) = SessionExportFamily::try_new_on_control(limits()).unwrap();
     let mut first = pending(7);

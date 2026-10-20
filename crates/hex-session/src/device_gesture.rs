@@ -830,6 +830,24 @@ pub(crate) struct GestureMachine {
     last_key: Option<GestureKey>,
 }
 
+impl GestureMachine {
+    /// These exact private fields contain inline Copy state. The exhaustive
+    /// patterns/Copy checks are the source contract; BodyRef proves footprint
+    /// only and supplies no constructor or retirement authority.
+    pub(crate) fn inline_worker_gesture_frame_on_control(
+        &self,
+    ) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        fn inline_copy<T: Copy>(_: &T) {}
+        let Self { active, last_key } = self;
+        if let Some(Active { snapshot, kind }) = active {
+            inline_copy(snapshot);
+            inline_copy(kind);
+        }
+        inline_copy(last_key);
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
+}
+
 impl GestureRequest {
     pub fn key(self) -> GestureKey {
         match self {

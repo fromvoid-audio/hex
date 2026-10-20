@@ -1,7 +1,14 @@
 //! One Resident compatibility request/result. This is never a Verified input.
 //! The UI receives a request token, not a publication or callback ACK.
 use super::*;
-use std::sync::Mutex;
+use crate::candidate_custody::{CustodyMutex, CustodyMutexGuard};
+use hex_engine::{
+    AudioStorageError, SharedMetadata,
+    sampler_host_fields::{
+        BodyRef, NativeResidentFieldLease, NativeResidentFields, NativeResidentRegistration,
+        SharedMetadataRef,
+    },
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ResidentPublicationToken(u64);
@@ -24,17 +31,259 @@ struct Slot {
     response: Option<ResidentPublicationResponse>,
     cancellation: Option<Arc<FreshRuntimeCancellation>>,
 }
-pub(super) struct ResidentForwarding {
-    slot: Mutex<Slot>,
+pub(crate) struct ResidentForwarding {
+    slot: CustodyMutex<Slot>,
+}
+/// The actual immutable anchor is embedded in the existing Root from birth.
+/// It owns no Root/callback, so endpoint release cannot create an owner cycle.
+pub(crate) struct ResidentArchive {
+    value: SharedMetadata<ResidentForwarding>,
+    registration: NativeResidentRegistration,
+}
+/// Inspection only: this guard cannot expose an owning endpoint or survive its
+/// Root borrow. Mutators never acquire a Root guard while holding this Slot.
+pub(crate) struct ResidentRead<'a> {
+    archive: &'a ResidentArchive,
+    slot: CustodyMutexGuard<'a, Slot>,
+}
+impl ResidentRead<'_> {
+    pub(crate) fn fields(&self) -> Result<NativeResidentFields<'_>, AudioStorageError> {
+        self.archive.fields(&self.slot)
+    }
+}
+pub(crate) enum ResidentHandle {
+    Legacy(Arc<ResidentForwarding>),
+    Qualified {
+        value: Option<SharedMetadata<ResidentForwarding>>,
+        lease: NativeResidentFieldLease,
+    },
+}
+impl std::ops::Deref for ResidentHandle {
+    type Target = ResidentForwarding;
+    fn deref(&self) -> &ResidentForwarding {
+        match self {
+            Self::Legacy(value) => value,
+            Self::Qualified { value, .. } => {
+                value.as_ref().expect("resident field already disposed")
+            }
+        }
+    }
+}
+impl Drop for ResidentHandle {
+    fn drop(&mut self) {
+        if let Self::Qualified { value, lease } = self {
+            if lease.begin_actual_field_drop_on_control().is_ok() {
+                drop(value.take());
+                let _ = lease.complete_actual_field_drop_on_control();
+            }
+        }
+    }
+}
+impl ResidentHandle {
+    pub(crate) fn legacy_pair() -> [Self; 2] {
+        let value = ResidentForwarding::new();
+        [Self::Legacy(Arc::clone(&value)), Self::Legacy(value)]
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    fn legacy_arc_for_test(&self) -> Arc<ResidentForwarding> {
+        match self {
+            Self::Legacy(value) => Arc::clone(value),
+            _ => panic!("legacy-only test alias"),
+        }
+    }
+}
+impl ResidentArchive {
+    /// Only the immutable construction facade may nest this sixth try after
+    /// its five existing exclusions. No waiting, mutation or owning drop here.
+    pub(crate) fn try_read_on_control(&self) -> Result<ResidentRead<'_>, AudioStorageError> {
+        let slot = self.value.slot.try_lock().map_err(|reason| match reason {
+            crate::candidate_custody::CustodyTryLockError::Contended => {
+                AudioStorageError::ExternalReadersPending
+            }
+            crate::candidate_custody::CustodyTryLockError::Poisoned => {
+                AudioStorageError::UnknownStorage
+            }
+        })?;
+        Ok(ResidentRead {
+            archive: self,
+            slot,
+        })
+    }
+    pub(crate) fn requested_bytes() -> Option<usize> {
+        SharedMetadataRef::constructor_bytes::<ResidentForwarding>()
+            .ok()?
+            .checked_add(NativeResidentRegistration::requested_bytes_on_control().ok()?)
+    }
+    pub(crate) fn construction_scratch() -> Option<usize> {
+        size_of::<Self>()
+            .checked_add(size_of::<ResidentForwarding>())?
+            .checked_add(size_of::<[ResidentHandle; 2]>())?
+            .checked_add(size_of::<ResidentRead<'_>>())?
+            .checked_add(NativeResidentRegistration::construction_scratch_bytes_on_control().ok()?)
+    }
+    pub(crate) fn new() -> Result<Self, Invalid> {
+        Self::requested_bytes().ok_or(Invalid("resident constructor layout unknown"))?;
+        // All four field identities precede metadata/DATA births and aliases.
+        let registration = NativeResidentRegistration::new_on_control()
+            .map_err(|_| Invalid("resident field metadata refused"))?;
+        let value = SharedMetadata::new_on_control(ResidentForwarding {
+            slot: CustodyMutex::new(Slot::default()),
+        });
+        let archive = Self {
+            value,
+            registration,
+        };
+        {
+            let read = archive
+                .try_read_on_control()
+                .map_err(|_| Invalid("fresh resident slot unavailable"))?;
+            read.fields()
+                .map_err(|_| Invalid("resident constructor fields differ"))?;
+        }
+        Ok(archive)
+    }
+    #[cfg(test)]
+    pub(crate) fn test_while_slot_held(&self, inspect: impl FnOnce()) {
+        std::thread::scope(|scope| {
+            let (held_tx, held_rx) = std::sync::mpsc::sync_channel(0);
+            let (release_tx, release_rx) = std::sync::mpsc::sync_channel(0);
+            let holder = scope.spawn(move || {
+                let guard = self.value.slot.try_lock().unwrap();
+                held_tx.send(()).unwrap();
+                release_rx.recv().unwrap();
+                drop(guard);
+            });
+            held_rx.recv().unwrap();
+            inspect();
+            release_tx.send(()).unwrap();
+            holder.join().unwrap();
+        });
+    }
+    /// Read-only actual endpoint binding, no Slot inspection or mutation.
+    pub(crate) fn matches_actual_field(&self, field: &ResidentHandle, role: usize) -> bool {
+        match field {
+            ResidentHandle::Qualified {
+                value: Some(value),
+                lease,
+            } => {
+                self.value.shares_owner_with(value)
+                    && self
+                        .registration
+                        .matches_actual_field_role_on_control(lease, role)
+            }
+            _ => false,
+        }
+    }
+    pub(crate) fn pair(&self) -> Result<[ResidentHandle; 2], Invalid> {
+        let field = |role| -> Result<ResidentHandle, Invalid> {
+            let lease = self
+                .registration
+                .reserve_field_on_control(role)
+                .map_err(|_| Invalid("resident field unavailable"))?;
+            // No fallible/allocation/callback work after reservation before
+            // installing the actual DATA field beside its affine lease.
+            let value = Some(self.value.clone());
+            Ok(ResidentHandle::Qualified { value, lease })
+        };
+        Ok([field(0)?, field(1)?])
+    }
+    fn fields<'a>(&'a self, slot: &'a Slot) -> Result<NativeResidentFields<'a>, AudioStorageError> {
+        let Self {
+            value,
+            registration,
+        } = self;
+        let ResidentForwarding { slot: actual } = value.as_ref();
+        let Slot {
+            next,
+            busy,
+            ever_used,
+            request,
+            response,
+            cancellation,
+        } = slot;
+        let _: (&u64, &bool, &bool) = (next, busy, ever_used);
+        let owner = SharedMetadataRef::of(value);
+        let body = BodyRef::of(slot);
+        if !BodyRef::of(value.as_ref()).contains(BodyRef::of(actual))
+            || !BodyRef::of(actual).contains(body)
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        let request = request.as_ref().map(|request| {
+            let Request {
+                token,
+                playback,
+                policy,
+                context_generation,
+            } = request;
+            let _: (&ResidentPublicationToken, &PublicationPolicy, &u64) =
+                (token, policy, context_generation);
+            playback
+        });
+        let failed_response = response.as_ref().and_then(|response| {
+            let ResidentPublicationResponse { token, result } = response;
+            let _: &ResidentPublicationToken = token;
+            result.as_ref().err().map(|error| {
+                let PublishError { reason, playback } = error;
+                let _: &&'static str = reason;
+                playback
+            })
+        });
+        Ok(NativeResidentFields {
+            body: BodyRef::of(self),
+            owner,
+            registration,
+            slot: body,
+            request,
+            failed_response,
+            cancellation: cancellation.as_ref().map(BodyRef::of),
+        })
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_facts(&self, rows: usize) -> Result<(usize, usize), AudioStorageError> {
+        let slot = self
+            .value
+            .slot
+            .try_lock()
+            .map_err(|_| AudioStorageError::ExternalReadersPending)?;
+        let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+            hex_engine::AudioStorageLedgerReservation {
+                data_rows: 32,
+                handle_rows: rows,
+                root_rows: 4,
+                max_retained_bytes: 1 << 20,
+                max_construction_peak_bytes: 1 << 20,
+            },
+        )?;
+        self.fields(&slot)?.visit_storage_on_control(&mut ledger)?;
+        ledger.validate_selected_shared_handles_on_control()?;
+        Ok((
+            ledger.summary()?.data_bytes,
+            ledger.selected_shared_counts_on_control().1,
+        ))
+    }
+    /// Additional actual outer storage. Payload children remain mandatory in
+    /// the guarded traversal; this arithmetic is not admission or a snapshot.
+    pub(crate) fn legacy_budget_increment(&self, payload_already_reported: bool) -> Option<usize> {
+        let bytes = SharedMetadataRef::constructor_bytes::<ResidentForwarding>()
+            .ok()?
+            .checked_add(
+                self.registration
+                    .retained_metadata_bytes_on_control()
+                    .ok()?,
+            )?;
+        bytes.checked_sub(if payload_already_reported {
+            size_of::<ResidentForwarding>()
+        } else {
+            0
+        })
+    }
 }
 impl ResidentForwarding {
     pub(super) fn new() -> Arc<Self> {
-        let shared = Arc::new(Self {
-            slot: Mutex::new(Slot::default()),
-        });
-        // Prewarm this actual constructor mutex before Client exposure.
-        drop(shared.slot.lock());
-        shared
+        Arc::new(Self {
+            slot: CustodyMutex::new(Slot::default()),
+        })
     }
     fn virgin(&self) -> bool {
         self.slot.try_lock().is_ok_and(|slot| {
@@ -46,17 +295,31 @@ impl ResidentForwarding {
         })
     }
     pub(super) fn storage(
-        client: &Arc<Self>,
-        worker: &Arc<Self>,
+        client: &ResidentHandle,
+        worker: &ResidentHandle,
     ) -> Option<crate::native_callback_owner::ChannelStorage> {
-        if !Arc::ptr_eq(client, worker)
-            || Arc::strong_count(client) != 2
-            || Arc::weak_count(client) != 0
-            || !client.virgin()
-        {
+        let same = match (client, worker) {
+            (ResidentHandle::Legacy(client), ResidentHandle::Legacy(worker)) => {
+                Arc::ptr_eq(client, worker)
+                    && Arc::strong_count(client) == 2
+                    && Arc::weak_count(client) == 0
+            }
+            (
+                ResidentHandle::Qualified {
+                    value: Some(client),
+                    lease: a,
+                },
+                ResidentHandle::Qualified {
+                    value: Some(worker),
+                    lease: b,
+                },
+            ) => client.shares_owner_with(worker) && a.same_constructor_as_on_control(b),
+            _ => false,
+        };
+        if !same || !client.virgin() {
             return None;
         }
-        Some(crate::native_callback_owner::ChannelStorage::paired_payload(client.as_ref()))
+        Some(crate::native_callback_owner::ChannelStorage::paired_payload(&**client))
     }
 }
 impl endpoints::ClientEndpoints {
@@ -160,10 +423,7 @@ impl PublicationControl {
             return;
         };
         let previous = {
-            let mut slot = match bridge.slot.lock() {
-                Ok(slot) => slot,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            let mut slot = bridge.slot.lock_recover_on_control();
             std::mem::replace(
                 &mut slot.cancellation,
                 self.latest_fresh_runtime_cancellation
@@ -196,10 +456,7 @@ impl PublicationControl {
         // Only this worker fills the result, and busy remains set until the
         // unique Client takes it. No competing request can replace this slot.
         if let Some(bridge) = &self.resident_forwarding {
-            let mut slot = match bridge.slot.lock() {
-                Ok(slot) => slot,
-                Err(poisoned) => poisoned.into_inner(),
-            };
+            let mut slot = bridge.slot.lock_recover_on_control();
             slot.response = Some(ResidentPublicationResponse {
                 token: request.token,
                 result,
@@ -209,199 +466,4 @@ impl PublicationControl {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::native_callback_owner::{NativeRetirement, reserve_native_worker};
-    fn playback() -> Playback {
-        let project = hex_project::Project::new(48000).unwrap();
-        let prepared = hex_engine::PreparedRevision::prepare(
-            &project,
-            &std::collections::BTreeMap::new(),
-            hex_engine::SharedSineTable::new_on_control(),
-            None,
-        )
-        .unwrap();
-        Playback::from_prepared(Arc::new(prepared))
-    }
-    #[test]
-    fn one_request_preserves_refusal_owner_and_separates_request_submission_and_apply() {
-        let _serial = candidate_tests::serial();
-        let (control, callback) = channel(48000).unwrap();
-        let root = control.native_candidate_root();
-        let (mut data, errors, terminals, mut client, mut worker) =
-            reserve_native_worker(control, callback, None);
-        let mut retirement = NativeRetirement::new(terminals, root);
-        client.activate();
-        let ticket = client
-            .forward_resident_publication(playback(), PublicationPolicy::InheritRuntime, 7)
-            .unwrap();
-        let pending = playback();
-        let identity = pending.prepared_revision().cloned().unwrap();
-        let refused = client
-            .forward_resident_publication(pending, PublicationPolicy::InheritRuntime, 7)
-            .unwrap_err();
-        assert!(Arc::ptr_eq(
-            refused.playback.prepared_revision().unwrap(),
-            &identity
-        ));
-        assert_eq!(client.status().unwrap().submitted_revision.load(Acquire), 0);
-        assert!(client.try_resident_publication_response().is_none());
-        worker.control().unwrap().poll_resident_publication();
-        let response = client.try_resident_publication_response().unwrap();
-        assert_eq!(response.token, ticket);
-        assert_eq!(response.result.unwrap(), 1);
-        assert_eq!(client.status().unwrap().submitted_revision.load(Acquire), 1);
-        assert_eq!(client.status().unwrap().applied_revision.load(Acquire), 0);
-        // A second request may enter the one cell after result collection, but
-        // actual queue/pending pressure still returns its exact original owner.
-        let refused_ticket = client
-            .forward_resident_publication(refused.playback, PublicationPolicy::InheritRuntime, 7)
-            .unwrap();
-        worker.control().unwrap().poll_resident_publication();
-        let response = client.try_resident_publication_response().unwrap();
-        assert_eq!(response.token, refused_ticket);
-        assert!(Arc::ptr_eq(
-            response
-                .result
-                .unwrap_err()
-                .playback
-                .prepared_revision()
-                .unwrap(),
-            &identity
-        ));
-        let render = || {
-            data.owner_mut().unwrap().run(|callback, _| {
-                callback.begin_block();
-                callback.render(&mut [[0.0; 2]; 8]).unwrap();
-            });
-        };
-        #[cfg(feature = "allocation-probe")]
-        {
-            let measured = allocation_counter::measure(render);
-            assert_eq!(
-                (
-                    measured.count_total,
-                    measured.bytes_total,
-                    measured.count_current,
-                    measured.bytes_current
-                ),
-                (0, 0, 0, 0)
-            );
-        }
-        #[cfg(not(feature = "allocation-probe"))]
-        {
-            let mut render = render;
-            render();
-        }
-        assert_eq!(client.status().unwrap().applied_revision.load(Acquire), 1);
-        assert!(client.try_resident_publication_response().is_none());
-        let fence = client.capture_fresh_runtime_fence().unwrap();
-        assert_eq!(
-            worker.control().unwrap().capture_fresh_runtime_fence(),
-            Some(fence)
-        );
-        let request = client
-            .forward_resident_publication(
-                playback(),
-                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
-                7,
-            )
-            .unwrap();
-        worker.control().unwrap().poll_resident_publication();
-        let response = client.try_resident_publication_response().unwrap();
-        assert_eq!(response.token, request);
-        let submitted = response.result.unwrap();
-        assert_eq!(
-            client.cancel_fresh_runtime_publication(submitted + 1),
-            FreshRuntimeCancellationResult::UnknownRevision
-        );
-        assert_eq!(
-            client.cancel_fresh_runtime_publication(submitted),
-            FreshRuntimeCancellationResult::Cancelled
-        );
-        data.owner_mut()
-            .unwrap()
-            .run(|callback, _| callback.begin_block());
-        assert_eq!(client.status().unwrap().applied_revision.load(Acquire), 1);
-        assert_eq!(
-            client.status().unwrap().rejected_revision(),
-            Some((submitted, PlaybackHandoffRejection::FreshRuntimeCancelled))
-        );
-        worker.control().unwrap().reclaim();
-        let fence = client.capture_fresh_runtime_fence().unwrap();
-        client
-            .forward_resident_publication(
-                playback(),
-                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
-                7,
-            )
-            .unwrap();
-        worker.control().unwrap().poll_resident_publication();
-        let successor = client
-            .try_resident_publication_response()
-            .unwrap()
-            .result
-            .unwrap();
-        assert_eq!(
-            client.cancel_fresh_runtime_publication(submitted),
-            FreshRuntimeCancellationResult::UnknownRevision
-        );
-        data.owner_mut()
-            .unwrap()
-            .run(|callback, _| callback.begin_block());
-        assert_eq!(
-            client.status().unwrap().applied_revision.load(Acquire),
-            successor
-        );
-        assert_eq!(
-            client.cancel_fresh_runtime_publication(successor),
-            FreshRuntimeCancellationResult::Complete
-        );
-        worker.control().unwrap().reclaim();
-        client.close();
-        worker.close();
-        drop(data);
-        drop(errors);
-        candidate_tests::finish(&mut retirement);
-    }
-    #[test]
-    fn contended_client_access_is_nonblocking_and_keeps_original_playback() {
-        let (control, callback) = channel(48000).unwrap();
-        let (data, errors, terminals, mut client, mut worker) =
-            reserve_native_worker(control, callback, None);
-        let root = worker.control().unwrap().native_candidate_root();
-        let mut retirement = NativeRetirement::new(terminals, root);
-        client.activate();
-        // Hold the worker's real cell guard; client methods must try, not wait.
-        let held = worker
-            .owner_ref()
-            .unwrap()
-            .resident_forwarding
-            .as_ref()
-            .unwrap()
-            .slot
-            .lock()
-            .unwrap();
-        let original = playback();
-        let identity = original.prepared_revision().cloned().unwrap();
-        let refused = client
-            .forward_resident_publication(original, PublicationPolicy::InheritRuntime, 0)
-            .unwrap_err();
-        assert_eq!(refused.reason, "resident publication busy");
-        assert!(Arc::ptr_eq(
-            refused.playback.prepared_revision().unwrap(),
-            &identity
-        ));
-        assert!(client.try_resident_publication_response().is_none());
-        assert_eq!(
-            client.cancel_fresh_runtime_publication(1),
-            FreshRuntimeCancellationResult::Busy
-        );
-        drop(held);
-        client.close();
-        worker.close();
-        drop(data);
-        drop(errors);
-        candidate_tests::finish(&mut retirement);
-    }
-}
+mod tests;

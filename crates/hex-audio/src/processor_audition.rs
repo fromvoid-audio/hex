@@ -1,13 +1,11 @@
 //! Bounded control-to-callback lease for transient EQ8 band audition.
-use hex_engine::{PostNodeIdentity, ProcessorAuditionSelection, ProcessorChainOwner};
-use rtrb::{Consumer, Producer, RingBuffer};
-use std::sync::{
-    Arc,
-    atomic::{
-        AtomicU64,
-        Ordering::{Acquire, Release},
-    },
+use crate::native_callback_owner::atomic_signal::{self, Signal};
+use crate::native_callback_owner::{
+    NativePreparedConsumer as Consumer, NativePreparedProducer as Producer, native_prepared_ring,
+    registered_prepared_ring,
 };
+use hex_engine::{PostNodeIdentity, ProcessorAuditionSelection, ProcessorChainOwner};
+use std::sync::atomic::Ordering::{Acquire, Release};
 
 pub const TARGET_COMMAND_CAPACITY: usize = 8;
 pub const MAX_TARGET_COMMANDS_PER_BLOCK: usize = 8;
@@ -53,9 +51,9 @@ struct TargetCommand {
 
 pub struct ProcessorAuditionTargetControl {
     producer: Producer<TargetCommand>,
-    desired_intent: Arc<AtomicU64>,
-    hard_cancel_epoch: Arc<AtomicU64>,
-    rejected_epoch: Arc<AtomicU64>,
+    desired_intent: Signal,
+    hard_cancel_epoch: Signal,
+    rejected_epoch: Signal,
     desired: Option<ProcessorAuditionTarget>,
     next_epoch: u64,
     pending: Option<TargetCommand>,
@@ -64,9 +62,9 @@ pub struct ProcessorAuditionTargetControl {
 
 pub struct ProcessorAuditionTargetCallback {
     consumer: Consumer<TargetCommand>,
-    desired_intent: Arc<AtomicU64>,
-    hard_cancel_epoch: Arc<AtomicU64>,
-    rejected_epoch: Arc<AtomicU64>,
+    desired_intent: Signal,
+    hard_cancel_epoch: Signal,
+    rejected_epoch: Signal,
     active_epoch: u64,
     active: Option<ProcessorAuditionTarget>,
     future: Option<TargetCommand>,
@@ -82,20 +80,67 @@ pub struct TargetBoundary {
     pub clear_mode: ClearMode,
 }
 
+pub(crate) fn constructor_cost() -> Option<(usize, usize)> {
+    let retained = crate::prepared::factory::ring_bytes::<TargetCommand>(TARGET_COMMAND_CAPACITY)?
+        .checked_add(crate::prepared::factory::shared_atomic_bytes()?.checked_mul(3)?)?;
+    let peak = retained
+        .checked_add(crate::prepared::factory::ring_scratch::<TargetCommand>()?)?
+        .checked_add(size_of::<(
+            ProcessorAuditionTargetControl,
+            ProcessorAuditionTargetCallback,
+        )>())?
+        .checked_add(crate::prepared::factory::atomic_signal_scratch()?.checked_mul(3)?)?;
+    Some((retained, peak))
+}
+
 pub fn channel() -> (
     ProcessorAuditionTargetControl,
     ProcessorAuditionTargetCallback,
 ) {
-    let (producer, consumer) = RingBuffer::new(TARGET_COMMAND_CAPACITY);
-    let desired_intent = Arc::new(AtomicU64::new(0));
-    let hard_cancel_epoch = Arc::new(AtomicU64::new(0));
-    let rejected_epoch = Arc::new(AtomicU64::new(0));
+    construct_channel(None).expect("unqualified target channel has no fallible registration")
+}
+pub(crate) fn registered_channel(
+    root: &crate::candidate_custody::CandidateRoot,
+    slot: usize,
+) -> Result<
     (
+        ProcessorAuditionTargetControl,
+        ProcessorAuditionTargetCallback,
+    ),
+    hex_engine::Invalid,
+> {
+    construct_channel(Some((root, slot)))
+}
+fn construct_channel(
+    root: Option<(&crate::candidate_custody::CandidateRoot, usize)>,
+) -> Result<
+    (
+        ProcessorAuditionTargetControl,
+        ProcessorAuditionTargetCallback,
+    ),
+    hex_engine::Invalid,
+> {
+    let (producer, consumer) = if let Some((root, slot)) = root {
+        let (producer, consumer, record) = registered_prepared_ring(TARGET_COMMAND_CAPACITY)
+            .map_err(|_| hex_engine::Invalid("target queue constructor pairing refused"))?;
+        root.retain_prepared_ring(slot, record)
+            .map_err(hex_engine::Invalid)?;
+        (producer, consumer)
+    } else {
+        native_prepared_ring(TARGET_COMMAND_CAPACITY)
+    };
+    let [desired_intent_control, desired_intent] =
+        atomic_signal::pair(root.map(|(root, _)| root), 1)?;
+    let [hard_cancel_epoch_control, hard_cancel_epoch] =
+        atomic_signal::pair(root.map(|(root, _)| root), 2)?;
+    let [rejected_epoch_control, rejected_epoch] =
+        atomic_signal::pair(root.map(|(root, _)| root), 3)?;
+    Ok((
         ProcessorAuditionTargetControl {
             producer,
-            desired_intent: Arc::clone(&desired_intent),
-            hard_cancel_epoch: Arc::clone(&hard_cancel_epoch),
-            rejected_epoch: Arc::clone(&rejected_epoch),
+            desired_intent: desired_intent_control,
+            hard_cancel_epoch: hard_cancel_epoch_control,
+            rejected_epoch: rejected_epoch_control,
             desired: None,
             next_epoch: 1,
             pending: None,
@@ -112,10 +157,22 @@ pub fn channel() -> (
             boundary: None,
             observed_hard_cancel_epoch: 0,
         },
-    )
+    ))
 }
 
 impl ProcessorAuditionTargetControl {
+    /// Actual constructor channel-field correlation only. Other owning
+    /// descendants retain their independent mandatory inventory contracts.
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        root.matches_prepared_producer(4, &self.producer)
+            && root.matches_atomic_signal(1, &self.desired_intent, 0)
+            && root.matches_atomic_signal(2, &self.hard_cancel_epoch, 0)
+            && root.matches_atomic_signal(3, &self.rejected_epoch, 0)
+    }
+
     pub fn desired(&self) -> Option<ProcessorAuditionTarget> {
         let epoch = decode_intent(self.desired_intent.load(Acquire)).0;
         (epoch > self.hard_cancel_epoch.load(Acquire))
@@ -236,6 +293,18 @@ impl ProcessorAuditionTargetControl {
 }
 
 impl ProcessorAuditionTargetCallback {
+    /// Actual constructor channel-field correlation only. Other owning
+    /// descendants retain their independent mandatory inventory contracts.
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        root.matches_prepared_consumer(4, &self.consumer)
+            && root.matches_atomic_signal(1, &self.desired_intent, 1)
+            && root.matches_atomic_signal(2, &self.hard_cancel_epoch, 1)
+            && root.matches_atomic_signal(3, &self.rejected_epoch, 1)
+    }
+
     pub(crate) fn constructor_channel_storage(
         &self,
     ) -> Option<crate::native_callback_owner::ChannelStorage> {
@@ -526,5 +595,58 @@ mod tests {
         assert_eq!(callback.take_boundary(), None);
         callback.begin_block();
         assert_eq!(callback.take_boundary(), None);
+    }
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+mod native_signal_field_tests {
+    use super::*;
+    #[test]
+    fn actual_foreign_signal_field_refuses_before_native_carrier_birth() {
+        let mut completed = 0;
+        for field in 0..3 {
+            let limits = crate::AudioCandidatePublicationReservation {
+                runtime_slots: 3,
+                archive_slots: 3,
+                member_rows: 128,
+                transfer_rows: 128,
+                receipt_rows: 3,
+                data_rows: 512,
+                handle_rows: 512,
+                max_retained_data_bytes: 4 << 20,
+                max_construction_peak_data_bytes: 8 << 20,
+            };
+            let (mut control, callback) =
+                crate::prepared::channel_with_factory_reservation(48000, None, Some(limits))
+                    .unwrap();
+            let root = control.native_candidate_root();
+            // The real Root queue fields remain intact: only this actual atomic
+            // owning field changes. Identical scalar value/layout is not origin.
+            let foreign = Signal::Legacy(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)));
+            match field {
+                0 => control.processor_audition.desired_intent = foreign,
+                1 => control.processor_audition.hard_cancel_epoch = foreign,
+                2 => control.processor_audition.rejected_epoch = foreign,
+                _ => unreachable!(),
+            }
+            let mut refused = false;
+            let birth = allocation_counter::measure(|| {
+                refused =
+                    crate::native_callback_owner::reserve_native_worker(control, callback, None)
+                        .is_err();
+            });
+            assert!(
+                refused,
+                "actual foreign signal field {field} must not inherit Root origin"
+            );
+            assert_eq!(
+                birth.count_total, 0,
+                "signal field {field}: before any carrier birth"
+            );
+            assert_eq!(root.test_native_carrier_facts().unwrap().0, 0);
+            completed += 1;
+            eprintln!("SUPPORTED actual signal field{field} refused before carrier births");
+        }
+        assert_eq!(completed, 3);
     }
 }

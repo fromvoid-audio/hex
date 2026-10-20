@@ -6,6 +6,11 @@ use std::path::PathBuf;
 pub struct FamilySnapshotFields<'a> {
     pub body: BodyRef<'a>,
     pub view: Option<SnapshotViewFields<'a>>,
+    pub event_metadata: Option<FamilyEventMetadataFields<'a>>,
+}
+pub struct FamilyEventMetadataFields<'a> {
+    pub owner: super::SharedMetadataRef<'a>,
+    pub metadata: super::EventMetadataFields<'a>,
 }
 pub struct FamilyCompiledRecordFields<'a> {
     pub body: BodyRef<'a>,
@@ -17,6 +22,29 @@ pub struct FamilyCompiledFields<'a> {
     pub first: FamilyCompiledRecordFields<'a>,
     pub second: FamilyCompiledRecordFields<'a>,
 }
+/// Actual immutable export-result metadata, never a renderer/compiled owner.
+/// Inline bodies are charged by their enclosing family; every owning buffer is
+/// separately mandatory here. No Export crate dependency or recursive visitor.
+pub struct FamilyExportResultFields<'a> {
+    pub body: BodyRef<'a>,
+    pub payload: Option<ExportResultPayloadFields<'a>>,
+}
+pub struct ExportResultPayloadFields<'a> {
+    pub body: BodyRef<'a>,
+    pub path: &'a PathBuf,
+    pub outcome: ExportResultOutcomeFields<'a>,
+}
+pub enum ExportResultOutcomeFields<'a> {
+    Success {
+        body: BodyRef<'a>,
+        path: &'a PathBuf,
+        recovery: Option<&'a PathBuf>,
+    },
+    Error {
+        body: BodyRef<'a>,
+        message: &'a String,
+    },
+}
 pub enum FamilyRequestPayload<'a> {
     Inline {
         body: BodyRef<'a>,
@@ -24,6 +52,15 @@ pub enum FamilyRequestPayload<'a> {
     Path {
         body: BodyRef<'a>,
         path: &'a PathBuf,
+    },
+    Name {
+        body: BodyRef<'a>,
+        name: &'a String,
+    },
+    PathAndName {
+        body: BodyRef<'a>,
+        path: &'a PathBuf,
+        name: &'a String,
     },
     ClipIds {
         body: BodyRef<'a>,
@@ -52,6 +89,7 @@ pub trait FamilyFields {
     fn reads(&self) -> VecRef<'_>;
     fn requests(&self) -> &dyn FamilyRequestRecords;
     fn compiled(&self) -> Result<Option<FamilyCompiledFields<'_>>, AudioStorageError>;
+    fn export_result(&self) -> Result<FamilyExportResultFields<'_>, AudioStorageError>;
 }
 fn contained(parent: BodyRef<'_>, child: BodyRef<'_>) -> Result<(), AudioStorageError> {
     if parent.contains(child) {
@@ -69,6 +107,44 @@ pub(crate) fn visit_compiled<'a>(
         if let Some(reader) = record.reader {
             contained(record.body, BodyRef::of(reader))?;
             reader.visit_shared_storage_on_control(ledger)?;
+        }
+    }
+    Ok(())
+}
+pub(crate) fn visit_export_result<'a>(
+    fields: FamilyExportResultFields<'a>,
+    ledger: &mut AudioRootStorageLedger<'a>,
+) -> Result<(), AudioStorageError> {
+    if let Some(payload) = fields.payload.as_ref() {
+        contained(fields.body, payload.body)?;
+        visit_export_result_payload(payload, ledger)?;
+    }
+    Ok(())
+}
+pub(crate) fn visit_export_result_payload<'a>(
+    payload: &ExportResultPayloadFields<'a>,
+    ledger: &mut AudioRootStorageLedger<'a>,
+) -> Result<(), AudioStorageError> {
+    contained(payload.body, BodyRef::of(payload.path))?;
+    ledger.path_backing(payload.path)?;
+    match &payload.outcome {
+        ExportResultOutcomeFields::Success {
+            body,
+            path,
+            recovery,
+        } => {
+            contained(payload.body, *body)?;
+            contained(*body, BodyRef::of(*path))?;
+            ledger.path_backing(path)?;
+            if let Some(recovery) = *recovery {
+                contained(*body, BodyRef::of(recovery))?;
+                ledger.path_backing(recovery)?;
+            }
+        }
+        ExportResultOutcomeFields::Error { body, message } => {
+            contained(payload.body, *body)?;
+            contained(*body, BodyRef::of(*message))?;
+            ledger.string(message)?;
         }
     }
     Ok(())
@@ -92,6 +168,18 @@ pub(crate) fn visit_requests<'a>(
                     contained(record.body, body)?;
                     contained(body, BodyRef::of(path))?;
                     ledger.path_backing(path)?;
+                }
+                FamilyRequestPayload::Name { body, name } => {
+                    contained(record.body, body)?;
+                    contained(body, BodyRef::of(name))?;
+                    ledger.string(name)?;
+                }
+                FamilyRequestPayload::PathAndName { body, path, name } => {
+                    contained(record.body, body)?;
+                    contained(body, BodyRef::of(path))?;
+                    contained(body, BodyRef::of(name))?;
+                    ledger.path_backing(path)?;
+                    ledger.string(name)?;
                 }
                 FamilyRequestPayload::ClipIds { body, ids } => {
                     contained(record.body, body)?;
@@ -125,6 +213,9 @@ pub(crate) fn visit_family<'a>(
     let requests = fields.requests();
     contained(body, requests.body())?;
     visit_requests(requests, ledger)?;
+    let result = fields.export_result()?;
+    contained(body, result.body)?;
+    visit_export_result(result, ledger)?;
     if let Some(compiled) = fields.compiled()? {
         contained(body, compiled.body)?;
         visit_compiled(&compiled, ledger)?;
@@ -133,6 +224,14 @@ pub(crate) fn visit_family<'a>(
         let record = fields.snapshot(index)?;
         if !snapshots.element(index)?.same(record.body) {
             return Err(AudioStorageError::SourceMismatch);
+        }
+        if let Some(event) = record.event_metadata {
+            contained(record.body, event.owner.body())?;
+            if !event.owner.payload().same(event.metadata.body) {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            event.owner.observe(ledger)?;
+            super::event::visit_event_metadata(&event.metadata, ledger)?;
         }
         if let Some(view) = record.view {
             contained(record.body, view.owner.body())?;
@@ -146,6 +245,12 @@ pub(crate) fn visit_family<'a>(
     Ok(())
 }
 impl<'a> AudioRootStorageLedger<'a> {
+    pub fn borrow_sampler_export_result_fields_on_control(
+        &mut self,
+        fields: FamilyExportResultFields<'a>,
+    ) -> Result<(), AudioStorageError> {
+        self.mutate(|ledger| visit_export_result(fields, ledger))
+    }
     /// Actual record descendants only. The enclosing retained family Box/guard,
     /// other live roots, construction peak and retirement remain mandatory.
     pub fn borrow_sampler_family_fields_on_control(

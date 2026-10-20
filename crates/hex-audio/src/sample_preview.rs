@@ -1,15 +1,14 @@
 //! Independent one-shot browser PCM on the existing output stream.
 //! One incoming owner, two retirement slots and one latest control-side pending
 //! owner bound memory and callback work. Only control reclaims PCM.
-use hex_engine::{Audio, Frame, Invalid};
-use rtrb::{Consumer, Producer, PushError, RingBuffer};
-use std::sync::{
-    Arc,
-    atomic::{
-        AtomicU64,
-        Ordering::{Acquire, Release},
-    },
+use crate::native_callback_owner::atomic_signal::{self, Signal};
+use crate::native_callback_owner::{
+    NativePreparedConsumer as Consumer, NativePreparedProducer as Producer, native_prepared_ring,
+    registered_prepared_ring,
 };
+use hex_engine::{Audio, Frame, Invalid};
+use rtrb::PushError;
+use std::sync::atomic::Ordering::{Acquire, Release};
 
 struct Preview {
     generation: u64,
@@ -59,44 +58,77 @@ pub struct Control {
     incoming: Producer<Preview>,
     retired: Consumer<Preview>,
     pending: Option<Preview>,
-    generation: Arc<AtomicU64>,
-    started: Arc<AtomicU64>,
-    finished: Arc<AtomicU64>,
-    position: Arc<AtomicU64>,
+    generation: Signal,
+    started: Signal,
+    finished: Signal,
+    position: Signal,
     start: usize,
     frames: usize,
     rate: u32,
     last_generation: u64,
     closing: bool,
-    status: Option<Arc<crate::prepared::Status>>,
+    status: Option<crate::prepared::status_owner::StatusHandle>,
 }
 
 pub(crate) struct Callback {
     incoming: Consumer<Preview>,
     retired: Producer<Preview>,
     active: Option<Preview>,
-    generation: Arc<AtomicU64>,
-    started: Arc<AtomicU64>,
-    finished: Arc<AtomicU64>,
-    position: Arc<AtomicU64>,
+    generation: Signal,
+    started: Signal,
+    finished: Signal,
+    position: Signal,
 }
 
+pub(crate) fn constructor_cost() -> Option<(usize, usize)> {
+    let retained = crate::prepared::factory::ring_bytes::<Preview>(1)?
+        .checked_add(crate::prepared::factory::ring_bytes::<Preview>(2)?)?
+        .checked_add(crate::prepared::factory::shared_atomic_bytes()?.checked_mul(4)?)?;
+    let peak = retained
+        .checked_add(crate::prepared::factory::ring_scratch::<Preview>()?.checked_mul(2)?)?
+        .checked_add(size_of::<(Control, Callback)>())?
+        .checked_add(crate::prepared::factory::atomic_signal_scratch()?.checked_mul(4)?)?;
+    Some((retained, peak))
+}
 pub(crate) fn channel(rate: u32) -> (Control, Callback) {
-    let (incoming, consumer) = RingBuffer::new(1);
-    let (returning, retired) = RingBuffer::new(2);
-    let generation = Arc::new(AtomicU64::new(0));
-    let started = Arc::new(AtomicU64::new(0));
-    let finished = Arc::new(AtomicU64::new(0));
-    let position = Arc::new(AtomicU64::new(0));
-    (
+    construct_channel(rate, None).expect("unqualified preview channel has no fallible registration")
+}
+pub(crate) fn registered_channel(
+    rate: u32,
+    root: &crate::candidate_custody::CandidateRoot,
+) -> Result<(Control, Callback), Invalid> {
+    construct_channel(rate, Some(root))
+}
+fn construct_channel(
+    rate: u32,
+    root: Option<&crate::candidate_custody::CandidateRoot>,
+) -> Result<(Control, Callback), Invalid> {
+    let (incoming, consumer, returning, retired) = if let Some(root) = root {
+        let (incoming, consumer, first) = registered_prepared_ring(1)
+            .map_err(|_| Invalid("preview incoming queue pairing refused"))?;
+        root.retain_prepared_ring(5, first).map_err(Invalid)?;
+        let (returning, retired, second) = registered_prepared_ring(2)
+            .map_err(|_| Invalid("preview retirement queue pairing refused"))?;
+        root.retain_prepared_ring(6, second).map_err(Invalid)?;
+        (incoming, consumer, returning, retired)
+    } else {
+        let (incoming, consumer) = native_prepared_ring(1);
+        let (returning, retired) = native_prepared_ring(2);
+        (incoming, consumer, returning, retired)
+    };
+    let [generation_control, generation] = atomic_signal::pair(root, 4)?;
+    let [started_control, started] = atomic_signal::pair(root, 5)?;
+    let [finished_control, finished] = atomic_signal::pair(root, 6)?;
+    let [position_control, position] = atomic_signal::pair(root, 7)?;
+    Ok((
         Control {
             incoming,
             retired,
             pending: None,
-            generation: generation.clone(),
-            started: started.clone(),
-            finished: finished.clone(),
-            position: position.clone(),
+            generation: generation_control,
+            started: started_control,
+            finished: finished_control,
+            position: position_control,
             start: 0,
             frames: 0,
             rate,
@@ -113,10 +145,52 @@ pub(crate) fn channel(rate: u32) -> (Control, Callback) {
             finished,
             position,
         },
-    )
+    ))
 }
 
 impl Control {
+    /// Only the one-time registered carrier birth may rely on these actual
+    /// destinations being empty. Later preview ownership is not inferred from
+    /// the channel match and requires its own inventory.
+    pub(crate) fn matches_fresh_registered_payload_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        let Self {
+            incoming: _,
+            retired: _,
+            pending,
+            generation: _,
+            started: _,
+            finished: _,
+            position: _,
+            start: _,
+            frames: _,
+            rate: _,
+            last_generation: _,
+            closing,
+            status: _,
+        } = self;
+        self.matches_constructor_channel_fields_on_control(root) && pending.is_none() && !*closing
+    }
+
+    /// Actual constructor channel-field correlation only. Other owning
+    /// descendants retain their independent mandatory inventory contracts.
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        root.matches_prepared_producer(5, &self.incoming)
+            && root.matches_prepared_consumer(6, &self.retired)
+            && root.matches_atomic_signal(4, &self.generation, 0)
+            && root.matches_atomic_signal(5, &self.started, 0)
+            && root.matches_atomic_signal(6, &self.finished, 0)
+            && root.matches_atomic_signal(7, &self.position, 0)
+            && self.status.as_ref().is_some_and(|field| {
+                root.matches_status_field(field, crate::prepared::status_owner::PREVIEW)
+            })
+    }
+
     pub fn snapshot(&self) -> Snapshot {
         let generation = self.generation.load(Acquire);
         let phase = if !self.permitted()
@@ -146,7 +220,7 @@ impl Control {
         }
     }
 
-    pub(crate) fn bind_status(&mut self, status: Arc<crate::prepared::Status>) {
+    pub(crate) fn bind_status(&mut self, status: crate::prepared::status_owner::StatusHandle) {
         self.status = Some(status);
     }
     fn permitted(&self) -> bool {
@@ -260,6 +334,36 @@ impl Control {
 }
 
 impl Callback {
+    pub(crate) fn matches_fresh_registered_payload_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        let Self {
+            incoming: _,
+            retired: _,
+            active,
+            generation: _,
+            started: _,
+            finished: _,
+            position: _,
+        } = self;
+        self.matches_constructor_channel_fields_on_control(root) && active.is_none()
+    }
+
+    /// Actual constructor channel-field correlation only. Other owning
+    /// descendants retain their independent mandatory inventory contracts.
+    pub(crate) fn matches_constructor_channel_fields_on_control(
+        &self,
+        root: &crate::candidate_custody::CandidateRoot,
+    ) -> bool {
+        root.matches_prepared_consumer(5, &self.incoming)
+            && root.matches_prepared_producer(6, &self.retired)
+            && root.matches_atomic_signal(4, &self.generation, 1)
+            && root.matches_atomic_signal(5, &self.started, 1)
+            && root.matches_atomic_signal(6, &self.finished, 1)
+            && root.matches_atomic_signal(7, &self.position, 1)
+    }
+
     pub(crate) fn constructor_channel_storage(
         &self,
     ) -> Option<crate::native_callback_owner::ChannelStorage> {
@@ -339,6 +443,7 @@ impl Callback {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     fn pcm(value: f32, frames: usize) -> Audio {
         Audio::new(48_000, vec![[value, -value]; frames]).unwrap()
@@ -678,5 +783,59 @@ mod tests {
         );
         assert!(control.status.shutdown_complete.load(Acquire));
         control.reclaim();
+    }
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+mod native_signal_field_tests {
+    use super::*;
+    #[test]
+    fn actual_foreign_signal_field_refuses_before_native_carrier_birth() {
+        let mut completed = 0;
+        for field in 0..4 {
+            let limits = crate::AudioCandidatePublicationReservation {
+                runtime_slots: 3,
+                archive_slots: 3,
+                member_rows: 128,
+                transfer_rows: 128,
+                receipt_rows: 3,
+                data_rows: 512,
+                handle_rows: 512,
+                max_retained_data_bytes: 4 << 20,
+                max_construction_peak_data_bytes: 8 << 20,
+            };
+            let (mut control, callback) =
+                crate::prepared::channel_with_factory_reservation(48000, None, Some(limits))
+                    .unwrap();
+            let root = control.native_candidate_root();
+            // The real Root queue fields remain intact: only this actual atomic
+            // owning field changes. Identical scalar value/layout is not origin.
+            let foreign = Signal::Legacy(std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)));
+            match field {
+                0 => control.sample_preview.generation = foreign,
+                1 => control.sample_preview.started = foreign,
+                2 => control.sample_preview.finished = foreign,
+                3 => control.sample_preview.position = foreign,
+                _ => unreachable!(),
+            }
+            let mut refused = false;
+            let birth = allocation_counter::measure(|| {
+                refused =
+                    crate::native_callback_owner::reserve_native_worker(control, callback, None)
+                        .is_err();
+            });
+            assert!(
+                refused,
+                "actual foreign signal field {field} must not inherit Root origin"
+            );
+            assert_eq!(
+                birth.count_total, 0,
+                "signal field {field}: before any carrier birth"
+            );
+            assert_eq!(root.test_native_carrier_facts().unwrap().0, 0);
+            completed += 1;
+            eprintln!("SUPPORTED actual signal field{field} refused before carrier births");
+        }
+        assert_eq!(completed, 4);
     }
 }

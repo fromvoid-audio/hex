@@ -27,6 +27,9 @@ impl RootResourceWitness {
     }
 }
 fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
+    // Capacity-only ceiling, NOT a constructor/physical identity certificate.
+    // Three new paired metadata records add6 actual record+lease handles per
+    // State; all must still be individually observed in the mandatory union.
     // Root handles: 2 per accepted State + at most8 control/callback/terminal,
     // queue/lifecycle/construction handles in this private factory. Life:3 per
     // reserved cell (Root,current,spare-or-covering). Rings:6; cells:4; Status:6; two domain signals:4.
@@ -37,8 +40,9 @@ fn root_handle_bound(bank: &NativeBank) -> Option<usize> {
     bank.publication
         .slots
         .len()
-        .checked_mul(5)?
+        .checked_mul(11)?
         .checked_add(28)?
+        .checked_add(bank.carriers.iter().flatten().count().checked_mul(3)?)?
         .checked_add(
             bank.native
                 .as_ref()
@@ -121,7 +125,8 @@ pub(super) fn for_candidate(
             .publication
             .slots
             .len()
-            .checked_add(9)
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(9))
             .and_then(|n| n.checked_add(native.channel_resources().0))
             .ok_or("resource count overflow")?,
         shared_handle_bound: occupied_handles(bank, excluded_preparation)

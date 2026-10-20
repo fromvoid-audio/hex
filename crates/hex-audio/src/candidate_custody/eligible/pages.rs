@@ -117,6 +117,8 @@ mod tests {
                 max_construction_peak_data_bytes: 4 * 1024 * 1024,
             },
             128,
+            None, // This fixture owns only the standalone Custody, no Root archive.
+            None, // No enclosing Root actor registration in this fixture.
         )
         .unwrap();
         root

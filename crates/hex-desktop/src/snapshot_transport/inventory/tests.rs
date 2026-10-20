@@ -97,6 +97,96 @@ fn three_registered_snapshot_families_and_vacancy_form_one_guarded_allocation_fr
                 .visit_children_selected_storage_on_control(&mut ledger)
                 .unwrap();
             let joined = ledger.summary().unwrap();
+            use hex_engine::sampler_host_fields::{
+                BodyRef, SamplerFamilyGuardFields, SamplerFamilyInventoryFields,
+                SamplerOuterFamilyFields, VecRef,
+            };
+            struct AlteredFamilies<'a, 'g> {
+                actual: &'a SnapshotFamilyInventory<'g>,
+                mode: u8,
+                foreign: Vec<u8>,
+            }
+            impl SamplerFamilyInventoryFields for AlteredFamilies<'_, '_> {
+                fn body(&self) -> BodyRef<'_> {
+                    self.actual.body()
+                }
+                fn outer(&self) -> &dyn SamplerOuterFamilyFields {
+                    self.actual.outer()
+                }
+                fn guards(&self) -> VecRef<'_> {
+                    if self.mode == 2 {
+                        VecRef::of(&self.foreign)
+                    } else {
+                        self.actual.guards()
+                    }
+                }
+                fn family(
+                    &self,
+                    index: usize,
+                ) -> Result<SamplerFamilyGuardFields<'_>, hex_engine::AudioStorageError>
+                {
+                    match self.mode {
+                        0 => Err(hex_engine::AudioStorageError::UnknownStorage),
+                        1 => self
+                            .actual
+                            .family((index + 1) % self.actual.active_families()),
+                        _ => self.actual.family(index),
+                    }
+                }
+            }
+            let reservation = hex_engine::AudioStorageLedgerReservation {
+                data_rows: 512,
+                handle_rows: 512,
+                root_rows: 16,
+                max_retained_bytes: 4_000_000,
+                max_construction_peak_bytes: 4_000_000,
+            };
+            for mode in 0..3 {
+                let altered = AlteredFamilies {
+                    actual: &inventory,
+                    mode,
+                    foreign: Vec::new(),
+                };
+                let mut refusal = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+                let mut result = None;
+                let measured = allocation_counter::measure(|| {
+                    result =
+                        Some(refusal.borrow_sampler_family_inventory_fields_on_control(&altered));
+                });
+                assert_eq!(
+                    result.unwrap(),
+                    Err(if mode == 0 {
+                        hex_engine::AudioStorageError::UnknownStorage
+                    } else {
+                        hex_engine::AudioStorageError::SourceMismatch
+                    })
+                );
+                assert_eq!((measured.count_total, measured.count_current), (0, 0));
+                assert!(
+                    refusal.summary().is_err(),
+                    "failed prefix cannot be resumed as a ledger"
+                );
+            }
+            for (retained_minus, peak_minus) in [(0, 0), (1, 0), (0, 1)] {
+                let mut exact = reservation;
+                exact.max_retained_bytes = joined.retained_bytes - retained_minus;
+                exact.max_construction_peak_bytes = joined.construction_peak_bytes - peak_minus;
+                let mut bounded = AudioRootStorageLedger::try_new_on_control(exact).unwrap();
+                let result = inventory.visit_selected_storage_on_control(&mut bounded);
+                if retained_minus == 0 && peak_minus == 0 {
+                    result.unwrap();
+                    initial
+                        .state
+                        .visit_children_selected_storage_on_control(&mut bounded)
+                        .unwrap();
+                    assert_eq!(bounded.summary().unwrap(), joined);
+                } else {
+                    assert_eq!(
+                        result,
+                        Err(hex_engine::AudioStorageError::ReservationExceeded)
+                    );
+                }
+            }
             assert_eq!(selected.data_bytes, joined.data_bytes);
             assert!(joined.data_bytes > inventory.requested_scratch_bytes());
             let mut checksum = 0;

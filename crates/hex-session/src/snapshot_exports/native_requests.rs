@@ -404,6 +404,29 @@ fn request_fields(
             Ok(FamilyRequestPayload::Path { body, path })
         }
         Request::CopyClips(ids) => Ok(FamilyRequestPayload::ClipIds { body, ids }),
+        Request::TuningLibrary {
+            project_generation,
+            revision,
+            operation_id,
+            operation,
+        } => {
+            use crate::tuning_gesture::TuningLibraryOperation as Op;
+            copy_field(project_generation);
+            copy_field(revision);
+            copy_field(operation_id);
+            match operation {
+                Op::List => inline!(),
+                Op::Load { slot } | Op::Duplicate { slot } => inline!(slot),
+                Op::Save { slot, name } | Op::Rename { slot, name } => {
+                    copy_field(slot);
+                    Ok(FamilyRequestPayload::Name { body, name })
+                }
+                Op::Import { path } => Ok(FamilyRequestPayload::Path { body, path }),
+                Op::Export { path, name } => {
+                    Ok(FamilyRequestPayload::PathAndName { body, path, name })
+                }
+            }
+        }
         Request::PrepareTuningAudition {
             revision: _,
             input: _,
@@ -424,12 +447,6 @@ fn request_fields(
             revision: _,
             track: _,
             edit: _,
-        }
-        | Request::TuningLibrary {
-            project_generation: _,
-            revision: _,
-            operation_id: _,
-            operation: _,
         }
         | Request::AddNativeDevice {
             track: _,
@@ -486,7 +503,12 @@ impl RequestRetirement {
         self.pending = false;
     }
     pub(super) fn visit(&self) -> Result<(), hex_engine::AudioStorageError> {
-        if !self.vacant() {
+        let Self {
+            stamp,
+            payload,
+            pending,
+        } = self;
+        if stamp.is_some() || payload.is_some() || *pending {
             Err(hex_engine::AudioStorageError::UnknownStorage)
         } else {
             Ok(())
@@ -514,6 +536,174 @@ mod tests {
             .unwrap(),
         }
     }
+    #[test]
+    fn native_request_actual_tuning_library_operations_keep_all_owned_fields() {
+        use crate::tuning_gesture::TuningLibraryOperation as Op;
+        use hex_engine::{AudioRootStorageLedger, AudioStorageLedgerReservation};
+        let budget = AudioStorageLedgerReservation {
+            data_rows: 32,
+            handle_rows: 16,
+            root_rows: 4,
+            max_retained_bytes: 1_000_000,
+            max_construction_peak_bytes: 1_000_000,
+        };
+        let text = |capacity| {
+            let mut value = String::with_capacity(capacity);
+            value.push_str("same name");
+            value
+        };
+        let path = |capacity| {
+            let mut value = std::path::PathBuf::with_capacity(capacity);
+            value.push("Case/same.freqs");
+            value
+        };
+        let mut queue = NativeRequests::default();
+        queue
+            .prepare(NativeRequests::requested_backing().unwrap())
+            .unwrap();
+        let mut ledger = AudioRootStorageLedger::try_new_on_control(budget).unwrap();
+        queue.visit(&mut ledger).unwrap();
+        let empty = ledger.summary().unwrap();
+        drop(ledger);
+        let operations = [
+            Op::List,
+            Op::Load { slot: 1 },
+            Op::Duplicate { slot: 2 },
+            Op::Save {
+                slot: 3,
+                name: text(129),
+            },
+            Op::Rename {
+                slot: 4,
+                name: text(131),
+            },
+            Op::Import { path: path(137) },
+            Op::Export {
+                path: path(139),
+                name: text(149),
+            },
+        ];
+        let bytes = operations
+            .iter()
+            .map(|operation| match operation {
+                Op::List | Op::Load { .. } | Op::Duplicate { .. } => 0,
+                Op::Save { name, .. } | Op::Rename { name, .. } => name.capacity(),
+                Op::Import { path } => path.capacity(),
+                Op::Export { path, name } => path.capacity() + name.capacity(),
+            })
+            .sum::<usize>();
+        for (index, operation) in operations.into_iter().enumerate() {
+            queue
+                .send(&mut Some(Request::TuningLibrary {
+                    project_generation: 3,
+                    revision: 7,
+                    operation_id: index as u64 + 1,
+                    operation,
+                }))
+                .unwrap();
+        }
+        let collect = |budget| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(budget)?;
+            queue.visit(&mut ledger)?;
+            let first = ledger.summary()?;
+            queue.visit(&mut ledger)?;
+            assert_eq!(ledger.summary()?, first);
+            Ok::<_, hex_engine::AudioStorageError>(first)
+        };
+        let actual = collect(budget).unwrap();
+        assert_eq!(actual.data_bytes - empty.data_bytes, bytes);
+        assert_eq!(actual.data_allocations - empty.data_allocations, 5);
+        let mut exact = budget;
+        exact.max_retained_bytes = actual.retained_bytes;
+        exact.max_construction_peak_bytes = actual.construction_peak_bytes;
+        assert_eq!(collect(exact).unwrap(), actual);
+        exact.max_retained_bytes -= 1;
+        assert!(collect(exact).is_err());
+        exact.max_retained_bytes += 1;
+        exact.max_construction_peak_bytes -= 1;
+        assert!(collect(exact).is_err());
+        eprintln!(
+            "SUPPORTED actual seven queued tuning-library operations,5 distinct owning buffers/{bytes} bytes, same32-slot backing/dedup/selected exact and both-minus1; claim/runtime/native admission OPEN"
+        );
+    }
+
+    #[test]
+    fn native_request_tuning_library_foreign_name_or_path_refuses() {
+        use crate::tuning_gesture::TuningLibraryOperation as Op;
+        use hex_engine::sampler_host_fields::{
+            BodyRef, FamilyRequestFields, FamilyRequestPayload, FamilyRequestRecords, VecRef,
+        };
+        struct Foreign<'a> {
+            queue: &'a NativeRequests,
+            path: &'a std::path::PathBuf,
+            name: &'a String,
+            replace_name: bool,
+        }
+        impl FamilyRequestRecords for Foreign<'_> {
+            fn body(&self) -> BodyRef<'_> {
+                self.queue.body()
+            }
+            fn slots(&self) -> VecRef<'_> {
+                self.queue.slots()
+            }
+            fn request(
+                &self,
+                index: usize,
+            ) -> Result<FamilyRequestFields<'_>, hex_engine::AudioStorageError> {
+                let mut fields = self.queue.request(index)?;
+                if let Some(FamilyRequestPayload::PathAndName { body, path, name }) = fields.request
+                {
+                    fields.request = Some(FamilyRequestPayload::PathAndName {
+                        body,
+                        path: if self.replace_name { path } else { self.path },
+                        name: if self.replace_name { self.name } else { name },
+                    });
+                }
+                Ok(fields)
+            }
+        }
+        let mut queue = NativeRequests::default();
+        queue
+            .prepare(NativeRequests::requested_backing().unwrap())
+            .unwrap();
+        queue
+            .send(&mut Some(Request::TuningLibrary {
+                project_generation: 2,
+                revision: 3,
+                operation_id: 4,
+                operation: Op::Export {
+                    path: "Case/same.freqs".into(),
+                    name: "same".into(),
+                },
+            }))
+            .unwrap();
+        let path = std::path::PathBuf::from("Case/same.freqs");
+        let name = String::from("same");
+        for replace_name in [false, true] {
+            let fields = Foreign {
+                queue: &queue,
+                path: &path,
+                name: &name,
+                replace_name,
+            };
+            let mut ledger = hex_engine::AudioRootStorageLedger::try_new_on_control(
+                hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 16,
+                    handle_rows: 16,
+                    root_rows: 4,
+                    max_retained_bytes: 1_000_000,
+                    max_construction_peak_bytes: 1_000_000,
+                },
+            )
+            .unwrap();
+            assert_eq!(
+                ledger.borrow_sampler_family_requests_on_control(&fields),
+                Err(hex_engine::AudioStorageError::SourceMismatch)
+            );
+            assert!(ledger.summary().is_err());
+        }
+    }
+
     #[test]
     fn native_request_time_range_actual_capacity_dedup_and_exact_limits() {
         use hex_engine::{

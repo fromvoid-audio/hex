@@ -169,15 +169,21 @@ impl SessionPlayback {
         if tracks.len() != device_chains.len() {
             return Err(AudioStorageError::SourceMismatch);
         }
-        for (chain, track) in device_chains.iter().zip(tracks) {
-            chain_storage(chain, &track.device_chain, l)?;
+        for (index, (chain, track)) in device_chains.iter().zip(tracks).enumerate() {
+            l.with_native_constructor_partition(
+                crate::audio_storage::NativeRuntimePartition::Group(0, index),
+                |l| chain_storage(chain, &track.device_chain, l),
+            )?;
         }
         let returns = revision.arrangement().return_buses();
         if return_chains.len() != returns.len() {
             return Err(AudioStorageError::SourceMismatch);
         }
-        for (chain, bus) in return_chains.iter().zip(returns) {
-            chain_storage(chain, &bus.device_chain, l)?;
+        for (index, (chain, bus)) in return_chains.iter().zip(returns).enumerate() {
+            l.with_native_constructor_partition(
+                crate::audio_storage::NativeRuntimePartition::Group(4, index),
+                |l| chain_storage(chain, &bus.device_chain, l),
+            )?;
         }
         Ok(())
     }

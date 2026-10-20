@@ -6,7 +6,9 @@ use crate::{Audio, CancellationQuery, Clip, Invalid, compile::PreparedAudioSourc
 pub(crate) use budget::Reservation;
 #[cfg(test)]
 mod control_storage_tests;
+mod original_sampler;
 mod pcm_inventory;
+pub use original_sampler::OriginalSamplerTransaction;
 pub use pcm_inventory::AudioTransformPcmInventory;
 #[cfg(test)]
 mod prepared_pcm_tests;

@@ -51,6 +51,11 @@ pub(crate) struct NativeCandidateBoundary {
     spectrum_reaper_bound: bool,
 }
 impl NativeCandidateBoundary {
+    /// The same closed constructor report includes this ACTUAL endpoint payload.
+    /// Only cost-overlap correlation; no child/lineage/admission certificate.
+    pub(crate) fn has_worker_resident_payload(&self) -> bool {
+        self.endpoint_carriers.is_some()
+    }
     pub(super) fn from_reserved(
         root: &crate::candidate_custody::CandidateRoot,
         data: &mut Guard<NativeCallbackOwner>,
@@ -67,7 +72,7 @@ impl NativeCandidateBoundary {
         let errors = errors.owner_ref()?;
         if !data.callback.belongs_to_candidate_root(root)
             || !data.callback.matches_native_status(&data.status)
-            || !Arc::ptr_eq(&data.status, &errors.status)
+            || !data.status.shares_owner_with(&errors.status)
         {
             return None;
         }

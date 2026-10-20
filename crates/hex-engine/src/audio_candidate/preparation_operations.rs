@@ -32,16 +32,56 @@ use hex_project::{AssetId, Project};
 ///     let _ = std::mem::replace(&mut **loan, replacement);
 /// }
 /// ```
+/// The operations loan stays on the acquiring control thread, including when
+/// mapped from the private Audio facade's retained guards.
+/// ```compile_fail
+/// fn send<T: Send>(_: T) {}
+/// fn escape(operations: hex_engine::AudioCandidatePreparationOperations<'_>) {
+///     send(operations);
+/// }
+/// ```
 pub struct AudioCandidatePreparationOperations<'a> {
     preparation: &'a mut AudioCandidatePreparation,
+    // ZST only: no Rc allocation/ownership. A borrowed protected payload alone
+    // could otherwise be Send even while its actual guard is not Send.
+    control_thread: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 impl AudioCandidatePreparation {
     /// Borrow the actual cell. This creates no origin, cost or admission permit.
     pub fn operations_on_control(&mut self) -> AudioCandidatePreparationOperations<'_> {
-        AudioCandidatePreparationOperations { preparation: self }
+        AudioCandidatePreparationOperations {
+            preparation: self,
+            control_thread: std::marker::PhantomData,
+        }
     }
 }
 impl AudioCandidatePreparationOperations<'_> {
+    pub(crate) fn construct_native_sampler_in_host(
+        &mut self,
+        target: &crate::SharedMetadata<Project>,
+        previous: Option<
+            &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+        >,
+        writers: &mut crate::audio_transform::OriginalSamplerTransaction<'_>,
+        construction: super::preparation::OriginalSamplerConstruction,
+    ) -> Result<(), AudioStorageError> {
+        self.preparation
+            .construct_original_sampler_with_writers_on_control(
+                target,
+                previous,
+                writers,
+                construction,
+            )
+    }
+
+    pub(crate) fn install_native_sampler_seal_in_host(
+        &mut self,
+        inspection: super::storage::OriginalSamplerSealInspection,
+    ) -> Result<bool, AudioStorageError> {
+        self.preparation
+            .install_native_sampler_seal_in_host(inspection)
+    }
+
     /// Invoke the concrete borrowed original producer after validating this
     /// reserved cell's local allowance and vacant phase/destination. Success is
     /// retained immediately inside its actual transferred preparation custody.
@@ -121,6 +161,34 @@ impl AudioCandidatePreparationOperations<'_> {
                 transforms,
                 reservation,
                 ConstructorPurpose::MainExport,
+            )
+    }
+
+    /// Main export deliberately constructs fresh contexts; current/previous
+    /// native owners remain distinct mandatory host inputs. The same existing
+    /// Session writers survive inspection, compiled birth and runtime sealing.
+    pub fn prepare_main_original_sampler_with_writers_on_control(
+        &mut self,
+        target: &crate::SharedMetadata<Project>,
+        resident: &dyn crate::sampler_host_fields::OriginalSamplerResidentFields,
+        producer: &crate::native_device_resources::OriginalResourceBankPlan<'_>,
+        original: &crate::AudioRootStorageLedger<'_>,
+        writers: &mut crate::audio_transform::OriginalSamplerTransaction<'_>,
+        reservation: crate::AudioStorageLedgerReservation,
+    ) -> Result<(), AudioStorageError> {
+        let transforms = writers.preparation();
+        self.preparation
+            .prepare_original_sampler_with_writers_on_control(
+                target,
+                producer,
+                resident.editor(),
+                None,
+                original,
+                transforms,
+                reservation,
+                ConstructorPurpose::MainExport,
+                Some(writers),
+                Some(resident),
             )
     }
 

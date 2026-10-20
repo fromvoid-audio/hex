@@ -1,5 +1,10 @@
 use crate::{Command, Created, Invalid, Project};
 use std::collections::VecDeque;
+mod original_sampler;
+pub use original_sampler::{
+    OriginalSamplerEditorTransition, OriginalSamplerPending, OriginalSamplerTransitionRequest,
+    OriginalSamplerTransitionResult,
+};
 
 /// Bounded snapshot history on the control thread. Oldest edits expire at capacity.
 /// IDs never rewind across undo, redo or branching, so stale references stay stale.
@@ -8,6 +13,7 @@ pub struct Editor {
     undo: VecDeque<Project>,
     redo: Vec<Project>,
     capacity: usize,
+    original_sampler_pending: std::cell::RefCell<OriginalSamplerPending>,
 }
 impl Editor {
     /// Validate before worker startup without allocating a disposable project.
@@ -24,6 +30,7 @@ impl Editor {
             undo: VecDeque::new(),
             redo: Vec::new(),
             capacity,
+            original_sampler_pending: std::cell::RefCell::default(),
         })
     }
     pub fn project(&self) -> &Project {
@@ -84,6 +91,7 @@ impl Editor {
         command: Command,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<(Created, T), E> {
+        self.require_original_sampler_idle()?;
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
         candidate.validate_device_asset_references()?;
@@ -115,6 +123,7 @@ impl Editor {
         commands: Vec<Command>,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
+        self.require_original_sampler_idle()?;
         if commands.len() > crate::MAX_CLIPS {
             return Err(E::from(Invalid("batch command limit reached")));
         }
@@ -144,6 +153,9 @@ impl Editor {
     }
 
     pub fn undo(&mut self) -> bool {
+        if self.require_original_sampler_idle().is_err() {
+            return false;
+        }
         let Some(mut previous) = self.undo.pop_back() else {
             return false;
         };
@@ -168,6 +180,7 @@ impl Editor {
         &mut self,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<Option<T>, E> {
+        self.require_original_sampler_idle()?;
         let Some(previous) = self.undo.back() else {
             return Ok(None);
         };
@@ -187,6 +200,9 @@ impl Editor {
     }
 
     pub fn redo(&mut self) -> bool {
+        if self.require_original_sampler_idle().is_err() {
+            return false;
+        }
         let Some(mut next) = self.redo.pop() else {
             return false;
         };
@@ -211,6 +227,7 @@ impl Editor {
         &mut self,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<Option<T>, E> {
+        self.require_original_sampler_idle()?;
         let Some(next) = self.redo.last() else {
             return Ok(None);
         };

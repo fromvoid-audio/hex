@@ -8,26 +8,32 @@
 use crate::spectrum::{FFT_SIZE, SpectrumFrame, SpectrumKernel};
 mod native;
 mod project;
-pub(crate) use native::{
-    NativeSpectrumIdentity, NativeSpectrumReceipt, spawn_native_spectrum_worker,
+mod stop;
+use crate::native_callback_owner::{
+    NativePreparedConsumer, NativePreparedProducer, native_prepared_ring,
 };
+pub(crate) use native::constructor_cost;
+#[cfg(test)]
+pub(crate) use native::spawn_native_spectrum_worker;
+pub(crate) use native::{NativeSpectrumIdentity, NativeSpectrumReceipt};
 pub(crate) use project::ProjectSelectionMailbox;
 pub use project::{
     MAX_PROJECT_CONTRIBUTION_FRAMES, MAX_PROJECT_LAYERS, MAX_PROJECT_PAYLOAD_BYTES,
-    MAX_PROJECT_TRACKS, PROJECT_DISPLAY_STALE_AFTER, ProjectSelection, PublishedProjectSpectrum,
+    MAX_PROJECT_TRACKS, PROJECT_DISPLAY_STALE_AFTER, ProjectSelection, ProjectSpectrumRefresh,
+    PublishedProjectSpectrum,
 };
-use rtrb::{Consumer, Producer, RingBuffer};
+use rtrb::RingBuffer;
 use std::{
     error::Error,
     fmt,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, SyncSender, TryRecvError, sync_channel},
     },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
+pub(crate) use stop::SpectrumStop;
 
 pub const CAPTURE_QUEUE_CAPACITY: usize = 32;
 pub const MAX_CAPTURE_FRAMES: usize = 256;
@@ -37,7 +43,7 @@ pub const DISPLAY_STALE_AFTER: Duration = Duration::from_millis(100);
 const DECAY_DB_PER_SECOND: f32 = 48.0;
 
 const IDLE_POLL_INTERVAL: Duration = Duration::from_millis(5);
-const RESULT_QUEUE_CAPACITY: usize = 1;
+pub(crate) const RESULT_QUEUE_CAPACITY: usize = 1;
 const MIN_CAPTURE_SAMPLE_RATE_HZ: u32 = 8_000;
 const MAX_CAPTURE_SAMPLE_RATE_HZ: u32 = 192_000;
 
@@ -95,7 +101,7 @@ pub enum CaptureOutcome {
 /// Capture-side producer. Construct it on control, then move it into the
 /// callback owner. It must be returned to control after callback quiescence.
 pub struct SpectrumCapture {
-    producer: Producer<CaptureBatch>,
+    producer: NativePreparedProducer<CaptureBatch>,
     next_sequence: u64,
     exhausted: bool,
     native: Option<NativeSpectrumReceipt>,
@@ -103,6 +109,25 @@ pub struct SpectrumCapture {
 }
 
 impl SpectrumCapture {
+    pub(crate) fn matches_capture_ring(
+        &self,
+        record: &hex_engine::sampler_host_fields::NativeFixedRingRegistration,
+    ) -> bool {
+        self.native.is_some() && self.producer.matches_constructor_record(record)
+    }
+    pub(crate) fn matches_project_rings(
+        &self,
+        records: [Option<&hex_engine::sampler_host_fields::NativeFixedRingRegistration>; 3],
+        packets: &[Option<hex_engine::sampler_host_fields::NativeSpectrumPacketRegistration>],
+    ) -> bool {
+        self.project
+            .as_ref()
+            .is_some_and(|project| project.matches_rings(records, packets))
+    }
+    pub(crate) fn is_legacy_capture(&self) -> bool {
+        self.native.is_none() && self.producer.is_unregistered()
+    }
+
     /// Submit one output batch without allocating, blocking, waking, or logging.
     ///
     /// An invalid or full submission still consumes its sequence number, so
@@ -219,13 +244,32 @@ impl SpectrumCapture {
 /// Control-side newest-result cache. It can be polled by the UI without
 /// owning or joining the worker thread.
 pub struct SpectrumReader {
-    results: Receiver<PublishedSpectra>,
+    results: NativePreparedConsumer<PublishedSpectra>,
     latest: Option<PublishedSpectra>,
     native: Option<NativeSpectrumIdentity>,
     project: Option<project::ProjectReader>,
 }
 
 impl SpectrumReader {
+    pub(crate) fn matches_result_ring(
+        &self,
+        record: &hex_engine::sampler_host_fields::NativeFixedRingRegistration,
+    ) -> bool {
+        self.native.is_some() && self.results.matches_constructor_record(record)
+    }
+    pub(crate) fn matches_project_rings(
+        &self,
+        records: [Option<&hex_engine::sampler_host_fields::NativeFixedRingRegistration>; 4],
+        results: &[Option<hex_engine::sampler_host_fields::NativeSpectrumResultRegistration>],
+    ) -> bool {
+        self.project
+            .as_ref()
+            .is_some_and(|project| project.matches_rings(records, results))
+    }
+    pub(crate) fn is_legacy_reader(&self) -> bool {
+        self.native.is_none() && self.results.is_unregistered()
+    }
+
     pub fn project_available(&self) -> bool {
         self.project.is_some()
     }
@@ -233,8 +277,22 @@ impl SpectrumReader {
         &mut self,
         now: Instant,
         selection: ProjectSelection,
-    ) -> Option<PublishedProjectSpectrum> {
+    ) -> Option<&PublishedProjectSpectrum> {
         self.project.as_mut()?.latest_at(now, selection)
+    }
+    pub(crate) fn refresh_project(
+        &mut self,
+        slot: &mut Option<PublishedProjectSpectrum>,
+        now: Instant,
+        selection: Option<ProjectSelection>,
+    ) -> project::ProjectSpectrumRefresh {
+        match self.project.as_mut() {
+            Some(project) => project.refresh(slot, now, selection),
+            None => {
+                drop(slot.take());
+                project::ProjectSpectrumRefresh::Cleared
+            }
+        }
     }
     /// Return the newest result, clearing cached display data after 100 ms.
     pub fn try_latest(&mut self) -> Option<PublishedSpectrum> {
@@ -252,9 +310,9 @@ impl SpectrumReader {
 
     pub fn try_latest_pair_at(&mut self, now: Instant) -> Option<PublishedSpectra> {
         for _ in 0..RESULT_QUEUE_CAPACITY {
-            match self.results.try_recv() {
+            match self.results.pop() {
                 Ok(result) => self.latest = Some(result),
-                Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                Err(rtrb::PopError::Empty) => break,
             }
         }
         if self
@@ -271,11 +329,12 @@ impl SpectrumReader {
 /// Lifecycle-side worker shutdown owner. The stream owner must first pause and
 /// drop the stream, which destroys its callback-held producer, then join here.
 pub struct SpectrumReaper {
-    stop: Arc<AtomicBool>,
+    stop: SpectrumStop,
     join: Option<JoinHandle<()>>,
     native: Option<NativeSpectrumIdentity>,
     phase: ReaperPhase,
     first_panic: Option<Box<dyn std::any::Any + Send>>,
+    captured_join: Option<hex_engine::sampler_host_fields::NativeSpectrumJoinLease>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -286,10 +345,51 @@ enum ReaperPhase {
     Failed,
 }
 impl SpectrumReaper {
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_join_completed(&self) -> bool {
+        self.phase == ReaperPhase::Complete && self.join.is_none()
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn test_first_panic(&self) -> Option<&(dyn std::any::Any + Send)> {
+        self.first_panic.as_deref()
+    }
+    pub(crate) fn validate_actual_stop_on_control(
+        &self,
+        parent: &crate::native_callback_owner::NativeRetirement,
+    ) -> Result<(), SpectrumWorkerError> {
+        parent
+            .matches_spectrum_stop(&self.stop)
+            .then_some(())
+            .ok_or(SpectrumWorkerError::StorageRefused)
+    }
+    // Only the actual owning lifecycle parent invokes this AFTER advancing
+    // this SAME Reaper. The affine association cannot be copied from identity.
+    pub(crate) fn finalize_captured_frame_on_control(
+        &mut self,
+        parent: &crate::native_callback_owner::NativeRetirement,
+    ) -> Result<(), SpectrumWorkerError> {
+        if self.phase != ReaperPhase::Complete || self.join.is_some() || self.first_panic.is_some()
+        {
+            return Err(SpectrumWorkerError::ThreadPanicked);
+        }
+        if let Some(association) = self.captured_join.as_mut() {
+            parent
+                .finish_spectrum_capture_on_control(association)
+                .map_err(|_| SpectrumWorkerError::StorageOverflow)?;
+            // Metadata alias closure is checked before disposing this paired
+            // field. Root's registration itself remains retained afterwards.
+            drop(self.captured_join.take());
+        }
+        Ok(())
+    }
+    #[cfg(all(test, feature = "allocation-probe"))]
+    pub(crate) fn join_finished_for_capture_test(&self) -> bool {
+        self.join.as_ref().is_some_and(JoinHandle::is_finished)
+    }
     /// Request exit without joining. Safe to use while retaining a quarantined
     /// stream and callback; all destruction still waits for successful pause.
     pub fn request_stop(&self) {
-        self.stop.store(true, Ordering::Release);
+        let _requested = self.stop.request_stop();
     }
 
     /// Stop and join after the callback producer has been destroyed by stream
@@ -300,7 +400,10 @@ impl SpectrumReaper {
     /// Persistent lifecycle seam. No owner take before Pending, no ordinary
     /// mutex is held, and a worker panic keeps its exact first payload here.
     pub(crate) fn advance_shutdown_on_control(&mut self) -> Result<(), SpectrumWorkerError> {
-        self.request_stop();
+        if self.stop.request_stop().is_err() {
+            self.phase = ReaperPhase::Failed;
+            return Err(SpectrumWorkerError::StorageRefused);
+        }
         match self.phase {
             ReaperPhase::Complete => return Ok(()),
             ReaperPhase::Pending | ReaperPhase::Failed => {
@@ -318,6 +421,9 @@ impl SpectrumReaper {
                 Ok(())
             }
             Err(payload) => {
+                if let Some(association) = self.captured_join.as_mut() {
+                    association.record_actual_worker_failure_on_control();
+                }
                 self.first_panic = Some(payload);
                 self.phase = ReaperPhase::Failed;
                 Err(SpectrumWorkerError::ThreadPanicked)
@@ -330,7 +436,7 @@ impl Drop for SpectrumReaper {
     fn drop(&mut self) {
         // Dropping the control handle requests worker exit but never joins it.
         // Owners needing lifecycle confirmation must call shutdown_and_join.
-        self.stop.store(true, Ordering::Release);
+        let _requested = self.stop.request_stop();
     }
 }
 
@@ -340,6 +446,7 @@ pub enum SpectrumWorkerError {
     ThreadSpawn(std::io::Error),
     ThreadPanicked,
     StorageOverflow,
+    StorageRefused,
     PoolCapacity,
     Allocation,
 }
@@ -355,6 +462,9 @@ impl fmt::Display for SpectrumWorkerError {
             }
             Self::PoolCapacity => formatter.write_str("spectrum packet pool capacity refused"),
             Self::StorageOverflow => formatter.write_str("spectrum storage size overflow"),
+            Self::StorageRefused => {
+                formatter.write_str("spectrum storage binding is unsupported or failed")
+            }
             Self::Allocation => formatter.write_str("could not reserve spectrum storage"),
             Self::ThreadPanicked => formatter.write_str("spectrum worker exited unexpectedly"),
         }
@@ -374,23 +484,45 @@ fn spawn_worker(
     fixed_native: bool,
     entry: Option<fn()>,
 ) -> Result<(SpectrumCapture, SpectrumReader, SpectrumReaper), SpectrumWorkerError> {
+    spawn_worker_with_parent(initial_stamp, fixed_native, entry, None)
+}
+pub(crate) fn spawn_worker_with_parent(
+    initial_stamp: SpectrumStamp,
+    fixed_native: bool,
+    entry: Option<fn()>,
+    parent: Option<&crate::native_callback_owner::NativeRetirement>,
+) -> Result<(SpectrumCapture, SpectrumReader, SpectrumReaper), SpectrumWorkerError> {
     let kernel = SpectrumKernel::new(initial_stamp.sample_rate_hz)
         .map_err(|_| SpectrumWorkerError::InvalidSampleRate(initial_stamp.sample_rate_hz))?;
 
     let core = SpectrumCore::new(kernel, initial_stamp.sample_rate_hz);
     let (project_capture, project_reader, project_worker) = if fixed_native {
-        let (capture, reader, worker) = project::channel(initial_stamp.sample_rate_hz)?;
+        let (capture, reader, worker) =
+            project::channel_for_parent(initial_stamp.sample_rate_hz, parent)?;
         (Some(capture), Some(reader), Some(worker))
     } else {
         (None, None, None)
     };
-    let (producer, consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
-    let (result_sender, result_receiver) = sync_channel(RESULT_QUEUE_CAPACITY);
-    let stop = Arc::new(AtomicBool::new(false));
-    let receipt = if fixed_native {
+    let (producer, consumer) = if fixed_native && let Some(parent) = parent {
+        parent
+            .spectrum_capture_ring_on_control()
+            .map_err(|_| SpectrumWorkerError::StorageOverflow)?
+    } else {
+        native_prepared_ring(CAPTURE_QUEUE_CAPACITY)
+    };
+    let (result_sender, result_receiver) = if fixed_native && let Some(parent) = parent {
+        parent
+            .spectrum_result_ring_on_control()
+            .map_err(|_| SpectrumWorkerError::StorageOverflow)?
+    } else {
+        native_prepared_ring(RESULT_QUEUE_CAPACITY)
+    };
+    let [stop, worker_stop] = SpectrumStop::pair(if fixed_native { parent } else { None })?;
+    let mut receipt = if fixed_native {
         Some(
             NativeSpectrumReceipt::new(
                 &producer,
+                &result_sender,
                 &stop,
                 &core,
                 initial_stamp.sample_rate_hz,
@@ -402,16 +534,49 @@ fn spawn_worker(
     } else {
         None
     };
-    let worker_stop = Arc::clone(&stop);
-    let join = thread::Builder::new()
-        .name("hex-spectrum".into())
-        .spawn(move || {
-            if let Some(entry) = entry {
-                entry();
+    let mut core = CapturedSpectrumCore {
+        payload: Some(core),
+        project: project_worker,
+        consumer,
+        results: result_sender,
+        stop: worker_stop,
+        entry,
+        lease: None,
+        #[cfg(all(test, feature = "allocation-probe"))]
+        panic_on_drop: TEST_CAPTURE_DROP_PANIC.with(|fault| fault.replace(false)),
+    };
+    let mut captured_join = if fixed_native && let Some(parent) = parent {
+        let fields = core.fields().ok_or(SpectrumWorkerError::StorageOverflow)?;
+        if let Some(receipt) = receipt.as_mut() {
+            receipt.storage.data_bytes = receipt.storage.data_bytes.checked_add(
+                hex_engine::sampler_host_fields::NativeSpectrumCapturedRegistration::metadata_requested_bytes_on_control()
+                    .map_err(|_| SpectrumWorkerError::StorageOverflow)?)
+                .and_then(|bytes| bytes.checked_add(hex_engine::sampler_host_fields::NativeFixedRingRegistration::metadata_requested_bytes_on_control().ok()?.checked_mul(2)?))
+                .ok_or(SpectrumWorkerError::StorageOverflow)?;
+        }
+        let (lease, join) = parent
+            .pair_spectrum_capture_on_control(fields)
+            .map_err(|_| SpectrumWorkerError::StorageOverflow)?;
+        core.lease = Some(lease);
+        Some(join)
+    } else {
+        None
+    };
+    let join = spawn_analyzer_thread(move || worker_loop(core));
+    let join = match join {
+        Ok(join) => join,
+        Err(error) => {
+            // std returned the actual closure after normal disposal. Buffers
+            // must report normal completion; Preparing unwind never reaches
+            // this separate no-worker constructor-abort branch.
+            if let (Some(parent), Some(association)) = (parent, captured_join.as_mut()) {
+                parent
+                    .abort_spectrum_capture_on_control(association)
+                    .map_err(|_| SpectrumWorkerError::StorageOverflow)?;
             }
-            worker_loop(consumer, result_sender, worker_stop, core, project_worker)
-        })
-        .map_err(SpectrumWorkerError::ThreadSpawn)?;
+            return Err(SpectrumWorkerError::ThreadSpawn(error));
+        }
+    };
 
     Ok((
         SpectrumCapture {
@@ -433,12 +598,13 @@ fn spawn_worker(
             native: receipt.map(|receipt| receipt.identity),
             phase: ReaperPhase::Ready,
             first_panic: None,
+            captured_join,
         },
     ))
 }
 
 #[derive(Clone, Copy)]
-struct CaptureBatch {
+pub(crate) struct CaptureBatch {
     stamp: SpectrumStamp,
     sequence: u64,
     captured_start: Instant,
@@ -448,17 +614,89 @@ struct CaptureBatch {
     paired: bool,
 }
 
-fn worker_loop(
-    mut consumer: Consumer<CaptureBatch>,
-    result_sender: SyncSender<PublishedSpectra>,
-    stop: Arc<AtomicBool>,
-    mut core: SpectrumCore,
-    mut project: Option<project::ProjectWorker>,
-) {
-    while !stop.load(Ordering::Acquire) {
+// Both existing result paths are SPSC, capacity one and drop the NEW result
+// on a full/disconnected consumer. A reader can disappear after this check;
+// the one already-queued owner then stays charged until worker retirement.
+fn try_publish_native_result(
+    producer: &mut NativePreparedProducer<PublishedSpectra>,
+    value: PublishedSpectra,
+) -> Option<PublishedSpectra> {
+    // Actual queued values are entirely inline. Exhaustive field types make
+    // a future owning descendant a compiler/source-contract change.
+    let PublishedSpectra { output, input } = &value;
+    let PublishedSpectrum {
+        stamp,
+        frame,
+        captured_at,
+        processed_at,
+    } = output;
+    let SpectrumStamp {
+        target,
+        generation,
+        sample_rate_hz,
+        applied_revision,
+    } = stamp;
+    let _: (&SpectrumTargetId, &u64, &u32, &u64, &Instant, &Instant) = (
+        target,
+        generation,
+        sample_rate_hz,
+        applied_revision,
+        captured_at,
+        processed_at,
+    );
+    frame.validate_native_inline_fields();
+    if let Some(frame) = input {
+        frame.validate_native_inline_fields();
+    }
+    if producer.is_abandoned() {
+        return Some(value);
+    }
+    producer
+        .push(value)
+        .err()
+        .map(|rtrb::PushError::Full(value)| value)
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+thread_local! {
+    static TEST_SPECTRUM_SPAWN_FAILURE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static TEST_CAPTURE_DROP_PANIC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+fn spawn_analyzer_thread(
+    worker: impl FnOnce() + Send + 'static,
+) -> std::io::Result<JoinHandle<()>> {
+    #[cfg(all(test, feature = "allocation-probe"))]
+    if TEST_SPECTRUM_SPAWN_FAILURE.with(|fault| fault.replace(false)) {
+        // Exercise the SAME constructor Err branch after actual normal closure
+        // disposal; this injection is not a real OS spawn-failure claim.
+        drop(worker);
+        return Err(std::io::Error::from(std::io::ErrorKind::WouldBlock));
+    }
+    thread::Builder::new()
+        .name("hex-spectrum".into())
+        .spawn(worker)
+}
+
+fn worker_loop(mut captured: CapturedSpectrumCore) {
+    if let Some(entry) = captured.entry {
+        entry();
+    }
+    loop {
+        match captured.stop.stopped() {
+            Ok(false) => {}
+            Ok(true) => break,
+            Err(_) => {
+                captured.record_capture_failure();
+                return;
+            }
+        }
+        let Some(core) = captured.payload.as_mut() else {
+            captured.record_capture_failure();
+            return;
+        };
         let mut drained = 0;
         while drained < MAX_BATCHES_PER_POLL {
-            let Ok(batch) = consumer.pop() else {
+            let Ok(batch) = captured.consumer.pop() else {
                 break;
             };
             core.ingest(batch);
@@ -466,13 +704,73 @@ fn worker_loop(
         }
         let now = Instant::now();
         if let Some(result) = core.analyze_pair_if_due(now) {
-            let _ = result_sender.try_send(result);
+            let _ = try_publish_native_result(&mut captured.results, result);
         }
-        if let Some(project) = project.as_mut() {
+        if let Some(project) = captured.project.as_mut() {
             drained += project.poll(now);
         }
         if drained == 0 {
             thread::sleep(IDLE_POLL_INTERVAL);
+        }
+    }
+}
+
+// The existing worker owns this payload directly. No new Box/lock/custodian.
+// Its inline frame outlives buffer destruction until the actual thread joins.
+struct CapturedSpectrumCore {
+    payload: Option<SpectrumCore>,
+    project: Option<project::ProjectWorker>,
+    consumer: NativePreparedConsumer<CaptureBatch>,
+    results: NativePreparedProducer<PublishedSpectra>,
+    stop: SpectrumStop,
+    entry: Option<fn()>,
+    lease: Option<hex_engine::sampler_host_fields::NativeSpectrumCaptureLease>,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    panic_on_drop: bool,
+}
+impl CapturedSpectrumCore {
+    fn record_capture_failure(&self) {
+        if let Some(lease) = self.lease.as_ref() {
+            lease.record_actual_capture_failure_on_control();
+        }
+    }
+    fn fields(&self) -> Option<hex_engine::sampler_host_fields::NativeSpectrumCaptureFields<'_>> {
+        Some(
+            hex_engine::sampler_host_fields::NativeSpectrumCaptureFields {
+                body: hex_engine::sampler_host_fields::BodyRef::of(self),
+                core: self.payload.as_ref()?.native_core_fields()?,
+                project: self.project.as_ref()?.native_core_fields(),
+            },
+        )
+    }
+}
+impl Drop for CapturedSpectrumCore {
+    fn drop(&mut self) {
+        let Some(lease) = self.lease.as_ref() else {
+            // Unpaired generic constructor, or an already failed disappeared
+            // lease: no registration completion is possible from this branch.
+            return;
+        };
+        let Some(fields) = self.fields() else {
+            self.record_capture_failure();
+            return;
+        };
+        if lease.begin_actual_buffers_drop_on_control(fields).is_err() {
+            self.record_capture_failure();
+            return;
+        }
+        #[cfg(all(test, feature = "allocation-probe"))]
+        if self.panic_on_drop {
+            std::panic::panic_any(31655_u64);
+        }
+        let Some(payload) = self.payload.take() else {
+            self.record_capture_failure();
+            return;
+        };
+        drop(payload);
+        drop(self.project.take());
+        if let Some(lease) = self.lease.as_mut() {
+            let _completed = lease.complete_actual_buffers_drop_on_control();
         }
     }
 }
@@ -829,7 +1127,7 @@ mod tests {
 
     #[test]
     fn paired_capture_refuses_mismatched_or_nonfinite_input_and_preserves_sequence_gaps() {
-        let (producer, mut consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+        let (producer, mut consumer) = native_prepared_ring(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
             next_sequence: 0,
@@ -900,6 +1198,54 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn malformed_captured_payload_does_not_mask_first_unwind_or_complete_storage() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        for missing_core in [true, false] {
+            let root = crate::candidate_custody::CandidateRoot::new(3).unwrap();
+            let parent =
+                crate::native_callback_owner::NativeRetirement::begin_construction(root.clone());
+            let (_capture, consumer) = native_prepared_ring(CAPTURE_QUEUE_CAPACITY);
+            let (results, _reader) = native_prepared_ring(RESULT_QUEUE_CAPACITY);
+            let [_stop, worker_stop] = SpectrumStop::pair(None).unwrap();
+            let (_project_capture, _project_reader, project) = project::channel(48000).unwrap();
+            let mut captured = CapturedSpectrumCore {
+                payload: Some(SpectrumCore::new(
+                    SpectrumKernel::new(48000).unwrap(),
+                    48000,
+                )),
+                project: Some(project),
+                consumer,
+                results,
+                stop: worker_stop,
+                entry: None,
+                lease: None,
+                panic_on_drop: false,
+            };
+            let (lease, join) = parent
+                .pair_spectrum_capture_on_control(captured.fields().unwrap())
+                .unwrap();
+            captured.lease = Some(lease);
+            if missing_core {
+                drop(captured.payload.take());
+            } else if let Some(core) = captured.payload.as_mut() {
+                drop(core.kernel.take());
+            }
+            let first = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _captured = captured;
+                std::panic::panic_any(31715_u64);
+            }))
+            .unwrap_err();
+            assert_eq!(first.downcast_ref::<u64>(), Some(&31715));
+            assert!(matches!(
+                root.test_spectrum_capture_facts(),
+                Err(hex_engine::AudioStorageError::UnknownStorage)
+            ));
+            drop(join);
+        }
+    }
+
     fn core() -> SpectrumCore {
         SpectrumCore::new(
             SpectrumKernel::new(8_000).expect("supported sample rate"),
@@ -909,7 +1255,7 @@ mod tests {
 
     #[test]
     fn full_queue_drops_only_capture_and_next_sequence_exposes_gap() {
-        let (producer, mut consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+        let (producer, mut consumer) = native_prepared_ring(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
             next_sequence: 0,
@@ -1006,6 +1352,69 @@ mod tests {
         assert_eq!(next.stamp.applied_revision, 33);
     }
 
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn actual_scalar_result_ring_preserves_oldest_full_and_freshness_without_allocating() {
+        let now = Instant::now();
+        let make = |revision| PublishedSpectra {
+            output: PublishedSpectrum {
+                stamp: stamp(1, 1, 48_000, revision),
+                frame: SpectrumFrame {
+                    sample_rate_hz: 48_000,
+                    bins_dbfs: [crate::spectrum::FLOOR_DBFS; crate::spectrum::SPECTRUM_BANDS],
+                },
+                captured_at: now,
+                processed_at: now,
+            },
+            input: None,
+        };
+        let (mut sender, receiver) = native_prepared_ring(RESULT_QUEUE_CAPACITY);
+        assert_eq!(sender.buffer().capacity(), 1);
+        let mut reader = SpectrumReader {
+            results: receiver,
+            latest: None,
+            native: None,
+            project: None,
+        };
+        let measured = allocation_counter::measure(|| {
+            assert!(try_publish_native_result(&mut sender, make(1)).is_none());
+            let returned = try_publish_native_result(&mut sender, make(2)).unwrap();
+            assert_eq!(returned.output.stamp.applied_revision, 2);
+            assert_eq!(reader.try_latest_at(now).unwrap().stamp.applied_revision, 1);
+            assert!(try_publish_native_result(&mut sender, make(3)).is_none());
+            assert_eq!(reader.try_latest_at(now).unwrap().stamp.applied_revision, 3);
+            // Producer shutdown never refreshes a cached capture or fabricates
+            // an output; the same original capture-age law clears it.
+            drop(sender);
+            assert!(
+                reader
+                    .try_latest_at(now + DISPLAY_STALE_AFTER + Duration::from_nanos(1))
+                    .is_none()
+            );
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.count_current,
+                measured.bytes_total,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        // A vanished reader cannot block the worker's one push attempt. Stop
+        // and join remain controlled by the existing independent lifecycle.
+        let (mut sender, receiver) = native_prepared_ring(RESULT_QUEUE_CAPACITY);
+        drop(receiver);
+        let measured = allocation_counter::measure(|| {
+            sender.push(make(4)).unwrap();
+            assert!(matches!(
+                sender.push(make(5)),
+                Err(rtrb::PushError::Full(_))
+            ));
+        });
+        assert_eq!((measured.count_total, measured.count_current), (0, 0));
+    }
+
     #[test]
     fn reader_drops_worker_result_by_capture_age_not_processing_or_receipt_time() {
         let mut analysis = core();
@@ -1021,9 +1430,9 @@ mod tests {
         assert!(result.processed_at >= now);
         assert!(!result.is_fresh_at(now));
 
-        let (sender, receiver) = sync_channel(RESULT_QUEUE_CAPACITY);
+        let (mut sender, receiver) = native_prepared_ring(RESULT_QUEUE_CAPACITY);
         sender
-            .try_send(PublishedSpectra {
+            .push(PublishedSpectra {
                 output: result,
                 input: None,
             })
@@ -1147,7 +1556,7 @@ mod tests {
 
     #[test]
     fn sequence_exhaustion_requires_a_new_capture_generation() {
-        let (producer, _consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+        let (producer, _consumer) = native_prepared_ring(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
             next_sequence: u64::MAX,
@@ -1167,7 +1576,7 @@ mod tests {
 
     #[test]
     fn invalid_capture_is_refused_and_consumes_a_sequence() {
-        let (producer, mut consumer) = RingBuffer::new(CAPTURE_QUEUE_CAPACITY);
+        let (producer, mut consumer) = native_prepared_ring(CAPTURE_QUEUE_CAPACITY);
         let mut capture = SpectrumCapture {
             producer,
             next_sequence: 0,

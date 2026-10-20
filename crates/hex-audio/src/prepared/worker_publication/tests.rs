@@ -35,7 +35,7 @@ fn nonextracting_preparation_operations_keep_actual_worker_cell_through_ready_ca
         let (control, callback) = channel(48_000).unwrap();
         let root = control.native_candidate_root();
         let (mut data, errors, terminals, mut client, mut worker) =
-            reserve_native_worker(control, callback, None);
+            reserve_native_worker(control, callback, None).unwrap();
         let mut retirement = NativeRetirement::new(terminals, root);
         {
             let mut loan = worker.control().unwrap();

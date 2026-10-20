@@ -41,6 +41,9 @@ fn ledger_limits() -> AudioStorageLedgerReservation {
     }
 }
 fn fixture() -> Option<(Session, Vec<AssetId>)> {
+    fixture_in(Session::new(48_000, 16, 1024).unwrap())
+}
+fn fixture_in(mut session: Session) -> Option<(Session, Vec<AssetId>)> {
     if !hex_engine::audio_storage_constructor_layout_supported() {
         eprintln!("unsupported native constructor; no Session source-plan admission proof");
         return None;
@@ -56,7 +59,6 @@ fn fixture() -> Option<(Session, Vec<AssetId>)> {
         .ok()
         .unwrap(),
     ];
-    let mut session = Session::new(48_000, 16, 1024).unwrap();
     let mut ids = Vec::new();
     for source in sources {
         let prepared = PreparedImport::from_native_source(
@@ -1022,4 +1024,327 @@ fn original_only_worker_children_join_real_sampler_history_empty_cache_and_sine(
         Ok(())
     })
     .unwrap();
+}
+
+#[test]
+fn actual_loaded_worker_inventory_cannot_span_same_context_construction() {
+    // This is a guard/callgraph discriminator, not native constructor admission.
+    // The fixture retains actual original Mono+Stereo media and their models.
+    let Some((session, _assets)) = fixture() else {
+        panic!("supported original source constructor required for this discriminator");
+    };
+    let entered = std::cell::Cell::new(false);
+    session
+        .with_resident_pcm_inventory_on_control(|_inventory| {
+            let transaction = session.audio_transforms.transaction(|| {
+                entered.set(true);
+                Ok(())
+            });
+            assert_eq!(
+                transaction,
+                Err(hex_engine::Invalid(
+                    "audio transform cache is already borrowed"
+                ))
+            );
+            assert!(
+                !entered.get(),
+                "compiler closure cannot run under these immutable cache guards"
+            );
+            assert!(
+                !session.audio_transforms.failed_incomplete_on_control(),
+                "pre-entry borrow refusal must not mark a constructor failure"
+            );
+            let compile = session.compile_prepared_revision(None);
+            assert!(matches!(
+                compile,
+                Err(crate::SessionError::Engine(hex_engine::Invalid(
+                    "audio waveform state is already borrowed"
+                )))
+            ));
+            Ok(())
+        })
+        .unwrap();
+    assert!(!entered.get());
+    // SAME real context/Session, with the inventory guards normally ended.
+    session
+        .audio_transforms
+        .transaction(|| {
+            entered.set(true);
+            Ok(())
+        })
+        .unwrap();
+    assert!(entered.get());
+    let compiled = session.compile_prepared_revision(None).unwrap();
+    assert_eq!(compiled.arrangement().sample_rate(), 48_000);
+    eprintln!(
+        "SUPPORTED actual loaded Mono+Stereo worker: retained inventory prevents SAME-context waveform/cache construction before compiler body; guard release restores SAME Session/context compilation; production protocol UNCHANGED"
+    );
+}
+
+#[test]
+fn actual_loaded_original_sampler_writers_observe_same_inventory_without_recursive_borrow() {
+    let signal = hex_engine::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
+    let job = hex_engine::RetainedControlJob::try_from_owned_on_control(
+        &mut Some(0_u8),
+        usize::MAX,
+        |_: &mut u8| Ok::<_, ()>(hex_engine::RetainedControlJobProgress::Pending),
+    )
+    .unwrap();
+    let session = Session::new_with_retained_cancellation_on_control(
+        48_000,
+        16,
+        1024,
+        signal.bind_worker_on_control(job.route()),
+    )
+    .unwrap();
+    let (session, _assets) = fixture_in(session).expect("supported source constructors");
+    let old = session
+        .with_resident_pcm_inventory_on_control(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits())?;
+            inventory.visit_original_only_worker_children_on_control(&mut ledger)?;
+            ledger.summary()
+        })
+        .unwrap();
+    let mut loan = session.original_sampler_session_loan_on_control().unwrap();
+    let observed = loan
+        .with_inventory(|inventory| {
+            let mut ledger = AudioRootStorageLedger::try_new_on_control(ledger_limits())?;
+            inventory.visit_original_only_worker_children_on_control(&mut ledger)?;
+            ledger.summary()
+        })
+        .unwrap();
+    assert_eq!(observed, old);
+    assert!(matches!(
+        session.original_sampler_session_loan_on_control(),
+        Err(AudioStorageError::ExternalReadersPending)
+    ));
+    // Reborrow the same writer only after all immutable inventory has ended.
+    loan.original_sampler_writer_on_control()
+        .inventory()
+        .visit_on_control(
+            &mut AudioRootStorageLedger::try_new_on_control(ledger_limits()).unwrap(),
+            hex_engine::AudioStorageRole::Caller,
+        )
+        .unwrap();
+    drop(loan);
+    session.compile_prepared_revision(None).unwrap();
+}
+
+#[test]
+fn actual_loaded_session_resident_same_writers_construct_render_ack_and_retire() {
+    use hex_engine::{AudioCandidateControlProgress, AudioCandidatePreparation};
+    use hex_project::{BeatTime, Command, Created};
+    for stereo in [false, true] {
+        let signal =
+            hex_engine::RetainedControlCancellationSignal::try_new_on_control(4096).unwrap();
+        let job = hex_engine::RetainedControlJob::try_from_owned_on_control(
+            &mut Some(0_u8),
+            usize::MAX,
+            |_: &mut u8| Ok::<_, ()>(hex_engine::RetainedControlJobProgress::Pending),
+        )
+        .unwrap();
+        let session = Session::new_with_retained_cancellation_on_control(
+            48_000,
+            16,
+            1024,
+            signal.bind_worker_on_control(job.route()),
+        )
+        .unwrap();
+        let (mut session, assets) = fixture_in(session).unwrap();
+        let audio_tracks: Vec<_> = session
+            .project()
+            .tracks()
+            .iter()
+            .map(|track| track.id())
+            .collect();
+        for track in audio_tracks {
+            session.editor.execute(Command::RemoveTrack(track)).unwrap();
+        }
+        let Created::Track(track) = session
+            .editor
+            .execute(Command::AddMidiTrack {
+                name: "sampler".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let device = session
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let assignment = hex_engine::sampler_replacement_state_on_control(
+            &hex_engine::empty_sampler_state_on_control().unwrap(),
+            4,
+        )
+        .unwrap();
+        let asset = assets[usize::from(stereo)];
+        let state = assignment
+            .state
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: assignment.slot,
+                asset: DeviceAssetKey::new(asset.value()).unwrap(),
+            }])
+            .unwrap();
+        session
+            .editor
+            .execute(Command::ReplaceDeviceState { device, state })
+            .unwrap();
+        let Created::Clip(clip) = session
+            .editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        session
+            .editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 127,
+            })
+            .unwrap();
+        let target = crate::SharedProject::new_on_control(session.project().clone());
+        session.editor.execute(Command::RemoveTrack(track)).unwrap();
+        // The captured target remains real while current authoring and history
+        // move on. Media and waveform owners remain in this actual Session.
+        for n in 0..16 {
+            session
+                .editor
+                .execute(Command::SetTempoPoint {
+                    beat: BeatTime::ZERO,
+                    tempo: hex_project::Tempo::new(100_000_000 + n * 1_000_000).unwrap(),
+                })
+                .unwrap();
+        }
+        let storage = AudioStorageReservation {
+            allocation_items: 256,
+            handle_obligations: 1024,
+            max_prepared_data_bytes: 64 * 1024 * 1024,
+            max_construction_data_bytes: 64 * 1024 * 1024,
+            caller_retained_bytes: 0,
+            caller_construction_bytes: 0,
+        };
+        let mut cell = AudioCandidatePreparation::try_new_on_control(0, storage).unwrap();
+        let reservation = AudioStorageLedgerReservation {
+            data_rows: 2048,
+            handle_rows: 2048,
+            root_rows: 128,
+            max_retained_bytes: 64 * 1024 * 1024,
+            max_construction_peak_bytes: 64 * 1024 * 1024,
+        };
+        let mut original = AudioRootStorageLedger::try_new_on_control(reservation).unwrap();
+        signal.visit_storage_on_control(&mut original).unwrap();
+        original
+            .borrow_shared_metadata_body_on_control(&target)
+            .unwrap();
+        original
+            .borrow_project_exclusive_buffers_on_control(&target)
+            .unwrap();
+        original
+            .borrow_project_midi_sources_on_control(&target)
+            .unwrap();
+        original
+            .borrow_project_native_states_on_control(&target)
+            .unwrap();
+        // A real external owning field cannot disappear merely because its
+        // physical body is already present through the Session's sine field.
+        let sine_alias = session.sine_table();
+        let mut loan = session.original_sampler_session_loan_on_control().unwrap();
+        {
+            let (fields, writers) = loan.resident_fields_and_writer_on_control();
+            let plan = hex_engine::native_device_resources::OriginalResourceBankPlan::borrow_resident_fields_on_control(&fields, &target).unwrap();
+            cell.operations_on_control()
+                .install_original_resources_on_control(&plan, limits(), &session.shutdown)
+                .unwrap();
+            assert!(
+                cell.operations_on_control()
+                    .prepare_main_original_sampler_with_writers_on_control(
+                        &target,
+                        &fields,
+                        &plan,
+                        &original,
+                        writers,
+                        reservation,
+                    )
+                    .is_err(),
+                "actual omitted sine handle must refuse"
+            );
+            assert!(cell.operations_on_control().prepared_identity().is_none());
+            assert!(!cell.failed_incomplete());
+            // Bind the ACTUAL omitted owning field. The SAME borrowed plan
+            // and SAME waveform/cache writer loan survive this failed preflight.
+            sine_alias.visit_storage_on_control(&mut original).unwrap();
+            cell.operations_on_control()
+                .prepare_main_original_sampler_with_writers_on_control(
+                    &target,
+                    &fields,
+                    &plan,
+                    &original,
+                    writers,
+                    reservation,
+                )
+                .unwrap();
+        }
+        drop(loan);
+        let reader = cell
+            .operations_on_control()
+            .register_compiled_reader_on_control()
+            .unwrap();
+        cell.operations_on_control()
+            .begin_main_control_work_on_control(16)
+            .unwrap();
+        let mut output = Vec::new();
+        loop {
+            let progress = cell
+                .operations_on_control()
+                .step_main_control_work_on_control(8)
+                .unwrap();
+            let AudioCandidateControlProgress::Block(block) = progress else {
+                break;
+            };
+            let mut copy = [[0.0; 2]; 256];
+            cell.operations_on_control()
+                .copy_main_control_block_on_control(block, &mut copy)
+                .unwrap();
+            output.extend_from_slice(&copy[..block.frames()]);
+            cell.operations_on_control()
+                .acknowledge_main_control_block_on_control(block)
+                .unwrap();
+            assert_eq!(
+                cell.operations_on_control()
+                    .acknowledge_main_control_block_on_control(block),
+                Err(AudioStorageError::SourceMismatch)
+            );
+        }
+        assert_eq!(output.len(), 16);
+        assert!(
+            output.iter().flatten().any(|sample| *sample != 0.0),
+            "loaded stereo={stereo}"
+        );
+        if stereo {
+            assert!(output.iter().any(|frame| frame[0] != frame[1]));
+        } else {
+            assert!(output.iter().all(|frame| frame[0] == frame[1]));
+        }
+        drop(original);
+        assert_eq!(
+            cell.cleanup_on_control(),
+            Err(AudioStorageError::ExternalReadersPending)
+        );
+        drop(reader);
+        cell.cleanup_on_control().unwrap();
+        session.compile_prepared_revision(None).unwrap();
+    }
 }

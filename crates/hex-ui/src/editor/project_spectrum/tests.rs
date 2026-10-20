@@ -31,12 +31,12 @@ fn result(view: &EditorView, now: Instant) -> PublishedProjectSpectrum {
         hex_audio::spectrum_worker::ProjectSelection::new(&ids, view.project_generation, 1, 48_000)
             .unwrap();
     selection.token = 2;
-    PublishedProjectSpectrum {
+    PublishedProjectSpectrum::unqualified_for_ui_test(
         selection,
-        applied_revision: 1,
-        captured_at: now,
-        processed_at: now,
-        frames: (0..hex_audio::spectrum_worker::MAX_PROJECT_LAYERS)
+        1,
+        now,
+        now,
+        (0..hex_audio::spectrum_worker::MAX_PROJECT_LAYERS)
             .map(|i| hex_audio::spectrum::SpectrumFrame {
                 sample_rate_hz: 48_000,
                 bins_dbfs: [-6.0 - i as f32 * 0.25; hex_audio::spectrum::SPECTRUM_BANDS],
@@ -45,7 +45,7 @@ fn result(view: &EditorView, now: Instant) -> PublishedProjectSpectrum {
             .into_boxed_slice()
             .try_into()
             .unwrap(),
-    }
+    )
 }
 #[gpui::test]
 fn project_spectrum_layers_preserve_all_members_colors_and_clear_replaced_context(

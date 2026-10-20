@@ -78,7 +78,23 @@ pub struct SpectrumKernel {
     left_power: Box<[f64; POSITIVE_BIN_COUNT]>,
 }
 
+impl SpectrumFrame {
+    pub(crate) fn validate_native_inline_fields(&self) {
+        let Self {
+            sample_rate_hz,
+            bins_dbfs,
+        } = self;
+        let _: &u32 = sample_rate_hz;
+        let _: &[f32; SPECTRUM_BANDS] = bins_dbfs;
+    }
+}
+
 impl SpectrumKernel {
+    pub(crate) fn constructor_heap_bytes() -> Option<usize> {
+        size_of::<[f64; FFT_SIZE]>()
+            .checked_mul(3)?
+            .checked_add(size_of::<[f64; POSITIVE_BIN_COUNT]>())
+    }
     pub(crate) fn heap_data_bytes(&self) -> Option<usize> {
         let Self {
             sample_rate_hz: _,
@@ -93,6 +109,32 @@ impl SpectrumKernel {
             .checked_add(std::mem::size_of_val(real.as_ref()))?
             .checked_add(std::mem::size_of_val(imaginary.as_ref()))?
             .checked_add(std::mem::size_of_val(left_power.as_ref()))
+    }
+
+    pub(crate) fn native_buffer_fields(
+        &self,
+    ) -> [hex_engine::sampler_host_fields::SpectrumFloatBoxRef<'_>; 4] {
+        use hex_engine::sampler_host_fields::SpectrumFloatBoxRef;
+        let Self {
+            sample_rate_hz,
+            window,
+            window_sum,
+            bands,
+            real,
+            imaginary,
+            left_power,
+        } = self;
+        // These remaining fields are inline primitives; adding an owning field
+        // requires adapting this exact producer, not a body-only declaration.
+        let _: &u32 = sample_rate_hz;
+        let _: &f64 = window_sum;
+        let _: &[Band; SPECTRUM_BANDS] = bands;
+        [
+            SpectrumFloatBoxRef::fft_values(window),
+            SpectrumFloatBoxRef::fft_values(real),
+            SpectrumFloatBoxRef::fft_values(imaginary),
+            SpectrumFloatBoxRef::fft_values(left_power),
+        ]
     }
 
     /// Construct reusable fixed storage for a supported audio sample rate.

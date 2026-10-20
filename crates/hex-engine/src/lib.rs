@@ -44,7 +44,7 @@ pub use audio_storage::{
     AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageIncomplete,
     AudioStorageLedgerReservation, AudioStorageRole, StreamedSourceBindingObligation,
     audio_storage_constructor_layout_supported, canonical_midi_storage_layout_supported,
-    canonical_native_state_storage_layout_supported,
+    canonical_native_state_storage_layout_supported, document_file_token_storage_layout_supported,
 };
 mod audio_clip_source;
 mod audio_input_storage;
@@ -118,7 +118,7 @@ pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
     native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
     native_device_parameter_for_class, native_device_view, native_device_view_for_class,
-    native_effect_frequency_response,
+    native_effect_frequency_response, sampler_parameters_on_control,
 };
 
 mod gain_envelope;

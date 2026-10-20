@@ -55,6 +55,77 @@ impl<'a> WorkerPublication<'a> {
     }
 }
 impl WorkerPublication<'_> {
+    /// Closed pending Editor+paired-source construction. Model commit and a
+    /// NEW current worker/backend validation still precede any publication.
+    #[expect(clippy::too_many_arguments, reason = "finite actual pending operands")]
+    pub fn construct_pending_original_sampler_with_host_on_control<
+        'owner,
+        P: hex_engine::sampler_host_fields::OriginalSamplerPendingSession<'owner>,
+    >(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        worker: &hex_engine::sampler_host_fields::SamplerWorkerFields<'_>,
+        current_source: &hex_engine::sampler_host_fields::CapturedSourceFields<'_>,
+        files: &dyn hex_engine::sampler_host_fields::FileSlotsFields<'_>,
+        families: &dyn hex_engine::sampler_host_fields::SamplerFamilyInventoryFields,
+        session: &mut P,
+        previous: Option<&hex_engine::AudioCompiledRevision>,
+        reservation: hex_engine::AudioStorageLedgerReservation,
+    ) -> Result<bool, hex_engine::AudioStorageError> {
+        if !self.control.native_custody || self.control.status.closing.load(Acquire) {
+            return Err(hex_engine::AudioStorageError::SourceMismatch);
+        }
+        self.control
+            .candidate_root
+            .construct_pending_original_sampler_in_host(
+                token,
+                worker,
+                current_source,
+                files,
+                families,
+                session,
+                previous,
+                reservation,
+            )
+    }
+    /// Closed construction in the SAME token-selected persistent parent.
+    /// This returns neither owners nor native publication authority. Caller
+    /// exclusions precede Audio's six single-try guards and end before DSP/IO.
+    #[expect(clippy::too_many_arguments, reason = "finite mandatory host operands")]
+    pub fn construct_original_sampler_with_host_on_control(
+        &mut self,
+        token: crate::AudioCandidatePreparationToken,
+        worker: &hex_engine::sampler_host_fields::SamplerWorkerFields<'_>,
+        source: &hex_engine::sampler_host_fields::CapturedSourceFields<'_>,
+        files: &dyn hex_engine::sampler_host_fields::FileSlotsFields<'_>,
+        families: &dyn hex_engine::sampler_host_fields::SamplerFamilyInventoryFields,
+        resident: &dyn hex_engine::sampler_host_fields::OriginalSamplerResidentFields,
+        producer: &hex_engine::native_device_resources::OriginalResourceBankPlan<'_>,
+        previous: Option<&hex_engine::AudioCompiledRevision>,
+        original: &hex_engine::AudioRootStorageLedger<'_>,
+        writers: &mut hex_engine::audio_transform::OriginalSamplerTransaction<'_>,
+        reservation: hex_engine::AudioStorageLedgerReservation,
+    ) -> Result<(), hex_engine::AudioStorageError> {
+        if !self.control.native_custody || self.control.status.closing.load(Acquire) {
+            return Err(hex_engine::AudioStorageError::SourceMismatch);
+        }
+        self.control
+            .candidate_root
+            .construct_original_sampler_in_host(
+                token,
+                worker,
+                source,
+                files,
+                families,
+                resident,
+                producer,
+                previous,
+                original,
+                writers,
+                reservation,
+            )
+    }
+
     pub(crate) fn enable_native_custody(&mut self) -> Result<(), String> {
         self.control.enable_native_custody()
     }

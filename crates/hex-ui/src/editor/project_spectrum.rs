@@ -127,8 +127,16 @@ impl EditorView {
                 .published_audio_revision(generation, state.revision)
         });
         let expanded = self.project_spectrum.expanded && !self.opening_project;
-        let mut result = None;
+        let old_source = self.project_spectrum.result.as_ref().map(|r| {
+            (
+                r.selection,
+                r.applied_revision,
+                r.captured_at,
+                r.processed_at,
+            )
+        });
         let mut output_identity = None;
+        let mut updated = false;
         if let Some(audio) = self.audio.as_mut() {
             let desired = audio.control.project_spectrum_desired();
             let same = desired.is_some_and(|s| {
@@ -152,24 +160,42 @@ impl EditorView {
                         );
                     }
                 }
-                result = audio.control.project_spectrum_latest().filter(|r| {
-                    r.selection.generation == generation
-                        && r.selection.tracks() == ids
-                        && r.selection.sample_rate_hz == audio.sample_rate
-                });
             }
+            let display = expanded
+                && audio.control.project_spectrum_desired().is_some_and(|s| {
+                    s.generation == generation
+                        && s.tracks() == ids
+                        && s.sample_rate_hz == audio.sample_rate
+                });
+            updated = audio
+                .control
+                .refresh_project_spectrum(&mut self.project_spectrum.result, display)
+                == hex_audio::spectrum_worker::ProjectSpectrumRefresh::Updated;
+        } else {
+            // No live Client can reuse an old closed-root snapshot. Its actual
+            // affine payload retires normally against that original Root.
+            drop(self.project_spectrum.result.take());
         }
-        if result.is_some() {
+
+        if self.project_spectrum.result.is_some() {
             output_identity = self
                 .audio
                 .as_ref()
                 .and_then(|a| a.control.output_identity());
         }
-        if self.project_spectrum.result != result
+        let new_source = self.project_spectrum.result.as_ref().map(|r| {
+            (
+                r.selection,
+                r.applied_revision,
+                r.captured_at,
+                r.processed_at,
+            )
+        });
+        if updated
+            || old_source != new_source
             || self.project_spectrum.output_identity != output_identity
         {
             self.project_spectrum.plot_cache = None;
-            self.project_spectrum.result = result;
             self.project_spectrum.output_identity = output_identity;
             true
         } else {
@@ -179,7 +205,6 @@ impl EditorView {
     fn toggle_project_spectrum(&mut self, cx: &mut Context<Self>) {
         self.cancel_project_spectrum_resize(cx);
         self.project_spectrum.expanded = !self.project_spectrum.expanded;
-        self.project_spectrum.result = None;
         if !self.project_spectrum.expanded
             && let Some(audio) = self.audio.as_ref()
         {

@@ -220,15 +220,27 @@ impl EditorView {
                 self.status = status;
             }
         }
-        match self.service.try_export_event() {
+        // Copy only presentation metadata while borrowing the actual result.
+        // The family/native loan is gone before any window/prompt/next request.
+        struct CompletionDisplay {
+            revision: u64,
+            result: Result<(u64, Option<PathBuf>), String>,
+        }
+        let completion = self.service.with_export_event(|event| CompletionDisplay {
+            revision: event.revision(),
+            result: event
+                .result()
+                .map(|report| (report.frames(), report.recovery_path().map(PathBuf::from)))
+                .map_err(str::to_owned),
+        });
+        match completion {
             Ok(event) => {
                 self.export_pending = false;
                 self.export_control = None;
                 // Native message bodies preserve case-sensitive recovery paths;
                 // status chrome normalizes app text through theme::text.
                 let recovery_message = match &event.result {
-                    Ok(report) => report
-                        .recovery_path
+                    Ok((_, recovery_path)) => recovery_path
                         .as_ref()
                         .map(|path| format!("previous file is preserved at {}", path.display())),
                     Err(error) => Some(error.clone()),
@@ -251,13 +263,12 @@ impl EditorView {
                     }
                 }
                 match event.result {
-                    Ok(report) => {
+                    Ok((frames, recovery_path)) => {
                         self.status = format!(
                             "exported rev {} · {} frames{}",
                             event.revision,
-                            report.frames,
-                            report
-                                .recovery_path
+                            frames,
+                            recovery_path
                                 .map(|path| format!(" · previous file at {}", path.display()))
                                 .unwrap_or_default()
                         );

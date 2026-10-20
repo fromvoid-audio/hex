@@ -848,3 +848,88 @@ still require the enclosing guarded union proof. No registry admission follows.
 The fixed-ring fixtures above cover native RingBuffer body/header alignment,
 capacities0/1/7/128 and zero-sized elements at17. They do not contain a separate
 over-aligned element fixture; native evidence must preserve that coverage limit.
+
+
+### Spectrum result backing in the continuing Sampler integration
+
+The EQ and project analyzer result transports use the existing pinned rtrb SPSC
+representation, each at its existing capacity of one. They replace the two opaque
+standard-library sync-channel backings; callback capture/return queues, FFT,
+analysis cadence, signal calibration, selection and display freshness are unchanged.
+A full result queue retains the oldest queued result and returns/drops the new
+one. An already-abandoned reader is detected before pushing; no result is queued
+for it. Reader shutdown can race that check: the at-most-one previously published
+owner remains in the same ring until the worker's existing endpoint retires at
+join. This bounded retention is accounted, not inferred absent from disconnection.
+No wakeup queue, additional worker, lock, registration family or capacity is added.
+
+The existing cost/resource report now includes the actual requested result-ring
+core/header/backing, rather than only naming an opaque channel group. Project
+results own Box storage: the pending-analysis, queued, and retained-reader buffers
+are three separate allocations. Pending is already reserved by ProjectCore's heap
+allowance; queued and retained-reader are charged separately from the ring element
+body. No Box backing is charged as though it were contained in that body. An owning
+result returned by the public latest query clones another Box; such external UI
+owners require their own actual enclosing-root inventory and are not covered by
+these three internal allowances.
+
+This is concrete backing/behavior evidence only. Raw result endpoints still need
+constructor-paired individual field lineage before complete DATA closure. Worker
+thread/stop infrastructure, dynamic pending/queued/retained payloads and external
+copies, all enclosing family/native roots, both ceilings before construction and
+actual Service publication/retirement remain mandatory. Existing NativeSome
+refusal is not cleared by a ring byte count or endpoint identity.
+
+
+The existing spectrum constructor-correlation identity also covers the actual EQ
+result consumer, plus the actual project result consumer alongside the project's
+capture/return pair. Swapping only either result field between two genuine native
+factories must invalidate both readers' identities before worker endpoint escape.
+The owner-local project accessor validates its private actual result field without
+exposing an owning getter or widening field visibility. These extra scalar identity
+members change concrete inline footprints; normal factory and carrier quotes use
+the changed concrete types. They allocate no additional metadata or handle.
+
+This closes an omitted endpoint consistency check, not physical origin or queued
+payload lineage. The correlation is not a retained registration, lease, disposal
+receipt, admission capability or evidence that children are absent. In particular,
+a worker join can complete while a reader still retains its endpoint or latest
+result. Future constructor registrations must stay rooted in the existing native
+custodian until the actual endpoints and payloads complete normal destruction;
+neither the copied identity nor ReaperPhase::Complete can retire them alone.
+
+### analyzer construction and two-phase native retirement (v3 work in progress)
+
+The prepared device path now performs a combined fixed-cohort constructor check
+before Root, queue, Status, carrier or analyzer birth when carrying the existing
+factory reservation. The bound includes both FFT workspaces, all project packet
+and result-buffer allowances (pending, queued and reader-latest), concrete ring
+backings/shared headers, captured Hex fields, and simultaneous parent/initializer
+scratch. It uses the existing pinned layout quotes and both unchanged ceilings.
+This remains a local constructor bound. It does not account for arbitrary
+external retained families, current/history/captured-source roots or user-query
+result copies; mandatory whole-host normal/bootstrap inventory still must bind
+those actual fields. The unreserved legacy path remains unqualified.
+
+The existing lifecycle parent receives the retirement Root role before analyzer
+construction. It stores the actual Reaper/JoinHandle immediately after successful
+spawn, before returning capture/reader. Preparing, unavailable, installed and
+failed carrier states are distinct. Once-only installation retains rejected
+captures in the caller and retains consumed foreign carriers in the failed
+parent. A missing/foreign carrier report is no longer silently ignored.
+
+Retirement first proves actual stream disposal, then drains and retires native
+callback/capture/error fields without destroying either UI Client or worker
+publication endpoint. The same owning parent invokes its actual Reaper join;
+only normal join (or actual never-created/unavailable constructor custody) can
+precede final endpoint and Root cleanup. Remaining reader/results may keep that
+last stage pending. Join never certifies result disposal. First panic and
+pending-before-take remain irreversible; consumed joins/destructors are not
+retried. Standalone no-analyzer test helpers refuse actual analyzer bindings.
+
+The pinned Rust thread Packet/Thread/name/parker/start bookkeeping remains the
+established opaque RESOURCE obligation, retained through the actual join. Hex
+captures, buffers, result Boxes, fields and metadata remain DATA, including when
+captured by the std closure. No private std layouts are reconstructed. These
+changes do not qualify NativeSome, full factory/Service union, Sampler playback,
+export/seek, native allocation/contention, or physical user acceptance.

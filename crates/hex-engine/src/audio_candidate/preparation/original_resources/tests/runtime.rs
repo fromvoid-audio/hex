@@ -4,21 +4,40 @@ use hex_project::{BeatTime, Command, Created};
 
 #[test]
 fn original_producer_to_persistent_sampler_candidate_keeps_target_and_reader_custody() {
-    exercise(ConstructorPurpose::NativeFresh, false, false);
+    exercise(ConstructorPurpose::NativeFresh, false, false, false);
 }
 #[test]
 fn main_original_sampler_control_work_matches_linear_pcm_and_reader_cleanup() {
-    exercise(ConstructorPurpose::MainExport, false, false);
+    exercise(ConstructorPurpose::MainExport, false, false, false);
 }
 #[test]
 fn main_original_input_destruction_failure_stays_in_same_anchor_once() {
-    exercise(ConstructorPurpose::MainExport, true, false);
+    exercise(ConstructorPurpose::MainExport, true, false, false);
 }
 #[test]
 fn main_cancel_with_unacknowledged_block_retains_reader_and_retires_original_once() {
-    exercise(ConstructorPurpose::MainExport, false, true);
+    exercise(ConstructorPurpose::MainExport, false, true, false);
 }
-fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
+#[test]
+fn retained_native_sampler_graph_binds_original_mono_stereo_and_pruned_target_while_rendering() {
+    exercise(ConstructorPurpose::NativeFresh, false, false, true);
+}
+fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool, transferred_graph: bool) {
+    exercise_with_writers(purpose, fault, cancel, transferred_graph, false)
+}
+#[test]
+fn main_original_sampler_same_writers_complete_registered_birth_pcm_cancel_and_fault() {
+    for (fault, cancel) in [(false, false), (false, true), (true, false)] {
+        exercise_with_writers(ConstructorPurpose::MainExport, fault, cancel, false, true);
+    }
+}
+fn exercise_with_writers(
+    purpose: ConstructorPurpose,
+    fault: bool,
+    cancel: bool,
+    transferred_graph: bool,
+    lending: bool,
+) {
     for (stereo, with_return) in [(false, false), (false, true), (true, false), (true, true)] {
         let (unused_bank, identity, mut editor) =
             crate::shared_analytic::sampler_tests::canonical_fixture().unwrap();
@@ -87,6 +106,18 @@ fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
         }
         let target = crate::SharedMetadata::new_on_control(editor.project().clone());
         editor.execute(Command::RemoveTrack(track)).unwrap();
+        if transferred_graph {
+            for n in 0..16 {
+                editor
+                    .execute(Command::SetTempoPoint {
+                        beat: BeatTime::ZERO,
+                        tempo: hex_project::Tempo::new(100_000_000 + n * 1_000_000).unwrap(),
+                    })
+                    .unwrap();
+            }
+            assert!(editor.project().tracks().is_empty());
+        }
+
         let original_source = if stereo {
             crate::OwnedAudioSource::try_resident(
                 44_100,
@@ -152,7 +183,23 @@ fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
             };
             crate::owned_shared::reset_birth_count();
             crate::owned_shared::reset_clone_count();
-            assert_eq!(
+            let result = if lending {
+                let mut writers = transforms
+                    .original_sampler_transaction_on_control()
+                    .unwrap();
+                cell.prepare_original_sampler_with_writers_on_control(
+                    &target,
+                    &plan,
+                    &editor,
+                    None,
+                    &original,
+                    &transforms,
+                    too_small,
+                    ConstructorPurpose::MainExport,
+                    Some(&mut writers),
+                    None,
+                )
+            } else {
                 cell.prepare_original_sampler_for_purpose_on_control(
                     &target,
                     &plan,
@@ -161,16 +208,107 @@ fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
                     &original,
                     &transforms,
                     too_small,
-                    purpose
-                ),
-                Err(expected),
-                "{refusal}"
-            );
+                    purpose,
+                )
+            };
+            assert_eq!(result, Err(expected), "{refusal}");
             assert_eq!(crate::owned_shared::birth_count(), 0, "{refusal}");
             assert_eq!(crate::owned_shared::clone_count(), 0, "{refusal}");
             assert!(cell.owner.is_none() && cell.token.is_none());
         }
+        if lending {
+            let mut writers = transforms
+                .original_sampler_transaction_on_control()
+                .unwrap();
+            let construction = cell
+                .inspect_original_sampler_with_writers_on_control(
+                    None, &target, &plan, None, &editor, None, &original, &writers, limits, purpose,
+                )
+                .unwrap();
+            let mut foreign = AudioCandidatePreparation::try_new_on_control(0, outer()).unwrap();
+            crate::owned_shared::reset_birth_count();
+            crate::owned_shared::reset_clone_count();
+            let mut refused = None;
+            let allocations = allocation_counter::measure(|| {
+                refused = Some(foreign.construct_original_sampler_with_writers_on_control(
+                    &target,
+                    None,
+                    &mut writers,
+                    construction,
+                ));
+            });
+            assert_eq!(refused, Some(Err(AudioStorageError::SourceMismatch)));
+            assert_eq!(allocations.count_total, 0);
+            assert_eq!(allocations.count_current, 0);
+            assert_eq!(crate::owned_shared::birth_count(), 0);
+            assert_eq!(crate::owned_shared::clone_count(), 0);
+            assert!(foreign.token.is_none() && foreign.owner.is_none());
+            assert!(cell.token.is_none() && cell.owner.is_none());
+            foreign.cleanup_on_control().unwrap();
+            let construction = cell
+                .inspect_original_sampler_with_writers_on_control(
+                    None, &target, &plan, None, &editor, None, &original, &writers, limits, purpose,
+                )
+                .unwrap();
+            // SAME immutable allocation, DIFFERENT actual owning handle/field.
+            // A copied owner identity cannot substitute for the inspected loan.
+            let foreign_target_field = target.clone();
+            crate::owned_shared::reset_birth_count();
+            crate::owned_shared::reset_clone_count();
+            let mut refused = None;
+            let allocations = allocation_counter::measure(|| {
+                refused = Some(cell.construct_original_sampler_with_writers_on_control(
+                    &foreign_target_field,
+                    None,
+                    &mut writers,
+                    construction,
+                ));
+            });
+            assert_eq!(refused, Some(Err(AudioStorageError::SourceMismatch)));
+            assert_eq!(allocations.count_total, 0);
+            assert_eq!(allocations.count_current, 0);
+            assert_eq!(crate::owned_shared::birth_count(), 0);
+            assert_eq!(crate::owned_shared::clone_count(), 0);
+            assert!(cell.token.is_none() && cell.owner.is_none());
+            drop(foreign_target_field);
+            // The actual original cell and SAME writers remain usable after
+            // refusing the unrelated physical destination before any birth.
+            drop(writers);
+        }
         if purpose == ConstructorPurpose::NativeFresh {
+            if transferred_graph {
+                let mut foreign =
+                    AudioCandidatePreparation::try_new_on_control(0, outer()).unwrap();
+                foreign
+                    .operations_on_control()
+                    .install_original_resources_on_control(&plan, allowance(), &query(false, false))
+                    .unwrap();
+                let actual = cell.custody.as_ref().unwrap();
+                let unrelated = foreign.custody.as_ref().unwrap();
+                let mut shell = AudioRootStorageLedger::try_new_on_control(limits).unwrap();
+                crate::owned_shared::reset_birth_count();
+                crate::owned_shared::reset_clone_count();
+                let measured = allocation_counter::measure(|| {
+                    cell.require_original_sampler_constructor_custody(actual)
+                        .unwrap();
+                    cell.visit_original_sampler_constructor_shell(actual, &mut shell)
+                        .unwrap();
+                    assert_eq!(
+                        cell.require_original_sampler_constructor_custody(unrelated),
+                        Err(AudioStorageError::SourceMismatch)
+                    );
+                });
+                assert_eq!((measured.count_total, measured.count_current), (0, 0));
+                assert_eq!(
+                    (
+                        crate::owned_shared::birth_count(),
+                        crate::owned_shared::clone_count()
+                    ),
+                    (0, 0)
+                );
+                drop(shell);
+                foreign.cleanup_on_control().unwrap();
+            }
             cell.prepare_original_sampler_on_control(
                 &target,
                 &plan,
@@ -181,6 +319,25 @@ fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
                 limits,
             )
             .unwrap();
+        } else if lending {
+            let mut writers = transforms
+                .original_sampler_transaction_on_control()
+                .unwrap();
+            cell.prepare_original_sampler_with_writers_on_control(
+                &target,
+                &plan,
+                &editor,
+                None,
+                &original,
+                &transforms,
+                limits,
+                ConstructorPurpose::MainExport,
+                Some(&mut writers),
+                None,
+            )
+            .unwrap();
+            // End the SAME writers before runtime loans, DSP or File turns.
+            drop(writers);
         } else {
             cell.operations_on_control()
                 .prepare_main_original_sampler_on_control(
@@ -209,6 +366,96 @@ fn exercise(purpose: ConstructorPurpose, fault: bool, cancel: bool) {
             .operations_on_control()
             .register_compiled_reader_on_control()
             .unwrap();
+        if transferred_graph {
+            {
+                let actual = &cell.owner.as_ref().unwrap().inner.custody;
+                let mut shell = AudioRootStorageLedger::try_new_on_control(limits).unwrap();
+                let measured = allocation_counter::measure(|| {
+                    cell.require_original_sampler_constructor_custody(actual)
+                        .unwrap();
+                    cell.visit_original_sampler_constructor_shell(actual, &mut shell)
+                        .unwrap();
+                });
+                assert_eq!((measured.count_total, measured.count_current), (0, 0));
+            }
+            let (mut runtime, mut anchor) = cell.split_for_publication_on_control().unwrap();
+            runtime
+                .apply_action(crate::PlaybackAction::Transport(
+                    crate::PlaybackCommand::Play,
+                ))
+                .unwrap();
+            let mut output = [[0.0; 2]; 16];
+            let mut rendered = None;
+            let measured =
+                allocation_counter::measure(|| rendered = Some(runtime.render(&mut output)));
+            rendered.unwrap().unwrap();
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.count_current,
+                    measured.bytes_total,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            let gain = if with_return { 1.25 } else { 1.0 };
+            let source: Vec<[f32; 2]> = if stereo {
+                crate::native_device_resources::tests::PCM.to_vec()
+            } else {
+                vec![[0.25; 2], [-0.5; 2], [0.75; 2], [-1.0; 2]]
+            };
+            for (index, frame) in output.iter().enumerate() {
+                let expected = source.get(index).copied().unwrap_or([0.0; 2]);
+                assert_eq!(
+                    *frame,
+                    [expected[0] * gain, expected[1] * gain],
+                    "stereo={stereo} return={with_return} frame={index}"
+                );
+            }
+            transforms
+                .with_pcm_inventory_on_control(|inventory| {
+                    let mut ledger = AudioRootStorageLedger::try_new_on_control(limits)?;
+                    anchor.visit_transferred_sampler_inputs(
+                        &target,
+                        None,
+                        Some(&plan),
+                        &editor,
+                        None,
+                        &original,
+                        inventory,
+                        &mut ledger,
+                    )?;
+                    reader.visit_shared_storage_on_control(&mut ledger)?;
+                    ledger.validate_selected_shared_handles_on_control()?;
+                    assert_eq!(ledger.summary()?.unknown_storage, 0);
+                    Ok::<_, AudioStorageError>(())
+                })
+                .unwrap();
+            let proof = runtime.dispose_on_control().unwrap();
+            let mut anchors = [Some(anchor)];
+            proof.record_anchor_cells_on_control(&mut anchors).unwrap();
+            drop(proof);
+            anchor = anchors[0].take().unwrap();
+            assert_eq!(
+                anchor.finish_disposal_on_control().err(),
+                Some(AudioStorageError::ExternalReadersPending)
+            );
+            drop(runtime); // Actual wrapper storage, separate from DSP proof.
+            assert_eq!(
+                anchor.finish_disposal_on_control().err(),
+                Some(AudioStorageError::ExternalReadersPending),
+                "actual external compiled reader STILL retains its own constructor obligation"
+            );
+            drop(reader);
+            anchor.finish_disposal_on_control().unwrap();
+            drop(anchor.recover_inputs_on_control().unwrap());
+            cell.cleanup_on_control().unwrap();
+            assert!(cell.complete);
+            eprintln!(
+                "retained native sampler graph completed stereo={stereo} return={with_return} target-pruned=true"
+            );
+            continue;
+        }
         if purpose == ConstructorPurpose::NativeFresh {
             assert_eq!(
                 cell.operations_on_control()

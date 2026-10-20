@@ -8,6 +8,9 @@ use std::{
 /// Audited owner implementation, not a public admission certificate. Every
 /// occupied actual Vec index must expose its exhaustive supported children.
 pub trait FileSlotsFields<'a> {
+    /// Actual temporary projector footprint, used only while that projector
+    /// remains borrowed by the closed host. It proves no child absence.
+    fn borrowed_frame(&self) -> BodyRef<'_>;
     fn slots(&self) -> VecRef<'a>;
     fn file(&self, index: usize) -> Result<FileJobFields<'a>, AudioStorageError>;
 }
@@ -43,8 +46,8 @@ fn contained(parent: BodyRef<'_>, child: BodyRef<'_>) -> Result<(), AudioStorage
         Err(AudioStorageError::SourceMismatch)
     }
 }
-pub(crate) fn visit_file_slots<'a>(
-    fields: &dyn FileSlotsFields<'a>,
+pub(crate) fn visit_file_slots<'owner: 'a, 'a>(
+    fields: &dyn FileSlotsFields<'owner>,
     ledger: &mut AudioRootStorageLedger<'a>,
 ) -> Result<(), AudioStorageError> {
     let slots = fields.slots();

@@ -88,6 +88,9 @@ struct Retirement {
     #[cfg(feature = "allocation-probe")]
     headless: bool,
     spectrum_reaper: Option<SpectrumReaper>,
+    spectrum_construction: SpectrumConstruction,
+    #[cfg(all(test, feature = "allocation-probe"))]
+    spectrum_test_entry: Option<fn()>,
     _lease: Lease,
     native: Option<crate::native_callback_owner::NativeRetirement>,
     backend_exposed: bool,
@@ -96,11 +99,66 @@ struct Retirement {
     failed: bool,
     first_panic: Option<Box<dyn std::any::Any + Send>>,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SpectrumConstruction {
+    NotRequested,
+    Preparing,
+    Installed,
+    Unavailable,
+}
 
 pub(crate) struct StreamOwner {
     retirement: Option<Retirement>,
 }
+pub(crate) type ConstructedChannel = (
+    StreamOwner,
+    crate::prepared::Control,
+    crate::prepared::Callback,
+    Option<crate::spectrum_worker::SpectrumReader>,
+    Option<crate::spectrum_worker::SpectrumWorkerError>,
+);
 impl StreamOwner {
+    // The real device and headless discriminator use this SAME closed fixed
+    // constructor. No approved totals/callback/plan escapes the preflight.
+    pub(crate) fn construct_prepared_channel_on_control(
+        lease: Lease,
+        rate: u32,
+        native_mode: bool,
+        reservation: Option<crate::AudioCandidatePublicationReservation>,
+    ) -> Result<ConstructedChannel, hex_engine::Invalid> {
+        crate::prepared::preflight_native_worker_birth(native_mode, reservation)?;
+        let (control, mut callback) =
+            crate::prepared::channel_with_factory_reservation(rate, None, reservation)?;
+        let root = control.native_candidate_root();
+        let mut parent = Self::begin_prepared_custody(lease, root);
+        let stamp = crate::spectrum_worker::SpectrumStamp {
+            target: crate::spectrum_worker::SpectrumTargetId(0),
+            generation: 0,
+            sample_rate_hz: rate,
+            applied_revision: 0,
+        };
+        let (reader, error) = match parent.construct_spectrum_on_control(stamp, native_mode) {
+            Ok((capture, reader)) => {
+                let mut capture = Some(capture);
+                if callback
+                    .attach_constructor_capture_on_control(&mut capture)
+                    .is_err()
+                {
+                    drop(capture);
+                    drop(reader);
+                    drop(callback);
+                    drop(control);
+                    let _aborted = parent.abort_before_carriers();
+                    return Err(hex_engine::Invalid(
+                        "spectrum constructor capture installation refused",
+                    ));
+                }
+                (Some(reader), None)
+            }
+            Err(error) => (None, Some(error)),
+        };
+        Ok((parent, control, callback, reader, error))
+    }
     pub fn new(stream: cpal::Stream, lease: Lease) -> Self {
         Self::with_spectrum(stream, lease, None)
     }
@@ -117,7 +175,14 @@ impl StreamOwner {
                 headless_backend: None,
                 #[cfg(feature = "allocation-probe")]
                 headless: false,
+                spectrum_construction: if spectrum_reaper.is_some() {
+                    SpectrumConstruction::Installed
+                } else {
+                    SpectrumConstruction::NotRequested
+                },
                 spectrum_reaper,
+                #[cfg(all(test, feature = "allocation-probe"))]
+                spectrum_test_entry: None,
                 _lease: lease,
                 native: None,
                 backend_exposed: true,
@@ -128,6 +193,7 @@ impl StreamOwner {
             }),
         }
     }
+    #[cfg(feature = "allocation-probe")]
     pub(crate) fn prepared_custody(
         lease: Lease,
         spectrum_reaper: Option<SpectrumReaper>,
@@ -136,11 +202,80 @@ impl StreamOwner {
         native.bind_spectrum_reaper(spectrum_reaper.as_ref());
         Self::unexposed_custody(lease, spectrum_reaper, Some(native))
     }
-    pub(crate) fn failed_preparation_custody(
+    pub(crate) fn begin_prepared_custody(
         lease: Lease,
-        spectrum_reaper: Option<SpectrumReaper>,
+        root: crate::candidate_custody::CandidateRoot,
     ) -> Self {
-        Self::unexposed_custody(lease, spectrum_reaper, None)
+        Self::unexposed_custody(
+            lease,
+            None,
+            Some(crate::native_callback_owner::NativeRetirement::begin_construction(root)),
+        )
+    }
+    // This is called only inside the same preflighted device construction.
+    // The actual JoinHandle is installed before returning any capture/reader.
+    pub(crate) fn construct_spectrum_on_control(
+        &mut self,
+        stamp: crate::spectrum_worker::SpectrumStamp,
+        native_mode: bool,
+    ) -> Result<
+        (
+            crate::spectrum_worker::SpectrumCapture,
+            crate::spectrum_worker::SpectrumReader,
+        ),
+        crate::spectrum_worker::SpectrumWorkerError,
+    > {
+        let parent = self
+            .retirement
+            .as_mut()
+            .filter(|p| {
+                p.spectrum_construction == SpectrumConstruction::NotRequested
+                    && p.spectrum_reaper.is_none()
+                    && p.native.is_some()
+            })
+            .ok_or(crate::spectrum_worker::SpectrumWorkerError::PoolCapacity)?;
+        parent.spectrum_construction = SpectrumConstruction::Preparing;
+        #[cfg(all(test, feature = "allocation-probe"))]
+        let entry = parent.spectrum_test_entry.take();
+        #[cfg(not(all(test, feature = "allocation-probe")))]
+        let entry = None;
+        let result = crate::spectrum_worker::spawn_worker_with_parent(
+            stamp,
+            native_mode,
+            entry,
+            parent.native.as_ref(),
+        );
+        match result {
+            Ok((capture, reader, reaper)) => {
+                parent.spectrum_reaper = Some(reaper);
+                parent.spectrum_construction = SpectrumConstruction::Installed;
+                Ok((capture, reader))
+            }
+            Err(error) => {
+                // The existing constructor has returned only after its real
+                // partial closure/payload values have normally dropped. An
+                // unwind instead leaves Preparing and is never absence proof.
+                parent.spectrum_construction = SpectrumConstruction::Unavailable;
+                Err(error)
+            }
+        }
+    }
+    pub(crate) fn install_constructed_native_carriers_on_control(
+        &mut self,
+        incoming: &mut Option<crate::native_callback_owner::NativeTerminals>,
+    ) -> Result<(), ()> {
+        let parent = self.retirement.as_mut().ok_or(())?;
+        let native = parent.native.as_mut().ok_or(())?;
+        native.install_constructed_carriers(incoming)?;
+        native.bind_spectrum_reaper(parent.spectrum_reaper.as_ref());
+        Ok(())
+    }
+    pub(crate) fn abort_before_carriers(&mut self) -> Result<(), ()> {
+        self.retirement
+            .as_mut()
+            .and_then(|p| p.native.as_mut())
+            .ok_or(())?
+            .abort_before_carriers()
     }
     fn unexposed_custody(
         lease: Lease,
@@ -154,7 +289,14 @@ impl StreamOwner {
                 headless_backend: None,
                 #[cfg(feature = "allocation-probe")]
                 headless: false,
+                spectrum_construction: if spectrum_reaper.is_some() {
+                    SpectrumConstruction::Installed
+                } else {
+                    SpectrumConstruction::NotRequested
+                },
                 spectrum_reaper,
+                #[cfg(all(test, feature = "allocation-probe"))]
+                spectrum_test_entry: None,
                 _lease: lease,
                 native,
                 backend_exposed: false,
@@ -290,7 +432,27 @@ pub fn request_worker_open(
         return Err(RecoveryOpenError::InvalidRate);
     }
     let sender = service().map_err(|_| RecoveryOpenError::WorkerClosed)?;
-    let waiter = enqueue_open_kind(sender, state(), expected_sample_rate, true)?;
+    let waiter = enqueue_open_kind(sender, state(), expected_sample_rate, true, None)?;
+    Ok(WorkerRecoveryOpen { waiter })
+}
+
+/// Native worker path carries the existing caller ceilings to the first Root
+/// and queue births. This is not a complete native-root admission certificate.
+pub fn request_worker_open_with_reservation(
+    expected_sample_rate: Option<u32>,
+    reservation: crate::AudioCandidatePublicationReservation,
+) -> Result<WorkerRecoveryOpen, RecoveryOpenError> {
+    if expected_sample_rate.is_some_and(|rate| !(8_000..=192_000).contains(&rate)) {
+        return Err(RecoveryOpenError::InvalidRate);
+    }
+    let sender = service().map_err(|_| RecoveryOpenError::WorkerClosed)?;
+    let waiter = enqueue_open_kind(
+        sender,
+        state(),
+        expected_sample_rate,
+        true,
+        Some(reservation),
+    )?;
     Ok(WorkerRecoveryOpen { waiter })
 }
 
@@ -312,7 +474,7 @@ pub fn request_initial_open() -> Result<RecoveryOpen, RecoveryOpenError> {
 
 fn request_open(expected_sample_rate: Option<u32>) -> Result<RecoveryOpen, RecoveryOpenError> {
     let sender = service().map_err(|_| RecoveryOpenError::WorkerClosed)?;
-    let waiter = enqueue_open_kind(sender, state(), expected_sample_rate, false)?;
+    let waiter = enqueue_open_kind(sender, state(), expected_sample_rate, false, None)?;
     Ok(RecoveryOpen { waiter })
 }
 
@@ -390,7 +552,7 @@ fn enqueue_open<T: Send + 'static, R: Send + 'static>(
     state: &Arc<OpenState>,
     expected_sample_rate: Option<u32>,
 ) -> Result<OpenWaiter<T>, RecoveryOpenError> {
-    enqueue_open_kind(sender, state, expected_sample_rate, false)
+    enqueue_open_kind(sender, state, expected_sample_rate, false, None)
 }
 
 fn enqueue_open_kind<T: Send + 'static, R: Send + 'static>(
@@ -398,7 +560,39 @@ fn enqueue_open_kind<T: Send + 'static, R: Send + 'static>(
     state: &Arc<OpenState>,
     expected_sample_rate: Option<u32>,
     worker_endpoints: bool,
+    factory_reservation: Option<crate::AudioCandidatePublicationReservation>,
 ) -> Result<OpenWaiter<T>, RecoveryOpenError> {
+    enqueue_open_payload(
+        sender,
+        state,
+        expected_sample_rate,
+        worker_endpoints,
+        factory_reservation,
+        &mut None,
+    )
+}
+
+// The SAME existing lane can transport the actual prepared parent/carriers.
+// Validation/busy/full refusal leaves its producer-owned field populated.
+// This private operation does not perform or certify whole-host admission.
+fn enqueue_open_payload<T: Send + 'static, R: Send + 'static>(
+    sender: &SyncSender<LifecycleMessage<T, R>>,
+    state: &Arc<OpenState>,
+    expected_sample_rate: Option<u32>,
+    worker_endpoints: bool,
+    factory_reservation: Option<crate::AudioCandidatePublicationReservation>,
+    prepared: &mut Option<Box<crate::device::PreparedBackend>>,
+) -> Result<OpenWaiter<T>, RecoveryOpenError> {
+    if let Some(payload) = prepared.as_ref() {
+        // These actual constructor fields must be inspected BEFORE request
+        // completion/flag allocation, reservation or producer-field transfer.
+        if !worker_endpoints || !payload.has_worker_endpoints() {
+            return Err(RecoveryOpenError::WorkerClosed);
+        }
+        if expected_sample_rate != Some(payload.sample_rate()) {
+            return Err(RecoveryOpenError::InvalidRate);
+        }
+    }
     if state.in_service.load(Acquire) {
         return Err(RecoveryOpenError::Busy);
     }
@@ -424,11 +618,13 @@ fn enqueue_open_kind<T: Send + 'static, R: Send + 'static>(
         id,
         expected_sample_rate,
         worker_endpoints,
+        factory_reservation,
         completion,
         canceled: Arc::clone(&canceled),
         consumed: Arc::clone(&consumed),
         abandoned: Arc::clone(&abandoned),
         state: Arc::clone(state),
+        prepared: prepared.take(),
     };
     match sender.try_send(LifecycleMessage::Open(request)) {
         Ok(()) => Ok(OpenWaiter {
@@ -440,11 +636,13 @@ fn enqueue_open_kind<T: Send + 'static, R: Send + 'static>(
             abandoned,
             released: false,
         }),
-        Err(TrySendError::Full(LifecycleMessage::Open(request))) => {
+        Err(TrySendError::Full(LifecycleMessage::Open(mut request))) => {
+            *prepared = request.prepared.take();
             finish_request(&request);
             Err(RecoveryOpenError::QueueFull)
         }
-        Err(TrySendError::Disconnected(LifecycleMessage::Open(request))) => {
+        Err(TrySendError::Disconnected(LifecycleMessage::Open(mut request))) => {
+            *prepared = request.prepared.take();
             finish_request(&request);
             Err(RecoveryOpenError::WorkerClosed)
         }
@@ -463,11 +661,13 @@ struct OpenRequest<T> {
     id: u64,
     expected_sample_rate: Option<u32>,
     worker_endpoints: bool,
+    factory_reservation: Option<crate::AudioCandidatePublicationReservation>,
     completion: SyncSender<Result<T, String>>,
     canceled: Arc<AtomicBool>,
     consumed: Arc<AtomicBool>,
     abandoned: Arc<AtomicBool>,
     state: Arc<OpenState>,
+    prepared: Option<Box<crate::device::PreparedBackend>>,
 }
 fn finish_request<T>(request: &OpenRequest<T>) {
     request.state.in_service.store(false, Release);
@@ -487,13 +687,23 @@ fn run_lifecycle<T: Send + 'static, R: Send + 'static>(
     mut try_open: impl FnMut(Option<u32>) -> Option<Result<T, String>>,
     retire: impl FnMut(R),
 ) {
-    run_lifecycle_selected(receiver, is_occupied, |rate, _| try_open(rate), retire)
+    run_lifecycle_selected(
+        receiver,
+        is_occupied,
+        |rate, _, _, _| try_open(rate),
+        retire,
+    )
 }
 
 fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
-    try_open: impl FnMut(Option<u32>, bool) -> Option<Result<T, String>>,
+    try_open: impl FnMut(
+        Option<u32>,
+        bool,
+        Option<crate::AudioCandidatePublicationReservation>,
+        &mut Option<Box<crate::device::PreparedBackend>>,
+    ) -> Option<Result<T, String>>,
     retire: impl FnMut(R),
 ) {
     run_lifecycle_with_control_jobs(
@@ -508,7 +718,12 @@ fn run_lifecycle_selected<T: Send + 'static, R: Send + 'static>(
 fn run_lifecycle_with_control_jobs<T: Send + 'static, R: Send + 'static>(
     receiver: Receiver<LifecycleMessage<T, R>>,
     is_occupied: impl Fn() -> bool,
-    mut try_open: impl FnMut(Option<u32>, bool) -> Option<Result<T, String>>,
+    mut try_open: impl FnMut(
+        Option<u32>,
+        bool,
+        Option<crate::AudioCandidatePublicationReservation>,
+        &mut Option<Box<crate::device::PreparedBackend>>,
+    ) -> Option<Result<T, String>>,
     mut retire: impl FnMut(R),
     mut advance_control_family: impl FnMut(),
 ) {
@@ -541,6 +756,10 @@ fn run_lifecycle_with_control_jobs<T: Send + 'static, R: Send + 'static>(
         if let Some(current) = active.as_mut() {
             match current.phase {
                 Phase::Queued if current.request.canceled.load(Acquire) => {
+                    // This payload itself holds OCCUPIED. Relinquish it to its
+                    // existing retirement route before waiting for that actual
+                    // frontier; otherwise cancellation would wait on itself.
+                    drop(current.request.prepared.take());
                     if !is_occupied() {
                         finish_request(&current.request);
                         active = None;
@@ -550,6 +769,8 @@ fn run_lifecycle_with_control_jobs<T: Send + 'static, R: Send + 'static>(
                     if let Some(result) = try_open(
                         current.request.expected_sample_rate,
                         current.request.worker_endpoints,
+                        current.request.factory_reservation,
+                        &mut current.request.prepared,
                     ) {
                         if current.request.canceled.load(Acquire) {
                             drop(result);
@@ -641,12 +862,16 @@ fn service() -> Result<&'static SyncSender<LifecycleMessage<Opened, Retirement>>
                     run_lifecycle_selected(
                         receiver,
                         || OCCUPIED.load(Acquire),
-                        |expected_rate, worker_endpoints| {
+                        |expected_rate, worker_endpoints, factory_reservation, prepared| {
+                            if let Some(prepared) = prepared.take() {
+                                return Some(crate::device::finish_prepared_backend(prepared));
+                            }
                             let lease = Lease::try_acquire()?;
                             Some(crate::device::open_prepared(
                                 expected_rate,
                                 lease,
                                 worker_endpoints,
+                                factory_reservation,
                             ))
                         },
                         retire_prepared_output,
@@ -702,38 +927,81 @@ fn retire_prepared_output(mut retirement: Retirement) {
 }
 fn retirement_tick(retirement: &mut Retirement) -> Result<bool, ()> {
     #[cfg(feature = "allocation-probe")]
-    if retirement.headless {
-        return dispose_stream_and_native_on_control(
+    let disposed = if retirement.headless {
+        dispose_stream_on_control(
             &mut retirement.headless_backend,
             true,
             &mut retirement.stream_drop_pending,
             &mut retirement.stream_disposed,
-            retirement.native.as_mut(),
             |_| Ok(()),
-        );
+        )?
+    } else {
+        dispose_retirement_stream(retirement)?
+    };
+    #[cfg(not(feature = "allocation-probe"))]
+    let disposed = dispose_retirement_stream(retirement)?;
+    if !disposed {
+        return Ok(false);
     }
-    if !dispose_stream_and_native_on_control(
+    if let Some(native) = retirement.native.as_mut()
+        && !native.advance_native_fields_after_stream_disposal(&CompletedStreamHandle {
+            root: native.root().root_id(),
+        })?
+    {
+        return Ok(false);
+    }
+    retirement.advance_worker_then_final_native()
+}
+fn dispose_retirement_stream(retirement: &mut Retirement) -> Result<bool, ()> {
+    dispose_stream_on_control(
         &mut retirement.stream,
         retirement.backend_exposed,
         &mut retirement.stream_drop_pending,
         &mut retirement.stream_disposed,
-        retirement.native.as_mut(),
         |stream| stream.pause().map_err(|_| ()),
-    )? {
-        return Ok(false);
-    }
-    if let Some(reaper) = retirement.spectrum_reaper.as_mut() {
-        if reaper.advance_shutdown_on_control().is_err() {
-            return Err(());
+    )
+}
+impl Retirement {
+    // Only this owning-parent driver crosses from actual analyzer join to
+    // final Root completion. No caller-supplied join flag/receipt is accepted.
+    fn advance_worker_then_final_native(&mut self) -> Result<bool, ()> {
+        match (self.spectrum_construction, self.spectrum_reaper.as_ref()) {
+            (SpectrumConstruction::Preparing, _) | (SpectrumConstruction::Installed, None) => {
+                return Err(());
+            }
+            (SpectrumConstruction::NotRequested | SpectrumConstruction::Unavailable, Some(_)) => {
+                return Err(());
+            }
+            _ => {}
         }
+        if let Some(reaper) = self.spectrum_reaper.as_mut() {
+            if let Some(native) = self.native.as_ref() {
+                reaper
+                    .validate_actual_stop_on_control(native)
+                    .map_err(|_| ())?;
+            }
+            reaper.advance_shutdown_on_control().map_err(|_| ())?;
+            if let Some(native) = self.native.as_ref() {
+                reaper
+                    .finalize_captured_frame_on_control(native)
+                    .map_err(|_| ())?;
+            }
+        }
+        if let Some(native) = self.native.as_mut()
+            && !native.finish_root_after_native_fields_on_control()?
+        {
+            return Ok(false);
+        }
+        // Keep the completed Reaper in its actual parent until that parent
+        // normally retires; repeated final-Pending calls inspect the same join.
+        Ok(true)
     }
-    drop(retirement.spectrum_reaper.take());
-    Ok(true)
 }
 
 // One matched retirement bundle owns both the actual stream handle and native
 // terminal root. The witness is never exposed to callers or detached from this
 // completed take/Drop frontier; a root cannot be reused for another incarnation.
+#[cfg(all(test, feature = "allocation-probe"))]
 fn dispose_stream_and_native_on_control<S>(
     stream: &mut Option<S>,
     backend_exposed: bool,
@@ -795,6 +1063,194 @@ fn dispose_stream_on_control<S>(
 #[cfg(test)]
 mod candidate_retirement_tests {
     use super::*;
+
+    #[cfg(feature = "allocation-probe")]
+    fn prepared_request_payload(worker: bool) -> Box<crate::device::PreparedBackend> {
+        let (retained, peak) = crate::prepared::native_worker_birth_bound(worker).unwrap();
+        let reservation = crate::AudioCandidatePublicationReservation {
+            runtime_slots: 3,
+            archive_slots: 3,
+            member_rows: 128,
+            transfer_rows: 128,
+            receipt_rows: 3,
+            data_rows: 256,
+            handle_rows: 256,
+            max_retained_data_bytes: retained,
+            max_construction_peak_data_bytes: peak,
+        };
+        let lease = Lease::acquire().unwrap();
+        if worker {
+            crate::device::prepare_backend_data(lease, 48000, true, Some(reservation))
+        } else {
+            crate::device::prepare_headless_legacy_test_stage(lease, 48000, reservation)
+        }
+        .unwrap()
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    fn wait_for_prepared_parent_retirement() {
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while OCCUPIED.load(Acquire) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "same parent did not retire"
+            );
+            thread::yield_now();
+        }
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn prepared_worker_request_refuses_actual_legacy_stage_before_metadata_birth() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let mut payload = Some(prepared_request_payload(false));
+        let original_identity = payload.as_ref().unwrap().test_output_identity();
+        let state = Arc::new(OpenState::new());
+        let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<(), ()>>(1);
+        let mut outcome = None;
+        let measured = allocation_counter::measure(|| {
+            outcome = Some(enqueue_open_payload(
+                &sender,
+                &state,
+                Some(48000),
+                true,
+                None,
+                &mut payload,
+            ));
+        });
+        let refused = matches!(outcome, Some(Err(RecoveryOpenError::WorkerClosed)));
+        let retained_identity = payload.as_ref().map(|p| p.test_output_identity());
+        let lane_untouched = state.reserved.load(Acquire) == 0 && !state.in_service.load(Acquire);
+        // Even the RED case must normally drop/join its actual parent. Drop the
+        // queued request too if a regression consumed the producer's stage.
+        drop(outcome);
+        drop(payload);
+        drop(receiver);
+        drop(sender);
+        wait_for_prepared_parent_retirement();
+        assert!(
+            refused,
+            "actual legacy-only stage was accepted as a worker payload"
+        );
+        assert_eq!(retained_identity, Some(original_identity));
+        assert!(lane_untouched);
+        assert_eq!(measured.count_total, 0);
+        assert_eq!(measured.bytes_total, 0);
+        assert_eq!(measured.count_current, 0);
+        assert_eq!(measured.bytes_current, 0);
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn prepared_request_full_busy_mismatch_disconnect_retain_then_transfer_same_parent() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let mut payload = Some(prepared_request_payload(true));
+        let identity = payload.as_ref().unwrap().test_output_identity();
+        let state = Arc::new(OpenState::new());
+        let (full, _receiver) = mpsc::sync_channel::<LifecycleMessage<u64, ()>>(0);
+        assert!(matches!(
+            enqueue_open_payload(&full, &state, Some(48000), true, None, &mut payload),
+            Err(RecoveryOpenError::QueueFull)
+        ));
+        assert_eq!(payload.as_ref().unwrap().test_output_identity(), identity);
+        assert_eq!(state.reserved.load(Acquire), 0);
+        assert!(!state.in_service.load(Acquire));
+
+        let refusal = allocation_counter::measure(|| {
+            assert!(matches!(
+                enqueue_open_payload(&full, &state, Some(44100), true, None, &mut payload),
+                Err(RecoveryOpenError::InvalidRate)
+            ));
+            state.in_service.store(true, Release);
+            assert!(matches!(
+                enqueue_open_payload(&full, &state, Some(48000), true, None, &mut payload),
+                Err(RecoveryOpenError::Busy)
+            ));
+            state.in_service.store(false, Release);
+        });
+        assert_eq!(refusal.count_total, 0);
+        assert_eq!(refusal.bytes_total, 0);
+        assert_eq!(payload.as_ref().unwrap().test_output_identity(), identity);
+        let (closed, receiver) = mpsc::sync_channel::<LifecycleMessage<u64, ()>>(1);
+        drop(receiver);
+        assert!(matches!(
+            enqueue_open_payload(&closed, &state, Some(48000), true, None, &mut payload),
+            Err(RecoveryOpenError::WorkerClosed)
+        ));
+        assert_eq!(payload.as_ref().unwrap().test_output_identity(), identity);
+        assert_eq!(state.reserved.load(Acquire), 0);
+
+        let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<u64, ()>>(3);
+        let mut waiter =
+            enqueue_open_payload(&sender, &state, Some(48000), true, None, &mut payload).unwrap();
+        assert!(payload.is_none());
+        let worker = thread::spawn(move || {
+            run_lifecycle_selected(
+                receiver,
+                || OCCUPIED.load(Acquire),
+                |rate, worker, _, payload| {
+                    assert_eq!(rate, Some(48000));
+                    assert!(worker);
+                    let actual = payload.take().expect("actual queued parent/carriers");
+                    let actual_identity = actual.test_output_identity();
+                    drop(actual); // SAME existing lifecycle retirement, no backend fixture.
+                    Some(Ok(actual_identity))
+                },
+                |_| {},
+            );
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        loop {
+            if let Some(result) = waiter.try_take().unwrap() {
+                assert_eq!(result.unwrap(), identity);
+                break;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            thread::yield_now();
+        }
+        while state.reserved.load(Acquire) != 0 {
+            assert!(std::time::Instant::now() < deadline);
+            thread::yield_now();
+        }
+        drop(waiter);
+        drop(sender);
+        worker.join().unwrap();
+        wait_for_prepared_parent_retirement();
+    }
+
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn prepared_request_cancel_retires_its_occupied_parent_before_releasing_lane() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let mut payload = Some(prepared_request_payload(true));
+        let state = Arc::new(OpenState::new());
+        let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<(), ()>>(3);
+        let waiter =
+            enqueue_open_payload(&sender, &state, Some(48000), true, None, &mut payload).unwrap();
+        assert!(payload.is_none());
+        assert!(OCCUPIED.load(Acquire));
+        drop(waiter); // Cancellation BEFORE the consumer claims the request.
+        let worker = thread::spawn(move || {
+            run_lifecycle_selected(
+                receiver,
+                || OCCUPIED.load(Acquire),
+                |_, _, _, _| panic!("cancelled payload must not build a backend"),
+                |_| {},
+            );
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while state.reserved.load(Acquire) != 0 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled lane waited on its own lease"
+            );
+            thread::yield_now();
+        }
+        assert!(!OCCUPIED.load(Acquire));
+        assert!(!state.in_service.load(Acquire));
+        drop(sender);
+        worker.join().unwrap();
+    }
     use crate::native_callback_owner::{ErrorCallbackOwner, Guard, NativeCallbackOwner};
     struct Backend {
         data: Option<Guard<NativeCallbackOwner>>,
@@ -806,11 +1262,482 @@ mod candidate_retirement_tests {
             drop(self.errors.take());
         }
     }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn actual_worker_joins_before_live_client_and_publication_endpoint_retirement() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let lease = Lease::acquire().unwrap();
+        let (retained, peak) = crate::prepared::native_worker_birth_bound(true).unwrap();
+        let reservation = worker_reservation(retained, peak);
+        let (mut stream_owner, control, callback, reader, error) =
+            StreamOwner::construct_prepared_channel_on_control(
+                lease,
+                48000,
+                true,
+                Some(reservation),
+            )
+            .unwrap();
+        assert!(error.is_none());
+        assert_eq!(
+            stream_owner
+                .retirement
+                .as_ref()
+                .unwrap()
+                .native
+                .as_ref()
+                .unwrap()
+                .root()
+                .root_id(),
+            control.native_candidate_root().root_id()
+        );
+        assert!(
+            stream_owner
+                .retirement
+                .as_ref()
+                .unwrap()
+                .spectrum_reaper
+                .is_some()
+        );
+        let root = control.native_candidate_root();
+        let (disposed, full_capture_data) = root.test_spectrum_capture_facts().unwrap().unwrap();
+        assert!(!disposed);
+        let (mut data, errors, terminals, mut client, mut publication) =
+            crate::native_callback_owner::reserve_native_worker(control, callback, reader).unwrap();
+        publication
+            .control()
+            .unwrap()
+            .enable_native_custody()
+            .unwrap();
+        stream_owner
+            .install_constructed_native_carriers_on_control(&mut Some(terminals))
+            .unwrap();
+        // Real nonempty Project result from the actual worker and capture
+        // field, using the real Client's issued selection. Direct capture test
+        // input is not a qualified Service source/render admission claim.
+        let selection = client.project_spectrum_select(&[], 1, 1, 48000).unwrap();
+        let callback_measurement = allocation_counter::measure(|| {
+            for _ in 0..16 {
+                data.owner_mut().unwrap().run(|callback, _| {
+                    assert!(matches!(
+                        callback.test_submit_project_capture(selection, &[[0.25; 2]; 256]),
+                        Some(crate::spectrum_worker::CaptureOutcome::Queued { .. })
+                    ));
+                });
+            }
+        });
+        assert_eq!(
+            (
+                callback_measurement.count_total,
+                callback_measurement.count_current,
+                callback_measurement.bytes_total,
+                callback_measurement.bytes_current
+            ),
+            (0, 0, 0, 0),
+            "actual callback capture path allocates/frees nothing on its thread"
+        );
+        let mut project_snapshot = None;
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            client.refresh_project_spectrum(&mut project_snapshot, true);
+            if project_snapshot.is_some() {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "actual worker produced no Project result"
+            );
+            std::thread::yield_now();
+        }
+        let retirement = stream_owner.retirement.as_mut().unwrap();
+        let mut backend = Some(Backend {
+            data: Some(data),
+            errors: Some(errors),
+        });
+        assert_eq!(
+            dispose_stream_on_control(
+                &mut backend,
+                true,
+                &mut retirement.stream_drop_pending,
+                &mut retirement.stream_disposed,
+                |_| Ok(())
+            ),
+            Ok(true)
+        );
+        let reaper = retirement.spectrum_reaper.as_ref().unwrap();
+        reaper.request_stop();
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while !reaper.join_finished_for_capture_test() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        let (disposed, frame_data) = root.test_spectrum_capture_facts().unwrap().unwrap();
+        assert!(
+            !disposed,
+            "normal buffer destruction does not close captured frame before join"
+        );
+        assert_eq!(
+            full_capture_data - frame_data,
+            4 * std::mem::size_of::<[[f32; 2]; 4096]>()
+                + 3 * std::mem::size_of::<[f64; 4096]>()
+                + std::mem::size_of::<[f64; 2049]>()
+
+                // Actual Project rolling/ordered, independent kernel four,
+                // and the inline-only envelope Box; no result Box inferred.
+                + std::mem::size_of::<[[f32; 2]; crate::spectrum_worker::MAX_PROJECT_LAYERS * 4096]>()
+                + std::mem::size_of::<[[f32; 2]; 4096]>()
+                + 3 * std::mem::size_of::<[f64; 4096]>()
+                + std::mem::size_of::<[f64; 2049]>()
+                + std::mem::size_of::<[Option<crate::spectrum::SpectrumFrame>; crate::spectrum_worker::MAX_PROJECT_LAYERS]>()
+        );
+        assert_eq!(retirement_tick(retirement), Ok(false));
+        assert!(
+            retirement
+                .spectrum_reaper
+                .as_ref()
+                .unwrap()
+                .test_join_completed(),
+            "actual join must be reached while both control endpoints remain live"
+        );
+        let (disposed, metadata_data) = root.test_spectrum_capture_facts().unwrap().unwrap();
+        assert!(disposed);
+        assert!(
+            frame_data > metadata_data,
+            "actual join closes captured frame, not registration metadata"
+        );
+        assert!(client.owner_ref().is_some());
+        assert!(publication.owner_ref().is_some());
+        assert!(
+            {
+                client.refresh_project_spectrum(&mut project_snapshot, true);
+                project_snapshot.is_some()
+            },
+            "actual cached Project Box remains in the live reader AFTER join"
+        );
+        // The callback's closing fence rejects a late producer before escape.
+        let late = crate::prepared::candidate_tests::candidate().unwrap();
+        let refused = publication
+            .control()
+            .unwrap()
+            .stage_audio_candidate(late, vec![])
+            .err()
+            .unwrap();
+        assert_eq!(refused.reason, "candidate native custody unavailable");
+        assert_eq!(
+            refused.owner.phase(),
+            hex_engine::AudioCandidateDisposalPhase::Owned
+        );
+        drop(refused);
+        publication.close();
+        client.close();
+        assert_eq!(
+            retirement_tick(retirement),
+            Ok(false),
+            "the actual external UI result still owns its buffer after join and endpoint retirement"
+        );
+        drop(project_snapshot.take());
+        assert_eq!(retirement_tick(retirement), Ok(true));
+        assert_eq!(retirement_tick(retirement), Ok(true));
+        // Avoid handing an already completed fixture to the global executor.
+        drop(stream_owner.retirement.take());
+    }
+    #[cfg(feature = "allocation-probe")]
+    fn worker_reservation(
+        retained: usize,
+        peak: usize,
+    ) -> crate::AudioCandidatePublicationReservation {
+        crate::AudioCandidatePublicationReservation {
+            runtime_slots: 3,
+            archive_slots: 3,
+            member_rows: 128,
+            transfer_rows: 128,
+            receipt_rows: 3,
+            data_rows: 256,
+            handle_rows: 256,
+            max_retained_data_bytes: retained,
+            max_construction_peak_data_bytes: peak,
+        }
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn worker_cohort_both_minus_one_refuse_before_any_root_or_analyzer_birth() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let (retained, peak) = crate::prepared::native_worker_birth_bound(true).unwrap();
+        for limits in [
+            worker_reservation(retained - 1, peak),
+            worker_reservation(retained, peak - 1),
+        ] {
+            let lease = Lease::acquire().unwrap();
+            let measured = allocation_counter::measure(|| {
+                assert!(
+                    StreamOwner::construct_prepared_channel_on_control(
+                        lease,
+                        48000,
+                        true,
+                        Some(limits)
+                    )
+                    .is_err()
+                );
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+        }
+        assert!(
+            crate::prepared::preflight_native_worker_birth(
+                true,
+                Some(worker_reservation(retained, peak))
+            )
+            .is_ok()
+        );
+        println!(
+            "SUPPORTED local complete fixed cohort retained{retained}/peak{peak}; both-minus1 BEFORE Root/queues/analyzer births0alloc; actual external host union still mandatory, not Service admission"
+        );
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn constructor_unavailable_requires_actual_precarrier_cleanup_in_same_parent() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let lease = Lease::acquire().unwrap();
+        let (control, callback) = crate::prepared::channel(48000).unwrap();
+        let root = control.native_candidate_root();
+        let id = root.root_id();
+        let mut owner = StreamOwner::begin_prepared_custody(lease, root);
+        let stamp = crate::spectrum_worker::SpectrumStamp {
+            target: crate::spectrum_worker::SpectrumTargetId(0),
+            generation: 0,
+            sample_rate_hz: 0,
+            applied_revision: 0,
+        };
+        let measured = allocation_counter::measure(|| {
+            assert!(matches!(
+                owner.construct_spectrum_on_control(stamp, true),
+                Err(crate::spectrum_worker::SpectrumWorkerError::InvalidSampleRate(0))
+            ));
+        });
+        assert_eq!((measured.count_total, measured.bytes_total), (0, 0));
+        let parent = owner.retirement.as_mut().unwrap();
+        assert!(parent.spectrum_construction == SpectrumConstruction::Unavailable);
+        assert!(parent.spectrum_reaper.is_none());
+        assert_eq!(parent.native.as_ref().unwrap().root().root_id(), id);
+        assert!(retirement_tick(parent).is_err());
+        drop(callback);
+        drop(control);
+        owner.abort_before_carriers().unwrap();
+        assert_eq!(
+            retirement_tick(owner.retirement.as_mut().unwrap()),
+            Ok(true)
+        );
+        assert_eq!(
+            retirement_tick(owner.retirement.as_mut().unwrap()),
+            Ok(true)
+        );
+        drop(owner.retirement.take());
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn actual_parent_keeps_worker_first_panic_and_remaining_endpoints_without_rejoin() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        fn fail() {
+            std::panic::panic_any(30711_u64);
+        }
+        let lease = Lease::acquire().unwrap();
+        let (control, mut callback) = crate::prepared::channel(48000).unwrap();
+        let mut owner = StreamOwner::begin_prepared_custody(lease, control.native_candidate_root());
+        owner.retirement.as_mut().unwrap().spectrum_test_entry = Some(fail);
+        let stamp = crate::spectrum_worker::SpectrumStamp {
+            target: crate::spectrum_worker::SpectrumTargetId(0),
+            generation: 0,
+            sample_rate_hz: 48000,
+            applied_revision: 0,
+        };
+        let (capture, reader) = owner.construct_spectrum_on_control(stamp, true).unwrap();
+        callback
+            .attach_constructor_capture_on_control(&mut Some(capture))
+            .unwrap();
+        let (data, errors, terminals, mut client, mut publication) =
+            crate::native_callback_owner::reserve_native_worker(control, callback, Some(reader))
+                .unwrap();
+        owner
+            .install_constructed_native_carriers_on_control(&mut Some(terminals))
+            .unwrap();
+        drop(data);
+        drop(errors);
+        let parent = owner.retirement.as_mut().unwrap();
+        assert_eq!(retirement_tick(parent), Err(()));
+        let first = parent
+            .spectrum_reaper
+            .as_ref()
+            .unwrap()
+            .test_first_panic()
+            .unwrap();
+        assert_eq!(first.downcast_ref::<u64>(), Some(&30711));
+        let address = first as *const _ as *const ();
+        assert!(client.owner_ref().is_some() && publication.owner_ref().is_some());
+        assert_eq!(retirement_tick(parent), Err(()));
+        let retained = parent
+            .spectrum_reaper
+            .as_ref()
+            .unwrap()
+            .test_first_panic()
+            .unwrap();
+        assert_eq!(retained as *const _ as *const (), address);
+        assert_eq!(retained.downcast_ref::<u64>(), Some(&30711));
+        client.close();
+        publication.close();
+        assert_eq!(retirement_tick(parent), Err(()));
+        // Failed fixture teardown, not a successful resource retirement claim.
+        drop(owner.retirement.take());
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn foreign_carriers_are_retained_before_failed_association_and_duplicate_keeps_input() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let lease = Lease::acquire().unwrap();
+        let (control, callback) = crate::prepared::channel(48000).unwrap();
+        let mut owner = StreamOwner::begin_prepared_custody(lease, control.native_candidate_root());
+        let (foreign_control, foreign_callback) = crate::prepared::channel(48000).unwrap();
+        let (data, errors, terminals, mut client, mut publication) =
+            crate::native_callback_owner::reserve_native_worker(
+                foreign_control,
+                foreign_callback,
+                None,
+            )
+            .unwrap();
+        let mut incoming = Some(terminals);
+        assert!(
+            owner
+                .install_constructed_native_carriers_on_control(&mut incoming)
+                .is_err()
+        );
+        assert!(incoming.is_none());
+        assert!(retirement_tick(owner.retirement.as_mut().unwrap()).is_err());
+        let (data2, errors2, terminals2) =
+            crate::native_callback_owner::reserve_native(callback, &control.status).unwrap();
+        let mut second = Some(terminals2);
+        assert!(
+            owner
+                .install_constructed_native_carriers_on_control(&mut second)
+                .is_err()
+        );
+        assert!(second.is_some());
+        publication.close();
+        client.close();
+        drop(data);
+        drop(errors);
+        drop(control);
+        drop(data2);
+        drop(errors2);
+        drop(second);
+        // Explicit failed-fixture teardown, never successful cleanup proof.
+        drop(owner.retirement.take());
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn once_only_capture_installation_keeps_actual_rejected_capture_in_caller() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let stamp = crate::spectrum_worker::SpectrumStamp {
+            target: crate::spectrum_worker::SpectrumTargetId(0),
+            generation: 0,
+            sample_rate_hz: 48000,
+            applied_revision: 0,
+        };
+        let (capture, reader, reaper) =
+            crate::spectrum_worker::spawn_native_spectrum_worker(stamp).unwrap();
+        let (other_capture, other_reader, other_reaper) =
+            crate::spectrum_worker::spawn_native_spectrum_worker(stamp).unwrap();
+        let expected = other_capture.native_receipt().unwrap().identity;
+        let (control, mut callback) = crate::prepared::channel(48000).unwrap();
+        let mut first = Some(capture);
+        callback
+            .attach_constructor_capture_on_control(&mut first)
+            .unwrap();
+        assert!(first.is_none());
+        let mut rejected = Some(other_capture);
+        let measured = allocation_counter::measure(|| {
+            assert!(
+                callback
+                    .attach_constructor_capture_on_control(&mut rejected)
+                    .is_err()
+            );
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        assert_eq!(
+            rejected
+                .as_ref()
+                .unwrap()
+                .native_receipt()
+                .unwrap()
+                .identity,
+            expected
+        );
+        drop(rejected);
+        drop(other_reader);
+        other_reaper.shutdown_and_join().unwrap();
+        drop(callback);
+        drop(control);
+        drop(reader);
+        reaper.shutdown_and_join().unwrap();
+        // This duplicate-installation fixture exercises actual owners, but does
+        // not claim whole-parent admission for its two independent workers.
+    }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn actual_after_spawn_foreign_channel_error_retires_original_parent_once() {
+        let _serial = crate::prepared::candidate_tests::serial();
+        let lease = Lease::acquire().unwrap();
+        let (retained, peak) = crate::prepared::native_worker_birth_bound(true).unwrap();
+        let (mut parent, control, callback, reader, error) =
+            StreamOwner::construct_prepared_channel_on_control(
+                lease,
+                48000,
+                true,
+                Some(worker_reservation(retained, peak)),
+            )
+            .unwrap();
+        assert!(error.is_none());
+        let original = control.native_candidate_root().root_id();
+        let (foreign_control, foreign_callback) = crate::prepared::channel(48000).unwrap();
+        let result =
+            crate::native_callback_owner::reserve_native_worker(foreign_control, callback, reader);
+        assert!(matches!(
+            result,
+            Err(hex_engine::Invalid("native worker callback source differs"))
+        ));
+        drop(control);
+        drop(foreign_callback);
+        parent.abort_before_carriers().unwrap();
+        let custody = parent.retirement.as_mut().unwrap();
+        assert_eq!(custody.native.as_ref().unwrap().root().root_id(), original);
+        assert_eq!(retirement_tick(custody), Ok(true));
+        assert!(
+            custody
+                .spectrum_reaper
+                .as_ref()
+                .unwrap()
+                .test_join_completed()
+        );
+        assert_eq!(retirement_tick(custody), Ok(true));
+        drop(parent.retirement.take());
+    }
     #[test]
     fn worker_open_uses_same_lane_and_preserves_negotiated_completion_and_abandonment() {
         let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<u32, ()>>(3);
         let state = Arc::new(OpenState::new());
-        let mut waiter = enqueue_open_kind(&sender, &state, None, true).unwrap();
+        let mut waiter = enqueue_open_kind(&sender, &state, None, true, None).unwrap();
         assert!(matches!(
             enqueue_open(&sender, &state, None),
             Err(RecoveryOpenError::Busy)
@@ -819,7 +1746,9 @@ mod candidate_retirement_tests {
             run_lifecycle_selected(
                 receiver,
                 || false,
-                |rate, worker| {
+                |rate, worker, factory_reservation, prepared| {
+                    assert!(prepared.is_none());
+                    assert!(factory_reservation.is_none());
                     assert!(worker);
                     assert_eq!(rate, None);
                     Some(Ok(44100))
@@ -1263,5 +2192,78 @@ mod tests {
         assert!(matches!(result, Some(Ok(()))));
         assert_eq!(attempts.load(Acquire), 3);
         assert!(opened_rx.try_recv().is_ok());
+    }
+}
+
+#[cfg(all(test, feature = "allocation-probe"))]
+mod factory_route_tests {
+    use super::*;
+    #[test]
+    fn real_worker_open_reservation_survives_queue_and_drives_actual_root_queue_constructor() {
+        type Output = (crate::prepared::Control, crate::prepared::Callback);
+        let (sender, receiver) = mpsc::sync_channel::<LifecycleMessage<Output, ()>>(3);
+        let state = Arc::new(OpenState::new());
+        let reservation = crate::AudioCandidatePublicationReservation {
+            runtime_slots: 3,
+            archive_slots: 3,
+            member_rows: 128,
+            transfer_rows: 128,
+            receipt_rows: 3,
+            data_rows: 256,
+            handle_rows: 256,
+            max_retained_data_bytes: 1 << 20,
+            max_construction_peak_data_bytes: 2 << 20,
+        };
+        let mut waiter =
+            enqueue_open_kind(&sender, &state, Some(48000), true, Some(reservation)).unwrap();
+        let worker = std::thread::spawn(move || {
+            run_lifecycle_selected(
+                receiver,
+                || false,
+                |rate, worker, carried, prepared| {
+                    assert!(prepared.is_none());
+                    assert!(worker);
+                    let carried = carried.expect("actual queued scalar reservation");
+                    assert_eq!(carried.max_retained_data_bytes, 1 << 20);
+                    assert_eq!(carried.max_construction_peak_data_bytes, 2 << 20);
+                    Some(
+                        crate::prepared::channel_with_factory_reservation(
+                            rate.unwrap(),
+                            None,
+                            Some(carried),
+                        )
+                        .map_err(|e| e.to_string()),
+                    )
+                },
+                |_| {},
+            )
+        });
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        let output = loop {
+            if let Some(result) = waiter.try_take().unwrap() {
+                break result.unwrap();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "local worker must advance"
+            );
+            std::thread::yield_now();
+        };
+        assert_eq!(
+            output
+                .0
+                .native_candidate_root()
+                .test_prepared_ring_data()
+                .unwrap()
+                .0,
+            9
+        );
+        drop(output);
+        drop(waiter);
+        drop(sender);
+        worker.join().unwrap();
+        eprintln!(
+            "SUPPORTED actual existing OpenRequest lane carries both ceilings into real prepared Root+9records birth; no OS device opened, no native/global admission claim"
+        );
     }
 }

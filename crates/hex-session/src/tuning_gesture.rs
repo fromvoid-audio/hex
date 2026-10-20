@@ -285,6 +285,25 @@ pub(crate) struct TuningGestureMachine {
 }
 
 impl TuningGestureMachine {
+    /// Exhaustively bind every actual private field, all inline Copy state.
+    /// A future owning field must change this producer and its storage walk.
+    pub(crate) fn inline_worker_gesture_frame_on_control(
+        &self,
+    ) -> hex_engine::sampler_host_fields::BodyRef<'_> {
+        fn inline_copy<T: Copy>(_: &T) {}
+        let Self {
+            active,
+            initial,
+            last_key,
+        } = self;
+        inline_copy(active);
+        inline_copy(initial);
+        inline_copy(last_key);
+        hex_engine::sampler_host_fields::BodyRef::of(self)
+    }
+}
+
+impl TuningGestureMachine {
     pub fn snapshot(&self) -> Option<TuningGestureSnapshot> {
         self.active
     }

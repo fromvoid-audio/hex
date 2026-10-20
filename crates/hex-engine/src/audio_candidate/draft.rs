@@ -16,8 +16,9 @@ pub struct AudioCandidateDraft {
     pub(super) identity: Option<AudioCandidateIdentity>,
     pub(super) sample_rate: u32,
     pub(super) runtime: Option<Box<RuntimeOwner>>,
-    pub(super) groups: Vec<Group>,
-    pub(super) journal: Vec<groups::TransferRow>,
+    pub(super) runtime_lease: Option<groups::RuntimeStorageLease>,
+    pub(super) groups: groups::GroupBook,
+    pub(super) journal: groups::TransferJournal,
     pub(super) archive: Option<groups::Archive>,
     purpose: ConstructorPurpose,
     phase: Phase,
@@ -30,8 +31,9 @@ impl AudioCandidateDraft {
             identity: None,
             sample_rate: 0,
             runtime: None,
-            groups: Vec::new(),
-            journal: Vec::new(),
+            runtime_lease: None,
+            groups: groups::GroupBook::default(),
+            journal: groups::TransferJournal::default(),
             archive: None,
             purpose: ConstructorPurpose::NativeFresh,
             phase: Phase::Empty,
@@ -145,21 +147,56 @@ impl AudioCandidateDraft {
                 .ok_or(AudioStorageError::Overflow)?,
         )?;
         runtime.visit_candidate_groups(&mut |kind, index, present| {
+            let member = self.groups.len();
             self.groups.push(Group {
                 location: (kind, index),
                 present,
                 closed: false,
+                lease: None,
                 origin: present.then_some(groups::Origin {
                     runtime: identity,
-                    member: self.groups.len(),
+                    member,
                 }),
             });
             Ok(())
         })?;
-        self.archive = Some(groups::Archive::prepare(identity, &self.groups)?);
+        // Bound the actual new paired registration bodies before allocating
+        // the first one; the existing concrete runtime cap is unchanged.
+        let shell_bytes = groups::runtime_registration_bytes()?
+            .checked_add(groups::group_book_registration_bytes()?)
+            .and_then(|n| n.checked_add(groups::group_book_construction_scratch_bytes().ok()?))
+            .ok_or(AudioStorageError::Overflow)?
+            .checked_add(groups::journal_registration_bytes()?)
+            .and_then(|n| n.checked_add(groups::journal_construction_scratch_bytes().ok()?))
+            .ok_or(AudioStorageError::Overflow)?;
+        let registration_bytes = self
+            .groups
+            .iter()
+            .filter(|g| g.origin.is_some())
+            .count()
+            .checked_mul(groups::registration_bytes()?)
+            .and_then(|n| n.checked_add(shell_bytes))
+            .ok_or(AudioStorageError::Overflow)?;
+        runtime.validate_candidate_runtime_storage(
+            self.groups
+                .capacity()
+                .checked_mul(std::mem::size_of::<Group>())
+                .and_then(|n| {
+                    n.checked_add(count.checked_mul(std::mem::size_of::<groups::ArchivedOrigin>())?)
+                })
+                .and_then(|n| n.checked_add(registration_bytes))
+                .and_then(|n| n.checked_add(std::mem::size_of::<RuntimeOwner>()))
+                .and_then(|n| n.checked_add(std::mem::size_of::<CandidateState>()))
+                .and_then(|n| n.checked_add(draft_inline_bytes))
+                .ok_or(AudioStorageError::Overflow)?,
+        )?;
         self.journal
             .try_reserve_exact(count)
             .map_err(|_| AudioStorageError::Allocation)?;
+        let (archive, runtime_lease) =
+            groups::Archive::prepare(identity, &mut self.groups, &mut self.journal)?;
+        self.archive = Some(archive);
+        self.runtime_lease = Some(runtime_lease);
         let extra = self
             .archive
             .as_ref()
@@ -229,6 +266,7 @@ impl AudioCandidateDraft {
                 custody: source,
                 token: source_token,
                 runtime: self.runtime.take(),
+                runtime_lease: self.runtime_lease.take(),
                 groups: std::mem::take(&mut self.groups),
                 journal: std::mem::take(&mut self.journal),
                 archive,
@@ -261,8 +299,29 @@ impl AudioCandidateDraft {
             _ => {}
         }
         self.phase = Phase::DropPending;
+        if let Some(archive) = &self.archive {
+            let lease = self
+                .runtime_lease
+                .as_ref()
+                .ok_or(AudioStorageError::SourceMismatch)?;
+            archive.validate_runtime_pair(lease)?;
+            archive.validate_fresh_pairs(&self.groups)?;
+            groups::begin_disposal(&self.groups)?;
+            lease.begin_disposal();
+        } else if self.runtime_lease.is_some() {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         match catch_unwind(AssertUnwindSafe(|| drop(self.runtime.take()))) {
             Ok(()) => {
+                if let Some(archive) = &mut self.archive {
+                    let lease = self
+                        .runtime_lease
+                        .as_ref()
+                        .ok_or(AudioStorageError::SourceMismatch)?;
+                    groups::complete_disposal(&self.groups);
+                    lease.complete_disposal();
+                    archive.close_disposed_draft(&self.groups, lease)?;
+                }
                 self.phase = Phase::Disposed;
                 Ok(())
             }
@@ -272,6 +331,75 @@ impl AudioCandidateDraft {
                 Err(AudioStorageError::UnknownStorage)
             }
         }
+    }
+}
+
+impl AudioCandidateDraft {
+    pub(super) fn visit_transferred_host_shell<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        owner: &AudioCandidateOwner,
+    ) -> Result<(), AudioStorageError> {
+        let Self {
+            identity,
+            sample_rate,
+            runtime,
+            runtime_lease,
+            groups,
+            journal,
+            archive,
+            purpose,
+            phase,
+            first_panic,
+        } = self;
+        if *phase != Phase::Transferred
+            || *identity != Some(owner.identity())
+            || *sample_rate != owner.sample_rate()
+            || *purpose != ConstructorPurpose::NativeFresh
+            || runtime.is_some()
+            || runtime_lease.is_some()
+            || archive.is_some()
+            || first_panic.is_some()
+            || !groups.is_empty()
+            || !journal.is_empty()
+        {
+            return Err(AudioStorageError::SourceMismatch);
+        }
+        // Includes any real remaining empty backing/metadata. Transferred does
+        // not itself declare those bytes absent or retire the destination.
+        groups.visit(ledger)?;
+        journal.visit(ledger)
+    }
+
+    pub(super) fn visit_unconstructed_host_children<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), AudioStorageError> {
+        let Self {
+            identity,
+            sample_rate: _,
+            runtime,
+            runtime_lease,
+            groups,
+            journal,
+            archive,
+            purpose: _,
+            phase,
+            first_panic,
+        } = self;
+        if *phase != Phase::Empty
+            || identity.is_some()
+            || runtime.is_some()
+            || runtime_lease.is_some()
+            || archive.is_some()
+            || first_panic.is_some()
+            || !groups.is_empty()
+            || !journal.is_empty()
+        {
+            return Err(AudioStorageError::UnknownStorage);
+        }
+        groups.visit(ledger)?;
+        journal.visit(ledger)
     }
 }
 

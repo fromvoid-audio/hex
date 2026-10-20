@@ -90,6 +90,8 @@ fn parent_bound_nonempty_success_owns_context_and_children_from_birth_through_cl
     // The nonempty actual parent is also visited in place, not rebuilt into a
     // synthetic cleanup parent. Closure includes all borrowed input aliases.
     let inputs = Inputs {
+        host: None,
+        resident: None,
         producer: None,
         rows: &preparation.arrangement_clips,
         preparation: &preparation,
@@ -194,6 +196,8 @@ fn parent_bound_inspection_is_allocation_id_clone_and_cleanup_free() {
     crate::owned_shared::reset_birth_count();
     crate::owned_shared::reset_clone_count();
     let inputs = Inputs {
+        host: None,
+        resident: None,
         producer: None,
         rows: &preparation.arrangement_clips,
         preparation: &preparation,
@@ -255,6 +259,8 @@ fn bound_limits(
         )
         .unwrap();
     let inputs = Inputs {
+        host: None,
+        resident: None,
         producer: None,
         rows: &preparation.arrangement_clips,
         preparation,
@@ -639,6 +645,8 @@ fn parent_bound_arithmetic_original_has_no_normal_authority_or_side_effects() {
             usize::MAX,
             |original| {
                 let inputs = Inputs {
+                    host: None,
+                    resident: None,
                     producer: None,
                     rows: &f.preparation.arrangement_clips,
                     preparation: &f.preparation,

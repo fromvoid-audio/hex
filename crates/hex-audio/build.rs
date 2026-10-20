@@ -160,7 +160,7 @@ fn main() {
         usize::from(decision.is_ok() && saved && pinned_ring && ring_saved)
     );
     let status_evidence = format!(
-        "{evidence}\ncontract: native-callback-status-arc-route-box-v1\nconstructor: actual private Callback status initialized by fresh Arc::new(Status::try_new()); route Vec try_reserve_exact/into_boxed_slice; fixed scalar leaf audit\nrequested layout only; handles/custody/construction peak separate\n"
+        "{evidence}\ncontract: native-callback-status-arc-route-box-v1\nconstructor: actual private Callback status initialized by fresh Arc::new(Status::try_new()); frozen route Vec try_reserve_exact/actual capacity; fixed scalar leaf audit\nrequested layout only; handles/custody/construction peak separate\n"
     );
     let status_saved = env::var_os("OUT_DIR")
         .map(PathBuf::from)

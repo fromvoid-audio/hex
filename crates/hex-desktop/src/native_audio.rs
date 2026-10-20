@@ -154,7 +154,16 @@ impl NativeAudioSink {
             return;
         }
         if self.opening.is_none() {
-            match hex_audio::request_worker_open(self.requested_rate) {
+            let reservation = match self.policy.as_ref() {
+                Ok(policy) => policy.publication,
+                Err(error) => {
+                    self.open_error = Some(error.clone());
+                    self.open_pending = false;
+                    return;
+                }
+            };
+            match hex_audio::request_worker_open_with_reservation(self.requested_rate, reservation)
+            {
                 Ok(opening) => self.opening = Some(opening),
                 Err(
                     hex_audio::RecoveryOpenError::Busy | hex_audio::RecoveryOpenError::QueueFull,

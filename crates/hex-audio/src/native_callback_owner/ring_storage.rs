@@ -3,6 +3,8 @@
 //! one Vec::with_capacity(capacity) backing; neither allocation grows on push/pop.
 use std::{alloc::Layout, sync::atomic::AtomicUsize};
 
+pub(super) mod transport;
+
 fn supported() -> bool {
     let target = match option_env!("HEX_NATIVE_CARRIER_LAYOUT_TARGET") {
         Some("x86_64-unknown-linux-gnu") => cfg!(all(

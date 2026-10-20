@@ -70,7 +70,10 @@ pub use session::{
 };
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
-pub use history::Editor;
+pub use history::{
+    Editor, OriginalSamplerEditorTransition, OriginalSamplerPending,
+    OriginalSamplerTransitionRequest, OriginalSamplerTransitionResult,
+};
 mod sorted_entries;
 pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
 pub use midi_playback::{

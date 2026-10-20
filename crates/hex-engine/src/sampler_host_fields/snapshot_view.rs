@@ -7,8 +7,10 @@ use crate::{
 use std::path::PathBuf;
 
 pub trait SnapshotViewPayload {
+    fn revision_field(&self) -> &u64;
     fn body(&self) -> BodyRef<'_>;
     fn source(&self) -> Option<CapturedSourceFields<'_>>;
+    fn comparison_source(&self) -> Option<CapturedSourceFields<'_>>;
     fn project(&self) -> &SharedMetadata<hex_project::Project>;
     fn waveforms(&self) -> VecRef<'_>;
     fn waveform(&self, index: usize) -> Result<WaveformFields<'_>, AudioStorageError>;
@@ -27,7 +29,10 @@ pub(crate) fn visit_snapshot_children<'a>(
     ledger: &mut AudioRootStorageLedger<'a>,
 ) -> Result<(), AudioStorageError> {
     let body = payload.body();
-    if let Some(source) = payload.source() {
+    for source in [payload.source(), payload.comparison_source()]
+        .into_iter()
+        .flatten()
+    {
         if !body.contains(source.owner.body()) {
             return Err(AudioStorageError::SourceMismatch);
         }

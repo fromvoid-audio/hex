@@ -104,7 +104,7 @@ fn actual_callback_project_and_eq_capture_preserve_pcm_and_final_context_validat
             .iter()
             .all(|frame| frame.bins_dbfs.iter().all(|value| value.is_finite()))
     );
-    drop(published);
+    // The readonly borrow ends here; the SAME reader retains its pool owner.
     // A UI context change after rendering invalidates its staged project block.
     callback.begin_block();
     callback.render(&mut actual).unwrap();

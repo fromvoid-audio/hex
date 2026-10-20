@@ -22,6 +22,7 @@ pub enum RetainedControlJobBuildError {
     IdentityExhausted,
 }
 trait Job: Send + Sync {
+    fn payload_body(&self) -> crate::sampler_host_fields::BodyRef<'_>;
     fn payload(&self) -> &dyn Any;
     fn step(&mut self) -> Result<RetainedControlJobProgress, RetainedControlJobFault>;
 }
@@ -30,6 +31,9 @@ struct TypedJob<T, E> {
     step: fn(&mut T) -> Result<RetainedControlJobProgress, E>,
 }
 impl<T: Send + Sync + 'static, E: 'static> Job for TypedJob<T, E> {
+    fn payload_body(&self) -> crate::sampler_host_fields::BodyRef<'_> {
+        crate::sampler_host_fields::BodyRef::of(&self.value)
+    }
     fn payload(&self) -> &dyn Any {
         &self.value
     }
@@ -133,27 +137,44 @@ impl RetainedControlJob {
     ) -> Result<(), crate::AudioStorageError> {
         self.visit_outer_with_gate(ledger, retained_control_job_box_layout_supported())
     }
+    pub(crate) fn matches_actual_payload_body(
+        &self,
+        body: crate::sampler_host_fields::BodyRef<'_>,
+    ) -> bool {
+        self.job.payload_body().same(body)
+    }
+    pub(crate) fn visit_outer_fields_on_control<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        self.visit_outer_fields_with_gate(ledger, retained_control_job_box_layout_supported())
+    }
     fn visit_outer_with_gate<'a>(
         &'a self,
         ledger: &mut crate::AudioRootStorageLedger<'a>,
         supported: bool,
     ) -> Result<(), crate::AudioStorageError> {
-        ledger.mutate(|ledger| {
-            if !supported {
-                return Err(crate::AudioStorageError::UnknownStorage);
-            }
-            let actual = Layout::for_value(self.job.as_ref());
-            if actual.size() == 0 {
-                return Err(crate::AudioStorageError::UnknownStorage);
-            }
-            // Holder/fat-pointer fields belong to the actual parent/table once.
-            // No invented Box header or allocated vtable is charged.
-            ledger.bytes(
-                crate::audio_storage::Owner::exclusive(self),
-                crate::audio_storage::Location("retained-control-job-box", 0),
-                actual.size(),
-            )
-        })
+        ledger.mutate(|ledger| self.visit_outer_fields_with_gate(ledger, supported))
+    }
+    fn visit_outer_fields_with_gate<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+        supported: bool,
+    ) -> Result<(), crate::AudioStorageError> {
+        if !supported {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        let actual = Layout::for_value(self.job.as_ref());
+        if actual.size() == 0 {
+            return Err(crate::AudioStorageError::UnknownStorage);
+        }
+        // Holder/fat-pointer fields belong to the actual parent/table once.
+        // No invented Box header or allocated vtable is charged.
+        ledger.bytes(
+            crate::audio_storage::Owner::exclusive(self),
+            crate::audio_storage::Location("retained-control-job-box", 0),
+            actual.size(),
+        )
     }
 }
 pub fn retained_control_job_box_layout_supported() -> bool {

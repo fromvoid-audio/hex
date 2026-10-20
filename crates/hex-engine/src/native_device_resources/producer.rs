@@ -13,6 +13,7 @@ pub struct OriginalResourcePlanReservation {
     pub max_construction_peak_bytes: usize,
 }
 
+#[derive(Clone, Copy)]
 enum Source<'a> {
     Stereo(&'a Audio),
     Native(&'a OwnedAudioSource),
@@ -41,6 +42,7 @@ impl Source<'_> {
 }
 /// One actual original borrow. Public raw/derived Audio remains Unknown at the
 /// existing alias constructor; this wrapper cannot attach or upgrade provenance.
+#[derive(Clone, Copy)]
 pub struct OriginalResourceInput<'a> {
     asset: AssetId,
     source: Source<'a>,
@@ -88,27 +90,51 @@ impl<'a> OriginalResourceInput<'a> {
 /// }
 /// ```
 pub struct OriginalResourceBankPlan<'a> {
-    entries: &'a Vec<OriginalResourceInput<'a>>,
+    inputs: SourceInputs<'a>,
+}
+enum SourceInputs<'a> {
+    Vector(&'a Vec<OriginalResourceInput<'a>>),
+    Resident {
+        fields: &'a dyn crate::sampler_host_fields::OriginalSamplerResidentFields,
+        target: &'a hex_project::Project,
+    },
 }
 impl<'a> OriginalResourceBankPlan<'a> {
     pub(crate) fn visit_storage_on_control<'scope>(
-        &self,
+        &'scope self,
         ledger: &mut crate::AudioRootStorageLedger<'scope>,
     ) -> Result<(), AudioStorageError>
     where
         'a: 'scope,
     {
         use crate::audio_storage::{Location, Owner};
-        ledger.vec(self.entries)?;
+        if let SourceInputs::Vector(entries) = self.inputs {
+            ledger.vec(entries)?;
+            ledger.bytes(
+                Owner::exclusive_vec(entries),
+                Location("original-resource-input-vec-inline", 0),
+                size_of_val(entries),
+            )?;
+        }
+        let body = crate::sampler_host_fields::BodyRef::of(self);
         ledger.bytes(
-            Owner::exclusive_vec(self.entries),
-            Location("original-resource-input-vec-inline", 0),
-            size_of_val(self.entries),
+            body.owner(),
+            Location("original-resource-plan-inline", 0),
+            body.layout_bytes(),
         )?;
-        for entry in self.entries {
+        for index in 0..self.len() {
+            let entry = self
+                .entry(index)
+                .map_err(|_| AudioStorageError::SourceMismatch)?;
             match &entry.source {
                 Source::Native(source) => {
-                    if !ledger.skip_observed_root(*source) {
+                    // A mandatory resident-owner walk may already cover this
+                    // exact embedded owning field. Reuse that observation, not
+                    // another handle or an unobserved enclosing-body claim.
+                    // Arithmetic membership never prunes descendants.
+                    if !ledger.skip_observed_root(*source)
+                        && !ledger.skip_observed_shared_field(*source)
+                    {
                         ledger.borrow_native_source_on_control(
                             source,
                             crate::AudioStorageRole::Caller,
@@ -116,7 +142,13 @@ impl<'a> OriginalResourceBankPlan<'a> {
                     }
                 }
                 Source::Stereo(source) => {
-                    if !ledger.skip_observed_root(*source) {
+                    // A mandatory resident-owner walk may already cover this
+                    // exact embedded owning field. Reuse that observation, not
+                    // another handle or an unobserved enclosing-body claim.
+                    // Arithmetic membership never prunes descendants.
+                    if !ledger.skip_observed_root(*source)
+                        && !ledger.skip_observed_shared_field(*source)
+                    {
                         ledger.borrow_native_audio_on_control(
                             source,
                             crate::AudioStorageRole::Caller,
@@ -128,7 +160,85 @@ impl<'a> OriginalResourceBankPlan<'a> {
         Ok(())
     }
     pub fn borrow(entries: &'a Vec<OriginalResourceInput<'a>>) -> Self {
-        Self { entries }
+        Self {
+            inputs: SourceInputs::Vector(entries),
+        }
+    }
+    /// Allocation-free resolution from the actual borrowed Session media and
+    /// captured target. This is not source-context/admission authority. Actual
+    /// owning fields, metadata, old/new coexistence and both caps remain in the
+    /// closed constructor. No temporary input Vec is born before that preflight.
+    pub fn borrow_resident_fields_on_control(
+        fields: &'a dyn crate::sampler_host_fields::OriginalSamplerResidentFields,
+        target: &'a hex_project::Project,
+    ) -> Result<Self, ResourcePreparationError> {
+        fields.validate_remaining_fields()?;
+        if !fields.verified_sources().is_empty() {
+            return Err(AudioStorageError::UnknownStorage.into());
+        }
+        let plan = Self {
+            inputs: SourceInputs::Resident { fields, target },
+        };
+        if plan.len() > hex_project::MAX_ASSETS {
+            return Err(ResourcePreparationError::InvalidSource);
+        }
+        // Inspect every actual source before any producer allocation/alias.
+        for index in 0..plan.len() {
+            plan.entry(index)?;
+        }
+        Ok(plan)
+    }
+    fn len(&self) -> usize {
+        match self.inputs {
+            SourceInputs::Vector(entries) => entries.len(),
+            SourceInputs::Resident { target, .. } => target.asset_entries_on_control().len(),
+        }
+    }
+    fn entry(&self, index: usize) -> Result<OriginalResourceInput<'a>, ResourcePreparationError> {
+        match self.inputs {
+            SourceInputs::Vector(entries) => entries
+                .get(index)
+                .copied()
+                .ok_or(ResourcePreparationError::InvalidSource),
+            SourceInputs::Resident { fields, target } => {
+                let asset = &target
+                    .asset_entries_on_control()
+                    .as_slice()
+                    .get(index)
+                    .ok_or(ResourcePreparationError::InvalidSource)?
+                    .1;
+                let mut left = 0;
+                let mut right = fields.media().len();
+                while left < right {
+                    let middle = left + (right - left) / 2;
+                    let candidate = fields.asset(middle)?;
+                    match candidate.asset.value().cmp(&asset.id().value()) {
+                        std::cmp::Ordering::Less => left = middle + 1,
+                        std::cmp::Ordering::Greater => right = middle,
+                        std::cmp::Ordering::Equal => {
+                            let source = match candidate.original {
+                                crate::sampler_host_fields::ResidentOriginalFields::Stereo(
+                                    audio,
+                                ) => Source::Stereo(audio),
+                                crate::sampler_host_fields::ResidentOriginalFields::Mono(
+                                    source,
+                                ) => Source::Native(source),
+                            };
+                            let (rate, frames, _) = source.facts()?;
+                            if rate != asset.source_sample_rate() || frames != asset.source_frames()
+                            {
+                                return Err(ResourcePreparationError::InvalidSource);
+                            }
+                            return Ok(OriginalResourceInput {
+                                asset: asset.id(),
+                                source,
+                            });
+                        }
+                    }
+                }
+                Err(ResourcePreparationError::InvalidSource)
+            }
+        }
     }
     /// The existing control producer, shared by Session's legacy bank-returning
     /// API and the sealed preparation route. No supplied bank is adopted. The
@@ -140,17 +250,19 @@ impl<'a> OriginalResourceBankPlan<'a> {
         cancel: &dyn crate::CancellationQuery,
     ) -> Result<DeviceResourceBank, ResourcePreparationError> {
         cancellation(cancel)?;
-        if self.entries.len() > hex_project::MAX_ASSETS
-            || self
-                .entries
-                .windows(2)
-                .any(|pair| pair[0].asset.value() >= pair[1].asset.value())
-        {
+        if self.len() > hex_project::MAX_ASSETS {
             return Err(ResourcePreparationError::InvalidSource);
         }
-        let input_bytes = Self::input_bytes(self.entries)?;
+        let mut previous = None;
+        for index in 0..self.len() {
+            let entry = self.entry(index)?;
+            if previous.is_some_and(|id| id >= entry.asset.value()) {
+                return Err(ResourcePreparationError::InvalidSource);
+            }
+            previous = Some(entry.asset.value());
+        }
+        let input_bytes = self.input_bytes()?;
         let minimum_metadata = self
-            .entries
             .len()
             .checked_mul(
                 size_of::<(AssetId, OwnedAudioSource)>() + size_of::<OriginalResourceSource>(),
@@ -168,10 +280,10 @@ impl<'a> OriginalResourceBankPlan<'a> {
         let mut sources = Vec::new();
         let mut expected = Vec::new();
         sources
-            .try_reserve_exact(self.entries.len())
+            .try_reserve_exact(self.len())
             .map_err(|_| AudioStorageError::Allocation)?;
         expected
-            .try_reserve_exact(self.entries.len())
+            .try_reserve_exact(self.len())
             .map_err(|_| AudioStorageError::Allocation)?;
         let source_bytes = sources
             .capacity()
@@ -194,7 +306,8 @@ impl<'a> OriginalResourceBankPlan<'a> {
         // Capture request facts and temporary capacities before creating aliases.
         // Source constructors check actual lineage; failure drops only new
         // unpublished control aliases. Unknown/derived Audio stays unknown.
-        for entry in self.entries {
+        for index in 0..self.len() {
+            let entry = self.entry(index)?;
             cancellation(cancel)?;
             let original = &entry.source;
             let (sample_rate, frames, layout) = original.facts()?;
@@ -205,7 +318,8 @@ impl<'a> OriginalResourceBankPlan<'a> {
                 layout,
             });
         }
-        for (entry, fact) in self.entries.iter().zip(&expected) {
+        for (index, fact) in expected.iter().enumerate() {
+            let entry = self.entry(index)?;
             cancellation(cancel)?;
             let original = &entry.source;
             let source = match original {
@@ -257,10 +371,16 @@ impl<'a> OriginalResourceBankPlan<'a> {
         )
         .map_err(|refused| refused.reason)
     }
-    fn input_bytes(
-        entries: &Vec<OriginalResourceInput<'_>>,
-    ) -> Result<usize, ResourcePreparationError> {
-        OriginalResourceInput::requested_input_metadata_bytes(entries.capacity())
+    fn input_bytes(&self) -> Result<usize, ResourcePreparationError> {
+        let input = match self.inputs {
+            SourceInputs::Vector(entries) => {
+                OriginalResourceInput::requested_input_metadata_bytes(entries.capacity())?
+            }
+            SourceInputs::Resident { .. } => 0,
+        };
+        input
+            .checked_add(size_of_val(self))
+            .ok_or(AudioStorageError::Overflow.into())
     }
 }
 

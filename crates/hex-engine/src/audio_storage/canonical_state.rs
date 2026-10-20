@@ -90,6 +90,9 @@ impl<'a> AudioRootStorageLedger<'a> {
         editor: &'a hex_project::Editor,
     ) -> Result<(), AudioStorageError> {
         self.mutate(|ledger| {
+            editor
+                .require_no_original_sampler_pending_on_control()
+                .map_err(|_| AudioStorageError::UnknownStorage)?;
             for project in editor.retained_projects_on_control() {
                 ledger.project_native_states(project)?;
             }

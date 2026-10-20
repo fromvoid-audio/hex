@@ -1,4 +1,4 @@
-//! Exactly the five native-custody exclusions. No callback waiting policy.
+//! The five native-custody exclusions and one Resident forwarding slot. No callback waiting policy.
 //! The pinned dependency keeps lock state inline; payload descendants still
 //! require their actual visitors. Control contention yields without fairness or
 //! a bounded-wait guarantee. Try paths perform one attempt and never yield.
@@ -10,16 +10,16 @@ use std::{
     sync::atomic::{AtomicBool, Ordering},
 };
 
-pub(super) struct CustodyMutex<T> {
+pub(crate) struct CustodyMutex<T> {
     value: SpinMutex<T, spin::Yield>,
     poisoned: AtomicBool,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum CustodyTryLockError {
+pub(crate) enum CustodyTryLockError {
     Contended,
     Poisoned,
 }
-pub(super) struct CustodyMutexGuard<'a, T> {
+pub(crate) struct CustodyMutexGuard<'a, T> {
     value: SpinMutexGuard<'a, T>,
     poisoned: &'a AtomicBool,
     panic_at_acquire: bool,
@@ -27,13 +27,13 @@ pub(super) struct CustodyMutexGuard<'a, T> {
     _not_send: PhantomData<Rc<()>>,
 }
 impl<T> CustodyMutex<T> {
-    pub(super) const fn new(value: T) -> Self {
+    pub(crate) const fn new(value: T) -> Self {
         Self {
             value: SpinMutex::new(value),
             poisoned: AtomicBool::new(false),
         }
     }
-    pub(super) fn try_lock(&self) -> Result<CustodyMutexGuard<'_, T>, CustodyTryLockError> {
+    pub(crate) fn try_lock(&self) -> Result<CustodyMutexGuard<'_, T>, CustodyTryLockError> {
         let value = self
             .value
             .try_lock()
@@ -51,7 +51,7 @@ impl<T> CustodyMutex<T> {
     }
     /// Existing control-only recovery. Never clears sticky poison; never call
     /// this from a callback or substitute it for an existing try path.
-    pub(super) fn lock_recover_on_control(&self) -> CustodyMutexGuard<'_, T> {
+    pub(crate) fn lock_recover_on_control(&self) -> CustodyMutexGuard<'_, T> {
         CustodyMutexGuard {
             value: self.value.lock(),
             poisoned: &self.poisoned,
