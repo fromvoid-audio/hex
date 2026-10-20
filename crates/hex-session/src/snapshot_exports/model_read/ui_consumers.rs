@@ -21,6 +21,11 @@ pub struct SnapshotMidiNoteRead<'a> {
 }
 
 #[derive(Clone, Copy)]
+pub struct SnapshotMidiSourceRead<'a> {
+    source: &'a hex_project::MidiSource,
+}
+
+#[derive(Clone, Copy)]
 pub struct SnapshotSceneRead<'a> {
     scene: &'a hex_project::Scene,
 }
@@ -92,6 +97,13 @@ impl<'a> SnapshotProjectRead<'a> {
         self.project
             .midi_note(id)
             .map(|note| SnapshotMidiNoteRead { note })
+    }
+
+    /// Resolve the current Arrangement or Session source without exposing its owner.
+    pub fn midi_source(self, id: ClipId) -> Option<SnapshotMidiSourceRead<'a>> {
+        self.project
+            .midi_source(id)
+            .map(|source| SnapshotMidiSourceRead { source })
     }
 
     pub fn scenes(self) -> impl ExactSizeIterator<Item = SnapshotSceneRead<'a>> + 'a {
@@ -271,6 +283,30 @@ impl SnapshotMidiNoteRead<'_> {
     }
 }
 
+impl<'a> SnapshotMidiSourceRead<'a> {
+    pub fn source_length(self) -> BeatTime {
+        self.source.source_length()
+    }
+    pub fn source_start(self) -> BeatTime {
+        self.source.source_start()
+    }
+    pub fn loop_start(self) -> BeatTime {
+        self.source.loop_start()
+    }
+    pub fn loop_end(self) -> BeatTime {
+        self.source.loop_end()
+    }
+    pub fn looping(self) -> bool {
+        self.source.looping()
+    }
+    pub fn notes(self) -> impl ExactSizeIterator<Item = SnapshotMidiNoteRead<'a>> + 'a {
+        self.source
+            .notes()
+            .iter()
+            .map(|note| SnapshotMidiNoteRead { note })
+    }
+}
+
 impl<'a> SnapshotSceneRead<'a> {
     pub fn id(self) -> SceneId {
         self.scene.id()
@@ -386,6 +422,10 @@ impl<'a> SnapshotMeterRead<'a> {
     pub fn points(self) -> impl ExactSizeIterator<Item = MeterPoint> + 'a {
         self.map.points().iter().copied()
     }
+    /// Exact bounded backing slice of the map's `Copy` meter points.
+    pub fn points_slice(self) -> &'a [MeterPoint] {
+        self.map.points()
+    }
 }
 
 impl<'a> SnapshotAssetRead<'a> {
@@ -488,6 +528,8 @@ mod tests {
         assert_eq!((position.bar(), position.beat()), (2, 3));
         assert_eq!(meter.meter_at(change).numerator(), 3);
         assert_eq!(meter.points().len(), 2);
+        assert_eq!(meter.points_slice().len(), 2);
+        assert_eq!(meter.points_slice()[1].beat(), change);
     }
 
     #[test]
@@ -570,6 +612,27 @@ mod tests {
             Created::Note(note) => note,
             other => panic!("unexpected midi note result: {other:?}"),
         };
+        let arrangement_clip = match editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::from_quarters(8).expect("small beat is representable"),
+                length: BeatTime::from_quarters(4).expect("small beat is representable"),
+            })
+            .expect("arrangement clip can be placed")
+        {
+            Created::Clip(clip) => clip,
+            other => panic!("unexpected arrangement clip result: {other:?}"),
+        };
+        editor
+            .execute(Command::AddMidiNote {
+                clip: arrangement_clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 48,
+                channel: 1,
+                velocity: 90,
+            })
+            .expect("arrangement midi note can be added");
 
         let read = SnapshotProjectRead {
             project: editor.project(),
@@ -590,6 +653,27 @@ mod tests {
         assert!(read.session_midi_clip(clip).is_some());
         assert!(read.midi_clip(clip).is_none());
         assert_eq!(read.midi_note(note).map(|note| note.pitch()), Some(60));
+        let session_source = read.midi_source(clip).expect("session source resolves");
+        assert_eq!(
+            session_source.source_length(),
+            BeatTime::from_quarters(4).unwrap()
+        );
+        assert_eq!(
+            session_source.notes().next().map(|note| note.id()),
+            Some(note)
+        );
+        let arrangement_source = read
+            .midi_source(arrangement_clip)
+            .expect("arrangement source resolves");
+        assert_eq!(
+            arrangement_source.source_length(),
+            BeatTime::from_quarters(4).unwrap()
+        );
+        let arrangement_note = arrangement_source.notes().next().expect("note exists");
+        assert_eq!(
+            (arrangement_note.pitch(), arrangement_note.velocity()),
+            (48, 90)
+        );
         assert_eq!(read.scenes().next().map(|scene| scene.id()), Some(scene));
         assert_eq!(read.session_cells().count(), 1);
     }
