@@ -1,0 +1,3833 @@
+[
+  {
+    "path": "AGENTS.md",
+    "status": "take-main"
+  },
+  {
+    "path": "Cargo.lock",
+    "status": "take-main"
+  },
+  {
+    "path": "README.md",
+    "status": "take-main"
+  },
+  {
+    "path": "changelog/generated.json",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/Cargo.toml",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/build.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-audio/build_support/carrier_gate.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/examples/profile_eq8_audition.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/examples/profile_eq8_spectrum.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/examples/profile_session_routes.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody/custody_mutex.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody/custody_mutex/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody/eligible.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody/eligible/native_birth_tests.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody/eligible/pages.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody/eligible/preparation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody/eligible/publication.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody/eligible/publication/disposal.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody/eligible/publication/preparation.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody/eligible/publication/tests.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-audio/src/candidate_custody/inline_lock_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/device.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-audio/src/lib.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-audio/src/lifecycle.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-audio/src/lifecycle/retained_families.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/lifecycle/retained_families/inventory.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-audio/src/lifecycle/retained_families/tests.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-audio/src/native_callback_owner.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-audio/src/native_callback_owner/allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/native_callback_owner/endpoint_tests.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-audio/src/native_callback_owner/resources.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-audio/src/native_callback_owner/ring_storage.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared/admission.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared/applied_source.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared/candidate_tests.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared/eligible_publication/tests/native_resources.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared/eligible_publication/tests/readiness.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared/eligible_publication/tests/utility_fixture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared/endpoints.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared/resident_forwarding.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared/status_storage.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared/worker_publication.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-audio/src/prepared/worker_publication/tests.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-audio/src/processor_audition.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-audio/src/render_fault.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/resource_borrow_allocation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/src/spectrum_target.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-audio/src/spectrum_worker/project.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-audio/tests/callback_allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/callback_allocations/output_capture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/callback_allocations/project_tuning.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/controller_keyboard_allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/device_comparison.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/eq8_audition_allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/fresh_publication_cancellation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/gain_recording_native.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/main_chain_allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/operator_fixed_allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/prepared.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/return_feed_allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/routed_midi_allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/session_silence_effect_allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/stream_publication.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/track_gain_allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/vector_global_allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-audio/tests/warp_preview_metadata_cost.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-cli/src/projects.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-cli/tests/fm4_export.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-cli/tests/midi_project.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-desktop/src/audio_policy.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-desktop/src/main.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-desktop/src/native_audio.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-desktop/src/native_audio/controller_input_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-desktop/src/native_audio/main_control_file.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-desktop/src/native_audio/tests.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-desktop/src/native_audio/tests/main_file.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-desktop/src/native_sources.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-desktop/src/snapshot_transport.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-desktop/src/snapshot_transport/inventory.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-desktop/src/snapshot_transport/inventory/tests.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-desktop/src/snapshot_transport/publication_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-desktop/src/snapshot_transport/storage_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-desktop/src/snapshot_transport/tests.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-desktop/src/snapshot_transport/worker_control.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-desktop/src/snapshot_transport/worker_startup.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/auto_pan.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/auto_pan/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/compressor.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/compressor/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/lib.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/modulation_waveform.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/operator_filter.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/operator_state/lfo.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/binding.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/envelope.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/filter.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/filter_envelope.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/metadata.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/metadata/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/modulation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/plan.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/plan_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/runtime.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/runtime/filter_envelope_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/runtime/filter_lfo_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/runtime/filter_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/runtime/modulation_runtime.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/runtime/modulation_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/runtime/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/state.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/state/read.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/state/slice_edit.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/state/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/sampler/voice.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-devices/src/utility.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/Cargo.toml",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/README.md",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/build.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-engine/build_support/midi_gate.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/build_support/pcm_clippy.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/build_support/pcm_gate.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/build_support/retained_job_box_gate.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/build_support/runtime_box_gate.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/build_support/state_gate.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/playback_stack.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_compile.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_eq8_parameter_history.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_instrument.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_operator_feedback.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_operator_filter.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_operator_lfo.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_session_audio.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_session_grid.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_session_handoff.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_session_inventory.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_session_playback.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_shared_context.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/profile_utility.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/support/operator_feedback_fixture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/support/session_audio_fixture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/examples/support/session_fixture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate/claimed.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate/draft.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate/groups.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate/preparation.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate/preparation/control_work.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources/tests/runtime.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate/preparation_operations.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate/reservation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_candidate/storage.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_clip_source.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_input_storage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_only_inputs.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clip_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/return_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/returns.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/returns/selector_cost.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root/lifecycle_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root/metadata_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root/revision_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/track_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/compiler_bindings.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/instrument.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/instrument/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/selector_cost.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/utility.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/utility/allowance.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/utility/allowance/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/original_resources.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/original_resources/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_preparation/storage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/arithmetic.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/arithmetic/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/canonical_state.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/construction_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/model_buffers.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/models.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/models/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/sources.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/state_metadata_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_storage/vec_backing_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_transform/budget.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_transform/control_storage_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_transform/events.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_transform/mapping.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_transform/mod.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_transform/pcm_inventory.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_transform/prepared_pcm_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/audio_transform/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/compensation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/compensation/delay.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/compensation/plan.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/compensation/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/compile.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/compile/retained_target_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/compile/sampler_cost.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/computer_keyboard.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/computer_keyboard/tuning_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/effect_resources.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/gain_envelope.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/gain_envelope/construction_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/gain_envelope/persistent.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/gain_envelope/persistent/retirement_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/gain_envelope/touch.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/lib.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-engine/src/main_chain.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/main_chain_review_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_compile.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_compile/construction.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_note_bank.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_note_bank/scoped.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_note_bank/storage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_note_bank/storage_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_preview.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_preview/persistent.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_preview/persistent/compiler.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_preview/persistent/nonempty_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_template.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_template/spans.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_template/spans/storage_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/midi_template/storage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/mutable_instrument.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/mutable_instrument/resource_fixture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/mutable_instrument/resource_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/mutable_instrument/runtime_pair.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/mutable_instrument/runtime_pair/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/native_device_resources.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/native_device_resources/effect_host_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/native_device_resources/effect_scope_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/native_device_resources/ingress.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/native_device_resources/producer.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/native_device_resources/producer/tests.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/native_device_resources/retained.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/native_device_resources/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/native_device_view.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-engine/src/owned_shared.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/pcm_arc.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/playback.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/playback/candidate_storage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/playback/metronome/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/prepared_revision.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/prepared_revision/assembly.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/prepared_revision/assembly/compiler.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/prepared_revision/compiled_reader.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/prepared_revision/descriptor_storage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/prepared_revision/descriptor_storage/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/prepared_revision/resource_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/prepared_tempo/persistent.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/project_output.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/retained_control_job.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/retained_control_job/cancellation.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/retained_control_job/route.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/retained_control_job/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/return_feed_plan.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/return_feed_plan/borrowed.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/return_feed_plan/borrowed/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/return_feed_plan/persistent.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/return_feed_plan/persistent/construction.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields/captured_source.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields/family.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields/file_slots.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields/physical.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields/snapshot_view.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields/waveform.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/sampler_host_fields/worker.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-engine/src/session_audio_preparation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_audio_preparation_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_inventory.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_inventory/audio_assembly.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_inventory/audio_assembly/cleanup.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_inventory/audio_assembly/compiler.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_inventory/audio_assembly/midi_cleanup_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_inventory/cleanup_preflight.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_inventory/midi_storage_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_inventory/mutable_factory.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_inventory/routed_midi.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_inventory/routed_midi/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/analytic_continuation_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/analytic_import.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/candidate_storage.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/candidate_storage/runtime_storage_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/capture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/capture_routing_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/capture_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/commands.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/compensation_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/compensation_tests/monitor_clock.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/compressor_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/device_capacity_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/effect_tail_budget_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/gain_recording.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/gate_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/handoff.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/harmonic_accounting.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/harmonic_accounting/inventory.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/harmonic_accounting/payload.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/harmonic_import.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/harmonic_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/instrument_memory_budget_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/live_expression_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/mutable_checkpoint.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/mutable_long_tail_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/operator_filter_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/preroll.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/render.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/render/compensated.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/render/computer_keyboard.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/return_effect_tail_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/return_effect_tails.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/return_feed_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/routing_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/saturator_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/silence_effect_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/source_loop_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/stream_action_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_playback/transport_loop_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_shared_preparation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_shared_preparation/compiler.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_shared_preparation_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_structure_preparation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_structure_preparation_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/session_tempo_preparation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/shared_analytic.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/shared_analytic/cleanup_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/shared_analytic/inline_fixture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/shared_analytic/resource_storage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/shared_analytic/resource_storage/arithmetic_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/shared_analytic/resource_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/shared_analytic/sampler_construction.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/shared_analytic/sampler_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/shared_metadata.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/shared_sine.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/signal_graph.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/signal_graph/construction.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/signal_graph/legacy.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/signal_graph/storage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/signal_graph/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/signal_graph/tests/eq_automation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/signal_graph/typed_inputs.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/signal_graph/typed_inputs/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/src/track_output.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/compile_streamed_sources.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/device_chain.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/fm4_native_admission.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/gain_envelope.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/gain_envelope/touch.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/latency_layout_proof/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/main_chain.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/midi_activity.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/midi_compile.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/midi_template.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/native_tuning_coverage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/observed_pages.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/operator_native_admission.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/project_tuning.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/registered_instrument.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/return_routes.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/session_audio_large.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/session_playback.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/session_profile_oracle.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/session_streamed_audio.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/track_mix.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-engine/tests/tuning_admission.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/src/buffered_file.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/src/controlled.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/src/lib.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/src/publication.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/src/staged_file.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/src/stems.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/tests/compensated.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/tests/main_chain.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/tests/native_tuning_coverage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/tests/operator_native.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/tests/prepared_mutable.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-export/tests/return_routes.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-lattice-contract/src/lib.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-lattice-contract/src/state_storage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-lattice/src/instrument_runtime.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-lattice/src/lib.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-lattice/src/owned_processor.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-lattice/src/resources.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-lattice/src/runtime_ownership.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-lattice/tests/host_resource_validation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-lattice/tests/state_descriptors.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-library/src/catalog.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-library/src/catalog/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/README.md",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/adpcm.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/device_source.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/lib.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/resample.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/resample/window_source.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/wav.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/wav_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/waveform.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/waveform/native_original.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/waveform/native_original/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/waveform/read.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-media/src/waveform/shared_storage_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-preferences/README.md",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-preferences/src/lib.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-preferences/src/project_directory.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/README.md",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/examples/profile_edits.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/appearance.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/audio_edit.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/audio_edit/commands.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/audio_edit/stretch.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/audio_edit/view.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/clip_fade_trim.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/clip_group.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/clip_group_batch.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/clip_group_preview.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/clip_group_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/device.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/device_assets.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/device_assets/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/device_comparison.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/edit.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/history.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-project/src/lib.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-project/src/main_devices.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/main_devices/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/midi.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/midi_storage.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/returns.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/session.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/snapshot.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/sorted_entries.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/sorted_entries/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/storage_buffers.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/time_range.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/src/track_remove_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/audio_view.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/automatic_track_colors.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/clip_paint.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/clip_paint_capacity.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/device_comparison.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/duplicate.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/empty_track_creation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/midi_split.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/midi_trim.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/playable_routing.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/prepared_batch_routing.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/snapshot.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/split.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-project/tests/validated_history.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/README.md",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/examples/operator_enable_fixture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/examples/profile_midi_edits.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/examples/time_selection_fixture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/audio_edit_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/audio_sources.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/clip_conversion.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/clip_conversion/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/comparison_transition.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/device_comparison.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/device_gesture.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-session/src/device_gesture/snapshot_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/device_sample.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/device_sample/native_waveform.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/device_sample/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/device_snapshot.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/import_batch.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/import_batch/console.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/import_batch/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/import_batch_decode.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/import_batch_decode/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/import_batch_decode/tests/console.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/lib.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-session/src/original_audio.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/resident_pcm.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/resident_pcm/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/resource_plan.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/resource_plan/producer.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/resource_plan/required_assets.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/resource_plan/required_assets/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/resource_plan/tests.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/service.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-session/src/service/audio_batch_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/audio_sink.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-session/src/service/browser_instrument_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/canonical_audio_source.rs",
+    "status": "bothchanged",
+    "merge": "conflict"
+  },
+  {
+    "path": "crates/hex-session/src/service/comparison_audio.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/service/controller_input_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/device_comparison.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/device_comparison/metadata_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/device_comparison/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/effect_bus.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/effect_bus_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/main_control_file.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/service/main_control_file/tests.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/service/preset.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/preset/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/recovery.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/request_transport.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/shared_project_storage_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/stopped_playback_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/tuning_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/verified_source_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/waveform_storage_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/service/worker_roots.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/service/worker_startup.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/session_cancellation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/shared_project.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports/event.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports/event/tests.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports/family.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports/native_requests.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports/native_transport.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports/native_transport/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports/storage.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports/transport.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports/worker_control.rs",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "crates/hex-session/src/snapshot_exports/worker_requests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/src/tuning_gesture.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-session/src/verified_import.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/device_comparison.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/empty_track_creation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/host_gain.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/midi_admission.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/operator_presets.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/operator_seek.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/prepared_batch_routing.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/project_open_preview.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/returns.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/scene_editing.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/service.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/session.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/session_workflow.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-session/tests/track_gain_gesture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/README.md",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/src/audio_edit.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/src/files.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-storage/src/lib.rs",
+    "status": "bothchanged",
+    "merge": "clean"
+  },
+  {
+    "path": "crates/hex-storage/src/preset.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/src/schema.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/src/schema/device_assets.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/src/schema/fade_shapes.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/src/schema/gain_touch/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/src/schema/host_gain.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/src/schema/tuning.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/appearance.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/audio_edit.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/audio_events.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/audio_view.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/automatic_track_colors.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/beats_warp.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/clip_names.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/device_assets.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/device_comparison.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/empty_track_creation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/gain_envelope.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/main_devices.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/musical_routing.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/persistence.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/playable_routing.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/provenance.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/return_feeds.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/routing.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/schema_lineages.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-storage/tests/tuning.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-stream/build.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-stream/tests/callback_allocations.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/Cargo.toml",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/README.md",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/build.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/examples/knob_review.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/examples/layout_review/compositions.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/examples/layout_review/eq.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/examples/layout_review/gallery.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/examples/layout_review/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/build_info.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/context_menu.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/device_composition.rs",
+    "status": "bothchanged",
+    "merge": "UI-owned"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/adaptive_grid_density.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/adaptive_grid_density_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/adaptive_grid_menu.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/adaptive_grid_menu_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/arrangement.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/arrangement_audio_panel.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/arrangement_device_drop_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/arrangement_main_track_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/arrangement_seek.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/arrangement_seek_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/audio_admission.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/audio_event_editor/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/audio_event_editor/view.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser/audition.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser/history.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser/insertion.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser/layout.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser/place_icons.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser/samples.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser/tree.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_arrow_fixture_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_builtin_source_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_divider_paint_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_focus_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_history_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_input.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_insert_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_instrument_enter_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_picker_compact_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_resize_feedback_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_search_selection_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_tag_editor_geometry_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/browser_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/changelog.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/clip_border_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/clip_content_cache_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/clip_drag_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/clip_header_color_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/clip_name.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/clip_paint.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/clip_paint_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/clip_selection.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/clip_view_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/close.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/console_drop.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/console_drop_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/context_menu.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/controller.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/controller/project_replacement_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/controller_input.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_comparison.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_gesture.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_gesture/effect_bus_barrier.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel.rs",
+    "status": "bothchanged",
+    "merge": "UI-owned"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/auto_pan_panel.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/bindings.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/chain_window.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/compressor_panel.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/effect_bus.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/eq_panel.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/eq_panel/axes.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/eq_panel/gestures.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/eq_panel/response.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/eq_panel/scroll_queue.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/eq_panel/spectrum.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/gesture_adapter.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/keyboard.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/navigation.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/parameter_rows.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/return_drag.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/return_view.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/chain_window_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/device_comparison_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/device_preset_ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/device_reorder_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/eq_graph_layout_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/eq_held_pointer_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/eq_node_gesture_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/header_actions_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/keyboard_delete_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/main_chain_ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/main_chain_ui_tests/barrier_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/navigation_ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/operator_tab_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_panel/tests/parameter_rows_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/device_preset.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/dialogs.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/dialogs/project_open.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/dialogs/ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/dialogs/ui_tests/recovery_name_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/drag.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/drag_autoscroll.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/edit_cursor.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/edit_cursor_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/editor_test_environment_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/fade_handles.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/gain_lane/mod.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/gain_lane/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/gain_recording.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/group_copy.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/group_drag_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/header.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/loop_bar_ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/loop_rail.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/loop_rail/pending.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/loop_rail/pending_ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/loop_rail/review_ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/loop_rail_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/loop_region.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/loop_selection_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/midi.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/midi_left_extension_ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/mixer.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/mod.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/musical_audio_controls.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/musical_audio_controls/actions.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/musical_audio_controls/sample_bpm.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/musical_audio_controls/ui_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/musical_time.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/name_case_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/overview.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/project_directory.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/project_directory/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/project_recovery.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/project_spectrum.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/project_spectrum/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/recent_projects.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/recovery_state.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/render.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/resize_pan_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/resize_release_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/resize_terminal_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/return_tracks.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/routing_controls.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/save.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/scrub.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/scrub_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/session_audio_panel.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/session_grid.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/session_navigation_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/stretch_limit_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/stretch_preview.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/tempo_input.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/tempo_input/keyboard_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/tempo_input_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/test_environment.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/theme_settings.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/time_move_preview.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/time_selection.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/time_selection/duplicate_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/time_selection/retained_duplicate_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/track_gain.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/track_gain/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/track_keyboard_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/track_layout_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/track_name.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/track_name/delete_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/tracks.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/transport.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/trim.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/tuning/lifecycle_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/tuning/mod.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/waveform.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/waveform_geometry.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/waveform_header_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/waveform_resize_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/waveform_stretch.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/waveform_stretch/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/workspace_view.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/workspace_view_ui_test.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-ui/src/theme/device.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/Cargo.toml",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/README.md",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/examples/beats_diagnosis.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/examples/beats_quality.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/examples/beats_recording.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/examples/beats_short_diagnosis.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/src/beats.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/src/beats/analysis.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/src/beats/envelope.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/src/beats/groups.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/src/beats/onsets.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/src/beats/plan.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/src/beats/stop.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/src/beats/synthesis.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/src/granular.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/src/lib.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/src/resample.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/beats_alternating.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/beats_bass_band.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/beats_envelope.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/beats_groups.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/beats_plan.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/beats_quality_followup.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/beats_seams.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/beats_short.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/beats_stop.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/beats_wsola.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/dsp.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/stretch_admission.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-warp/tests/support/quality.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/README.md",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/curve.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/frame.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/frame_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/lib.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/numeric_control.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/numeric_control/compact_slider_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/numeric_text.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/response_graph.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/response_graph/axes.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/response_graph/scroll.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/response_graph/scroll_terminal_tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/spectrum_painter.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/spectrum_painter/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/spectrum_plot.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/style.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/tests.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/text_case.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "crates/hex-widgets/src/text_click_selection.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/adaptive-grid-menu.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/arrangement-device-drop.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/audio-view-model.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/auto-pan.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/automatic-track-colors.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/beats-clip-warp.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/browser-layout.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/browser-places.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/changelog.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/clip-drag.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/clip-paint.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/clip-resize-browser-release.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/clip-title-colors.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/clip-waveform-body.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/cloud-environment.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/compressor.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/dependency-warnings.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/development-workflow.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/device-comparison.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/device-controls.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/device-presets.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/empty-track-creation.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/eq-graph-layout.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/eq-node-gestures.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/eq.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/group-clip-drag.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/latency.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/local-ci.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/loop-selection.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/main-track.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/midi.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/musical-editing.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/native-device-resource-host.md",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "docs/native-midi-storage.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/native-state-storage.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/native-tuning-coverage.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/operator-tab-fixture.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/prepared-seek-cancellation.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/project-directory.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/project-file-actions.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/project-tempo-input.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/resize-edge-pan.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/resize-release.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/retained-control-job-storage.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/routing.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/runtime.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/sample-library.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/sampler-runtime-storage.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/sampler.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/selected-clip-border-followup.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/session-audio.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/shared-project-storage.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/spectrum-painting.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/test-builds.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/time-selection.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/track-header-volume.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/track-selection.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/ui-design.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/warp-resize-limits.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/waveform-storage.md",
+    "status": "take-main"
+  },
+  {
+    "path": "docs/workspace-views.md",
+    "status": "take-main"
+  },
+  {
+    "path": "launch",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/build_inputs.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/changelog.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/check-architecture.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/check-dependency-future-lints.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/check-dependency-patches.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/check-gpui-patch.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/check-ui-style.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/ci_plan.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/custody_mutex_policy.py",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "scripts/hex-test-build.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/launch-restart.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/launch-restart.swift",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/local-ci.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/sampler_host_policy.py",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "scripts/tests/test_changelog.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/tests/test_ci_plan.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/tests/test_custody_mutex_policy.py",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "scripts/tests/test_hex_test_build.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/tests/test_launch.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/tests/test_launch_restart.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/tests/test_launch_restart_compile.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/tests/test_local_ci.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/tests/test_pcm_build_gate.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/tests/test_sampler_host_policy.py",
+    "status": "bothchanged",
+    "merge": "add-delete"
+  },
+  {
+    "path": "scripts/tests/test_stream_build_inputs.py",
+    "status": "take-main"
+  },
+  {
+    "path": "scripts/tests/test_ui_build_identity.py",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/block/HEX-PATCHES.md",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/block/hex-patches.diff",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/block/hex-provenance.json",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/block/src/lib.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/HEX-PATCHES.md",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/hex-patches.diff",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/hex-provenance.json",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/src/app.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/src/app/test_context.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/src/interactive.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/src/platform.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/src/platform/linux/wayland/client.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/src/platform/linux/x11/client.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/src/platform/mac/events.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/src/platform/mac/platform.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/src/platform/test/platform.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "third_party/gpui/src/platform/windows/events.rs",
+    "status": "take-main"
+  },
+  {
+    "path": "todo.md",
+    "status": "take-main"
+  }
+]
