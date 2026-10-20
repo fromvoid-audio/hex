@@ -315,7 +315,7 @@ mod tests {
         editor
             .execute(hex_project::Command::InsertTrackWithDevice {
                 name: "instrument".into(),
-                before: None,
+                before_track: None,
                 slot: hex_project::TrackDeviceSlot::Instrument,
                 state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })

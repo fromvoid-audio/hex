@@ -1530,7 +1530,7 @@ mod tests {
         let Created::Track(track) = editor
             .execute(Command::InsertTrackWithDevice {
                 name: "audio".into(),
-                before: None,
+                before_track: None,
                 slot: hex_project::TrackDeviceSlot::Instrument,
                 state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
