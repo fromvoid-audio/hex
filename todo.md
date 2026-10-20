@@ -6408,6 +6408,18 @@ Existing foreign-owner, stale-artifact, source-change, CAS and lock controls sta
 intact. Combined exact-source tooling qualification is recorded in PR505/Pulse;
 no global TMPDIR override or production safety change is used.
 
+## borrowed sampler source binding — pulse2923 / PR509
+
+The existing sampler kernel now prepares scalar voices against exact borrowed
+mono/stereo resource identities. Voices do not capture PCM owners or slice-marker
+storage; missing or changed resources cannot retarget an existing voice. Existing
+stereo, pitch, reverse, loop, envelope and checked lifetime behavior is preserved.
+Five source-binding/PCM fixtures supplement the original sampler regressions.
+Required exact-candidate results and the before/after standalone release profile
+are recorded with PR509 and Pulse2923. Native resource admission, registration,
+loading, app playback and optimized delivery remain open under2783/2789; this
+kernel increment does not complete the playable sampler MVP.
+
 ## bounded resize-modifier fixture — pulse2924 / PR510
 
 The stationary snap/Shift-stretch gesture fixture uses the supported 8 kHz
