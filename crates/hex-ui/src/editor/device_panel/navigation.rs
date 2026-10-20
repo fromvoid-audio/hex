@@ -4,6 +4,107 @@ use gpui::{
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ScrollHandle, ScrollWheelEvent, canvas, fill,
     point, size,
 };
+use hex_session::snapshot_exports::{
+    SnapshotDeviceRead, SnapshotTransportError, ui_consumers::SnapshotTrackDeviceRead,
+};
+
+const MAX_OVERVIEW_CARDS: usize = hex_project::MAX_DEVICES_PER_TRACK + 1;
+type CardFacts = (
+    NativeDeviceClass,
+    hex_lattice_contract::DeviceTypeId,
+    DeviceId,
+);
+
+#[derive(Debug)]
+enum InventoryError {
+    Transport(SnapshotTransportError),
+    OwnerUnavailable,
+    Overflow,
+    Allocation,
+}
+impl From<SnapshotTransportError> for InventoryError {
+    fn from(error: SnapshotTransportError) -> Self {
+        Self::Transport(error)
+    }
+}
+impl InventoryError {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Transport(SnapshotTransportError::Busy) => "device chain is busy",
+            Self::Transport(_) => "device chain read is unavailable",
+            Self::OwnerUnavailable => "device chain owner is unavailable",
+            Self::Overflow => "device chain exceeds the current format limit",
+            Self::Allocation => "device chain display is unavailable",
+        }
+    }
+}
+fn inventory_unavailable(error: InventoryError) -> Stateful<Div> {
+    div()
+        .id("device-chain-bottom-bar")
+        .w(px(176.0))
+        .h(px(18.0))
+        .flex_shrink_0()
+        .text_xs()
+        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+        .child(theme::text(error.message()))
+}
+fn push_card(
+    cards: &mut Vec<CardFacts>,
+    device: SnapshotDeviceRead<'_>,
+) -> Result<(), InventoryError> {
+    if cards.len() >= MAX_OVERVIEW_CARDS || cards.len() == cards.capacity() {
+        return Err(InventoryError::Overflow);
+    }
+    cards.push((device.class(), device.type_id(), device.id()));
+    Ok(())
+}
+fn read_inventory(
+    view: &EditorView,
+    owner: Option<DevicePanelOwner>,
+) -> Result<Vec<CardFacts>, InventoryError> {
+    // Track chains have at most 64 effects plus their one instrument slot.
+    // Reserve outside the family guard, then fill only Copy facts without growth.
+    let mut cards = Vec::new();
+    cards
+        .try_reserve_exact(MAX_OVERVIEW_CARDS)
+        .map_err(|_| InventoryError::Allocation)?;
+    let state = view
+        .state
+        .as_ref()
+        .ok_or(InventoryError::OwnerUnavailable)?;
+    state.read_with(|snapshot| {
+        let project = snapshot.model();
+        match owner {
+            Some(DevicePanelOwner::Main) => {
+                for device in project.main_devices() {
+                    push_card(&mut cards, device)?;
+                }
+            }
+            Some(DevicePanelOwner::Track(id)) => {
+                let track = project.track(id).ok_or(InventoryError::OwnerUnavailable)?;
+                for node in track.ordered_device_chain() {
+                    let device = match node {
+                        SnapshotTrackDeviceRead::Instrument(device)
+                        | SnapshotTrackDeviceRead::Effect(device) => device,
+                    };
+                    push_card(&mut cards, device)?;
+                }
+            }
+            Some(DevicePanelOwner::Return(id)) => {
+                let track = project
+                    .returns()
+                    .find(|track| track.id() == id)
+                    .ok_or(InventoryError::OwnerUnavailable)?;
+                for device in track.devices() {
+                    push_card(&mut cards, device)?;
+                }
+            }
+            None => {}
+        }
+        Ok::<_, InventoryError>(())
+    })??;
+    Ok(cards)
+}
 
 #[derive(Default)]
 pub(in crate::editor) struct Navigation {
@@ -97,58 +198,23 @@ pub(in crate::editor) fn bottom_bar(
                     .then_some(DevicePanelOwner::Main)
             })
     };
+    let inventory = match read_inventory(view, owner) {
+        Ok(inventory) => inventory,
+        Err(error) => return inventory_unavailable(error),
+    };
+    // Geometry and all GPUI/navigation mutations follow the completed read.
+    let mut cards = Vec::new();
+    if cards.try_reserve_exact(inventory.len()).is_err() {
+        return inventory_unavailable(InventoryError::Allocation);
+    }
+    for (class, type_id, device) in inventory {
+        cards.push((device_card_width(class, type_id), device));
+    }
     view.device_panel
         .navigation
         .sync(view.project_generation, owner, view.mode);
     if !open {
         view.device_panel.navigation.cancel();
-    }
-    let mut cards = Vec::new();
-    if let Some(state) = &view.state {
-        match owner {
-            Some(DevicePanelOwner::Main) => {
-                cards.extend(state.project.main_devices().iter().map(|device| {
-                    (
-                        device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
-                        device.id(),
-                    )
-                }))
-            }
-            Some(DevicePanelOwner::Track(id)) => {
-                if let Some(track) = state.project.track(id) {
-                    for node in track.ordered_device_chain() {
-                        let (device, class) = match node {
-                            hex_project::TrackDeviceRef::Instrument(device) => {
-                                (device, NativeDeviceClass::Instrument)
-                            }
-                            hex_project::TrackDeviceRef::Effect(device) => {
-                                (device, NativeDeviceClass::Effect)
-                            }
-                        };
-                        cards.push((
-                            device_card_width(class, device.state().type_id()),
-                            device.id(),
-                        ));
-                    }
-                }
-            }
-            Some(DevicePanelOwner::Return(id)) => {
-                if let Some(track) = state
-                    .project
-                    .return_tracks()
-                    .iter()
-                    .find(|track| track.id() == id)
-                {
-                    cards.extend(track.devices().iter().map(|device| {
-                        (
-                            device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
-                            device.id(),
-                        )
-                    }));
-                }
-            }
-            None => {}
-        }
     }
     let entity = cx.entity();
     let scroll = view.device_panel.navigation.scroll.clone();

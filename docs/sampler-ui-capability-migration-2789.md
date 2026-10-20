@@ -114,6 +114,31 @@ test fixtures, behavioral pressure tests, controller/backend/startup integration
 full qualification and optimized delivery remain open. This is a partial compiler
 diagnostic, not a test or clean-build pass.
 
+The local continuation then composes exactly the 31 UI paths from Merger's
+`96ff579e` against shared `23f7bab4`, checking every before hash and preserving
+new local work. This imports the nominal popup and selected-loop reads plus
+retained shared-type fixture corrections; it does not replace the newer core
+or qualify those still-incompatible owning UI fixtures. Navigation now prepares
+at most 65 Copy card facts before changing its scroll/gesture state. The Return
+add-effect action reads revision and finishes controls before closing its menu.
+
+Review found the imported loop read could deallocate BTreeSet nodes through
+`remove` while the snapshot guard was active. Its scratch now allocates before
+the read and marks sorted Copy membership flags inside, preserving Session
+exclusion, exact Arrangement range and unknown-ID errors. This no-free property
+is source-inspected, not allocation-instrumented. A real registered UI fixture
+must still exercise mixed Audio/MIDI/Session selection, missing IDs, Busy refusal
+and zero guard-scope allocations/deallocations; current UI compilation prevents
+that regression from executing.
+
+The frozen `modern-merger-navigation` check at HEAD `d457225b` completed with
+exit 101 and 453 actual errors (454 headings), unchanged source SHA-256
+`791d3867b17cae0fe7075e9aa87a1e1c22df17bb5cfc932e18ca559cbe7ab62a`.
+There were no primary diagnostics in navigation, popup, loop or the Return
+add-menu hunk. Remaining Return errors are the existing EQ/meter dependencies.
+Scoped format/diff/layout checks pass. No tests, clean UI build, full audit,
+Native startup/playback or optimized delivery are qualified by this run.
+
 The sections below preserve the older b94-based component's source history;
 their unconnected-dispatch and unavailable-query descriptions are historical.
 

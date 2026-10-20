@@ -403,9 +403,20 @@ fn render_return_add_menu(
                         .cursor(gpui::CursorStyle::PointingHand)
                         .child(theme::text(label))
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            let Some(revision) = view.state.as_ref().map(|state| state.revision)
-                            else {
-                                return;
+                            let revision = match view
+                                .state
+                                .as_ref()
+                                .map(|state| state.read_with(|snapshot| snapshot.revision()))
+                            {
+                                Some(Ok(revision)) => revision,
+                                Some(Err(_)) => {
+                                    view.device_panel.message = Some(
+                                        "device source is busy · retry adding the effect".into(),
+                                    );
+                                    cx.notify();
+                                    return;
+                                }
+                                None => return,
                             };
                             let request = owner.insert_request(
                                 view.project_generation,
@@ -413,9 +424,19 @@ fn render_return_add_menu(
                                 None,
                                 type_id,
                             );
-                            if finalize_controls(view, cx) && view.enqueue_device_barrier(request) {
-                                view.device_panel.add_menu_open = false;
-                                view.device_panel.message = None;
+                            match finalize_controls_checked(view, cx) {
+                                Ok(true) => {
+                                    if view.enqueue_device_barrier(request) {
+                                        view.device_panel.add_menu_open = false;
+                                        view.device_panel.message = None;
+                                    }
+                                }
+                                Ok(false) => {}
+                                Err(_) => {
+                                    view.device_panel.message = Some(
+                                        "device controls are busy · retry adding the effect".into(),
+                                    );
+                                }
                             }
                             cx.notify();
                         })),

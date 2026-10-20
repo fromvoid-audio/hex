@@ -75,6 +75,14 @@ group previews, remaining editor consumers, actual registered UI fixtures and
 Native startup/backend closure remain explicit dependencies. No pressure/UI
 behavioral test, clean build or usable delivery is established by that diagnostic.
 
+The exact Merger UI delta through `96ff579e` is also composed without replacing
+core or local work. The following navigation/Return-menu/loop-scratch stage has a
+frozen partial check with 453 actual errors, none primary in its new hunks.
+Loop membership scratch no longer frees tree nodes inside a snapshot read;
+allocation instrumentation and real nominal UI fixtures remain unexecuted.
+This is continued source integration, with startup/playback/full qualification
+and optimized delivery still open.
+
 The production device-composition source guard passes with the real instrument
 dispatch. Earlier staged leaf tests (UI2, Engine2, Session30) remain evidence for
 that earlier immutable component only. The earlier feature-only mount and its
