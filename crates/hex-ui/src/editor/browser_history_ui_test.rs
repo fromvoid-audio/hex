@@ -960,3 +960,107 @@ fn review_history_root_projection_restores_both_directions_and_quiesces(cx: &mut
         visual.run_until_parked();
     }
 }
+
+#[gpui::test]
+fn review_readiness_obsolete_tree_worker_does_not_hold_saved_root(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering;
+    let (handle, editor, directory) = fixture(cx);
+    std::fs::create_dir_all(directory.0.join("samples/old-folder")).unwrap();
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    editor.update(visual, |view, _| view.browser.auto_audition = false);
+    click(visual, "browser-entry-0");
+    let saved = editor.read_with(visual, |view, cx| {
+        let Some(crate::editor::browser::BrowserItemKey::File(path)) = view.browser_selected_item(cx) else { panic!("saved Samples root") };
+        path
+    });
+    let top = visual.debug_bounds("browser-entry-0").unwrap().top();
+    click(visual, "browser-section-projects");
+    let gate = editor.update(visual, |view, _| view.browser.tree.test_gate_next_scan());
+    click(visual, "browser-disclosure-0");
+    assert!(gate.reached.load(Ordering::Acquire));
+    let started = editor.read_with(visual, |view, _| {
+        assert!(view.browser.tree.test_worker_busy());
+        view.browser.tree.requests_started
+    });
+    // The actual old-source scan stays unresolved across the real Back input.
+    click(visual, "browser-history-back");
+    editor.read_with(visual, |view, cx| {
+        assert_eq!(view.browser.section, BrowserSection::Samples);
+        assert!(view.browser.tree.test_worker_busy(), "physical ownership is retained");
+        assert_eq!(view.browser.tree.requests_started, started, "no second worker");
+        assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::File(path)) if path == saved), "obsolete worker blocked the already available saved root");
+        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        assert!(view.browser.playback_path.is_none());
+    });
+    assert_eq!(visual.debug_bounds("browser-entry-0").unwrap().top(), top);
+    gate.release();
+    visual.run_until_parked();
+    editor.read_with(visual, |view, cx| {
+        assert!(!view.browser.tree.test_worker_busy());
+        assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::File(path)) if path == saved));
+    });
+}
+
+#[gpui::test]
+fn review_readiness_indexed_expansion_waits_then_restores_native_top(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering;
+    for place in [false, true] {
+        let (handle, editor, directory) = fixture(cx);
+        let folder = directory.0.join("samples/loop-folder");
+        std::fs::create_dir_all(&folder).unwrap();
+        for index in 0..45 { std::fs::write(folder.join(format!("{index:03}-loop.hex")), b"").unwrap(); }
+        let visual = &mut VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        editor.update(visual, |view, _| view.browser.auto_audition = false);
+        click(visual, if place { "browser-place-0" } else { "browser-section-all" });
+        click(visual, "browser-search");
+        visual.simulate_input("loop");
+        visual.run_until_parked();
+        click(visual, "browser-disclosure-0");
+        let anchor = folder.join("020-loop.hex");
+        let index = editor.update(visual, |view, cx| {
+            let entries = view.browser_visible_entries(cx);
+            let index = entries.iter().position(|entry| entry.path == anchor).unwrap();
+            view.browser.selected_index = index;
+            view.browser.results_focused = true;
+            view.browser.scroll.scroll_to_item_strict(index, gpui::ScrollStrategy::Top);
+            cx.notify();
+            index
+        });
+        visual.run_until_parked();
+        let row = Box::leak(format!("browser-entry-{index}").into_boxed_str());
+        let painted_top = visual.debug_bounds(row).unwrap().top();
+        click(visual, "browser-section-devices");
+        // Both insertion and removal change this current indexed augmentation.
+        if place { std::fs::remove_file(folder.join("000-loop.hex")).unwrap(); }
+        else { std::fs::write(folder.join("000-before-loop.hex"), b"").unwrap(); }
+        let gate = editor.update(visual, |view, cx| {
+            view.move_browser_history(false, cx);
+            let gate = view.browser.tree.test_gate_next_scan();
+            view.refresh_browser_tree(cx);
+            gate
+        });
+        visual.run_until_parked();
+        assert!(gate.reached.load(Ordering::Acquire));
+        editor.read_with(visual, |view, cx| {
+            assert!(!view.browser.loading && !view.browser.samples.history_loading(), "other actual providers settled");
+            assert!(view.browser.tree.test_worker_busy());
+            assert!(view.browser_selected_item(cx).is_none(), "indexed history consumed its anchor before current expanded-folder completion; place={place}");
+        });
+        gate.release();
+        visual.run_until_parked();
+        let restored = editor.read_with(visual, |view, cx| {
+            assert!(!view.browser.tree.test_worker_busy());
+            assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::File(path)) if path == anchor));
+            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert!(view.browser.playback_path.is_none());
+            let entries = view.browser_visible_entries(cx);
+            entries.iter().position(|entry| entry.path == anchor).unwrap()
+        });
+        assert_ne!(index, restored, "actual current scan must shift the anchor index");
+        let row = Box::leak(format!("browser-entry-{restored}").into_boxed_str());
+        assert_eq!(visual.debug_bounds(row).unwrap().top(), painted_top, "strict painted top survives changed rows; place={place}");
+        visual.run_until_parked();
+    }
+}

@@ -57,6 +57,8 @@ pub(super) struct Tree {
     expanded: HashSet<PathBuf>,
     queue: VecDeque<PathBuf>,
     in_flight: bool,
+    #[cfg(test)]
+    test_scan_gate: Option<Arc<crate::editor::test_environment::CatalogSaveGate>>,
     epoch: u64,
     snapshot: RefCell<Option<Snapshot>>,
     root_cache: RefCell<Option<RootCache>>,
@@ -68,6 +70,17 @@ pub(super) struct Tree {
 }
 
 impl Tree {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn test_gate_next_scan(&mut self) -> Arc<crate::editor::test_environment::CatalogSaveGate> {
+        assert!(self.test_scan_gate.is_none());
+        let gate = Arc::new(crate::editor::test_environment::CatalogSaveGate::default());
+        self.test_scan_gate = Some(gate.clone());
+        gate
+    }
+
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn test_worker_busy(&self) -> bool { self.in_flight }
+
     pub(super) fn history_loading(&self) -> bool {
         self.in_flight || !self.queue.is_empty() || self.dirty.get()
     }
@@ -434,6 +447,8 @@ impl EditorView {
         };
         #[cfg(test)]
         let test_environment = std::sync::Arc::clone(&self.test_environment);
+        #[cfg(test)]
+        let test_gate = self.browser.tree.test_scan_gate.take();
         let this = cx.entity().downgrade();
         cx.spawn(async move |_, cx| {
             let path = request.path.clone();
@@ -442,6 +457,8 @@ impl EditorView {
                 .spawn(async move {
                     #[cfg(test)]
                     let _test_environment = test_environment;
+                    #[cfg(test)]
+                    if let Some(gate) = test_gate { gate.wait().await; }
                     scan_directory(path)
                 })
                 .await;
