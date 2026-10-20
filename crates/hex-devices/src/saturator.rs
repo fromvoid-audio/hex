@@ -214,25 +214,32 @@ impl NativeDeviceMetadata for SaturatorDefinition {
         value: ParameterValue,
     ) -> Result<NativeDeviceState, DeviceContractError> {
         let mut settings = decode(state)?;
-        let descriptor = DESCRIPTORS
-            .iter()
-            .find(|descriptor| descriptor.id == id)
-            .ok_or(DeviceContractError::UnknownParameter)?;
-        descriptor.validate(value)?;
-        match (id, value) {
-            (parameter::DRIVE, ParameterValue::Float(value)) => settings.drive_db = value,
-            (parameter::OUTPUT, ParameterValue::Float(value)) => settings.output_db = value,
-            (parameter::DRY_WET, ParameterValue::Float(value)) => settings.dry_wet = value,
-            (parameter::CURVE, ParameterValue::Choice(0)) => {
-                settings.curve = SaturationCurve::SoftClip
-            }
-            (parameter::CURVE, ParameterValue::Choice(1)) => {
-                settings.curve = SaturationCurve::DigitalClip
-            }
-            _ => return Err(DeviceContractError::InvalidParameterValue),
-        }
+        patch_settings(&mut settings, id, value)?;
         encode(settings)
     }
+}
+
+fn patch_settings(
+    settings: &mut SaturatorSettings,
+    id: ParameterId,
+    value: ParameterValue,
+) -> Result<(), DeviceContractError> {
+    let descriptor = DESCRIPTORS
+        .iter()
+        .find(|descriptor| descriptor.id == id)
+        .ok_or(DeviceContractError::UnknownParameter)?;
+    descriptor.validate(value)?;
+    match (id, value) {
+        (parameter::DRIVE, ParameterValue::Float(value)) => settings.drive_db = value,
+        (parameter::OUTPUT, ParameterValue::Float(value)) => settings.output_db = value,
+        (parameter::DRY_WET, ParameterValue::Float(value)) => settings.dry_wet = value,
+        (parameter::CURVE, ParameterValue::Choice(0)) => settings.curve = SaturationCurve::SoftClip,
+        (parameter::CURVE, ParameterValue::Choice(1)) => {
+            settings.curve = SaturationCurve::DigitalClip
+        }
+        _ => return Err(DeviceContractError::InvalidParameterValue),
+    }
+    Ok(())
 }
 
 impl NativeDeviceDefinition for SaturatorDefinition {
@@ -425,7 +432,25 @@ pub struct SaturatorTransferCurve {
 pub fn transfer_curve(
     state: &NativeDeviceState,
 ) -> Result<SaturatorTransferCurve, DeviceContractError> {
-    let settings = decode(state)?;
+    transfer_curve_with_overrides(state, &[])
+}
+
+/// Borrowed current state plus at most four effective pending UI values.
+/// The shared canonical patch law updates only Copy settings; no state owner is born.
+pub fn transfer_curve_with_overrides(
+    state: &NativeDeviceState,
+    overrides: &[(ParameterId, ParameterValue)],
+) -> Result<SaturatorTransferCurve, DeviceContractError> {
+    if overrides.len() > 4 {
+        return Err(DeviceContractError::InvalidParameterValue);
+    }
+    let mut settings = decode(state)?;
+    for (index, &(id, value)) in overrides.iter().enumerate() {
+        if overrides[..index].iter().any(|(prior, _)| *prior == id) {
+            return Err(DeviceContractError::InvalidParameterValue);
+        }
+        patch_settings(&mut settings, id, value)?;
+    }
     let drive = amplitude_from_db(settings.drive_db)?;
     let output = amplitude_from_db(settings.output_db)?;
     let peak = output.max(1.0);

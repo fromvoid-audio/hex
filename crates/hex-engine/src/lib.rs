@@ -119,10 +119,10 @@ pub use shared_metadata::{SharedMetadata, SharedMetadataCacheIdentity};
 mod pcm_arc;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
-    NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
-    native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
-    native_device_parameter_for_class, native_device_view, native_device_view_for_class,
-    native_effect_frequency_response, sampler_parameters_on_control,
+    NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceRead,
+    NativeDeviceView, native_device_catalog, native_device_catalog_for_class,
+    native_device_descriptors_for_class, native_device_parameter_for_class, native_device_view,
+    native_device_view_for_class, native_effect_frequency_response, sampler_parameters_on_control,
 };
 
 mod gain_envelope;

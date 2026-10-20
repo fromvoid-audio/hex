@@ -33,6 +33,7 @@ pub struct SnapshotClipRead<'a> {
 #[derive(Clone, Copy)]
 pub struct SnapshotDeviceRead<'a> {
     device: &'a hex_project::Device,
+    class: hex_engine::NativeDeviceClass,
 }
 #[derive(Clone, Copy)]
 pub struct SnapshotReturnRead<'a> {
@@ -89,9 +90,19 @@ impl<'a> SnapshotProjectRead<'a> {
             .map(|track| SnapshotReturnRead { track })
     }
     pub fn device(self, id: DeviceId) -> Option<SnapshotDeviceRead<'a>> {
+        let class = if self
+            .project
+            .tracks()
+            .iter()
+            .any(|track| track.instrument().is_some_and(|device| device.id() == id))
+        {
+            hex_engine::NativeDeviceClass::Instrument
+        } else {
+            hex_engine::NativeDeviceClass::Effect
+        };
         self.project
             .device(id)
-            .map(|device| SnapshotDeviceRead { device })
+            .map(|device| SnapshotDeviceRead { device, class })
     }
 }
 impl<'a> SnapshotTrackRead<'a> {
@@ -130,12 +141,16 @@ impl<'a> SnapshotTrackRead<'a> {
         self.track
             .devices()
             .iter()
-            .map(|device| SnapshotDeviceRead { device })
+            .map(|device| SnapshotDeviceRead {
+                device,
+                class: hex_engine::NativeDeviceClass::Effect,
+            })
     }
     pub fn instrument(self) -> Option<SnapshotDeviceRead<'a>> {
-        self.track
-            .instrument()
-            .map(|device| SnapshotDeviceRead { device })
+        self.track.instrument().map(|device| SnapshotDeviceRead {
+            device,
+            class: hex_engine::NativeDeviceClass::Instrument,
+        })
     }
     /// GainPoint is Copy scalar metadata; neither an owning lane nor its Vec is exposed.
     pub fn gain_points(self) -> &'a [hex_project::GainPoint] {
@@ -174,7 +189,15 @@ impl<'a> SnapshotClipRead<'a> {
         self.clip.fade()
     }
 }
-impl SnapshotDeviceRead<'_> {
+impl<'a> SnapshotDeviceRead<'a> {
+    pub fn class(self) -> hex_engine::NativeDeviceClass {
+        self.class
+    }
+    /// Nominal borrowed current-format controls. No state/model owner can be
+    /// extracted; this view ends with the enclosing retained snapshot read.
+    pub fn controls(self) -> Result<hex_engine::NativeDeviceRead<'a>, hex_engine::Invalid> {
+        hex_engine::NativeDeviceRead::on_control(self.class, self.device.state())
+    }
     pub fn id(self) -> DeviceId {
         self.device.id()
     }
@@ -202,7 +225,10 @@ impl<'a> SnapshotReturnRead<'a> {
         self.track
             .devices()
             .iter()
-            .map(|device| SnapshotDeviceRead { device })
+            .map(|device| SnapshotDeviceRead {
+                device,
+                class: hex_engine::NativeDeviceClass::Effect,
+            })
     }
 }
 
