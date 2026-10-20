@@ -35,3 +35,12 @@ O(V*N) lookup work per redraw. The source call paths establish that cost; no
 native latency or benchmark improvement is claimed. Both existing callers now
 resolve one body fill and reuse it for the title and readable foreground. The
 original rendered color/recolor/selection/geometry/rename regression is unchanged.
+
+Current-main integration preserves the passive preview title route: actual clips
+receive the already-resolved body fill, while transient preview titles keep
+their existing neutral fill and remain noninteractive. No new project lookup
+is added. The private scene fixture now precreates one Environment before
+sample/import/UI startup, sharing its root with all four preferences and
+catalog jobs. Its original color/selection/rename/geometry assertions remain
+unchanged; a held real catalog save checks root retention and cleanup.
+Native readability, physical input and user acceptance remain open.

@@ -6055,3 +6055,10 @@ Return pan/Solo have no current model and are omitted. Full2835 acceptance and
 optimized native visual/listening checks stay open. No PR438/431 implementation,
 recording backend, codec, new DSP or native app action is included. Final current
 candidate checks/review/merge belong to the sole merger.
+
+
+PR432 integration: preserve title/body inherited fill reuse and current passive
+preview interaction. Private fixture uses one Environment before sample/UI
+startup with actual held catalog save/cleanup control; original paint/selection/
+rename/geometry test body unchanged. Current owning/required checks and review
+pending; native readability/input acceptance remains open.

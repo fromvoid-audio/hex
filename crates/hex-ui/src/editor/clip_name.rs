@@ -216,7 +216,12 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         self.clip_name_strip(
-            track, clip, name, theme::color(theme::PaletteRole::Raised), false, cx,
+            track,
+            clip,
+            name,
+            theme::color(theme::PaletteRole::Raised),
+            false,
+            cx,
         )
     }
     fn clip_name_strip(

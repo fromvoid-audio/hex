@@ -1,13 +1,16 @@
 //! Actual title-strip paint with disposable worker/catalog startup.
-use super::super::{EditorView, external_audio_drop_ui_test::BatchFiles, viewport::Viewport};
+use super::super::{EditorView, test_environment::Environment, viewport::Viewport};
 use crate::theme;
 use gpui::{AppContext, Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, ClipFlavor, ClipId, Command, Created, ElementColor, TrackId};
 use hex_session::service::{Event, Request, Service};
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 struct Fixture {
-    _files: BatchFiles,
+    _environment: Arc<Environment>,
     window: gpui::AnyWindowHandle,
     editor: Entity<EditorView>,
     track: TrackId,
@@ -26,11 +29,31 @@ fn next(service: &Service) -> Event {
     }
 }
 fn fixture(cx: &mut TestAppContext) -> Fixture {
+    fixture_with_environment(cx, Environment::new().unwrap())
+}
+fn fixture_with_environment(cx: &mut TestAppContext, environment: Arc<Environment>) -> Fixture {
     cx.update(super::super::bind_editor_keys);
-    let files = BatchFiles::new();
-    let wav = files.wav("clip-title.wav", 48_000, 96_000);
-    let directory = wav.parent().unwrap();
-    std::fs::create_dir(directory.join("samples")).unwrap();
+    let directory = environment.root();
+    std::fs::create_dir_all(directory.join("samples")).unwrap();
+    let wav = directory.join("samples/clip-title.wav");
+    let count = 96_000_u32;
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"RIFF");
+    bytes.extend_from_slice(&(36 + count * 2).to_le_bytes());
+    bytes.extend_from_slice(b"WAVEfmt ");
+    bytes.extend_from_slice(&16_u32.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&1_u16.to_le_bytes());
+    bytes.extend_from_slice(&48_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&96_000_u32.to_le_bytes());
+    bytes.extend_from_slice(&2_u16.to_le_bytes());
+    bytes.extend_from_slice(&16_u16.to_le_bytes());
+    bytes.extend_from_slice(b"data");
+    bytes.extend_from_slice(&(count * 2).to_le_bytes());
+    for _ in 0..count {
+        bytes.extend_from_slice(&8192_i16.to_le_bytes());
+    }
+    std::fs::write(&wav, bytes).unwrap();
     let service = Service::new(48_000, 16, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
@@ -74,9 +97,15 @@ fn fixture(cx: &mut TestAppContext) -> Fixture {
     let editor = cx
         .update_window(window, |_, window, cx| {
             let editor = window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test_with_browser_directory(window, cx, service, directory)
+                EditorView::new_for_test_with_environment(
+                    window,
+                    cx,
+                    service,
+                    Arc::clone(&environment),
+                )
             });
             editor.update(cx, |v, cx| {
+                assert!(Arc::ptr_eq(&environment, &v.test_environment));
                 assert_eq!(v.browser.directory, directory.join("samples"));
                 assert_eq!(v.browser.places, vec![directory.join("samples")]);
                 v.state = Some(event.state);
@@ -91,7 +120,7 @@ fn fixture(cx: &mut TestAppContext) -> Fixture {
         })
         .unwrap();
     Fixture {
-        _files: files,
+        _environment: environment,
         window,
         editor,
         track,
@@ -259,4 +288,68 @@ fn clip_titles_paint_inherited_flavor_colors_through_selection_and_recolor(
         assert_eq!(project.clip(f.audio).unwrap(), &original_audio);
         assert_eq!(project.midi_clip(f.midi).unwrap(), &original_midi);
     });
+}
+
+#[gpui::test]
+fn title_fixture_catalog_job_retains_same_root_through_save_and_cleanup(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering;
+    let environment = Environment::new().unwrap();
+    let root = environment.root().to_owned();
+    let weak = Arc::downgrade(&environment);
+    let gate = environment.gate_next_catalog_save();
+    let f = fixture_with_environment(cx, environment);
+    let mut visual = VisualTestContext::from_window(f.window, cx);
+    visual.run_until_parked();
+    assert!(gate.reached.load(Ordering::Acquire));
+    assert!(!gate.finished.load(Ordering::Acquire));
+    let paths = f.editor.read_with(&visual, |view, _| {
+        assert!(Arc::ptr_eq(&f._environment, &view.test_environment));
+        [
+            view.browser.test_preferences_path().to_owned(),
+            view.recent_projects.test_path().to_owned(),
+            view.theme_settings.test_path().to_owned(),
+            view.project_directory.test_path().to_owned(),
+        ]
+    });
+    for (path, name) in paths.iter().zip([
+        "browser.json",
+        "recent-projects.json",
+        "theme.json",
+        "project-directory.json",
+    ]) {
+        assert_eq!(*path, root.join("config").join(name));
+    }
+    let database = paths[0].with_extension("samples-v1.db");
+    assert_eq!(database, root.join("config/browser.samples-v1.db"));
+    assert!(!database.exists());
+    let editor_weak = f.editor.downgrade();
+    visual.update(|window, cx| {
+        let _ = window.replace_root(cx, |_, _| gpui::Empty);
+    });
+    drop(f);
+    visual.update(|_, _| {});
+    visual.run_until_parked();
+    assert!(editor_weak.upgrade().is_none());
+    assert_eq!(
+        weak.strong_count(),
+        1,
+        "actual catalog job holds the same root"
+    );
+    assert!(root.join("samples/clip-title.wav").is_file());
+    for path in &paths {
+        assert!(path.parent().unwrap().is_dir());
+    }
+    gate.release();
+    visual.run_until_parked();
+    assert!(gate.finished.load(Ordering::Acquire));
+    assert!(gate.save_succeeded.load(Ordering::Relaxed));
+    assert!(gate.root_present_during_save.load(Ordering::Relaxed));
+    visual.update(|_, _| {});
+    assert!(weak.upgrade().is_none());
+    let until = Instant::now() + Duration::from_secs(5);
+    while root.exists() {
+        assert!(Instant::now() < until);
+        std::thread::yield_now();
+    }
+    eprintln!("TITLE_CATALOG same_root=true saved=true cleanup=true");
 }
