@@ -1947,7 +1947,8 @@ impl Project {
     pub(crate) fn new_main_device_runtime(
         &self,
     ) -> Result<crate::EffectRuntimeChain, hex_lattice_contract::DeviceContractError> {
-        let instances = crate::effect_resources::clone_prepared_on_control(&self.main_device_chain)?;
+        let instances =
+            crate::effect_resources::clone_prepared_on_control(&self.main_device_chain)?;
         crate::EffectRuntimeChain::new_prepared(instances)
     }
 
@@ -2496,7 +2497,8 @@ impl RendererRuntime {
 
     pub(crate) fn has_stateful_processors(&self) -> bool {
         self.main_chain.has_stateful_processors()
-            || self.device_chains
+            || self
+                .device_chains
                 .iter()
                 .any(crate::EffectRuntimeChain::has_stateful_processors)
             || self

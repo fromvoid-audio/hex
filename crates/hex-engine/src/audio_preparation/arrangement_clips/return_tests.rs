@@ -593,7 +593,7 @@ fn utility_return_fixture(
     snapshot.return_tracks[0]
         .devices
         .push(hex_project::DeviceSnapshot {
-                comparison: None,
+            comparison: None,
             id: snapshot.next_id,
             bypassed,
             state,

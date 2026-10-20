@@ -379,7 +379,7 @@ mod tests {
                 snapshot.tracks[0]
                     .devices
                     .push(hex_project::DeviceSnapshot {
-                comparison: None,
+                        comparison: None,
                         id: snapshot.next_id,
                         bypassed,
                         state,
@@ -412,7 +412,9 @@ mod tests {
                     custody.entries[0].owner = match owner {
                         ProcessorChainOwner::Track(id) => ProcessorChainOwner::Return(id),
                         ProcessorChainOwner::Return(id) => ProcessorChainOwner::Track(id),
-                        ProcessorChainOwner::Main => panic!("Main is outside this closed Utility fixture"),
+                        ProcessorChainOwner::Main => {
+                            panic!("Main is outside this closed Utility fixture")
+                        }
                     };
                     assert_eq!(
                         custody.bytes(&actual),
