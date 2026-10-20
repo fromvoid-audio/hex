@@ -51,8 +51,8 @@ pub use frame::{
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
     NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlFinalValue, NumericControlKind, NumericEscape, NumericEventPhase,
-    bind_numeric_control_keys,
+    NumericControlFinalValue, NumericControlKind, NumericDragAxis, NumericEscape,
+    NumericEventPhase, bind_numeric_control_keys,
 };
 pub use response_graph::{
     ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphEvent,

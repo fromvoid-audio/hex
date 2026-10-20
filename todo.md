@@ -6111,3 +6111,13 @@ browser Enter/density/capture behavior. Local owning fixtures bind their origina
 paths and catalog jobs to one Environment, with pointer/four-path assertions;
 original test bodies remain. Current focused/required/review and native acceptance
 remain separate; old source receipts do not qualify this combined candidate.
+
+
+### 2026-10-20 — pulse2889 / pr491 Arrange pan drag direction
+
+- Real upward-header-drag regression failed on unchanged production (value0
+  instead of0.4); per-instance shared numeric drag axis fixes that consumer.
+- Keep gain/Console/device defaults and existing canonical pan/Undo/capture/text
+  semantics; test both directions, horizontal-only, fine motion and bounds.
+- Source component checks/evidence are separate from sole-merger qualification
+  and coordinator-owned optimized physical input/audio acceptance.

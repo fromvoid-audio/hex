@@ -59,8 +59,9 @@ The supported resident header component places a compact name/automation/send
 column beside two mixer rows. The upper row contains a numbered track activator,
 Solo and a clearly disabled recording-availability indication. The lower row has
 one centered, filled dB field and one bipolar balance field. Both use the shared
-`NumericControl::FilledSlider` appearance: click to type, drag horizontally,
-Shift for fine motion, Enter to validate and Escape to cancel. The fill is a
+`NumericControl::FilledSlider` appearance: click to type, drag gain horizontally
+and Arrange pan vertically, Shift for fine motion, Enter to validate and Escape
+to cancel. The fill is a
 parameter position, never an audio meter; balance fills outward from a marked
 center and retains Hex's existing stereo-balance law and l/r/c input codec.
 Standard and CompactSlider geometry elsewhere stays unchanged. The 176×44px
@@ -103,3 +104,28 @@ automation/send buttons, resize edges, invalid/IME text and shortcut isolation.
 Verify Return rows remain pinned and streaming retains real +/- controls. Record
 actual source/build and font/visual/audio observations separately; no app action
 or installation is performed by the source executor.
+
+## vertical Arrange header pan — pulse2889 / pr491
+
+Arrange track pan now uses the shared numeric control's per-instance Vertical
+drag axis: upward increases toward right, downward decreases toward left; pure
+horizontal motion leaves the value unchanged. Its visual field, stereo-balance
+law, bipolar limits, l/r/c codec, Shift fine sensitivity and canonical gesture
+preview/commit/Undo remain shared. Only the Balance track binding opts in; normal
+volume, Return gain, Console and device consumers keep their existing behavior.
+Return headers currently expose gain but no pan model/command, so this adds none.
+
+The pre-change real header/Service regression failed because an upward24px drag
+left balance0 rather than0.4. The new rendered/worker case covers both directions,
+horizontal-only movement, fine motion, bounds, stable geometry and one Undo/Redo.
+The existing pan text/cancel/activator/Solo assertions remain, with its drag vector
+updated to vertical. Shared-widget tests exercise default, explicit Horizontal
+and Vertical instances through real pointer input and unchanged filled geometry;
+existing keyboard/reset/cancel/capture controls remain in the owning suites.
+
+Finite coordinator-owned native follow-up: on a qualified optimized source, drag
+Arrange pan up/right and down/left, verify horizontal-only has no change, Shift
+fine adjustment, boundaries, click/type l/r/c, Enter/Escape, existing reset and
+Undo/Redo. Check volume and Console/device sliders retain their direction and
+name/resize hit areas remain stationary. These source tests do not establish
+physical input, native GPU/font, listening or installed-build acceptance.
