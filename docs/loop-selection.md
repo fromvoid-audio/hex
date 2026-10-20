@@ -44,3 +44,10 @@ pointer ownership, then checks the same keys and Undo/Redo after release.
 The private selection fixture shares one precreated Environment for samples
 and all four preferences. Its original selection/typing/Console/drop tests
 remain intact, with central Environment lifecycle coverage reused.
+
+Loop shortcuts also wait while the ruler scrub owns a held or released final
+target. The existing `scrub_active` predicate covers both phases through the
+normal seek admission/refusal lifecycle. The regression uses actual ruler
+pointer input and the existing offline seek-ack gate, then verifies ordinary
+MIDI selection looping and Undo/Redo after scrub retirement. Seek/ACK policy
+and transport behavior are unchanged.
