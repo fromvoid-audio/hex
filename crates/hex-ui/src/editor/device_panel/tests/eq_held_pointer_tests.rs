@@ -959,3 +959,336 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
     backend.close();
     drop(output);
 }
+
+// Advance the real preparation worker without pumping a callback or the
+// resident-publication worker. This preserves the otherwise short race window.
+fn review_wait_seek_candidate(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
+    use crate::editor::arrangement_seek::SeekStage;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if editor.update(cx, |view, _| {
+            view.tick_prepared_arrangement_seek();
+            view.prepared_seek
+                .as_ref()
+                .is_some_and(|s| s.stage == SeekStage::CandidateReady)
+        }) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "actual seek worker did not complete"
+        );
+        std::thread::yield_now();
+    }
+}
+
+fn review_receive_preview(
+    editor: &gpui::Entity<EditorView>,
+    cx: &mut TestAppContext,
+    sequence: u64,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if editor.update(cx, |view, _| {
+            let Ok(event) = view.service.try_event() else {
+                return false;
+            };
+            let found = event
+                .device_preview
+                .as_ref()
+                .is_some_and(|p| p.identity.sequence == sequence)
+                && event.playback.is_some();
+            view.receive(event);
+            found
+        }) {
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "actual preview {sequence} missing"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[gpui::test]
+fn eq_review_overtaken_preview_preserves_held_space_intent(cx: &mut TestAppContext) {
+    let _guard = graph_layout_tests::status_fixture_guard();
+    let (handle, editor, _environment, device) = held_node_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let (mut output, mut backend) = attach_actual_output(&editor, cx, &mut visual);
+    let start = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    let first = plot(&mut visual, device, 0.62, 0.7);
+    visual.simulate_mouse_move(first, Some(MouseButton::Left), Modifiers::default());
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        preview_is_applied,
+    );
+    visual.simulate_keystrokes("space");
+    review_wait_seek_candidate(&editor, cx);
+    let second = plot(&mut visual, device, 0.68, 0.65);
+    visual.simulate_mouse_move(second, Some(MouseButton::Left), Modifiers::default());
+    let submitted = editor.update(cx, |view, _| {
+        view.pump_device_gesture();
+        view.device_gesture.snapshot().unwrap().sequence
+    });
+    let third = plot(&mut visual, device, 0.73, 0.6);
+    visual.simulate_mouse_move(third, Some(MouseButton::Left), Modifiers::default());
+    editor.read_with(cx, |view, _| {
+        assert!(view.device_gesture.snapshot().unwrap().sequence > submitted)
+    });
+    review_receive_preview(&editor, cx, submitted);
+    editor.read_with(cx, |view, _| {
+        assert!(view.prepared_seek.is_none());
+        assert!(
+            view.latched_seek_intent
+                .as_ref()
+                .is_some_and(|i| i.start_playing),
+            "intermediate same-owner preview must not erase held Space"
+        );
+    });
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        |view| {
+            view.prepared_seek.is_none()
+                && view.latched_seek_intent.is_none()
+                && view
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .control
+                    .status()
+                    .unwrap()
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+        },
+    );
+    visual.simulate_keystrokes("space");
+    visual.simulate_keystrokes("escape");
+    pump_actual_until(&editor, cx, &mut visual, &mut output, &mut backend, settled);
+    editor.update(cx, |view, _| {
+        view.audio.take();
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn eq_review_publication_retirement_preserves_newer_held_space_intent(cx: &mut TestAppContext) {
+    use crate::editor::arrangement_seek::SeekStage;
+    let _guard = graph_layout_tests::status_fixture_guard();
+    let (handle, editor, _environment, device) = held_node_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let (mut output, mut backend) = attach_actual_output(&editor, cx, &mut visual);
+    let start = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    let first = plot(&mut visual, device, 0.62, 0.7);
+    visual.simulate_mouse_move(first, Some(MouseButton::Left), Modifiers::default());
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        preview_is_applied,
+    );
+    visual.simulate_keystrokes("space");
+    review_wait_seek_candidate(&editor, cx);
+    editor.update(cx, |view, cx| {
+        view.tick(cx);
+        assert!(view.pending_resident_publication.is_some());
+        assert_eq!(
+            view.prepared_seek.as_ref().unwrap().stage,
+            SeekStage::CandidateReady
+        );
+    });
+    let next = plot(&mut visual, device, 0.71, 0.6);
+    visual.simulate_mouse_move(next, Some(MouseButton::Left), Modifiers::default());
+    editor.update(cx, |view, _| {
+        view.tick_prepared_arrangement_seek();
+        assert!(view.prepared_seek.as_ref().unwrap().cancelled);
+        assert!(view.latched_seek_intent.is_some());
+    });
+    let control = output.publication.control().unwrap();
+    control.poll_resident_publication();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        if editor.update(cx, |view, cx| {
+            view.tick(cx);
+            matches!(
+                view.prepared_seek.as_ref().map(|s| s.stage),
+                Some(SeekStage::Published { .. })
+            )
+        }) {
+            break;
+        }
+        control.poll_resident_publication();
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    }
+    editor.read_with(cx, |view, _| {
+        assert!(
+            view.latched_seek_intent
+                .as_ref()
+                .is_some_and(|i| i.start_playing),
+            "publication response must preserve the newer held intent during cancellation"
+        )
+    });
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        |view| {
+            view.prepared_seek.is_none()
+                && view.latched_seek_intent.is_none()
+                && view
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .control
+                    .status()
+                    .unwrap()
+                    .playing
+                    .load(std::sync::atomic::Ordering::Acquire)
+        },
+    );
+    visual.simulate_keystrokes("space");
+    visual.simulate_keystrokes("escape");
+    pump_actual_until(&editor, cx, &mut visual, &mut output, &mut backend, settled);
+    editor.update(cx, |view, _| {
+        view.audio.take();
+    });
+    backend.close();
+    drop(output);
+}
+
+#[gpui::test]
+fn eq_review_completed_seek_cancel_reconciles_actual_callback_revision(cx: &mut TestAppContext) {
+    use crate::editor::arrangement_seek::SeekStage;
+    use std::sync::atomic::Ordering::Acquire;
+    let _guard = graph_layout_tests::status_fixture_guard();
+    let (handle, editor, _environment, device) = held_node_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let (mut output, mut backend) = attach_actual_output(&editor, cx, &mut visual);
+    let start = plot(&mut visual, device, 0.5, 0.5);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    let first = plot(&mut visual, device, 0.62, 0.7);
+    visual.simulate_mouse_move(first, Some(MouseButton::Left), Modifiers::default());
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        preview_is_applied,
+    );
+    visual.simulate_keystrokes("space");
+    review_wait_seek_candidate(&editor, cx);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let revision = loop {
+        editor.update(cx, |view, cx| {
+            view.tick(cx);
+        });
+        output
+            .publication
+            .control()
+            .unwrap()
+            .poll_resident_publication();
+        if let Some(revision) = editor.read_with(cx, |view, _| {
+            match view.prepared_seek.as_ref().unwrap().stage {
+                SeekStage::Published { audio_revision } => Some(audio_revision),
+                _ => None,
+            }
+        }) {
+            break revision;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    backend.render(&mut [[0.0; 2]; 64]).unwrap();
+    assert_eq!(
+        backend.status().unwrap().applied_revision.load(Acquire),
+        revision
+    );
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.audio
+                .as_ref()
+                .unwrap()
+                .control
+                .cancel_fresh_runtime_publication(revision),
+            hex_audio::prepared::FreshRuntimeCancellationResult::Complete
+        );
+    });
+    // Callback won, but UI has not consumed its applied ACK. Pause is a real
+    // action and must not make the now-installed source disappear from metadata.
+    visual.simulate_keystrokes("space");
+    editor.update(cx, |view, cx| {
+        view.tick(cx);
+    });
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.audible_playback.as_ref().unwrap().audio_revision,
+            revision,
+            "late cancellation cannot discard the installed seek metadata"
+        );
+        assert!(view.prepared_seek.is_none());
+    });
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        |view| {
+            !view
+                .audio
+                .as_ref()
+                .unwrap()
+                .control
+                .status()
+                .unwrap()
+                .playing
+                .load(Acquire)
+        },
+    );
+    visual.simulate_keystrokes("space");
+    pump_actual_until(
+        &editor,
+        cx,
+        &mut visual,
+        &mut output,
+        &mut backend,
+        |view| {
+            view.prepared_seek.is_none()
+                && view
+                    .audio
+                    .as_ref()
+                    .unwrap()
+                    .control
+                    .status()
+                    .unwrap()
+                    .playing
+                    .load(Acquire)
+        },
+    );
+    visual.simulate_keystrokes("space");
+    visual.simulate_keystrokes("escape");
+    pump_actual_until(&editor, cx, &mut visual, &mut output, &mut backend, settled);
+    editor.update(cx, |view, _| {
+        view.audio.take();
+    });
+    backend.close();
+    drop(output);
+}

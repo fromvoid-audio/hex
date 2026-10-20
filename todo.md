@@ -1,3 +1,17 @@
+## held EQ preview publication races — pulse2881 / PR483, 20 october2026
+
+Three actual worker/callback interleavings reproduced lost Space intent during
+resident publication retirement, an overtaken intermediate preview, and stale
+UI audible metadata after callback-won cancellation. The repair preserves the
+existing single seek/retirement owner and latest scalar intent, validates ordered
+same-owner preview identities, and distinguishes Applying from Complete-with-
+actual-installed-revision and returned cancellation. See
+[prepared seek cancellation](docs/prepared-seek-cancellation.md). Exact targeted,
+strict/default-feature, cancellation and allocation receipts are recorded in
+Pulse; these are source component checks, not final prospective qualification,
+physical flicker/audio acceptance or delivery. All original68c/f855 failure and
+component histories remain separate. Main484 metering return is queued next.
+
 ## Browser history source checkpoint (Pulse2669 / PR286)
 
 Session-local bounded source/directory/query history replaces the disabled arrow

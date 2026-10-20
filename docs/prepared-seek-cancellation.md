@@ -156,3 +156,28 @@ request admission and exact-owner retry. That seed is explicitly not a simulated
 worker-Busy result. Existing Session worker tests independently cover occupied
 retirement, shutdown handback and worker-thread destruction. Native visible
 flicker, physical input/audio and optimized combined-build acceptance remain open.
+
+### held preview publication races (20 october 2026)
+
+The publication response finishes invalidation without clearing the latest
+already-latched intent. A replacement preview may be intermediate: its identity
+must share the old and currently active gesture key, generation and canonical
+revision, with old <= incoming <= active sequence. Foreign, terminal and older
+identities retain their existing refusal behavior. Admission still waits for the
+exact latest applied preview and its original prepared-root/fence checks.
+
+Cancellation result is distinct from the invalidation request. If callback is
+Applying, the exact pending identity survives until actual terminal observation.
+If Complete, its applied revision must match before it can restore audible
+metadata; a completed returned/canceled candidate remains canceled. Pause after
+callback installation therefore reconciles the actually installed preview and a
+later held Space can capture a fresh fence. No new runtime owner, counter, queue,
+publication API or callback work is added.
+
+Three real GPUI/Service/publication/callback regressions failed at the intended
+assertions on f855 production; all three passed after the repair, alongside the
+11 existing focused review controls. The final immutable component receipt is
+recorded in Pulse2881; the completed-return cancellation control and actual audio
+CAS/allocation controls are included there. These automated observations do not
+establish native framebuffer smoothness, physical input/audio deadlines or user
+acceptance. Sole merger owns final prospective-tree qualification and merge.

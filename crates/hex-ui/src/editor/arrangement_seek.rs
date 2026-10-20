@@ -201,8 +201,20 @@ fn cancel_published_seek<C: SeekAudioControl>(
     let SeekStage::Published { audio_revision } = pending.stage else {
         return None;
     };
-    pending.cancelled = true;
-    control.map(|control| control.cancel_publication(audio_revision))
+    let result = control.map(|control| control.cancel_publication(audio_revision));
+    // Invalidation is a request, not proof that control won the apply CAS.
+    // When callback won, retain the exact source through its actual ACK so
+    // the installed runtime can still supply a fresh admission fence.
+    pending.cancelled = match result {
+        Some(FreshRuntimeCancellationResult::Applying) => false,
+        // Complete also describes a returned/rejected candidate. Only an
+        // actually installed exact revision can restore audible metadata.
+        Some(FreshRuntimeCancellationResult::Complete) => control
+            .and_then(SeekAudioControl::status_view)
+            .is_none_or(|status| status.applied_revision.load(Acquire) != audio_revision),
+        _ => true,
+    };
+    result
 }
 
 pub(super) fn routes_are_current(entries: &[SessionRouteEntry], project: &Project) -> bool {
@@ -823,7 +835,12 @@ impl EditorView {
                     && incoming.project_generation == previous.project_generation
                     && incoming.canonical_revision == previous.canonical_revision
                     && incoming.sequence >= previous.sequence
-                    && self.active_seek_preview() == Some(incoming))
+                    && self.active_seek_preview().is_some_and(|active| {
+                        active.key == incoming.key
+                            && active.project_generation == incoming.project_generation
+                            && active.canonical_revision == incoming.canonical_revision
+                            && active.sequence >= incoming.sequence
+                    }))
                 .then(|| pending.intent())
             });
         let latest = self.latched_seek_intent.take();

@@ -686,7 +686,12 @@ impl EditorView {
                     .as_ref()
                     .is_some_and(|seek| seek.cancelled)
                 {
+                    // The seek was invalidated while this worker owned its
+                    // runtime. Completing cancellation must not erase a newer
+                    // intent already retained for the same held gesture.
+                    let latest = self.latched_seek_intent.take();
                     self.invalidate_prepared_seek();
+                    self.latched_seek_intent = latest;
                 }
                 self.status =
                     format!("audio revision {audio_revision} submitted · waiting for playback");
@@ -710,7 +715,12 @@ impl EditorView {
                     .as_ref()
                     .is_some_and(|seek| seek.cancelled)
                 {
+                    // The seek was invalidated while this worker owned its
+                    // runtime. Completing cancellation must not erase a newer
+                    // intent already retained for the same held gesture.
+                    let latest = self.latched_seek_intent.take();
                     self.invalidate_prepared_seek();
+                    self.latched_seek_intent = latest;
                 }
             }
         }

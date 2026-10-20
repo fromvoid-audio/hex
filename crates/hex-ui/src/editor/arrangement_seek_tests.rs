@@ -456,6 +456,15 @@ fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal
         ))
     );
 
+    assert_eq!(
+        cancel_published_seek(Some(&control), &mut pending),
+        Some(FreshRuntimeCancellationResult::Complete)
+    );
+    assert!(
+        pending.cancelled,
+        "completed return is not an applied runtime"
+    );
+
     let mut pending_slot = Some(pending);
     let mut status = String::from("arrangement seek ready · waiting for audio");
     let mut error = None;
