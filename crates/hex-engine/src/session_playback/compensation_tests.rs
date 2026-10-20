@@ -88,7 +88,13 @@ fn dry_fader_clock_reports_downstream_main_delivery_delay() {
 
 #[test]
 fn computer_keyboard_positive_latency_refusal_preserves_authored_runtime() {
-    let f = fixture(&[&[7]], 1024);
+    let mut f = fixture(&[&[7]], 1024);
+    f.editor
+        .execute(hex_project::Command::InsertInstrument {
+            track: f.tracks[0],
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap();
     let revision = prepare(&f).unwrap();
     let mut tested = crate::playback::Playback::from_prepared(Arc::clone(&revision));
     let mut oracle = crate::playback::Playback::from_prepared(revision);
@@ -115,6 +121,12 @@ fn operator_sync_companions_preserve_pcm_through_compensated_startup_and_partiti
     let frames = 16_000;
     let configure = |delay: u32| {
         let mut f = fixture(&[&[delay]], frames);
+        f.editor
+            .execute(Command::InsertInstrument {
+                track: f.tracks[0],
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap();
         let class = crate::NativeDeviceClass::Instrument;
         let mut state = crate::default_native_device_state_for_class(
             class,
