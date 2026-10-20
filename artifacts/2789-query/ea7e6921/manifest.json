@@ -1,0 +1,77 @@
+{
+  "source": "ea7e6921878463ca7956f3f8670aff4036338f10",
+  "tree": "523d812e886bfb217f7416e6bf0d67f47a94fbe8",
+  "base": "ab18a7fb50bd8641c02818ab16fe7d35f36f8234",
+  "native_children": [
+    "62960eef105bc3e4734e0ea6a31ae90dbded8e83",
+    "cdb4d626a9575d2106df93946550d80910ae9e78"
+  ],
+  "local_query_commit": "c5acd17b",
+  "fixture_source": "d8a87fac2eff7d6282c84f82a49265d27b8a92c4",
+  "results": {
+    "01": "Session lib check PASS before fixture application",
+    "02": "Session tests blocked by seven inherited fixture compile errors, preserved",
+    "03": "Expected RED old four-override bound: runtime failure of five-effective-field current Main Compressor discriminator",
+    "04": "Restored actual DESCRIPTORS bound GREEN: 1 PASS",
+    "05": "Engine borrowed query suite: 5 PASS including zero allocation controls",
+    "06": "workspace format FAIL inherited ab18 Engine formatting; owning files no differences",
+    "07": "all-target Engine/Devices strict blocked by four inherited main_chain integration fixture E0308",
+    "08": "Engine/Devices library strict PASS",
+    "09": "remote refs point-in-time discovery only",
+    "10": "after exact fixture child, Session retained model-read suite 7 PASS incl audio facade regression",
+    "11": "Session library strict PASS"
+  },
+  "limitations": [
+    "component only; no full/merge/native qualification",
+    "UI WIP not included",
+    "broader fixture/format correction remains merger owned",
+    "Initial producer/backend/typed completion and UI integration still outstanding"
+  ],
+  "source_scope": "Native borrowed core children plus retained SnapshotRead facade and meaningful current Main Compressor/retained-audio tests; minimal four-file Session fixture prerequisite. No UI source included.",
+  "logs": {
+    "01-session-facade-check.log": {
+      "bytes": 1739,
+      "sha256": "544bdd38371a165bc0ff4ce432f04c722a28f903b25d622c4d0b097d5fd66338"
+    },
+    "02-retained-facade-tests.log": {
+      "bytes": 10378,
+      "sha256": "68044e1f6ffa3c63ef3791f6e1f8ed0e6d2460b51a6d5c17cfdee5cb0be8a3f7"
+    },
+    "03-compressor-old-four-bound-RED.log": {
+      "bytes": 1477,
+      "sha256": "67a0cdd2dabaf46ed3e0b878a9875947f4d20c750bf9ad2ff78854f3e4d5e868"
+    },
+    "04-compressor-five-bound-GREEN.log": {
+      "bytes": 606,
+      "sha256": "fc8914cfd15b3e2a3ef86885eeff212f9b92219202eed715bd26e76569ab784a"
+    },
+    "05-engine-borrowed-queries.log": {
+      "bytes": 841,
+      "sha256": "3556cc9fbdad348b21f22b4e0ae40f870a4e1e451097553c344ea8f78b01eed0"
+    },
+    "06-format.log": {
+      "bytes": 3572,
+      "sha256": "0fd1b5db1118907aa7a6f6cbff55b99a4f943bacf572e03dc4215de5c12c1ebd"
+    },
+    "07-engine-devices-strict.log": {
+      "bytes": 3660,
+      "sha256": "5b7bac458a4a96420ba41a7dcb745e626fe65bc98077b459efe7d0626d32fb93"
+    },
+    "08-engine-devices-library-strict.log": {
+      "bytes": 415,
+      "sha256": "bc37cf9f64b702e255ade72972f5635f1c22287ca5c87cc19930596883a25961"
+    },
+    "09-remote-evidence-refs.log": {
+      "bytes": 3605,
+      "sha256": "7c76c4b7dfcfe6b1baccbaceb62c8f1d6728d9b0acee6008e520f76526e3f314"
+    },
+    "10-session-retained-facade-tests.log": {
+      "bytes": 1723,
+      "sha256": "bc0aac1f7b40190c6b1f1a18486d6f0a334d34ef8f554ffa9bac3189a0269c51"
+    },
+    "11-session-library-strict.log": {
+      "bytes": 639,
+      "sha256": "0471542ae5e385f75d41eea320265e1c0a98df68b25954eb25852eb2104e6291"
+    }
+  }
+}
