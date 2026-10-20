@@ -11,8 +11,14 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 static RELEASE_FAILURES: AtomicUsize = AtomicUsize::new(0);
-static OPERATIONS: SnapshotReadOperations =
-    SnapshotReadOperations::new_unqualified(validate, read, derive, release, report);
+static OPERATIONS: SnapshotReadOperations = SnapshotReadOperations::new_unqualified(
+    validate,
+    read,
+    derive,
+    release,
+    report,
+    follows_source,
+);
 fn family_error(error: RetainedFamilyError) -> Error {
     match error {
         RetainedFamilyError::Reservation
@@ -46,6 +52,19 @@ fn read(
     hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
         family
             .read_with(stamp, |snapshot| continuation.read(snapshot))
+            .map_err(record_error)
+    })
+    .map_err(family_error)?
+}
+fn follows_source(
+    route: RetainedControlJobRoute,
+    current: &SnapshotReadStamp,
+    previous: &SnapshotReadStamp,
+    generation: u64,
+) -> Result<bool, Error> {
+    hex_audio::read_retained_family_route::<SessionExportFamily, _>(route, |family| {
+        family
+            .follows_source(current, previous, generation)
             .map_err(record_error)
     })
     .map_err(family_error)?

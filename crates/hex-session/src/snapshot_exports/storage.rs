@@ -17,6 +17,7 @@ impl ViewState {
 // Actual fields under the existing family/worker borrow. This helper is
 // exhaustive on every owning ViewState field and allocates no projection list.
 struct ViewParts<'a> {
+    comparison: &'a Option<crate::service::ComparisonAudioBinding>,
     source: &'a Option<crate::service::SharedCanonicalAudioSource>,
     project: &'a crate::SharedProject,
     waveforms: &'a hex_project::SortedEntries<hex_project::AssetId, crate::SharedWaveform>,
@@ -28,6 +29,7 @@ struct ViewParts<'a> {
 fn view_parts(view: &ViewState) -> ViewParts<'_> {
     let ViewState {
         canonical_audio_source,
+        comparison_audio,
         project,
         waveforms,
         audio_clip_waveforms,
@@ -41,6 +43,7 @@ fn view_parts(view: &ViewState) -> ViewParts<'_> {
         document_path,
     } = view;
     ViewParts {
+        comparison: comparison_audio,
         source: canonical_audio_source,
         project,
         waveforms,
@@ -59,6 +62,14 @@ impl hex_engine::sampler_host_fields::SnapshotViewPayload for ViewState {
             .source
             .as_ref()
             .map(crate::service::canonical_audio_source::sampler_fields_on_control)
+    }
+    fn comparison_source(
+        &self,
+    ) -> Option<hex_engine::sampler_host_fields::CapturedSourceFields<'_>> {
+        view_parts(self)
+            .comparison
+            .as_ref()
+            .map(|binding| binding.sampler_source_fields_on_control())
     }
     fn project(&self) -> &crate::SharedProject {
         view_parts(self).project
@@ -268,6 +279,9 @@ mod tests {
                 } else {
                     self.actual.source()
                 }
+            }
+            fn comparison_source(&self) -> Option<CapturedSourceFields<'_>> {
+                self.actual.comparison_source()
             }
             fn project(&self) -> &crate::SharedProject {
                 if self.kind == 1 {

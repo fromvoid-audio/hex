@@ -404,6 +404,18 @@ impl SessionExportFamily {
             .map_err(|_| ExportRecordError::Busy)?;
         records.read_with(stamp, read)
     }
+    /// One inner guard covers both exact read incarnations and sealed binding.
+    pub fn follows_source(
+        &self,
+        current: &SnapshotReadStamp,
+        previous: &SnapshotReadStamp,
+        generation: u64,
+    ) -> Result<bool, ExportRecordError> {
+        self.records
+            .try_read()
+            .map_err(|_| ExportRecordError::Busy)?
+            .follows_source(current, previous, generation)
+    }
     pub fn derive_read(
         &self,
         stamp: &SnapshotReadStamp,
