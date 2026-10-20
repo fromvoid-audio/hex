@@ -191,12 +191,7 @@ impl EditorView {
                 .child(edit.input.clone())
                 .into_any_element();
         }
-        div()
-            .min_w_0()
-            .flex_1()
-            .truncate()
-            .child(theme::text(name))
-            .into_any_element()
+        clip_name_text(name).into_any_element()
     }
     pub(super) fn clip_name_header(
         &self,
@@ -224,6 +219,18 @@ impl EditorView {
             cx,
         )
     }
+    pub(super) fn clip_name_drag_header(
+        &self,
+        clip: ClipId,
+        name: &str,
+        fill: u32,
+    ) -> impl IntoElement + use<> {
+        clip_name_surface(fill)
+            .id(("clip-drag-name", clip.value()))
+            .debug_selector(move || format!("clip-drag-name-{}", clip.value()))
+            .child(clip_name_text(name))
+    }
+
     fn clip_name_strip(
         &self,
         track: hex_project::TrackId,
@@ -233,21 +240,9 @@ impl EditorView {
         interactive: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let text = theme::readable_text(fill, theme::color(theme::PaletteRole::Text));
-        div()
+        clip_name_surface(fill)
             .id(("clip-name", clip.value()))
             .debug_selector(move || format!("clip-name-{}", clip.value()))
-            .absolute()
-            .top(px(-1.0))
-            .left(px(-1.0))
-            .right(px(-1.0))
-            .h(px(CLIP_NAME_HEIGHT))
-            .px_1()
-            .overflow_hidden()
-            .text_xs()
-            .line_height(px(14.0))
-            .bg(rgb(fill))
-            .text_color(rgb(text))
             .when(interactive, |header| {
                 header.cursor_pointer().on_click(cx.listener(
                     move |view, event: &gpui::ClickEvent, window, cx| {
@@ -271,6 +266,27 @@ impl EditorView {
             })
             .child(self.clip_name_label(clip, name))
     }
+}
+
+fn clip_name_surface(fill: u32) -> gpui::Div {
+    let text = theme::readable_text(fill, theme::color(theme::PaletteRole::Text));
+    div()
+        .absolute()
+        .top(px(-1.0))
+        .left(px(-1.0))
+        .right(px(-1.0))
+        .h(px(CLIP_NAME_HEIGHT))
+        .px_1()
+        .overflow_hidden()
+        .text_xs()
+        .line_height(px(14.0))
+        .bg(rgb(fill))
+        .text_color(rgb(text))
+}
+
+// A passive drag clone must never mount the live rename input a second time.
+fn clip_name_text(name: &str) -> gpui::Div {
+    div().min_w_0().flex_1().truncate().child(theme::text(name))
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]

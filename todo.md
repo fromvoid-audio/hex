@@ -6198,3 +6198,16 @@ acceptance remain separate; prior fixture-only baseline failure is not a product
 - Exact final receipts/counts live in Pulse/source-bound evidence. Full prospective
   current-main qualification/review/merge belongs to sole merger. Native keyboard,
   listening and user acceptance remain separate; no app action performed.
+
+
+## Full-content clip drag previews — pulse2890 / PR492
+
+Shared passive production title/audio/MIDI painters now supply internal landing,
+valid-lane groups, append-row and floating anchor previews. Preserve original
+ready processed content as provisional display when future warp/tempo differs;
+no new decode, PCM owner, model edit or capture/command route. Actual MIDI and
+processed/looped-warp audio painter checks cover body clipping, ready root/offset,
+floating content and mixed move/copy groups. Original missing-note, opacity and
+modifier-fixture failures remain separate. Source checks/handoff in progress;
+sole-merger exact qualification, actual merge and optimized physical acceptance
+remain pending. No app delivery or native user approval is claimed.

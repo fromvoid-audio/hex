@@ -147,26 +147,6 @@ pub(super) fn timeline_waveform_view_cached(
     )
 }
 
-pub(super) fn waveform_view_at(
-    waveform: &Arc<CachedWaveform>,
-    clip: &Clip,
-    timeline_origin: u64,
-    visible_start: u64,
-    visible_end: u64,
-) -> Div {
-    waveform_canvas(
-        Arc::clone(waveform),
-        WaveformMapping::Clip {
-            clip: clip.clone(),
-            timeline_origin,
-        },
-        visible_start,
-        visible_end,
-        None,
-        None,
-    )
-}
-
 pub(super) fn waveform_view_cached(
     waveform: &Arc<CachedWaveform>,
     clip: &Clip,
