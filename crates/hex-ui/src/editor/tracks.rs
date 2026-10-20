@@ -1486,6 +1486,7 @@ impl EditorView {
                     )
                 })
                 .take(midi_shape_budget);
+            let fill = theme::clip_fill(track.color(), clip.flavor(), selected_clip);
             let mut midi = div()
                 .id(("midi-clip", clip.id().value()))
                 .debug_selector(|| format!("midi-clip-visual-{}", clip.id().value()))
@@ -1498,11 +1499,7 @@ impl EditorView {
                 .overflow_hidden()
                 .cursor(gpui::CursorStyle::Arrow)
                 .opacity(if trim_preview.is_some() { 0.0 } else { 1.0 })
-                .bg(rgb(theme::clip_fill(
-                    track.color(),
-                    clip.flavor(),
-                    selected_clip,
-                )))
+                .bg(rgb(fill))
                 .border_1()
                 .border_color(rgb(if selected_clip {
                     theme::color(theme::PaletteRole::Primary)
@@ -1551,7 +1548,7 @@ impl EditorView {
                         .child(theme::text(format!("{shown}/{}", preview.occurrence_count))),
                 );
             }
-            midi = midi.child(self.clip_name_header(track_id, clip.id(), clip.name(), cx));
+            midi = midi.child(self.clip_name_header(track_id, clip.id(), clip.name(), fill, cx));
             if let Some((payload, lane)) = midi_drag_payload {
                 let move_surface = self
                     .clip_drag_surface(
@@ -1673,6 +1670,14 @@ impl EditorView {
                 )
             });
         let waveform = state.waveforms.get(&clip.asset());
+        let fill = theme::clip_fill(
+            state
+                .project
+                .track(track)
+                .map_or(hex_project::ElementColor::default(), |t| t.color()),
+            clip.flavor(),
+            selected,
+        );
         let mut content = div()
             .absolute()
             .top_0()
@@ -1683,14 +1688,7 @@ impl EditorView {
             .overflow_hidden()
             .cursor(gpui::CursorStyle::Arrow)
             .opacity(if active_trim_preview { 0.0 } else { 1.0 })
-            .bg(rgb(theme::clip_fill(
-                state
-                    .project
-                    .track(track)
-                    .map_or(hex_project::ElementColor::default(), |t| t.color()),
-                clip.flavor(),
-                selected,
-            )))
+            .bg(rgb(fill))
             .hover(move |style| {
                 style.border_color(rgb(theme::color(if selected {
                     theme::PaletteRole::Primary
@@ -1836,7 +1834,7 @@ impl EditorView {
             cx,
         );
         let mut content = content
-            .child(self.clip_name_header(track, clip.id(), clip.name(), cx))
+            .child(self.clip_name_header(track, clip.id(), clip.name(), fill, cx))
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
             .on_mouse_down(
