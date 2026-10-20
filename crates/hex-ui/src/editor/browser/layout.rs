@@ -266,8 +266,15 @@ impl EditorView {
             })
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(move |view, _, _, cx| {
-                    view.move_browser_history(forward, cx);
+                cx.listener(move |view, _, window, cx| {
+                    if enabled {
+                        view.move_browser_history(forward, cx);
+                    } else {
+                        // A disabled arrow is inert, including the ancestor's
+                        // ordinary non-text focus transfer and text checkpoint.
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
                 }),
             )
     }

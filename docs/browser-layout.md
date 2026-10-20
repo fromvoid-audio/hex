@@ -340,3 +340,12 @@ step or discarding the forward branch. This does not reveal hidden sources or
 change Samples/layout availability. Actual row-menu removal and toolbar-arrow
 controls cover both directions, unchanged query/media/project history and no
 automatic preview; native physical navigation remains separate acceptance.
+
+History arrows leave search editing through the existing results focus path when
+navigation is enabled; disabled arrows do not checkpoint typing or transfer
+focus. A coalesced query returning to its predecessor collapses the duplicate,
+retains the predecessor's item/scroll identity and ends that edit transaction.
+History restoration waits for the provider actually used by the source/query,
+not unrelated catalog work. Top-row capture uses the existing fixed 22px,
+zero-padding browser list geometry and actual painted offset, with pending scroll
+intent taking precedence; restoration uses strict top alignment after layout.

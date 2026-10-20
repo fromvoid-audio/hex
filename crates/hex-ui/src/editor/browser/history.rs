@@ -114,16 +114,8 @@ impl History {
 
 impl EditorView {
     fn browser_history_entry(&self, cx: &App) -> Entry {
-        let top = {
-            // The convenience index accessor is test-support-only in GPUI.
-            // Its existing public state carries the same pending/layout value.
-            let scroll = self.browser.scroll.0.borrow();
-            scroll
-                .deferred_scroll_to_item
-                .as_ref()
-                .map(|deferred| deferred.item_index)
-                .unwrap_or_else(|| scroll.base_handle.logical_scroll_top().0)
-        };
+        let count = self.browser_visible_entries(cx).len() + self.browser_visible_devices(cx).len();
+        let top = self.browser_history_top_index(count);
         Entry {
             location: Location {
                 section: self.browser.section.clone(),
@@ -135,6 +127,25 @@ impl EditorView {
                 top: self.browser_item_at(top, cx),
             },
         }
+    }
+
+    fn browser_history_top_index(&self, count: usize) -> usize {
+        let scroll = self.browser.scroll.0.borrow();
+        // Both browser UniformLists have zero vertical padding and fixed
+        // ROW_HEIGHT rows. Generic ScrollHandle child indexes do not describe
+        // virtualized global rows; use the actual painted offset instead.
+        let index = scroll.deferred_scroll_to_item.as_ref().map_or_else(
+            || {
+                let offset = -scroll.base_handle.offset().y / px(1.0);
+                if offset.is_finite() && ROW_HEIGHT.is_finite() && ROW_HEIGHT > 0.0 {
+                    (offset.max(0.0) / ROW_HEIGHT).floor() as usize
+                } else {
+                    0
+                }
+            },
+            |pending| pending.item_index,
+        );
+        index.min(count.saturating_sub(1))
     }
 
     // Synchronize before navigation as well as from the observer: a queued observer
@@ -170,12 +181,28 @@ impl EditorView {
         } else {
             self.browser.history.push(next)
         };
-        self.browser.history.editing_query = retained;
+        let history = &mut self.browser.history;
+        let collapsed = editing
+            && retained
+            && history.cursor > 0
+            && history.entries[history.cursor - 1].location
+                == history.entries[history.cursor].location;
+        let restored = if collapsed {
+            history.entries.remove(history.cursor);
+            history.cursor -= 1;
+            Some(history.entries[history.cursor].clone())
+        } else {
+            None
+        };
+        history.editing_query = retained && !collapsed;
         self.browser.observed_query = self.browser.search.read(cx).content.clone();
         if !retained {
             self.browser.places_status = Some("browser history field limit reached".into());
         }
         self.reset_browser_results();
+        // A type/delete round trip retains the predecessor's saved identity and
+        // ends this text transaction; subsequent typing starts a new branch.
+        self.browser.history.pending = restored;
     }
 
     /// A source choice or deliberate result navigation commits the current query
@@ -198,6 +225,22 @@ impl EditorView {
     }
 
     pub(super) fn move_browser_history(&mut self, forward: bool, cx: &mut Context<Self>) {
+        let available = |history: &History| {
+            if forward {
+                history.can_forward()
+            } else {
+                history.can_back()
+            }
+        };
+        if !available(&self.browser.history) {
+            return;
+        }
+        self.sync_browser_query(cx);
+        // A synchronous query change may have removed the painted Forward
+        // branch or collapsed Back. Never checkpoint a now-disabled direction.
+        if !available(&self.browser.history) {
+            return;
+        }
         self.checkpoint_browser_history(cx);
         let Some(mut entry) = self.browser.history.step(forward) else {
             return;
@@ -262,26 +305,24 @@ impl EditorView {
     }
 
     pub(super) fn restore_browser_history_position(&mut self, cx: &App) {
-        let files = !matches!(
-            self.browser.section,
-            BrowserSection::Instruments | BrowserSection::Collection(_)
-        );
-        let catalog = matches!(
-            self.browser.section,
-            BrowserSection::Samples | BrowserSection::All | BrowserSection::Place(_)
-        );
-        if self.browser.history.pending.is_none()
-            || (files && (self.browser.loading || self.browser.tree.history_loading()))
+        let query = &self.browser.search.read(cx).content;
+        let indexed = samples::ResultsMode::for_query(query) == samples::ResultsMode::Indexed;
+        let (listing, tree, catalog) = match self.browser.section {
+            BrowserSection::Samples => (false, !indexed, indexed),
+            BrowserSection::All => (indexed, !indexed, indexed),
+            BrowserSection::Place(_) => (true, !indexed, indexed),
+            BrowserSection::Projects => (true, true, false),
+            BrowserSection::Instruments | BrowserSection::Collection(_) => (false, false, false),
+        };
+        if (listing && self.browser.loading)
+            || (tree && self.browser.tree.history_loading())
             || (catalog && self.browser.samples.history_loading())
         {
             return;
         }
-        let entry = self
-            .browser
-            .history
-            .pending
-            .take()
-            .expect("checked pending history");
+        let Some(entry) = self.browser.history.pending.take() else {
+            return;
+        };
         // A user edit/source choice cancels pending before reaching here. Workers
         // have their own scan/tree/catalog generations and cannot change location.
         if entry.location.section != self.browser.section
@@ -305,7 +346,7 @@ impl EditorView {
             .unwrap_or(0);
         self.browser
             .scroll
-            .scroll_to_item(top, gpui::ScrollStrategy::Top);
+            .scroll_to_item_strict(top, gpui::ScrollStrategy::Top);
     }
 }
 

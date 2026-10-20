@@ -6133,3 +6133,11 @@ Environment before their files/Service and actual identity/path assertions. New
 combined hidden custom/Home/Music Back/Forward controls keep branch/no-autoplay/
 no-authoring/media oracles. Required current-head checks/review and native/manual
 acceptance remain separate; prior fixture-only baseline failure is not a product RED.
+
+- PR286 review continuation: captured actual disabled-focus, duplicate-query and
+  unrelated-catalog restoration failures; revised painted-scroll control proved
+  restored0px versus retained-220px. Enabled arrow focus was already correct.
+  Reuse the existing focus path, make disabled arrows inert, collapse adjacent
+  query round trips, wait only the used provider, remove the runtime expect and
+  capture/strictly restore actual fixed-row geometry. Current validation pending;
+  original eight and six hidden-source cases remain, no native claim.
