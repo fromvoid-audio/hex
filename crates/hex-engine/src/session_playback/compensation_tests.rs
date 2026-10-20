@@ -386,3 +386,6 @@ fn main_removal_retains_old_tail_and_applies_future_source_mix_once() {
         "future source mix once plus independent old residual"
     );
 }
+
+#[path = "compensation_tests/monitor_clock.rs"]
+mod monitor_clock;
