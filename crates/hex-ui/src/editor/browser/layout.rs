@@ -59,6 +59,13 @@ impl Default for BrowserLayout {
 }
 
 impl BrowserLayout {
+    pub(super) fn history_source_available(&self, source: &BrowserSection) -> bool {
+        SECTIONS
+            .iter()
+            .position(|(section, _)| section == source)
+            .is_none_or(|index| self.visible[index])
+    }
+
     pub(super) fn samples_visible(&self) -> bool {
         self.visible[0]
     }
@@ -232,6 +239,46 @@ fn browser_pending(value: &str) -> Div {
 }
 
 impl EditorView {
+    fn browser_history_arrow(&self, forward: bool, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let enabled = if forward {
+            self.browser.history.can_forward()
+        } else {
+            self.browser.history.can_back()
+        };
+        let selector = if forward {
+            "browser-history-forward"
+        } else {
+            "browser-history-back"
+        };
+        browser_pending(if forward { "›" } else { "‹" })
+            .id(selector)
+            .debug_selector(move || selector.to_owned())
+            .when(enabled, |button| {
+                button
+                    .cursor_pointer()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Text)))
+            })
+            .tooltip(move |_, cx| {
+                cx.new(|_| super::super::transport::MiniTooltip {
+                    description: theme::text(if forward { "forward" } else { "back" }),
+                })
+                .into()
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    if enabled {
+                        view.move_browser_history(forward, cx);
+                    } else {
+                        // A disabled arrow is inert, including the ancestor's
+                        // ordinary non-text focus transfer and text checkpoint.
+                        window.prevent_default();
+                        cx.stop_propagation();
+                    }
+                }),
+            )
+    }
+
     pub(super) fn browser_toolbar(&self, cx: &mut Context<Self>) -> Div {
         browser_divider()
             .h(px(30.0))
@@ -241,33 +288,15 @@ impl EditorView {
             .px_1()
             .gap_1()
             .debug_selector(|| "browser-toolbar".to_owned())
-            .child(
-                browser_pending("‹")
-                    .id("browser-history-back")
-                    .debug_selector(|| "browser-history-back".to_owned())
-                    .tooltip(|_, cx| {
-                        cx.new(|_| super::super::transport::MiniTooltip {
-                            description: theme::text("back · history pending"),
-                        })
-                        .into()
-                    }),
-            )
-            .child(
-                browser_pending("›")
-                    .id("browser-history-forward")
-                    .tooltip(|_, cx| {
-                        cx.new(|_| super::super::transport::MiniTooltip {
-                            description: theme::text("forward · history pending"),
-                        })
-                        .into()
-                    }),
-            )
+            .child(self.browser_history_arrow(false, cx))
+            .child(self.browser_history_arrow(true, cx))
             .child(
                 div()
                     .flex_1()
                     .min_w_0()
                     .capture_any_mouse_down(cx.listener(|view, event: &MouseDownEvent, _, cx| {
                         if event.button == MouseButton::Left {
+                            view.checkpoint_browser_history(cx);
                             view.browser.results_focused = false;
                             cx.notify();
                         }

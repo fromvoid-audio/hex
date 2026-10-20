@@ -4932,6 +4932,8 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
     });
 }
 
+#[path = "browser_history_ui_test.rs"]
+mod browser_history_ui_test;
 #[path = "browser_builtin_source_ui_test.rs"]
 mod builtin_sources;
 #[path = "browser_resize_feedback_ui_test.rs"]
