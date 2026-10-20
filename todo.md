@@ -6386,3 +6386,13 @@ guards are unchanged. The pre-fix compiler-PATH suite failed on `/var` versus
 Standalone UI-root correction is included here so each split step can pass the
 complete tooling plan; explicit marker lookups and alias regressions follow in
 2912/2913. No native application or audio acceptance is implied.
+
+## actual fixture owner markers — pulse2912 / PR504
+
+Launch recovery reads the prior runner's selected owner marker; the UI build
+fixture retains the successful optimized build's reported release-owner path.
+Neither independently hashes a configured path spelling. Existing tests still
+check stale-owner and external-cache preservation, dirty-build refusal, READY
+owner/artifact preservation and real compiled-consumer freshness. Required
+exact-source tooling results are retained in the PR and Pulse. No production
+runner, launch, packaging or ownership policy changes.
