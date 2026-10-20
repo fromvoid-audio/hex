@@ -98,6 +98,13 @@ refusals stop visibly. Bool callers and FIFO laws remain unchanged. Its frozen
 partial diagnostic still reports 441 errors elsewhere and no primary error in
 new admission code; actual queue-pressure/release/ACK tests remain unexecuted.
 
+A controller metadata preparer now quotes and fills plain display/ACK facts from
+the same retained head with backing reserved outside the guard. It is compiled
+but unconnected: no Event receive, ACK, submission or UI action occurs through
+it. Corrected full-source partial diagnostics still fail with 441 errors and no
+primary helper error. Native paired-source preflight and actual backend
+completion routes remain prerequisites for the real controller port.
+
 The production device-composition source guard passes with the real instrument
 dispatch. Earlier staged leaf tests (UI2, Engine2, Session30) remain evidence for
 that earlier immutable component only. The earlier feature-only mount and its

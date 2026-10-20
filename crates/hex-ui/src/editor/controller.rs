@@ -26,6 +26,8 @@ use std::{
 #[cfg(all(test, feature = "ui-test-support"))]
 mod project_replacement_tests;
 
+mod source_notice;
+
 /// Result of actual request admission, separate from transport read pressure.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RequestAdmission {

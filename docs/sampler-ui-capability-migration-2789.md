@@ -184,6 +184,32 @@ classification is connected, but real full-queue/barrier/refusal/retry/ACK UI
 regressions remain unexecuted until the registered fixture and UI compilation
 are available; no reliable release acceptance or usable build is claimed.
 
+Controller metadata preparation is now staged in `controller/source_notice.rs`.
+It quotes the actual retained head, reserves exact fallible backing outside the
+read, then copies only plain text/paths, bounded slot labels, Copy ACK fields
+and basic snapshot facts from that same head without buffer growth. UTF-8
+conversion and owned display assembly occur after the guard. Empty-versus-absent
+values are retained. It owns no project, compiled/input/PCM source or additional
+capability and performs no receive, ACK, submission or UI action.
+
+This module is **unconnected preparation**, not an event consumer. Its returned
+head is correlation only; it proves no previous-source relation, backend route
+or admission. The existing controller still needs the actual paired preclaim
+comparison and backend-associated completion contracts before it can consume
+this preparation safely. No legacy Event conversion or claim-and-drop shortcut
+is introduced.
+
+The preliminary `modern-event-notice` failed diagnostic omitted the then
+untracked new module from its tracked-only fingerprint; that receipt is retained
+and explicitly does not identify the full candidate. The corrected
+`modern-event-notice-v2` check includes the complete new source and ended with
+exit 101, 441 actual errors, unchanged SHA-256
+`a9c92a38ac5df2aa802a418be641d83ef491d488e0dbc081d07829fd45dd17af`.
+No primary diagnostic is in the new module. Scoped formatting/diff/layout checks
+pass. Same-head change/refusal, exact metadata/ACK delivery and zero allocation
+or deallocation while guarded remain unexecuted behavioral tests; this adds no
+clean UI/strict/full/native/usable qualification.
+
 The sections below preserve the older b94-based component's source history;
 their unconnected-dispatch and unavailable-query descriptions are historical.
 
