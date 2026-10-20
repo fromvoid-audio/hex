@@ -1407,22 +1407,15 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let focused_owner = self
-            .focused_return
-            .filter(|id| {
-                state
-                    .project
-                    .return_tracks()
-                    .iter()
-                    .any(|track| track.id() == *id)
-            })
-            .map(super::device_panel::DevicePanelOwner::Return)
-            .or_else(|| {
-                self.selected_track
-                    .map(super::device_panel::DevicePanelOwner::Track)
-            });
-
+        let focused_owner = super::device_panel::selected_owner(self, state);
         match (focused_owner, target.identity.owner) {
+            (
+                Some(super::device_panel::DevicePanelOwner::Main),
+                hex_engine::ProcessorChainOwner::Main,
+            ) => state.project.main_devices().iter().any(|device| {
+                device.id().value() == target.identity.device_id
+                    && device.state().type_id() == target.identity.device_type
+            }),
             (
                 Some(super::device_panel::DevicePanelOwner::Track(track_id)),
                 hex_engine::ProcessorChainOwner::Track(owner_id),
@@ -1488,21 +1481,15 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return false;
         };
-        let focused_owner = self
-            .focused_return
-            .filter(|id| {
-                state
-                    .project
-                    .return_tracks()
-                    .iter()
-                    .any(|track| track.id() == *id)
-            })
-            .map(super::device_panel::DevicePanelOwner::Return)
-            .or_else(|| {
-                self.selected_track
-                    .map(super::device_panel::DevicePanelOwner::Track)
-            });
+        let focused_owner = super::device_panel::selected_owner(self, state);
         match (focused_owner, target.identity.owner) {
+            (
+                Some(super::device_panel::DevicePanelOwner::Main),
+                hex_engine::ProcessorChainOwner::Main,
+            ) => state.project.main_devices().iter().any(|device| {
+                device.id().value() == target.identity.device_id
+                    && device.state().type_id() == target.identity.device_type
+            }),
             (
                 Some(super::device_panel::DevicePanelOwner::Track(track_id)),
                 hex_engine::ProcessorChainOwner::Track(owner_id),
@@ -1761,6 +1748,7 @@ impl EditorView {
             } else {
                 None
             };
+        self.observe_effect_bus_barrier(&event);
         let event_state = Arc::clone(&event.state);
         let revision = event_state.revision;
         if !event.project_replaced {
@@ -1891,6 +1879,7 @@ impl EditorView {
             }
             self.device_gesture.reset();
             self.device_gesture_barriers.clear();
+            self.refuse_effect_bus_barriers("effect insertion canceled · project replaced");
             self.edit_cursor = None;
             self.clip_paint_gesture = None;
             self.time_selection = None;
@@ -1919,6 +1908,7 @@ impl EditorView {
             self.duplicate_intent.reject();
             self.pending_scene_duplicate = None;
             self.selected_track = None;
+            self.device_panel.main_selected = None;
             self.track_selection = super::selection::TrackSelection::default();
             self.selected_clip = None;
             self.selected_scene = None;
@@ -1939,8 +1929,13 @@ impl EditorView {
                 self.session_copy_source = None;
             }
             self.track_selection.reconcile(&state.project);
-            (self.selected_track, self.selected_clip) =
-                selection::reconcile(&state.project, self.selected_track, self.selected_clip);
+            if self.selected_track.is_some() || self.focused_return.is_some() {
+                self.device_panel.main_selected = None;
+            }
+            if self.device_panel.main_selected != Some(self.project_generation) {
+                (self.selected_track, self.selected_clip) =
+                    selection::reconcile(&state.project, self.selected_track, self.selected_clip);
+            }
             if let Some(clip) = self.selected_clip
                 && state.project.session_midi_clip(clip).is_some()
                 && let Some(cell) = state.project.session_cells().iter().find(|cell| {
@@ -2219,6 +2214,7 @@ impl EditorView {
             if let Some(snapshot) = self.device_gesture.snapshot() {
                 self.bind_tuning_library_device_terminal(snapshot.key, false);
             }
+            self.refuse_effect_bus_barriers("effect insertion canceled · device edit was retired");
             self.device_gesture.reset();
             super::device_gesture::retire_deferred(
                 &mut self.pending_requests,
@@ -2334,6 +2330,9 @@ impl EditorView {
             if let Some(message) = message {
                 self.error = Some(message.into());
             }
+        }
+        if let Some(reason) = self.take_effect_bus_barrier_error() {
+            self.error = Some(reason.into());
         }
         self.reconcile_publication_observation();
         if event.request_complete
@@ -2525,6 +2524,7 @@ impl EditorView {
                 | Request::DropNativeDevice { .. }
                 | Request::DropBrowserDeviceOnArrangement { .. }
                 | Request::InsertBrowserInstrumentTrack { .. }
+                | Request::InsertEffectBusDevice { .. }
                 | Request::AddNativeDevice { .. }
                 | Request::ReplaceNativeDevice { .. }
                 | Request::CompareDevice { .. }

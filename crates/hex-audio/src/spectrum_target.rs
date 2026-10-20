@@ -112,6 +112,7 @@ impl SpectrumTargetControl {
         }
         if match identity.owner {
             ProcessorChainOwner::Track(id) | ProcessorChainOwner::Return(id) => id == 0,
+            ProcessorChainOwner::Main => false,
         } {
             return Err(TargetError::InvalidOwner);
         }
@@ -300,6 +301,55 @@ mod tests {
             )
             .unwrap()
             .0
+    }
+
+    #[test]
+    fn main_owner_preserves_exact_target_and_rejects_invalid_inputs() {
+        let (mut control, mut callback) = channel();
+        let main = identity(17, ProcessorChainOwner::Main);
+        let (target, _) = control.select(main, 7, 12, 48_000).unwrap();
+        callback.begin_block();
+        assert_eq!(callback.current(), Some(target));
+        assert_eq!(target.identity, main);
+        assert_eq!(target.project_generation, 7);
+        assert_eq!(target.activation_floor, 12);
+        for (identity, floor, rate, error) in [
+            (
+                identity(0, ProcessorChainOwner::Main),
+                12,
+                48_000,
+                TargetError::InvalidDevice,
+            ),
+            (main, 0, 48_000, TargetError::InvalidActivationFloor),
+            (main, 12, 7_999, TargetError::UnsupportedSampleRate(7_999)),
+            (
+                identity(17, ProcessorChainOwner::Track(0)),
+                12,
+                48_000,
+                TargetError::InvalidOwner,
+            ),
+            (
+                identity(17, ProcessorChainOwner::Return(0)),
+                12,
+                48_000,
+                TargetError::InvalidOwner,
+            ),
+            (
+                PostNodeIdentity::new(
+                    ProcessorChainOwner::Main,
+                    17,
+                    hex_engine::DeviceTypeId::from_static("hex.utility"),
+                ),
+                12,
+                48_000,
+                TargetError::WrongDeviceType,
+            ),
+        ] {
+            assert_eq!(control.select(identity, 7, floor, rate), Err(error));
+            assert_eq!(control.desired(), Some(target));
+            callback.begin_block();
+            assert_eq!(callback.current(), Some(target));
+        }
     }
 
     #[test]

@@ -36,6 +36,8 @@ pub(super) use gesture_adapter::{
     dispatch_numeric_gesture, owns_numeric_gesture,
 };
 mod chain_window;
+mod effect_bus;
+pub(super) use effect_bus::{EffectBusOwner, select_main, selected_owner};
 mod compressor_panel;
 mod eq8_panel;
 mod eq_panel;
@@ -103,6 +105,7 @@ struct DeviceControlIdentity {
 #[derive(Default)]
 pub(super) struct DevicePanelState {
     pub(super) owner: Option<DevicePanelOwner>,
+    pub(super) main_selected: Option<u64>,
     chain_window: chain_window::ChainWindow,
     parameter_rows: HashMap<DeviceId, parameter_rows::RowWindow>,
     pub(super) navigation: navigation::Navigation,
@@ -158,6 +161,7 @@ struct OperatorPreviewInventory {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum DevicePanelOwner {
+    Main,
     Track(TrackId),
     Return(hex_project::ReturnId),
 }
@@ -519,17 +523,10 @@ pub(super) fn view(
             |inventory| Arc::clone(&inventory.devices),
         );
     operator_panel::preview::retire_removed(view, cx, alive_operator.as_ref());
-    let desired_owner = view
-        .focused_return
-        .filter(|id| {
-            state
-                .project
-                .return_tracks()
-                .iter()
-                .any(|track| track.id() == *id)
-        })
-        .map(DevicePanelOwner::Return)
-        .or_else(|| view.selected_track.map(DevicePanelOwner::Track));
+    if view.selected_track.is_some() || view.focused_return.is_some() {
+        view.device_panel.main_selected = None;
+    }
+    let desired_owner = selected_owner(view, &state);
     if desired_owner != view.device_panel.owner {
         if let Some(audio) = view.audio.as_mut() {
             let _ = audio.control.spectrum_clear();
@@ -581,10 +578,17 @@ pub(super) fn view(
         view.device_panel.message = None;
     }
     match view.device_panel.owner {
-        Some(DevicePanelOwner::Track(track)) => render_track(view, window, cx, &state, track),
-        Some(DevicePanelOwner::Return(return_track)) => {
-            return_view::render(view, window, cx, &state, return_track)
+        Some(DevicePanelOwner::Main) => {
+            return_view::render(view, window, cx, &state, EffectBusOwner::Main)
         }
+        Some(DevicePanelOwner::Track(track)) => render_track(view, window, cx, &state, track),
+        Some(DevicePanelOwner::Return(return_track)) => return_view::render(
+            view,
+            window,
+            cx,
+            &state,
+            EffectBusOwner::Return(return_track),
+        ),
         None => empty_panel("select a track or return to view devices"),
     }
 }
@@ -597,6 +601,7 @@ pub(super) fn clear_eq8_audition_gesture_flags(view: &mut EditorView) {
 
 fn owner_exists(state: &ViewState, owner: DevicePanelOwner) -> bool {
     match owner {
+        DevicePanelOwner::Main => true,
         DevicePanelOwner::Track(track) => state.project.track(track).is_some(),
         DevicePanelOwner::Return(return_track) => state
             .project
@@ -614,10 +619,17 @@ fn render_owner(
     owner: DevicePanelOwner,
 ) -> Stateful<Div> {
     match owner {
-        DevicePanelOwner::Track(track) => render_track(view, window, cx, state, track),
-        DevicePanelOwner::Return(return_track) => {
-            return_view::render(view, window, cx, state, return_track)
+        DevicePanelOwner::Main => {
+            return_view::render(view, window, cx, state, EffectBusOwner::Main)
         }
+        DevicePanelOwner::Track(track) => render_track(view, window, cx, state, track),
+        DevicePanelOwner::Return(return_track) => return_view::render(
+            view,
+            window,
+            cx,
+            state,
+            EffectBusOwner::Return(return_track),
+        ),
     }
 }
 
@@ -1610,10 +1622,10 @@ fn render_effect(
 }
 
 impl EditorView {
-    fn drop_native_device_to_return(
+    fn drop_native_device_to_effect_bus(
         &mut self,
         drag: &drag::NativeDeviceDrag,
-        return_track: hex_project::ReturnId,
+        owner: EffectBusOwner,
         before: Option<DeviceId>,
         window: &mut Window,
         cx: &mut Context<EditorView>,
@@ -1627,14 +1639,9 @@ impl EditorView {
             && self.native_device_drag_is_current(drag)
             && self.state.as_ref().is_some_and(|state| {
                 state.revision == drag.revision
-                    && state.project.return_tracks().iter().any(|candidate| {
-                        candidate.id() == return_track
-                            && before.is_none_or(|anchor| {
-                                candidate
-                                    .devices()
-                                    .iter()
-                                    .any(|device| device.id() == anchor)
-                            })
+                    && owner.devices(&state.project).is_some_and(|devices| {
+                        before
+                            .is_none_or(|anchor| devices.iter().any(|device| device.id() == anchor))
                     })
             });
         if !current {
@@ -1661,52 +1668,31 @@ impl EditorView {
             cx.notify();
             return;
         }
-        let command = match drag.source {
+        let request = match drag.source {
             drag::NativeDeviceDragSource::Browser {
                 class: NativeDeviceClass::Effect,
                 type_id,
-            } => hex_engine::default_native_device_state_for_class(
-                NativeDeviceClass::Effect,
-                type_id,
-            )
-            .map(|state| Command::InsertReturnDevice {
-                return_track,
-                before,
-                state,
-            })
-            .map_err(|error| error.to_string().to_lowercase()),
+            } => Ok(owner.insert_request(drag.project_generation, drag.revision, before, type_id)),
             drag::NativeDeviceDragSource::Browser {
                 class: NativeDeviceClass::Instrument,
                 ..
-            } => Err("return tracks accept effects only".to_owned()),
+            } => Err("this effect chain accepts effects only".to_owned()),
             drag::NativeDeviceDragSource::Existing { device, .. } => {
-                let owns_device = self.state.as_ref().is_some_and(|state| {
-                    state.project.return_tracks().iter().any(|candidate| {
-                        candidate.id() == return_track
-                            && candidate
-                                .devices()
-                                .iter()
-                                .any(|effect| effect.id() == device)
-                    })
-                });
+                let devices = self
+                    .state
+                    .as_ref()
+                    .and_then(|state| owner.devices(&state.project));
+                let owns_device = devices
+                    .is_some_and(|devices| devices.iter().any(|effect| effect.id() == device));
                 if owns_device {
-                    let unchanged = self.state.as_ref().is_some_and(|state| {
-                        state
-                            .project
-                            .return_tracks()
-                            .iter()
-                            .find(|owner| owner.id() == return_track)
-                            .is_some_and(|owner| {
-                                let position = owner
-                                    .devices()
-                                    .iter()
-                                    .position(|candidate| candidate.id() == device);
-                                before == Some(device)
-                                    || position.is_some_and(|index| {
-                                        owner.devices().get(index + 1).map(|next| next.id())
-                                            == before
-                                    })
-                            })
+                    let unchanged = devices.is_some_and(|devices| {
+                        before == Some(device)
+                            || devices
+                                .iter()
+                                .position(|entry| entry.id() == device)
+                                .is_some_and(|index| {
+                                    devices.get(index + 1).map(|next| next.id()) == before
+                                })
                     });
                     if unchanged {
                         self.status = "device order unchanged".into();
@@ -1714,19 +1700,19 @@ impl EditorView {
                         cx.notify();
                         return;
                     }
-                    Ok(Command::MoveReturnDevice { device, before })
+                    Ok(Request::Edit(owner.reorder(device, before)))
                 } else {
                     Err("devices can only be reordered within their current owner".to_owned())
                 }
             }
         };
         self.clear_native_device_drag(drag);
-        match command {
-            Ok(command) => {
-                if self.enqueue_device_barrier(Request::Edit(command)) {
+        match request {
+            Ok(request) => {
+                if self.enqueue_device_barrier(request) {
                     self.error = None;
                     self.device_panel.message = None;
-                    self.status = "updating return effects".into();
+                    self.status = "updating effects".into();
                 }
             }
             Err(reason) => {

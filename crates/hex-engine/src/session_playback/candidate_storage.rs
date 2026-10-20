@@ -27,6 +27,7 @@ impl SessionPlayback {
             route_scratch,
             device_chains,
             return_chains,
+            main_chain,
             return_scratch,
             return_effect_tails,
             mutable_instruments,
@@ -121,6 +122,7 @@ impl SessionPlayback {
         for chain in return_chains {
             chain_storage(chain, &[], l)?;
         }
+        chain_storage(main_chain, &revision.arrangement().main_device_chain, l)?;
         Ok(())
     }
 }

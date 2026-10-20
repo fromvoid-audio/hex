@@ -957,22 +957,25 @@ pub(crate) fn validate_prepared_graph_budget(
             )
             .ok_or(MutableInstrumentRuntimeError::Budget)?;
     }
-    for bus in arrangement.return_buses() {
-        for device in bus.device_chain.iter() {
-            let Some(definition) = &device.definition else {
-                continue;
-            };
-            effect_count = effect_count
-                .checked_add(1)
-                .ok_or(MutableInstrumentRuntimeError::Budget)?;
-            effect_bytes = effect_bytes
-                .checked_add(
-                    definition
-                        .declared_pair_bytes()
-                        .ok_or(MutableInstrumentRuntimeError::Budget)?,
-                )
-                .ok_or(MutableInstrumentRuntimeError::Budget)?;
-        }
+    for device in arrangement
+        .return_buses()
+        .iter()
+        .flat_map(|bus| bus.device_chain.iter())
+        .chain(arrangement.main_device_chain.iter())
+    {
+        let Some(definition) = &device.definition else {
+            continue;
+        };
+        effect_count = effect_count
+            .checked_add(1)
+            .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        effect_bytes = effect_bytes
+            .checked_add(
+                definition
+                    .declared_pair_bytes()
+                    .ok_or(MutableInstrumentRuntimeError::Budget)?,
+            )
+            .ok_or(MutableInstrumentRuntimeError::Budget)?;
     }
 
     let mut mutable_count = 0_usize;

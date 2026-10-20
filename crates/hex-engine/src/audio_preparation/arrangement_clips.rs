@@ -275,6 +275,12 @@ impl ArrangementClips {
         }
         Ok(())
     }
+    pub(super) fn main_carrier_bytes() -> Result<usize, AudioStorageError> {
+        root::ArrangementRootAssembly::main_carrier_bytes()
+    }
+    pub(super) fn reserve_main_carrier(&mut self) -> Result<(), AudioStorageError> {
+        self.root.reserve_main_carrier()
+    }
     pub(super) fn construct(
         &mut self,
         slots: &mut [SourceSlot],

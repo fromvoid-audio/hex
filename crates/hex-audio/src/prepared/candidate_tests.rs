@@ -167,9 +167,14 @@ pub(crate) fn candidate_with_context(
     };
     let token = custody.begin_input_on_control(input).ok().unwrap();
     Some((
-        AudioCandidateOwner::try_new_on_control(custody, token)
-            .ok()
-            .unwrap(),
+        match AudioCandidateOwner::try_new_on_control(custody, token) {
+            Ok(owner) => owner,
+            Err(refusal) => {
+                let reason = format!("{:?}", refusal.reason);
+                drop(refusal);
+                panic!("actual candidate constructor refused: {reason}");
+            }
+        },
         session_clip,
     ))
 }

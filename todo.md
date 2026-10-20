@@ -6254,3 +6254,88 @@ component histories remain separate. Main484 metering return is queued next.
   retain original EQ/seek/A-B/text tests and negative receipts. Source component
   evidence is separate from sole-merger prospective qualification and native
   framebuffer/physical audio acceptance.
+
+## Main Renderer metering return — pulse2882 / PR484, 20 october2026
+
+The public headless Renderer metering toggle now includes its existing prepared
+Main chain. Actual nonzero-PCM enable/read failed before the repair. The owning
+case covers disabled/enable/disable/reenable in ordinary/routed projects with
+bitwise unchanged PCM. Source-bound targeted/strict and callback allocation
+controls are recorded in Pulse, not final prospective qualification or native
+meter/display acceptance. Prior d81 latency/A-B repairs and evidence remain
+preserved; no new meter owner/API, callback work or Main DSP pass is introduced.
+
+
+## 19 october 2026 — pulse2882 / pr484 main effect chain
+
+- Singleton canonical effect-only Main with global DeviceIds and strict current
+  format33; original pinned layout, clip destination exclusion and master fader
+  remain. Shared rail/parameter/preset/A-B/history paths target Main explicitly.
+- One Main NativeRuntimeChain after Tracks+Returns, before master gain once;
+  Track/Return taps/stems remain pre-Main. Current prepared handles/runtime bytes
+  and combined effect+mutable-instrument limits include Main. Empty Main assembly
+  Arc is quoted before birth and retained/restored by the same carrier; authored
+  Main remains outside that constructor's existing narrow graph class.
+- Actual stateful normal handoff missing-inheritance, combined cap omission,
+  meter lookup, native fallback/legacy-history and Session class-resolution
+  failures are retained with source-bound positive controls. Real Console input,
+  A/B project/preset round trips, nonlinear/export/stem PCM and callback zero-
+  allocation/history checks supplement the earlier finite UI/carrier receipts.
+- Sole merger owns prospective full checks/review/merge. Root owns optimized
+  native geometry/control/output/listening checks; no physical acceptance is
+  claimed. Future395 overlay must preserve Main accounting on modern combined
+  source, without importing the unfinished old overlay into this task.
+
+
+## Main latency and inactive-bank review — pulse2882 / PR484
+
+Continue canonical263003 history: final causal output arrival includes actual
+serial Main latency under the existing checked limit while pre-Main alignment and
+stems stay intact. Main joins Session comparison validation and typed metadata
+classification; malformed saved inactive payload refuses open. Actual latency and
+saved-project/command reds are retained, along with distinct fixture/compile
+failures. Actual Project layout is measured, not assumed to grow four bytes.
+Original owning cases remain; focused/strict/source-bound handoff in progress.
+Sole merger owns prospective required checks/review/merge, and Root owns optimized
+native acceptance. No app delivery, hosted CI or Native395 overlay is claimed.
+## Main/Return catalog factory ownership — PR484 integration
+
+The shared Main/Return catalog menu and browser-drop paths now carry typed
+destination/type/anchor and captured project stamps to the Session worker.
+Default construction and pre-barrier refusal live on the worker; canonical
+insert commands, selection, same-owner reorder and ordinary empty tracks remain.
+New Service and rendered controls cover both destinations, history and atomic
+refusal. This is an implementation checkpoint; exact-source owning checks,
+required CI, review and merge remain pending. Native delivery remains separate.
+
+PR484 integration continuation: worker-only Main/Return catalog construction is
+implemented. Actual Main/Return menu and browser-drop ACK/history controls pass;
+Service admission/refusal/gesture controls and retained Track controls remain
+source-scoped. The two new review regressions (deferred Add revision and Main
+Utility popup) were reproduced and now pass through actual Service/UI paths,
+including changed/no-op gesture history. Final refusal controls, exact required
+plan and current review remain pending; no merge or native acceptance claimed.
+
+PR484 finite review controls: 10 Main/Return UI cases and the five retained
+barrier FIFO/retirement cases pass on stable source; rejected/canceled terminal,
+old/unmatched ACK, interposed canonical edit, document replacement/identity ABA,
+invalid intent and Utility missing/wrong-type controls are included. Earlier
+fixture/compiler and product-regression negatives remain retained separately.
+Final clean candidate required plan/review/merge audit remains pending.
+
+PR484 constructor regression: removed the duplicate Main/Project group location
+within the existing closed Audio-only constructor and explicitly checked prepared
+and actual runtime Main entries before group emission. Existing group identities,
+reservation, storage accounting and ordinary Main behavior are unchanged. Actual
+known constructor, empty/populated eligibility, Engine custody and Audio default
+and feature suites pass; exact prior 51-failure required receipt is retained.
+Four further current-head Main review findings remain open; no merge/full-pass
+claim is made by these owning checks.
+
+PR484 renderer rollback continuation: actual owned-Main transaction RED corrected
+by including Main in the existing failure rollback. Warmed nonzero PCM/history,
+output zeroing, unchanged failure position and immediate inheritance/retry pass.
+Existing default export receiver passes source-end/final-sample controls for
+upstream-only, Main-only and combined latency without changing export production.
+Clock/tail finite ownership plan is returned in Pulse2882; no allocation writes
+or full required rerun while those current findings remain unresolved.

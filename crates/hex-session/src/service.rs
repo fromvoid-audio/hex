@@ -26,6 +26,9 @@ pub use audio_sink::WorkerAudioSink;
 use audio_sink::WorkerEvents;
 pub use comparison_audio::ComparisonAudioBinding;
 mod device_comparison;
+mod effect_bus;
+#[cfg(test)]
+mod effect_bus_tests;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -315,6 +318,15 @@ pub enum Request {
         class: hex_engine::NativeDeviceClass,
         type_id: hex_lattice_contract::DeviceTypeId,
     },
+    /// Catalog effect insertion; defaults and target admission belong to the worker.
+    InsertEffectBusDevice {
+        project_generation: u64,
+        revision: u64,
+        destination: EffectBusDestination,
+        class: hex_engine::NativeDeviceClass,
+        type_id: hex_lattice_contract::DeviceTypeId,
+        before: Option<hex_project::DeviceId>,
+    },
     /// Catalog device on a captured Arrangement lane or before-track anchor.
     DropBrowserDeviceOnArrangement {
         project_generation: u64,
@@ -506,6 +518,12 @@ impl Request {
                 | Self::OpenWith { .. }
         )
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EffectBusDestination {
+    Main,
+    Return(hex_project::ReturnId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1347,10 +1365,10 @@ fn run_worker(
         let mut gesture_request = false;
         let mut preview_prepared = None;
         let mut preview_project = None;
-        // Resolve Enter on the worker before any gesture barrier. Invalid identities
+        // Resolve catalog insertions on the worker before any gesture barrier. Invalid identities
         // and requests during a live draft cannot commit unrelated gesture history.
         // A valid request then uses the exact generic Edit publication path below,
-        // including Created::Track selection and keyboard/tuning preparation.
+        // including Created selection and keyboard/tuning preparation.
         let browser_insert = match &request {
             Request::InsertBrowserInstrumentTrack {
                 project_generation: expected_generation,
@@ -1377,6 +1395,29 @@ fn run_worker(
                             state,
                         })
                         .map_err(|reason| reason.to_string().to_lowercase())
+                },
+            ),
+            Request::InsertEffectBusDevice {
+                project_generation: expected_generation,
+                revision: expected_revision,
+                destination,
+                class,
+                type_id,
+                before,
+            } => Some(
+                if *expected_generation != project_generation || *expected_revision != revision {
+                    Err("effect insertion canceled · project changed".to_owned())
+                } else if device_gesture.snapshot().is_some() || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active device edit before inserting an effect".into())
+                } else {
+                    effect_bus::insertion_command(
+                        session.project(),
+                        *destination,
+                        *class,
+                        *type_id,
+                        *before,
+                    )
                 },
             ),
             _ => None,
@@ -1663,6 +1704,10 @@ fn run_worker(
                     error = Some(
                         "instrument insertion request was not prepared; select it again".into(),
                     );
+                }
+                Request::InsertEffectBusDevice { .. } => {
+                    error =
+                        Some("effect insertion request was not prepared; select it again".into());
                 }
                 Request::DropBrowserDeviceOnArrangement {
                     project_generation: expected_generation,
@@ -2687,24 +2732,20 @@ fn run_worker(
                             Some((compiled_revision, prepared))
                                 if *compiled_revision == revision =>
                             {
-                                let frames = frames.unwrap_or_else(|| {
-                                    prepared
-                                        .arrangement()
-                                        .audible_end_frame()
-                                        .unwrap_or(0)
-                                        .saturating_sub(start)
-                                });
-                                if frames == 0 || start.checked_add(frames).is_none() {
-                                    Err("invalid export range".to_owned())
-                                } else {
-                                    Ok(ExportJob {
-                                        revision,
-                                        path: path.clone(),
-                                        prepared: Arc::clone(prepared),
-                                        frames,
-                                        controlled: Some((start, signal, control, overwrite)),
-                                    })
-                                }
+                                hex_export::controlled_frame_count(
+                                    prepared.arrangement(),
+                                    start,
+                                    frames,
+                                    &signal,
+                                )
+                                .map_err(|error| error.to_string())
+                                .map(|frames| ExportJob {
+                                    revision,
+                                    path: path.clone(),
+                                    prepared: Arc::clone(prepared),
+                                    frames,
+                                    controlled: Some((start, signal, control, overwrite)),
+                                })
                             }
                             _ => Err("latest project revision has not compiled".to_owned()),
                         }

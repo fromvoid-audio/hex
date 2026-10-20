@@ -11,6 +11,7 @@ impl Project {
                     .iter()
                     .flat_map(|track| track.devices()),
             )
+            .chain(self.main_devices())
     }
 
     /// Resolve identities only; this performs no file access or PCM admission.

@@ -659,6 +659,7 @@ impl Playback {
         let refuses_unowned_prepared_fallback = session_runtime.is_none()
             && session_unavailable.is_some()
             && (prepared_revision.session().has_mutable_instruments()
+                || !project.main_device_chain.is_empty()
                 || project
                     .tracks()
                     .iter()
@@ -1320,6 +1321,7 @@ impl Playback {
                 .prepared_revision
                 .as_ref()
                 .is_some_and(|revision| revision.session().has_mutable_instruments())
+                || !self.project.main_device_chain.is_empty()
                 || self
                     .project
                     .tracks()
@@ -1486,6 +1488,7 @@ impl Playback {
                 .prepared_revision
                 .as_ref()
                 .is_some_and(|revision| revision.session().has_mutable_instruments())
+                || !self.project.main_device_chain.is_empty()
                 || self
                     .project
                     .tracks()
@@ -1616,11 +1619,12 @@ impl Playback {
 
 fn legacy_arrangement_state_cannot_be_seeded(previous: &Playback) -> bool {
     if previous.performance_frame != 0
-        && previous
-            .project
-            .tracks()
-            .iter()
-            .any(crate::Track::has_device_chain)
+        && (!previous.project.main_device_chain.is_empty()
+            || previous
+                .project
+                .tracks()
+                .iter()
+                .any(crate::Track::has_device_chain))
     {
         return true;
     }
