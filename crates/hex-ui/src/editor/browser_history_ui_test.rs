@@ -827,16 +827,13 @@ fn review_history_waits_for_the_used_catalog_not_an_unrelated_scan(cx: &mut Test
                 "real catalog work was not started"
             );
             view.restore_browser_history_position(cx);
-            assert_eq!(
-                view.browser_selected_item(cx),
-                (!indexed).then_some(selected.clone()),
-                "indexed={indexed}"
-            );
+            assert_eq!(view.browser_selected_item(cx).is_none(), indexed, "indexed={indexed}");
+            if !indexed { assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::File(path)) if path == selected)); }
             cx.notify();
         });
         visual.run_until_parked();
         editor.read_with(visual, |view, cx| {
-            assert_eq!(view.browser_selected_item(cx), Some(selected));
+            assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::File(path)) if path == selected));
             assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
             assert!(view.browser.playback_path.is_none());
         });
