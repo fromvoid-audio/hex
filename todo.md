@@ -6182,3 +6182,19 @@ acceptance remain separate; prior fixture-only baseline failure is not a product
   semantics; test both directions, horizontal-only, fine motion and bounds.
 - Source component checks/evidence are separate from sole-merger qualification
   and coordinator-owned optimized physical input/audio acceptance.
+
+### 19 October 2026 — pulse2879 / pr481 focused BPM arrows
+
+- Project and sample BPM fields opt into 1 BPM Up/Down and 0.1 BPM Command-Up/Down;
+  Shift remains coarse. Generic numeric owners keep Shift-fine semantics.
+- Valid unmarked text drafts adjust locally until existing Enter/blur commit;
+  Escape, invalid/IME text, inclusive bounds and canonical micro-BPM conversion
+  retain their owner contracts. No model/Service/schema/global modifier change.
+- Original real GPUI Up120→expected121 failed with120, preserved test-only8f3e763d.
+  First source repair passed that same case and actual Service Undo/Redo.
+  Expanded sample Undo fixture initially unwrapped None: the real original field
+  uses tempo-map fallback; corrected oracle compares complete actual before/after
+  canonical state, without changing production or inventing an explicit BPM.
+- Exact final receipts/counts live in Pulse/source-bound evidence. Full prospective
+  current-main qualification/review/merge belongs to sole merger. Native keyboard,
+  listening and user acceptance remain separate; no app action performed.
