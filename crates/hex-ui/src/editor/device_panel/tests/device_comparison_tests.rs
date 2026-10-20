@@ -974,6 +974,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
             project_generation: 0,
             project_revision: state.revision,
             prepared_revision: prepared,
+            device_preview_identity: None,
         },
         fence,
     );

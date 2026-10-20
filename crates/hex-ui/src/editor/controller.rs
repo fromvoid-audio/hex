@@ -681,6 +681,18 @@ impl EditorView {
                 {
                     seek.stage = super::arrangement_seek::SeekStage::Published { audio_revision };
                 }
+                if self
+                    .prepared_seek
+                    .as_ref()
+                    .is_some_and(|seek| seek.cancelled)
+                {
+                    // The seek was invalidated while this worker owned its
+                    // runtime. Completing cancellation must not erase a newer
+                    // intent already retained for the same held gesture.
+                    let latest = self.latched_seek_intent.take();
+                    self.invalidate_prepared_seek();
+                    self.latched_seek_intent = latest;
+                }
                 self.status =
                     format!("audio revision {audio_revision} submitted · waiting for playback");
             }
@@ -698,6 +710,18 @@ impl EditorView {
                     tuning_preview_identity: pending.tuning_preview_identity,
                 });
                 self.error = Some(rejected.reason.to_lowercase().into());
+                if self
+                    .prepared_seek
+                    .as_ref()
+                    .is_some_and(|seek| seek.cancelled)
+                {
+                    // The seek was invalidated while this worker owned its
+                    // runtime. Completing cancellation must not erase a newer
+                    // intent already retained for the same held gesture.
+                    let latest = self.latched_seek_intent.take();
+                    self.invalidate_prepared_seek();
+                    self.latched_seek_intent = latest;
+                }
             }
         }
         true
@@ -887,6 +911,14 @@ impl EditorView {
         visible_change |= self.tick_prepared_arrangement_seek();
         visible_change |= self.tick_scrub();
         visible_change |= self.poll_resident_publication();
+        // Snapshot private ACK-source eligibility before borrowing the audio
+        // client. This does not admit publication: promotion below still needs
+        // actual applied/rejected telemetry, including cancellation losing CAS.
+        // No UI event can change this owner during this synchronous tick.
+        let current_seek_source = self.prepared_seek.as_ref().and_then(|seek| {
+            self.seek_publication_is_current(seek.request_id, seek.device_preview_identity)
+                .then_some((seek.request_id, seek.device_preview_identity))
+        });
         let Some(audio) = self.audio.as_mut() else {
             let pending_after = self
                 .worker_requests_pending
@@ -1099,20 +1131,26 @@ impl EditorView {
             rejected_revision.map(|(revision, _)| revision),
         );
         if let Some(candidate) = audible {
-            let source = applied_tuning_candidate_source(
-                &candidate,
-                self.project_generation,
-                self.state.as_ref().map(|s| s.revision),
-                self.tuning.client.snapshot().map(|s| (s.key, s.sequence)),
-            )
-            .unwrap_or_else(|| {
-                applied_candidate_source(
+            let source = if candidate.seek_request_id.is_some_and(|request_id| {
+                current_seek_source != Some((request_id, candidate.device_preview_identity))
+            }) {
+                AppliedCandidateSource::SupersededPreview
+            } else {
+                applied_tuning_candidate_source(
                     &candidate,
                     self.project_generation,
-                    self.state.as_ref().map(|state| state.revision),
-                    active_gesture,
+                    self.state.as_ref().map(|s| s.revision),
+                    self.tuning.client.snapshot().map(|s| (s.key, s.sequence)),
                 )
-            });
+                .unwrap_or_else(|| {
+                    applied_candidate_source(
+                        &candidate,
+                        self.project_generation,
+                        self.state.as_ref().map(|state| state.revision),
+                        active_gesture,
+                    )
+                })
+            };
             if source == AppliedCandidateSource::Current {
                 if candidate.tuning_preview_identity.is_some() {
                     self.tuning.broadcast.observe(
@@ -2255,6 +2293,7 @@ impl EditorView {
                         && preview.identity.canonical_revision == revision
                 })
                 .map(|preview| preview.identity);
+            self.retire_seek_before_playback_replacement(preview_identity);
             // Retain the immutable source identity before Playback ownership can
             // move into the audio publication queue.
             let prepared_revision = playback.prepared_revision().cloned();
