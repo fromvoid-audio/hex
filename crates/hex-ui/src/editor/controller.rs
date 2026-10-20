@@ -4514,8 +4514,11 @@ mod comparison_source_binding_tests {
         };
         receive();
         service
-            .submit(Request::Edit(hex_project::Command::AddMidiTrack {
+            .submit(Request::Edit(hex_project::Command::InsertTrackWithDevice {
                 name: "source".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             }))
             .unwrap();
         let initial = receive();
