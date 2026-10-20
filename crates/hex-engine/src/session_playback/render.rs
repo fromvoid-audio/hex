@@ -465,21 +465,44 @@ impl SessionPlayback {
                     capture,
                 )?;
             }
-            let main_clock = crate::effect_clock::ArrangementEffectClock::session(
+            if let Some(compensation) = self.compensation.as_ref() {
+                compensation
+                    .process_main(
+                        &mut self.main_chain,
+                        &mut output[output_offset..chunk_end],
+                        output_offset,
+                        observer,
+                    )
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            } else {
+                let main_clock = crate::effect_clock::ArrangementEffectClock::session(
+                    self.revision.session().timing(),
+                    arrangement_frame,
+                    performance_frame,
+                    arrangement_loop_pass,
+                    true,
+                );
+                crate::main_chain::process(
+                    &mut self.main_chain,
+                    &mut output[output_offset..chunk_end],
+                    output_offset,
+                    Some(&main_clock),
+                    observer,
+                )
+                .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            }
+            let tail_clock = crate::effect_clock::ArrangementEffectClock::session(
                 self.revision.session().timing(),
                 arrangement_frame,
                 performance_frame,
                 arrangement_loop_pass,
                 true,
             );
-            crate::main_chain::process(
-                &mut self.main_chain,
+            self.return_effect_tails.render_main_chunk(
                 &mut output[output_offset..chunk_end],
-                output_offset,
-                Some(&main_clock),
-                observer,
-            )
-            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                self.compensation.as_ref(),
+                &tail_clock,
+            )?;
             let chunk = u64::try_from(chunk_frames)
                 .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
             performance_frame = performance_frame

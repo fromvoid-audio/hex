@@ -198,3 +198,62 @@ fn return_eq_uses_the_same_arrangement_clock_with_and_without_compensation() {
         assert_eq!(offline, actual);
     }
 }
+
+#[test]
+fn main_eq_automation_follows_upstream_and_each_serial_input_origin() {
+    fn main_revision(upstream: u32, serial: &[u32]) -> Arc<PreparedRevision> {
+        let mut f = eq_fixture(upstream, true, false);
+        let device = f
+            .editor
+            .project()
+            .track(f.tracks[0])
+            .unwrap()
+            .devices()
+            .last()
+            .unwrap();
+        let state = device.state().clone();
+        let id = device.id();
+        f.editor.execute(Command::RemoveDevice(id)).unwrap();
+        for delay in serial {
+            f.editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: super::state(*delay).unwrap(),
+                })
+                .unwrap();
+        }
+        f.editor
+            .execute(Command::InsertMainDevice {
+                before: None,
+                state,
+            })
+            .unwrap();
+        prepare_eq(&f)
+    }
+    let frames = 4_096;
+    let expected = session(main_revision(0, &[]), frames, 31);
+    let static_pcm = session(prepare_eq(&eq_fixture(0, false, false)), frames, 31);
+    assert!(
+        expected
+            .iter()
+            .zip(&static_pcm)
+            .any(|(a, b)| (a[0] - b[0]).abs() > 0.02),
+        "actual automation must affect output"
+    );
+    for (upstream, serial) in [(7, vec![]), (0, vec![3, 5]), (7, vec![3, 5])] {
+        let latency = upstream + serial.iter().sum::<u32>();
+        let revision = main_revision(upstream, &serial);
+        for partition in [1, 31, 128] {
+            let actual = session(Arc::clone(&revision), frames + latency as usize, partition);
+            assert!(actual[..latency as usize].iter().all(|f| *f == [0.0; 2]));
+            let mismatch = actual[latency as usize..]
+                .iter()
+                .zip(&expected)
+                .position(|(a, b)| a != b);
+            assert!(
+                mismatch.is_none(),
+                "Main EQ input origin drift at {mismatch:?}; upstream={upstream}, serial={serial:?}, partition={partition}"
+            );
+        }
+    }
+}

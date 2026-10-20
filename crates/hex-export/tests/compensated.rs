@@ -101,7 +101,8 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
     let legacy = directory.join("legacy.wav");
     let shared = directory.join("prepared.wav");
     let a = hex_export::render_new(&legacy, &compiled, 0, default_end).unwrap();
-    let b = hex_export::render_prepared_new(&shared, prepared, 0, default_end).unwrap();
+    let b =
+        hex_export::render_prepared_new(&shared, Arc::clone(&prepared), 0, default_end).unwrap();
     assert_eq!((a.frames, b.frames), (17, 17));
     let a = std::fs::read(&legacy).unwrap();
     let b = std::fs::read(&shared).unwrap();
@@ -113,6 +114,48 @@ fn assert_default_export_final_frame(track_delay: bool, main_delay: bool) {
         .flat_map(|sample| ((sample * 32767.0_f32).round() as i16).to_le_bytes())
         .collect();
     assert_eq!(&a[44..], expected);
+    use hex_export::{ExportControl, ExportSignal, controlled_frame_count};
+    let main = ExportSignal::Main;
+    let frames = controlled_frame_count(prepared.arrangement(), 0, None, &main).unwrap();
+    assert_eq!(frames, 17 + u64::from(compiled.main_latency_frames()));
+    assert_eq!(
+        controlled_frame_count(prepared.arrangement(), 0, Some(17), &main).unwrap(),
+        17
+    );
+    let track = editor.project().tracks()[0].id();
+    let capture = ExportSignal::CapturedMix(vec![hex_engine::OutputCaptureId::Track(track)]);
+    assert_eq!(
+        controlled_frame_count(prepared.arrangement(), 0, None, &capture).unwrap(),
+        17
+    );
+    assert_eq!(
+        controlled_frame_count(
+            prepared.arrangement(),
+            0,
+            None,
+            &ExportSignal::Stems(vec![])
+        )
+        .unwrap(),
+        17
+    );
+    for (label, span) in [("automatic", frames), ("explicit", 17)] {
+        let path = directory.join(format!("{label}.wav"));
+        let report = hex_export::render_prepared_controlled(
+            &path,
+            Arc::clone(&prepared),
+            0,
+            span,
+            ExportSignal::Main,
+            &ExportControl::default(),
+        )
+        .unwrap();
+        assert_eq!(report.frames, span);
+        let bytes = std::fs::read(path).unwrap();
+        let latency = compiled.main_latency_frames() as usize;
+        let mut causal = vec![0; latency * 4];
+        causal.extend_from_slice(&expected);
+        assert_eq!(&bytes[44..], &causal[..span as usize * 4]);
+    }
     std::fs::remove_dir_all(directory).unwrap();
 }
 // Only the effect fixture is used; the empty instrument registry is truthful.

@@ -389,3 +389,122 @@ fn main_renderer_metering_tracks_public_enable_disable_and_reenable_without_pcm_
         }
     }
 }
+
+#[test]
+fn removing_warmed_main_preserves_zero_input_residual_once() {
+    for compensated in [false, true] {
+        for action in ["remove", "bypass", "replace"] {
+            assert_main_residual(compensated, action);
+        }
+    }
+}
+fn assert_main_residual(compensated: bool, action: &str) {
+    let (mut edit, mut media) = fixture(compensated);
+    // Past warmup, canonical input really is zero; only the old Main has PCM.
+    for audio in media.values_mut() {
+        let mut frames = vec![[0.0; 2]; 1024];
+        frames[..128].fill([0.25, -0.125]);
+        *audio = Audio::new(48_000, frames).unwrap();
+    }
+    edit.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    let prepared = revision(&edit, &media);
+    let mut donor = SessionPlayback::new(Arc::clone(&prepared)).unwrap();
+    let mut oracle = SessionPlayback::new(prepared).unwrap();
+    for runtime in [&mut donor, &mut oracle] {
+        runtime.apply(SessionPlaybackCommand::Play).unwrap();
+        runtime.render(&mut [[0.0; 2]; 128]).unwrap();
+    }
+    let device = edit.project().main_devices()[0].id();
+    match action {
+        "bypass" => {
+            edit.execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        }
+        "replace" => {
+            edit.execute(Command::RemoveDevice(device)).unwrap();
+            let state = UTILITY_DEFINITION
+                .patch_parameter(
+                    &UTILITY_DEFINITION.default_state().unwrap(),
+                    parameter::INVERT_RIGHT,
+                    ParameterValue::Bool(true),
+                )
+                .unwrap();
+            edit.execute(Command::InsertMainDevice {
+                before: None,
+                state,
+            })
+            .unwrap();
+        }
+        _ => {
+            edit.execute(Command::RemoveDevice(device)).unwrap();
+        }
+    }
+    let mut candidate = SessionPlayback::new(revision(&edit, &media)).unwrap();
+    candidate.try_inherit_state_from(&mut donor).unwrap();
+    let track = edit.project().tracks()[0].id();
+    let plan = candidate
+        .output_capture_plan(&[hex_engine::OutputCaptureId::Track(track)], 64)
+        .unwrap();
+    let mut expected = [[0.0; 2]; 64];
+    let mut actual = expected;
+    oracle.render(&mut expected).unwrap();
+    assert!(
+        expected.iter().flatten().any(|sample| sample.abs() > 0.001),
+        "real residual"
+    );
+    let mut tap = [[9.0; 2]; 64];
+    let mut buffers: [&mut [[f32; 2]]; 1] = [&mut tap];
+    let mut capture = hex_engine::OutputCapture::new(&plan, &mut buffers);
+    candidate
+        .render_with_capture(&mut actual, &mut capture)
+        .unwrap();
+    assert_eq!(
+        actual, expected,
+        "post-current-Main, premaster exactly once: {action}/{compensated}"
+    );
+    assert_eq!(
+        capture.output(0).unwrap(),
+        &[[0.0; 2]; 64],
+        "old Main must not pollute pre-Main captures"
+    );
+    candidate.apply(SessionPlaybackCommand::Stop).unwrap();
+    candidate.apply(SessionPlaybackCommand::Seek(512)).unwrap();
+    candidate.apply(SessionPlaybackCommand::Play).unwrap();
+    candidate.render(&mut actual).unwrap();
+    assert_eq!(actual, [[0.0; 2]; 64], "stop/seek retires the old residual");
+}
+
+#[test]
+fn repeated_main_detachment_exhausts_shared_bank_atomically() {
+    let (mut edit, media) = fixture(false);
+    let state = edit.project().main_devices()[0].state().clone();
+    let mut donor = SessionPlayback::new(revision(&edit, &media)).unwrap();
+    donor.apply(SessionPlaybackCommand::Play).unwrap();
+    donor.render(&mut [[0.0; 2]; 1]).unwrap();
+    for index in 0..=64 {
+        let id = edit.project().main_devices()[0].id();
+        edit.execute(Command::RemoveDevice(id)).unwrap();
+        edit.execute(Command::InsertMainDevice {
+            before: None,
+            state: state.clone(),
+        })
+        .unwrap();
+        let mut candidate = SessionPlayback::new(revision(&edit, &media)).unwrap();
+        let position = donor.performance_frame();
+        let result = candidate.try_inherit_state_from(&mut donor);
+        if index == 64 {
+            assert!(result.is_err(), "existing 64-slot bank must remain bounded");
+            assert_eq!(donor.performance_frame(), position);
+            let mut output = [[0.0; 2]; 1];
+            donor.render(&mut output).unwrap();
+            assert!(output[0].iter().any(|sample| sample.abs() > 0.001));
+        } else {
+            result.unwrap();
+            candidate.render(&mut [[0.0; 2]; 1]).unwrap();
+            donor = candidate;
+        }
+    }
+}

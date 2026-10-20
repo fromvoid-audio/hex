@@ -203,3 +203,115 @@ fn operator_sync_companions_preserve_pcm_through_compensated_startup_and_partiti
         assert_eq!(actual[7..], expected);
     }
 }
+
+#[test]
+fn main_removal_and_serial_replacement_keep_old_larger_stamp_horizon_and_pending_pcm() {
+    use crate::signal_graph::tests::state;
+    use hex_project::{Command, Created};
+    for routed in [false, true] {
+        for replacement in [false, true] {
+            let mut f = if routed {
+                fixture(&[&[7]], 64)
+            } else {
+                fixture(&[&[]], 64)
+            };
+            if routed {
+                let Created::ReturnTrack(bus) = f
+                    .editor
+                    .execute(Command::AddReturnTrack {
+                        name: "delayed".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("return")
+                };
+                f.editor
+                    .execute(Command::InsertReturnDevice {
+                        return_track: bus,
+                        before: None,
+                        state: state(5).unwrap(),
+                    })
+                    .unwrap();
+                f.editor
+                    .execute(Command::SetReturnSend {
+                        track: f.tracks[0],
+                        return_track: bus,
+                        gain: 1.0,
+                    })
+                    .unwrap();
+            }
+            let Created::Device(main) = f
+                .editor
+                .execute(Command::InsertMainDevice {
+                    before: None,
+                    state: state(3).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("main")
+            };
+            let original = prepare(&f).unwrap();
+            let old_horizon = original.arrangement().main_latency_frames();
+            let warm = old_horizon as usize - 1;
+            let mut old = SessionPlayback::new(Arc::clone(&original)).unwrap();
+            let mut oracle = SessionPlayback::new(original).unwrap();
+            for runtime in [&mut old, &mut oracle] {
+                runtime.apply(SessionPlaybackCommand::Play).unwrap();
+                runtime.render(&mut vec![[0.0; 2]; warm]).unwrap();
+            }
+            f.editor.execute(Command::RemoveDevice(main)).unwrap();
+            if replacement {
+                for _ in 0..2 {
+                    f.editor
+                        .execute(Command::InsertMainDevice {
+                            before: None,
+                            state: state(1).unwrap(),
+                        })
+                        .unwrap();
+                }
+            }
+            let revision = prepare(&f).unwrap();
+            let graph = Arc::clone(revision.arrangement().signal_graph.as_ref().unwrap());
+            assert!(revision.arrangement().main_latency_frames() < old_horizon);
+            let mut next = SessionPlayback::new(revision).unwrap();
+            next.try_inherit_state_from(&mut old).unwrap();
+            let history = next.compensation.as_ref().unwrap();
+            assert!(Arc::ptr_eq(&history.graph, &graph));
+            assert!(
+                history.delays.history_horizon() >= old_horizon,
+                "old origins cannot shrink with current Main"
+            );
+            // A second coherent handoff while the detached Main is still
+            // audible carries the same bank owner, without refeeding it.
+            let mut continued = SessionPlayback::new(prepare(&f).unwrap()).unwrap();
+            continued.try_inherit_state_from(&mut next).unwrap();
+            let mut next = continued;
+            let mut expected = [[0.0; 2]; 4];
+            let mut actual = expected;
+            oracle.render(&mut expected).unwrap();
+            assert!(expected.iter().flatten().any(|s| *s != 0.0));
+            next.render(&mut actual).unwrap();
+            assert_eq!(
+                actual, expected,
+                "old output once; routed={routed}, replacement={replacement}"
+            );
+        }
+    }
+}
+
+#[test]
+fn neutral_zero_graph_metadata_allocates_no_delay_runtime_and_keeps_first_sample() {
+    let f = fixture(&[&[]], 8);
+    let revision = prepare(&f).unwrap();
+    let graph = revision.arrangement().signal_graph.as_ref().unwrap();
+    assert!(!graph.needs_runtime());
+    let mut runtime = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+    assert!(runtime.compensation.is_none());
+    let renderer = crate::Renderer::new(revision.arrangement());
+    assert!(renderer.runtime.compensation.is_none());
+    assert!(runtime.accounted_runtime_storage_bytes().unwrap() >= graph.table_bytes().unwrap());
+    runtime.apply(SessionPlaybackCommand::Play).unwrap();
+    let mut actual = [[0.0; 2]; 8];
+    runtime.render(&mut actual).unwrap();
+    assert_eq!(&actual[..], f.samples.as_slice());
+}

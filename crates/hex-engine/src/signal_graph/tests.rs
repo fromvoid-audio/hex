@@ -990,7 +990,13 @@ fn main_review_unknown_latency_refuses_before_candidate_publication() {
         .unwrap();
     let bypassed = prepare(&f).unwrap();
     assert_eq!(bypassed.arrangement().main_latency_frames(), 0);
-    assert!(bypassed.arrangement().signal_graph.is_none());
+    assert!(
+        bypassed
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .is_some_and(|graph| !graph.needs_runtime())
+    );
     assert_eq!(session(bypassed, 8, 3), f.samples);
 }
 
@@ -1022,8 +1028,14 @@ fn main_review_main_only_delay_retains_fast_pre_main_path_and_bypass() {
         .unwrap();
     let revision = prepare(&f).unwrap();
     assert!(
-        revision.arrangement().signal_graph.is_none(),
-        "Main does not add fake upstream compensation"
+        revision
+            .arrangement()
+            .signal_graph
+            .as_ref()
+            .unwrap()
+            .main_latency()
+            == 0,
+        "Main clock history must not add upstream alignment delay"
     );
     assert_eq!(revision.arrangement().main_latency_frames(), 3);
     let mut expected = vec![[0.0; 2]; 11];

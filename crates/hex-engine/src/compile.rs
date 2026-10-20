@@ -662,7 +662,11 @@ fn compile_project_inner<'a>(
             .map_or(0, |graph| graph.main_latency()),
         &project.main_device_chain,
     )?;
-    if project.signal_graph.is_some() {
+    if project
+        .signal_graph
+        .as_ref()
+        .is_some_and(|graph| graph.needs_runtime())
+    {
         for track in &mut project.tracks {
             track.source_mix = crate::PreparedTrackMix::identity();
         }

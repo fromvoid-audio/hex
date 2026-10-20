@@ -280,6 +280,8 @@ impl SessionPlayback {
         }
         if let Some(compensation) = &self.compensation {
             checked_add(&mut total, compensation.storage_bytes()?)?;
+        } else if let Some(graph) = &self.revision.arrangement().signal_graph {
+            checked_add(&mut total, graph.table_bytes()?)?;
         }
         checked_add(&mut total, self.analytic_import.backing_bytes()?)?;
         add_capacity::<TrackRoute>(&mut total, self.routes.capacity())?;
@@ -366,7 +368,14 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     let mut total = std::mem::size_of::<SessionPlayback>();
     checked_add(&mut total, main_bytes)?;
     if let Some(graph) = &arrangement.signal_graph {
-        checked_add(&mut total, graph.runtime_preflight_bytes()?)?;
+        checked_add(
+            &mut total,
+            if graph.needs_runtime() {
+                graph.runtime_preflight_bytes()?
+            } else {
+                graph.table_bytes()?
+            },
+        )?;
     }
     checked_add(&mut total, analytic_import::ImportPlan::preflight_bytes()?)?;
     checked_add(&mut total, PREROLL_SCRATCH_BYTES)?;

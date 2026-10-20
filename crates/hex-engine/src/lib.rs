@@ -2028,6 +2028,45 @@ impl Project {
         self.audible_end_frame
     }
 
+    /// Causal Main output end for an untrimmed, automatically sized offline
+    /// range. Ordinary source-length exports trim startup separately and must
+    /// continue to use `audible_end_frame`. Explicit ranges never use this bound.
+    pub fn untrimmed_main_end_frame(&self) -> Result<Option<u64>, Invalid> {
+        let Some(source_end) = self.audible_end_frame else {
+            return Ok(None);
+        };
+        let mut drain = 0_u64;
+        for device in self
+            .main_device_chain
+            .iter()
+            .filter(|device| !device.bypassed)
+        {
+            let tail = device.definition.as_ref().map_or(
+                hex_lattice::OutputTail::Finite { max_tail_frames: 0 },
+                hex_lattice::PreparedProcessorFactory::output_tail,
+            );
+            let hex_lattice::OutputTail::Finite { max_tail_frames } = tail else {
+                return Err(Invalid(
+                    "automatic Main range requires a finite tail; choose an explicit range",
+                ));
+            };
+            drain = drain
+                .checked_add(max_tail_frames)
+                .ok_or(Invalid("Main export drain overflow"))?;
+        }
+        let limit = u64::from(self.sample_rate)
+            .checked_mul(session_playback::MAX_FINITE_EFFECT_TAIL_SECONDS)
+            .ok_or(Invalid("Main export drain overflow"))?;
+        if drain > limit {
+            return Err(Invalid("Main export drain exceeds its bounded horizon"));
+        }
+        source_end
+            .checked_add(u64::from(self.main_output_latency_frames))
+            .and_then(|end| end.checked_add(drain))
+            .map(Some)
+            .ok_or(Invalid("Main export range overflow"))
+    }
+
     pub fn device_meter(
         &self,
         device_id: u64,
@@ -2123,6 +2162,7 @@ impl RendererRuntime {
         let compensation = match project
             .signal_graph
             .as_ref()
+            .filter(|graph| graph.needs_runtime())
             .map(|graph| signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
         {

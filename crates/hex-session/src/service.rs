@@ -2732,24 +2732,20 @@ fn run_worker(
                             Some((compiled_revision, prepared))
                                 if *compiled_revision == revision =>
                             {
-                                let frames = frames.unwrap_or_else(|| {
-                                    prepared
-                                        .arrangement()
-                                        .audible_end_frame()
-                                        .unwrap_or(0)
-                                        .saturating_sub(start)
-                                });
-                                if frames == 0 || start.checked_add(frames).is_none() {
-                                    Err("invalid export range".to_owned())
-                                } else {
-                                    Ok(ExportJob {
-                                        revision,
-                                        path: path.clone(),
-                                        prepared: Arc::clone(prepared),
-                                        frames,
-                                        controlled: Some((start, signal, control, overwrite)),
-                                    })
-                                }
+                                hex_export::controlled_frame_count(
+                                    prepared.arrangement(),
+                                    start,
+                                    frames,
+                                    &signal,
+                                )
+                                .map_err(|error| error.to_string())
+                                .map(|frames| ExportJob {
+                                    revision,
+                                    path: path.clone(),
+                                    prepared: Arc::clone(prepared),
+                                    frames,
+                                    controlled: Some((start, signal, control, overwrite)),
+                                })
                             }
                             _ => Err("latest project revision has not compiled".to_owned()),
                         }

@@ -147,6 +147,12 @@ impl RendererRuntime {
                     destination[0] += scratch[0][0];
                     destination[1] += scratch[0][1];
                 }
+                compensation.process_main(
+                    &mut self.main_chain,
+                    std::slice::from_mut(destination),
+                    offset,
+                    &mut None,
+                )?;
             }
             Ok::<(), Invalid>(())
         })();
@@ -158,17 +164,6 @@ impl RendererRuntime {
             output.fill([0.0; 2]);
             return Err(error);
         }
-        crate::main_chain::process(
-            &mut self.main_chain,
-            output,
-            0,
-            Some(&crate::effect_clock::ArrangementEffectClock::canonical(
-                project.tempo_map.as_ref(),
-                start,
-            )),
-            &mut None,
-        )
-        .map_err(|_| Invalid("main effect runtime failed"))?;
         compensation.delays.commit_transaction().map_err(error)?;
         for chain in self
             .device_chains

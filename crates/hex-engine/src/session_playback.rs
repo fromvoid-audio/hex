@@ -292,7 +292,7 @@ pub(crate) fn candidate_group_reservation(
 const SESSION_RELEASE_CAPACITY: usize = MAX_TRACKS * MAX_SIMULTANEOUS_VOICES_PER_TRACK;
 const SESSION_TAIL_GROUP_CAPACITY: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 const MAX_RETAINED_SUFFIX_ENTRIES: usize = 4_096;
-const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 10;
+pub(crate) const MAX_FINITE_EFFECT_TAIL_SECONDS: u64 = 10;
 
 /// Bounded result for targets canceled because their stable track or clip was
 /// removed by the candidate revision.
@@ -1095,6 +1095,7 @@ impl SessionPlayback {
             .arrangement()
             .signal_graph
             .as_ref()
+            .filter(|graph| graph.needs_runtime())
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;

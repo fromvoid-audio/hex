@@ -257,3 +257,41 @@ both prepared and legacy WAVs. This does not establish the distinct untrimmed
 controlled-range default or finite-tail policy; that scope remains under review.
 Main content-origin clocks and outgoing-tail preservation remain open. No final
 required-plan pass, merge or native acceptance is implied by these owning checks.
+
+
+### Clock and outgoing Main continuation (component checkpoint)
+
+The current Main continuation retains immutable graph metadata even at zero
+arrival, while `needs_runtime` alone selects compensated execution. Neutral
+memoryless projects keep the existing chunk kernel and first sample; fused
+source/Return matrices are not reset merely because metadata exists. Serial Main
+nodes receive each processor's complete content-origin stamp through the existing
+single transactional clock history. Pre-Main taps and alignment retain their own
+boundary. A Main-only handoff maps typed pre-Main endpoints rather than dense
+indices, and either copies into preallocated compatible histories or carries the
+actual donor clock owner with separate current and delay-plan graphs. A smaller
+current plan does not discard old outgoing Main origins.
+
+Outgoing Main suffixes use the existing 64-slot Return/Main typed tail bank and
+aggregate processor, entry, paired-payload and runtime budgets. The complete old
+chain remains owned and charged, including inactive prefix capacity; only the
+invalidated suffix receives zero new input. Its output joins after current Main
+processing and before current master gain, excluding Track/Return captures and
+stems. Matching parameter edits keep one history. Stop/seek reset, transactional
+rollback, bounded exhaustion and control-side retirement retain the existing
+mechanisms. Actual component tests cover removal, bypass, replacement, repeated
+handoff with a larger old clock horizon, once-only residual output and a full
+shared bank's atomic refusal. Original Return-tail and budget tests remain.
+
+`Project::audible_end_frame` and ordinary latency-trimmed Service/CLI exports
+remain source-length contracts. Only controlled automatic (`frames: None`) Main
+export extends the causal range by the actual final arrival and checked finite
+Main residual declaration. Explicit causal spans remain exact. CapturedMix and
+stem defaults retain their source boundary. Unbounded/excessive/overflowing Main
+automatic extents refuse with an explicit-range option, rather than truncating
+silently. Real WAV controls cover upstream-only, Main-only and combined latency,
+including the final source sample and unchanged explicit/pre-Main ranges.
+
+This is a source/component checkpoint, not a final required-plan pass, merge,
+whole performance parity claim or native acceptance. Failed intermediate and
+zero-selector receipts remain preserved separately.

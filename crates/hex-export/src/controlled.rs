@@ -86,6 +86,36 @@ pub enum ExportSignal {
     Stems(Vec<super::Stem>),
 }
 
+/// Resolve an optional range for the causal controlled renderer. Explicit
+/// spans and pre-Main capture/stem defaults retain their own source semantics.
+pub fn controlled_frame_count(
+    project: &Project,
+    start: u64,
+    frames: Option<u64>,
+    signal: &ExportSignal,
+) -> Result<u64, ExportError> {
+    let frames = match frames {
+        Some(frames) => frames,
+        None => {
+            let end = match signal {
+                ExportSignal::Main => project.untrimmed_main_end_frame().map_err(|_| {
+                    ExportError::Invalid(
+                        "automatic Main range is unbounded or invalid; choose an explicit range",
+                    )
+                })?,
+                ExportSignal::CapturedMix(_) | ExportSignal::Stems(_) => {
+                    project.audible_end_frame()
+                }
+            };
+            end.unwrap_or(0).saturating_sub(start)
+        }
+    };
+    if frames == 0 || start.checked_add(frames).is_none() {
+        return Err(ExportError::Invalid("invalid export range"));
+    }
+    Ok(frames)
+}
+
 /// Render a selected half-open frame range to a new PCM16 WAV. Stateful history
 /// is reconstructed from zero without Seek, in cancellable 256-frame blocks.
 /// Preroll has the existing bounded engine work ceiling; transport loop metadata
