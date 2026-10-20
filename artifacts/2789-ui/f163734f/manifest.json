@@ -1,0 +1,45 @@
+{
+  "source": "f163734ff1853444301e85007cbada54e75280a4",
+  "tree": "57bb2976c6545e7314d65a4a6ed2d7a790bcfa49",
+  "exact_ui_composition": "d457225bb00fef4c487da89ffa2cac5d1e27642d",
+  "merger_source": "96ff579e5b7dedb343f82e02ebabe268c52a0112",
+  "shared_ui_base": "23f7bab4fc2c4b14418177fce61d838c624983b3",
+  "qualification": "INCOMPLETE/UNQUALIFIED; no cleanUI/test/strict/merge/full/native/delivery result",
+  "diagnostic": {
+    "command": "cargo check -p hex-ui --locked --lib",
+    "exit": 101,
+    "actual_errors": 453,
+    "unchanged_source_sha256": "791d3867b17cae0fe7075e9aa87a1e1c22df17bb5cfc932e18ca559cbe7ab62a",
+    "log_sha256": "563cc7ad1055f90cd65b2353e170b7273db4c7eed3ce3b8ccf890c555d77b1c8"
+  },
+  "checks": [
+    "scopedrustfmtPASS",
+    "gitdiffcheckPASS",
+    "actualcheck-device-layout.pyPASS"
+  ],
+  "review_fix": "selected loop membership Copy flags replace BTreeSet remove under read; no-free property source-inspected only, real registered UI/allocation regression blocked on UI compilation",
+  "remaining": [
+    "other legacy UI consumers and shared owning group facade",
+    "actual registered UI fixture and behavioral pressure/allocation tests",
+    "Native startup/producer/backend/meters/EQ ACK closure",
+    "exact frozen fullqualification and optimizeddelivery"
+  ],
+  "archive": {
+    "bytes": 23245,
+    "sha256": "ec2b3292d1b0c301d16e38e8bbafe1429a8814b04d5a32e8db1adb35c04d5c29"
+  },
+  "files": {
+    "artifacts/sampler-ui-migration/modern-merger-navigation.log": {
+      "bytes": 184542,
+      "sha256": "563cc7ad1055f90cd65b2353e170b7273db4c7eed3ce3b8ccf890c555d77b1c8"
+    },
+    "artifacts/sampler-ui-migration/modern-merger-navigation.json": {
+      "bytes": 1413,
+      "sha256": "f608c0a7032f6791be4670673028e82e1a051446550fd2f87a08527162ef3a29"
+    },
+    "artifacts/sampler-ui-migration/merger-96ff-composition.json": {
+      "bytes": 7782,
+      "sha256": "516b7a989ceb00baf1dd24f2bae18b083ee3f10237b522842ad400ba273be038"
+    }
+  }
+}
