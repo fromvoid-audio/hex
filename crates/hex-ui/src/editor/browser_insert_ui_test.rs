@@ -33,12 +33,12 @@ fn fixture(
 ) -> (
     gpui::AnyWindowHandle,
     gpui::Entity<EditorView>,
-    PreferencesTestDirectory,
+    std::sync::Arc<crate::editor::test_environment::Environment>,
     std::path::PathBuf,
 ) {
     cx.update(crate::editor::bind_editor_keys);
-    let directory = PreferencesTestDirectory::new();
-    let samples = directory.0.join("samples");
+    let directory = crate::editor::test_environment::Environment::new().unwrap();
+    let samples = directory.root().join("samples");
     std::fs::create_dir_all(&samples).unwrap();
     let path = samples.join("Loop.WAV");
     std::fs::write(&path, mono_pcm_wav(24)).unwrap();
@@ -46,16 +46,25 @@ fn fixture(
     let editor = cx
         .update_window(handle, |_, window, cx| {
             window.replace_root(cx, |window, cx| {
-                EditorView::new_for_test_with_browser_directory(
+                EditorView::new_for_test_with_environment(
                     window,
                     cx,
                     Service::new(48_000, 32, 8_000_000).unwrap(),
-                    &directory.0,
+                    std::sync::Arc::clone(&directory),
                 )
             })
         })
         .unwrap();
     editor.read_with(cx, |view, _| {
+        assert!(std::sync::Arc::ptr_eq(&directory, &view.test_environment));
+        for (actual, name) in [
+            (view.browser.test_preferences_path(), "browser.json"),
+            (view.recent_projects.test_path(), "recent-projects.json"),
+            (view.theme_settings.test_path(), "theme.json"),
+            (view.project_directory.test_path(), "project-directory.json"),
+        ] {
+            assert_eq!(actual, directory.root().join("config").join(name));
+        }
         assert_eq!(view.browser.directory, samples);
         assert_eq!(view.browser.places, vec![samples.clone()]);
         assert_eq!(view.sample_roots(), vec![samples.clone()]);
@@ -406,4 +415,53 @@ fn browser_insert_enter_in_query_cannot_enqueue_sample_or_commit_ime(cx: &mut Te
         assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
         assert!(view.last_enqueued_import_to_track.is_none());
     });
+}
+
+#[gpui::test]
+fn browser_insert_all_disabled_densities_refuse_actual_enter(cx: &mut TestAppContext) {
+    use crate::editor::musical_time::{AdaptiveGridDensity, SnapGrid};
+    let (handle, editor, _directory, _path) = fixture(cx);
+    let visual = &mut VisualTestContext::from_window(handle, cx);
+    select_sample(&editor, visual);
+    let before = editor.read_with(visual, |view, _| view.state.as_ref().unwrap().clone());
+    for grid in
+        std::iter::once(SnapGrid::Off).chain(AdaptiveGridDensity::ALL.map(SnapGrid::OffDensity))
+    {
+        editor.update(visual, |view, _| {
+            view.browser.insert_quantized = true;
+            view.snap_grid = grid;
+            view.offline_cursor = 25_000;
+            view.error = None;
+        });
+        visual.simulate_keystrokes("enter");
+        editor.read_with(visual, |view, _| {
+            assert!(
+                view.error
+                    .as_deref()
+                    .is_some_and(|error| error.contains("enable the arrangement grid")),
+                "{grid:?} must visibly refuse"
+            );
+            assert_eq!(view.worker_requests_pending, 0, "{grid:?}");
+            assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+            assert!(view.audio_batch.is_none() && view.last_enqueued_import_to_track.is_none());
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(state.project, before.project);
+            assert_eq!(
+                (
+                    state.revision,
+                    state.can_undo,
+                    state.can_redo,
+                    state.unsaved
+                ),
+                (
+                    before.revision,
+                    before.can_undo,
+                    before.can_redo,
+                    before.unsaved
+                )
+            );
+            assert_eq!(view.snap_grid, grid);
+        });
+        eprintln!("ACTUAL_DISABLED_GRID_REFUSAL {grid:?}");
+    }
 }
