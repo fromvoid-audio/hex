@@ -859,6 +859,26 @@ fn review_history_root_projection_restores_both_directions_and_quiesces(cx: &mut
     let (handle, editor, _directory) = builtin_history_fixture(cx);
     let visual = &mut VisualTestContext::from_window(handle, cx);
     visual.run_until_parked();
+    // Complete ordinary Service startup before taking the project/history
+    // oracle. This is setup only, before either tested history direction.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let ready = editor.update(visual, |view, cx| {
+            if view.tick(cx) {
+                cx.notify();
+            }
+            view.state.is_some() && view.worker_requests_pending == 0
+        });
+        visual.run_until_parked();
+        if ready {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "Service initialization did not complete"
+        );
+        std::thread::yield_now();
+    }
     editor.update(visual, |view, _| view.browser.auto_audition = false);
     // Home is deliberately the current directory but excluded from Samples.
     // Actual row clicks settle each projection before the tested navigation.
