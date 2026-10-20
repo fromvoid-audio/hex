@@ -1,0 +1,50 @@
+{
+  "source": "bf4e9bff6b7e2a2740681698f8bc805f355066c9",
+  "tree": "5ffc8139f872cadc0d23e7fb3a5ad34c4db736c2",
+  "accepted_canonical_parent": "f855a8f8a7bd2b1c0dc0c5ad5aec3bed8312cf0d",
+  "direct_parent": "bd5c5ba56388ef2341f9c10515de813e5bbbf3fa",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/arrangement_seek.rs",
+      "before_sha256": "ade7b3eaa3a8d10d80ca54c144edf70605ec1501efb3cabd70953341c7cd9b5a",
+      "after_sha256": "7ded283e73ff87c114f902f28d0ac6867a98a068423e99b2a4b81348d9883564",
+      "before_blob": "4c312325fd849b477b75575a7206d31f4e8c710f",
+      "after_blob": "9d9cb5ba56b2e680f319f935b796e5727d31deb7"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/arrangement_seek_tests.rs",
+      "before_sha256": "0255222b8d92fcc7bafb6dfd587b3f14027aabf04c1e130572d57b14fccb6eb3",
+      "after_sha256": "43508a5315b4648a106893af5566bcb97c48e6a668c352240bec47c8301306c4",
+      "before_blob": "cbdde69f0355a51bb1a2c66fa37c4ced0b31ef09",
+      "after_blob": "dc708a39d17e9d2151df816f3b9be02a3ced7152"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/controller.rs",
+      "before_sha256": "0d705adb113f4aef7b92815a3069db7db60e1a9a4c692e916a265f7536d0e343",
+      "after_sha256": "b8c644f342ba06251aa47c10509b86ec6b7ecaf2ce49b1e3b1fd0336f7b86b00",
+      "before_blob": "260b7b436792df08abe5d591e25575e67cdbc31c",
+      "after_blob": "55505fb7a3b2eca1c85c4a3845b8343f336998dc"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/eq_held_pointer_tests.rs",
+      "before_sha256": "7e02e330df5d29e792b511075fdec0ab2046b9f0365c059c7b808828ab98cfae",
+      "after_sha256": "8b0c63b6e03198168e6f155f5a049f0bb11232f3710f667acd560d04b7dd5a3f",
+      "before_blob": "03342a4604ee1acc650052770996b5e36dc3ab2c",
+      "after_blob": "80b6cb580e2819557045e46cc85c99c9931f3426"
+    },
+    {
+      "path": "docs/prepared-seek-cancellation.md",
+      "before_sha256": "3aa0b5278e769fda73dace69a019e127874ece3ce7f79446b39cc9815aba7353",
+      "after_sha256": "8a1445e2ab94891aea035c739a6a72975c6466418da46a75950f811d04208978",
+      "before_blob": "5b79d84e99e42b8f0dc4b3b4509c2488d3e7dcb1",
+      "after_blob": "52bca2fa3db43f7a8c111b8e727a342454544df4"
+    },
+    {
+      "path": "todo.md",
+      "before_sha256": "02cd934acb2b8a67e07734020fbd9dc625f6d411771f20a6fd396ddbbf456adf",
+      "after_sha256": "c873cc1b23453456521b75dd0d0d0a1f1039152777d3321d64a32762bb21a7d7",
+      "before_blob": "15c785691ffc6398de33abcc6319aced32d34e01",
+      "after_blob": "a331b0b030fe2d9e91fb3d2724e84d893f14f2f5"
+    }
+  ]
+}

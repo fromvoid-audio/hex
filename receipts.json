@@ -1,0 +1,152 @@
+[
+  {
+    "run_id": "20261020T073743Z-f491e65b",
+    "exit_code": 1,
+    "duration_seconds": 228.021,
+    "source": {
+      "commit": "f855a8f8a7bd2b1c0dc0c5ad5aec3bed8312cf0d",
+      "content_sha256": "17045426aee7a75220ef26721c4f4d7d16b2bae0acb4b90fbed1a8c4ea33e81c",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-ui/src/editor/device_panel/tests/eq_held_pointer_tests.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "00a8e2dcd905284b486d9b1f21206e4fa0ab4ea6ec3dd89977fa8d4de9e64fd5",
+    "counts": [
+      {
+        "log": "01-eq-three-race-baseline.log",
+        "passed": 11,
+        "failed": 3,
+        "ignored": 0
+      }
+    ],
+    "verification_status": "failed",
+    "stale": false
+  },
+  {
+    "run_id": "20261020T074156Z-afef3a47",
+    "exit_code": 0,
+    "duration_seconds": 77.995,
+    "source": {
+      "commit": "f855a8f8a7bd2b1c0dc0c5ad5aec3bed8312cf0d",
+      "content_sha256": "8b0a834c1112e8e39b7ac441d7548114fd3126565024ee4d67987dc29b7d40b6",
+      "dirty": true,
+      "dirty_files": [
+        " M crates/hex-ui/src/editor/arrangement_seek.rs",
+        " M crates/hex-ui/src/editor/controller.rs",
+        " M crates/hex-ui/src/editor/device_panel/tests/eq_held_pointer_tests.rs"
+      ],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "161a75ad5835b543beea73f69376bb96349444c2ea0d88e27d332a886a069914",
+    "counts": [
+      {
+        "log": "01-eq-three-race-repair.log",
+        "passed": 14,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "verification_status": "partial",
+    "stale": false
+  },
+  {
+    "run_id": "20261020T074533Z-fa22c56b",
+    "exit_code": 0,
+    "duration_seconds": 290.014,
+    "source": {
+      "commit": "bd5c5ba56388ef2341f9c10515de813e5bbbf3fa",
+      "content_sha256": "f54628afc95a10db1d5b476dcc85c90c11f8ce0396ee51bc546a3395213285f2",
+      "dirty": false,
+      "dirty_files": [],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "fbbfdc7510e290d4f2f28a16e3f18980f856ebdbd1a0226c200ce7039fabcc3b",
+    "counts": [
+      {
+        "log": "07-ui-owning-controls.log",
+        "passed": 100,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "08-session-retirement-controls.log",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "09-actual-callback-cancellation-CAS.log",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "10-conditional-callback-allocation.log",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "11-allocation-probe-calibration.log",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "verification_status": "partial",
+    "stale": false
+  },
+  {
+    "run_id": "20261020T075143Z-6ddd4998",
+    "exit_code": 0,
+    "duration_seconds": 164.447,
+    "source": {
+      "commit": "bf4e9bff6b7e2a2740681698f8bc805f355066c9",
+      "content_sha256": "229cf1a0f30298368e37a0ae43e1e40026d1ed8699109a9d87eb34284b023556",
+      "dirty": false,
+      "dirty_files": [],
+      "git_common_dir": "/workspace/hex/.git",
+      "workspace_root": "/workspace/hex-workspace-tab-489"
+    },
+    "summary_sha256": "a5c851cdb3502f6b6e3334da285b53f840bbb4b0fc2cc2fc766dc5c77404549b",
+    "counts": [
+      {
+        "log": "07-ui-owning-controls.log",
+        "passed": 100,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "08-session-retirement-controls.log",
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "09-actual-callback-cancellation-CAS.log",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "10-conditional-callback-allocation.log",
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0
+      },
+      {
+        "log": "11-allocation-probe-calibration.log",
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0
+      }
+    ],
+    "verification_status": "partial",
+    "stale": false
+  }
+]
