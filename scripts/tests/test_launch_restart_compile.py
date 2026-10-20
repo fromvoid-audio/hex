@@ -423,8 +423,32 @@ class CompiledHelperTests(unittest.TestCase):
         unrelated=subprocess.Popen([sys.executable,'-c','import time;time.sleep(60)'])
         self.addCleanup(lambda: (unrelated.kill(),unrelated.wait()) if unrelated.poll() is None else None)
         self.configure(sleep=60,spawn_child=True)
-        with patch.object(restart,'COMPILE_TIMEOUT',.3):
+        real_popen=subprocess.Popen;compiler_children=[];compile_waits=[]
+        def spawn(*args,**kwargs):
+            child=real_popen(*args,**kwargs)
+            compiler_children.append(child);wait=child.wait;first_wait=True
+            def after_descendant_ready(timeout=None):
+                nonlocal first_wait
+                if first_wait:
+                    first_wait=False
+                    # Fixture startup is separate from the short timeout oracle.
+                    # Production already owns this process before readiness can
+                    # fail, so its exception path still kills/reaps the group.
+                    deadline=time.monotonic()+15
+                    markers=[self.root/name for name in ('compiler-pid','compiler-child-pid')]
+                    while not all(path.exists() and path.read_text().isdigit() for path in markers):
+                        self.assertIsNone(child.poll(),'fixture compiler exited before descendant readiness')
+                        self.assertLess(time.monotonic(),deadline,'fixture compiler never recorded both process IDs')
+                        time.sleep(.01)
+                    compile_waits.append(timeout)
+                return wait(timeout=timeout)
+            child.wait=after_descendant_ready
+            return child
+        with patch.object(restart,'COMPILE_TIMEOUT',.3),patch.object(restart.subprocess,'Popen',side_effect=spawn):
             with self.assertRaisesRegex(restart.RestartError,'compile timed out'):self.controller.snapshot()
+        self.assertEqual(compile_waits,[.3])
+        self.assertEqual(len(compiler_children),1)
+        self.assertIsNotNone(compiler_children[0].poll(),'timed-out owned compiler was not reaped')
         self.assertIsNone(unrelated.poll())
         self.assertEqual(self.calls(self.native_log),[])
         self.assertFalse(list(self.output.glob('native-helper-*')))
