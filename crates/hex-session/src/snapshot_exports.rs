@@ -195,6 +195,24 @@ impl<'a> SnapshotRead<'a> {
             .state();
         hex_engine::SamplerDeviceStateRead::from_native(state)
     }
+    /// Fixed Copy control facts from this EXACT retained Sampler. Finish the
+    /// read before GPUI/render/submit/ACK; no state, model or resource escapes.
+    /// This metadata query does not open the instrument registry or processing.
+    pub fn sampler_parameters(
+        self,
+        device: hex_project::DeviceId,
+    ) -> Result<
+        [hex_engine::NativeDeviceParameterView; 43],
+        hex_lattice_contract::DeviceContractError,
+    > {
+        let state = self
+            .snapshot
+            .project
+            .device(device)
+            .ok_or(hex_lattice_contract::DeviceContractError::WrongDeviceType)?
+            .state();
+        hex_engine::sampler_parameters_on_control(state)
+    }
 }
 impl SnapshotExportRecords {
     /// Requested record-table component quote before allocating either backing.
