@@ -1,10 +1,10 @@
 # hex-storage
 
-All new saves use one strict schema32 envelope requiring project tuning,
-the complete device-asset manifest (including empty lists), and an explicit
-`placement` field on each audio edit (`null` for ordinary placement). Every device
+All new saves use one strict schema33 envelope requiring project tuning,
+the complete device-asset manifest (including empty lists), an explicit
+`main_devices` list (including an empty Main), and an explicit `placement` field on each audio edit (`null` for ordinary placement). Every device
 has one bounded manifest entry with a required nullable A/B comparison and
-active/inactive asset bindings. Superseded alpha schemas30/31 refuse explicitly; there is
+active/inactive asset bindings. Superseded alpha schemas30/31/32 refuse explicitly; there is
 no tuning-only/asset-only compatibility dispatch. Legacy writers and asset-unaware presets explicitly refuse these
 references. Storage preserves neutral identities and resolves them through the
 project model, without decoding device payloads or loading PCM. See
@@ -163,7 +163,7 @@ Unsaved projects use that same latest-untitled checkpoint path. Recovery
 retains original-document provenance and prepares the complete media and playback
 candidate before adoption, without acquiring an overwrite association.
 
-New saves use schema32: required audio-edit placement, complete device assets with
+New saves use schema33: required Main devices, audio-edit placement and complete device assets with
 active/inactive A/B bindings, project tuning and audition settings, schema28 audio
 events, schema27 inherited track colors/per-clip flavors,
 schema26 names, required fade-shape metadata and device host gains,
