@@ -61,6 +61,7 @@ pub use session_structure_preparation::SessionStructureCapacity;
 pub use session_tempo_preparation::SessionTempoCapacity;
 pub mod audio_transform;
 mod effect_clock;
+mod main_chain;
 mod native_device_view;
 pub use audio_input_storage::{
     AudioInputStorageAndObligations, AudioInputStorageRefusal, AudioInputStorageSummary,
@@ -1841,11 +1842,25 @@ pub struct Project {
     midi_routing: Vec<(hex_project::TrackId, hex_project::TrackId)>,
     loop_region: Option<hex_project::LoopRegion>,
     master_gain: PreparedMasterGain,
+    main_device_chain: Arc<[hex_lattice::PreparedRuntimeInstance]>,
+    // Final causal arrival after Main, separate from the pre-Main summing graph.
+    main_output_latency_frames: u32,
     audible_end_frame: Option<u64>,
     has_streamed_sources: bool,
     shared_contexts: owned_shared::OwnedShared<shared_analytic::SharedAnalyticContextTable>,
 }
 impl Project {
+    pub(crate) fn new_main_device_runtime(
+        &self,
+    ) -> Result<hex_lattice::NativeRuntimeChain, hex_lattice_contract::DeviceContractError> {
+        let mut instances = Vec::new();
+        instances
+            .try_reserve_exact(self.main_device_chain.len())
+            .map_err(|_| hex_lattice_contract::DeviceContractError::RuntimeAllocation)?;
+        instances.extend(self.main_device_chain.iter().cloned());
+        hex_lattice::NativeRuntimeChain::new_prepared(instances)
+    }
+
     /// Worker-only observation of accepted transformed PCM, independent of cache residency.
     pub fn audio_clip_views(&self) -> &[PreparedAudioClipView] {
         &self.audio_clip_views
@@ -1939,6 +1954,8 @@ impl Project {
             midi_routing: Vec::new(),
             loop_region,
             master_gain,
+            main_device_chain: Arc::from([]),
+            main_output_latency_frames: 0,
             has_streamed_sources,
             shared_contexts: owned_shared::OwnedShared::new_owned(
                 shared_analytic::SharedAnalyticContextTable::default(),
@@ -1998,9 +2015,7 @@ impl Project {
     }
     /// Known causal startup delay; compensation does not remove physical latency.
     pub fn main_latency_frames(&self) -> u32 {
-        self.signal_graph
-            .as_ref()
-            .map_or(0, |graph| graph.main_latency())
+        self.main_output_latency_frames
     }
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
@@ -2035,6 +2050,7 @@ impl Project {
         self.return_buses
             .iter()
             .flat_map(|bus| bus.device_chain.iter())
+            .chain(self.main_device_chain.iter())
             .find(|device| device.device_id == device_id)
             .map(|device| &device.meter)
     }
@@ -2086,6 +2102,7 @@ impl PreparedMasterGain {
 pub(crate) struct RendererRuntime {
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    main_chain: hex_lattice::NativeRuntimeChain,
     return_scratch: Vec<[Frame; 256]>,
     runtime_error: Option<&'static str>,
     compensation: Option<signal_graph::SignalRuntime>,
@@ -2096,6 +2113,13 @@ impl RendererRuntime {
         let mut return_chains = Vec::new();
         let mut return_scratch = Vec::new();
         let mut runtime_error = None;
+        let main_chain = match project.new_main_device_runtime() {
+            Ok(chain) => chain,
+            Err(_) => {
+                runtime_error = Some("main runtime preparation failed");
+                hex_lattice::NativeRuntimeChain::empty()
+            }
+        };
         let compensation = match project
             .signal_graph
             .as_ref()
@@ -2142,6 +2166,7 @@ impl RendererRuntime {
                         return Self {
                             device_chains,
                             return_chains,
+                            main_chain,
                             return_scratch,
                             runtime_error,
                             compensation,
@@ -2166,6 +2191,7 @@ impl RendererRuntime {
         Self {
             device_chains,
             return_chains,
+            main_chain,
             return_scratch,
             runtime_error,
             compensation,
@@ -2182,6 +2208,7 @@ impl RendererRuntime {
         for chain in &mut self.return_chains {
             chain.reset();
         }
+        self.main_chain.reset();
     }
 
     pub(crate) fn select_processor_audition(
@@ -2191,6 +2218,12 @@ impl RendererRuntime {
         selection: Option<hex_lattice::ProcessorAuditionSelection>,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => self.main_chain.select_processor_audition(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection,
+            ),
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -2227,6 +2260,12 @@ impl RendererRuntime {
         selection: hex_lattice::ProcessorAuditionSelection,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => self.main_chain.processor_audition_is_active(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection,
+            ),
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -2262,6 +2301,13 @@ impl RendererRuntime {
         identity: crate::PostNodeIdentity,
     ) -> bool {
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => {
+                self.main_chain.cancel_processor_audition_for_identity(
+                    identity.owner,
+                    identity.device_id,
+                    identity.device_type,
+                )
+            }
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -2296,12 +2342,15 @@ impl RendererRuntime {
         for chain in &mut self.return_chains {
             chain.cancel_all_processor_auditions();
         }
+        self.main_chain.cancel_all_processor_auditions();
     }
 
     pub(crate) fn has_stateful_processors(&self) -> bool {
-        self.device_chains
-            .iter()
-            .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
+        self.main_chain.has_stateful_processors()
+            || self
+                .device_chains
+                .iter()
+                .any(hex_lattice::NativeRuntimeChain::has_stateful_processors)
             || self
                 .return_chains
                 .iter()
@@ -2334,6 +2383,7 @@ impl RendererRuntime {
             }
         });
         tracks_match
+            && self.main_chain.can_inherit_from(&previous.main_chain)
             && project
                 .return_buses()
                 .iter()
@@ -2362,6 +2412,7 @@ impl RendererRuntime {
         previous: &Self,
         previous_project: &Project,
     ) {
+        self.main_chain.inherit_from(&previous.main_chain);
         for (index, track) in project.tracks().iter().enumerate() {
             let Some(track_id) = track.canonical_track_id() else {
                 continue;
@@ -2475,6 +2526,7 @@ impl RendererRuntime {
         for chain in &mut self.device_chains {
             chain.begin_block();
         }
+        self.main_chain.begin_block();
         let has_return_routes = !project.return_buses.is_empty()
             || project.tracks.iter().any(|track| !track.sends.is_empty());
         if has_return_routes {
@@ -2493,6 +2545,18 @@ impl RendererRuntime {
             for chain in &mut self.return_chains {
                 chain.commit_block();
             }
+            crate::main_chain::process(
+                &mut self.main_chain,
+                output,
+                0,
+                Some(&crate::effect_clock::ArrangementEffectClock::canonical(
+                    project.tempo_map.as_ref(),
+                    block_start,
+                )),
+                &mut None,
+            )
+            .map_err(|_| Invalid("main effect runtime failed"))?;
+            self.main_chain.commit_block();
             project.master_gain.apply(output);
             *position = next;
             return Ok(());
@@ -2615,6 +2679,18 @@ impl RendererRuntime {
         }
         // Neutral projects retain their original hot path. Non-neutral master
         // gain is deliberately post-sum rather than folded into track gains.
+        crate::main_chain::process(
+            &mut self.main_chain,
+            output,
+            0,
+            Some(&crate::effect_clock::ArrangementEffectClock::canonical(
+                project.tempo_map.as_ref(),
+                block_start,
+            )),
+            &mut None,
+        )
+        .map_err(|_| Invalid("main effect runtime failed"))?;
+        self.main_chain.commit_block();
         project.master_gain.apply(output);
         *position = next;
         Ok(())
@@ -2821,6 +2897,7 @@ impl<'a> Renderer<'a> {
             .device_chains
             .iter_mut()
             .chain(self.runtime.return_chains.iter_mut())
+            .chain(std::iter::once(&mut self.runtime.main_chain))
         {
             chain.set_metering(enabled);
         }

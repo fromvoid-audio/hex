@@ -90,3 +90,110 @@ Native user check: disable snap, click Main without moving, then drag a range an
 its upper-third handle after resizing/panning; verify cursor, endpoints and Undo.
 Source validation and merge evidence are retained with PR263; native input is a
 separate acceptance check.
+
+## main audio effects — pulse2882 / pr484
+
+The original row-only implementation above did not add a processing chain.
+Main now has its own effect-only canonical device vector with global DeviceIds;
+it remains a singleton, never a regular TrackId or clip destination. Clicking
+its Arrange or Console header selects its shared device rail. Existing effect
+controls, add/drop/reorder, bypass/remove, A/B comparison and presets address
+that actual Main inventory. Track and Return selection keep their existing
+owners. Instruments are refused in Main; selecting Main never inserts a track.
+
+One prepared Main chain processes the sum of Tracks and Returns, followed by
+existing master gain once, then the Main observer. Track/Return capture taps and
+stems stay before Main/master processing. Arrangement, launched Session audio,
+compensated routing, linear/prepared WAV and controlled range export share this
+boundary. Controlled nonzero-range export reconstructs stateful Main history by
+the existing bounded preroll; the simple linear export helpers retain their
+existing seek semantics. No new DSP law, lookahead or latency cap is introduced.
+
+Current format33 includes the required bounded Main inventory, both A/B banks,
+host trims, bypass, stable IDs and complete device-asset inventory. Earlier
+formats are explicitly refused; no alpha migration or user-data rewrite is
+performed. Main uses existing per-chain/global processor and byte caps. Its
+prepared runtime, physical owner kind9/index0, shared handles and meters join
+current accounting. The narrow audio assembly constructor still explicitly
+refuses authored Main, just as its existing restricted graph class refuses
+other unsupported authored chains; ordinary compile/Session/export works.
+Future395 custody overlays must carry Main on their combined modern source;
+this change does not import or qualify that unpublished implementation.
+
+Matching Main processor histories are inherited only after normal handoff's
+fallible phases commit; the existing stopped compensated fast path also retains
+history. Newly inserted processors start fresh. Unavailable prepared native
+runtime and warmed legacy-history refusal policies include Main, preventing a
+silent fallback or a cold-history substitution. Device-meter lookup resolves
+the same actual prepared Main tap.
+
+Source checks cover real header/add/reorder/parameter/Cancel/A-B/copy/preset and
+project Save/Open requests, refusal without canonical mutation, exact Undo/Redo,
+nonlinear post-sum PCM, stateful normal/fast handoff, exact combined runtime cap,
+range-export history, pre-Main stems, and instrumented callback publication /
+render / retirement. Exact receipt/source identities are recorded in Pulse;
+these component checks are not the sole merger's prospective full integration
+or physical device qualification.
+
+For Root's later optimized native check, record the exact build/source: select
+Main in both views, add an effect and edit it while audio plays; confirm Main
+processes the complete sum once and master gain remains independent. Switch and
+copy distinct A/B banks, reorder/bypass/remove and Undo/Redo, save/open a project
+and preset, and verify ordinary Track/Return selection. Try an instrument and a
+sample on Main: neither may create a Main instrument or clip. Check focused EQ
+and metering against the selected Main device, plus dense/minimum-width layout.
+This task does not claim native output deadlines, listening or user acceptance.
+
+
+## Main review repairs — source continuation, 20 October 2026
+
+The pre-Main summing graph retains its original Track/Return arrival, alignment,
+clock and tap/stem contract. Compilation separately validates the actual enabled
+serial Main processors' known algorithmic latency, adds it with checked arithmetic
+under the existing cumulative compensation limit, and stores the final output
+arrival in the existing prepared Project. The existing public latency report now
+includes Main. Bypass and memoryless matrices contribute zero; unknown or excessive
+latency refuses the candidate before publication. No artificial delay, new graph
+node, queue, owner, runtime API or additional Main DSP pass is introduced.
+
+Synthetic/empty constructors initialize final latency to zero. The restricted
+assembly constructor still refuses authored Main effects and initializes the same
+zero scalar; its exhaustive restore and inventory patterns acknowledge the scalar
+without changing resource custody or claims. Actual Project layout measured2360
+bytes both before and after this change on the checked cloud toolchain; no fixed
+four-byte budget increment is assumed. Existing accounting uses actual layout and
+retains the same limits. Native's separate prepared-carrier fields must compose by
+hunk; no whole Native overlay is included here.
+
+Session validation now includes Main's inactive comparison payloads in the same
+Effect provider validation as Track/Return. The metadata-only classifier includes
+Main in both comparison stripping and proof of a real typed Switch/Copy edge;
+active provider bytes, host trims, bypass and other audible fields remain intact.
+A saved project with valid active Main state and malformed inactive state now
+refuses at Session open, preserving original file bytes. Valid comparison states,
+both directional copies without switching, current-format round trips and atomic
+Undo/Redo retain the existing format33 and global trim semantics. Absent B still
+means an identical bank: Copy is a genuine no-op, not invented bank creation.
+
+Red-first checks observed four actual Main latency failures (final15 reported7,
+Main-only3 reported0, unknown admitted, cumulative65537 admitted) and two actual
+Main comparison failures (invalid command accepted, malformed saved bank opened).
+Separate fixture-API, exhaustive-pattern and initial-copy test-assumption failures
+are retained as such. The repaired latency cases include actual PCM at multiple
+partitions, Renderer, pre-Main captures and warm Main history/refused incompatible
+handoff. Component qualification and exact evidence are recorded in Pulse2882;
+sole-merger prospective validation, actual merge and native optimized acceptance
+remain separate. No device/app/native operations are performed by this source lane.
+
+### public headless Main metering (20 october 2026)
+
+`Renderer::set_effect_metering` enables/disables the existing prepared Main
+chain along with Track and Return chains. The public Main `device_meter` uses
+the actual device tap; no new owner, observation API or extra DSP pass is added.
+The regression first showed zero Main peaks with nonzero rendered PCM after
+enabling metering. It checks default-disabled, enabled, disabled and reenabled
+telemetry in ordinary and routed projects, with bitwise PCM equality to an
+unmetered renderer throughout. Targeted exact-source component/strict/allocation
+receipts are in Pulse2882; earlier d81 latency/A-B evidence remains separate.
+Final prospective qualification belongs to the sole merger; physical meters,
+listening and optimized delivery remain unverified here.

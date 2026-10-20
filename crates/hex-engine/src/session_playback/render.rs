@@ -291,6 +291,7 @@ impl SessionPlayback {
                 .device_chains
                 .iter_mut()
                 .chain(self.return_chains.iter_mut())
+                .chain(std::iter::once(&mut self.main_chain))
             {
                 chain.rollback_block();
             }
@@ -361,6 +362,7 @@ impl SessionPlayback {
         for chain in &mut self.return_chains {
             chain.begin_block();
         }
+        self.main_chain.begin_block();
         self.return_effect_tails.begin_block();
         for runtime in self.mutable_instruments.iter_mut().flatten() {
             runtime.begin_block();
@@ -463,6 +465,21 @@ impl SessionPlayback {
                     capture,
                 )?;
             }
+            let main_clock = crate::effect_clock::ArrangementEffectClock::session(
+                self.revision.session().timing(),
+                arrangement_frame,
+                performance_frame,
+                arrangement_loop_pass,
+                true,
+            );
+            crate::main_chain::process(
+                &mut self.main_chain,
+                &mut output[output_offset..chunk_end],
+                output_offset,
+                Some(&main_clock),
+                observer,
+            )
+            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             let chunk = u64::try_from(chunk_frames)
                 .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
             performance_frame = performance_frame
@@ -482,6 +499,7 @@ impl SessionPlayback {
             output_offset = chunk_end;
         }
 
+        self.main_chain.commit_block();
         self.revision.arrangement().master_mix().apply(output);
         for chain in &mut self.device_chains {
             chain.commit_block();

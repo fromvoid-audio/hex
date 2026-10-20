@@ -538,10 +538,12 @@ impl PreparedRevision {
     /// carry history and require preroll. Return processors are checked
     /// conservatively even when no current send reaches them.
     pub fn arrangement_seek_requires_preroll(&self) -> bool {
-        self.arrangement
-            .tracks()
-            .iter()
-            .any(|track| track.has_mutable_instrument() || track.has_device_chain())
+        !self.arrangement.main_device_chain.is_empty()
+            || self
+                .arrangement
+                .tracks()
+                .iter()
+                .any(|track| track.has_mutable_instrument() || track.has_device_chain())
             || self.arrangement.return_buses().iter().any(|bus| {
                 bus.device_chain
                     .iter()

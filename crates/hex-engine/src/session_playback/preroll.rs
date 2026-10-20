@@ -262,6 +262,12 @@ impl SessionPlayback {
 
     pub(super) fn accounted_runtime_storage_bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<Self>();
+        checked_add(
+            &mut total,
+            self.main_chain
+                .accounted_storage_bytes()?
+                .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?,
+        )?;
         if self.live_expression.is_some() {
             checked_add(
                 &mut total,
@@ -352,7 +358,13 @@ pub(super) fn arrangement_runtime_storage_preflight_bytes(
     let arrangement = revision.arrangement();
     let track_count = arrangement.tracks().len();
     let return_buses = arrangement.return_buses();
+    let main_bytes =
+        hex_lattice::NativeRuntimeChain::declared_storage_preflight_bytes_for_prepared(
+            &arrangement.main_device_chain,
+        )?
+        .checked_sub(std::mem::size_of::<hex_lattice::NativeRuntimeChain>())?;
     let mut total = std::mem::size_of::<SessionPlayback>();
+    checked_add(&mut total, main_bytes)?;
     if let Some(graph) = &arrangement.signal_graph {
         checked_add(&mut total, graph.runtime_preflight_bytes()?)?;
     }

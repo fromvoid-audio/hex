@@ -176,6 +176,7 @@ fn missing_comparison_wrong_slot_provider_or_state_size_refuses_current_document
     assert!(hex_storage::decode(&serde_json::to_vec(&changed).unwrap()).is_err());
     let mut changed = original;
     changed["version"] = 31.into();
+    changed.as_object_mut().unwrap().remove("main_devices");
     assert!(
         hex_storage::decode(&serde_json::to_vec(&changed).unwrap()).is_err(),
         "old alpha envelope is explicitly unsupported"

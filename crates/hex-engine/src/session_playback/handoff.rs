@@ -203,6 +203,9 @@ impl SessionPlayback {
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if !self.main_chain.can_inherit_from(&previous.main_chain) {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -343,6 +346,7 @@ impl SessionPlayback {
             self.capture_epoch = recipient_epoch;
             previous.capture_epoch = donor_epoch;
             self.candidate_admission_open = false;
+            self.main_chain.inherit_from(&previous.main_chain);
             return Ok(SessionHandoffReport {
                 cancelled_pending: [None; MAX_TRACKS],
                 cancelled_pending_len: 0,
@@ -2981,6 +2985,7 @@ impl SessionPlayback {
         if let Some(groups) = groups {
             groups.commit();
         }
+        self.main_chain.inherit_from(&previous.main_chain);
         Ok(report)
     }
 

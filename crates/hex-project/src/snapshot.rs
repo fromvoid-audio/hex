@@ -27,6 +27,7 @@ pub struct Snapshot {
     pub session: SessionSnapshot,
     pub loop_region: Option<LoopRegion>,
     pub master_gain: f32,
+    pub main_devices: Vec<DeviceSnapshot>,
     pub tempo_points: Vec<TempoPoint>,
     pub meter_points: Vec<MeterPoint>,
 }
@@ -432,6 +433,16 @@ impl Project {
                     .collect(),
             },
             loop_region: self.loop_region,
+            main_devices: self
+                .main_devices
+                .iter()
+                .map(|device| DeviceSnapshot {
+                    comparison: device.comparison.clone(),
+                    id: device.id.value(),
+                    bypassed: device.bypassed,
+                    state: device.state.clone(),
+                })
+                .collect(),
             master_gain: self.master_gain,
             tempo_points: self.tempo_map.points().to_vec(),
             meter_points: self.meter_map.points().to_vec(),
@@ -506,7 +517,20 @@ impl Project {
         }
 
         let mut total_clips = 0_usize;
-        let mut total_devices = 0_usize;
+        if snapshot.main_devices.len() > MAX_DEVICES_PER_TRACK {
+            return Err(Invalid("main device limit reached"));
+        }
+        let mut main_devices = Vec::with_capacity(snapshot.main_devices.len());
+        for device in snapshot.main_devices {
+            insert_id(device.id, &mut ids, &mut max_id)?;
+            main_devices.push(Device {
+                comparison: device.comparison,
+                id: DeviceId(device.id),
+                state: device.state,
+                bypassed: device.bypassed,
+            });
+        }
+        let mut total_devices = main_devices.len();
         let mut total_notes = 0_usize;
         let mut return_ids = BTreeSet::new();
         let mut returns = Vec::with_capacity(snapshot.return_tracks.len());
@@ -894,6 +918,7 @@ impl Project {
         project.assets = assets;
         project.tracks = tracks;
         project.returns = returns;
+        project.main_devices = main_devices;
         project.session = crate::SessionGrid { scenes, cells };
         project.loop_region = snapshot.loop_region;
         project.master_gain = snapshot.master_gain;
@@ -909,6 +934,11 @@ impl Project {
                 if let Some(comparison) = device.comparison() {
                     comparison.validate(device.state())?;
                 }
+            }
+        }
+        for device in project.main_devices() {
+            if let Some(comparison) = device.comparison() {
+                comparison.validate(device.state())?;
             }
         }
         project.validate_device_asset_references()?;

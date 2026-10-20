@@ -14,6 +14,7 @@ impl SessionPlayback {
         for chain in &mut self.return_chains {
             chain.begin_block();
         }
+        self.main_chain.begin_block();
         self.route_scratch.copy_from_slice(&self.routes);
         let step = if self.compensation.is_some() { 1 } else { 256 };
         for (chunk_index, chunk) in output.chunks_mut(step).enumerate() {
@@ -95,6 +96,16 @@ impl SessionPlayback {
             }
             self.render_return_buses(chunk, offset, None, observer, capture)?;
         }
+        let main_clock = crate::effect_clock::ArrangementEffectClock::session(
+            self.revision.session().timing(),
+            self.arrangement_frame,
+            self.performance_frame,
+            self.arrangement_loop_pass,
+            false,
+        );
+        crate::main_chain::process(&mut self.main_chain, output, 0, Some(&main_clock), observer)
+            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        self.main_chain.commit_block();
         self.revision.arrangement().master_mix().apply(output);
         for chain in &mut self.device_chains {
             chain.commit_block();

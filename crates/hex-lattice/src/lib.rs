@@ -278,6 +278,7 @@ pub enum NodeSignalPhase {
 /// distinct during runtime history handoff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProcessorChainOwner {
+    Main,
     Track(u64),
     Return(u64),
 }
@@ -286,6 +287,7 @@ impl ProcessorChainOwner {
     fn is_valid(self) -> bool {
         match self {
             Self::Track(id) | Self::Return(id) => id != 0,
+            Self::Main => true,
         }
     }
 }

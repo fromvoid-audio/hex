@@ -330,6 +330,7 @@ pub struct SessionPlayback {
     route_scratch: Vec<TrackRoute>,
     device_chains: Vec<hex_lattice::NativeRuntimeChain>,
     return_chains: Vec<hex_lattice::NativeRuntimeChain>,
+    main_chain: hex_lattice::NativeRuntimeChain,
     return_scratch: Vec<[Frame; 256]>,
     return_effect_tails: ReturnEffectTailBank,
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
@@ -516,6 +517,7 @@ impl SessionPlayback {
             route_scratch: _,
             device_chains,
             return_chains,
+            main_chain: _,
             return_scratch: _,
             return_effect_tails,
             mutable_instruments,
@@ -576,6 +578,7 @@ impl SessionPlayback {
         }
         visit(7, 0, true)?; // this exact Session revision handle
         visit(8, 0, compensation.is_some())?;
+        visit(9, 0, true)?; // singleton Main, existing owner kinds unchanged
         Ok(())
     }
     pub(crate) fn set_device_metering(&mut self, enabled: bool) {
@@ -584,6 +587,7 @@ impl SessionPlayback {
             .device_chains
             .iter_mut()
             .chain(self.return_chains.iter_mut())
+            .chain(std::iter::once(&mut self.main_chain))
         {
             chain.set_metering(enabled);
         }
@@ -648,6 +652,12 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => self.main_chain.select_processor_audition(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection,
+            ),
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -735,6 +745,12 @@ impl SessionPlayback {
     ) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => self.main_chain.processor_audition_is_active(
+                identity.owner,
+                identity.device_id,
+                identity.device_type,
+                selection,
+            ),
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -767,6 +783,13 @@ impl SessionPlayback {
     pub(crate) fn cancel_processor_audition(&mut self, identity: crate::PostNodeIdentity) -> bool {
         let project = self.revision.arrangement();
         match identity.owner {
+            hex_lattice::ProcessorChainOwner::Main => {
+                self.main_chain.cancel_processor_audition_for_identity(
+                    identity.owner,
+                    identity.device_id,
+                    identity.device_type,
+                )
+            }
             hex_lattice::ProcessorChainOwner::Track(owner) => project
                 .tracks()
                 .iter()
@@ -995,6 +1018,10 @@ impl SessionPlayback {
             );
             return_scratch.push([[0.0; 2]; 256]);
         }
+        let main_chain = revision
+            .arrangement()
+            .new_main_device_runtime()
+            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
         let return_effect_tails = ReturnEffectTailBank::new()?;
         let mut tail_groups = Vec::new();
         tail_groups
@@ -1081,6 +1108,7 @@ impl SessionPlayback {
             route_scratch,
             device_chains,
             return_chains,
+            main_chain,
             return_scratch,
             return_effect_tails,
             mutable_instruments,
