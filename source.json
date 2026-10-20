@@ -1,0 +1,35 @@
+{
+  "canonical_pr": 489,
+  "canonical_branch": "pulse/task-2813-g2-e38e29b88b49",
+  "source": "12c0a47d1fb811bf962b45e19b9e2dff76fb6661",
+  "tree": "bd0cdc2d1348f88d17b979d77583e728c4607e3e",
+  "qualified_base": "1d1797bb0e22a9f3f7871f9782162ca1e5abcc34",
+  "original_plan": "6d2f77259e8d0cf4efacc41840167eea747ee89b",
+  "pin": "7c437ef47910ecc5ac6d901c36815a151abc0d4b",
+  "runtime_default_receipt_source": "211ce9a253b01295721ab7c5daae079dfac9e846",
+  "later_change": "only user-confirmation prose",
+  "production_files_changed": 0,
+  "changes": [
+    {
+      "path": "crates/hex-ui/src/editor/workspace_view_ui_test.rs",
+      "before_blob": "309554e858006dad47e98fa180c207db58518bd3",
+      "after_blob": "7ac3ab210cb4b7a9f40c2c89969c6dabdc73b952",
+      "before_sha256": "90d89cb85ccf7be5180c48c670281565ab0d8390e0f4004bd27c6119cbbbd7ec",
+      "after_sha256": "aa59b5a88c773c19ad91f1542e756b7857ce393f8bd9b21a24cf57a6a3bb3c71"
+    },
+    {
+      "path": "docs/workspace-views.md",
+      "before_blob": "df9858bd109fd1581e0b95109257109e3823debd",
+      "after_blob": "9d1ff201ee492b05bc430b2068e1904756a0578c",
+      "before_sha256": "7539c5d7af3cdbe2e0e93d3db9ea01c1b9866290d9f85741fcf8af649afeab7c",
+      "after_sha256": "f9e445dd4a4f8931be5c35fda8d04b6557ccde79ca1f42c39cb47847e350f958"
+    },
+    {
+      "path": "todo.md",
+      "before_blob": "1bb2c15d98fa5c1d9a7765f00eae25940fd1d9a1",
+      "after_blob": "a2276e7523007acc5b0577eca84b4de9b318167f",
+      "before_sha256": "22dd68006635b4f9156a9279aa51d7ff023624565013d685dde242dc70ec8d33",
+      "after_sha256": "ba2debd94de4d12649609a5065faecb88dcd41cff107fda60af6d067b20e3764"
+    }
+  ]
+}

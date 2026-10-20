@@ -1,0 +1,256 @@
+[
+  {
+    "run": "20261020T052008Z-e3f6407f",
+    "source": "7c437ef47910ecc5ac6d901c36815a151abc0d4b",
+    "status": "failed",
+    "exit_code": 1,
+    "stale": false,
+    "duration_seconds": 10.358,
+    "summary_sha256": "b36778015b206505ebbaf72fd0c0e3a5fdceecc0f7959157fe1c1f769fc800b5",
+    "steps": [
+      {
+        "step_id": "routed-tab-baseline",
+        "status": "not_run",
+        "exit_code": null
+      }
+    ]
+  },
+  {
+    "run": "20261020T052053Z-b2520b0c",
+    "source": "7c437ef47910ecc5ac6d901c36815a151abc0d4b",
+    "status": "partial",
+    "exit_code": 0,
+    "stale": false,
+    "duration_seconds": 85.857,
+    "summary_sha256": "b4a3cb36167c906e4430ebd8734ed003f3fa80aab3e0f27efe6c20ab91976e07",
+    "steps": [
+      {
+        "step_id": "routed-tab-baseline",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261020T052446Z-56625ecd",
+    "source": "7c437ef47910ecc5ac6d901c36815a151abc0d4b",
+    "status": "failed",
+    "exit_code": 1,
+    "stale": false,
+    "duration_seconds": 49.512,
+    "summary_sha256": "1f04687eed5e9cf5c9449586d69c2f957500043c54660a655de3662b646f6eb8",
+    "steps": [
+      {
+        "step_id": "full-setup-focus-discriminator",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261020T052608Z-20ad86bc",
+    "source": "7c437ef47910ecc5ac6d901c36815a151abc0d4b",
+    "status": "failed",
+    "exit_code": 1,
+    "stale": false,
+    "duration_seconds": 61.589,
+    "summary_sha256": "b435fa9685c27eb58debfc044d7926b3d72d68d2da4f8e9802e10db9d5bd3ad9",
+    "steps": [
+      {
+        "step_id": "startup-focus-discriminator",
+        "status": "failed",
+        "exit_code": 101
+      }
+    ]
+  },
+  {
+    "run": "20261020T052755Z-ebb39900",
+    "source": "7c437ef47910ecc5ac6d901c36815a151abc0d4b",
+    "status": "partial",
+    "exit_code": 0,
+    "stale": false,
+    "duration_seconds": 65.661,
+    "summary_sha256": "42038e476bd210136e9e7c4bf27639b625f009656d5be5bedf6f93e4f18e3781",
+    "steps": [
+      {
+        "step_id": "startup-focus-discriminator-corrected",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261020T053101Z-025f97ea",
+    "source": "211ce9a253b01295721ab7c5daae079dfac9e846",
+    "status": "failed",
+    "exit_code": 1,
+    "stale": false,
+    "duration_seconds": 88.876,
+    "summary_sha256": "b5fb8142fddfbbd66a5df4dd930428f387264be32f305927dde8272b40c2ba78",
+    "steps": [
+      {
+        "step_id": "default-ui-lib",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "workspace-feature",
+        "status": "failed",
+        "exit_code": 101
+      },
+      {
+        "step_id": "strict-default",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "strict-feature",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "architecture",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "ui-style",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "gpui-patch",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "touched-fmt",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "diff-check",
+        "status": "not_run",
+        "exit_code": null
+      }
+    ]
+  },
+  {
+    "run": "20261020T053606Z-22f601d6",
+    "source": "211ce9a253b01295721ab7c5daae079dfac9e846",
+    "status": "interrupted",
+    "exit_code": 130,
+    "stale": false,
+    "duration_seconds": 25.311,
+    "summary_sha256": "e1404496fdf9bc766add711039619b0108aa3d3e1738af54ca9ff9c14f0407e5",
+    "steps": [
+      {
+        "step_id": "workspace-feature",
+        "status": "interrupted",
+        "exit_code": 130
+      },
+      {
+        "step_id": "strict-default",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "strict-feature",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "architecture",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "ui-style",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "gpui-patch",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "touched-fmt",
+        "status": "not_run",
+        "exit_code": null
+      },
+      {
+        "step_id": "diff-check",
+        "status": "not_run",
+        "exit_code": null
+      }
+    ]
+  },
+  {
+    "run": "20261020T053959Z-4d9940f8",
+    "source": "12c0a47d1fb811bf962b45e19b9e2dff76fb6661",
+    "status": "partial",
+    "exit_code": 0,
+    "stale": false,
+    "duration_seconds": 2.401,
+    "summary_sha256": "342f2f3ceba599b0086a77474b66ef07f95647e27306df218e5181eb3a649f9d",
+    "steps": [
+      {
+        "step_id": "inactive-dev-cache-clean",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  },
+  {
+    "run": "20261020T054103Z-75cc2c09",
+    "source": "12c0a47d1fb811bf962b45e19b9e2dff76fb6661",
+    "status": "partial",
+    "exit_code": 0,
+    "stale": false,
+    "duration_seconds": 160.173,
+    "summary_sha256": "1b2424b785ef7caa1a9c38f031a16bb810cc553d550904f1892486f715397bf9",
+    "steps": [
+      {
+        "step_id": "workspace-feature",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "strict-default",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "strict-feature",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "architecture",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "ui-style",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "gpui-patch",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "touched-fmt",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "step_id": "diff-check",
+        "status": "passed",
+        "exit_code": 0
+      }
+    ]
+  }
+]
