@@ -13,7 +13,7 @@ use gpui::{
 };
 use hex_audio::sample_preview::Phase;
 use hex_library::{DirectoryListing, EntryKind, LibraryEntry, ScanError, scan_directory};
-use hex_preferences::BrowserPlaces;
+use hex_preferences::{BrowserBuiltin, BrowserPlaces};
 use hex_session::service::AudioPreview;
 use hex_session::service::Request;
 use std::{
@@ -160,6 +160,7 @@ pub(super) struct BrowserState {
     music: PathBuf,
     pub(super) places: Vec<PathBuf>,
     place_icons: HashMap<PathBuf, String>,
+    source_preferences: BrowserPlaces,
     preferences_path: PathBuf,
     preferences_loading: bool,
     pub(super) preferences_writable: bool,
@@ -247,6 +248,7 @@ impl BrowserState {
             music,
             places,
             place_icons: HashMap::new(),
+            source_preferences: BrowserPlaces::default(),
             preferences_path,
             preferences_loading: true,
             preferences_writable: true,
@@ -449,6 +451,10 @@ impl EditorView {
                     Some(places_error("could not load browser places", &error));
             }
             Ok(loaded) => {
+                self.browser
+                    .layout
+                    .set_samples_visible(!loaded.builtin_hidden(BrowserBuiltin::Samples));
+                self.browser.source_preferences = loaded.clone();
                 self.browser.place_icons = loaded
                     .icon_assignments()
                     .map(|(path, id)| (path.to_owned(), id.to_owned()))
@@ -458,6 +464,10 @@ impl EditorView {
                     .place_icons
                     .values()
                     .any(|id| !place_icons::known(id))
+                    || [BrowserBuiltin::Home, BrowserBuiltin::Music]
+                        .into_iter()
+                        .filter_map(|source| loaded.builtin_icon(source))
+                        .any(|id| !place_icons::known(id))
                 {
                     self.browser.places_status =
                         Some("some place icons unavailable · showing folder".into());
@@ -493,6 +503,7 @@ impl EditorView {
                 }
             }
         }
+        self.reconcile_browser_source_visibility(cx);
         self.refresh_sample_catalog(cx);
     }
 
@@ -512,6 +523,24 @@ impl EditorView {
             .filter(|path| **path != self.browser.home && **path != self.browser.music)
             .cloned();
         let places = BrowserPlaces::new(additional).and_then(|mut places| {
+            for source in [
+                BrowserBuiltin::Music,
+                BrowserBuiltin::Home,
+                BrowserBuiltin::Samples,
+            ] {
+                places.set_builtin_icon(
+                    source,
+                    self.browser.source_preferences.builtin_icon(source),
+                )?;
+                places.set_builtin_hidden(
+                    source,
+                    self.browser.source_preferences.builtin_hidden(source),
+                );
+            }
+            for path in places.additional().to_vec() {
+                places
+                    .set_place_hidden(&path, self.browser.source_preferences.place_hidden(&path))?;
+            }
             for (path, id) in &self.browser.place_icons {
                 if places.additional().contains(path) {
                     places.set_icon(path, Some(id))?;
@@ -521,6 +550,7 @@ impl EditorView {
         });
         match places {
             Ok(places) => {
+                self.browser.source_preferences = places.clone();
                 self.browser.pending_places_save = Some(places);
                 self.browser.places_status = Some("saving browser places…".into());
                 self.start_browser_places_save(cx);
@@ -2508,9 +2538,19 @@ impl EditorView {
                                         Some("browser folder limit reached".into());
                                 }
                             }
+                            if view.browser.places.contains(&path)
+                                && !view.browser_place_visible(&path)
+                            {
+                                view.set_browser_source_visible(
+                                    BrowserSection::Place(path.clone()),
+                                    true,
+                                    cx,
+                                );
+                            }
                             view.refresh_sample_catalog(cx);
                             if view.browser.section != BrowserSection::Samples
                                 && view.browser.places.contains(&path)
+                                && view.browser_place_visible(&path)
                             {
                                 view.select_browser_source(BrowserSection::Place(path), cx);
                             }

@@ -4613,7 +4613,10 @@ fn browser_place_icons_catalog_uses_same_bounds_expanded_and_collapsed(cx: &mut 
                     .insert(path.clone(), "samples".into());
                 assert_eq!(view.browser_place_glyph(&path), "□");
                 view.open_browser_place_icons(path, point(px(0.0), px(0.0)), window, cx);
-                assert!(view.context_menu.is_none(), "defaults aren't custom Places");
+                assert!(
+                    view.context_menu.is_none(),
+                    "these built-ins are absent from this custom-only fixture"
+                );
             }
             view.browser.preferences_loading = true;
             view.open_browser_place_icons(directory.0.clone(), point(px(0.0), px(0.0)), window, cx);
@@ -4929,6 +4932,8 @@ fn browser_picker_compact_gear_closes_without_expanding_then_opens_explicitly(
     });
 }
 
+#[path = "browser_builtin_source_ui_test.rs"]
+mod builtin_sources;
 #[path = "browser_resize_feedback_ui_test.rs"]
 mod resize_feedback;
 

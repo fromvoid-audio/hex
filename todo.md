@@ -5349,6 +5349,12 @@ to normal; existing selection/hover/focus/audition regressions remain applicable
 Optimized native clipping/tooltip/drag acceptance stays with the coordinator;
 source handoff is separate from final integration/full CI/merge and delivery.
 
+18 October2026 — Pulse2844/PR446 source: reuse bundled Place grid/reset for stable
+Home/Music IDs; reversible sidebar-only Remove for Home/Music/Samples/custom
+folders, existing configuration restores sources, active removal falls back to
+All without deleting files/catalog/project media. All displays first; accepted
+Command-F route reused unchanged. Focused rendered/persistence checks recorded
+in Pulse; full prospective CI/merge remains sole merger, native acceptance root.
 18 October2026 — Pulse2708/PR324: actual active picker drag lost cyan beyond its
 moving hit bounds; outer resize activity survived lost-Left movement. Bind paint
 to each existing gesture and notify on state transitions; clear stale outer latch
@@ -6095,3 +6101,13 @@ later variants were not executed after that failure. The private sample fixture
 now precreates one shared Environment before WAV/Service startup and checks its
 identity and four preference paths; original six behavior/helper bodies remain.
 Current-head required qualification/review and native acceptance remain separate.
+
+## hidden-source picker integration — pulse2844 / PR446
+
+Actual Remove → folder-picker same custom path reproduced invisible selection on
+composed439607. Reuse only existing source visibility restoration and require
+visibility before picker selection; preserve Samples convention and all current
+browser Enter/density/capture behavior. Local owning fixtures bind their original
+paths and catalog jobs to one Environment, with pointer/four-path assertions;
+original test bodies remain. Current focused/required/review and native acceptance
+remain separate; old source receipts do not qualify this combined candidate.

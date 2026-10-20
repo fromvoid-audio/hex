@@ -24,6 +24,7 @@ pub(super) struct UtilityModeAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    RemoveBrowserSource(super::browser::BrowserSection),
     AdaptiveGrid {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
@@ -300,6 +301,9 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::RemoveBrowserSource(source) => {
+                self.remove_browser_source(source, window, cx);
+            }
             EditorContextAction::AdaptiveGrid {
                 generation,
                 density,
@@ -434,6 +438,9 @@ impl EditorView {
                 }
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)
+                }
+                EditorContextAction::RemoveBrowserSource(source) => {
+                    !self.browser_source_removable(source)
                 }
                 EditorContextAction::InsertTrack(_) => false,
                 EditorContextAction::AdaptiveGrid { generation, .. } => {
