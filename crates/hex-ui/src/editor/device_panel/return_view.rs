@@ -445,18 +445,16 @@ fn render_return_add_menu(
                         .cursor(gpui::CursorStyle::PointingHand)
                         .child(theme::text(label))
                         .on_click(cx.listener(move |view, _, _, cx| {
-                            let request = match hex_engine::default_native_device_state_for_class(
-                                NativeDeviceClass::Effect,
-                                type_id,
-                            ) {
-                                Ok(state) => Request::Edit(owner.insert(None, state)),
-                                Err(error) => {
-                                    view.device_panel.message =
-                                        Some(error.to_string().to_lowercase());
-                                    cx.notify();
-                                    return;
-                                }
+                            let Some(revision) = view.state.as_ref().map(|state| state.revision)
+                            else {
+                                return;
                             };
+                            let request = owner.insert_request(
+                                view.project_generation,
+                                revision,
+                                None,
+                                type_id,
+                            );
                             if finalize_controls(view, cx) && view.enqueue_device_barrier(request) {
                                 view.device_panel.add_menu_open = false;
                                 view.device_panel.message = None;

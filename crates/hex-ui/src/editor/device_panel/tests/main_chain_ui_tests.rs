@@ -2,6 +2,178 @@
 use super::*;
 use crate::editor::test_environment::Environment;
 
+#[gpui::test]
+fn main_and_return_catalog_menu_and_browser_drop_reach_worker_with_one_history_step(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    let environment = Environment::new().unwrap();
+    std::fs::create_dir_all(environment.root().join("samples")).unwrap();
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.replace_root(cx, |window, cx| {
+                EditorView::new_for_test_with_environment(
+                    window,
+                    cx,
+                    Service::new(48_000, 32, 8_000_000).unwrap(),
+                    Arc::clone(&environment),
+                )
+            })
+        })
+        .unwrap();
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.update(|window, _| window.activate_window());
+    visual.simulate_resize(size(px(1600.), px(900.)));
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddTrack {
+            name: "empty".into()
+        })));
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddReturnTrack {
+            name: "return".into()
+        })));
+    });
+    pump(&editor, &mut visual);
+    let return_id = editor.read_with(&visual, |view, _| {
+        view.state.as_ref().unwrap().project.return_tracks()[0].id()
+    });
+    for owner in [EffectBusOwner::Main, EffectBusOwner::Return(return_id)] {
+        let focus_selector = match owner {
+            EffectBusOwner::Main => "main-track-header".to_owned(),
+            EffectBusOwner::Return(id) => format!("return-track-focus-{}", id.value()),
+        };
+        let bounds = visual
+            .debug_bounds(Box::leak(focus_selector.into_boxed_str()))
+            .unwrap();
+        let focus_point = if owner == EffectBusOwner::Main {
+            point(bounds.left() + px(14.), bounds.center().y)
+        } else {
+            bounds.center()
+        };
+        visual.simulate_click(focus_point, Modifiers::default());
+        visual.run_until_parked();
+        let before_menu = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.clone()
+        });
+        let toggle = visual.debug_bounds("device-add-toggle").unwrap().center();
+        visual.simulate_click(toggle, Modifiers::default());
+        visual.run_until_parked();
+        let selector = format!("add-{}-effect-hex.utility", owner.prefix());
+        let add = visual
+            .debug_bounds(Box::leak(selector.into_boxed_str()))
+            .unwrap()
+            .center();
+        visual.simulate_click(add, Modifiers::default());
+        pump(&editor, &mut visual);
+        let menu_project = editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(owner.devices(&state.project).unwrap().len(), 1);
+            assert_eq!(
+                owner.devices(&state.project).unwrap()[0].state(),
+                &hex_engine::default_native_device_state_for_class(
+                    NativeDeviceClass::Effect,
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.utility")
+                )
+                .unwrap()
+            );
+            assert_eq!(view.selected_track, None);
+            assert_eq!(
+                view.focused_return,
+                if owner == EffectBusOwner::Main {
+                    None
+                } else {
+                    Some(return_id)
+                }
+            );
+            assert!(
+                state.project.tracks()[0]
+                    .ordered_device_chain()
+                    .next()
+                    .is_none()
+            );
+            state.project.clone()
+        });
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, before_menu)
+        });
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, menu_project)
+        });
+        editor.update(&mut visual, |view, cx| {
+            view.select_browser_source(crate::editor::browser::BrowserSection::Instruments, cx)
+        });
+        visual.run_until_parked();
+        let source = visual
+            .debug_bounds("browser-device-effect-hex.utility")
+            .unwrap()
+            .center();
+        visual.simulate_mouse_down(source, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_move(
+            source + point(px(12.), px(0.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        visual.run_until_parked();
+        let target = visual
+            .debug_bounds(Box::leak(owner.end_selector().into_boxed_str()))
+            .unwrap()
+            .center();
+        visual.simulate_mouse_move(target, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.state.as_ref().unwrap().project,
+                menu_project,
+                "held drop does not author"
+            );
+            assert!(view.active_native_device_drag.is_some());
+        });
+        visual.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
+        let dropped = editor.read_with(&visual, |view, _| {
+            assert!(view.error.is_none(), "{:?}", view.error);
+            assert!(view.active_native_device_drag.is_none());
+            let state = view.state.as_ref().unwrap();
+            assert_eq!(owner.devices(&state.project).unwrap().len(), 2);
+            assert_eq!(view.selected_track, None);
+            assert_eq!(
+                view.focused_return,
+                if owner == EffectBusOwner::Main {
+                    None
+                } else {
+                    Some(return_id)
+                }
+            );
+            assert!(
+                state.project.tracks()[0]
+                    .ordered_device_chain()
+                    .next()
+                    .is_none()
+            );
+            state.project.clone()
+        });
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, menu_project)
+        });
+        editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Redo)));
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(view.state.as_ref().unwrap().project, dropped)
+        });
+    }
+}
+
 fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let end = std::time::Instant::now() + std::time::Duration::from_secs(5);
     loop {

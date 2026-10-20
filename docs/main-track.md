@@ -197,3 +197,14 @@ unmetered renderer throughout. Targeted exact-source component/strict/allocation
 receipts are in Pulse2882; earlier d81 latency/A-B evidence remains separate.
 Final prospective qualification belongs to the sole merger; physical meters,
 listening and optimized delivery remain unverified here.
+### catalog insertion ownership
+
+Main and Return add menus and browser drops send only the captured project
+generation/revision, effect type, destination and optional anchor to the Session
+worker. The UI does not construct a default device state. Before any gesture
+barrier, the worker refuses stale stamps, a live device/tuning draft, unsupported
+classes or types, missing Returns and anchors outside the destination. A valid
+request resolves the registered default on the worker and uses the existing
+atomic Main/Return insertion command and ordinary prepared-edit publication.
+It retains the selected bus, created-device response and one Undo/Redo step.
+Existing-device same-owner reorder and ordinary empty-track behavior are unchanged.

@@ -1668,16 +1668,11 @@ impl EditorView {
             cx.notify();
             return;
         }
-        let command = match drag.source {
+        let request = match drag.source {
             drag::NativeDeviceDragSource::Browser {
                 class: NativeDeviceClass::Effect,
                 type_id,
-            } => hex_engine::default_native_device_state_for_class(
-                NativeDeviceClass::Effect,
-                type_id,
-            )
-            .map(|state| owner.insert(before, state))
-            .map_err(|error| error.to_string().to_lowercase()),
+            } => Ok(owner.insert_request(drag.project_generation, drag.revision, before, type_id)),
             drag::NativeDeviceDragSource::Browser {
                 class: NativeDeviceClass::Instrument,
                 ..
@@ -1705,16 +1700,16 @@ impl EditorView {
                         cx.notify();
                         return;
                     }
-                    Ok(owner.reorder(device, before))
+                    Ok(Request::Edit(owner.reorder(device, before)))
                 } else {
                     Err("devices can only be reordered within their current owner".to_owned())
                 }
             }
         };
         self.clear_native_device_drag(drag);
-        match command {
-            Ok(command) => {
-                if self.enqueue_device_barrier(Request::Edit(command)) {
+        match request {
+            Ok(request) => {
+                if self.enqueue_device_barrier(request) {
                     self.error = None;
                     self.device_panel.message = None;
                     self.status = "updating effects".into();

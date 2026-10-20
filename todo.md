@@ -6298,3 +6298,12 @@ failures. Actual Project layout is measured, not assumed to grow four bytes.
 Original owning cases remain; focused/strict/source-bound handoff in progress.
 Sole merger owns prospective required checks/review/merge, and Root owns optimized
 native acceptance. No app delivery, hosted CI or Native395 overlay is claimed.
+## Main/Return catalog factory ownership — PR484 integration
+
+The shared Main/Return catalog menu and browser-drop paths now carry typed
+destination/type/anchor and captured project stamps to the Session worker.
+Default construction and pre-barrier refusal live on the worker; canonical
+insert commands, selection, same-owner reorder and ordinary empty tracks remain.
+New Service and rendered controls cover both destinations, history and atomic
+refusal. This is an implementation checkpoint; exact-source owning checks,
+required CI, review and merge remain pending. Native delivery remains separate.

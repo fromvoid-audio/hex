@@ -44,14 +44,23 @@ impl EffectBusOwner {
             Self::Return(id) => format!("return-device-drop-end-{}", id.value()),
         }
     }
-    pub(super) fn insert(self, before: Option<DeviceId>, state: NativeDeviceState) -> Command {
-        match self {
-            Self::Main => Command::InsertMainDevice { before, state },
-            Self::Return(return_track) => Command::InsertReturnDevice {
-                return_track,
-                before,
-                state,
+    pub(super) fn insert_request(
+        self,
+        project_generation: u64,
+        revision: u64,
+        before: Option<DeviceId>,
+        type_id: hex_lattice_contract::DeviceTypeId,
+    ) -> Request {
+        Request::InsertEffectBusDevice {
+            project_generation,
+            revision,
+            destination: match self {
+                Self::Main => hex_session::service::EffectBusDestination::Main,
+                Self::Return(id) => hex_session::service::EffectBusDestination::Return(id),
             },
+            class: NativeDeviceClass::Effect,
+            type_id,
+            before,
         }
     }
     pub(super) fn reorder(self, device: DeviceId, before: Option<DeviceId>) -> Command {
