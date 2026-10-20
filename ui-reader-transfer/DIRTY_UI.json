@@ -1,0 +1,18 @@
+[
+  {
+    "path": "crates/hex-ui/Cargo.toml",
+    "sha256": "c9a3ac85490916fcb0bd7fa82681f08c5ec77fe7a6db702c0933bf384cd15f9a"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/export.rs",
+    "sha256": "338265adcf2825bcd38efc24fc9b176f5ab010fca54c618fad9cb66f298455ed"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/project_spectrum.rs",
+    "sha256": "bcaaee646d07a5435ceac76cf76d56880233ed9955faa6bb165ccf0eb5d98524"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/project_spectrum/tests.rs",
+    "sha256": "935082726ec51796602835a29c9847bcd2047df6675687a319a8462d92b2b834"
+  }
+]

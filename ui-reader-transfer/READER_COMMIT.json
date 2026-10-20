@@ -1,0 +1,22 @@
+{
+  "commit": "96d016cc6d8d36db82a6447e96b5be477a1e19cf",
+  "tree": "45e32032e52624c44dd19fecc65b1499361873f9",
+  "parent": "1d5b89a2f658a22cb9c1f76c5bfc1631326e192d",
+  "files": [
+    {
+      "path": "crates/hex-session/src/snapshot_exports.rs",
+      "sha256": "1a5ad6e491597debceaf0607cc3ac830efb9b7edfc7903439a14c3c803ddbad6",
+      "before_sha256": "7a0d0294b4c2e98f6058f6de2652aa8405bdf29200674c57c7f88ef836baca16"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/model_read.rs",
+      "sha256": "b5c6bf7a0ab0fbba86e5ca9ee471afc530f499dee75964cd6cafc090b32497d9",
+      "before_sha256": null
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/model_read/tests.rs",
+      "sha256": "25b71be8d8f91f407f50aed235f4e68a1bc83f9ecb6f1ce87fbf12994fa1cf42",
+      "before_sha256": null
+    }
+  ]
+}

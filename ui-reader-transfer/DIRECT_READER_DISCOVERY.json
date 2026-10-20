@@ -1,0 +1,493 @@
+{
+  "warning": "Direct textual discovery, not exhaustive aliases/67-list authority",
+  "files": [
+    {
+      "path": "crates/hex-ui/src/editor/arrangement.rs",
+      "sha256": "b9f829afef7b48a07ad4adb7e011ba53b432831de99c0ae6086652e253ffefc3"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/arrangement_audio_panel.rs",
+      "sha256": "21f52a0b7698f318721a326d3d2ea6b468e980d010bcec815cab782be4609b7b"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/arrangement_device_drop.rs",
+      "sha256": "9da7c774ed54b8c436ad2fca01abc79c4e3e826206881131086a0ba8eb500522"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/arrangement_device_drop_ui_test.rs",
+      "sha256": "04450a0a82db77e7c4325727de4b598827128c87e1501534924b23179e8e8bb9"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/arrangement_main_track_ui_test.rs",
+      "sha256": "a267008ad3912834e4210b07abc426e5eec903757bc70e3aec0c52f6d97fe0b5"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/arrangement_seek.rs",
+      "sha256": "3238a6cc9138a470f71b5b29a0c5dd42fcbe17b14f1325682f02edccc9117f06"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/audio_event_editor/mod.rs",
+      "sha256": "bcf3dcdb7bf3551b91c04c903c741339aada52da2e6f4148d481a18f4c9bdd41"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/audio_event_editor/tests.rs",
+      "sha256": "a8d92336a86c94c375ded87513cacfd8dee0f6b504e566e662cc6713847bf62d"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/audio_event_editor/view.rs",
+      "sha256": "53c5976e2fab938452155360f7afb5f1db9fa7eb52a6d0448f617d46131d85e8"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/browser.rs",
+      "sha256": "0b095d4ee91546eed01232bde260c7cf8d207962cfc111d8144e8b11095ac84d"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/browser_ui_test.rs",
+      "sha256": "10fb01e972f7df6c15d130aa126a7fc7fe949892c73883e7aea662b31520d0d3"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_border_ui_test.rs",
+      "sha256": "449f6ea84f97d7cbea4db34a079f796230a09e1f57d3f7b4eedd6d052f2ca8d9"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_clipboard_ui_test.rs",
+      "sha256": "de112c4804ea6183a3e67ecec1cd6d4c199e5d862523b05e50bf26c0fb730f69"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_content_cache.rs",
+      "sha256": "c92e740edba480773b9a40d372c96e7230092f929b590fb5d02e2b4e681563aa"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_content_cache_ui_test.rs",
+      "sha256": "637e6d9d7421169f9055162b39b4ad01afac60f63e632c9413708d2a4f2b4126"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_content_profile.rs",
+      "sha256": "1f7714156a9f66dc0ac89a4f9540bae23db82041b2879bc1ce115c70a96da279"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_drag_ui_test.rs",
+      "sha256": "0ad4ad28ee0a7a3ece99a5331a5370ab99180993ce6c999cacb83c6389c18432"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_name.rs",
+      "sha256": "09d24343dc7db4cdd8efa6d2f2720907947d2863b7df908aca4d5a148a54f3d6"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_paint.rs",
+      "sha256": "d46e78d4cc33c7c9666c8097103641cd27b0449b0d52a81ee15168f078698e34"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_paint_ui_test.rs",
+      "sha256": "6fdb30d76fbf61d533a52fd6304d61f38398e8e550773d8e05ac2005e84844c2"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_selection.rs",
+      "sha256": "d54f41a8acba960d0b63aef7e3d0e83f4dfb3a6ef22640fb89508c48763860e4"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_view.rs",
+      "sha256": "daa111c562e6aad3527a0abb1591422c2039e42d252b02c1f877d78a4d584dcd"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/clip_view_ui_test.rs",
+      "sha256": "318e4e47cc5708dc470df774116861572076188e4c85f02613345d7970e44eea"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/close.rs",
+      "sha256": "13927b5910c787dd67f0e77b5f09294104016f0688ed0f16710574bd7fdc5712"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/computer_keyboard.rs",
+      "sha256": "8035b4b8c068c496045c15ea8ebd896d3f429eb0db780b7a9c237ce81f2ad635"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/context_menu.rs",
+      "sha256": "0f8d6a16dd27d0be96c4e7f299407a34288271551e77d5f23d8b5efe1adce544"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/controller.rs",
+      "sha256": "07724e615ffcd35aa6406930c67fbda1ca69a2284abef33160bb621572bfebd4"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/controller/project_replacement_tests.rs",
+      "sha256": "d0a8e406b6b3232b8e2eadc12f662f796e7af821fc558361303c19dc8d71ddbd"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/controller_input.rs",
+      "sha256": "c416ab25ab788221efcc8d488c8cb713f56bf5e79dcb89773680ff2d0030426b"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel.rs",
+      "sha256": "49d1915cd8c5006b4e933e30cb592f819c3d92344df711f7d9642ba26653f5ab"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/bindings.rs",
+      "sha256": "1bd27ad00d5827102ae895483fd161fd1d7616b2b4687c631c02b42ac94c812b"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/eq8_panel.rs",
+      "sha256": "137e8503d516c8973f7a6f16448d49818cea1be5947f5b39e6e3f43f22204982"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/eq8_panel/graph.rs",
+      "sha256": "7b8bbfb8ef124aeb9efd0e7ae320b709a72517363ae6d902433deeaea0e45ab4"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/eq_panel.rs",
+      "sha256": "10f944343aea795fc21354643f0c0669b628f467dd4d8310fc24c5d9c8a458ad"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/gain_meters.rs",
+      "sha256": "a731f1d46c19c961cf6b95520ba624547becb8488d6ed73df9ae26dd375d95b3"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/navigation.rs",
+      "sha256": "a2cfe5ae09dac217b6da05c820fbd0ac3649de29547a332a9c848fe7e3f60544"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/operator_harmonic_ui_tests.rs",
+      "sha256": "c522f4a23f8dd0ea63f75ffcc72dd0972148d47d203a3abb69362a29e97116ef"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/operator_panel/context.rs",
+      "sha256": "499a484019dc5ea31573c6e260637919f124473e2e13b48a8437d2141f7d494d"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/return_view.rs",
+      "sha256": "9ffe4e390878a50a97e61d75d6c1f5e49f26f32959fc088f28822c92b232e6e2"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests.rs",
+      "sha256": "c6a4725d59ce4e7316a185f3bc266d0c357bb77124dc3590437ba977d2cce1f9"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/accessibility_tests.rs",
+      "sha256": "702719ab812a7fdd70264ea9c6cb27043ae044ea3c480442bcd6e4e016e69c5d"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/auto_pan_ui_tests.rs",
+      "sha256": "1491dd91e9a220729c1bc9a4600333d8991c1f272c18efc9ec06c62ad401edf3"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/bindings_tests.rs",
+      "sha256": "4079c44bf4d2e756fbb9f583562061ec1cefbb3d9945c163798c4b137dea1a29"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/chain_window_tests.rs",
+      "sha256": "c87f7400e1d17d214416effe54dd70f3a7ded2086081f0c7ae9f3c343235df7b"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/compressor_ui_tests.rs",
+      "sha256": "fc250737f343de2c8218e323e28d318161dfa79595a2ada2b082c0eb7b392f80"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/device_preset_ui_tests.rs",
+      "sha256": "820233c92d9eab240cdef02c5e6db0d228f4a6522f4c9b5f690403a5e0dfd029"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/device_reorder_tests.rs",
+      "sha256": "4a69f8ab42629439b2eff92d3aeec6868f370ab1b78f247f907c39f1ef61ac95"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/device_theme_tests.rs",
+      "sha256": "73e3635e315c48cec565ca0e19c9176e75d30f7ed8f9f2aa260874bed5ef1ce9"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/eq_ui_tests.rs",
+      "sha256": "ed254ab0f74304fa0a5a61b74110fae739f8042e822ec48913a2ab7e864c9e55"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/gate_ui_tests.rs",
+      "sha256": "fe023a14f984cdb7c5d1cb765d6100eeba7d6bbcc6442081645ea62fd4387dec"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/operator_algorithm_ui_tests.rs",
+      "sha256": "ff039eb7666b090753b20d03812ee128c250edca8685a216094d2d1f29a3bc2e"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/operator_enable_ui_tests.rs",
+      "sha256": "f8542c1dc7a5c0279c05ad23c113cdb9084bdd4f14ad1025040bb4419cffcaf8"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/operator_navigation_tests.rs",
+      "sha256": "f8343f1e4ef31777b38abd7774162816a959e210d7c97c7862bd039d1e4e7608"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/operator_preview_navigation_tests.rs",
+      "sha256": "630308f22c48ffe408f9aab7517570c61de5c2ad51f4e9590fd42571171f38ff"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/operator_tab_tests.rs",
+      "sha256": "a133b1244e4ae738537343c7b7e9efb36d367ab7949cd92eee3df32086674f9b"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/parameter_rows_tests.rs",
+      "sha256": "7836b42546b67b1e19a6c47d23cd647764c94d36e6d5fb4c4540761a45330d5f"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/saturator_ui_tests.rs",
+      "sha256": "635b31184c7ada43e5cc5b157c521bafa41f3448f7022d40eca5e926595f1c4a"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_panel/tests/shortcut_text_tests.rs",
+      "sha256": "981194c924d0952a0749b8948f390c8fb0a2f9fd36c0510b4fe458470163bf31"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/device_preset.rs",
+      "sha256": "7b4732a8946dbc7c34dc2d05f32fda8e2234e3c5f93e402c276da786cde37fbf"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/dialogs.rs",
+      "sha256": "2e34723200314dd35bf647dc11582b0b8082a174b2ac758d01699585eeb6bfd3"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/drag.rs",
+      "sha256": "a8560e54dcdf94e44b48ac877fa41df5ae902c3829b2d04051d7a96c59d53a1e"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/drag_autoscroll.rs",
+      "sha256": "17ba628bc99c71846740f185296eade4c855e5ebc2807ba17fdae1030131d7fa"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/edit_cursor.rs",
+      "sha256": "370bf4c17bdb499f1c7c689637f649f41c30ae79068e914c45c718ebe5ee6a53"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/edit_cursor_ui_test.rs",
+      "sha256": "8569c87e2f79057d91872d9e8dff06b652592199d7406b4c96b63b9f212acefa"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/export.rs",
+      "sha256": "338265adcf2825bcd38efc24fc9b176f5ab010fca54c618fad9cb66f298455ed"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/external_audio_drop.rs",
+      "sha256": "9863336210b3e53351ba972f93f20ca0a21f49c7230e56983502c5302ef7b41e"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/external_audio_drop_ui_test.rs",
+      "sha256": "4c54f0fbce72878e3a97d6c99882b4ff5413cdf17f3eb0592cb10612e89dc582"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/fade_handles.rs",
+      "sha256": "4dc9df7cf069d237c409d3620473de0e32a68643b05aa97b5a96a5011ab4612f"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/fade_handles_ui_test.rs",
+      "sha256": "b76b6dd788e1164690bef02278f2d269f98ddac3a836236793573591a48c4adc"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/fades.rs",
+      "sha256": "8017f66b6599b1b9789d4d80fca3b2829204ef145119c8a2e2d39615fe632b81"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/gain_lane/controls.rs",
+      "sha256": "4c8073562afe890a0023b6a8e707f172c62a9e75bd5706653bcd99021cfb2d13"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/gain_lane/mod.rs",
+      "sha256": "e399e08520c1dfac9585b32812183e9d810e672794305ed13c9f1cc03124a955"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/gain_lane/paint.rs",
+      "sha256": "1b2845fe044aca0f1748567d78a0ef806c61c6aa740b5fea2ab9f18f97bcfa6e"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/gain_lane/tests.rs",
+      "sha256": "50d31a79797a73fb223442005f77510d715db1e393c41ea41e865d8361e2203c"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/gain_recording.rs",
+      "sha256": "c8cafbe47eb1c172dd0f79e9ce1866983896391ed2777260c90f1b153f8b0fa1"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/header.rs",
+      "sha256": "6d9e31b3b617ccc5fc5f50047ef8fa560fd80a44f28926f84d56beb61108cbae"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail.rs",
+      "sha256": "c315dd0d77ca6abaff158773324c2f623496f78dfe27e1822cc234df2033e6b7"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/loop_rail_ui_test.rs",
+      "sha256": "a0c96716449a180e1d4431c9151e8b7c71355e82c95f56a68ac33b88ea655acb"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi.rs",
+      "sha256": "94cf12d8c2b0ec04934cf408a66e03ddf603ef9e87a64c6f81a0910af7eb3946"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_canvas.rs",
+      "sha256": "d587f375bb1c991247a485ab2ec8f4a8795c91c0a99740661221db571d5cfc31"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/midi_draw.rs",
+      "sha256": "e2599d74a2ae779a59239c522bf8a304d7af524cda412e3df8e8372ff406ee33"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/mixer.rs",
+      "sha256": "e00c4cdd58bd436f56218a09108364024a78231523455261a035ef5dde4de9bb"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/mod.rs",
+      "sha256": "2b67646575cbc8fbde0ba1b8928be56e95afb53da7cf112041d57268307e4c78"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/musical_audio_controls.rs",
+      "sha256": "1688cfb91d5a86cefdd6f856da1a008f17d99a53581e7ba8437886c8c6026255"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/musical_audio_controls/sample_bpm.rs",
+      "sha256": "059e85f9ed4d55f0c6143662194555e7ef5a233117b43bfd4c3b29574cd92712"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/musical_audio_controls/ui_tests.rs",
+      "sha256": "d8ad71f21f1cdc8fe143853ef3ffa34d34320834dc7850b660106bdf5ae07b50"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/musical_time.rs",
+      "sha256": "a81b265b6c622aa9f98dfe362b59763a2087b09b52ec1dd0d7ddb08cf3f4668a"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/overview.rs",
+      "sha256": "9badbb674138594f3eb130cf55f3672821c2eaee39607f07d087b90e94c871a1"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/project_recovery.rs",
+      "sha256": "b42bc3998baea9fa9d38ed041e5cfb1bb1e0375f29b530ff216151f4054093a9"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/project_spectrum.rs",
+      "sha256": "bcaaee646d07a5435ceac76cf76d56880233ed9955faa6bb165ccf0eb5d98524"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/project_spectrum/tests.rs",
+      "sha256": "935082726ec51796602835a29c9847bcd2047df6675687a319a8462d92b2b834"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/recent_projects.rs",
+      "sha256": "43b11b979c3c2fc2ab332c23faeebb1e5708d5141e346c6fe02633e85a9f9209"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/recovery.rs",
+      "sha256": "4c7992fbfb5cb56743c493e9db36988a1d37038691724ce79ab8d66025b890ca"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/render.rs",
+      "sha256": "292dfbfbda6983466bd8cd22ea48e281c734e52c6ce32d64fc4ad3871472e822"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/return_tracks.rs",
+      "sha256": "60b1bad0372918e73128e988debc00ba56985a0a044f89b75767e69580b562b8"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/routing_controls.rs",
+      "sha256": "832021e681f4cf7ccb4861268e5e9e553f4a52b00f44577ba5940a527b265c75"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/save.rs",
+      "sha256": "a5f410aade3cba513aa0f2cc08edb51a26639f20bc10a7b4581cbbc525a2e49c"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/scrub.rs",
+      "sha256": "11b0451a41b1280b2d8f835317d5b916a5a5635d224a036d29462eb85a0841e4"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/scrub_tests.rs",
+      "sha256": "9090d51a9a28b77e4d0542bb3a7cd1551a985cffff1f45a28e96fcf4a40053fb"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/selection.rs",
+      "sha256": "16381a3c8966aa06e35d7f6a5bec8c5e0e2155d96c818950193aede86e88bf2f"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/session_audio_panel.rs",
+      "sha256": "3310991a1ef2daf6b092ce3a873803c6b129f745d8235ddb313401db4f858da2"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/session_grid.rs",
+      "sha256": "90bfb0a89ea6eb28a91a2e3346422b732c12da91b44ad63803ff1b1121f93c20"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/session_navigation_ui_test.rs",
+      "sha256": "6916a2efeb55874ee533d423d455ded2331628d69aaca6a6606ca0845ff9d6be"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/snap_nudge_ui_test.rs",
+      "sha256": "1152a8cac55c44395c69938e49692e5637b05130e8902cc9a89e3f5bfc4c981c"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/theme_settings.rs",
+      "sha256": "16da487f1f97c6b737b89dc69e0d7d6eb905953ffaedae840d93e3ad4a767037"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/time_gesture.rs",
+      "sha256": "ebd986e9ab85aab0a7c06e6488abcd8257d8f874f7d38626e17aad572f7678a7"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/time_selection.rs",
+      "sha256": "276c4fbe8806d451f017852821b07488f476cfd1fb49b94384b2b2dbdc61580d"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/time_selection_profile.rs",
+      "sha256": "03f4085b7169f286af3390a194ce01400193fb920af8b8841b2b80ea3d7a0dca"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/track_layout.rs",
+      "sha256": "3defef83ba07da86f10c65b520e5e0396830825b99869f114af06fc09dca42c7"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/track_layout_ui_test.rs",
+      "sha256": "aa572141bf185e4c36e1ab93de6ae9354249b5b411561da4bb9d7db18137dfd6"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/track_name.rs",
+      "sha256": "ce9152f889030030ad4a41a4d98f12a206c84490ffdb0cba3f3b559a34b09360"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/tracks.rs",
+      "sha256": "7b39a2f2601d5035a68485bb5c94b6fe725c3b371da5f87d8f5f32d17d7a689f"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/transport.rs",
+      "sha256": "ac99eb23e8ef2e3d64bc9a4fa1026c8b8d7313f64946917c8f5c1aa7c0f212a7"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/trim.rs",
+      "sha256": "f5cd21c68d764f2e98ca31b54205732e21a9392653edba018f451c4794609888"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/tuning/audition.rs",
+      "sha256": "2eaf16bc037750236a1fd1ad454c20403dab39db4be45c39cdc2c85947605da5"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/tuning/broadcast.rs",
+      "sha256": "a20f02db66a3b7c24d3a14324f5b304c46a2d24905a30353f8e40d3eb65282d8"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/tuning/library.rs",
+      "sha256": "c2de94b39c9de3daf08edd3bba0ed000a384f1be32cdaed9fa700194f1705f74"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/tuning/lifecycle_tests.rs",
+      "sha256": "813c1466822091ade417e7d359acd9c12d79442eecb633879c72d711dd053d76"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/tuning/midi_activity.rs",
+      "sha256": "d7ef74dc584e231d55967274cc56d4c10feac756212d09ad96f6b5757c2b1a51"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/tuning/mod.rs",
+      "sha256": "d18aa26f76b447edd54c03e409f12dfedaa5f3518d1fa7e249dcd2bd396a7fe5"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/tuning/ui_tests.rs",
+      "sha256": "7d234304af940fc0ae9259f97b3760bd3f12fe36c591e20168c8caf0be724679"
+    },
+    {
+      "path": "crates/hex-ui/src/editor/waveform_resize_ui_test.rs",
+      "sha256": "89e290ffc44f18da4dd215be810010809cf3f958c8ae7a2e8dd09eb020c0df4c"
+    }
+  ]
+}

@@ -1,0 +1,451 @@
+--- a/crates/hex-session/src/snapshot_exports.rs
++++ b/crates/hex-session/src/snapshot_exports.rs
+@@ -7,6 +7,11 @@
+ static NEXT_FAMILY: AtomicU64 = AtomicU64::new(1);
+ 
+ mod event;
++mod model_read;
++pub use model_read::{
++    SnapshotClipRead, SnapshotDeviceRead, SnapshotProjectRead, SnapshotReturnRead,
++    SnapshotTrackRead,
++};
+ mod family;
+ // Record transitions are independent of the platform exclusion primitive. The
+ // existing family supplies structural exclusion; Service wiring is in progress.
+--- /dev/null
++++ b/crates/hex-session/src/snapshot_exports/model_read.rs
+@@ -0,0 +1,208 @@
++//! Borrowed UI queries on the actual retained snapshot. Private model fields
++//! cannot be extracted, cloned into an unregistered owner, or kept past a read.
++//! These queries confer no source, storage, or publication authority.
++use super::SnapshotRead;
++use hex_project::{ClipId, DeviceId, ReturnId, TrackId};
++
++/// A model query tied to one existing family read, never an owning Project.
++///
++/// ```compile_fail
++/// fn escape(read: &hex_session::snapshot_exports::SnapshotReadCapability) {
++///     let _model = read.read_with(|snapshot| snapshot.model());
++/// }
++/// ```
++/// ```compile_fail
++/// fn extract(model: hex_session::snapshot_exports::SnapshotProjectRead<'_>) {
++///     let _: hex_project::Project = model.clone();
++/// }
++/// ```
++#[derive(Clone, Copy)]
++pub struct SnapshotProjectRead<'a> {
++    project: &'a hex_project::Project,
++}
++#[derive(Clone, Copy)]
++pub struct SnapshotTrackRead<'a> {
++    track: &'a hex_project::Track,
++}
++#[derive(Clone, Copy)]
++pub struct SnapshotClipRead<'a> {
++    clip: &'a hex_project::Clip,
++}
++#[derive(Clone, Copy)]
++pub struct SnapshotDeviceRead<'a> {
++    device: &'a hex_project::Device,
++}
++#[derive(Clone, Copy)]
++pub struct SnapshotReturnRead<'a> {
++    track: &'a hex_project::ReturnTrack,
++}
++
++impl<'a> SnapshotRead<'a> {
++    pub fn model(self) -> SnapshotProjectRead<'a> {
++        SnapshotProjectRead {
++            project: &self.snapshot.project,
++        }
++    }
++    pub fn timeline_frames(self) -> u64 {
++        self.snapshot.timeline_frames
++    }
++    pub fn can_undo(self) -> bool {
++        self.snapshot.can_undo
++    }
++    pub fn can_redo(self) -> bool {
++        self.snapshot.can_redo
++    }
++    pub fn unsaved(self) -> bool {
++        self.snapshot.unsaved
++    }
++    pub fn document_path(self) -> Option<&'a std::path::Path> {
++        self.snapshot.document_path.as_deref()
++    }
++}
++impl<'a> SnapshotProjectRead<'a> {
++    pub fn sample_rate(self) -> u32 {
++        self.project.sample_rate()
++    }
++    pub fn loop_region(self) -> Option<hex_project::LoopRegion> {
++        self.project.loop_region()
++    }
++    pub fn master_gain(self) -> f32 {
++        self.project.master_gain()
++    }
++    pub fn tracks(self) -> impl ExactSizeIterator<Item = SnapshotTrackRead<'a>> + 'a {
++        self.project
++            .tracks()
++            .iter()
++            .map(|track| SnapshotTrackRead { track })
++    }
++    pub fn track(self, id: TrackId) -> Option<SnapshotTrackRead<'a>> {
++        self.project
++            .track(id)
++            .map(|track| SnapshotTrackRead { track })
++    }
++    pub fn returns(self) -> impl ExactSizeIterator<Item = SnapshotReturnRead<'a>> + 'a {
++        self.project
++            .return_tracks()
++            .iter()
++            .map(|track| SnapshotReturnRead { track })
++    }
++    pub fn device(self, id: DeviceId) -> Option<SnapshotDeviceRead<'a>> {
++        self.project
++            .device(id)
++            .map(|device| SnapshotDeviceRead { device })
++    }
++}
++impl<'a> SnapshotTrackRead<'a> {
++    pub fn id(self) -> TrackId {
++        self.track.id()
++    }
++    pub fn name(self) -> &'a str {
++        self.track.name()
++    }
++    pub fn gain(self) -> f32 {
++        self.track.gain()
++    }
++    pub fn balance(self) -> f32 {
++        self.track.balance()
++    }
++    pub fn muted(self) -> bool {
++        self.track.muted()
++    }
++    pub fn soloed(self) -> bool {
++        self.track.soloed()
++    }
++    pub fn clips(self) -> impl ExactSizeIterator<Item = SnapshotClipRead<'a>> + 'a {
++        self.track
++            .clips()
++            .iter()
++            .map(|clip| SnapshotClipRead { clip })
++    }
++    pub fn clip(self, id: ClipId) -> Option<SnapshotClipRead<'a>> {
++        self.track
++            .clips()
++            .iter()
++            .find(|clip| clip.id() == id)
++            .map(|clip| SnapshotClipRead { clip })
++    }
++    pub fn devices(self) -> impl ExactSizeIterator<Item = SnapshotDeviceRead<'a>> + 'a {
++        self.track
++            .devices()
++            .iter()
++            .map(|device| SnapshotDeviceRead { device })
++    }
++    pub fn instrument(self) -> Option<SnapshotDeviceRead<'a>> {
++        self.track
++            .instrument()
++            .map(|device| SnapshotDeviceRead { device })
++    }
++    /// GainPoint is Copy scalar metadata; neither an owning lane nor its Vec is exposed.
++    pub fn gain_points(self) -> &'a [hex_project::GainPoint] {
++        self.track.gain_envelope()
++    }
++}
++impl<'a> SnapshotClipRead<'a> {
++    pub fn id(self) -> ClipId {
++        self.clip.id()
++    }
++    pub fn name(self) -> &'a str {
++        self.clip.name()
++    }
++    pub fn asset(self) -> hex_project::AssetId {
++        self.clip.asset()
++    }
++    pub fn start(self) -> u64 {
++        self.clip.start()
++    }
++    pub fn duration(self) -> u64 {
++        self.clip.duration()
++    }
++    pub fn source_offset(self) -> u64 {
++        self.clip.source_offset()
++    }
++    pub fn source_length(self) -> u64 {
++        self.clip.source_length()
++    }
++    pub fn looping(self) -> bool {
++        self.clip.looping()
++    }
++    pub fn gain(self) -> hex_project::ClipGain {
++        self.clip.gain()
++    }
++    pub fn fade(self) -> hex_project::ClipFade {
++        self.clip.fade()
++    }
++}
++impl SnapshotDeviceRead<'_> {
++    pub fn id(self) -> DeviceId {
++        self.device.id()
++    }
++    pub fn type_id(self) -> hex_lattice_contract::DeviceTypeId {
++        self.device.state().type_id()
++    }
++    pub fn bypassed(self) -> bool {
++        self.device.bypassed()
++    }
++}
++impl<'a> SnapshotReturnRead<'a> {
++    pub fn id(self) -> ReturnId {
++        self.track.id()
++    }
++    pub fn name(self) -> &'a str {
++        self.track.name()
++    }
++    pub fn gain(self) -> f32 {
++        self.track.gain()
++    }
++    pub fn muted(self) -> bool {
++        self.track.muted()
++    }
++    pub fn devices(self) -> impl ExactSizeIterator<Item = SnapshotDeviceRead<'a>> + 'a {
++        self.track
++            .devices()
++            .iter()
++            .map(|device| SnapshotDeviceRead { device })
++    }
++}
++
++#[cfg(test)]
++mod tests;
+--- /dev/null
++++ b/crates/hex-session/src/snapshot_exports/model_read/tests.rs
+@@ -0,0 +1,223 @@
++use crate::snapshot_exports::*;
++use hex_project::{Command, Created};
++
++#[test]
++fn retained_model_queries_follow_exact_snapshot_until_last_read_ack() {
++    let mut session = crate::Session::new(48_000, 8, 1024).unwrap();
++    let Created::Track(track) = session
++        .editor
++        .execute(Command::AddTrack {
++            name: "captured track".into(),
++        })
++        .unwrap()
++    else {
++        panic!("expected track");
++    };
++    let Created::ReturnTrack(bus) = session
++        .editor
++        .execute(Command::AddReturnTrack {
++            name: "captured return".into(),
++        })
++        .unwrap()
++    else {
++        panic!("expected return");
++    };
++    let make_view = |session: &crate::Session, revision| {
++        Some(crate::service::view_state_owned(
++            session,
++            hex_engine::empty_midi_preview_on_control(),
++            revision,
++            1,
++            false,
++            None,
++        ))
++    };
++    let (mut family, producer) =
++        SessionExportFamily::try_new_on_control(SnapshotExportReservation {
++            snapshot_records: 2,
++            read_records: 4,
++            max_bookkeeping_bytes: 16_384,
++        })
++        .unwrap();
++    let mut source = make_view(&session, 7);
++    let first = family
++        .insert_event_read_on_control(&producer, &mut source)
++        .unwrap();
++    let second = family.derive_read(&first).unwrap();
++    let third = family.derive_read(&first).unwrap();
++    let fourth = family.derive_read(&first).unwrap();
++    assert!(source.is_none());
++    session
++        .editor
++        .execute(Command::RenameTrack {
++            track,
++            name: "current track".into(),
++        })
++        .unwrap();
++    session
++        .editor
++        .execute(Command::RemoveReturnTrack(bus))
++        .unwrap();
++    let mut replacement = make_view(&session, 8);
++    assert!(matches!(
++        family.insert_event_read_on_control(&producer, &mut replacement),
++        Err(ExportRecordError::Reservation)
++    ));
++    assert!(replacement.is_some());
++    for read in [&first, &second, &third, &fourth] {
++        assert_eq!(
++            family.read_with(read, |view| {
++                let model = view.model();
++                let captured = model.track(track).unwrap();
++                let returned = model.returns().next().unwrap();
++                assert_eq!(captured.name(), "captured track");
++                assert_eq!(returned.id(), bus);
++                assert_eq!(returned.name(), "captured return");
++                assert_eq!(model.tracks().len(), 1);
++                assert_eq!(captured.clips().len(), 0);
++                assert_eq!(captured.gain_points().len(), 0);
++                (view.revision(), captured.id(), model.sample_rate())
++            }),
++            Ok((7, track, 48_000))
++        );
++    }
++    family.release_read(first).unwrap();
++    family.release_read(second).unwrap();
++    family.release_read(third).unwrap();
++    assert_eq!(
++        family.cleanup_one_on_control(),
++        Ok(SnapshotFamilyCleanup::Pending)
++    );
++    assert_eq!(
++        family
++            .try_inventory_guard_on_control()
++            .unwrap()
++            .snapshot_count(),
++        1
++    );
++    let next = family
++        .insert_event_read_on_control(&producer, &mut replacement)
++        .unwrap();
++    assert_eq!(
++        family.read_with(&next, |view| {
++            assert_eq!(view.model().track(track).unwrap().name(), "current track");
++            assert_eq!(view.model().returns().len(), 0);
++            view.revision()
++        }),
++        Ok(8)
++    );
++    // The last old reader remains on revision 7 after replacement and abandon.
++    family.abandon_on_control(&producer).unwrap();
++    assert_eq!(family.read_with(&fourth, |view| view.revision()), Ok(7));
++    family.release_read(fourth).unwrap();
++    family.release_read(next).unwrap();
++    for _ in 0..4 {
++        if family.cleanup_one_on_control() == Ok(SnapshotFamilyCleanup::Disposed) {
++            return;
++        }
++    }
++    panic!("all actual readers were acknowledged but family did not retire");
++}
++
++#[test]
++fn sampler_control_scalars_follow_retained_read_after_current_state_replacement() {
++    use hex_lattice_contract::{ParameterId, ParameterValue};
++    let mut session = crate::Session::new(48_000, 8, 0).unwrap();
++    let empty = hex_engine::empty_sampler_state_on_control().unwrap();
++    let Created::Track(track) = session
++        .editor
++        .execute(Command::InsertTrackWithDevice {
++            name: "retained sampler controls".into(),
++            before_track: None,
++            slot: hex_project::TrackDeviceSlot::Instrument,
++            state: empty.clone(),
++        })
++        .unwrap()
++    else {
++        panic!("actual test instrument track");
++    };
++    let device = session
++        .project()
++        .track(track)
++        .unwrap()
++        .instrument()
++        .unwrap()
++        .id();
++    let (mut family, key) = SessionExportFamily::try_new_on_control(SnapshotExportReservation {
++        snapshot_records: 2,
++        read_records: 4,
++        max_bookkeeping_bytes: 16_384,
++    })
++    .unwrap();
++    let make_view = |session: &crate::Session, revision| {
++        Some(crate::service::view_state_owned(
++            session,
++            hex_engine::empty_midi_preview_on_control(),
++            revision,
++            0,
++            false,
++            None,
++        ))
++    };
++    let mut initial = make_view(&session, 0);
++    let old = family
++        .insert_event_read_on_control(&key, &mut initial)
++        .unwrap();
++    let loaded = hex_engine::sampler_replacement_state_on_control(&empty, 16)
++        .unwrap()
++        .state;
++    session
++        .editor
++        .execute(Command::ReplaceDeviceState {
++            device,
++            state: loaded,
++        })
++        .unwrap();
++    let mut next = make_view(&session, 1);
++    let new = family
++        .insert_event_read_on_control(&key, &mut next)
++        .unwrap();
++    let old_values = family
++        .read_with(&old, |read| read.sampler_parameters(device))
++        .unwrap()
++        .unwrap();
++    assert!(old_values.iter().all(|p| !p.enabled));
++    let next_values = family
++        .read_with(&new, |read| read.sampler_parameters(device))
++        .unwrap()
++        .unwrap();
++    assert_eq!(
++        next_values
++            .iter()
++            .find(|p| p.descriptor.id == ParameterId::from_static(18))
++            .unwrap()
++            .value,
++        ParameterValue::Float(16.0)
++    );
++    assert!(next_values.iter().any(|p| p.enabled));
++    assert_eq!(
++        family
++            .inspect_queries_on_control(|fields| fields.snapshot_count())
++            .unwrap(),
++        2
++    );
++    family.release_read(old).unwrap();
++    family.cleanup_one_on_control().unwrap();
++    assert_eq!(
++        family
++            .inspect_queries_on_control(|fields| fields.snapshot_count())
++            .unwrap(),
++        1
++    );
++    // Copy display facts are intentionally usable AFTER the owning read ends.
++    // They contain no model/state handle capable of retaining the old source.
++    assert!(old_values.iter().all(|p| !p.enabled));
++    family.release_read(new).unwrap();
++    family.cleanup_one_on_control().unwrap();
++    assert_eq!(
++        family
++            .inspect_queries_on_control(|fields| fields.snapshot_count())
++            .unwrap(),
++        0
++    );
++}

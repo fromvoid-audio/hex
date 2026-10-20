@@ -1,0 +1,22 @@
+[
+  {
+    "path": "crates/hex-ui/Cargo.toml",
+    "sha256": "c9a3ac85490916fcb0bd7fa82681f08c5ec77fe7a6db702c0933bf384cd15f9a",
+    "before_sha256": "605b5f5d7ab1c5c5225180fdf94b62bc24b92a429fbdaafe5dfb0b0f9c299dca"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/export.rs",
+    "sha256": "338265adcf2825bcd38efc24fc9b176f5ab010fca54c618fad9cb66f298455ed",
+    "before_sha256": "2e651b7be37f992e63ee7194703595567f132bc0779928dad7cdd0fd5ed643f9"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/project_spectrum.rs",
+    "sha256": "bcaaee646d07a5435ceac76cf76d56880233ed9955faa6bb165ccf0eb5d98524",
+    "before_sha256": "ae85ad0fdebb1228f59d0d519516c582184444cbb092200db81563823fe5ccf7"
+  },
+  {
+    "path": "crates/hex-ui/src/editor/project_spectrum/tests.rs",
+    "sha256": "935082726ec51796602835a29c9847bcd2047df6675687a319a8462d92b2b834",
+    "before_sha256": "ee95159abe30c20c43f8110e816c56de7cff76a9e48b20ba3524b27b2f4d3e61"
+  }
+]

@@ -1,0 +1,30 @@
+[package]
+name = "hex-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+ui-test-support = ["gpui/test-support"]
+
+[dependencies]
+hex-mts = { path = "../hex-mts" }
+hex-tuning = { path = "../hex-tuning" }
+hex-midi = { path = "../hex-midi" }
+hex-diagnostics = { path = "../hex-diagnostics" }
+hex-session = { path = "../hex-session" }
+hex-project = { path = "../hex-project" }
+hex-engine = { path = "../hex-engine" }
+hex-audio = { path = "../hex-audio" }
+hex-library = { path = "../hex-library" }
+hex-preferences = { path = "../hex-preferences" }
+hex-lattice-contract = { path = "../hex-lattice-contract" }
+hex-widgets = { path = "../hex-widgets" }
+gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
+
+[dev-dependencies]
+hex-media = { path = "../hex-media" }
+
+[lints]
+workspace = true
