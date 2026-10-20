@@ -6419,3 +6419,33 @@ Required exact-candidate results and the before/after standalone release profile
 are recorded with PR509 and Pulse2923. Native resource admission, registration,
 loading, app playback and optimized delivery remain open under2783/2789; this
 kernel increment does not complete the playable sampler MVP.
+
+## bounded resize-modifier fixture — pulse2924 / PR510
+
+The stationary snap/Shift-stretch gesture fixture uses the supported 8 kHz
+project/source rate with the same two-second source and placement. It still
+submits the actual Beats stretch and waits for its terminal worker completion,
+with unchanged five-second deadline and behavioral assertions. Other resize
+fixtures retain their 48 kHz default. No production UI or DSP behavior changes.
+The two original full-audit deadline failures and exact repair validation remain
+recorded with PR510/Pulse2924; Sampler PR509 requires fresh qualification after
+this prerequisite merges.
+
+## bounded resize boundary fixture workload — pulse2924 / PR510
+
+The large expansion test keeps its two-second source, timeline geometry and 8x
+cap at a supported 8khz rate, preserving real Beats preparation, release and
+Undo under the same ten-second deadline. Other stretch-limit fixtures remain
+48khz. Read-only sampling identified actual Beats synthesis in the previous
+48khz worker; isolated success alone did not qualify the failed full UI run.
+The separate EQ capacity deadline remains under diagnosis; no production or
+queue-capacity change is included.
+
+## bounded EQ capacity replay fixture — pulse2924 / PR510
+
+The full 32-stream capacity oracle drains real worker edits without forcing a
+whole-window redraw on every poll, then paints the settled result. Actual mouse
+input, overflow refusal, terminal state, all six Undo checks and the five-second
+guard remain. A replay-specific sample showed redundant GPUI drawing dominating
+the polling window while the session worker mostly waited for requests. The
+shared device test pump and production behavior remain unchanged.
