@@ -1123,7 +1123,32 @@ impl EditorView {
         {
             let state = self.state.as_ref()?;
             let body = self.arrangement_bounds?;
-            let viewport = self.visible_viewport(state.timeline_frames);
+            let (viewport, sample_rate, empty, grid) = state
+                .read_with(|snapshot| {
+                    let viewport = self.visible_viewport(snapshot, snapshot.timeline_frames());
+                    let width = body.width - self.track_header_width();
+                    let grid = payload
+                        .metadata
+                        .borrow()
+                        .as_ref()
+                        .filter(|metadata| metadata.sample_rate == snapshot.sample_rate())
+                        .and_then(|metadata| start.checked_add(metadata.playback_frames))
+                        .map(|_| {
+                            super::musical_time::grid_lines(
+                                &snapshot.model(),
+                                viewport,
+                                width,
+                                self.snap_grid,
+                            )
+                        });
+                    (
+                        viewport,
+                        snapshot.sample_rate(),
+                        snapshot.model().tracks().len() == 0,
+                        grid,
+                    )
+                })
+                .ok()?;
             let timeline_width = body.width - self.track_header_width();
             if !timeline_width.is_finite() || timeline_width <= 0.0 || viewport.length == 0 {
                 return None;
@@ -1132,14 +1157,14 @@ impl EditorView {
                 .metadata
                 .borrow()
                 .as_ref()
-                .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
+                .filter(|metadata| metadata.sample_rate == sample_rate)
                 .and_then(|metadata| start.checked_add(metadata.playback_frames))
             else {
                 let left = body.left
                     + ((start.saturating_sub(viewport.start).min(viewport.length)) as f64
                         / viewport.length as f64
                         * f64::from(timeline_width)) as f32;
-                let top = if state.project.tracks().is_empty() {
+                let top = if empty {
                     body.top
                 } else {
                     payload.insertion_line_y.get().unwrap_or(body.top) + 1.0
@@ -1173,7 +1198,7 @@ impl EditorView {
                     * f64::from(timeline_width)) as f32;
             let width = (visible_end - visible_start) as f64 / viewport.length as f64
                 * f64::from(timeline_width);
-            let top = if state.project.tracks().is_empty() {
+            let top = if empty {
                 body.top
             } else {
                 payload.insertion_line_y.get().unwrap_or(body.top) + 1.0
@@ -1192,21 +1217,12 @@ impl EditorView {
                 },
                 BrowserGhostDecor {
                     selector: "browser-audio-append-preview",
-                    grid: Some((
-                        super::musical_time::grid_lines(
-                            &state.project,
-                            viewport,
-                            timeline_width,
-                            self.snap_grid,
-                        ),
-                        visible_start,
-                        visible_end,
-                    )),
+                    grid: Some((grid.unwrap_or_default(), visible_start, visible_end)),
                     waveform_visual: payload
                         .metadata
                         .borrow()
                         .as_ref()
-                        .filter(|metadata| metadata.sample_rate == state.project.sample_rate())
+                        .filter(|metadata| metadata.sample_rate == sample_rate)
                         .map(|metadata| {
                             super::waveform::waveform_source_segment_view(
                                 Arc::clone(&metadata.waveform),
@@ -1456,9 +1472,12 @@ impl EditorView {
                 cx.notify();
                 return;
             };
+            let Ok(revision) = state.read_with(|snapshot| snapshot.revision()) else {
+                return;
+            };
             self.enqueue(Request::InsertBrowserInstrumentTrack {
                 project_generation: self.project_generation,
-                revision: state.revision,
+                revision,
                 class: hex_engine::NativeDeviceClass::Instrument,
                 type_id,
             });
@@ -2134,22 +2153,26 @@ impl EditorView {
         };
         let path = entry.path.clone();
         let name = entry.name.clone();
-        let drag_context = self.state.as_ref().map(|state| {
-            (
-                state.project.sample_rate(),
-                state.revision,
-                state.timeline_frames,
-                self.project_generation,
-                self.browser.scans.generation,
-                self.snap_grid,
-            )
+        let drag_context = self.state.as_ref().and_then(|state| {
+            state
+                .read_with(|snapshot| {
+                    (
+                        snapshot.sample_rate(),
+                        snapshot.revision(),
+                        self.visible_viewport(snapshot, snapshot.timeline_frames()),
+                        self.project_generation,
+                        self.browser.scans.generation,
+                        self.snap_grid,
+                    )
+                })
+                .ok()
         });
         let drag_payload = if entry.kind == EntryKind::WaveAudio {
             drag_context.map(
                 |(
                     sample_rate,
                     revision,
-                    timeline_frames,
+                    viewport,
                     project_generation,
                     browser_generation,
                     snap_grid,
@@ -2165,7 +2188,6 @@ impl EditorView {
                         })
                         .cloned()
                         .unwrap_or_default();
-                    let viewport = self.visible_viewport(timeline_frames);
                     drag::BrowserAudioDrag {
                         project_generation,
                         revision,
@@ -2252,10 +2274,7 @@ impl EditorView {
             );
         if let Some(payload) = drag_payload {
             let hover_path = path.clone();
-            let sample_rate = self
-                .state
-                .as_ref()
-                .map_or(48_000, |state| state.project.sample_rate());
+            let sample_rate = payload.sample_rate;
             let hover_entity = cx.entity();
             row = row.on_hover(move |hovered, _, cx| {
                 if *hovered {
@@ -2385,13 +2404,17 @@ impl EditorView {
         let type_id = entry.type_id;
         let debug_type = type_id.as_str().unwrap_or("invalid").to_owned();
         let name = entry.name.to_lowercase();
-        let payload = self.state.as_ref().map(|state| drag::NativeDeviceDrag {
-            project_generation: self.project_generation,
-            revision: state.revision,
-            source: drag::NativeDeviceDragSource::Browser { class, type_id },
-            destination: Rc::new(Cell::new(None)),
-            return_destination: Rc::new(Cell::new(None)),
-        });
+        let payload = self
+            .state
+            .as_ref()
+            .and_then(|state| state.read_with(|snapshot| snapshot.revision()).ok())
+            .map(|revision| drag::NativeDeviceDrag {
+                project_generation: self.project_generation,
+                revision,
+                source: drag::NativeDeviceDragSource::Browser { class, type_id },
+                destination: Rc::new(Cell::new(None)),
+                return_destination: Rc::new(Cell::new(None)),
+            });
         let row = div()
             .id(("browser-device", index))
             .debug_selector(move || format!("browser-device-{class_label}-{debug_type}"))

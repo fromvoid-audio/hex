@@ -144,6 +144,7 @@ use hex_audio::prepared::Status;
 use hex_engine::playback::{Playback, PlaybackAction, PlaybackCommand};
 use hex_project::{ClipId, Command, SceneId, TrackId};
 use hex_session::service::{Request, Service, ViewState};
+use hex_session::snapshot_exports::{SnapshotRead, SnapshotReadCapability, SnapshotTransportError};
 use recent_projects::RecentProjectsState;
 use recovery_state::RecoveryState;
 use refresh::RedrawGate;
@@ -172,7 +173,7 @@ pub(super) struct PendingPlaybackAction {
 struct PendingPlayback {
     project_revision: u64,
     project_generation: u64,
-    state: Arc<ViewState>,
+    state: SnapshotReadCapability,
     playback: Playback,
     install_fresh_runtime: bool,
     fresh_runtime_fence: Option<hex_audio::prepared::FreshRuntimeFence>,
@@ -186,7 +187,7 @@ struct PendingResidentPublication {
     token: hex_audio::prepared::ResidentPublicationToken,
     project_revision: u64,
     project_generation: u64,
-    state: Arc<ViewState>,
+    state: SnapshotReadCapability,
     install_fresh_runtime: bool,
     fresh_runtime_fence: Option<hex_audio::prepared::FreshRuntimeFence>,
     prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
@@ -232,11 +233,10 @@ struct PendingEditorPublicationObservation {
     state: crate::EditorPublicationState,
 }
 
-#[derive(Clone)]
 struct PlaybackCandidate {
     audio_revision: u64,
     project_generation: u64,
-    state: Arc<ViewState>,
+    state: SnapshotReadCapability,
     prepared_revision: Option<Arc<hex_engine::PreparedRevision>>,
     seek_request_id: Option<u64>,
     device_preview_identity: Option<hex_session::service::DevicePreviewIdentity>,
@@ -553,7 +553,7 @@ pub(super) struct EditorView {
     recovery: RecoveryState,
     stopped_playback_restore: Option<audio_admission::StoppedPlaybackRestore>,
     offline_cursor: u64,
-    pub(in crate::editor) state: Option<Arc<ViewState>>,
+    pub(in crate::editor) state: Option<SnapshotReadCapability>,
     selected_track: Option<TrackId>,
     track_selection: selection::TrackSelection,
     gain_lane: gain_lane::GainLane,
@@ -1311,34 +1311,58 @@ impl EditorView {
         Some((self.selected_track?, self.selected_clip?))
     }
 
-    pub(super) fn selected_clip_data(&self) -> Option<(TrackId, ClipId, u64, u64, u64, u64)> {
-        let (track_id, clip_id) = self.selected()?;
-        let state = self.state.as_ref()?;
-        let track = state.project.track(track_id)?;
-        let clip = track.clips().iter().find(|clip| clip.id() == clip_id)?;
-        Some((
-            track_id,
-            clip_id,
-            clip.start(),
-            clip.duration(),
-            clip.source_offset(),
-            clip.source_length(),
-        ))
-    }
-
-    pub(super) fn select_track(&mut self, track: TrackId, window: &mut Window) {
-        let Some(state) = self.state.as_ref() else {
-            return;
+    pub(super) fn selected_clip_data(
+        &self,
+    ) -> Result<Option<(TrackId, ClipId, u64, u64, u64, u64)>, SnapshotTransportError> {
+        let Some((track_id, clip_id)) = self.selected() else {
+            return Ok(None);
         };
-        if self
-            .track_selection
-            .select(&state.project, track, false, false)
-        {
-            self.focus_selected_track(track, window);
-        }
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| {
+            let clip = snapshot.model().track(track_id)?.clip(clip_id)?;
+            Some((
+                track_id,
+                clip_id,
+                clip.start(),
+                clip.duration(),
+                clip.source_offset(),
+                clip.source_length(),
+            ))
+        })
     }
 
-    pub(super) fn focus_selected_track(&mut self, track: TrackId, window: &mut Window) {
+    pub(super) fn select_track(&mut self, track: TrackId, window: &mut Window) -> bool {
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Ok(Some((selection, first_gain))) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let first = project
+                .track(track)?
+                .gain_points()
+                .first()
+                .map(|point| point.beat);
+            let mut selection = self.track_selection.clone();
+            selection
+                .select(&project, track, false, false)
+                .then_some((selection, first))
+        }) else {
+            return false;
+        };
+        self.focus_selected_track(track, first_gain, window);
+        self.track_selection = selection;
+        self.update_track_selection_status();
+        true
+    }
+
+    pub(super) fn focus_selected_track(
+        &mut self,
+        track: TrackId,
+        first_gain: Option<hex_project::BeatTime>,
+        window: &mut Window,
+    ) {
         self.advance_selection_intent();
         let header_focused = self.track_header_focused(window);
         self.duplicate_intent.cancel_chain();
@@ -1346,13 +1370,10 @@ impl EditorView {
         self.midi_hit_cycle = None;
         self.focus_track_details(window);
         self.selected_track = Some(track);
-        if let Some(state) = self.state.as_ref() {
-            self.gain_lane.change_owner(track, &state.project);
-        }
+        self.gain_lane.change_owner_facts(track, first_gain);
         self.focused_return = None;
         self.selected_clip = None;
         self.midi_selection.clear();
-        self.update_track_selection_status();
         if header_focused {
             self.focus_track_header_after_navigation(track, window);
         }
@@ -1373,7 +1394,21 @@ impl EditorView {
                 .status()
                 .is_some_and(|status| status.playing.load(std::sync::atomic::Ordering::Acquire))
         });
-        let start_frame = self.playback_start_frame();
+        let start_frame = match if matches!(
+            self.play_toggle_action(device_playing, 0),
+            arrangement_seek::ToggleAction::Pause
+        ) {
+            Ok(0)
+        } else {
+            self.playback_start_frame()
+        } {
+            Ok(frame) => frame,
+            Err(_) => {
+                self.error =
+                    Some("project read unavailable · cannot choose playback position".into());
+                return;
+            }
+        };
         let command = match self.play_toggle_action(device_playing, start_frame) {
             arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
             arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),
@@ -1393,13 +1428,14 @@ impl EditorView {
         self.queue_audio_command(command);
     }
 
-    fn playback_start_frame(&self) -> u64 {
-        if let Some(selection) = self.normalized_time_selection() {
-            return selection.start();
+    fn playback_start_frame(&self) -> Result<u64, SnapshotTransportError> {
+        if let Some(selection) = self.normalized_time_selection_checked()? {
+            return Ok(selection.start());
         }
-        self.edit_cursor
+        Ok(self
+            .edit_cursor
             .filter(|cursor| cursor.generation == self.project_generation)
-            .map_or(0, |cursor| cursor.frame)
+            .map_or(0, |cursor| cursor.frame))
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {
@@ -1415,12 +1451,18 @@ impl EditorView {
         if self.opening_project || self.close_prompt_open {
             return;
         }
-        let choice = self
-            .state
-            .as_ref()
-            .and_then(|state| selection::neighbor(&state.project, self.selected_track, forward));
+        let choice = self.state.as_ref().and_then(|state| {
+            state
+                .read_with(|snapshot| {
+                    selection::neighbor(&snapshot.model(), self.selected_track, forward)
+                })
+                .ok()
+                .flatten()
+        });
         if let Some((index, track, clip)) = choice {
-            self.select_track(track, window);
+            if !self.select_track(track, window) {
+                return;
+            }
             if let Some(clip) = clip
                 && self.focus_clip_details(window, cx)
             {
@@ -1436,47 +1478,79 @@ impl EditorView {
     }
 
     pub(super) fn gain_by(&mut self, track: TrackId, amount: f32) {
-        if self
-            .state
-            .as_ref()
-            .and_then(|state| state.project.track(track))
-            .is_some_and(|track| {
-                !track.gain_envelope().is_empty() || !track.gain_lane().spans().is_empty()
-            })
-        {
-            self.error = Some(
-                "automation owns gain · edit the gain lane or clear it for static fallback".into(),
-            );
+        let Some(state) = self.state.as_ref() else {
             return;
+        };
+        let owned = state.read_with(|snapshot| {
+            snapshot
+                .model()
+                .track(track)
+                .map(|track| !track.gain_points().is_empty() || track.gain_spans().next().is_some())
+        });
+        match owned {
+            Ok(Some(false)) => {}
+            Ok(Some(true)) => {
+                self.error = Some(
+                    "automation owns gain · edit the gain lane or clear it for static fallback"
+                        .into(),
+                );
+                return;
+            }
+            Ok(None) => return,
+            Err(_) => {
+                self.error = Some("project read unavailable".into());
+                return;
+            }
         }
         self.enqueue(Request::Edit(Command::GainBy { track, amount }));
     }
 
     pub(super) fn add_track(&mut self) {
-        let count = self
-            .state
-            .as_ref()
-            .map_or(0, |state| state.project.tracks().len());
+        let count = match self.state.as_ref() {
+            Some(state) => match state.read_with(|snapshot| snapshot.model().tracks().len()) {
+                Ok(count) => count,
+                Err(_) => {
+                    self.error = Some("project read is unavailable · cannot add track".into());
+                    return;
+                }
+            },
+            None => 0,
+        };
         self.enqueue(Request::Edit(Command::AddTrack {
             name: format!("audio {}", count + 1),
         }));
     }
 
     pub(super) fn remove_track(&mut self, cx: &mut Context<Self>) {
+        let Some(track) = self.selected_track else {
+            return;
+        };
+        let current = match self.state.as_ref() {
+            Some(state) => {
+                match state.read_with(|snapshot| snapshot.model().track(track).is_some()) {
+                    Ok(current) => current,
+                    Err(_) => {
+                        self.error =
+                            Some("project read is unavailable · cannot remove track".into());
+                        return;
+                    }
+                }
+            }
+            None => false,
+        };
+        if !current {
+            return;
+        }
         if !device_panel::finalize_controls(self, cx) {
             return;
         }
-        if let (Some(track), Some(state)) = (self.selected_track, self.state.as_ref()) {
-            if state.project.track(track).is_some() {
-                self.duplicate_intent.cancel_chain();
-                self.enqueue_device_barrier(Request::Edit(Command::RemoveTrack(track)));
-                self.selected_track = None;
-                self.selected_clip = None;
-            }
-        }
+        self.duplicate_intent.cancel_chain();
+        self.enqueue_device_barrier(Request::Edit(Command::RemoveTrack(track)));
+        self.selected_track = None;
+        self.selected_clip = None;
     }
 
-    pub(super) fn state(&self) -> Option<&Arc<ViewState>> {
+    pub(super) fn state(&self) -> Option<&SnapshotReadCapability> {
         self.state.as_ref()
     }
 
@@ -1484,24 +1558,26 @@ impl EditorView {
         self.audio.as_ref().and_then(|audio| audio.status())
     }
 
-    fn visible_viewport(&self, horizon: u64) -> Viewport {
+    /// Pure view geometry within the caller's existing read. Never acquire a
+    /// second family read while projecting captured gestures or render facts.
+    fn visible_viewport(&self, snapshot: SnapshotRead<'_>, horizon: u64) -> Viewport {
         // Display all authored points while this editor is open. Canonical content/export
         // extent stays unchanged; a held gain endpoint is not an audible source duration.
-        let gain_end = self.state.as_ref().and_then(|state| {
-            self.gain_lane
-                .track
-                .and_then(|id| state.project.track(id))
-                .and_then(|track| {
-                    track
-                        .gain_envelope()
-                        .last()
-                        .map(|point| point.beat)
-                        .into_iter()
-                        .chain(track.gain_lane().spans().last().map(|span| span.end))
-                        .max()
-                })
-                .and_then(|beat| state.project.tempo_map().beat_to_frame(beat).ok())
-        });
+        let project = snapshot.model();
+        let gain_end = self
+            .gain_lane
+            .track
+            .and_then(|id| project.track(id))
+            .and_then(|track| {
+                track
+                    .gain_points()
+                    .last()
+                    .map(|point| point.beat)
+                    .into_iter()
+                    .chain(track.gain_spans().last().map(|span| span.end()))
+                    .max()
+            })
+            .and_then(|beat| project.tempo().beat_to_frame(beat).ok());
         let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
         // Only a current resize owner may extend the transient display extent.
         let horizon = horizon.max(self.trim_display_end().unwrap_or(0));
@@ -1525,6 +1601,21 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Ok(Some((length, selection))) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            project.track(track)?;
+            let length = project.midi_clip(clip).map(|midi| midi.source_length());
+            let mut selection = self.track_selection.clone();
+            if !selection.contains(track) {
+                selection.select(&project, track, false, false);
+            }
+            Some((length, selection))
+        }) else {
+            return false;
+        };
         if !self.focus_clip_details(window, cx) {
             return false;
         }
@@ -1536,25 +1627,15 @@ impl EditorView {
             self.midi_scene_cache.clear();
             self.midi_selection.clear();
             self.piano_beat_start = hex_project::BeatTime::ZERO;
-            if let Some(length) = self
-                .state
-                .as_ref()
-                .and_then(|state| state.project.midi_clip(clip))
-                .map(|midi| midi.source_length())
-            {
+            if let Some(length) = length {
                 self.piano_beat_span = hex_project::BeatTime::from_raw(
                     self.piano_beat_span.raw().min(length.raw().max(1)),
                 );
             }
         }
         self.selected_track = Some(track);
-        if !self.track_selection.contains(track)
-            && let Some(state) = self.state.as_ref()
-        {
-            self.track_selection
-                .select(&state.project, track, false, false);
-            self.update_track_selection_status();
-        }
+        self.track_selection = selection;
+        self.update_track_selection_status();
         self.selected_clip = Some(clip);
         self.clip_selection.only(track, clip);
         self.focus.focus(window);

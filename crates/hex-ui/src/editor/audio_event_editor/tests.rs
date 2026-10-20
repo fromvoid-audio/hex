@@ -321,16 +321,8 @@ fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mu
     let bounds = visual.debug_bounds("audio-events-waveform").unwrap();
     editor.update(cx, |view, _| {
         view.audio_event_editor.grid = SnapGrid::Off;
-        let (_, root, _) = view.event_context().unwrap();
-        let events = view
-            .state
-            .as_ref()
-            .unwrap()
-            .project
-            .clip(view.selected_clip.unwrap())
-            .unwrap()
-            .editable_audio_events()
-            .unwrap();
+        let (_, root, _) = view.event_context().unwrap().unwrap();
+        let events = view.event_data().unwrap().unwrap().events;
         let first = *events
             .events
             .iter()
@@ -548,7 +540,7 @@ fn outer_trim_clamps_stale_cursor_range_and_hidden_selection(cx: &mut TestAppCon
     });
     visual.run_until_parked();
     editor.update(cx, |view, _| {
-        let (_, root, _) = view.event_context().unwrap();
+        let (_, root, _) = view.event_context().unwrap().unwrap();
         assert_eq!(root.view_start, 48000);
         assert_eq!(
             view.audio_event_editor.cursor, root.view_start,
@@ -654,4 +646,171 @@ fn duplicate_and_clipboard_paste_refuse_beyond_visible_child(cx: &mut TestAppCon
             "a fitting visible paste must still work"
         );
     });
+}
+
+// These checks use owning project fixtures only at the control/test boundary.
+// The production token fill is the same nominal Copy-only read used by the UI.
+fn event_domain_token(project: &hex_project::Project, clip: ClipId) -> DomainToken {
+    let source = project.clip(clip).unwrap();
+    let facts = source.with_audio_event_root(project.tempo_map(), |read| read.facts());
+    let mut token = DomainToken::empty(facts.domain).unwrap();
+    source.with_audio_event_root(project.tempo_map(), |read| token.fill(&read).unwrap());
+    token
+}
+
+fn event_token_fixture() -> (hex_project::Editor, ClipId) {
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(48000).unwrap(), 8).unwrap();
+    let hex_project::Created::Imported { clip, .. } = editor
+        .execute(Command::ImportAudioTrack {
+            name: "events".into(),
+            path: "not-opened.wav".into(),
+            sample_rate: 48000,
+            frames: 100,
+        })
+        .unwrap()
+    else {
+        panic!("import fixture");
+    };
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+        .unwrap();
+    (editor, clip)
+}
+
+#[test]
+fn clipboard_domain_remains_compatible_after_event_edits_and_outer_crop() {
+    let (mut editor, clip) = event_token_fixture();
+    let before = event_domain_token(editor.project(), clip);
+    editor
+        .execute(Command::EditAudioEvents {
+            clip,
+            operation: AudioEventEdit::Split { at: 20 },
+        })
+        .unwrap();
+    editor
+        .execute(Command::TrimClipEdge {
+            clip,
+            edge: hex_project::TrimEdge::Left,
+            frame: 40,
+        })
+        .unwrap();
+    let source = editor.project().clip(clip).unwrap();
+    assert_eq!(source.audio_edit().unwrap().view_start, 40);
+    assert!(source.editable_audio_events().unwrap().events.len() > 1);
+    assert_eq!(
+        before,
+        event_domain_token(editor.project(), clip),
+        "crop and event edits must not invalidate copied source content"
+    );
+    editor
+        .execute(Command::SetAudioClipPitch { clip, cents: 138 })
+        .unwrap();
+    assert_ne!(
+        before,
+        event_domain_token(editor.project(), clip),
+        "a changed processing domain must refuse old clipboard content"
+    );
+}
+
+#[test]
+fn clipboard_domain_compares_point_values_even_when_all_counts_match() {
+    use hex_project::{
+        AudioFadeProjection, BeatTime, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker,
+        WarpMode, WarpSettings,
+    };
+    use std::sync::Arc;
+    let (editor, clip) = event_token_fixture();
+    let mut snapshot = editor.project().snapshot();
+    let root = snapshot.tracks[0].audio_clips_mut().unwrap()[0]
+        .edit
+        .as_mut()
+        .unwrap();
+    let domain = Arc::make_mut(&mut root.domain);
+    domain.warp = Some(WarpSettings {
+        mode: WarpMode::RePitch,
+        markers: vec![
+            WarpMarker {
+                source_frame: 0,
+                beat: BeatTime::ZERO,
+            },
+            WarpMarker {
+                source_frame: 50,
+                beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+            },
+            WarpMarker {
+                source_frame: 100,
+                beat: BeatTime::ONE,
+            },
+        ],
+    });
+    domain.source_gain = vec![
+        SourceGainPoint {
+            frame: 0,
+            gain_q16: 65536,
+        },
+        SourceGainPoint {
+            frame: 100,
+            gain_q16: 32768,
+        },
+    ];
+    domain.fade_projection = Some(AudioFadeProjection {
+        tempo: TempoMap::new(
+            48000,
+            vec![
+                TempoPoint::new(BeatTime::ZERO, Tempo::new(120_000_000).unwrap()),
+                TempoPoint::new(BeatTime::ONE, Tempo::new(90_000_000).unwrap()),
+            ],
+        )
+        .unwrap(),
+        origin_beat_raw: 0,
+        local_start_raw: 0,
+    });
+    let project = hex_project::Project::from_snapshot(snapshot.clone()).unwrap();
+    let expected = event_domain_token(&project, clip);
+    for changed in 0..3 {
+        let mut next = snapshot.clone();
+        let domain = Arc::make_mut(
+            &mut next.tracks[0].audio_clips_mut().unwrap()[0]
+                .edit
+                .as_mut()
+                .unwrap()
+                .domain,
+        );
+        match changed {
+            0 => domain.warp.as_mut().unwrap().markers[1].source_frame = 51,
+            1 => domain.source_gain[1].gain_q16 = 32769,
+            _ => {
+                domain.fade_projection.as_mut().unwrap().tempo = TempoMap::new(
+                    48000,
+                    vec![
+                        TempoPoint::new(BeatTime::ZERO, Tempo::new(120_000_000).unwrap()),
+                        TempoPoint::new(BeatTime::ONE, Tempo::new(91_000_000).unwrap()),
+                    ],
+                )
+                .unwrap()
+            }
+        }
+        let project = hex_project::Project::from_snapshot(next).unwrap();
+        let actual = event_domain_token(&project, clip);
+        assert_eq!(
+            expected.facts, actual.facts,
+            "headers/counts deliberately match"
+        );
+        assert_ne!(
+            expected, actual,
+            "clipboard must compare exact ordered Copy point values"
+        );
+    }
+}
+
+#[test]
+fn scalar_capture_refuses_count_changes_without_growing_inside_read() {
+    let mut buffer = Vec::with_capacity(1);
+    let capacity = buffer.capacity();
+    assert!(fill_exact(&mut buffer, [1, 2].into_iter(), 1).is_err());
+    assert_eq!(buffer, [1]);
+    assert_eq!(buffer.capacity(), capacity);
+    let mut missing = Vec::with_capacity(2);
+    assert!(fill_exact(&mut missing, [1].into_iter(), 2).is_err());
 }

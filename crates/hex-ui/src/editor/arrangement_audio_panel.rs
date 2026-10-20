@@ -58,7 +58,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     }
     let state = view.state.as_ref()?.clone();
     let (track, clip_id, position, length, source_start, source_length) =
-        view.selected_clip_data()?;
+        view.selected_clip_data().ok().flatten()?;
     let clip = state.project.clip(clip_id)?;
     let asset = state.project.asset(clip.asset())?;
     let source_end = source_start.checked_add(source_length)?;

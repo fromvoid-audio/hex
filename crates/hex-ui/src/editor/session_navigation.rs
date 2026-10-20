@@ -1,6 +1,83 @@
 //! Stable-ID keyboard navigation and Enter targets for the Session grid.
 use super::EditorMode;
-use hex_project::{ClipId, Project, SceneId, SessionCellContent, TrackId};
+use hex_project::{ClipId, SceneId, TrackId};
+#[cfg(test)]
+use hex_project::{Project, SessionCellContent};
+use hex_session::snapshot_exports::{
+    SnapshotProjectRead, ui_consumers::SnapshotSessionCellContentRead,
+};
+
+/// ID and Copy content queries for the existing navigation algorithms. No
+/// owning model or allocation is needed; Project fixtures are test-only.
+pub(super) trait SessionProject {
+    fn track_ids(&self) -> impl ExactSizeIterator<Item = TrackId>;
+    fn scene_ids(&self) -> impl ExactSizeIterator<Item = SceneId>;
+    fn cell(&self, track: TrackId, scene: SceneId) -> CellContent;
+    fn cells(&self) -> impl ExactSizeIterator<Item = (TrackId, CellContent)>;
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum CellContent {
+    Empty,
+    Stop,
+    Midi(ClipId),
+    Audio(ClipId),
+}
+
+impl SessionProject for SnapshotProjectRead<'_> {
+    fn track_ids(&self) -> impl ExactSizeIterator<Item = TrackId> {
+        self.tracks().map(|track| track.id())
+    }
+    fn scene_ids(&self) -> impl ExactSizeIterator<Item = SceneId> {
+        self.scenes().map(|scene| scene.id())
+    }
+    fn cell(&self, track: TrackId, scene: SceneId) -> CellContent {
+        cell_fact(self.session_cell(track, scene))
+    }
+    fn cells(&self) -> impl ExactSizeIterator<Item = (TrackId, CellContent)> {
+        self.session_cells()
+            .map(|cell| (cell.track(), cell_fact(cell.content())))
+    }
+}
+
+fn cell_fact(content: SnapshotSessionCellContentRead<'_>) -> CellContent {
+    match content {
+        SnapshotSessionCellContentRead::Empty => CellContent::Empty,
+        SnapshotSessionCellContentRead::Stop => CellContent::Stop,
+        SnapshotSessionCellContentRead::Midi(clip) => CellContent::Midi(clip.id()),
+        SnapshotSessionCellContentRead::Audio(clip) => CellContent::Audio(clip.id()),
+    }
+}
+
+#[cfg(test)]
+impl SessionProject for Project {
+    fn track_ids(&self) -> impl ExactSizeIterator<Item = TrackId> {
+        self.tracks().iter().map(|track| track.id())
+    }
+    fn scene_ids(&self) -> impl ExactSizeIterator<Item = SceneId> {
+        self.scenes().iter().map(|scene| scene.id())
+    }
+    fn cell(&self, track: TrackId, scene: SceneId) -> CellContent {
+        match self.session_cell(track, scene) {
+            None => CellContent::Empty,
+            Some(SessionCellContent::Stop) => CellContent::Stop,
+            Some(SessionCellContent::Midi(clip)) => CellContent::Midi(clip.id()),
+            Some(SessionCellContent::Audio(clip)) => CellContent::Audio(clip.id()),
+        }
+    }
+    fn cells(&self) -> impl ExactSizeIterator<Item = (TrackId, CellContent)> {
+        self.session_cells().iter().map(|cell| {
+            (
+                cell.track(),
+                match cell.content() {
+                    SessionCellContent::Stop => CellContent::Stop,
+                    SessionCellContent::Midi(clip) => CellContent::Midi(clip.id()),
+                    SessionCellContent::Audio(clip) => CellContent::Audio(clip.id()),
+                },
+            )
+        })
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Direction {
@@ -37,15 +114,16 @@ pub(super) struct SceneMoveTarget {
 }
 
 pub(super) fn resolve_scene_move(
-    project: &Project,
+    project: &(impl SessionProject + ?Sized),
     scene: SceneId,
     direction: Direction,
 ) -> Option<SceneMoveTarget> {
-    let scenes = project.scenes();
-    let index = scenes.iter().position(|item| item.id() == scene)?;
+    let index = project.scene_ids().position(|id| id == scene)?;
     let before = match direction {
-        Direction::Up if index > 0 => Some(scenes.get(index - 1)?.id()),
-        Direction::Down if index + 1 < scenes.len() => scenes.get(index + 2).map(|item| item.id()),
+        Direction::Up if index > 0 => Some(project.scene_ids().nth(index - 1)?),
+        Direction::Down if index + 1 < project.scene_ids().len() => {
+            project.scene_ids().nth(index + 2)
+        }
         Direction::Left | Direction::Right | Direction::Up | Direction::Down => return None,
     };
     Some(SceneMoveTarget { scene, before })
@@ -66,17 +144,17 @@ pub(super) fn session_editor_has_focus(mode: EditorMode, piano_focused: bool) ->
 }
 
 pub(super) fn resolve_navigation(
-    project: &Project,
+    project: &(impl SessionProject + ?Sized),
     selected_cell: Option<(TrackId, SceneId)>,
     selected_scene: Option<SceneId>,
     direction: Direction,
 ) -> Option<Selection> {
-    let tracks = project.tracks();
-    let scenes = project.scenes();
+    let track_count = project.track_ids().len();
+    let scene_count = project.scene_ids().len();
     if let Some((track, scene)) = selected_cell {
-        let track_index = tracks.iter().position(|item| item.id() == track)?;
-        let scene_index = scenes.iter().position(|item| item.id() == scene)?;
-        if direction == Direction::Right && track_index + 1 == tracks.len() {
+        let track_index = project.track_ids().position(|id| id == track)?;
+        let scene_index = project.scene_ids().position(|id| id == scene)?;
+        if direction == Direction::Right && track_index + 1 == track_count {
             return Some(Selection::Scene(scene));
         }
         let next_track = match direction {
@@ -88,69 +166,62 @@ pub(super) fn resolve_navigation(
             Direction::Up => scene_index.saturating_sub(1),
             Direction::Down => scene_index
                 .saturating_add(1)
-                .min(scenes.len().saturating_sub(1)),
+                .min(scene_count.saturating_sub(1)),
             Direction::Left | Direction::Right => scene_index,
         };
         return Some(Selection::Cell {
-            track: tracks.get(next_track)?.id(),
-            scene: scenes.get(next_scene)?.id(),
+            track: project.track_ids().nth(next_track)?,
+            scene: project.scene_ids().nth(next_scene)?,
         });
     }
     if let Some(scene) = selected_scene {
-        let scene_index = scenes.iter().position(|item| item.id() == scene)?;
+        let scene_index = project.scene_ids().position(|id| id == scene)?;
         return match direction {
             Direction::Up => Some(Selection::Scene(
-                scenes.get(scene_index.saturating_sub(1))?.id(),
+                project.scene_ids().nth(scene_index.saturating_sub(1))?,
             )),
             Direction::Down => Some(Selection::Scene(
-                scenes
-                    .get(
-                        scene_index
-                            .saturating_add(1)
-                            .min(scenes.len().saturating_sub(1)),
-                    )?
-                    .id(),
+                project.scene_ids().nth(
+                    scene_index
+                        .saturating_add(1)
+                        .min(scene_count.saturating_sub(1)),
+                )?,
             )),
-            Direction::Left if !tracks.is_empty() => Some(Selection::Cell {
-                track: tracks.last()?.id(),
+            Direction::Left if track_count != 0 => Some(Selection::Cell {
+                track: project.track_ids().last()?,
                 scene,
             }),
             Direction::Left | Direction::Right => Some(Selection::Scene(scene)),
         };
     }
-    if tracks.is_empty() {
-        return Some(Selection::Scene(scenes.first()?.id()));
+    if track_count == 0 {
+        return Some(Selection::Scene(project.scene_ids().next()?));
     }
     Some(Selection::Cell {
-        track: tracks.first()?.id(),
-        scene: scenes.first()?.id(),
+        track: project.track_ids().next()?,
+        scene: project.scene_ids().next()?,
     })
 }
 
 pub(super) fn resolve_enter_target(
-    project: &Project,
+    project: &(impl SessionProject + ?Sized),
     selected_cell: Option<(TrackId, SceneId)>,
     selected_scene: Option<SceneId>,
 ) -> Option<EnterTarget> {
     if let Some((track, scene)) = selected_cell {
-        if project.track(track).is_none() || !project.scenes().iter().any(|item| item.id() == scene)
+        if !project.track_ids().any(|id| id == track) || !project.scene_ids().any(|id| id == scene)
         {
             return None;
         }
-        return match project.session_cell(track, scene)? {
-            SessionCellContent::Midi(clip) => Some(EnterTarget::LaunchClip {
-                track,
-                clip: clip.id(),
-            }),
-            SessionCellContent::Audio(clip) => Some(EnterTarget::LaunchClip {
-                track,
-                clip: clip.id(),
-            }),
-            SessionCellContent::Stop => Some(EnterTarget::StopTrack(track)),
+        return match project.cell(track, scene) {
+            CellContent::Midi(clip) => Some(EnterTarget::LaunchClip { track, clip }),
+            CellContent::Audio(clip) => Some(EnterTarget::LaunchClip { track, clip }),
+            CellContent::Stop => Some(EnterTarget::StopTrack(track)),
+            CellContent::Empty => None,
         };
     }
     selected_scene
-        .filter(|scene| project.scenes().iter().any(|item| item.id() == *scene))
+        .filter(|scene| project.scene_ids().any(|id| id == *scene))
         .map(EnterTarget::LaunchScene)
 }
 

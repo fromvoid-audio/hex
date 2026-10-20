@@ -1,7 +1,10 @@
 //! Whole Arrangement clip membership; time selections keep their separate owner.
 use super::EditorView;
 use gpui::{Context, Modifiers, Window};
-use hex_project::{ClipId, Project, TrackId};
+#[cfg(test)]
+use hex_project::Project;
+use hex_project::{ClipId, TrackId};
+use hex_session::snapshot_exports::SnapshotProjectRead;
 use std::collections::BTreeSet;
 
 #[derive(Clone, Default)]
@@ -22,7 +25,13 @@ impl ClipSelection {
             self.epoch = self.epoch.wrapping_add(1);
         }
     }
-    fn select(&mut self, project: &Project, track: TrackId, clip: ClipId, modifiers: Modifiers) {
+    fn select(
+        &mut self,
+        project: SnapshotProjectRead<'_>,
+        track: TrackId,
+        clip: ClipId,
+        modifiers: Modifiers,
+    ) {
         if modifiers.shift
             && let Some((anchor_track, anchor_clip)) = self.anchor
             && anchor_track == track
@@ -52,7 +61,7 @@ impl ClipSelection {
             self.only(track, clip);
         }
     }
-    fn reconcile(&mut self, project: &Project, generation: u64, revision: u64) {
+    fn reconcile(&mut self, project: SnapshotProjectRead<'_>, generation: u64, revision: u64) {
         if self.scope == Some((generation, revision)) {
             return;
         }
@@ -66,13 +75,11 @@ impl ClipSelection {
         }
         let valid = project
             .tracks()
-            .iter()
             .flat_map(|track| {
                 track
                     .clips()
-                    .iter()
                     .map(|c| c.id())
-                    .chain(track.midi_clips().iter().map(|c| c.id()))
+                    .chain(track.midi_clips().map(|c| c.id()))
             })
             .collect::<BTreeSet<_>>();
         let members = self.members.intersection(&valid).copied().collect();
@@ -82,17 +89,16 @@ impl ClipSelection {
         }
     }
 }
-fn ordered_clips(project: &Project, track: TrackId) -> Vec<ClipId> {
+fn ordered_clips(project: SnapshotProjectRead<'_>, track: TrackId) -> Vec<ClipId> {
     let Some(track) = project.track(track) else {
         return Vec::new();
     };
     let mut clips = track
         .clips()
-        .iter()
         .map(|c| (c.start(), c.id()))
-        .chain(track.midi_clips().iter().filter_map(|c| {
+        .chain(track.midi_clips().filter_map(|c| {
             project
-                .tempo_map()
+                .tempo()
                 .beat_to_frame(c.start())
                 .ok()
                 .map(|frame| (frame, c.id()))
@@ -141,17 +147,28 @@ impl EditorView {
         self.midi_hit_cycle = None;
     }
     pub(super) fn reconcile_clip_selection(&mut self) {
-        // A lane/header focus change clears the visible clip selection. A later
-        // additive click must not resurrect those now invisible members.
-        if self.selected_clip.is_none() {
-            self.clip_selection.apply_members(BTreeSet::new());
-            self.clip_selection.anchor = None;
-        }
-        if let Some(state) = &self.state {
-            self.clip_selection
-                .reconcile(&state.project, self.project_generation, state.revision);
-        }
+        let Some(state) = &self.state else {
+            return;
+        };
+        let Ok(selection) = state.read_with(|snapshot| {
+            let mut selection = self.clip_selection.clone();
+            // A lane/header focus change clears visible whole-clip selection.
+            if self.selected_clip.is_none() {
+                selection.apply_members(BTreeSet::new());
+                selection.anchor = None;
+            }
+            selection.reconcile(
+                snapshot.model(),
+                self.project_generation,
+                snapshot.revision(),
+            );
+            selection
+        }) else {
+            return;
+        };
+        self.clip_selection = selection;
     }
+
     pub(super) fn clip_is_selected(&self, clip: ClipId) -> bool {
         self.selected_clip == Some(clip)
             || self.selected_clip.is_some_and(|primary| {
@@ -177,35 +194,49 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.reconcile_clip_selection();
-        let mut selection = self.clip_selection.clone();
-        if !self.set_selected_clip(track, clip, window, cx) {
+        let Some(state) = &self.state else {
+            return;
+        };
+        let Ok((selection, next_focus, selected)) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let mut selection = self.clip_selection.clone();
+            if self.selected_clip.is_none() {
+                selection.apply_members(BTreeSet::new());
+                selection.anchor = None;
+            }
+            selection.reconcile(project, self.project_generation, snapshot.revision());
+            selection.select(project, track, clip, modifiers);
+            let selected = selection.members.contains(&clip);
+            let next_focus = if selected {
+                None
+            } else {
+                selection
+                    .members
+                    .iter()
+                    .next_back()
+                    .copied()
+                    .and_then(|primary| {
+                        project
+                            .tracks()
+                            .find(|track| {
+                                track.clips().any(|clip| clip.id() == primary)
+                                    || track.midi_clips().any(|clip| clip.id() == primary)
+                            })
+                            .map(|track| (track.id(), primary))
+                    })
+            };
+            (selection, next_focus, selected)
+        }) else {
+            return;
+        };
+        let (owner, primary) = next_focus.unwrap_or((track, clip));
+        if !self.set_selected_clip(owner, primary, window, cx) {
             return;
         }
-        // A deliberate whole-clip header click supersedes an unrelated time
-        // rectangle; body gestures retain their separate range-copy contract.
         self.time_selection = None;
         self.time_selection_project_scope = false;
-        let mut next_focus = None;
-        if let Some(state) = &self.state {
-            selection.select(&state.project, track, clip, modifiers);
-            if !selection.members.contains(&clip) {
-                self.selected_clip = None;
-                if let Some(primary) = selection.members.iter().next_back().copied() {
-                    next_focus = state
-                        .project
-                        .tracks()
-                        .iter()
-                        .find(|t| {
-                            t.clips().iter().any(|c| c.id() == primary)
-                                || t.midi_clips().iter().any(|c| c.id() == primary)
-                        })
-                        .map(|t| (t.id(), primary));
-                }
-            }
-        }
-        if let Some((owner, primary)) = next_focus {
-            self.set_selected_clip(owner, primary, window, cx);
+        if !selected && next_focus.is_none() {
+            self.selected_clip = None;
         }
         self.clip_selection = selection;
         let count = self.selected_clip_ids().len();
@@ -301,7 +332,6 @@ mod tests {
             for track in view.state.as_ref().unwrap().project.tracks() {
                 for (id, flavor, prefix) in track
                     .clips()
-                    .iter()
                     .map(|c| (c.id(), c.flavor(), "clip-visual"))
                     .chain(
                         track

@@ -33,6 +33,9 @@ impl EditorView {
         if self.close_prompt_open || self.project_open.busy() || self.pending_open_path.is_some() {
             return false;
         }
+        let Some(unsaved) = self.close_unsaved(cx) else {
+            return false;
+        };
         if !self.prepare_theme_window_close(window, cx) {
             return false;
         }
@@ -41,7 +44,7 @@ impl EditorView {
         if let Err(reason) = self.finalize_tuning_gesture() {
             self.error = Some(reason.into());
         }
-        if self.requires_close_confirmation(cx) {
+        if self.requires_close_confirmation(unsaved, cx) {
             self.show_close_prompt(window, cx, false);
             false
         } else {
@@ -60,6 +63,9 @@ impl EditorView {
         if self.close_prompt_open || self.project_open.busy() || self.pending_open_path.is_some() {
             return;
         }
+        let Some(unsaved) = self.close_unsaved(cx) else {
+            return;
+        };
         if !self.prepare_theme_window_close(window, cx) {
             return;
         }
@@ -68,7 +74,7 @@ impl EditorView {
         if let Err(reason) = self.finalize_tuning_gesture() {
             self.error = Some(reason.into());
         }
-        if self.requires_close_confirmation(cx) {
+        if self.requires_close_confirmation(unsaved, cx) {
             self.show_close_prompt(window, cx, true);
         } else {
             self.cancel_browser_sample_playback();
@@ -77,9 +83,25 @@ impl EditorView {
         }
     }
 
-    fn requires_close_confirmation(&self, cx: &Context<Self>) -> bool {
+    fn close_unsaved(&mut self, cx: &mut Context<Self>) -> Option<bool> {
+        match self
+            .state
+            .as_ref()
+            .map(|state| state.read_with(|snapshot| snapshot.unsaved()))
+            .transpose()
+        {
+            Ok(unsaved) => Some(unsaved.unwrap_or(false)),
+            Err(_) => {
+                self.error = Some("project read is unavailable · cannot close".into());
+                cx.notify();
+                None
+            }
+        }
+    }
+
+    fn requires_close_confirmation(&self, unsaved: bool, cx: &Context<Self>) -> bool {
         requires_close_confirmation(
-            self.state.as_ref().is_some_and(|state| state.unsaved),
+            unsaved,
             self.worker_requests_pending,
             self.pending_requests.len(),
             self.duplicate_intent.is_pending(),

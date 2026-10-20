@@ -1,7 +1,7 @@
+use super::EditorView;
 use super::drag::BrowserAudioDrag;
 use super::tracks::TRACK_ROW_HEIGHT;
 use super::viewport::Viewport;
-use super::{EditorView, ViewState};
 use crate::theme;
 use gpui::{
     Context, Div, ExternalPaths, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
@@ -33,9 +33,12 @@ impl EditorView {
         if timeline_width <= 0.0 {
             return false;
         }
+        let Ok(revision) = state.read_with(|snapshot| snapshot.revision()) else {
+            return false;
+        };
         self.arrangement_pan = Some(super::ArrangementPan {
             generation: self.project_generation,
-            revision: state.revision,
+            revision,
             last_x: x,
             last_y: y,
             timeline_width,
@@ -51,9 +54,18 @@ impl EditorView {
             self.arrangement_pan = None;
             return false;
         };
+        let Ok((revision, horizon, current)) = state.read_with(|snapshot| {
+            (
+                snapshot.revision(),
+                snapshot.timeline_frames(),
+                self.visible_viewport(snapshot, snapshot.timeline_frames()),
+            )
+        }) else {
+            return false;
+        };
         if self.mode != super::EditorMode::Arrangement
             || self.project_generation != pan.generation
-            || state.revision != pan.revision
+            || revision != pan.revision
         {
             self.arrangement_pan = None;
             return false;
@@ -74,14 +86,13 @@ impl EditorView {
         }
         self.arrangement_pan = Some(pan);
 
-        let current = self.visible_viewport(state.timeline_frames);
         let frame_delta = -f64::from(dx) * current.length as f64 / f64::from(pan.timeline_width);
         if frame_delta.is_finite() && frame_delta != 0.0 {
             let frame_delta = frame_delta
                 .round()
                 .clamp(i128::MIN as f64, i128::MAX as f64) as i128;
-            let next = current.pan_by_frames(state.timeline_frames, frame_delta);
-            self.viewport = (next != Viewport::fit(state.timeline_frames)).then_some(next);
+            let next = current.pan_by_frames(horizon, frame_delta);
+            self.viewport = (next != Viewport::fit(horizon)).then_some(next);
         }
         if dy != 0.0 {
             let base_handle = self.track_scroll.clone();
@@ -109,7 +120,35 @@ impl EditorView {
             self.track_scroll.remeasure();
         }
         self.track_layout.available_width = Some(available_width);
-        let Some(state) = self.state.as_ref().cloned() else {
+        let ruler_width = (f32::from(window.bounds().size.width)
+            - self.browser_content_width(window)
+            - self.track_header_width())
+        .max(0.0);
+        let Some(geometry) = self.state.as_ref().map(|state| {
+            state.read_with(|snapshot| {
+                let project = snapshot.model();
+                let viewport = self.visible_viewport(snapshot, snapshot.timeline_frames());
+                (
+                    viewport,
+                    super::musical_time::grid_lines(
+                        &project,
+                        viewport,
+                        ruler_width,
+                        self.snap_grid,
+                    ),
+                    super::musical_time::adaptive_grid_bands_for_grid(&project, viewport, ruler_width, self.snap_grid),
+                    super::musical_time::ruler_ticks(&project, viewport, ruler_width),
+                    super::overview::cached(
+                        &self.overview_cache,
+                        self.project_generation,
+                        snapshot,
+                    ),
+                    project.tracks().len() == 0,
+                    snapshot.revision(),
+                    project.loop_region(),
+                )
+            })
+        }) else {
             let viewport = Viewport {
                 start: 0,
                 length: 1,
@@ -122,31 +161,22 @@ impl EditorView {
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         };
-        self.sync_track_layout(state.project.tracks());
-        let ruler_width = (f32::from(window.bounds().size.width)
-            - self.browser_content_width(window)
-            - self.track_header_width())
-        .max(0.0);
-        if state.project.tracks().is_empty() {
-            let empty_viewport = self.visible_viewport(state.timeline_frames);
-            let grid = super::musical_time::grid_lines(
-                &state.project,
-                empty_viewport,
-                ruler_width,
-                self.snap_grid,
-            );
-            let bands = super::musical_time::adaptive_grid_bands_for_grid(
-                &state.project,
-                empty_viewport,
-                ruler_width,
-                self.snap_grid,
-            );
-            let overview = super::overview::widget(
-                super::overview::cached(&self.overview_cache, self.project_generation, &state),
-                empty_viewport,
-                self.track_header_width(),
-                cx.entity(),
-            );
+        let Ok((viewport, grid, bands, ticks, overview_cache, empty, revision, loop_region)) =
+            geometry
+        else {
+            return div()
+                .flex_1()
+                .min_h_0()
+                .child(theme::text("arrangement read unavailable"));
+        };
+        self.sync_track_layout();
+        let overview = super::overview::widget(
+            overview_cache,
+            viewport,
+            self.track_header_width(),
+            cx.entity(),
+        );
+        if empty {
             let upper = div()
                 .flex_1()
                 .min_h_0()
@@ -154,11 +184,12 @@ impl EditorView {
                 .flex_col()
                 .bg(rgb(theme::color(theme::PaletteRole::Background)))
                 .children([overview])
-                .child(self.ruler(&state, ruler_width, cx))
+                .child(self.ruler(viewport, ticks, cx))
                 .child(super::loop_rail::view(
                     self,
-                    &state,
-                    empty_viewport,
+                    revision,
+                    loop_region,
+                    viewport,
                     &grid,
                     cx,
                 ))
@@ -172,7 +203,7 @@ impl EditorView {
                         .children([timeline_grid_layer(
                             &bands,
                             &grid,
-                            empty_viewport,
+                            viewport,
                             self.track_header_width(),
                         )])
                         .child(
@@ -188,26 +219,11 @@ impl EditorView {
                         ),
                     cx,
                 )]);
-            let main = self.main_track_row(empty_viewport, &bands, &grid, cx);
+            let main = self.main_track_row(viewport, &bands, &grid, cx);
             let returns = self.return_tracks_view(cx);
             return self.arrangement_surface(upper, returns, main, cx);
         }
 
-        let viewport = self.visible_viewport(state.timeline_frames);
-        let grid =
-            super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid);
-        let bands = super::musical_time::adaptive_grid_bands_for_grid(
-            &state.project,
-            viewport,
-            ruler_width,
-            self.snap_grid,
-        );
-        let overview = super::overview::widget(
-            super::overview::cached(&self.overview_cache, self.project_generation, &state),
-            viewport,
-            self.track_header_width(),
-            cx.entity(),
-        );
         let rows_viewport = viewport;
         let rows_grid = grid.clone();
         let track_scale_factor = window.scale_factor();
@@ -280,16 +296,17 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .children([overview])
-            .child(self.ruler(&state, ruler_width, cx))
-            .child(super::loop_rail::view(self, &state, viewport, &grid, cx))
-            .children([self.arrangement_body(content, cx)])
-            .children(super::gain_lane::view(
+            .child(self.ruler(viewport, ticks, cx))
+            .child(super::loop_rail::view(
                 self,
-                &state,
+                revision,
+                loop_region,
                 viewport,
-                ruler_width,
+                &grid,
                 cx,
-            ));
+            ))
+            .children([self.arrangement_body(content, cx)])
+            .children(super::gain_lane::view(self, viewport, ruler_width, cx));
         let main = self.main_track_row(viewport, &bands, &grid, cx);
         let returns = self.return_tracks_view(cx);
         self.arrangement_surface(upper, returns, main, cx)
@@ -547,10 +564,11 @@ impl EditorView {
             .inset_0(),
         );
         body = body.children(self.arrangement_device_drop_preview());
-        let insertion_line_y = if self
-            .state()
-            .is_some_and(|state| state.project.tracks().is_empty())
-        {
+        let tracks_empty = self
+            .state
+            .as_ref()
+            .map(|state| state.read_with(|snapshot| snapshot.model().tracks().len() == 0));
+        let insertion_line_y = if matches!(tracks_empty, Some(Ok(true) | Err(_))) {
             None
         } else {
             self.active_browser_audio_drag
@@ -741,42 +759,42 @@ impl EditorView {
             )
     }
 
-    fn ruler(&self, state: &ViewState, ruler_width: f32, cx: &mut Context<Self>) -> Div {
-        let viewport = self.visible_viewport(state.timeline_frames);
+    fn ruler(
+        &self,
+        viewport: Viewport,
+        ticks: Vec<super::musical_time::RulerTick>,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let labels = div()
             .absolute()
             .top_0()
             .bottom_0()
             .left_0()
             .right_0()
-            .children(
-                super::musical_time::ruler_ticks(&state.project, viewport, ruler_width)
-                    .into_iter()
-                    .map(|tick| {
-                        let x = (tick.frame - viewport.start) as f32 / viewport.length as f32;
-                        div()
-                            .absolute()
-                            .top_0()
-                            .bottom_0()
-                            .left(relative(x))
-                            .flex()
-                            .items_center()
-                            .border_l_1()
-                            .border_color(rgb(if tick.meter_marker || tick.fragmentary_bar {
-                                theme::color(theme::PaletteRole::Primary)
-                            } else {
-                                theme::color(theme::PaletteRole::Grid)
-                            }))
-                            .pl_1()
-                            .text_xs()
-                            .text_color(rgb(if tick.meter_marker {
-                                theme::color(theme::PaletteRole::Text)
-                            } else {
-                                theme::color(theme::PaletteRole::Muted)
-                            }))
-                            .child(theme::text(tick.label))
-                    }),
-            );
+            .children(ticks.into_iter().map(|tick| {
+                let x = (tick.frame - viewport.start) as f32 / viewport.length as f32;
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left(relative(x))
+                    .flex()
+                    .items_center()
+                    .border_l_1()
+                    .border_color(rgb(if tick.meter_marker || tick.fragmentary_bar {
+                        theme::color(theme::PaletteRole::Primary)
+                    } else {
+                        theme::color(theme::PaletteRole::Grid)
+                    }))
+                    .pl_1()
+                    .text_xs()
+                    .text_color(rgb(if tick.meter_marker {
+                        theme::color(theme::PaletteRole::Text)
+                    } else {
+                        theme::color(theme::PaletteRole::Muted)
+                    }))
+                    .child(theme::text(tick.label))
+            }));
         let entity = cx.entity();
         let seek_viewport = viewport;
         let cells = div()

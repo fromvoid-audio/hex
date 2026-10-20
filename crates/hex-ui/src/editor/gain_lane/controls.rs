@@ -8,14 +8,19 @@ use hex_widgets::{
 
 /// Gain is a shared numeric control; exact beats move through the existing time viewport/grid.
 pub(super) fn numeric(view: &mut EditorView, cx: &mut Context<EditorView>) -> Div {
-    let Some(point) = view.gain_point() else {
+    let Ok(Some(point)) = view.gain_point() else {
         return div();
     };
     let Some(track) = view.gain_lane.track else {
         return div();
     };
     let generation = view.project_generation;
-    let revision = view.state.as_ref().map_or(0, |state| state.revision);
+    let Some(state) = view.state.as_ref() else {
+        return div();
+    };
+    let Ok(revision) = state.read_with(|snapshot| snapshot.revision()) else {
+        return div();
+    };
     let key = (track, point.beat, generation, revision);
     let slot = &mut view.gain_lane.gain;
     if slot.as_ref().is_some_and(|binding| binding.key != key) {
@@ -50,11 +55,15 @@ pub(super) fn numeric(view: &mut EditorView, cx: &mut Context<EditorView>) -> Di
         let entity = cx.new(|cx| NumericControl::from_config(cx, config));
         let subscription =
             cx.subscribe(&entity, move |view, _, event: &NumericControlEvent, cx| {
+                let current = match view.state.as_ref() {
+                    Some(state) => state.read_with(|snapshot| snapshot.revision() == revision),
+                    None => Ok(false),
+                };
+                let Ok(current) = current else {
+                    return;
+                };
                 if view.project_generation != generation
-                    || view
-                        .state
-                        .as_ref()
-                        .is_none_or(|state| state.revision != revision)
+                    || !current
                     || view.gain_lane.track != Some(track)
                 {
                     view.gain_lane.draft = None;

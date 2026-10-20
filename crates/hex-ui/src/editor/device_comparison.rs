@@ -89,12 +89,12 @@ pub(super) fn current(view: &EditorView, target: &Intent) -> bool {
 
 pub(super) fn actions(
     view: &EditorView,
-    device: &hex_project::Device,
+    device: DeviceId,
     class: NativeDeviceClass,
     selected: bool,
     cx: &mut Context<EditorView>,
 ) -> Div {
-    let Some(target) = intent(view, device.id(), class, Action::Switch) else {
+    let Some(target) = intent(view, device, class, Action::Switch) else {
         return div();
     };
     let (label, tooltip) = match target.expected {
@@ -109,7 +109,7 @@ pub(super) fn actions(
     };
     div().child(
         super::device_panel::action_button(
-            format!("device-comparison-{}", device.id().value()),
+            format!("device-comparison-{}", device.value()),
             label,
             tooltip,
             theme::DeviceActionRole::Normal,

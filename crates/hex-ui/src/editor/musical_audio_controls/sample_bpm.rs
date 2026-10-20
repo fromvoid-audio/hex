@@ -14,39 +14,49 @@ pub(crate) struct Binding {
 impl EditorView {
     pub(crate) fn sample_bpm_editing(&self, cx: &Context<Self>) -> bool {
         self.sample_bpm_control.as_ref().is_some_and(|binding| {
-            self.selected_clip_data()
-                .is_some_and(|selection| selection.1 == binding.key.0)
+            let selection_current = match self.selected_clip_data() {
+                Ok(selection) => selection.is_some_and(|selection| selection.1 == binding.key.0),
+                Err(_) => return binding.entity.read(cx).is_editing(),
+            };
+            let revision_current = match self.state.as_ref() {
+                Some(state) => match state.read_with(|snapshot| snapshot.revision()) {
+                    Ok(revision) => revision == binding.key.2,
+                    Err(_) => return binding.entity.read(cx).is_editing(),
+                },
+                None => false,
+            };
+            selection_current
                 && self.project_generation == binding.key.1
-                && self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.revision == binding.key.2)
+                && revision_current
                 && binding.entity.read(cx).is_editing()
         })
     }
 }
 pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorView>) -> Div {
-    let Some(state) = view.state.as_ref() else {
+    let Some((warped, value, revision)) = view.state.as_ref().and_then(|state| {
+        state
+            .read_with(|snapshot| {
+                let project = snapshot.model();
+                let clip = project.tracks().find_map(|track| track.clip(id))?;
+                let edit = clip.audio_edit();
+                let value = edit.and_then(|edit| edit.sample_bpm()).unwrap_or_else(|| {
+                    let tempo = project.tempo();
+                    tempo.tempo_at(tempo.frame_to_beat(clip.start()).unwrap_or(BeatTime::ZERO))
+                });
+                Some((
+                    edit.is_some_and(|edit| edit.warp_enabled()),
+                    value,
+                    snapshot.revision(),
+                ))
+            })
+            .ok()
+            .flatten()
+    }) else {
         return div();
     };
-    let Some(clip) = state.project.clip(id) else {
-        return div();
-    };
-    let domain = clip.audio_edit().map(|edit| edit.domain.as_ref());
-    let enabled = domain.is_some_and(|domain| domain.warp_enabled) && !view.edit_pending();
-    let value = domain
-        .and_then(|domain| domain.sample_bpm)
-        .unwrap_or_else(|| {
-            state.project.tempo_map().tempo_at(
-                state
-                    .project
-                    .tempo_map()
-                    .frame_to_beat(clip.start())
-                    .unwrap_or(BeatTime::ZERO),
-            )
-        });
+    let enabled = warped && !view.edit_pending();
     let value = f64::from(value.micro_bpm()) / 1_000_000.0;
-    let key = (id, view.project_generation, state.revision);
+    let key = (id, view.project_generation, revision);
     if view
         .sample_bpm_control
         .as_ref()
@@ -97,10 +107,11 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                     || view
                         .state
                         .as_ref()
-                        .is_none_or(|state| state.revision != key.2)
-                    || view
-                        .selected_clip_data()
-                        .is_none_or(|selection| selection.1 != id)
+                        .is_none_or(|state| {
+                            !state.read_with(|snapshot| snapshot.revision())
+                                .is_ok_and(|revision| revision == key.2)
+                        })
+                    || !matches!(view.selected_clip_data(), Ok(Some(selection)) if selection.1 == id)
                 {
                     return;
                 }

@@ -8,8 +8,9 @@ pub(super) fn render_chain(
     window: Option<&Window>,
     cx: &mut Context<EditorView>,
     owner: EffectBusOwner,
-    devices: &[hex_project::Device],
+    facts: &read_facts::OwnerFacts,
 ) -> Stateful<Div> {
+    let devices = &facts.devices;
     let visible_bounds = Rc::new(RefCell::new(None));
     let receiver_bounds = visible_bounds.clone();
     let entity = cx.entity();
@@ -17,8 +18,8 @@ pub(super) fn render_chain(
         .iter()
         .map(|device| {
             (
-                device.id(),
-                device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+                device.id,
+                device_card_width(NativeDeviceClass::Effect, device.type_id),
             )
         })
         .collect();
@@ -47,16 +48,23 @@ pub(super) fn render_chain(
             }
         });
     for (index, device) in devices.iter().enumerate() {
-        if chain_window::must_mount(view, device.id(), window, cx) {
-            let focus = view.device_panel.chain_window.focus(device.id(), cx);
-            let rendered =
-                super::return_view::render_return_effect(view, window, cx, owner, device)
-                    .track_focus(&focus);
-            let rendered = keyboard::card(view, cx, device.id(), focus.clone(), rendered);
+        if chain_window::must_mount(view, device.id, window, cx) {
+            let focus = view.device_panel.chain_window.focus(device.id, cx);
+            let rendered = super::return_view::render_return_effect(
+                view,
+                window,
+                cx,
+                owner,
+                device,
+                facts.revision,
+                facts.sample_rate,
+            )
+            .track_focus(&focus);
+            let rendered = keyboard::card(view, cx, device.id, focus.clone(), rendered);
             let rendered = super::super::device_comparison::card(
                 view,
                 cx,
-                device.id(),
+                device.id,
                 NativeDeviceClass::Effect,
                 focus,
                 rendered,
@@ -65,15 +73,15 @@ pub(super) fn render_chain(
                 view,
                 cx,
                 owner,
-                Some(device.id()),
-                devices.get(index + 1).map(|next| next.id()),
+                Some(device.id),
+                devices.get(index + 1).map(|next| next.id),
                 visible_bounds.clone(),
                 rendered,
             ));
         } else {
             let card = chain_window::spacer(
-                device.id(),
-                device_card_width(NativeDeviceClass::Effect, device.state().type_id()),
+                device.id,
+                device_card_width(NativeDeviceClass::Effect, device.type_id),
             )
             .mr(px(DEVICE_CHAIN_PADDING));
             chain = chain.child(card);

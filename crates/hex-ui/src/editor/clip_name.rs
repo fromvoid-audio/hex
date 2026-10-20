@@ -4,8 +4,11 @@ use crate::theme;
 use gpui::{
     App, AppContext, Context, Entity, KeyBinding, Subscription, Window, div, prelude::*, px, rgb,
 };
-use hex_project::{ClipId, Command, SessionCellContent};
+use hex_project::{ClipId, Command};
 use hex_session::service::Request;
+use hex_session::snapshot_exports::{
+    SnapshotProjectRead, SnapshotTransportError, ui_consumers::SnapshotSessionCellContentRead,
+};
 
 pub(super) const CLIP_NAME_HEIGHT: f32 =
     super::tracks::TRACK_ROW_HEIGHT * super::time_selection::SELECTION_HANDLE_FRACTION;
@@ -17,6 +20,16 @@ pub(super) struct NameEdit {
     original: String,
     input: Entity<BrowserSearch>,
     _blur: Subscription,
+}
+
+fn clip_name_at(project: SnapshotProjectRead<'_>, id: ClipId) -> Option<&str> {
+    project
+        .tracks()
+        .find_map(|track| track.clip(id))
+        .map(|clip| clip.name())
+        .or_else(|| project.midi_clip(id).map(|clip| clip.name()))
+        .or_else(|| project.session_audio_clip(id).map(|clip| clip.name()))
+        .or_else(|| project.session_midi_clip(id).map(|clip| clip.name()))
 }
 
 pub(super) fn bind_keys(cx: &mut App) {
@@ -42,13 +55,28 @@ pub(super) fn bind_keys(cx: &mut App) {
 }
 impl EditorView {
     pub(super) fn reconcile_clip_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let target = match self.clip_name_target() {
+            Ok(target) => target,
+            Err(_) => return,
+        };
+        let source_current = if let Some(edit) = &self.clip_name_edit {
+            match self.state.as_ref() {
+                Some(state) => match state.read_with(|snapshot| {
+                    snapshot.revision() == edit.revision
+                        && clip_name_at(snapshot.model(), edit.clip) == Some(edit.original.as_str())
+                }) {
+                    Ok(current) => current,
+                    Err(_) => return,
+                },
+                None => false,
+            }
+        } else {
+            true
+        };
         if let Some(edit) = &self.clip_name_edit
             && (edit.generation != self.project_generation
-                || self.clip_name_target() != Some(edit.clip)
-                || !self.state.as_ref().is_some_and(|s| {
-                    s.revision == edit.revision
-                        && s.project.clip_name(edit.clip) == Some(edit.original.as_str())
-                }))
+                || target != Some(edit.clip)
+                || !source_current)
         {
             let focused = edit.input.read(cx).focus_handle().is_focused(window);
             self.clip_name_edit = None;
@@ -58,16 +86,24 @@ impl EditorView {
         }
     }
 
-    fn clip_name_target(&self) -> Option<ClipId> {
+    fn clip_name_target(&self) -> Result<Option<ClipId>, SnapshotTransportError> {
         if self.mode == EditorMode::Session {
-            let (track, scene) = self.selected_cell?;
-            match self.state.as_ref()?.project.session_cell(track, scene)? {
-                SessionCellContent::Audio(c) => Some(c.id()),
-                SessionCellContent::Midi(c) => Some(c.id()),
-                SessionCellContent::Stop => None,
-            }
+            let Some((track, scene)) = self.selected_cell else {
+                return Ok(None);
+            };
+            let Some(state) = self.state.as_ref() else {
+                return Ok(None);
+            };
+            state.read_with(
+                |snapshot| match snapshot.model().session_cell(track, scene) {
+                    SnapshotSessionCellContentRead::Audio(clip) => Some(clip.id()),
+                    SnapshotSessionCellContentRead::Midi(clip) => Some(clip.id()),
+                    SnapshotSessionCellContentRead::Stop
+                    | SnapshotSessionCellContentRead::Empty => None,
+                },
+            )
         } else {
-            self.selected_clip
+            Ok(self.selected_clip)
         }
     }
     pub(super) fn begin_clip_name(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -82,17 +118,20 @@ impl EditorView {
         {
             return;
         }
-        let Some(clip) = self.clip_name_target() else {
+        let Ok(Some(clip)) = self.clip_name_target() else {
             return;
         };
-        let Some(state) = self.state.as_ref() else {
+        let Some((original, revision)) = self.state.as_ref().and_then(|state| {
+            state
+                .read_with(|snapshot| {
+                    clip_name_at(snapshot.model(), clip)
+                        .map(|name| (name.to_owned(), snapshot.revision()))
+                })
+                .ok()
+                .flatten()
+        }) else {
             return;
         };
-        let Some(name) = state.project.clip_name(clip) else {
-            return;
-        };
-        let original = name.to_owned();
-        let revision = state.revision;
         let input = cx.new(|cx| BrowserSearch::for_clip_name(original.clone(), cx));
         let focus = input.read(cx).focus_handle().clone();
         let blur = cx.on_blur(&focus, window, |view, _, cx| {
@@ -111,15 +150,29 @@ impl EditorView {
         cx.notify();
     }
     fn commit_clip_name(&mut self, cx: &mut Context<Self>) {
+        let Some(edit) = self.clip_name_edit.as_ref() else {
+            return;
+        };
+        let source_current = match self.state.as_ref() {
+            Some(state) => match state.read_with(|snapshot| {
+                snapshot.revision() == edit.revision
+                    && clip_name_at(snapshot.model(), edit.clip) == Some(edit.original.as_str())
+            }) {
+                Ok(current) => current,
+                Err(_) => {
+                    self.error =
+                        Some("project read is unavailable · clip name remains pending".into());
+                    return;
+                }
+            },
+            None => false,
+        };
         let Some(edit) = self.clip_name_edit.take() else {
             return;
         };
         let name = edit.input.read(cx).content.clone();
         if edit.generation == self.project_generation
-            && self.state.as_ref().is_some_and(|s| {
-                s.revision == edit.revision
-                    && s.project.clip_name(edit.clip) == Some(edit.original.as_str())
-            })
+            && source_current
             && !self.edit_pending()
             && name != edit.original
         {
@@ -172,6 +225,9 @@ impl EditorView {
     ) {
         if commit {
             self.commit_clip_name(cx);
+            if self.clip_name_edit.is_some() {
+                return;
+            }
         } else {
             self.clip_name_edit = None;
         }

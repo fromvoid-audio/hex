@@ -1,4 +1,50 @@
-use hex_project::{ClipId, Project, TrackId};
+#[cfg(test)]
+use hex_project::Project;
+use hex_project::{ClipId, TrackId};
+use hex_session::snapshot_exports::ui_consumers::SnapshotSessionCellContentRead;
+use hex_session::snapshot_exports::{SnapshotProjectRead, SnapshotTransportError};
+
+/// Finite selection facts; production reads never expose canonical owners.
+pub(super) trait SelectionProject {
+    fn track_ids(&self) -> impl ExactSizeIterator<Item = TrackId>;
+    fn first_clip(&self, track: TrackId) -> Option<ClipId>;
+    fn owns_clip(&self, track: TrackId, clip: ClipId) -> bool;
+}
+impl SelectionProject for SnapshotProjectRead<'_> {
+    fn track_ids(&self) -> impl ExactSizeIterator<Item = TrackId> {
+        self.tracks().map(|track| track.id())
+    }
+    fn first_clip(&self, track: TrackId) -> Option<ClipId> {
+        let track = self.track(track)?;
+        track
+            .clips()
+            .next()
+            .map(|clip| clip.id())
+            .or_else(|| track.midi_clips().next().map(|clip| clip.id()))
+    }
+    fn owns_clip(&self, track: TrackId, clip: ClipId) -> bool {
+        self.track(track).is_some_and(|track| track.clips().any(|item| item.id() == clip) || track.midi_clips().any(|item| item.id() == clip))
+            || self.session_cells().any(|cell| cell.track() == track && matches!(cell.content(), SnapshotSessionCellContentRead::Midi(item) if item.id() == clip))
+    }
+}
+#[cfg(test)]
+impl SelectionProject for Project {
+    fn track_ids(&self) -> impl ExactSizeIterator<Item = TrackId> {
+        self.tracks().iter().map(|track| track.id())
+    }
+    fn first_clip(&self, track: TrackId) -> Option<ClipId> {
+        let track = self.track(track)?;
+        track
+            .clips()
+            .first()
+            .map(|clip| clip.id())
+            .or_else(|| track.midi_clips().first().map(|clip| clip.id()))
+    }
+    fn owns_clip(&self, track: TrackId, clip: ClipId) -> bool {
+        self.track(track).is_some_and(|track| track.clips().iter().any(|item| item.id() == clip) || track.midi_clips().iter().any(|item| item.id() == clip))
+            || self.session_cells().iter().any(|cell| cell.track() == track && matches!(cell.content(), hex_project::SessionCellContent::Midi(item) if item.id() == clip))
+    }
+}
 
 /// One view selection over canonical stable track IDs, independent of time ranges.
 #[derive(Default, Clone, Debug, PartialEq, Eq)]
@@ -12,43 +58,49 @@ impl TrackSelection {
         self.ids.contains(&track)
     }
 
-    pub(super) fn ordered(&self, project: &Project) -> Vec<TrackId> {
+    pub(super) fn ordered(&self, project: &(impl SelectionProject + ?Sized)) -> Vec<TrackId> {
         project
-            .tracks()
-            .iter()
-            .map(|track| track.id())
+            .track_ids()
             .filter(|id| self.ids.contains(id))
             .collect()
     }
 
-    pub(super) fn reconcile(&mut self, project: &Project) {
-        self.ids.retain(|id| project.track(*id).is_some());
-        if self.anchor.is_some_and(|id| project.track(id).is_none()) {
+    pub(super) fn reconcile(&mut self, project: &(impl SelectionProject + ?Sized)) {
+        self.ids
+            .retain(|id| project.track_ids().any(|track| track == *id));
+        if self
+            .anchor
+            .is_some_and(|id| !project.track_ids().any(|track| track == id))
+        {
             self.anchor = self.ordered(project).first().copied();
         }
     }
 
     pub(super) fn select(
         &mut self,
-        project: &Project,
+        project: &(impl SelectionProject + ?Sized),
         track: TrackId,
         range: bool,
         toggle: bool,
     ) -> bool {
-        let Some(index) = project.tracks().iter().position(|item| item.id() == track) else {
+        let Some(index) = project.track_ids().position(|item| item == track) else {
             return false;
         };
         self.reconcile(project);
         if range {
             let anchor = self
                 .anchor
-                .and_then(|id| project.tracks().iter().position(|item| item.id() == id))
+                .and_then(|id| project.track_ids().position(|item| item == id))
                 .unwrap_or(index);
             if !toggle {
                 self.ids.clear();
             }
-            for item in &project.tracks()[anchor.min(index)..=anchor.max(index)] {
-                self.ids.insert(item.id());
+            for id in project
+                .track_ids()
+                .skip(anchor.min(index))
+                .take(anchor.abs_diff(index) + 1)
+            {
+                self.ids.insert(id);
             }
             if self.anchor.is_none() {
                 self.anchor = Some(track);
@@ -70,7 +122,10 @@ impl TrackSelection {
 
 impl super::EditorView {
     pub(super) fn update_track_selection_status(&mut self) {
-        self.status = match self.selected_track_ids().len() {
+        let Ok(ids) = self.selected_track_ids_checked() else {
+            return;
+        };
+        self.status = match ids.len() {
             0 => "no tracks selected".into(),
             1 => "track selected".into(),
             count => format!("{count} tracks selected"),
@@ -86,80 +141,82 @@ impl super::EditorView {
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        if self
-            .track_selection
-            .select(&state.project, track, modifiers.shift, modifiers.platform)
-        {
-            self.focus_selected_track(track, window);
-        }
+        let Ok(Some((selection, first_gain))) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let first_gain = project
+                .track(track)?
+                .gain_points()
+                .first()
+                .map(|point| point.beat);
+            let mut selection = self.track_selection.clone();
+            selection
+                .select(
+                    &snapshot.model(),
+                    track,
+                    modifiers.shift,
+                    modifiers.platform,
+                )
+                .then_some((selection, first_gain))
+        }) else {
+            return;
+        };
+        self.focus_selected_track(track, first_gain, window);
+        self.track_selection = selection;
+        self.update_track_selection_status();
     }
 
     /// Every consumer receives explicit members in canonical order; time range
     /// and focused-clip state never promote unrelated tracks into this selection.
     pub(super) fn selected_track_ids(&self) -> Vec<TrackId> {
-        self.state.as_ref().map_or_else(Vec::new, |state| {
-            self.track_selection.ordered(&state.project)
-        })
+        self.selected_track_ids_checked().unwrap_or_default()
+    }
+    pub(super) fn selected_track_ids_checked(
+        &self,
+    ) -> Result<Vec<TrackId>, SnapshotTransportError> {
+        match self.state.as_ref() {
+            Some(state) => {
+                state.read_with(|snapshot| self.track_selection.ordered(&snapshot.model()))
+            }
+            None => Ok(Vec::new()),
+        }
     }
 }
 
 /// Keep a valid selected clip attached to its canonical owner after edits,
 /// undo, redo or worker-side project changes.
 pub(super) fn reconcile(
-    project: &Project,
+    project: &(impl SelectionProject + ?Sized),
     current_track: Option<TrackId>,
     current_clip: Option<ClipId>,
 ) -> (Option<TrackId>, Option<ClipId>) {
     if let Some(clip_id) = current_clip
-        && let Some(track) = project.tracks().iter().find(|track| {
-            track.clips().iter().any(|clip| clip.id() == clip_id)
-                || track.midi_clips().iter().any(|clip| clip.id() == clip_id)
-                || project.session_cells().iter().any(|cell| {
-                    cell.track() == track.id()
-                        && matches!(cell.content(), hex_project::SessionCellContent::Midi(clip) if clip.id() == clip_id)
-                })
-        })
+        && let Some(track) = project
+            .track_ids()
+            .find(|track| project.owns_clip(*track, clip_id))
     {
-        return (Some(track.id()), Some(clip_id));
+        return (Some(track), Some(clip_id));
     }
     let track = current_track
-        .filter(|id| project.track(*id).is_some())
-        .or_else(|| project.tracks().first().map(|track| track.id()));
-    let clip = track.and_then(|id| {
-        let track = project.track(id)?;
-        track
-            .clips()
-            .first()
-            .map(|clip| clip.id())
-            .or_else(|| track.midi_clips().first().map(|clip| clip.id()))
-    });
-    (track, clip)
+        .filter(|id| project.track_ids().any(|track| track == *id))
+        .or_else(|| project.track_ids().next());
+    (track, track.and_then(|id| project.first_clip(id)))
 }
 
 /// Keyboard navigation uses canonical order and stable IDs, without wrapping.
 pub(super) fn neighbor(
-    project: &Project,
+    project: &(impl SelectionProject + ?Sized),
     current: Option<TrackId>,
     forward: bool,
 ) -> Option<(usize, TrackId, Option<ClipId>)> {
-    let tracks = project.tracks();
-    let last = tracks.len().checked_sub(1)?;
-    let index = match current.and_then(|id| tracks.iter().position(|track| track.id() == id)) {
+    let last = project.track_ids().len().checked_sub(1)?;
+    let index = match current.and_then(|id| project.track_ids().position(|track| track == id)) {
         Some(index) if forward => index.saturating_add(1).min(last),
         Some(index) => index.saturating_sub(1),
         None if forward => 0,
         None => last,
     };
-    let track = tracks.get(index)?;
-    Some((
-        index,
-        track.id(),
-        track
-            .clips()
-            .first()
-            .map(|clip| clip.id())
-            .or_else(|| track.midi_clips().first().map(|clip| clip.id())),
-    ))
+    let track = project.track_ids().nth(index)?;
+    Some((index, track, project.first_clip(track)))
 }
 
 #[cfg(test)]

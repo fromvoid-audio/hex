@@ -25,19 +25,25 @@ pub(super) fn warp_header(
     let Some(state) = view.state.as_ref() else {
         return controls;
     };
-    let Some(clip) = state.project.clip(clip_id) else {
+    let Ok(Some((revision, active, mode))) = state.read_with(|snapshot| {
+        let clip = snapshot
+            .model()
+            .tracks()
+            .find_map(|track| track.clip(clip_id))?;
+        let edit = clip.audio_edit();
+        Some((
+            snapshot.revision(),
+            edit.is_some_and(|edit| edit.warp_enabled()),
+            edit.and_then(|edit| edit.warp_mode()).unwrap_or(modes()[0]),
+        ))
+    }) else {
         return controls;
     };
     let capture = Capture {
         clip: clip_id,
-        revision: state.revision,
+        revision,
         generation: view.project_generation,
     };
-    let domain = clip.audio_edit().map(|edit| edit.domain.as_ref());
-    let active = domain.is_some_and(|domain| domain.warp_enabled);
-    let mode = domain
-        .and_then(|domain| domain.warp.as_ref())
-        .map_or(modes()[0], |warp| warp.mode);
     controls = controls.child(
         button(
             capture,
@@ -104,21 +110,69 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
     let Some(state) = view.state.as_ref() else {
         return controls;
     };
-    let Some(clip) = state.project.clip(clip_id) else {
+    let Ok(Some((
+        revision,
+        pitch,
+        active,
+        mode,
+        musical,
+        page,
+        marker_count,
+        has_warp,
+        markers,
+        gain_points,
+    ))) = state.read_with(|snapshot| {
+        let clip = snapshot
+            .model()
+            .tracks()
+            .find_map(|track| track.clip(clip_id))?;
+        let edit = clip.audio_edit();
+        let active = edit.is_some_and(|edit| edit.warp_enabled());
+        let warp_mode = edit.and_then(|edit| edit.warp_mode());
+        let marker_count = edit.map_or(0, |edit| edit.warp_markers().len());
+        let gain_count = edit.map_or(0, |edit| edit.source_gain_points().len());
+        let count = gain_count.max(if active { marker_count } else { 0 });
+        let page = clamped_page(view.audio_point_page, count);
+        let first = page.saturating_mul(PAGE);
+        let markers = edit
+            .map(|edit| {
+                edit.warp_markers()
+                    .enumerate()
+                    .skip(first)
+                    .take(PAGE)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let gain_points = edit
+            .map(|edit| {
+                edit.source_gain_points()
+                    .enumerate()
+                    .skip(first)
+                    .take(PAGE)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        Some((
+            snapshot.revision(),
+            edit.map_or(0, |edit| edit.pitch_cents()),
+            active,
+            warp_mode.unwrap_or(modes()[0]),
+            edit.and_then(|edit| edit.musical_start()).is_some(),
+            page,
+            marker_count,
+            warp_mode.is_some(),
+            markers,
+            gain_points,
+        ))
+    })
+    else {
         return controls;
     };
     let capture = Capture {
         clip: clip_id,
-        revision: state.revision,
+        revision,
         generation: view.project_generation,
     };
-    let edit = clip.audio_edit();
-    let domain = edit.map(|e| e.domain.as_ref());
-    let pitch = domain.map_or(0, |d| d.pitch_cents);
-    let active = domain.is_some_and(|d| d.warp_enabled);
-    let mode = domain
-        .and_then(|d| d.warp.as_ref())
-        .map_or(modes()[0], |w| w.mode);
     controls = controls.child(musical_control_label("musical audio"));
     controls = controls.child(musical_control_row(
         capture,
@@ -130,7 +184,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
     ));
     controls = controls.child(button(
         capture,
-        if edit.is_some_and(|e| e.musical_start.is_some()) {
+        if musical {
             "anchor · beats"
         } else {
             "anchor · frames"
@@ -206,15 +260,6 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
             }
         }
     }
-    let point_count = domain.map_or(0, |d| {
-        d.source_gain.len().max(if active {
-            d.warp.as_ref().map_or(0, |w| w.markers.len())
-        } else {
-            0
-        })
-    });
-    let page = clamped_page(view.audio_point_page, point_count);
-    let first = page.saturating_mul(PAGE);
     controls = controls.child(musical_control_row(
         capture,
         format!("points · page {}", page + 1),
@@ -223,7 +268,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
         false,
         cx,
     ));
-    if active && let Some(warp) = domain.and_then(|d| d.warp.as_ref()) {
+    if active && has_warp {
         controls = controls.child(button(
             capture,
             "add warp marker",
@@ -231,12 +276,12 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
             view.edit_pending(),
             cx,
         ));
-        for (index, marker) in warp.markers.iter().enumerate().skip(first).take(PAGE) {
+        for (index, marker) in markers {
             controls = controls.child(musical_control_label(&format!(
                 "marker {index} · source {}",
                 marker.source_frame
             )));
-            if index > 0 && index + 1 < warp.markers.len() {
+            if index > 0 && index + 1 < marker_count {
                 controls = controls.child(musical_control_row(
                     capture,
                     "source frame".into(),
@@ -259,7 +304,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                     cx,
                 ));
             }
-            if index > 0 && index + 1 < warp.markers.len() {
+            if index > 0 && index + 1 < marker_count {
                 controls = controls.child(button(
                     capture,
                     "remove marker",
@@ -278,8 +323,8 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
         view.edit_pending(),
         cx,
     ));
-    if let Some(domain) = domain {
-        for (index, point) in domain.source_gain.iter().enumerate().skip(first).take(PAGE) {
+    {
+        for (index, point) in gain_points {
             controls = controls.child(musical_control_row(
                 capture,
                 format!("src {}", point.frame),
@@ -434,31 +479,29 @@ fn button(
             {
                 return;
             }
-            let Some(state) = view
-                .state
-                .as_ref()
-                .filter(|state| state.revision == capture.revision)
-            else {
+            let Some(state) = view.state.as_ref() else {
                 return;
             };
+            let Ok(Some((current_revision, count))) = state.read_with(|snapshot| {
+                let clip = snapshot
+                    .model()
+                    .tracks()
+                    .find_map(|track| track.clip(capture.clip))?;
+                let count = clip.audio_edit().map_or(0, |edit| {
+                    edit.source_gain_points().len().max(if edit.warp_enabled() {
+                        edit.warp_markers().len()
+                    } else {
+                        0
+                    })
+                });
+                Some((snapshot.revision() == capture.revision, count))
+            }) else {
+                return;
+            };
+            if !current_revision {
+                return;
+            }
             if let Action::Page(direction) = action {
-                let count = state
-                    .project
-                    .clip(capture.clip)
-                    .and_then(|clip| clip.audio_edit())
-                    .map_or(0, |edit| {
-                        edit.domain
-                            .source_gain
-                            .len()
-                            .max(if edit.domain.warp_enabled {
-                                edit.domain
-                                    .warp
-                                    .as_ref()
-                                    .map_or(0, |warp| warp.markers.len())
-                            } else {
-                                0
-                            })
-                    });
                 let current = clamped_page(view.audio_point_page, count);
                 view.audio_point_page = clamped_page(
                     if direction < 0 {

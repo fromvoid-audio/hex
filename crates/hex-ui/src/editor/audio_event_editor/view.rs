@@ -7,36 +7,11 @@ pub(in crate::editor) fn view(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
 ) -> Option<gpui::Stateful<Div>> {
-    let (clip_id, root, revision) = view.event_context()?;
-    let owner = (clip_id, view.project_generation);
-    if view.audio_event_editor.owner != Some(owner) {
-        let clipboard = view.audio_event_editor.clipboard.take();
-        view.audio_event_editor = State {
-            owner: Some(owner),
-            revision,
-            cursor: root.view_start,
-            clipboard,
-            ..State::default()
-        };
-    }
-    if view.audio_event_editor.revision != revision {
-        view.audio_event_editor.gesture = None;
-        view.audio_event_editor.cursor = view
-            .audio_event_editor
-            .cursor
-            .clamp(root.view_start, root.view_end);
-        view.audio_event_editor.range = view.audio_event_editor.range.and_then(|(start, end)| {
-            let start = start.max(root.view_start);
-            let end = end.min(root.view_end);
-            (start < end).then_some((start, end))
-        });
-        view.audio_event_editor.revision = revision;
-    }
-    let state = view.state.as_ref()?;
-    let clip = state.project.clip(clip_id)?.clone();
-    let events = match clip.editable_audio_events() {
-        Ok(events) => events,
-        Err(error) => {
+    let data = match view.event_data() {
+        Ok(Some(data)) => data,
+        Ok(None) => return None,
+        Err(ReadError::Model(error)) => {
+            view.error = Some(error.0.into());
             return Some(
                 div()
                     .id("audio-event-editor-limit")
@@ -45,7 +20,172 @@ pub(in crate::editor) fn view(
                     .child(theme::text(error.0)),
             );
         }
+        Err(error) => {
+            view.event_error(error);
+            return None;
+        }
     };
+    let clip_id = data.clip;
+    let root = data.root;
+    let revision = data.revision;
+    let source_key = data.source_key;
+    let owner = (clip_id, view.project_generation);
+    let same_context = view.audio_event_editor.owner == Some(owner)
+        && view.audio_event_editor.revision == revision
+        && view.audio_event_editor.source_key == Some(source_key);
+    let events = data.events;
+    let preview = if same_context {
+        view.audio_event_editor
+            .gesture
+            .as_ref()
+            .and_then(|g| g.operation.clone())
+            .and_then(|op| events.edited(op, root.domain.clock.length()).ok())
+            .unwrap_or_else(|| events.clone())
+    } else {
+        events.clone()
+    };
+    let local = match view.event_viewport(&root) {
+        Ok(Some(value)) => value,
+        Ok(None) => return None,
+        Err(error) => {
+            view.event_error(error);
+            return None;
+        }
+    };
+    let viewport = match view.event_project_viewport(&root) {
+        Ok(Some(value)) => value,
+        Ok(None) => return None,
+        Err(error) => {
+            view.event_error(error);
+            return None;
+        }
+    };
+    let width = view
+        .audio_event_editor
+        .bounds
+        .map_or(640.0, |bounds| f32::from(bounds.size.width));
+    let same_owner = view.audio_event_editor.owner == Some(owner);
+    let grid = if same_owner {
+        view.audio_event_editor.grid
+    } else {
+        SnapGrid::default()
+    };
+    let cursor = if same_owner {
+        view.audio_event_editor
+            .cursor
+            .clamp(root.view_start, root.view_end)
+    } else {
+        root.view_start
+    };
+    let range = view
+        .audio_event_editor
+        .range
+        .filter(|_| same_owner)
+        .and_then(|(start, end)| {
+            let start = start.max(root.view_start);
+            let end = end.min(root.view_end);
+            (start < end).then_some((start, end))
+        });
+    let selected_range = if same_context {
+        match view
+            .audio_event_editor
+            .gesture
+            .as_ref()
+            .and_then(|g| g.operation.as_ref())
+        {
+            Some(AudioEventEdit::MoveRange {
+                start,
+                end,
+                destination,
+            }) => Some((*destination, *destination + (*end - *start))),
+            _ => range,
+        }
+    } else {
+        range
+    };
+    // Allocate only scalar projection scratch outside the guard, then fill it
+    // without growth from the same retained root before changing local state.
+    let mut positions = Vec::with_capacity(preview.events.len() * 3 + 5);
+    positions.extend([root.view_start, root.view_end, cursor]);
+    if let Some((a, b)) = selected_range {
+        positions.extend([a, b]);
+    }
+    for event in &preview.events {
+        let a = event.start.max(root.view_start);
+        let b = event.end.min(root.view_end);
+        if a >= b {
+            continue;
+        }
+        positions.extend([a, b]);
+        if let Some(original) = events.events.iter().find(|e| e.id == event.id).or_else(|| {
+            events.events.iter().find(|e| {
+                e.source_start <= event.source_start
+                    && event.source_start < e.source_start + e.length()
+            })
+        }) {
+            positions.push(prepared_waveform_position(*event, *original, a)?);
+        }
+    }
+    let mut frames = Vec::with_capacity(positions.len());
+    let projection = view.event_read(|snapshot, read| {
+        for position in &positions {
+            if frames.len() == frames.capacity() {
+                return Err(Invalid("audio event projection buffer is full"));
+            }
+            frames.push((*position, read.root_frame_at(*position)?));
+        }
+        let project = snapshot.model();
+        let clip_start = project
+            .clip(clip_id)
+            .ok_or(Invalid("audio event clip is unavailable"))?
+            .start();
+        Ok::<_, Invalid>((
+            clip_start,
+            super::super::musical_time::grid_lines(&project, viewport, width, grid),
+            super::super::musical_time::ruler_ticks(&project, viewport, width),
+        ))
+    });
+    let (clip_start, lines, ticks) = match projection {
+        Ok(Some(Ok(value))) => value,
+        Ok(Some(Err(error))) => {
+            view.event_error(error.into());
+            return None;
+        }
+        Ok(None) => return None,
+        Err(error) => {
+            view.event_error(error);
+            return None;
+        }
+    };
+    let frame_at = |position| {
+        frames
+            .iter()
+            .find(|(p, _)| *p == position)
+            .map(|(_, frame)| *frame)
+    };
+    let first = frame_at(root.view_start)?;
+    let frame_to_x =
+        |frame: u64| frame.saturating_sub(first + local.start) as f32 / local.length.max(1) as f32;
+    if view.audio_event_editor.owner != Some(owner) {
+        let clipboard = view.audio_event_editor.clipboard.take();
+        view.audio_event_editor = State {
+            owner: Some(owner),
+            revision,
+            source_key: Some(source_key),
+            cursor: root.view_start,
+            clipboard,
+            ..State::default()
+        };
+    }
+    if view.audio_event_editor.revision != revision
+        || view.audio_event_editor.source_key != Some(source_key)
+    {
+        view.audio_event_editor.gesture = None;
+        view.audio_event_editor.cursor = cursor;
+        view.audio_event_editor.range = range;
+        view.audio_event_editor.revision = revision;
+        view.audio_event_editor.source_key = Some(source_key);
+    }
     if view.audio_event_editor.selected.is_some_and(|id| {
         !events
             .events
@@ -54,25 +194,6 @@ pub(in crate::editor) fn view(
     }) {
         view.audio_event_editor.selected = None;
     }
-    let preview = view
-        .audio_event_editor
-        .gesture
-        .as_ref()
-        .and_then(|g| g.operation.clone())
-        .and_then(|op| events.edited(op, root.domain.clock.length()).ok())
-        .unwrap_or_else(|| events.clone());
-    let local = view.event_viewport(&root);
-    let viewport = view.event_project_viewport(&root)?;
-    let first = root
-        .root_frame_at(root.view_start, state.project.tempo_map())
-        .ok()?;
-    let frame_at = |position: u64| root.root_frame_at(position, state.project.tempo_map()).ok();
-    let frame_to_x =
-        |frame: u64| frame.saturating_sub(first + local.start) as f32 / local.length.max(1) as f32;
-    let width = view
-        .audio_event_editor
-        .bounds
-        .map_or(640.0, |bounds| f32::from(bounds.size.width));
     let mut body = div()
         .id("audio-events-waveform")
         .debug_selector(|| "audio-events-waveform".into())
@@ -83,12 +204,7 @@ pub(in crate::editor) fn view(
         .overflow_hidden()
         .bg(rgb(theme::color(theme::PaletteRole::Raised)))
         .cursor_crosshair();
-    for line in super::super::musical_time::grid_lines(
-        &state.project,
-        viewport,
-        width,
-        view.audio_event_editor.grid,
-    ) {
+    for line in lines {
         let x = (line.frame - viewport.start) as f32 / viewport.length.max(1) as f32;
         body = body.child(
             div()
@@ -110,7 +226,7 @@ pub(in crate::editor) fn view(
             .border_b_1()
             .border_color(rgb(theme::color(theme::PaletteRole::Border))),
     );
-    for tick in super::super::musical_time::ruler_ticks(&state.project, viewport, width) {
+    for tick in ticks {
         let x = (tick.frame - viewport.start) as f32 / viewport.length.max(1) as f32;
         body = body.child(
             div()
@@ -164,28 +280,33 @@ pub(in crate::editor) fn view(
         }) {
             let source_raw = prepared_waveform_position(*event, *original, raw_a)?;
             let source_root = frame_at(source_raw)?;
-            let source_frame = clip
-                .start()
+            let source_frame = clip_start
                 .checked_add(source_root.saturating_sub(first))?
                 .checked_add(visible_start - start)?;
             let end_frame = source_frame.checked_add(visible_end - visible_start)?;
-            if let Some(prepared) = state.audio_clip_waveforms.get(&clip_id) {
-                element = element.child(waveform::waveform_source_segment_gain_view_cached(
-                    std::sync::Arc::clone(&prepared.waveform),
-                    0,
-                    source_root + (visible_start - start),
-                    source_root + (visible_end - start),
-                    clip.gain(),
-                    std::rc::Rc::clone(&view.waveform_geometry_cache),
-                ));
-            } else if let Some(wave) = state.waveforms.get(&clip.asset()) {
-                element = element.child(waveform::waveform_view_cached(
-                    wave,
-                    &clip,
-                    source_frame,
-                    end_frame,
-                    std::rc::Rc::clone(&view.waveform_geometry_cache),
-                ));
+            // The shared renderer reads current accepted peaks through the
+            // editor's retained capability during paint; no owner escapes here.
+            let segment = waveform::event_segment_view(
+                view,
+                cx,
+                waveform::EventSegmentRequest {
+                    clip: clip_id,
+                    source_root_start: source_root + (visible_start - start),
+                    source_root_end: source_root + (visible_end - start),
+                    source_project_start: source_frame,
+                    source_project_end: end_frame,
+                    generation: view.project_generation,
+                    revision,
+                    source_key,
+                },
+            );
+            match segment {
+                Ok(Some(segment)) => element = element.child(segment),
+                Ok(None) => {}
+                Err(error) => {
+                    view.event_error(error.into());
+                    return None;
+                }
             }
         }
         element = element.child(
@@ -221,19 +342,6 @@ pub(in crate::editor) fn view(
         }
         body = body.child(element);
     }
-    let selected_range = match view
-        .audio_event_editor
-        .gesture
-        .as_ref()
-        .and_then(|g| g.operation.as_ref())
-    {
-        Some(AudioEventEdit::MoveRange {
-            start,
-            end,
-            destination,
-        }) => Some((*destination, *destination + (*end - *start))),
-        _ => view.audio_event_editor.range,
-    };
     if let Some((a, b)) = selected_range.filter(|(a, b)| a < b) {
         let a = frame_at(a)?.max(first + local.start);
         let b = frame_at(b)?.min(first + local.start + local.length);
@@ -251,11 +359,7 @@ pub(in crate::editor) fn view(
             );
         }
     }
-    let cursor = frame_at(
-        view.audio_event_editor
-            .cursor
-            .min(root.domain.clock.length()),
-    )?;
+    let cursor = frame_at(cursor)?;
     if (first + local.start..=first + local.start + local.length).contains(&cursor) {
         body = body.child(
             div()
@@ -290,37 +394,34 @@ pub(in crate::editor) fn view(
         .on_mouse_down(
             MouseButton::Left,
             cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
-                if view.edit_pending() || !view.event_context_current() {
+                if view.edit_pending() || !matches!(view.event_context_current(), Ok(true)) {
                     return;
                 }
-                let Some(position) = view
+                let Ok(Some(position)) = view
                     .event_pointer_position(f32::from(event.position.x), event.modifiers.platform)
                 else {
                     return;
                 };
-                let Some(raw) = view.event_pointer_position(
+                let Ok(Some(raw)) = view.event_pointer_position(
                     f32::from(event.position.x),
                     view.audio_event_editor.grid != SnapGrid::Off,
                 ) else {
                     return;
                 };
-                view.audio_event_focus.focus(window);
-                let Some((clip_id, root, _)) = view.event_context() else {
-                    return;
+                let data = match view.event_data() {
+                    Ok(Some(data)) => data,
+                    Ok(None) => return,
+                    Err(error) => {
+                        view.event_error(error);
+                        return;
+                    }
                 };
-                let Some(state) = view.state.as_ref() else {
-                    return;
-                };
-                let Some(clip) = state.project.clip(clip_id) else {
-                    return;
-                };
+                let root = data.root;
+                let events = data.events;
                 let ruler = view
                     .audio_event_editor
                     .bounds
                     .is_some_and(|b| f32::from(event.position.y - b.origin.y) < 22.0);
-                let Ok(events) = clip.editable_audio_events() else {
-                    return;
-                };
                 let hit = events
                     .events
                     .iter()
@@ -337,38 +438,36 @@ pub(in crate::editor) fn view(
                         Kind::Select
                     }
                 } else if ruler || event.modifiers.shift || hit.is_none() {
-                    view.audio_event_editor.range = Some((position, position));
-                    view.audio_event_editor.selected = None;
                     Kind::Select
                 } else if let Some(hit) = hit {
-                    view.audio_event_editor.range = None;
-                    view.audio_event_editor.selected = Some(hit.id);
-                    let first = root
-                        .root_frame_at(root.view_start, state.project.tempo_map())
-                        .unwrap_or(0);
-                    let local = view.event_viewport(&root);
+                    let Ok(Some(first)) = view.event_frame_at(root.view_start) else {
+                        return;
+                    };
+                    let Ok(Some(local)) = view.event_viewport(&root) else {
+                        return;
+                    };
+                    let Ok(Some(hit_start)) = view.event_frame_at(hit.start) else {
+                        return;
+                    };
+                    let Ok(Some(hit_end)) = view.event_frame_at(hit.end) else {
+                        return;
+                    };
                     let bounds = view.audio_event_editor.bounds;
                     let width = bounds.map_or(1.0, |b| f32::from(b.size.width));
                     let offset = bounds.map_or(0.0, |b| f32::from(event.position.x - b.origin.x));
-                    let x = |raw: u64| {
-                        root.root_frame_at(raw, state.project.tempo_map())
-                            .unwrap_or(0)
-                            .saturating_sub(first + local.start) as f32
+                    let x = |frame: u64| {
+                        frame.saturating_sub(first + local.start) as f32
                             / local.length.max(1) as f32
                             * width
                     };
                     if hit.start >= root.view_start
-                        && root
-                            .root_frame_at(hit.start, state.project.tempo_map())
-                            .is_ok_and(|frame| frame >= first + local.start)
-                        && (offset - x(hit.start)).abs() <= 6.0
+                        && hit_start >= first + local.start
+                        && (offset - x(hit_start)).abs() <= 6.0
                     {
                         Kind::Leading(hit)
                     } else if hit.end <= root.view_end
-                        && root
-                            .root_frame_at(hit.end, state.project.tempo_map())
-                            .is_ok_and(|frame| frame <= first + local.start + local.length)
-                        && (offset - x(hit.end)).abs() <= 6.0
+                        && hit_end <= first + local.start + local.length
+                        && (offset - x(hit_end)).abs() <= 6.0
                     {
                         Kind::Trailing(hit)
                     } else {
@@ -377,6 +476,18 @@ pub(in crate::editor) fn view(
                 } else {
                     Kind::Select
                 };
+                view.audio_event_focus.focus(window);
+                match kind {
+                    Kind::Select => {
+                        view.audio_event_editor.range = Some((position, position));
+                        view.audio_event_editor.selected = None;
+                    }
+                    Kind::Move(hit) | Kind::Leading(hit) | Kind::Trailing(hit) => {
+                        view.audio_event_editor.range = None;
+                        view.audio_event_editor.selected = Some(hit.id);
+                    }
+                    Kind::RangeMove { .. } => {}
+                }
                 view.audio_event_editor.cursor = position;
                 view.audio_event_editor.gesture = Some(Gesture {
                     pointer_x: f32::from(event.position.x),
@@ -408,20 +519,28 @@ pub(in crate::editor) fn view(
                 if view.audio_event_editor.gesture.is_none() {
                     return;
                 }
-                view.event_update_pointer(f32::from(event.position.x), event.modifiers.platform);
-                if let Some(gesture) = view.audio_event_editor.gesture.take() {
+                if !view.event_update_pointer(f32::from(event.position.x), event.modifiers.platform)
+                {
+                    return;
+                }
+                if let Some(gesture) = view.audio_event_editor.gesture.as_ref().cloned() {
                     if let Some(operation) = gesture.operation {
-                        if let AudioEventEdit::MoveRange {
-                            start,
-                            end,
-                            destination,
-                        } = &operation
+                        let moved = match &operation {
+                            AudioEventEdit::MoveRange {
+                                start,
+                                end,
+                                destination,
+                            } => Some((*destination, *destination + (*end - *start))),
+                            _ => None,
+                        };
+                        if view.event_commit(operation)
+                            && let Some((start, end)) = moved
                         {
-                            view.audio_event_editor.range =
-                                Some((*destination, *destination + (*end - *start)));
-                            view.audio_event_editor.cursor = *destination;
+                            view.audio_event_editor.range = Some((start, end));
+                            view.audio_event_editor.cursor = start;
                         }
-                        view.event_commit(operation);
+                    } else {
+                        view.audio_event_editor.gesture = None;
                     }
                 }
                 cx.stop_propagation();

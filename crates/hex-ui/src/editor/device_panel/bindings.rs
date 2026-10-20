@@ -41,77 +41,67 @@ pub(super) struct CapturedBinding {
 }
 
 impl CapturedBinding {
+    // Action-only refusal. Cleanup callers use the checked form so pressure
+    // never masquerades as a removed or disabled control.
     pub(super) fn current(self, view: &EditorView, require_enabled: bool) -> bool {
+        self.current_checked(view, require_enabled).unwrap_or(false)
+    }
+    pub(super) fn current_checked(
+        self,
+        view: &EditorView,
+        require_enabled: bool,
+    ) -> Result<bool, hex_session::snapshot_exports::SnapshotTransportError> {
+        let Some(state) = view.state.as_ref() else {
+            return Ok(false);
+        };
+        state.read_with(|snapshot| self.current_in(view, snapshot.model(), require_enabled))
+    }
+    pub(super) fn current_in(
+        self,
+        view: &EditorView,
+        project: hex_session::snapshot_exports::SnapshotProjectRead<'_>,
+        require_enabled: bool,
+    ) -> bool {
         if self.generation != view.project_generation || self.owner != view.device_panel.owner {
             return false;
         }
-        let Some(state) = view.state.as_ref() else {
-            return false;
-        };
         let device = match (self.owner, self.identity.class) {
-            (Some(DevicePanelOwner::Track(id)), NativeDeviceClass::Instrument) => state
-                .project
+            (Some(DevicePanelOwner::Track(id)), NativeDeviceClass::Instrument) => project
                 .track(id)
                 .and_then(|track| track.instrument())
                 .filter(|device| device.id() == self.key.device),
             (Some(DevicePanelOwner::Track(id)), NativeDeviceClass::Effect) => {
-                state.project.track(id).and_then(|track| {
+                project.track(id).and_then(|track| {
                     track
                         .devices()
-                        .iter()
                         .find(|device| device.id() == self.key.device)
                 })
             }
-            (Some(DevicePanelOwner::Return(id)), NativeDeviceClass::Effect) => state
-                .project
-                .return_tracks()
-                .iter()
+            (Some(DevicePanelOwner::Return(id)), NativeDeviceClass::Effect) => project
+                .returns()
                 .find(|track| track.id() == id)
                 .and_then(|track| {
                     track
                         .devices()
-                        .iter()
                         .find(|device| device.id() == self.key.device)
                 }),
-            (Some(DevicePanelOwner::Main), NativeDeviceClass::Effect) => state
-                .project
+            (Some(DevicePanelOwner::Main), NativeDeviceClass::Effect) => project
                 .main_devices()
-                .iter()
                 .find(|device| device.id() == self.key.device),
             _ => None,
         };
         let Some(device) = device else {
             return false;
         };
-        if device.state().type_id() != self.identity.type_id {
+        if device.class() != self.identity.class || device.type_id() != self.identity.type_id {
             return false;
         }
-        if self.key.parameter == hex_engine::DEVICE_INPUT_GAIN.id {
-            return self.descriptor == hex_engine::DEVICE_INPUT_GAIN;
-        }
-        if self.key.parameter == hex_engine::DEVICE_OUTPUT_GAIN.id {
-            return self.descriptor == hex_engine::DEVICE_OUTPUT_GAIN;
-        }
-        if let Some((class, cached_state, cached_view)) =
-            view.device_panel.views.get(&self.key.device)
-            && *class == self.identity.class
-            && cached_state == device.state()
-        {
-            return cached_view.as_ref().ok().is_some_and(|metadata| {
-                metadata.parameters.iter().any(|parameter| {
-                    parameter.descriptor == self.descriptor
-                        && (!require_enabled || parameter.enabled)
-                })
-            });
-        }
-        hex_engine::native_device_view_for_class(self.identity.class, device.state()).is_ok_and(
-            |metadata| {
-                metadata.parameters.iter().any(|parameter| {
-                    parameter.descriptor == self.descriptor
-                        && (!require_enabled || parameter.enabled)
-                })
-            },
-        )
+        device
+            .controls()
+            .and_then(|controls| controls.parameter(self.key.parameter))
+            .is_ok_and(|parameter| {
+                parameter.descriptor == self.descriptor && (!require_enabled || parameter.enabled)
+            })
     }
 }
 
@@ -261,6 +251,12 @@ pub(super) fn render_parameter(
     parameter: &NativeDeviceParameterView,
     rendering: BindingPresentation,
 ) -> Div {
+    let Some(state) = view.state.as_ref() else {
+        return div();
+    };
+    let Ok(revision) = state.read_with(|snapshot| snapshot.revision()) else {
+        return div();
+    };
     let configuration = rendering;
     let BindingPresentation {
         kind: presentation,
@@ -314,7 +310,6 @@ pub(super) fn render_parameter(
         None => false,
     };
     // Semantic queries describe acknowledged canonical values, not effective painted drafts.
-    let revision = view.state.as_ref().map_or(0, |state| state.revision);
     let generation = view.project_generation;
     let owner = cx.entity().downgrade();
     let pending = view.edit_pending()
@@ -325,10 +320,11 @@ pub(super) fn render_parameter(
         owner
             .read_with(app, |view, _| {
                 view.project_generation == generation
-                    && view
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.revision == revision)
+                    && view.state.as_ref().is_some_and(|state| {
+                        state
+                            .read_with(|snapshot| snapshot.revision() == revision)
+                            .unwrap_or(false)
+                    })
                     && !view.edit_pending()
                     && view.device_gesture.snapshot().is_none()
                     && view.device_gesture_barriers.is_empty()
@@ -681,16 +677,9 @@ fn create_parameter_control(
                         .get(&target)
                         .copied()
                         .or_else(|| {
-                            view.device_panel
-                                .views
-                                .get(&target.device)
-                                .and_then(|(_, _, device_view)| device_view.as_ref().ok())
-                                .and_then(|device_view| {
-                                    device_view.parameters.iter().find(|parameter| {
-                                        parameter.descriptor.id == target.parameter
-                                    })
-                                })
-                                .map(|parameter| parameter.value)
+                            view.state.as_ref()?.read_with(|snapshot| {
+                                snapshot.model().device(target.device)?.controls().ok()?.parameter(target.parameter).ok().map(|parameter| parameter.value)
+                            }).ok().flatten()
                         })
                         .unwrap_or(ParameterValue::Bool(!event.checked));
                     if let (

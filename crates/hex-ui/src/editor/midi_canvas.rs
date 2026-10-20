@@ -76,34 +76,12 @@ fn pitch_at_y(y: f32, height: f32, low: u8) -> Option<u8> {
 
 impl EditorView {
     pub(super) fn midi_editor(&mut self, cx: &mut Context<Self>) -> Option<Div> {
-        let state = self.state.as_ref()?;
         let clip_id = self.selected_clip?;
-        let source = state.project.midi_source(clip_id)?;
-        let arrangement = state.project.midi_clip(clip_id);
-        let revision = state.revision;
         let generation = self.project_generation;
-        let source_values = super::midi_source_controls::SourceValues::from_source(
-            source,
-            arrangement.map_or(0, |clip| clip.start().raw()),
-            arrangement.map_or(source.source_length().raw(), |clip| {
-                clip.arrangement_length().raw()
-            }),
-        );
-        let clip_len = source.source_length();
         let beat_start = self.piano_beat_start;
         let beat_span = self.piano_beat_span;
         let pitch_low = self.piano_pitch_low;
         let grid = self.midi_snap_grid;
-        let notes = source.notes();
-        let key = super::midi_scene::SceneKey {
-            generation,
-            revision,
-            clip: clip_id,
-            beat_start: beat_start.raw(),
-            beat_span: beat_span.raw(),
-            pitch_low,
-        };
-        let scene = self.midi_scene_cache.get_or_build(key, notes).0;
         let selected = if self.midi_selection.len() == 1 {
             self.midi_selection.primary()
         } else {
@@ -113,7 +91,58 @@ impl EditorView {
         let selected_ids = self.midi_selection.shared_ids();
         let selection_epoch = self.midi_selection.epoch();
         let preview = self.midi_note_gesture.map(|gesture| gesture.preview);
-        let selected_note_data = selected.and_then(|id| state.project.midi_note(id));
+        let state = self.state.as_ref()?;
+        let cache = &self.midi_scene_cache;
+        let (revision, source_values, clip_len, scene, selected_note_data, arrangement) = state
+            .read_with(|snapshot| {
+                let project = snapshot.model();
+                let source = project.midi_source(clip_id)?;
+                let arrangement = project.midi_clip(clip_id);
+                let revision = snapshot.revision();
+                let values = super::midi_source_controls::SourceValues {
+                    arrangement_start: arrangement.map_or(0, |clip| clip.start().raw()),
+                    arrangement_length: arrangement.map_or(source.source_length().raw(), |clip| {
+                        clip.arrangement_length().raw()
+                    }),
+                    source_length: source.source_length().raw(),
+                    source_start: source.source_start().raw(),
+                    loop_start: source.loop_start().raw(),
+                    loop_end: source.loop_end().raw(),
+                    looping: source.looping(),
+                };
+                let key = super::midi_scene::SceneKey {
+                    generation,
+                    revision,
+                    clip: clip_id,
+                    beat_start: beat_start.raw(),
+                    beat_span: beat_span.raw(),
+                    pitch_low,
+                };
+                let note_fact =
+                    |note: hex_session::snapshot_exports::ui_consumers::SnapshotMidiNoteRead<
+                        '_,
+                    >| super::midi_group_drag::GroupNote {
+                        id: note.id(),
+                        start: note.start().raw(),
+                        duration: note.duration().raw(),
+                        pitch: note.pitch(),
+                        channel: note.channel(),
+                        velocity: note.velocity(),
+                    };
+                let scene = cache.prepare_facts(key, source.notes().map(note_fact)).0;
+                let note = selected.and_then(|id| project.midi_note(id)).map(note_fact);
+                Some((
+                    revision,
+                    values,
+                    source.source_length(),
+                    scene,
+                    note,
+                    arrangement.map(|_| ()),
+                ))
+            })
+            .ok()
+            .flatten()?;
+        self.midi_scene_cache.retain(std::sync::Arc::clone(&scene));
         let status = if self.midi_selection.len() > 1 {
             format!(
                 "{} notes selected · drag to move · backspace to delete · cmd+a select all",
@@ -128,16 +157,16 @@ impl EditorView {
                     )
                 },
                 |note| {
-                    let data = preview.filter(|_| selected == Some(note.id()));
+                    let data = preview.filter(|_| selected == Some(note.id));
                     let (pitch, start, duration) = data.map_or_else(
-                        || (note.pitch(), note.start().raw(), note.duration().raw()),
+                        || (note.pitch, note.start, note.duration),
                         |item| (item.pitch, item.start, item.duration),
                     );
                     format!(
                         "p{pitch} · t{} · g{} · v{}",
                         beat_label(start),
                         beat_label(duration),
-                        note.velocity()
+                        note.velocity
                     )
                 },
             )
@@ -489,17 +518,53 @@ impl EditorView {
                     ];
                     mouse_down_entity.update(cx, |view, view_cx| {
                         if view.project_generation != generation
-                            || view.state.as_ref().is_none_or(|s| s.revision != revision)
+                            || view.state.as_ref().is_none_or(|state| {
+                                !state
+                                    .read_with(|snapshot| snapshot.revision())
+                                    .is_ok_and(|current| current == revision)
+                            })
                             || view.selected_clip != Some(clip_id)
                             || view.edit_pending()
                         {
                             return;
                         }
-                        view.midi_focus.focus(window);
                         let mut hit_cycle = view.midi_hit_cycle;
                         let hit = event_scene
                             .hit(x, y, width, height, &mut hit_cycle)
                             .and_then(|id| event_scene.note(id));
+                        let group_originals = if !view.midi_draw_mode
+                            && !event.modifiers.shift
+                            && event.click_count < 2
+                            && view.midi_selection.len() > 1
+                            && hit.is_some_and(|note| view.midi_selection.contains(note.id))
+                        {
+                            let ids = view.midi_selection.shared_ids();
+                            match view.with_midi_source(|source| {
+                                super::midi_group_drag::capture_selected_notes(
+                                    source
+                                        .notes()
+                                        .map(|note| super::midi_group_drag::GroupNote {
+                                            id: note.id(),
+                                            start: note.start().raw(),
+                                            duration: note.duration().raw(),
+                                            pitch: note.pitch(),
+                                            channel: note.channel(),
+                                            velocity: note.velocity(),
+                                        }),
+                                    &ids,
+                                )
+                            }) {
+                                Ok(Some(Ok(notes))) => Some(notes),
+                                Ok(Some(Err(error))) => {
+                                    view.error = Some(error.into());
+                                    return;
+                                }
+                                Ok(None) | Err(_) => return,
+                            }
+                        } else {
+                            None
+                        };
+                        view.midi_focus.focus(window);
                         if view.midi_draw_mode {
                             if event.click_count != 1 {
                                 return;
@@ -559,35 +624,9 @@ impl EditorView {
                                     view_cx.notify();
                                     return;
                                 }
-                                let Some(project_clip) = view
-                                    .state
-                                    .as_ref()
-                                    .and_then(|state| state.project.midi_source(clip_id))
-                                else {
+                                let Some(originals) = group_originals else {
                                     return;
                                 };
-                                let mut originals = Vec::new();
-                                if originals
-                                    .try_reserve_exact(view.midi_selection.len())
-                                    .is_err()
-                                {
-                                    view.error =
-                                        Some("could not reserve selected midi notes".into());
-                                    return;
-                                }
-                                for selected_note in project_clip.notes() {
-                                    if !view.midi_selection.contains(selected_note.id()) {
-                                        continue;
-                                    }
-                                    originals.push(super::midi_group_drag::GroupNote {
-                                        id: selected_note.id(),
-                                        start: selected_note.start().raw(),
-                                        duration: selected_note.duration().raw(),
-                                        pitch: selected_note.pitch(),
-                                        channel: selected_note.channel(),
-                                        velocity: selected_note.velocity(),
-                                    });
-                                }
                                 if originals.len() != view.midi_selection.len() {
                                     view.midi_group_gesture = None;
                                     return;
@@ -776,9 +815,15 @@ impl EditorView {
                                 f32::from(bounds.size.height),
                             ],
                         };
-                        let current = view.midi_note_gesture.as_ref().is_some_and(|gesture| {
-                            view.midi_note_gesture_current(gesture, context)
-                        });
+                        let current = match view
+                            .midi_note_gesture
+                            .as_ref()
+                            .map(|gesture| view.midi_note_gesture_current(gesture, context))
+                            .transpose()
+                        {
+                            Ok(current) => current.unwrap_or(false),
+                            Err(_) => return,
+                        };
                         if !current {
                             if view.midi_note_gesture.take().is_some() {
                                 view_cx.notify();
@@ -818,11 +863,19 @@ impl EditorView {
                             view_cx.notify();
                             return;
                         }
+                        let revision_current = match view
+                            .state
+                            .as_ref()
+                            .map(|state| {
+                                state.read_with(|snapshot| snapshot.revision() == revision)
+                            })
+                            .transpose()
+                        {
+                            Ok(current) => current.unwrap_or(false),
+                            Err(_) => return,
+                        };
                         if view.project_generation != generation
-                            || view
-                                .state
-                                .as_ref()
-                                .is_none_or(|state| state.revision != revision)
+                            || !revision_current
                             || view.selected_clip != Some(clip_id)
                             || view.edit_pending()
                         {
@@ -904,7 +957,7 @@ impl EditorView {
                             view_cx.notify();
                             return;
                         }
-                        let Some(mut gesture) = view.midi_note_gesture.take() else {
+                        let Some(gesture) = view.midi_note_gesture.as_ref() else {
                             return;
                         };
                         let context = midi_drag::GestureContext {
@@ -925,13 +978,19 @@ impl EditorView {
                                 f32::from(bounds.size.height),
                             ],
                         };
-                        if !view.midi_note_gesture_current(&gesture, context)
-                            || !midi_drag::release_is_inside(
-                                &gesture,
-                                f32::from(event.position.x),
-                                f32::from(event.position.y),
-                            )
-                        {
+                        let current = match view.midi_note_gesture_current(gesture, context) {
+                            Ok(current) => current,
+                            Err(_) => return,
+                        };
+                        let inside = midi_drag::release_is_inside(
+                            gesture,
+                            f32::from(event.position.x),
+                            f32::from(event.position.y),
+                        );
+                        let Some(mut gesture) = view.midi_note_gesture.take() else {
+                            return;
+                        };
+                        if !current || !inside {
                             view_cx.notify();
                             return;
                         }
@@ -1402,10 +1461,11 @@ impl EditorView {
     }
 
     fn pan_piano(&mut self, right: bool) {
+        let clip_length = match self.with_midi_source(|source| source.source_length().raw()) {
+            Ok(length) => length.unwrap_or(0),
+            Err(_) => return,
+        };
         self.cancel_midi_note_gesture();
-        let clip_length = self
-            .midi_clip()
-            .map_or(0, |clip| clip.source_length().raw());
         let span = self
             .piano_beat_span
             .raw()
@@ -1424,10 +1484,11 @@ impl EditorView {
     }
 
     fn zoom_piano(&mut self, inward: bool) {
+        let clip_length = match self.with_midi_source(|source| source.source_length().raw()) {
+            Ok(length) => length.unwrap_or(BeatTime::ONE.raw()),
+            Err(_) => return,
+        };
         self.cancel_midi_note_gesture();
-        let clip_length = self
-            .midi_clip()
-            .map_or(BeatTime::ONE.raw(), |clip| clip.source_length().raw());
         let current = self
             .piano_beat_span
             .raw()
@@ -1446,10 +1507,11 @@ impl EditorView {
     }
 
     fn fit_piano(&mut self) {
+        let length = match self.with_midi_source(|source| source.source_length().raw()) {
+            Ok(length) => length.unwrap_or(BeatTime::ONE.raw()),
+            Err(_) => return,
+        };
         self.cancel_midi_note_gesture();
-        let length = self
-            .midi_clip()
-            .map_or(BeatTime::ONE.raw(), |clip| clip.source_length().raw());
         self.piano_beat_span =
             BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
         self.piano_beat_start = BeatTime::ZERO;
@@ -1467,20 +1529,29 @@ impl EditorView {
         &self,
         gesture: &midi_drag::NoteGesture,
         mut context: midi_drag::GestureContext,
-    ) -> bool {
+    ) -> Result<bool, hex_session::snapshot_exports::SnapshotTransportError> {
         let Some(clip) = context.selected_clip else {
-            return false;
+            return Ok(false);
         };
         context.pending = self.edit_pending();
-        let clip_contains_note = self.state.as_ref().is_some_and(|state| {
-            state.revision == context.revision
-                && state
-                    .project
-                    .midi_source(clip)
-                    .is_some_and(|midi| midi.notes().iter().any(|note| note.id() == gesture.note))
-        });
+        let clip_contains_note = self
+            .state
+            .as_ref()
+            .map(|state| {
+                state.read_with(|snapshot| {
+                    snapshot.revision() == context.revision
+                        && snapshot.model().midi_source(clip).is_some_and(|source| {
+                            source.notes().any(|note| note.id() == gesture.note)
+                        })
+                })
+            })
+            .transpose()?
+            .unwrap_or(false);
         context.clip_contains_note = clip_contains_note;
-        context.generation == self.project_generation && midi_drag::is_current(gesture, context)
+        Ok(
+            context.generation == self.project_generation
+                && midi_drag::is_current(gesture, context),
+        )
     }
 
     fn piano_keys(&self, low: u8) -> Div {

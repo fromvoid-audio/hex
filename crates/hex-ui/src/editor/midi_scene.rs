@@ -1,5 +1,8 @@
 //! Revision-keyed complete piano-roll geometry and deterministic overlap hits.
-use hex_project::{ClipId, MidiNote, MidiNoteInsert, NoteId};
+use super::midi_group_drag::GroupNote;
+#[cfg(test)]
+use hex_project::MidiNote;
+use hex_project::{ClipId, MidiNoteInsert, NoteId};
 use std::{collections::HashMap, sync::Arc};
 
 pub(super) const ROWS: usize = 24;
@@ -93,7 +96,12 @@ pub(super) struct MidiSceneCache {
 }
 
 impl MidiScene {
+    #[cfg(test)]
     pub(super) fn build(key: SceneKey, notes: &[MidiNote]) -> Self {
+        Self::build_facts(key, notes.iter().map(note_fact))
+    }
+
+    fn build_facts(key: SceneKey, notes: impl ExactSizeIterator<Item = GroupNote>) -> Self {
         let mut visible = Vec::with_capacity(notes.len());
         let mut rows: [Vec<usize>; ROWS] = std::array::from_fn(|_| Vec::new());
         let mut by_id = HashMap::with_capacity(notes.len());
@@ -104,30 +112,30 @@ impl MidiScene {
             && let Some(view_end) = view_end
         {
             for note in notes {
-                let start = note.start().raw();
-                let duration = note.duration().raw();
+                let start = note.start;
+                let duration = note.duration;
                 let Some(end) = start.checked_add(duration) else {
                     continue;
                 };
                 if end <= key.beat_start
                     || start >= view_end
-                    || note.pitch() < key.pitch_low
-                    || note.pitch() >= key.pitch_low.saturating_add(ROWS as u8)
+                    || note.pitch < key.pitch_low
+                    || note.pitch >= key.pitch_low.saturating_add(ROWS as u8)
                 {
                     continue;
                 }
-                let row = usize::from(key.pitch_low + 23 - note.pitch());
+                let row = usize::from(key.pitch_low + 23 - note.pitch);
                 let visible_start = start.max(key.beat_start);
                 let visible_end = end.min(view_end);
                 let x = (visible_start - key.beat_start) as f64 / key.beat_span as f64;
                 let width = (visible_end - visible_start) as f64 / key.beat_span as f64;
                 let item = NoteGeometry {
-                    id: note.id(),
+                    id: note.id,
                     start,
                     duration,
-                    pitch: note.pitch(),
-                    channel: note.channel(),
-                    velocity: note.velocity(),
+                    pitch: note.pitch,
+                    channel: note.channel,
+                    velocity: note.velocity,
                     x: x as f32,
                     y: row as f32 / ROWS as f32,
                     width: width as f32,
@@ -259,17 +267,48 @@ impl MidiSceneCache {
         self.scene = None;
     }
 
-    pub(super) fn get_or_build(
+    #[cfg(test)]
+    fn get_or_build(&mut self, key: SceneKey, notes: &[MidiNote]) -> (Arc<MidiScene>, bool) {
+        self.get_or_build_facts(key, notes.iter().map(note_fact))
+    }
+
+    #[cfg(test)]
+    fn get_or_build_facts(
         &mut self,
         key: SceneKey,
-        notes: &[MidiNote],
+        notes: impl ExactSizeIterator<Item = GroupNote>,
+    ) -> (Arc<MidiScene>, bool) {
+        let (scene, reused) = self.prepare_facts(key, notes);
+        self.retain(Arc::clone(&scene));
+        (scene, reused)
+    }
+
+    pub(super) fn prepare_facts(
+        &self,
+        key: SceneKey,
+        notes: impl ExactSizeIterator<Item = GroupNote>,
     ) -> (Arc<MidiScene>, bool) {
         if let Some(scene) = self.scene.as_ref().filter(|scene| scene.key() == key) {
             return (Arc::clone(scene), true);
         }
-        let scene = Arc::new(MidiScene::build(key, notes));
-        self.scene = Some(Arc::clone(&scene));
+        let scene = Arc::new(MidiScene::build_facts(key, notes));
         (scene, false)
+    }
+
+    pub(super) fn retain(&mut self, scene: Arc<MidiScene>) {
+        self.scene = Some(scene);
+    }
+}
+
+#[cfg(test)]
+fn note_fact(note: &MidiNote) -> GroupNote {
+    GroupNote {
+        id: note.id(),
+        start: note.start().raw(),
+        duration: note.duration().raw(),
+        pitch: note.pitch(),
+        channel: note.channel(),
+        velocity: note.velocity(),
     }
 }
 

@@ -1,6 +1,6 @@
 //! Canonical MIDI clip authoring commands and note parameter edits.
 use super::EditorView;
-use hex_project::{BeatTime, ClipId, Command, MidiSource, NoteId};
+use hex_project::{BeatTime, ClipId, Command, NoteId};
 use hex_session::service::Request;
 
 impl EditorView {
@@ -15,47 +15,55 @@ impl EditorView {
         if self.edit_pending()
             || self.project_generation != generation
             || self.selected_clip != Some(clip_id)
-            || self
-                .state
-                .as_ref()
-                .is_none_or(|state| state.revision != revision)
         {
             return;
         }
-        let Some(source) = self
-            .state
-            .as_ref()
-            .and_then(|state| state.project.midi_source(clip_id))
-        else {
+        let Some(state) = self.state.as_ref() else {
             return;
         };
-        let arrangement = self
-            .state
-            .as_ref()
-            .and_then(|state| state.project.midi_clip(clip_id));
-        if field == super::midi_source_controls::SourceField::ArrangementLength
-            && arrangement.is_none()
-        {
-            return;
-        }
-        let source_values = super::midi_source_controls::SourceValues::from_source(
-            source,
-            arrangement.map_or(0, |clip| clip.start().raw()),
-            arrangement.map_or(source.source_length().raw(), |clip| {
-                clip.arrangement_length().raw()
-            }),
-        );
-        let latest_note_end =
-            if field == super::midi_source_controls::SourceField::SourceLength && direction < 0 {
+        let Ok(Some((source_values, latest_note_end, placement))) = state.read_with(|snapshot| {
+            if snapshot.revision() != revision {
+                return None;
+            }
+            let project = snapshot.model();
+            let source = project.midi_source(clip_id)?;
+            let arrangement = project.midi_clip(clip_id);
+            if field == super::midi_source_controls::SourceField::ArrangementLength
+                && arrangement.is_none()
+            {
+                return None;
+            }
+            let values = super::midi_source_controls::SourceValues {
+                arrangement_start: arrangement.map_or(0, |clip| clip.start().raw()),
+                arrangement_length: arrangement.map_or(source.source_length().raw(), |clip| {
+                    clip.arrangement_length().raw()
+                }),
+                source_length: source.source_length().raw(),
+                source_start: source.source_start().raw(),
+                loop_start: source.loop_start().raw(),
+                loop_end: source.loop_end().raw(),
+                looping: source.looping(),
+            };
+            let latest_note_end = if field == super::midi_source_controls::SourceField::SourceLength
+                && direction < 0
+            {
                 source
                     .notes()
-                    .iter()
                     .filter_map(|note| note.start().raw().checked_add(note.duration().raw()))
                     .max()
                     .unwrap_or(0)
             } else {
                 0
             };
+            let placement = if arrangement.is_some() {
+                super::midi_source_controls::SourcePlacement::Arrangement
+            } else {
+                super::midi_source_controls::SourcePlacement::Session
+            };
+            Some((values, latest_note_end, placement))
+        }) else {
+            return;
+        };
         let step = self.midi_snap_grid.movement_step();
         let changed = match super::midi_source_controls::adjust(
             source_values,
@@ -71,31 +79,49 @@ impl EditorView {
                 return;
             }
         };
-        let Some(command) = self.state.as_ref().and_then(|state| {
-            super::midi_source_controls::edit_command(&state.project, clip_id, changed)
-        }) else {
-            return;
-        };
+        let command =
+            super::midi_source_controls::edit_command_for_placement(placement, clip_id, changed);
         self.enqueue(Request::Edit(command));
     }
 
-    pub(super) fn selected_midi_clip_data(&self) -> Option<ClipId> {
-        let state = self.state.as_ref()?;
-        let id = self.selected_clip?;
-        state.project.midi_source(id).map(|_| id)
+    pub(super) fn selected_midi_clip_data(
+        &self,
+    ) -> Result<Option<ClipId>, hex_session::snapshot_exports::SnapshotTransportError> {
+        let Some(id) = self.selected_clip else {
+            return Ok(None);
+        };
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| snapshot.model().midi_source(id).map(|_| id))
     }
 
-    pub(super) fn selected_arrangement_midi_clip_data(&self) -> Option<ClipId> {
-        let state = self.state.as_ref()?;
-        let id = self.selected_clip?;
-        state.project.midi_clip(id).map(|_| id)
+    pub(super) fn selected_arrangement_midi_clip_data(
+        &self,
+    ) -> Result<Option<ClipId>, hex_session::snapshot_exports::SnapshotTransportError> {
+        let Some(id) = self.selected_clip else {
+            return Ok(None);
+        };
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| snapshot.model().midi_clip(id).map(|_| id))
     }
 
     pub(super) fn add_midi_track(&mut self) {
         if self.edit_pending() {
             return;
         }
-        let count = self.state.as_ref().map_or(0, |s| s.project.tracks().len());
+        let count = match self.state.as_ref() {
+            Some(state) => match state.read_with(|snapshot| snapshot.model().tracks().len()) {
+                Ok(count) => count,
+                Err(_) => {
+                    self.error = Some("project read is unavailable · cannot add midi track".into());
+                    return;
+                }
+            },
+            None => 0,
+        };
         self.enqueue(Request::Edit(Command::AddMidiTrack {
             name: format!("track {}", count + 1),
         }));
@@ -110,17 +136,28 @@ impl EditorView {
                 Some("seek pending · wait for the cursor before adding a midi clip".into());
             return;
         }
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
-        let Some(track) = self.selected_track.and_then(|id| state.project.track(id)) else {
-            self.error = Some("select a track before adding a midi clip".into());
-            return;
-        };
         let frame = self.audio_status().map_or(self.offline_cursor, |s| {
             s.position.load(std::sync::atomic::Ordering::Relaxed)
         });
-        let Ok(beat) = state.project.tempo_map().frame_to_beat(frame) else {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let facts = match state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let track = self.selected_track.and_then(|id| project.track(id))?;
+            Some((track.id(), project.tempo().frame_to_beat(frame)))
+        }) {
+            Ok(facts) => facts,
+            Err(_) => {
+                self.error = Some("project read is unavailable · cannot add midi clip".into());
+                return;
+            }
+        };
+        let Some((track, beat)) = facts else {
+            self.error = Some("select a track before adding a midi clip".into());
+            return;
+        };
+        let Ok(beat) = beat else {
             self.error = Some("cursor exceeds the musical beat range".into());
             return;
         };
@@ -137,7 +174,7 @@ impl EditorView {
         self.piano_beat_span = BeatTime::from_raw(4 * BeatTime::ONE.raw());
         self.midi_selection.clear();
         self.enqueue(Request::Edit(Command::PlaceMidiClip {
-            track: track.id(),
+            track,
             start,
             length: BeatTime::from_raw(4 * BeatTime::ONE.raw()),
         }));
@@ -147,24 +184,28 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
-        let Some(item) = state.project.midi_clip(clip) else {
-            return;
-        };
         let Some((grid, viewport, width)) = self.nudge_grid_context(platform) else {
             return;
         };
-        let start = if grid.is_off() {
-            if right {
-                item.start().raw().checked_add(BeatTime::ONE.raw())
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Ok(Some((track, length, start))) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let item = project.midi_clip(clip)?;
+            let start = if grid.is_off() {
+                if right {
+                    item.start().raw().checked_add(BeatTime::ONE.raw())
+                } else {
+                    Some(item.start().raw().saturating_sub(BeatTime::ONE.raw()))
+                }
             } else {
-                Some(item.start().raw().saturating_sub(BeatTime::ONE.raw()))
-            }
-        } else {
-            grid.adjacent_beat(&state.project, item.start(), viewport, width, right)
-                .map(BeatTime::raw)
+                grid.adjacent_beat(&project, item.start(), viewport, width, right)
+                    .map(BeatTime::raw)
+            };
+            Some((item.track(), item.arrangement_length().raw(), start))
+        }) else {
+            return;
         };
         let Some(start) = start else {
             if grid.is_off() {
@@ -172,19 +213,10 @@ impl EditorView {
             }
             return;
         };
-        if start.checked_add(item.length().raw()).is_none() {
+        if start.checked_add(length).is_none() {
             self.error = Some("midi clip move exceeds the beat range".into());
             return;
         }
-        let Some(track) = state
-            .project
-            .tracks()
-            .iter()
-            .find(|t| t.midi_clips().iter().any(|item| item.id() == clip))
-            .map(|t| t.id())
-        else {
-            return;
-        };
         self.enqueue(Request::Edit(Command::MoveMidiClip {
             clip,
             track,
@@ -203,7 +235,7 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
-        let Some(clip) = self.selected_midi_clip_data() else {
+        let Ok(Some(clip)) = self.selected_midi_clip_data() else {
             return;
         };
         let notes = self.midi_selection.ids().to_vec();
@@ -226,15 +258,30 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
-        let Some(clip) = self.midi_clip() else {
+        let Some(clip) = self.selected_clip else {
             return;
         };
-        let mut notes = Vec::new();
-        if notes.try_reserve_exact(clip.notes().len()).is_err() {
-            self.error = Some("could not reserve select-all midi notes".into());
+        let Some(state) = self.state.as_ref() else {
             return;
-        }
-        notes.extend(clip.notes().iter().map(|note| note.id()));
+        };
+        let Ok(notes) = state.read_with(|snapshot| {
+            snapshot
+                .model()
+                .midi_source(clip)
+                .map(|source| collect_note_ids(source.notes().map(|note| note.id())))
+        }) else {
+            return;
+        };
+        let Some(notes) = notes else {
+            return;
+        };
+        let notes = match notes {
+            Ok(notes) => notes,
+            Err(error) => {
+                self.error = Some(error.into());
+                return;
+            }
+        };
         self.midi_note_gesture = None;
         self.midi_group_gesture = None;
         if let Err(error) = self.midi_selection.select_all(notes) {
@@ -254,12 +301,16 @@ impl EditorView {
         let Some(note) = self.midi_selection.primary() else {
             return;
         };
-        let Some(state) = self.state.as_ref() else {
+        let Some(revision) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.read_with(|snapshot| snapshot.revision()).ok())
+        else {
             return;
         };
         self.update_note_field(
             note,
-            state.revision,
+            revision,
             self.project_generation,
             NoteField::Onset(if right { 1 } else { -1 }),
         );
@@ -280,12 +331,16 @@ impl EditorView {
         let Some(note) = self.midi_selection.primary() else {
             return;
         };
-        let Some(state) = self.state.as_ref() else {
+        let Some(revision) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.read_with(|snapshot| snapshot.revision()).ok())
+        else {
             return;
         };
         self.update_note_field(
             note,
-            state.revision,
+            revision,
             self.project_generation,
             NoteField::Pitch(semitones),
         );
@@ -295,10 +350,14 @@ impl EditorView {
         &mut self,
         parameter: super::midi_group_drag::GroupParameter,
     ) {
-        let Some(clip) = self.selected_midi_clip_data() else {
+        let Ok(Some(clip)) = self.selected_midi_clip_data() else {
             return;
         };
-        let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
+        let Some(revision) = self
+            .state
+            .as_ref()
+            .and_then(|state| state.read_with(|snapshot| snapshot.revision()).ok())
+        else {
             return;
         };
         self.adjust_selected_group(
@@ -317,46 +376,33 @@ impl EditorView {
         {
             return;
         }
-        let Some(clip_id) = self.selected_midi_clip_data() else {
+        let Ok(Some(clip_id)) = self.selected_midi_clip_data() else {
             return;
+        };
+        let generation = self.project_generation;
+        let selected = self.midi_selection.shared_ids();
+        let Ok(Some(facts)) = self.selected_group_facts(clip_id, &selected) else {
+            return;
+        };
+        let revision = facts.revision;
+        let clip_length = facts.source_length;
+        let originals = match facts.notes {
+            Ok(notes) => notes,
+            Err(error) => {
+                self.error = Some(error.into());
+                return;
+            }
         };
         let Some(state) = self.state.as_ref() else {
             return;
         };
-        let revision = state.revision;
-        let generation = self.project_generation;
-        let clip_length = match state.project.midi_source(clip_id) {
-            Some(clip) => clip.source_length().raw(),
-            None => return,
-        };
-        let selected = self.midi_selection.shared_ids();
-        let mut originals = Vec::new();
-        if originals.try_reserve_exact(selected.len()).is_err() {
-            self.error = Some("could not reserve selected midi notes".into());
-            return;
-        }
-        let Some(clip) = state.project.midi_source(clip_id) else {
+        let Ok(current_revision) = state.read_with(|snapshot| snapshot.revision()) else {
             return;
         };
-        for note in clip.notes() {
-            if selected.binary_search(&note.id()).is_ok() {
-                originals.push(super::midi_group_drag::GroupNote {
-                    id: note.id(),
-                    start: note.start().raw(),
-                    duration: note.duration().raw(),
-                    pitch: note.pitch(),
-                    channel: note.channel(),
-                    velocity: note.velocity(),
-                });
-            }
-        }
         if originals.len() != selected.len()
             || self.project_generation != generation
-            || self
-                .state
-                .as_ref()
-                .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || current_revision != revision
+            || self.selected_midi_clip_data() != Ok(Some(clip_id))
             || self.edit_pending()
         {
             self.error = Some("selected midi notes changed · nudge canceled".into());
@@ -393,56 +439,40 @@ impl EditorView {
         if self.edit_pending()
             || self.midi_selection.len() < 2
             || self.midi_selection.len() > hex_project::MAX_NOTES
-            || self.selected_midi_clip_data() != Some(expected_clip)
+            || self.selected_midi_clip_data() != Ok(Some(expected_clip))
             || self.project_generation != expected_generation
             || self.midi_selection.epoch() != expected_selection_epoch
-            || self
-                .state
-                .as_ref()
-                .is_none_or(|state| state.revision != expected_revision)
         {
             return;
         }
         let clip_id = expected_clip;
-        let Some(state) = self.state.as_ref() else {
-            return;
-        };
         let revision = expected_revision;
         let generation = expected_generation;
         let selection_epoch = expected_selection_epoch;
-        let clip_length = match state.project.midi_source(clip_id) {
-            Some(clip) => clip.source_length().raw(),
-            None => return,
-        };
         let selected = self.midi_selection.shared_ids();
-        let Some(clip) = state.project.midi_source(clip_id) else {
+        let Ok(Some(facts)) = self.selected_group_facts(clip_id, &selected) else {
             return;
         };
-        let originals = match super::midi_group_drag::capture_selected_notes(
-            clip.notes()
-                .iter()
-                .map(|note| super::midi_group_drag::GroupNote {
-                    id: note.id(),
-                    start: note.start().raw(),
-                    duration: note.duration().raw(),
-                    pitch: note.pitch(),
-                    channel: note.channel(),
-                    velocity: note.velocity(),
-                }),
-            &selected,
-        ) {
+        if facts.revision != revision {
+            return;
+        }
+        let clip_length = facts.source_length;
+        let originals = match facts.notes {
             Ok(originals) => originals,
             Err(error) => {
                 self.error = Some(error.into());
                 return;
             }
         };
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Ok(current_revision) = state.read_with(|snapshot| snapshot.revision()) else {
+            return;
+        };
         if self.project_generation != generation
-            || self
-                .state
-                .as_ref()
-                .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || current_revision != revision
+            || self.selected_midi_clip_data() != Ok(Some(clip_id))
             || self.midi_selection.epoch() != selection_epoch
             || self.midi_selection.shared_ids().as_ref() != selected.as_ref()
             || self.edit_pending()
@@ -465,12 +495,15 @@ impl EditorView {
                 return;
             }
         };
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Ok(current_revision) = state.read_with(|snapshot| snapshot.revision()) else {
+            return;
+        };
         if self.project_generation != generation
-            || self
-                .state
-                .as_ref()
-                .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || current_revision != revision
+            || self.selected_midi_clip_data() != Ok(Some(clip_id))
             || self.midi_selection.epoch() != selection_epoch
             || self.midi_selection.shared_ids().as_ref() != selected.as_ref()
             || self.edit_pending()
@@ -484,6 +517,36 @@ impl EditorView {
         }));
     }
 
+    fn selected_group_facts(
+        &self,
+        clip: ClipId,
+        selected: &[NoteId],
+    ) -> Result<Option<MidiGroupFacts>, hex_session::snapshot_exports::SnapshotTransportError> {
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let source = project.midi_source(clip)?;
+            let source_length = source.source_length().raw();
+            let notes = source
+                .notes()
+                .map(|note| super::midi_group_drag::GroupNote {
+                    id: note.id(),
+                    start: note.start().raw(),
+                    duration: note.duration().raw(),
+                    pitch: note.pitch(),
+                    channel: note.channel(),
+                    velocity: note.velocity(),
+                });
+            Some(MidiGroupFacts {
+                revision: snapshot.revision(),
+                source_length,
+                notes: super::midi_group_drag::capture_selected_notes(notes, selected),
+            })
+        })
+    }
+
     pub(super) fn edit_pending(&self) -> bool {
         self.gain_recorder.blocks_edits()
             || self.opening_project
@@ -493,11 +556,19 @@ impl EditorView {
             || self.device_gesture_pending()
     }
 
-    pub(super) fn midi_clip(&self) -> Option<&MidiSource> {
-        self.state
-            .as_ref()?
-            .project
-            .midi_source(self.selected_clip?)
+    pub(super) fn with_midi_source<R>(
+        &self,
+        read: impl for<'a> FnOnce(
+            hex_session::snapshot_exports::ui_consumers::SnapshotMidiSourceRead<'a>,
+        ) -> R,
+    ) -> Result<Option<R>, hex_session::snapshot_exports::SnapshotTransportError> {
+        let Some(clip) = self.selected_clip else {
+            return Ok(None);
+        };
+        let Some(state) = self.state.as_ref() else {
+            return Ok(None);
+        };
+        state.read_with(|snapshot| snapshot.model().midi_source(clip).map(read))
     }
 
     pub(super) fn update_note_field(
@@ -511,27 +582,48 @@ impl EditorView {
             || self.midi_selection.primary() != Some(note_id)
             || self.edit_pending()
             || self.project_generation != generation
-            || self.state.as_ref().is_none_or(|s| s.revision != revision)
         {
             return;
         }
-        let Some((old_start, old_duration, old_pitch, channel, old_velocity)) = self
-            .state
-            .as_ref()
-            .and_then(|s| s.project.midi_note(note_id))
-            .map(|n| {
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Ok((current, note, source)) = state.read_with(|snapshot| {
+            let project = snapshot.model();
+            let note = project.midi_note(note_id).map(|note| {
                 (
-                    n.start().raw(),
-                    n.duration().raw(),
-                    n.pitch(),
-                    n.channel(),
-                    n.velocity(),
+                    note.start().raw(),
+                    note.duration().raw(),
+                    note.pitch(),
+                    note.channel(),
+                    note.velocity(),
                 )
-            })
-        else {
+            });
+            let source = self.selected_clip.and_then(|id| {
+                project.midi_source(id).map(|source| {
+                    (
+                        source.source_length().raw(),
+                        source.notes().any(|note| note.id() == note_id),
+                    )
+                })
+            });
+            (snapshot.revision() == revision, note, source)
+        }) else {
+            return;
+        };
+        if !current {
+            return;
+        }
+        let Some((old_start, old_duration, old_pitch, channel, old_velocity)) = note else {
             self.midi_selection.clear();
             return;
         };
+        let Some((source_length, owns_note)) = source else {
+            return;
+        };
+        if !owns_note {
+            return;
+        }
         let mut start = old_start;
         let mut duration = old_duration;
         let mut pitch = old_pitch;
@@ -552,9 +644,7 @@ impl EditorView {
                         .saturating_sub(step)
                         .max(self.midi_snap_grid.minimum_gate().min(duration))
                 } else {
-                    let available = self
-                        .midi_clip()
-                        .map_or(0, |clip| clip.source_length().raw().saturating_sub(start));
+                    let available = source_length.saturating_sub(start);
                     duration.saturating_add(step).min(available)
                 }
             }
@@ -562,15 +652,9 @@ impl EditorView {
                 velocity = (i16::from(velocity) + delta).clamp(1, 127) as u8
             }
         }
-        let Some(clip) = self.midi_clip() else {
-            return;
-        };
-        if !clip.notes().iter().any(|item| item.id() == note_id) {
-            return;
-        }
         if start
             .checked_add(duration)
-            .is_none_or(|end| end > clip.source_length().raw())
+            .is_none_or(|end| end > source_length)
         {
             self.error = Some("edit would move the note outside its clip".into());
             return;
@@ -584,6 +668,23 @@ impl EditorView {
             velocity,
         }));
     }
+}
+
+struct MidiGroupFacts {
+    revision: u64,
+    source_length: u64,
+    notes: Result<Vec<super::midi_group_drag::GroupNote>, &'static str>,
+}
+
+fn collect_note_ids(
+    ids: impl ExactSizeIterator<Item = NoteId>,
+) -> Result<Vec<NoteId>, &'static str> {
+    let mut notes = Vec::new();
+    notes
+        .try_reserve_exact(ids.len())
+        .map_err(|_| "could not reserve select-all midi notes")?;
+    notes.extend(ids);
+    Ok(notes)
 }
 
 #[derive(Clone, Copy)]
