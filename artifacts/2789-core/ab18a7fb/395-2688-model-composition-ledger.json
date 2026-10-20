@@ -1,0 +1,86 @@
+{
+  "base": "0d8ea48b411ed3ecdf9b435fc30b2e2c74d9cf35",
+  "source": "268821da3cd205cebeba710be6883ab745577d56",
+  "paths": [
+    {
+      "path": "crates/hex-audio/tests/audio_preview_allocation.rs",
+      "before": "19254559047cdab93238eb9d0cd79543bdbafec6f203efd3fc4a3807c205cd61",
+      "frozen_after": "4a01e490c98d2c31a043d206c28ee4d206206f271e5671ec98d1c274ad3f29a4",
+      "integration_before": "19254559047cdab93238eb9d0cd79543bdbafec6f203efd3fc4a3807c205cd61",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "4a01e490c98d2c31a043d206c28ee4d206206f271e5671ec98d1c274ad3f29a4"
+    },
+    {
+      "path": "crates/hex-project/README.md",
+      "before": "28664d8965387814076bd866718b4503f984a4ac672c709b2ff635b92408b361",
+      "frozen_after": "623c1eb2fd0a9467fe6452252397d3cbf6c41bb307a0b0ead7715732400bc3e7",
+      "integration_before": "6a1a3908cd80bfd41bc34580c88850b03aeecd7abec2fcff200b70e4379268ee",
+      "method": "three-way-clean",
+      "integration_after": "f704ee3ecf331fb59cdc15ec85c7eadb773d3e34f4949b3ea3c8d316e278d734"
+    },
+    {
+      "path": "crates/hex-project/src/audio_edit.rs",
+      "before": "cd560cdbeed1319baefbc80a37ca2073cac57f8cc676fff8dd82184558f9683d",
+      "frozen_after": "e029b507d7f53a92e6ed5e1b937a707f89e976ccf318bf5e1f4443363d915235",
+      "integration_before": "cd560cdbeed1319baefbc80a37ca2073cac57f8cc676fff8dd82184558f9683d",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "e029b507d7f53a92e6ed5e1b937a707f89e976ccf318bf5e1f4443363d915235"
+    },
+    {
+      "path": "crates/hex-project/src/audio_event_read.rs",
+      "before": null,
+      "frozen_after": "d60bf396250427183b623071bff8996f81fc9d8759698536a9efa627078c9893",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "d60bf396250427183b623071bff8996f81fc9d8759698536a9efa627078c9893"
+    },
+    {
+      "path": "crates/hex-project/src/audio_event_read/events.rs",
+      "before": null,
+      "frozen_after": "b8c25a619e44bf8ffc2f69089b9aea345cd28886eabede3ba070c84844a1cdee",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "b8c25a619e44bf8ffc2f69089b9aea345cd28886eabede3ba070c84844a1cdee"
+    },
+    {
+      "path": "crates/hex-project/src/audio_events.rs",
+      "before": "85f896ec5787a9a40049d3a0be6a6dd5e3237f9ae1e5a369969e795ce7abb553",
+      "frozen_after": "01b3eba2e01ca55f7ad12b87f2e8224b72a230c41ee0c9334d701c6db4ab9405",
+      "integration_before": "85f896ec5787a9a40049d3a0be6a6dd5e3237f9ae1e5a369969e795ce7abb553",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "01b3eba2e01ca55f7ad12b87f2e8224b72a230c41ee0c9334d701c6db4ab9405"
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview.rs",
+      "before": "bbdf0b1582f2ad55acc110f971049571123f3f7c46768a7965d0cd0f7d46163e",
+      "frozen_after": "a325fc0370a765b0a3eda1771f143dda77dadf654e4f2296782dc5f20c7aea33",
+      "integration_before": "bbdf0b1582f2ad55acc110f971049571123f3f7c46768a7965d0cd0f7d46163e",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "a325fc0370a765b0a3eda1771f143dda77dadf654e4f2296782dc5f20c7aea33"
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview/plan.rs",
+      "before": "c9cb88f2d7d29a69ccf936c3077852a239d37cd2045735bc9995356e6b41aae4",
+      "frozen_after": "dcb1a4a6485e4a3bcc7b486e7bdedb449c5ab1900d2d13ad2b6976940bcdc6a8",
+      "integration_before": "c9cb88f2d7d29a69ccf936c3077852a239d37cd2045735bc9995356e6b41aae4",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "dcb1a4a6485e4a3bcc7b486e7bdedb449c5ab1900d2d13ad2b6976940bcdc6a8"
+    },
+    {
+      "path": "crates/hex-project/src/lib.rs",
+      "before": "6d19edeb945680f41d7c6621d3d225be0eb37cd04975e10469bf5f6a95db5470",
+      "frozen_after": "3eaaabeea366b20ffdc3aca9a5da131d9a0487131ebf9033d9b671e9694e5bce",
+      "integration_before": "55e71628b60b676d5b5f8772e8b4cea7dfb0e33cd9ae9cc026e1e4e3324fd8f3",
+      "method": "three-way-clean",
+      "integration_after": "c42866072cca4bea49affbc4597c1aad445aa6c59d9ad2f9294bb7e775121f55"
+    },
+    {
+      "path": "crates/hex-project/tests/audio_event_read.rs",
+      "before": null,
+      "frozen_after": "9c1d0690985ddbf99ba403b50d9052045fb01f4ae3e8d0f9210366141586c1f3",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "9c1d0690985ddbf99ba403b50d9052045fb01f4ae3e8d0f9210366141586c1f3"
+    }
+  ]
+}

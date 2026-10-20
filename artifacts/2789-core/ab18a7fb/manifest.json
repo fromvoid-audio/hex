@@ -1,0 +1,62 @@
+[
+  {
+    "path": "artifacts/2789-core/ab18a7fb/source-manifest.json",
+    "bytes": 142068,
+    "sha256": "d276bfc442d0e4bad1972592cf679c00f5af4c8500fbc2c7c10c1f05068defab"
+  },
+  {
+    "path": "artifacts/2789-core/ab18a7fb/395-b05-native-model2688-library-v1/summary.json",
+    "bytes": 183060,
+    "sha256": "7d432fb43d7dfbf70a9ff1d6bb3c7b207668b31fddefea87670d81199e0bbcfb"
+  },
+  {
+    "path": "artifacts/2789-core/ab18a7fb/395-b05-native-model2688-library-v1/target-handoff-clean.log",
+    "bytes": 666,
+    "sha256": "ef2067a4a9642989447e2e38387c26e4464ceaf07fc288cfb89d0115443c5f06"
+  },
+  {
+    "path": "artifacts/2789-core/ab18a7fb/395-b05-native-model2688-library-v1/01-core-library-check.log",
+    "bytes": 1099,
+    "sha256": "244a312ff8f54dc8dff05ff13687be156dfe7e5061951dbc6d4db18535d6f8fe"
+  },
+  {
+    "path": "artifacts/2789-core/ab18a7fb/395-b05-e9-engine-owning-controls-v5/summary.json",
+    "bytes": 181434,
+    "sha256": "2ed7d5a11f725a7c0a80873478fb519bcfa5ae68839099d526aa7dd4171a0cfc"
+  },
+  {
+    "path": "artifacts/2789-core/ab18a7fb/395-b05-e9-engine-owning-controls-v5/01-engine-owning-controls.log",
+    "bytes": 9200,
+    "sha256": "a8d0f6b2c2bb6711466ff50bb93ac11b327f367878c7d111f1dfd5f020aaabfd"
+  },
+  {
+    "path": "artifacts/2789-core/ab18a7fb/395-b05-e9-engine-owning-controls-v5/target-handoff-clean.log",
+    "bytes": 7980,
+    "sha256": "bce2ed2ef5ad2ff691eaad57fba6b1edd62df74e2e92a2283d63bddbfb97d0eb"
+  },
+  {
+    "path": "artifacts/2789-core/ab18a7fb/395-493d-7bba-composition-ledger.json",
+    "bytes": 6706,
+    "sha256": "2d96c667b92834094acc50f7799c2cd40e7923fd93640b2d22603de3038d765a"
+  },
+  {
+    "path": "artifacts/2789-core/ab18a7fb/395-0d8-model-composition-ledger.json",
+    "bytes": 7841,
+    "sha256": "a016cf8890b353fcfe5ee617d8f9523a005ea00eecf462188611931df3cf2288"
+  },
+  {
+    "path": "artifacts/2789-core/ab18a7fb/395-2688-model-composition-ledger.json",
+    "bytes": 4569,
+    "sha256": "d9b2a18986b69b91825f0cf0271639bd576f8d46fe176091f6587271a2cf64a3"
+  },
+  {
+    "path": "artifacts/2789-core/ab18a7fb/395-b05-native-model2688-library-v1-terminal.json",
+    "bytes": 82068,
+    "sha256": "31e5b51036255994d8f0ce28ae3b5ec652929a91e4f8619ea5d09265316839f7"
+  },
+  {
+    "path": "artifacts/2789-core/ab18a7fb/395-b05-e9-engine-owning-controls-v5-terminal.json",
+    "bytes": 79998,
+    "sha256": "faae5d1be1930f3313aeee96a6d5f1e19e45871e67705009dde6a0ed9e32a8d0"
+  }
+]

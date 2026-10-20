@@ -1,0 +1,112 @@
+{
+  "base": "493d348ec20d490de9310080d04963ddcb552437",
+  "source": "7bba01953a19d3ba29de36facbd0a37307d69dd6",
+  "paths": [
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport.rs",
+      "before": "47e2fcfe3015a82fe51a95c1f464f0f1421d36e98dce519c95fe9db1db7ec0c4",
+      "frozen_after": "521d54df52887ec36ecc72b67993a9975afc780b72cceb7a9a1517dc71c26928",
+      "integration_before": "521d54df52887ec36ecc72b67993a9975afc780b72cceb7a9a1517dc71c26928",
+      "method": "already-exact",
+      "integration_after": "521d54df52887ec36ecc72b67993a9975afc780b72cceb7a9a1517dc71c26928"
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport/worker_startup.rs",
+      "before": "29fadd20abb17c61b46772361f1eed4cf405545312dcbc01b0def8c58815e120",
+      "frozen_after": "9f7c01bc8a24e3092571bef333a65527f100daee074ae8d819cb3003bb860fc2",
+      "integration_before": "9f7c01bc8a24e3092571bef333a65527f100daee074ae8d819cb3003bb860fc2",
+      "method": "already-exact",
+      "integration_after": "9f7c01bc8a24e3092571bef333a65527f100daee074ae8d819cb3003bb860fc2"
+    },
+    {
+      "path": "crates/hex-session/src/service.rs",
+      "before": "21f3cade39d49359fa97760180967eb74bda4dbeeea97bf37c749e7dc749e62e",
+      "frozen_after": "3fe24629d7368fae92ccccc81acdcd64e7cc0bd35f2c3ee9ed647267ffe2d180",
+      "integration_before": "4ecb3a0f73ee8132ad4b302142f8a9e30249f903bf14c879f17d323153be416b",
+      "method": "three-way-clean",
+      "integration_after": "4ecb3a0f73ee8132ad4b302142f8a9e30249f903bf14c879f17d323153be416b"
+    },
+    {
+      "path": "crates/hex-session/src/service/audio_sink.rs",
+      "before": "16d6a1507313f03cd3dc64d81e5648aa6a682c9a25d7a3c6dddbeb30b6ee1947",
+      "frozen_after": "35511ae8beb2f81f009f86d118dca03ef4e357e6ca4330ab5fc1bd6e63e1688a",
+      "integration_before": "35511ae8beb2f81f009f86d118dca03ef4e357e6ca4330ab5fc1bd6e63e1688a",
+      "method": "already-exact",
+      "integration_after": "35511ae8beb2f81f009f86d118dca03ef4e357e6ca4330ab5fc1bd6e63e1688a"
+    },
+    {
+      "path": "crates/hex-session/src/service/source_events.rs",
+      "before": null,
+      "frozen_after": "8cb33ba9f8d5506713c8162f7d88027967befdefd90d23c03d4d2e2abc6f5d14",
+      "integration_before": "8cb33ba9f8d5506713c8162f7d88027967befdefd90d23c03d4d2e2abc6f5d14",
+      "method": "already-exact",
+      "integration_after": "8cb33ba9f8d5506713c8162f7d88027967befdefd90d23c03d4d2e2abc6f5d14"
+    },
+    {
+      "path": "crates/hex-session/src/service/worker_startup.rs",
+      "before": "9130d23682dc59f929dd2b4589697f45fd33b9645e1626be8d39f477ae7453eb",
+      "frozen_after": "d0d2b3617e3a66ea9ada1eb8e7210df3693f329f8000a304d8361617acb8f369",
+      "integration_before": "d0d2b3617e3a66ea9ada1eb8e7210df3693f329f8000a304d8361617acb8f369",
+      "method": "already-exact",
+      "integration_after": "d0d2b3617e3a66ea9ada1eb8e7210df3693f329f8000a304d8361617acb8f369"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports.rs",
+      "before": "123120913e6cf33829c0f79651d177624eb831dc91aafaafaba914e120eef0fe",
+      "frozen_after": "eb66f5d0e88fb07c9f5e82972e5c9dc4ca7840cf1442a1e368e0f401e4775b68",
+      "integration_before": "eb66f5d0e88fb07c9f5e82972e5c9dc4ca7840cf1442a1e368e0f401e4775b68",
+      "method": "already-exact",
+      "integration_after": "eb66f5d0e88fb07c9f5e82972e5c9dc4ca7840cf1442a1e368e0f401e4775b68"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/family.rs",
+      "before": "8f43cc62c1ab4ebaca480026d428414d0dfc96ebfee599c690dc92cd38d1c725",
+      "frozen_after": "35fce48c045afc9c02afb4e6d576f0b1b49a85bef2bf65992fa02965623529a9",
+      "integration_before": "35fce48c045afc9c02afb4e6d576f0b1b49a85bef2bf65992fa02965623529a9",
+      "method": "already-exact",
+      "integration_after": "35fce48c045afc9c02afb4e6d576f0b1b49a85bef2bf65992fa02965623529a9"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/model_read/ui_consumers.rs",
+      "before": "820f2d6778c98f47521c076efd1d41dbda19cfb3022ce9e779f66d0c4240eef1",
+      "frozen_after": "bf7b574852e8dca9c8d1b675f7b21f3cb374b0b9658f0e17a543952a866f3249",
+      "integration_before": "f5cbdc55fe87c56b34c50ff7951b36b3f08cfb2148c99cf3490d3766fb168eb0",
+      "method": "three-way-conflict",
+      "integration_after": "e4ac978c8eec862e196c6f63a6827fc79d68f383d36cafa5fb3563a5d9321a01"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/native_editor_profile.rs",
+      "before": null,
+      "frozen_after": "de5738b7ac2feb5786f110539d44d3220c37371ec6d2ccda92e1bc93f1e29d3c",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "de5738b7ac2feb5786f110539d44d3220c37371ec6d2ccda92e1bc93f1e29d3c"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/source_queue.rs",
+      "before": "62c3e7f91849a6c5726827929b55aed5b0b863764ee297096515d52a6d07ad21",
+      "frozen_after": "f60107d967d10af6dc303a3e18453dd0ff4a826f33e14a2664d7ae3c27a3957e",
+      "integration_before": "62c3e7f91849a6c5726827929b55aed5b0b863764ee297096515d52a6d07ad21",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "f60107d967d10af6dc303a3e18453dd0ff4a826f33e14a2664d7ae3c27a3957e"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/transport.rs",
+      "before": "4d74e671009aab416fc29637aee21d44ae86cf6d2c4846e743493daa85948fa7",
+      "frozen_after": "a12d6c6c6ff6b34f7183dddbdc5a5cbaff5b81bd90e963b7b1835e8ecc99e760",
+      "integration_before": "4d74e671009aab416fc29637aee21d44ae86cf6d2c4846e743493daa85948fa7",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "a12d6c6c6ff6b34f7183dddbdc5a5cbaff5b81bd90e963b7b1835e8ecc99e760"
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/worker_control.rs",
+      "before": "b75d37fcf9f81ae0d68adb6841a8ed8fdb1a9036c042cb8e3b399a85da8b573b",
+      "frozen_after": "4d4ed65513c1a88923179310adaefca85603199890f3a664c05634e2d4c50693",
+      "integration_before": "b75d37fcf9f81ae0d68adb6841a8ed8fdb1a9036c042cb8e3b399a85da8b573b",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "4d4ed65513c1a88923179310adaefca85603199890f3a664c05634e2d4c50693"
+    }
+  ],
+  "query_conflict_disposition": "Preserve all three newer e9-only hunks: SnapshotDeviceRead import, has_assets, actual ordered_device_chain. Increment44c queries retained; no API deletion.",
+  "initial_tool_diagnostic": "merge-file returned3 for THREE conflicts, not fatal failure; initial safety assertion stopped before writing query output. Prior paths already applied. Corrected helper admits conflict counts<128; source ledger records re-observed exact paths."
+}

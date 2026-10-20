@@ -1,0 +1,3440 @@
+{
+  "source": "ab18a7fb50bd8641c02818ab16fe7d35f36f8234",
+  "tree": "252b90a8fad077242ede6c5ec5220740ec0ff715",
+  "parents": [
+    "b05a9eaa61edc60f711acdc06d907f7525d6197c",
+    "e9a6437d1a1a36868ad9e162ae0a5518086c9de9",
+    "7bba01953a19d3ba29de36facbd0a37307d69dd6",
+    "268821da3cd205cebeba710be6883ab745577d56"
+  ],
+  "ref": "refs/heads/evidence/hex395-modern-main-core-336-source",
+  "base": "b05a9eaa61edc60f711acdc06d907f7525d6197c",
+  "scope": "PARTIAL CORE ONLY; UI-uncomposed; no shipping/full/native qualification",
+  "library_run": "395-b05-native-model2688-library-v1",
+  "library_session": 45131,
+  "library_pid_pgid": 2913848,
+  "library_exit": 0,
+  "library_duration": 13.889,
+  "preceding_engine_controls": {
+    "run": "395-b05-e9-engine-owning-controls-v5",
+    "pass": 63,
+    "fail": 0,
+    "ignored": 1,
+    "scope": "preceding model continuation; no transfer of full qualification"
+  },
+  "reservations": {
+    "local": "reserved three-method Session ui_consumers child preview facade only; UI preview/audio-editor consumers on isolated child",
+    "merger": "Engine core composition and fixtures; no edits to Local facade child",
+    "native": "published new controls separate intake; active Initial/producer WIP excluded"
+  },
+  "files": [
+    {
+      "path": "Cargo.lock",
+      "git_blob": "952d694054b6350ebc05808587c4c1b0a9397e87",
+      "sha256": "84e83b4c73cee0c91297111ea4de83022da962b8d0d191f2e8a1bf47b994ec14",
+      "bytes": 193973
+    },
+    {
+      "path": "crates/hex-audio/Cargo.toml",
+      "git_blob": "3734bf27156a198cca39c992f6d76fa89df2529c",
+      "sha256": "ea50f2123048e339e0bb037405cf728fa91ee529df66fbd676c91287ac301a65",
+      "bytes": 924
+    },
+    {
+      "path": "crates/hex-audio/build.rs",
+      "git_blob": "2d3f5b1559dc094e2b9d6d0617a81d1efb7c6ea6",
+      "sha256": "093ef7ba3acb00390756cb23de8658d0e77cd02bb203d85afbd29456b5fdfe0e",
+      "bytes": 7399
+    },
+    {
+      "path": "crates/hex-audio/build_support/carrier_gate.rs",
+      "git_blob": "d4436ccf82fb20355a40da5cce6e82bc77eed311",
+      "sha256": "7f0f18bd452a48bf701aaac82de59ab50029a6858037ca2a7eb7e40d425dbe82",
+      "bytes": 3361
+    },
+    {
+      "path": "crates/hex-audio/examples/profile_eq8_audition.rs",
+      "git_blob": "a328d5528695ed2bc067e2b805214c10256c2f4c",
+      "sha256": "c3b834017c8693fb923f8e694bba13d575cce650d7a688339a357cbfa919af8d",
+      "bytes": 9118
+    },
+    {
+      "path": "crates/hex-audio/examples/profile_eq8_spectrum.rs",
+      "git_blob": "2071ae7c439f00fc210440969458bfc2c217f991",
+      "sha256": "cc19e76e5bdf4383e58e9f226fdcd4c0967b9e1329ca78389ac4d224127d9ab6",
+      "bytes": 8673
+    },
+    {
+      "path": "crates/hex-audio/examples/profile_session_routes.rs",
+      "git_blob": "b36eee0ac6c2734100025f0c4a5a04b997683caa",
+      "sha256": "f78910bf1b5005b9485e52c565f9e6be602bdb34940e30463850da0719d1d96b",
+      "bytes": 7717
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody.rs",
+      "git_blob": "1823cee582fbc4034cb664e785775c1aa6cf0cde",
+      "sha256": "bfc9612af2353dfcb495a1674f7050d633b63d3a5dbdf986486b14991ef98488",
+      "bytes": 65258
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/custody_mutex.rs",
+      "git_blob": "3e2c6675ebf254f7be2a51d8284d1d9be1e67cf4",
+      "sha256": "2720624b69eda78eb8e3a0ea9e84782fcd5d7f953101924d20309c23cf975211",
+      "bytes": 2829
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/custody_mutex/tests.rs",
+      "git_blob": "10902d138608f222e84db419ade88b71f34cc68e",
+      "sha256": "faf6d9a966ce2b1f9a185bf1488f5fa54c9d85de4fb095b041899664f575fa15",
+      "bytes": 4741
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible.rs",
+      "git_blob": "4c7dfd3a43598a2b8f295365dbc44310aeed86ec",
+      "sha256": "73e799646a3413848e26bfb0a128608918eed740fedc076609d1ccef4aa0a651",
+      "bytes": 56473
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/native_birth_tests.rs",
+      "git_blob": "9f8d2b1ec9a050624e174118928e01835edc126a",
+      "sha256": "a7401b116a8604b368a5e7caf205c78de54c8583e6337217cc290a1b709ec606",
+      "bytes": 6480
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/pages.rs",
+      "git_blob": "5ea8a817bff1c6e6ba9a8c0b059b4610e8ef0966",
+      "sha256": "f3123960635702e66e89a5318ad53129aafdfdf962cf82d2237d9912b29a1d22",
+      "bytes": 7290
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/preparation.rs",
+      "git_blob": "f9a1c549e132f80873a4222cbfb61e65687d69c5",
+      "sha256": "1d9c36f0143edd0bcf72efe22aa315bf4fa3ebcbce9d02d1cfb75efa15a89e81",
+      "bytes": 17658
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication.rs",
+      "git_blob": "dff2f355eb9554df83b77d6fa131f31f8da032ce",
+      "sha256": "22b01d69b7c064039437fba6f0311d660aad941ea96461a8c76f3e0296d41bba",
+      "bytes": 47592
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/disposal.rs",
+      "git_blob": "5f295b60dc36a0f5a454ff0cb35c63e00a252095",
+      "sha256": "f684eec56415731dd182cf4a611df12fec48f613ddd3759b46f1c0d9068bd3e3",
+      "bytes": 20469
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/native_host.rs",
+      "git_blob": "ffa3b70b3d1d8b86aca41318f37e18bb6c5a60d6",
+      "sha256": "2a3934ad807a9e1c082f051b623136bbcd73fd29f4c39d1930eb517edc9256f5",
+      "bytes": 25059
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/native_host/tests.rs",
+      "git_blob": "8657bdf7af8dab514d45277a8a18639881fc6336",
+      "sha256": "565aab8b3d35bbdee9432ffea2baf07422d9183d0c044c9b8dafa4e504fc077f",
+      "bytes": 32718
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/preparation.rs",
+      "git_blob": "ae0fe394e34ca98b45b910cd1147fcc26aa890f6",
+      "sha256": "e6b0fae88c4154278e62a139288a83d367fd79c29d87945486b3520a184c22f1",
+      "bytes": 63023
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/resources.rs",
+      "git_blob": "1d436b0035ff0623f8bc3fd4e9fa385f5f3c0c45",
+      "sha256": "dea45de74e00feb151c061aa27266fd71dceb549c7e5766c2bbf1c4af289bcdf",
+      "bytes": 6649
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/eligible/publication/tests.rs",
+      "git_blob": "4006f3373c69ed2a32db0c3bdc175e5a50c9f05f",
+      "sha256": "c22441a93fb935dfdc6e2e575f6b376fe3f4a16f084ecfae3b8991d54ec2c9d9",
+      "bytes": 27486
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/inline_lock_tests.rs",
+      "git_blob": "979b9b73cb3bdb58af204cd8c0afaea89acfe051",
+      "sha256": "b155447b9a5f85232d41c42af622a9360ef6f59580c94e9fe82eedf430a1f5d3",
+      "bytes": 4644
+    },
+    {
+      "path": "crates/hex-audio/src/candidate_custody/root_fields.rs",
+      "git_blob": "b26d23fdceafe906f3c4f45764fa999dcecdde00",
+      "sha256": "f306367e1de05995c6c21846e988700df994e15ea02554ffff37ba656b3bfcfd",
+      "bytes": 9111
+    },
+    {
+      "path": "crates/hex-audio/src/device.rs",
+      "git_blob": "850a7269ef640af734d2bd2b8e4c90c8dbd75a64",
+      "sha256": "fa395da88ab41020eb968b1195e9aab43a75877fb4cb631051c5b2e1e8befdc2",
+      "bytes": 46400
+    },
+    {
+      "path": "crates/hex-audio/src/gain_recording.rs",
+      "git_blob": "0033ae60103f797461735c9abfd8f24805f90b32",
+      "sha256": "3798f2c7ef0e36325bcc34fd4873a561ccd3a2838ea51b4b1deda1dc91c5917c",
+      "bytes": 18210
+    },
+    {
+      "path": "crates/hex-audio/src/gain_recording/tests.rs",
+      "git_blob": "6b9af5c83817be171006193c8046354dcf8b1af0",
+      "sha256": "521b7ed3b60ada3aff839558cc5828db7040ae6ae24298d3106f50a5aa518c8e",
+      "bytes": 8973
+    },
+    {
+      "path": "crates/hex-audio/src/lib.rs",
+      "git_blob": "c35ffdc55a27ee0ddf2eb0815d269488d5c2b484",
+      "sha256": "3872765a0736850c619b7d6df129d9e6ee312e1a735c4690c7fee9df91cf6e88",
+      "bytes": 8674
+    },
+    {
+      "path": "crates/hex-audio/src/lifecycle.rs",
+      "git_blob": "614fe1684b62aac1ed18fbea5dda5dc277d3e8b1",
+      "sha256": "00c7ea7f7c20651758164a8c82976633fa5ed77bae44e0c29fcbf744fc63bf33",
+      "bytes": 87050
+    },
+    {
+      "path": "crates/hex-audio/src/lifecycle/retained_families.rs",
+      "git_blob": "016a0acbda8881b178e6dd776c3a866670a5fdea",
+      "sha256": "881011ef70638a37456fde83c0201de2e49fbd1ae67ff3e8848e985da74c5d29",
+      "bytes": 35280
+    },
+    {
+      "path": "crates/hex-audio/src/lifecycle/retained_families/inventory.rs",
+      "git_blob": "d226f72b8bf0690fda0dad35b2dbfcd80192d7dd",
+      "sha256": "85ef6395dd8a791c6f20e831c8f091234744a6bffbaa00d118d2910bedd106c0",
+      "bytes": 18451
+    },
+    {
+      "path": "crates/hex-audio/src/lifecycle/retained_families/tests.rs",
+      "git_blob": "440fec03965934726d043ccc544930beaa70bdf6",
+      "sha256": "da1db8f9618a973cd32261110251d9533d85c218eb5bbb636ea13fcff3aa2a98",
+      "bytes": 33169
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner.rs",
+      "git_blob": "a9d735d2d0b542a104b37cea6746775c33cb788c",
+      "sha256": "f6742ad716eff6604e30afa07ad5d44bd058fb46c16c5e992de2ce1aa82c3ac7",
+      "bytes": 34599
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/allocations.rs",
+      "git_blob": "d3a79883ee254274d2d1f501da10bc54630d42e0",
+      "sha256": "a474352b16b8ab45cf7e2855aa91a1c38eaf58ce1ed01ab6ff9f448bfbcefb66",
+      "bytes": 6889
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/atomic_signal.rs",
+      "git_blob": "cbcbcf6dd6d068d7f119d57167bc1361e4636a1c",
+      "sha256": "391d669d9b3b86a38d53d06c297dc72567880fcada00b85cca991c3dfd681092",
+      "bytes": 1751
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/endpoint_tests.rs",
+      "git_blob": "0a7aa51f5d2a017ab0b713e616535b6ddb59f78c",
+      "sha256": "8d05947943b3913a3b79fc36b30eb6765425c3625756d706d25927cdfc8e674c",
+      "bytes": 18779
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/registered.rs",
+      "git_blob": "b6ddcc6eb21379b417c885ed049a8648bf7249d2",
+      "sha256": "81f6b244e941f5891d7b6b6007211410a9b3ea5ac89f311d64c096592a5a7259",
+      "bytes": 4719
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/resources.rs",
+      "git_blob": "d5d204eeb1d3548a42490c047c31ef21161aa1c2",
+      "sha256": "4bca0ceabe076e3c70dfa62820cd90216049c33a0fa0303410bdf01cf29f6481",
+      "bytes": 8264
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/ring_storage.rs",
+      "git_blob": "775068139697c16a21fa9aae61a390ec45e33c7a",
+      "sha256": "10b213c3e5f6c19208abe047e7915ae51d63f26f312e48d48199bb484791f950",
+      "bytes": 4218
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/ring_storage/registered_tests.rs",
+      "git_blob": "6bfe69199bdba06ffa4d5517dff63f71001cd6a7",
+      "sha256": "be881091d20b4035516279807b062c2688a5f87deb94a3e73aedf9f9e30b4760",
+      "bytes": 9946
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/ring_storage/transport.rs",
+      "git_blob": "aaaa6b90b614709fd8e76d6e85f8b6788b9a9989",
+      "sha256": "e298a0e9bbb866186091b9789733b570556cff9702bd93cb499f657608a6b7f9",
+      "bytes": 6908
+    },
+    {
+      "path": "crates/hex-audio/src/native_callback_owner/storage_tests.rs",
+      "git_blob": "bfe32583469c29ad2e41decfe613609500abb1ac",
+      "sha256": "0735400505543919d284bac86495c0a9859d374ae4a24648ed750b40b3c2a239",
+      "bytes": 15790
+    },
+    {
+      "path": "crates/hex-audio/src/prepared.rs",
+      "git_blob": "c3506a5b26f41582b3f9855bf5e29b63695be835",
+      "sha256": "f32f077e65bce459968084d72a0b938ea6f5a749b3987b1a6aa5b020fad76447",
+      "bytes": 283219
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/admission.rs",
+      "git_blob": "a99475ac1915c5ea2b0238fa7c52577a83a1ba71",
+      "sha256": "6e9256902c77e9c90d890f728ae9218b470651632d6d86f09d9acf7f951b0b8a",
+      "bytes": 1477
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/applied_source.rs",
+      "git_blob": "11185f23a44f92ec4e9c292d06dac7db9a21730f",
+      "sha256": "29f39877d7e7ac5ac6c564de3fcc07c44ab1ce4e1d393d7f2b74f6927bef3fb4",
+      "bytes": 3803
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/candidate_tests.rs",
+      "git_blob": "60531cd3ed89487a856ead0187123d27f8c20a20",
+      "sha256": "3e3caf97440ee3cd899c819f0fa86c1ef39b785715911ec82e0020fe5989e187",
+      "bytes": 23608
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/eligible_publication/tests/native_resources.rs",
+      "git_blob": "0a45609feedc54a22ec0ea8e3756b232e120606c",
+      "sha256": "a99e59ea4be4ff3d99670e37b2f31aea5e72b7e7940bd0862a894460090d538e",
+      "bytes": 21465
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/endpoints.rs",
+      "git_blob": "592de46bedc493216b2e69fcfec707fdaee22311",
+      "sha256": "e17e3900f9e74269aa390f83611b2c0898107c5fcbde57394affd95eda21bf23",
+      "bytes": 19548
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/factory.rs",
+      "git_blob": "e8771f517b623714a24e851657e024d0d670cd76",
+      "sha256": "9b6b7ca06fd277ab011dcf7e8847189f3b0300cc268590f03e215d9d949967ea",
+      "bytes": 7812
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/factory/tests.rs",
+      "git_blob": "5cbc9e901e9fce1101810ac88f86935394e34c2c",
+      "sha256": "a7cd63e25f5a2bf633638afd9b0f396862f50a44a5c541ae58f6b6c2ebaae528",
+      "bytes": 30584
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/final_active_tests.rs",
+      "git_blob": "68414d030ce0725a379f5ebb9dadfb08149554f0",
+      "sha256": "f107da29750173224988571f1281720e16148167d52b3789a1f10107aa3d33ae",
+      "bytes": 17189
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/project_spectrum_tests.rs",
+      "git_blob": "9ff4922de412d8a87e48764220e87004bccf8e11",
+      "sha256": "4d34c1759a5647c934c5a4a915643ab281883a6d91cbb84fa3ccfa5ff2593f9f",
+      "bytes": 6118
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/resident_forwarding.rs",
+      "git_blob": "02412465333fcfbcd5262624ce154128a7bcc6d9",
+      "sha256": "0caf5288f3678c53624fd2bdfb594998aaf38115ba1ada47bd1b6048726ba19a",
+      "bytes": 17502
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/resident_forwarding/tests.rs",
+      "git_blob": "53e8f749e30856e6d32e0404deb06da7c1a28b00",
+      "sha256": "fd7b387a1022c01e42fbc6b295a730ed11371ffa63dcbecff85e2c239e90c236",
+      "bytes": 19222
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/status_owner.rs",
+      "git_blob": "63e7ce87c7e6f40683555a35b425a414842cf8ae",
+      "sha256": "8ab9407efeaa3b9a447322a96a26692573c6fcac849e788e35392273fba09b2c",
+      "bytes": 7885
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/status_owner/tests.rs",
+      "git_blob": "701bd4d1c4513049c2bf1a6ad211d4e8b69b4cd0",
+      "sha256": "65554f13bcdfd9860c0b8231e48fc473b0e32371d46e4ef7ef6970cd87db661f",
+      "bytes": 5019
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/status_storage.rs",
+      "git_blob": "fca69fcad6c0564c785fe27325b1d526b0dac7ec",
+      "sha256": "a537652ee614aa1d2f7e85be342c6bfd574449eb724a3621cfd23f5ad5146e5c",
+      "bytes": 11373
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/worker_publication.rs",
+      "git_blob": "69a48770ab336168d9421a9de0b702997d247058",
+      "sha256": "b12cd15ccfcaeb83771263bcb5a6fffcb3b6e7a1f39bf6b7fed20b72c066b958",
+      "bytes": 14289
+    },
+    {
+      "path": "crates/hex-audio/src/prepared/worker_publication/tests.rs",
+      "git_blob": "dc7064ccc0d2dcf58e5f48ab02841f3d13cfc7a5",
+      "sha256": "8fa25af2ae4951241dec5b147178f1f5a35497c0d9805bc3caf146d1136d2cdf",
+      "bytes": 7993
+    },
+    {
+      "path": "crates/hex-audio/src/processor_audition.rs",
+      "git_blob": "72361eb8bf60bf30c3a95aa18d684eda5dc455f8",
+      "sha256": "e06949779f3f69ef200b3cff1ed08ddb2a328a2a2fd6c9be1b02e833cb2e548a",
+      "bytes": 25642
+    },
+    {
+      "path": "crates/hex-audio/src/render_fault.rs",
+      "git_blob": "122ace48ce419c097d40a9d1b77b4a150d26e415",
+      "sha256": "53ead9d55564ef02761c4232429406923b6052c439acd503dd90b451bb4fbc7e",
+      "bytes": 5129
+    },
+    {
+      "path": "crates/hex-audio/src/resource_borrow_allocation.rs",
+      "git_blob": "35f0a98235f4c97bd295d08485b939fcfd74386c",
+      "sha256": "7ea3d25ee50b8ef413cb4bec02ef966d8e51deeae2f564dcc871dd1e79c28d5a",
+      "bytes": 51592
+    },
+    {
+      "path": "crates/hex-audio/src/sample_preview.rs",
+      "git_blob": "3c22efd52cc971eab702849dd5e7acc90893360a",
+      "sha256": "ff64a6803b5f48412763ce8f2d24bbe93324135ec8254f34c0f5014c9d183ca1",
+      "bytes": 31504
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum.rs",
+      "git_blob": "bdbe89708eae3d6596350ce323f2a7072d1d1e30",
+      "sha256": "364812feec9918ba2e5886edf134234aad27b9fd7646d63b9d345d629918653b",
+      "bytes": 18676
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_target.rs",
+      "git_blob": "8393ef99956429981aecc47d36d9323ce3a48901",
+      "sha256": "a97e85dd057d4a8a4fd65416eb0873909fc81ee8a0b6693f6fb6f14d2ce525f8",
+      "bytes": 22109
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_worker.rs",
+      "git_blob": "64152596f1be4b542946d714ad6dc35e89edb2cd",
+      "sha256": "26b62e95b922e01863439217400b11ca1f4800521eb09c27a02cf1edc4755a82",
+      "bytes": 59586
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_worker/native.rs",
+      "git_blob": "6acb1831205f7d84107590774051c96cda45cab9",
+      "sha256": "56981e48984ca73d98e674b1ec55708c0e8f24d7b5ff7d82c18c931d290faf16",
+      "bytes": 31348
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_worker/project.rs",
+      "git_blob": "8ebac0f66e10ad3885acea271cf99b82c06a84bc",
+      "sha256": "4b6dc75cc6907b4293335f79c1b52decfbea81e526b5c16e781eda65335e7156",
+      "bytes": 78626
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_worker/project/packet.rs",
+      "git_blob": "00d7216bc6426aab0abe955cd1016b4af75be66c",
+      "sha256": "62d1fc9e1bbf9da91466bb63551bd0054e359e2e2c07490fc95b5311ab182ffa",
+      "bytes": 9511
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_worker/project/packet/carrier_binding_tests.rs",
+      "git_blob": "ad97111741ef0dd6f294789337b9c96891b0d858",
+      "sha256": "66a2f21259ead16d8cfa40eaee4a8611279a6903687f4c681cec4f561e15219f",
+      "bytes": 2528
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_worker/project/result.rs",
+      "git_blob": "a4062cac30a3446babbed9c15fc199494fe23aa9",
+      "sha256": "8a83d398d71651bf8bdf1a52b306f61d383ed66d94140aa28ef515cf6bbecb6a",
+      "bytes": 15140
+    },
+    {
+      "path": "crates/hex-audio/src/spectrum_worker/stop.rs",
+      "git_blob": "946b44e562cdb2bb47ee74968d95c621fad6bd1a",
+      "sha256": "c64e87e2cb81e04795a0422041bba9adbcdba584229b80632b8d0be3727d3405",
+      "bytes": 7146
+    },
+    {
+      "path": "crates/hex-audio/src/worker_fixture.rs",
+      "git_blob": "1ed7d589dd1edd82c38e08cd2bcf36fc27c0fbe6",
+      "sha256": "c80e13159cd161b3a5065b11caabc0adc17baee014c25a7f7b3f40b283c6afb8",
+      "bytes": 5986
+    },
+    {
+      "path": "crates/hex-audio/tests/audio_preview_allocation.rs",
+      "git_blob": "e12cd9649ffeed5bc1f304c749934746ce43e3b0",
+      "sha256": "4a01e490c98d2c31a043d206c28ee4d206206f271e5671ec98d1c274ad3f29a4",
+      "bytes": 10369
+    },
+    {
+      "path": "crates/hex-audio/tests/callback_allocations.rs",
+      "git_blob": "cc451cd9d275a2a5d9a36292fee9961e186a42b4",
+      "sha256": "687b2e7a85a567e7bf192f7f9c6b6b32a9296eba3134c9922f10edbc2ce4e7c4",
+      "bytes": 117453
+    },
+    {
+      "path": "crates/hex-audio/tests/callback_allocations/output_capture.rs",
+      "git_blob": "4448397e150b4097b099f496c4fc40121d981476",
+      "sha256": "fd1a7b414560b14e2e98c55fe493fe22009c9df43d369d135e08296e4ce90a61",
+      "bytes": 8724
+    },
+    {
+      "path": "crates/hex-audio/tests/callback_allocations/project_tuning.rs",
+      "git_blob": "6ed7cc5b320a45b646eddbfd842328b531bc02eb",
+      "sha256": "9c60a9ac8d3c5e64543f91aa0c00ec6886a9e9692a0ce198bdcb7d920c104a51",
+      "bytes": 12397
+    },
+    {
+      "path": "crates/hex-audio/tests/controller_keyboard_allocations.rs",
+      "git_blob": "a2c867d7f56b41727cea1da1712778e681c401e2",
+      "sha256": "2e82ad8e32809c99fa7faf9c6489d2fab1cb2dbf6633ffcb6171ddc6581feb71",
+      "bytes": 5428
+    },
+    {
+      "path": "crates/hex-audio/tests/eq8_audition_allocations.rs",
+      "git_blob": "e4e611df678a96679ab0d052d6729b4a38644f80",
+      "sha256": "92f9a40d8f61b33f4dca339c1fc63d23fb1adab7d125487bd164d8d146e37ba6",
+      "bytes": 16612
+    },
+    {
+      "path": "crates/hex-audio/tests/fresh_publication_cancellation.rs",
+      "git_blob": "0a5ea566586e6ab09e7622f1ec2404d7cbe6bb0a",
+      "sha256": "3469121c4135a13e304f5490a69bfb665d047352aa789916f3204fddc4812324",
+      "bytes": 8424
+    },
+    {
+      "path": "crates/hex-audio/tests/gain_recording_native.rs",
+      "git_blob": "c489158be1770d238e0c51d6c7d81c90dd9c0665",
+      "sha256": "37d8d24834ed4dfd20210f89162d374ee5d510509f857ee30663b83ee96b069a",
+      "bytes": 10620
+    },
+    {
+      "path": "crates/hex-audio/tests/operator_fixed_allocations.rs",
+      "git_blob": "f0cd0a111929e91450fc9afff6c7baf96796c38e",
+      "sha256": "b5d9716d6ea261f80d43404c4b797d01af0e86c3d33533d9c6ac42dffa77eda4",
+      "bytes": 25599
+    },
+    {
+      "path": "crates/hex-audio/tests/prepared.rs",
+      "git_blob": "5f357b90867b87ff02671d57ff210dc0b7c13840",
+      "sha256": "3636d216d6693a2b7465280b736e0bad98b6f3c3318dbb0124afa13cae1da9c7",
+      "bytes": 37561
+    },
+    {
+      "path": "crates/hex-audio/tests/return_feed_allocations.rs",
+      "git_blob": "3422351b3010e8f106e55d9dc3ac0c9fc5431e48",
+      "sha256": "520a354dc4039d8c62c08fae2221e5da966ca1f873de00c934517105fb2455e3",
+      "bytes": 6283
+    },
+    {
+      "path": "crates/hex-audio/tests/routed_midi_allocations.rs",
+      "git_blob": "a16c6970b76920ac244ed2f19ab1f9ac3dfffee8",
+      "sha256": "5d424889bd5694a35d918a88e358e002dda2cb812988f5a1a220fa19db404e96",
+      "bytes": 5409
+    },
+    {
+      "path": "crates/hex-audio/tests/session_silence_effect_allocations.rs",
+      "git_blob": "3c5a57c39ec1158458a0c217ffd55c37b4c9e6c7",
+      "sha256": "0b1892d4df8b7d69ba3d99ef9a1bd05ca2472cca459c8e3437981ef2fba2ef03",
+      "bytes": 4915
+    },
+    {
+      "path": "crates/hex-audio/tests/stream_publication.rs",
+      "git_blob": "a57093b94c35390ff8ba33b4f0900682463577ba",
+      "sha256": "7f3a31c59cc123f7b025a714287f65eb50d2c2bafb677a752b9920cc409f4b02",
+      "bytes": 4331
+    },
+    {
+      "path": "crates/hex-audio/tests/vector_global_allocations.rs",
+      "git_blob": "27d2ef843b29401679c61a5685e6f154c1867b07",
+      "sha256": "d9d9edcdacb130dfe74722fe1e6d982bd5245bb2213ce70a55b02e34a5d82d95",
+      "bytes": 7548
+    },
+    {
+      "path": "crates/hex-cli/src/projects.rs",
+      "git_blob": "0856ae0970272dee3e348ec75234bf7c09a662d4",
+      "sha256": "0bbe12c2df413afa6016698361c02c2cc3e4d3ecb1581bd82f8c46909a3fcd9e",
+      "bytes": 11011
+    },
+    {
+      "path": "crates/hex-cli/tests/fm4_export.rs",
+      "git_blob": "9cf450c6285d57f773b4bec2fb81f34c0a9d0f2f",
+      "sha256": "a4a66d564d43c52db767fcf60141586622d3c7ec025f989098f6c7c07a6a7dd2",
+      "bytes": 3886
+    },
+    {
+      "path": "crates/hex-desktop/src/audio_policy.rs",
+      "git_blob": "e4276b6d278b45cd9bc2e279c249b8fa41876d6c",
+      "sha256": "d1dc9beaac01e934059777f9c967dcfee93710962193158f895a10a50fa1c61c",
+      "bytes": 6633
+    },
+    {
+      "path": "crates/hex-desktop/src/main.rs",
+      "git_blob": "9c8ad6dafaaa42bba5f57c95387fa67082bffe55",
+      "sha256": "8a4c1f030d27f76372ff99dbb6be6cf0cf86c1b1c1b9dd6f6f0b28ebd0dfbc60",
+      "bytes": 2501
+    },
+    {
+      "path": "crates/hex-desktop/src/native_audio.rs",
+      "git_blob": "5299c094571e41f367132b163e5b16b3fdea317b",
+      "sha256": "eb60a69c0fb2c04d8034f7837dbae14f3f815e447d1fcdcb2e4676e4dde92462",
+      "bytes": 31650
+    },
+    {
+      "path": "crates/hex-desktop/src/native_audio/main_control_file.rs",
+      "git_blob": "dbfbeffaa9919ed9222c036be988fa8e8eeee4f0",
+      "sha256": "9ea9c0e2e7d7cb6af14ac30bcb2786bc72e15956157dad4d437b3982326bae81",
+      "bytes": 2366
+    },
+    {
+      "path": "crates/hex-desktop/src/native_audio/tests.rs",
+      "git_blob": "d4e78c712f92ab2b39818242a5000ecd5277a6b0",
+      "sha256": "0550afb18c0b97221bde9364ae38642de7ad6e46bebcb7f4f21b195543fb7633",
+      "bytes": 41917
+    },
+    {
+      "path": "crates/hex-desktop/src/native_audio/tests/closed_original.rs",
+      "git_blob": "193a03275f2a80fbcffdd173d4668ecc6b8e54a7",
+      "sha256": "0b882aa71c3de89ca265ad8cef3d44bdaeb20aff41ffb5a1a09f1caa5f917a86",
+      "bytes": 11276
+    },
+    {
+      "path": "crates/hex-desktop/src/native_audio/tests/main_file.rs",
+      "git_blob": "0b5538529104e5cc2455f2686edaef6026b24d6c",
+      "sha256": "966c41088372ce6ab3dc8daa41281e7a7b02c5ef4ca81eceeadeb7ecdb41f5fd",
+      "bytes": 10205
+    },
+    {
+      "path": "crates/hex-desktop/src/native_sources.rs",
+      "git_blob": "9577f065215c7cabd2fecdac0d811e081ff0f174",
+      "sha256": "a896a90701dd5ab2a86a43d638f4fea469872283ad89302c769f535f65162fe6",
+      "bytes": 10477
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport.rs",
+      "git_blob": "7e4db12ee90a5fe146289554586886d38f31a640",
+      "sha256": "521d54df52887ec36ecc72b67993a9975afc780b72cceb7a9a1517dc71c26928",
+      "bytes": 11152
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport/inventory.rs",
+      "git_blob": "bbbc9c8d97d80afbc9d79b815140e9542f6d74da",
+      "sha256": "3eec84bf355a1ad2c0e401f94140d195e36c5a328897f281f2c0098b38bdfa68",
+      "bytes": 7477
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport/inventory/tests.rs",
+      "git_blob": "a2a8ea447ab9e8cf0b94f79881ed2d9c921dd8fb",
+      "sha256": "7ae98d5c89bfa9c9fc5fef1f7da0ec43b6cee4d2d80f42afd5dc890ddf017495",
+      "bytes": 14298
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport/publication_tests.rs",
+      "git_blob": "4b3364ce6233b5b51a76e73151edf71db4968b13",
+      "sha256": "d7c0ad6453f965670f0e4a86c1dce24cbf96d4686b7f39e9c5e9e35fdb280040",
+      "bytes": 4299
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport/storage_tests.rs",
+      "git_blob": "a2f609b1ef19fa966fbf73a11722938bf12393b5",
+      "sha256": "9eb830695fc5a0e24750d09ac15a582a6b69a8fc841235a3adf7910dfbe5f577",
+      "bytes": 7032
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport/tests.rs",
+      "git_blob": "d147497794fd97dd6095471d8511a3323f275134",
+      "sha256": "b9f7230b3edbe88c5d9130847a449f88b3c5385b4319cf7dcffa002e4f0b782c",
+      "bytes": 11679
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport/worker_control.rs",
+      "git_blob": "1174b62fb8a888174c957a6ba08c81e883ec69c3",
+      "sha256": "6270d061ba2de1363497e4c0b58b6129dcf170d698bdd03234536c9c0a5b8ce1",
+      "bytes": 36769
+    },
+    {
+      "path": "crates/hex-desktop/src/snapshot_transport/worker_startup.rs",
+      "git_blob": "98fd04c20d46533e8b24e1d75e4b55caaf52369b",
+      "sha256": "9f7c01bc8a24e3092571bef333a65527f100daee074ae8d819cb3003bb860fc2",
+      "bytes": 4620
+    },
+    {
+      "path": "crates/hex-devices/src/lib.rs",
+      "git_blob": "19cadc1c69532de6a4491742aa7755644908f67c",
+      "sha256": "1e9cd7d5a9476c69a1b5bcd575107413f9268bc9ddaedb01b105d71472a6598a",
+      "bytes": 16617
+    },
+    {
+      "path": "crates/hex-devices/src/modulation_waveform.rs",
+      "git_blob": "cfdd0482c28336baaedb87024323e439564279e8",
+      "sha256": "52354278e97b1dcd2f907ccfede2a45bc213345f1dd4b58eb90c9a9b9c0698e8",
+      "bytes": 1026
+    },
+    {
+      "path": "crates/hex-devices/src/operator_filter.rs",
+      "git_blob": "e4dfd512ded827c963330d0b410da69428ab6bce",
+      "sha256": "19eab920c5774684727a2efb84802836080194bc4290787ceed0730d81cd84b9",
+      "bytes": 9852
+    },
+    {
+      "path": "crates/hex-devices/src/operator_state/lfo.rs",
+      "git_blob": "741510d299e876aaca1490b537bffac5c4c2be72",
+      "sha256": "5fefb99711900e11049309a3da50349be5c7468a38163c15544d6c133478ae0f",
+      "bytes": 8168
+    },
+    {
+      "path": "crates/hex-devices/src/sampler.rs",
+      "git_blob": "05f77669fbc5ab5a3d9739138b174b28c612def6",
+      "sha256": "b01dae736885846050457cae6f9744a4e4d1b9809126ce0796fe474773b57a9b",
+      "bytes": 5954
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/binding.rs",
+      "git_blob": "187f043aeaac81bee3887370223db756898c0b11",
+      "sha256": "6b3c23d2a01e6cbdd95ca470d423a9705750d5ff929a3d930803ed45cf2a9c78",
+      "bytes": 4592
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/envelope.rs",
+      "git_blob": "6afb26d91fa062ab7ae36b03b5fd991d724fa9e1",
+      "sha256": "9089d28fb07ff5ab6ead12c097f69cfeba77fd1d97478fd5e61d617eb4a3c243",
+      "bytes": 2404
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/filter.rs",
+      "git_blob": "b2d14eac305476ee8fe34c29b5edb81a3c2d39ec",
+      "sha256": "365d8ffc6aae29f87eea1bb53e9980e368a969ed346b637e0b7b757ffcb77726",
+      "bytes": 11075
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/filter_envelope.rs",
+      "git_blob": "17a237a59d448097cf4055e293b036e79a9ffdac",
+      "sha256": "e00f179ed1fad28d0c12ab7ea6e54c78129d4a9cf082f2754ac266ee1f7c8d8d",
+      "bytes": 4217
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/metadata.rs",
+      "git_blob": "a172e3a988bfabcf94e213124866d15f61b6a3a5",
+      "sha256": "85f4a478421dd19c698d4f83513eb99b41d8fb9572de3145efffc235ad3fb3dc",
+      "bytes": 19495
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/metadata/tests.rs",
+      "git_blob": "8c3ca1b63a75f8af5b1f78f2a317e79ba8f9b3ea",
+      "sha256": "3ba5df48c7faf825006a9627102ea28bb01e656639e07ab9143267e91b268a3d",
+      "bytes": 22320
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/modulation.rs",
+      "git_blob": "239faefb344fb19ec1c5eb3fde2a14548c50d680",
+      "sha256": "860463878b82bc430e5c2ead906deebf2613dba0c40ecd9434b55931f65bcb03",
+      "bytes": 8542
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/plan.rs",
+      "git_blob": "66c3e71e8d1183160efff531c2c160d15c851939",
+      "sha256": "3250d57b62b40f7dd532f80b31ebcc1a0f434ba9830f06ffc0d784649fd313e2",
+      "bytes": 9005
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/plan_tests.rs",
+      "git_blob": "54d3a5430ad9037d7312ef3dd0e9321074ac6647",
+      "sha256": "21937525df581c04656b9c37cf77e8ad69ca06ff9fc21e513361e85d14764a35",
+      "bytes": 7461
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/runtime.rs",
+      "git_blob": "fe563f15df1763fd3042f39926f807f5665c8a37",
+      "sha256": "5e4e40ddb2c091632ac8a7489e6985dc28e7e0f523048a12cf25dfcc23d7a970",
+      "bytes": 17565
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/runtime/filter_envelope_tests.rs",
+      "git_blob": "8107f82b82f439ac0235278c483d69530fb86397",
+      "sha256": "9e64f3fc83e2bcb240e07e95c6b74a9e29c26ed0d106a3541ebaabb990f74310",
+      "bytes": 12015
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/runtime/filter_lfo_tests.rs",
+      "git_blob": "d00cbccd41dee64ff6fda9bbee5802235b0de73c",
+      "sha256": "6dca749606f478f6f7ce75cd227606438bf7c05e8eabdbf03ef42bc958314970",
+      "bytes": 12072
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/runtime/filter_tests.rs",
+      "git_blob": "dd035861b6888e0d5d1d53663d29427ad14a4644",
+      "sha256": "eba1bd32aa9f5737a221a39e2aa504e98e02542e62c3a32982571b80327669a5",
+      "bytes": 11599
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/runtime/modulation_runtime.rs",
+      "git_blob": "499c47f54570362072694068c7ba3e57a3966030",
+      "sha256": "0b3af70f7215798ef0fcc4d02fa6b7e7769da89da4b5af12d978c5af8d35b5af",
+      "bytes": 4620
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/runtime/modulation_tests.rs",
+      "git_blob": "4a4f73fbe18f64897a5b0e6052a3be04014719ba",
+      "sha256": "8096f0e70db5cbd38049cd6a60b58693aabb28180ec5fe9a66195449f97a2b4d",
+      "bytes": 10063
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/runtime/tests.rs",
+      "git_blob": "59ef23cc880ad30ccc30c124335c33b62dd31f13",
+      "sha256": "3af9e33281071dc969c3b666fa5a88e9f2c8e945b10ba3b54813a363fe8f9451",
+      "bytes": 21402
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/state.rs",
+      "git_blob": "dc2ea2e0d8c51be6936b22459ff215608ba41b60",
+      "sha256": "34f3420fc32a3dda271ba3f0ce109e33d22d6cffd9888a721acd1981d3f3d662",
+      "bytes": 11914
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/state/read.rs",
+      "git_blob": "e0eb6ce24a158a7c9f82b66a2b1a692ed32de35f",
+      "sha256": "ee80a9306d260f4f79d7e9ee97af56ae704749d04d515769f7c4c3d038693142",
+      "bytes": 9833
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/state/slice_edit.rs",
+      "git_blob": "4d27917491d6ebec52e96b396942537b95dd48b7",
+      "sha256": "bfd027316af3d90d1612e1bafdc8699c9a857d2452e95f992488dd234457dbfe",
+      "bytes": 9127
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/state/tests.rs",
+      "git_blob": "bf3606143ff871a426abba5b6587ce93614da453",
+      "sha256": "e90223dd1b174865770f971dc072f8f1e4ad82495797c53313ab5de3e3c92fc4",
+      "bytes": 18601
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/tests.rs",
+      "git_blob": "b38867a477ab4ee46b1460866a6e3bcec2f1d957",
+      "sha256": "e8f09f1dc65f38df4daa8c99a98635c963a267afc1fa07d5a241a73e8f54119a",
+      "bytes": 13990
+    },
+    {
+      "path": "crates/hex-devices/src/sampler/voice.rs",
+      "git_blob": "3e48e1d0fd6bf40c9446b23a8b109a53f72b7e04",
+      "sha256": "774795185dff680dafa497e029db9f591f57ec60ec0cb27f0b5c7e5851d9cfdb",
+      "bytes": 9289
+    },
+    {
+      "path": "crates/hex-devices/src/utility.rs",
+      "git_blob": "f87ff6c3d1d715a956f74a297b250516121bfb22",
+      "sha256": "cfb34632b59b8ce3475b10304faa0903aa25e756e2260ea14df1f4027ec6d6ed",
+      "bytes": 52580
+    },
+    {
+      "path": "crates/hex-engine/Cargo.toml",
+      "git_blob": "328578f1e3c1f24b8f9e9a335984f0194d47812f",
+      "sha256": "662abf56950fb56ad21ce79375de1574fad8c1221099338b82363107cb2cff62",
+      "bytes": 820
+    },
+    {
+      "path": "crates/hex-engine/README.md",
+      "git_blob": "c0dd020b35f9e9578101905c95b3b8084990e86f",
+      "sha256": "1de5045864faf5ef34ded90f15bb23fee12dba77fe2d18c6161d829c08330b47",
+      "bytes": 40531
+    },
+    {
+      "path": "crates/hex-engine/build.rs",
+      "git_blob": "223836f18de059eea6259f23ce511654671c74cf",
+      "sha256": "27d34f93d09fe4c20bf5bf7cd3388dba4053f30ca1c9af608216b1adef1038e0",
+      "bytes": 15165
+    },
+    {
+      "path": "crates/hex-engine/build_support/document_token_gate.rs",
+      "git_blob": "d495c3bbaa90c176a286ebb8d344df3cbb1484ea",
+      "sha256": "d45a6344b12d0803ba48daa8c7770eb33acd1db84d36b11f9f3a6bfdc33303b8",
+      "bytes": 2691
+    },
+    {
+      "path": "crates/hex-engine/build_support/midi_gate.rs",
+      "git_blob": "ff155a20f7eaf23226b46db9097fe9bebb24aae5",
+      "sha256": "893c8bdde55461a154b27294f57f029f1d8b4cd51c7c23c8d59def90d2fb92ba",
+      "bytes": 1450
+    },
+    {
+      "path": "crates/hex-engine/build_support/pcm_gate.rs",
+      "git_blob": "cff1fe895b5d130735bc696c06e7ef5f5a780ba3",
+      "sha256": "f6159aeabd6cbd19a0d762b6eeab6bc84e1def5c4915dad50af8f435ad2a4497",
+      "bytes": 3282
+    },
+    {
+      "path": "crates/hex-engine/build_support/retained_job_box_gate.rs",
+      "git_blob": "700934325517f3cd8ad003079bbd4e78de03f39b",
+      "sha256": "c4ac971fbeda60e8288ffe9665ad13833ccf592dc170a73c0de1be6226700a71",
+      "bytes": 356
+    },
+    {
+      "path": "crates/hex-engine/build_support/runtime_box_gate.rs",
+      "git_blob": "d08467db3e8cf24cc46501a7b03a78d4bbacc3bb",
+      "sha256": "9082ce4678fd172b66469896e8c38d9c7fd2a20086175aad3726fe564c183f1e",
+      "bytes": 339
+    },
+    {
+      "path": "crates/hex-engine/build_support/state_gate.rs",
+      "git_blob": "60d69d2fd94b24b8141ec0b816c29f5ec76a1966",
+      "sha256": "79c8f7d980142c535aa8c08fbe268118b420162ac74ba38210c5a7649dc94b2c",
+      "bytes": 1407
+    },
+    {
+      "path": "crates/hex-engine/examples/playback_stack.rs",
+      "git_blob": "6966333ed650363310c91b0902c8aedc2ad3d14a",
+      "sha256": "7435b1671e0502d874a832a9b97776f9585140428ea65f3916df544be868a9ee",
+      "bytes": 14876
+    },
+    {
+      "path": "crates/hex-engine/examples/profile_eq8_parameter_history.rs",
+      "git_blob": "bcff257ce2451a24097bdc41c3c54aa1441052c0",
+      "sha256": "e5c9a423df8c6d8cb8eb62094161066bd8e77feba2a6dfd6dfb6bf127e29eef8",
+      "bytes": 6063
+    },
+    {
+      "path": "crates/hex-engine/examples/profile_instrument.rs",
+      "git_blob": "09c0836d84372f1788f80fe511b4284788920497",
+      "sha256": "09cd92c621686503935c77b384b0dbf59e242575b1808486e310d0f56ed76dec",
+      "bytes": 15188
+    },
+    {
+      "path": "crates/hex-engine/examples/profile_operator_feedback.rs",
+      "git_blob": "83f91fe5819852d6738529ef414737d6d78e1ba4",
+      "sha256": "d1b4142fdaa20b6bfd11cb1a2be5aebc06223bf1404231f914598cf755f89425",
+      "bytes": 17286
+    },
+    {
+      "path": "crates/hex-engine/examples/profile_operator_filter.rs",
+      "git_blob": "962fd339541d6681983df259503871007a517d1b",
+      "sha256": "67a033a9409a73db19eb707d963fa593d9e24321a431d8627626d5e876b6cb5c",
+      "bytes": 3626
+    },
+    {
+      "path": "crates/hex-engine/examples/profile_operator_lfo.rs",
+      "git_blob": "e33430b2b9005c2a5a15caac5de3a8535d0a1df2",
+      "sha256": "335c272849388af4328aef31b7c57c75826893d35dcacc01d17740373bd5c6de",
+      "bytes": 4786
+    },
+    {
+      "path": "crates/hex-engine/examples/profile_session_audio.rs",
+      "git_blob": "ecd417cff38488ccd1f9090580907f225c677e40",
+      "sha256": "1eac138f393cff89ffaf83a3de410836c712d4796e01316834f128366cd730c3",
+      "bytes": 28705
+    },
+    {
+      "path": "crates/hex-engine/examples/profile_session_grid.rs",
+      "git_blob": "a97a427cb757043727bedd43fb63a637838b7351",
+      "sha256": "6a00cae11f360eaad9465512e5ed29897c4738a8cbfd4ec6e596162f83947e8d",
+      "bytes": 7831
+    },
+    {
+      "path": "crates/hex-engine/examples/profile_session_handoff.rs",
+      "git_blob": "38763529e9bbe9466ed565a36984781274795488",
+      "sha256": "246bdacb1f04806c2f17afb5b7f93c75c549503269ac7111fd1a15f394ae435b",
+      "bytes": 4912
+    },
+    {
+      "path": "crates/hex-engine/examples/profile_session_inventory.rs",
+      "git_blob": "244ad3313a6453014bb6cdf70c53fde2ee534f16",
+      "sha256": "cc2884f8741ffe39be34028739ffc814c67ef0e2742000aa7afef205372d56cc",
+      "bytes": 10580
+    },
+    {
+      "path": "crates/hex-engine/examples/profile_session_playback.rs",
+      "git_blob": "bf8827d55f5aad7b654633ad9faa4a50dc809757",
+      "sha256": "0a69f7219771a35f869e796bc23d6d04d0681c3e220d62e38d95921ca77cbfd4",
+      "bytes": 5752
+    },
+    {
+      "path": "crates/hex-engine/examples/profile_shared_context.rs",
+      "git_blob": "961d9e9f1a7e113bf812c73161d271d6a88e7706",
+      "sha256": "c016cb4e270404ee44ae856d7134cc71feb3149b52f76155be979e87c8f79861",
+      "bytes": 15993
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate.rs",
+      "git_blob": "fd629b27c45dc1e239f197b7e6f73bcd750b02d4",
+      "sha256": "c55321f948423ee130b76872cdddcd08663941cec873c83efee2537b972f7a35",
+      "bytes": 28995
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/claimed.rs",
+      "git_blob": "ef15853d9450a858f3b4b4fbfb3e8ccf05311e6b",
+      "sha256": "059692520e8e2e58596913f80e19daf5d8a41e9551bc6bb9f1a33484d7bfa319",
+      "bytes": 52194
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/draft.rs",
+      "git_blob": "9ca478c361ed5a8dad112233007818b9bac2cb4e",
+      "sha256": "24cd05cce0803df4ad2f602a29832db04eeb980a63aa8a181cdfd1ed79fea903",
+      "bytes": 22749
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/groups.rs",
+      "git_blob": "3b91ac13e0606825433c2a206be8507a93243021",
+      "sha256": "025736a076d77eea0056f309fd97e7ae335661a285e0d382b8580e6b99c58c6f",
+      "bytes": 43743
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/groups/retained.rs",
+      "git_blob": "b68af35ca0eb3fc86c348dd7863e11593f564c87",
+      "sha256": "c2edea42e9ca6087f6abc64ebea5e15015597ea1eaf22fb2bd28eefbacda59e3",
+      "bytes": 21264
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation.rs",
+      "git_blob": "87e75109d440a5de904f61ad88254c4e8d7dba9b",
+      "sha256": "ba14100b8c8c5fe338ca956b2fdff055b4a4b2d9843c4b98b724a97e2146be68",
+      "bytes": 20415
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation/control_work.rs",
+      "git_blob": "437b703b1483a4789d9df6a3e47bae82fcc1dd8c",
+      "sha256": "91f12817eca14bc376e1c0a39a055017d6fc2aca4b8ea913cb8d035690e0f1c8",
+      "bytes": 17258
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation/native_fields.rs",
+      "git_blob": "fb586fcab729972d70f156dda81ba48546b13278",
+      "sha256": "b7c9587038efd14797705a8c1d28567d1b6ebdaaac4ef3e5aafa59f5f71eb8e9",
+      "bytes": 9050
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources.rs",
+      "git_blob": "95f7064cdc65bb6138c224d9726c2cd6694eda3e",
+      "sha256": "955569d526a636e992331ed2a9152efdc38080a5544ede1a3def122664e2ab01",
+      "bytes": 19365
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources/tests.rs",
+      "git_blob": "c149b74a7dbc125beb7111c8181469f4e349a076",
+      "sha256": "49dc3667db7e2be41bd43fc885cf63a45de62cb6bcf3fe81c8d8e6d7b695c5c0",
+      "bytes": 9388
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation/original_resources/tests/runtime.rs",
+      "git_blob": "946f3d7f1aa9d203632351415e62ef25ac429e87",
+      "sha256": "5ef24fe3899b77f6bd5954d8619f7c295a2f276720166dc44ab6c31e978bea75",
+      "bytes": 25540
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/preparation_operations.rs",
+      "git_blob": "fcdf37d5fc572c2aff1a2ef31165bbbc9001995a",
+      "sha256": "ad75be6179a6a92acf75d6b825607f00106a3fe0cf40b50e6a02fe6748dda514",
+      "bytes": 12087
+    },
+    {
+      "path": "crates/hex-engine/src/audio_candidate/storage.rs",
+      "git_blob": "255be311875e90ae61545e6bab880bb042589471",
+      "sha256": "c33c71ff9f7509138d1347068fcfb3f2a5301909254e21d641e6a634b920d839",
+      "bytes": 43187
+    },
+    {
+      "path": "crates/hex-engine/src/audio_clip_source.rs",
+      "git_blob": "99fc24ae57a45a0818246b966c2f4bb5eb4750c1",
+      "sha256": "e380d32d1a7c342fc1c7788f8c08ddf0f613f6ba54d6de06acec2041a40baa33",
+      "bytes": 2121
+    },
+    {
+      "path": "crates/hex-engine/src/audio_input_storage.rs",
+      "git_blob": "fb6282d9e8923705996baf9cf1a4206328fc1188",
+      "sha256": "aa8d66a1f62709b3b34ace1d9e6bbe930a7b84e89f7c5b29b2f3e719c0296b5c",
+      "bytes": 14343
+    },
+    {
+      "path": "crates/hex-engine/src/audio_only_inputs.rs",
+      "git_blob": "04dabde89c3bbca663eee3aaea560696010a483f",
+      "sha256": "ccc2b3da75a7db82bf3833d449c77779803f1fb0648f72d4807a22bf39236dda",
+      "bytes": 46210
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation.rs",
+      "git_blob": "1402acd1953a1f129d6a09685f2bf5dd9b8252eb",
+      "sha256": "55646f29843be0183ca463f5e2622d6fc554be6f0a9d7eeed81c2d181548209b",
+      "bytes": 74237
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clip_tests.rs",
+      "git_blob": "35736c1e10724d319b0429c6841b24bda5956688",
+      "sha256": "d233b2e1b0ae199c2ff80c66899aa93595cd99331439a162adef15d122463bef",
+      "bytes": 21716
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips.rs",
+      "git_blob": "4c561203f85da1158dba7bc23915bf353512e408",
+      "sha256": "2d2379acb624198258cb53ddcba9957fee1b1de3d037b433ae8a239c5f96b158",
+      "bytes": 28540
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/return_tests.rs",
+      "git_blob": "9e69e65a837c040e56863c5fd22acc14b5d7330d",
+      "sha256": "89acc6b34447d18cd76317536ea72342f1198f722770e48ec4c68b9532a20815",
+      "bytes": 51482
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/returns.rs",
+      "git_blob": "fdb0e2dac11cc2ce99648fdd2baacab0d13f164e",
+      "sha256": "e46eeef9c84e522ef1603499a616bba63e8054deece53917a0d3fe290cd3d8f1",
+      "bytes": 26897
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/returns/selector_cost.rs",
+      "git_blob": "519029cf69ad40950313ecc1d3384d33fbfc574b",
+      "sha256": "10f6ce58220ee09489c957ff26c81e8cb3c9b69775a343bea0739d45d97006f1",
+      "bytes": 6566
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root.rs",
+      "git_blob": "daadfe425c608de1fbe8552fba6b370883385552",
+      "sha256": "3995ea5b40afd5aa3a06d3debdb477b57f74762697d6a6b4a41225c63e3c61bf",
+      "bytes": 29386
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root/lifecycle_tests.rs",
+      "git_blob": "fc82f0e0ce00abc81e8dbe7282befd9507e62e2a",
+      "sha256": "e4e730d8a37db0adf378c746c06f84705813d81781388e9267c7a006cde5c23d",
+      "bytes": 9733
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root/metadata_tests.rs",
+      "git_blob": "cdb682842ee80ae83cd0e002f750e02012c1c403",
+      "sha256": "3a59beeaefae98e19db5e4153783cc37e52dd4f0e0d3e95c8e2f7e2004b492f3",
+      "bytes": 16409
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root/revision_tests.rs",
+      "git_blob": "28d3b1ff2f096493d57cfe1ab7d12d68b96a60e3",
+      "sha256": "66d356980e2a06903a8ab1bdfce1b9922aacd77f8c3c0ac5be4bd2aa2ebaa76e",
+      "bytes": 35928
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/root/tests.rs",
+      "git_blob": "b146cf51325da8608bd278faaabfa6d0282473f7",
+      "sha256": "7212f5de03119cd0898f9b6f7fd84010b9a02d09a851257ba5037c5a2fe15444",
+      "bytes": 20157
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile.rs",
+      "git_blob": "b0c4282825dfc9f6cb63c54469678e89e43e1077",
+      "sha256": "7d9f4a5f6b8ebb95955827451c9ae259e78fbe20443d3e64cee94e25dda986cb",
+      "bytes": 27211
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/complete.rs",
+      "git_blob": "86b832587b1e4131274536ce1817b7f6ad7292ff",
+      "sha256": "509c3a28c9ef78abdf8bba45dc88940afb9d4b92eee7f977c95485cf4176a45d",
+      "bytes": 13201
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests.rs",
+      "git_blob": "c30eae411977023a1fd754e0655b9ad224caf164",
+      "sha256": "db19e9b548e08c49e8328a3f252dadfa051b0457fe25d85cff469f61714fbaf5",
+      "bytes": 28981
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/captured_target.rs",
+      "git_blob": "072572975fdc1f11340121ebe82c2af2f37f3d64",
+      "sha256": "6a8da6b9c78e228fb7aac8f1c92a321391f117c8017fc1308c62188bbde2971b",
+      "bytes": 37488
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/sampler_compile/tests/parent_bound.rs",
+      "git_blob": "70950f2b6afda3ca946bcd6ef0dfee344115a0dd",
+      "sha256": "49ea642d45d41911de16d8e182b43c7340ed2a6864242e2c92f804b9e9657525",
+      "bytes": 24551
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/track_tests.rs",
+      "git_blob": "6e9857c35b3a5ca901368626e25c2e4b6c96f77f",
+      "sha256": "f133c6f1561003682dc00c1da014444d911217e3110a31500c7ba822f2e36a4a",
+      "bytes": 85312
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks.rs",
+      "git_blob": "5fa8afb80016f05a3d8d70045e731a9d530324c9",
+      "sha256": "a993dd4c412b999253a8baef7a97056f234624a25b19246ec0b1a3e7bb72056e",
+      "bytes": 51762
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/compiler_bindings.rs",
+      "git_blob": "1856b1342fa0794c43d79ed0cf2f9b1a0cac2bd9",
+      "sha256": "2355f6c5acbf5d61533d1d33198b2c37e8e2c7fa1c5a8974c3aa18ebb99305f7",
+      "bytes": 7614
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/instrument.rs",
+      "git_blob": "4e3f740e5e865c65c2f3264c561511943d8200de",
+      "sha256": "0704fbe100efca959ec17dccab79c55d6ad324db5498be5f14081538bed2a351",
+      "bytes": 5492
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/instrument/tests.rs",
+      "git_blob": "653e39485fddcf9c6d42dcb835b37eaf4c224910",
+      "sha256": "6a533f790f84377129f556d5ea31820bbf8538bff7f3ba5809ce8faacd64886b",
+      "bytes": 9627
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/selector_cost.rs",
+      "git_blob": "8e8ac3fffaec18a72862bdff18ee60bd74ececbf",
+      "sha256": "9add5890806f33ce4b93d6c444636480acccdca8f1543db7b54bfc8467720dd0",
+      "bytes": 6326
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/utility.rs",
+      "git_blob": "24088503e2bf19f616f1b43f550ebdb19beb54bb",
+      "sha256": "7e8e1668750e6c02ae8596595ae3d21b8610fe5cf63b4e40c59ecdc144e44fde",
+      "bytes": 26152
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/utility/allowance.rs",
+      "git_blob": "251bfd9aaf0d6f536f63c3459f8ee21e925d81c9",
+      "sha256": "6bc94d3e4d73617ad4d180ebc9a20e3947387c8d93eb2d4d0ba7f1a6b5423094",
+      "bytes": 5553
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/arrangement_clips/tracks/utility/allowance/tests.rs",
+      "git_blob": "a661b46c90f900c42aad63952078d50827266d94",
+      "sha256": "41287a3012cb36133e7ec0112a05dc6c4aec9f178e19b23e877b229279b191f5",
+      "bytes": 8902
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/original_resources.rs",
+      "git_blob": "149f338f30e0f63ed7899d6efb75adcd53feaa12",
+      "sha256": "5148a9538fb7fc41582b9e37fa966a194bb5eda7c1ed5c7e6dafd8f4f94a228c",
+      "bytes": 3530
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/original_resources/tests.rs",
+      "git_blob": "62f51ca5f3b1b9aa13a6d75a40a0e52e5bfb6d53",
+      "sha256": "bfb31a881eeee8553c8ff2b1359f990573e1b9b3718af99b8e355aa60187ebc9",
+      "bytes": 11098
+    },
+    {
+      "path": "crates/hex-engine/src/audio_preparation/storage.rs",
+      "git_blob": "72e532af2e89db71a701013f0f71a9ae0b0dbee2",
+      "sha256": "a41daf0fd763a5bb579540ffe16ef7fcce8152b2959718aafd7b0e38df455840",
+      "bytes": 2659
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage.rs",
+      "git_blob": "9b517e6daad3acd9d89440db51f819b8b11a0fbc",
+      "sha256": "ef2e59b9f5fe2d5f6ba646f5d41e84c86551f40d908bac956c10dcce209194bc",
+      "bytes": 34791
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/arithmetic.rs",
+      "git_blob": "f5c26bad7eefcc07d68956a0023890930b28733f",
+      "sha256": "cfd469da39cafa18a24ba740b962a8f0bc9d24a7c13f1424055ae14c3d228a6c",
+      "bytes": 13984
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/arithmetic/tests.rs",
+      "git_blob": "ff8cdc91537727038d81edfcad6571035a554e23",
+      "sha256": "b4c2c7a37f1bcde7abd76510760d321bf8f83a5919f6a58b90e7c663efc362ea",
+      "bytes": 17546
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/canonical_state.rs",
+      "git_blob": "44ce48cec5dde64487f6e7efe17e4e48b16d2de2",
+      "sha256": "6ac6586a847160c2e71cd6baf6ce40b89848fe27cc47886bfccb96fe51b1076c",
+      "bytes": 14405
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/construction_tests.rs",
+      "git_blob": "8bd93e3b71796e3fe18a26c0690daa3a543d945f",
+      "sha256": "34323eba353f515a5477043a152d8249ba74dd8009ef6f17514f9a2c95f742d0",
+      "bytes": 1454
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/document_token.rs",
+      "git_blob": "c3ea4233927df09f1036ee86d90af408b5444e56",
+      "sha256": "ba51b2426c754ad76684b3d229164bc3ee47073bc55de8d4178104b1d34efcce",
+      "bytes": 7634
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/model_buffers.rs",
+      "git_blob": "65d0ad0a3f4093559cbb9c1cc8e323837ee1fc54",
+      "sha256": "a0f310eea6c68af9a16d99ff41a58b8fd14d65d23c0d3aa7267ce3c2036d4b79",
+      "bytes": 8434
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/models.rs",
+      "git_blob": "77225c1130add47295c37feacf98207258a7fc38",
+      "sha256": "ea00777b617107d3d1909125db7a123743c1a9687fda20823594126fc306620a",
+      "bytes": 10025
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/models/tests.rs",
+      "git_blob": "9c4a0585a49dee9bcf972e5a571303259fd26fbd",
+      "sha256": "3cfcd7e31e3ebdc2508086d0a9dfd624c12258f9d2803f4bee6f481679346789",
+      "bytes": 19292
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_atomic_signal.rs",
+      "git_blob": "1a2f8ebbc76fb21fd362fdde89dce044e0adc245",
+      "sha256": "d4cd65ef7abdc88786a71d2d0fd0a0551817e8f1ea4a6d0a07a116354479a8b1",
+      "bytes": 9305
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_atomic_signal/tests.rs",
+      "git_blob": "f03610b426e52908bdcc1b62fd582df87821b1dc",
+      "sha256": "9bd4c716037fac3ce62d155295bc7d76f56bc29e34c15d15e31a693595971b6d",
+      "bytes": 11479
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_carrier.rs",
+      "git_blob": "567b672c4586ff14291dece83ede233d2a1bb236",
+      "sha256": "7fe59d7b0f91d3fb9f4919cd5048f1db2d8bf871b7396d588d054fb7200ec420",
+      "bytes": 20963
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_fixed_ring.rs",
+      "git_blob": "3c1e8de3b438783767a4ab37c1662d916a3826d2",
+      "sha256": "492b0d460fbb52a02c1ae78b05ab4aed85fa3f4fc2b0fd91938a08dcb4196e7c",
+      "bytes": 9809
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_group_book.rs",
+      "git_blob": "3c4b6519e3d6e66a8376739457e16143b1fc54d8",
+      "sha256": "825e3c59e5ef759bab02dc2dbdf5ded4a86e927e6c3e0760f4cc053d29447dd8",
+      "bytes": 12469
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_journal.rs",
+      "git_blob": "88c3cb7ce913d81f71d8a7cef1d0c146f8170f9e",
+      "sha256": "eb6d4a8a20faa52ffa794cc60f42b8e14af64397e86f6b8b8cd75f4928f2efb0",
+      "bytes": 12176
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_resident.rs",
+      "git_blob": "68e94b66b00272992dc48ada7ec1f9c728ea46b3",
+      "sha256": "3a0d32478e631ba937223952f6d39c6956a6103e9391cab3f5ed2a6131b50638",
+      "bytes": 9534
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_retained.rs",
+      "git_blob": "80469c143fde910a1cac4f7f225543862f9fb156",
+      "sha256": "29645ab9f3799113e7114c6e1278cc5054ebe9b9ec12545b2eacc8e4916073c3",
+      "bytes": 16945
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_root_fields.rs",
+      "git_blob": "fa6e6d243461e0780771d9d67ea9c95ffae067b8",
+      "sha256": "a50543f6f14a03931c3f56723135e0aa130461b63047ae95566f1fd015633c21",
+      "bytes": 8097
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_spectrum.rs",
+      "git_blob": "b7738d8573f3eb0756691f1473b7af23192166c3",
+      "sha256": "8e3f75565143e2a3bba39fcf56701dc43d930c89a2740fe5fe1289c0693cccb1",
+      "bytes": 9990
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_spectrum/packet.rs",
+      "git_blob": "36b916e7335936e76bf3a4f38cebc97592b699db",
+      "sha256": "c9be6301c58058509c51eba40dadc70a2035258f7f8d5b80d6ca8a3930c4dccd",
+      "bytes": 10734
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_spectrum/result.rs",
+      "git_blob": "8d5515ed8b50141982a417f2c65307cbbc8e0e77",
+      "sha256": "14d11d7c0299f11b26a6c47fd946ab108af34dc6630ea529e6aed70223c17cf5",
+      "bytes": 12171
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_spectrum/tests.rs",
+      "git_blob": "726be64b1fe06935fef9a5132a076d554c8724cb",
+      "sha256": "fecab43203c88701946aa73db0fd4b097ed045f70622c1e47aa30584a95ea3d1",
+      "bytes": 6942
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_state.rs",
+      "git_blob": "d72e654c36c14c7f2175606334ed1eee3caf9a80",
+      "sha256": "84859648ddb93685f5e64fb686e110bd4150928e798033542582fff24d0cfec7",
+      "bytes": 16684
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/native_status.rs",
+      "git_blob": "aed4df29c1a0b0a54e010f828d47329c34dd64ce",
+      "sha256": "9a6ad19dc4cbff721a05291a7f24fe76761386dbf14eaba37af313358f212610",
+      "bytes": 11399
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/original_sampler_pending.rs",
+      "git_blob": "c22237b3d2d7e565b81f822cc870d99a5d62840f",
+      "sha256": "3e1d4853f53a6fc1aa537e8042d7ac9db2adc2881b43af339859ca7a922832eb",
+      "bytes": 5969
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/original_sampler_pending/tests.rs",
+      "git_blob": "039ddac1a187cdcf0748a97e26fbd9a3f66b2779",
+      "sha256": "de094d512b5c43383626c2ad7d6eecfa258d5c0be08f442d6977419a664c25b3",
+      "bytes": 4538
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/sources.rs",
+      "git_blob": "92ea5cf74eadbee8dc25b53b022eee8bf16aca53",
+      "sha256": "999c5a285cc7e1f0a02bb655ba9a962767d26d40e8a9919d28a567f4f7e365b8",
+      "bytes": 6979
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/state_metadata_tests.rs",
+      "git_blob": "adc51ef1cfa2d9d594b3fb9d739a9e96c0c8cf7a",
+      "sha256": "144d0a1c0b3ca10b88bf787110494e6120580b4184eaddc4dca665b2e8d20d1c",
+      "bytes": 5213
+    },
+    {
+      "path": "crates/hex-engine/src/audio_storage/vec_backing_tests.rs",
+      "git_blob": "cf20c55a48319d7f74a038ae321b88b9b9a7db20",
+      "sha256": "2e1daddfe8bcc873325ea1557633e1f0f8a810e594c10445c0dc4f9f9ce69d98",
+      "bytes": 3564
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/budget.rs",
+      "git_blob": "c71f9b8e71daed1fab240be1c15ba64a0a4ddf7f",
+      "sha256": "a34c095c4ba0677c94a2537a5278d8a6a95ec7310d16d1aa807077daa8fd2d1e",
+      "bytes": 3193
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/control_storage_tests.rs",
+      "git_blob": "8cfaeb3b65dcd67fdd285bf7d5fab4dca300b9b0",
+      "sha256": "2e5fb6ac309b368f70c8727b4bc301e5a5bb492ff39523816bbd2bebee172c7a",
+      "bytes": 9469
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/events.rs",
+      "git_blob": "eedc29e0e11724614d063761eea3644539c39c23",
+      "sha256": "d9f7e6fa8ac97c4001eea7e55ed6236d9a2981b902dc720e679c29508aee9b7a",
+      "bytes": 2962
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/mapping.rs",
+      "git_blob": "f6823b15d03cb2fd7e76ca4adadc2574e85f27ae",
+      "sha256": "a930620ecba95b00aca60b9a111023b5cb0e99cf70842ef1c33d5e442e1699ab",
+      "bytes": 6145
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/mod.rs",
+      "git_blob": "ea7c2d5d77768bb6641fdff61296fd11db5aed00",
+      "sha256": "353dce0908f04655aed1fc9be47698eb164210fab1605298d0b0aee508a7539f",
+      "bytes": 29612
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/original_sampler.rs",
+      "git_blob": "b252e5a1efce6025969a578bacba8e84be302797",
+      "sha256": "4abd61adc31d46aa588f0e62ca720dd381b8c3b01ea4ad01c8b496ca750b720c",
+      "bytes": 8342
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/pcm_inventory.rs",
+      "git_blob": "a1b3dcbbd1699770e3c99150346a95d5ee48d5f5",
+      "sha256": "469704e53465ff2af2a8669b1be707845c7351a086795536b6da082c8f48c5d6",
+      "bytes": 8466
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/prepared_pcm_tests.rs",
+      "git_blob": "8d5e2190d767e61ff6939d0ae2b0ec3f6177c6fd",
+      "sha256": "b31909e0a657eaf84a8dfc5d5b3bd5b33bc566ded5579208730de19f925b0a1c",
+      "bytes": 10038
+    },
+    {
+      "path": "crates/hex-engine/src/audio_transform/tests.rs",
+      "git_blob": "efe7da1f4d726bcd3b79da11d79ec4de7c70d77e",
+      "sha256": "feb197f9fe55f7b7bbe95e6a1a05c34aa634b397274f4bdd394cc81afccbd508",
+      "bytes": 76307
+    },
+    {
+      "path": "crates/hex-engine/src/compensation.rs",
+      "git_blob": "791d25d82a2de969742ad137539ac62db16561cf",
+      "sha256": "a0a6139ff58352302527939356df294499c32ee9fc963524d04ea335eb3af462",
+      "bytes": 13974
+    },
+    {
+      "path": "crates/hex-engine/src/compensation/delay.rs",
+      "git_blob": "6996249a5fef61b952c88d4c9182af86f5f022e9",
+      "sha256": "8a5c855692463206a484cd6f9d6d113578853f2b156f0789d61694b66657a603",
+      "bytes": 9513
+    },
+    {
+      "path": "crates/hex-engine/src/compensation/plan.rs",
+      "git_blob": "fd916af1beb5569c0885d2547788fd67108a23cd",
+      "sha256": "6ec0af74e21bce54d2568427dd6f0c2b15fa532d2ed040ab2fff6f8a329eef0e",
+      "bytes": 7718
+    },
+    {
+      "path": "crates/hex-engine/src/compensation/tests.rs",
+      "git_blob": "b6252593307be5dc3e7c3195ef3879af62636502",
+      "sha256": "d6beb4127e091730aca753ac6d8c56bc35ad350dacbf251038bb36950b53018f",
+      "bytes": 18652
+    },
+    {
+      "path": "crates/hex-engine/src/compile.rs",
+      "git_blob": "90dcae0ed46fc0531db86b0ca1c116532b684e0a",
+      "sha256": "ddc140de67263897876b7b9907dbb4c0370992c8029e61466beb24ed31babaca",
+      "bytes": 47966
+    },
+    {
+      "path": "crates/hex-engine/src/compile/retained_target_tests.rs",
+      "git_blob": "708d40353c313ebcf3e7d3611a8ef97b157e5fd4",
+      "sha256": "da7f3449f830e32707d24b6bb32715c99e2d3d819d81553d39d05a0104dc3b0a",
+      "bytes": 9381
+    },
+    {
+      "path": "crates/hex-engine/src/compile/sampler_cost.rs",
+      "git_blob": "6bf641cc49ffb940e9d9dcd039d5d28702949d12",
+      "sha256": "6389499bc4544485730faeec5f8abe68ac1cebd0f9aa731a6dbaa36de4474886",
+      "bytes": 3273
+    },
+    {
+      "path": "crates/hex-engine/src/computer_keyboard.rs",
+      "git_blob": "431afc46f00b78d04318597550c47d645d2caea8",
+      "sha256": "b437e785144c13a83ed3e03c0e2778dcd0d55dadc37f4649e841ed0857286a41",
+      "bytes": 67917
+    },
+    {
+      "path": "crates/hex-engine/src/computer_keyboard/tuning_tests.rs",
+      "git_blob": "04fd50a1e732c111b93db79ae5542c642d550ae6",
+      "sha256": "41bcd92ee1a056090c60f9874cf1360c9f5fff7177fcd0583abc938aab6539df",
+      "bytes": 11201
+    },
+    {
+      "path": "crates/hex-engine/src/effect_resources.rs",
+      "git_blob": "a259874d83e432e0c8889b3dd3440af5f6e310a0",
+      "sha256": "e83a6508ac4fabb9942b74dbd41bf4a56d35b65c50e175c00946f2083a10d349",
+      "bytes": 1825
+    },
+    {
+      "path": "crates/hex-engine/src/gain_envelope.rs",
+      "git_blob": "3e036597114eec7e9e1e11fd600693f5747420e5",
+      "sha256": "1f2bfabf09349618692e49f81ea10ea15de6cec5efc0d714dbf462359acd3281",
+      "bytes": 26866
+    },
+    {
+      "path": "crates/hex-engine/src/gain_envelope/construction_tests.rs",
+      "git_blob": "201433d204afec8fb9062d026b2e2686ec4e37ad",
+      "sha256": "924713d1f8e83aa74fc989e437011ed65770f92b69eb89bb34967100dc1ee3db",
+      "bytes": 4203
+    },
+    {
+      "path": "crates/hex-engine/src/gain_envelope/persistent.rs",
+      "git_blob": "6f7fe9fbd49468e626fab2a892ce3b444984b919",
+      "sha256": "da8e3ea7392fe77c43f0fb90e4cf75a2f5e1c0ebcabb7b63c5bafeac173e949e",
+      "bytes": 7995
+    },
+    {
+      "path": "crates/hex-engine/src/gain_envelope/persistent/retirement_tests.rs",
+      "git_blob": "870f65ec7e85a70d95460c60add05e06e881f1ca",
+      "sha256": "3ad3a8c963b818006db3979bb6aae57cc01f8563fcc67496cb69cbbd95e3ed3f",
+      "bytes": 7795
+    },
+    {
+      "path": "crates/hex-engine/src/gain_envelope/touch.rs",
+      "git_blob": "fea73f3b28e3c910ac730c70cc0e7a975c40ec17",
+      "sha256": "f39da1f6a1003e1b8862339ea81b2c3b2764f4fc5ed143e3b1f3e110df12e743",
+      "bytes": 6876
+    },
+    {
+      "path": "crates/hex-engine/src/lib.rs",
+      "git_blob": "f7d07b93d7035ce47ff0943aa169897232bfc07e",
+      "sha256": "31e8d76bbf67940e4112db88f5c1237f8ec7a6a7866b43851d73ec6b1a9339fe",
+      "bytes": 127144
+    },
+    {
+      "path": "crates/hex-engine/src/main_chain.rs",
+      "git_blob": "fc3c7cfc8cb6cc75bc2cb99c921db75c0d3bc4fd",
+      "sha256": "4c3beb87b0a5eb26f85eb9cce07358e980fc8414ffddab306d64f9f35711e3fa",
+      "bytes": 2046
+    },
+    {
+      "path": "crates/hex-engine/src/main_chain_review_tests.rs",
+      "git_blob": "aaf436d96cb429d5b91cd30a3642aeaa7889d56f",
+      "sha256": "fe15b27be0523820b5595629f8d6300866608986004ff1b8d1df41d78c82043a",
+      "bytes": 7221
+    },
+    {
+      "path": "crates/hex-engine/src/midi_compile.rs",
+      "git_blob": "28c30dfd88e878e443685bdbc6bd6ca8208b53ce",
+      "sha256": "7296ce26cb47725974be0ac3f609e6615d2083e5347dcc7b79ab0e79269125ac",
+      "bytes": 26571
+    },
+    {
+      "path": "crates/hex-engine/src/midi_compile/construction.rs",
+      "git_blob": "04ec88b8043cb4bbf658f57eff869cf60f1f05c3",
+      "sha256": "abcf44b1da17eff3a72c4867c6a4be0a0fd8e088ef6cf1d59c847c1c6dca3c54",
+      "bytes": 6917
+    },
+    {
+      "path": "crates/hex-engine/src/midi_note_bank.rs",
+      "git_blob": "c1ded0fc48caa59467b7dc33caa38a24a2b11998",
+      "sha256": "025d18b30a782a98881e177b8b0b0aa9e8b64f37479b708ad1e71b5fc1d0af7a",
+      "bytes": 30660
+    },
+    {
+      "path": "crates/hex-engine/src/midi_note_bank/scoped.rs",
+      "git_blob": "ce238ac65e637c9b0e05df9e969ba20b98de24ae",
+      "sha256": "237c5dd353c5b3c8920ef1066ee2c88e6b54d29f2f07af011f8d37c976af8f1f",
+      "bytes": 4686
+    },
+    {
+      "path": "crates/hex-engine/src/midi_note_bank/storage.rs",
+      "git_blob": "f417a7899ea5dca1cae9cc588ac8a564d6239598",
+      "sha256": "b489533d590140370bb320a0e06385b2f4771e4aa1541aa69ea0695b8a93e83d",
+      "bytes": 2620
+    },
+    {
+      "path": "crates/hex-engine/src/midi_note_bank/storage_tests.rs",
+      "git_blob": "c8127e3f1ac58e3c14b9b9717baa7ebfe8b923f9",
+      "sha256": "e403a8cab9208379c3d340dde0a10f45e219d01f4957070041fbb4bb7a210133",
+      "bytes": 7714
+    },
+    {
+      "path": "crates/hex-engine/src/midi_preview.rs",
+      "git_blob": "207d54f54748130019a4f25e8076452d01d80224",
+      "sha256": "14caef0c50ba6dea69fde5d430b7afb8ce423d25f0bd5811c82399541ce31a5b",
+      "bytes": 14572
+    },
+    {
+      "path": "crates/hex-engine/src/midi_preview/persistent.rs",
+      "git_blob": "b2b7e0e235e793b0c1594caf4c91bf7590f69bdf",
+      "sha256": "bf80679bb874c46135de900ccd8db545add30fa2c28cc1fb111b6980aea7b884",
+      "bytes": 15665
+    },
+    {
+      "path": "crates/hex-engine/src/midi_preview/persistent/compiler.rs",
+      "git_blob": "dd2f22b9ee6776142bb39f1d7b4362953ed80b76",
+      "sha256": "3436ad81a21d3e04bb047d81ccfbd7af4cc0ab04730b4d3be839bc223d2fa079",
+      "bytes": 4050
+    },
+    {
+      "path": "crates/hex-engine/src/midi_preview/persistent/nonempty_tests.rs",
+      "git_blob": "c0afe99047251d2c7bd3a0a8e0b5ba4372f737ed",
+      "sha256": "2ce2c2a46b69d662de5e0aaa8c6063d8a947af18c2152c4a8cc4edfc88077c94",
+      "bytes": 7710
+    },
+    {
+      "path": "crates/hex-engine/src/midi_template.rs",
+      "git_blob": "bee2711410abd11a8500226f5296b3d2c814ff88",
+      "sha256": "3bebf48cac1e23d2d5f74035317f83398ec6c7a32b11af9f44e9510df57692b8",
+      "bytes": 28141
+    },
+    {
+      "path": "crates/hex-engine/src/midi_template/spans.rs",
+      "git_blob": "ff473cbb5e6a8886436fa17d253461c9e4cf5717",
+      "sha256": "bb98124f1a476cfcfacebc395e686a673e69039f8367c00114d83cb5c207a00a",
+      "bytes": 55359
+    },
+    {
+      "path": "crates/hex-engine/src/midi_template/spans/storage_tests.rs",
+      "git_blob": "4cc7d9a95e057df33a77d3cc9a179ff4fddb957e",
+      "sha256": "d21897de4eb363c095d621ce0fbb94cc5cfcb90840e8ee3ffafea5102947ab25",
+      "bytes": 8174
+    },
+    {
+      "path": "crates/hex-engine/src/midi_template/storage.rs",
+      "git_blob": "9f219d8e4674680052151509f49151cbe4698f1a",
+      "sha256": "92d51de8df3a3bac78e7c0b5eabef1e732c4eff48eeaa1b564040fd94b064859",
+      "bytes": 5899
+    },
+    {
+      "path": "crates/hex-engine/src/mutable_instrument.rs",
+      "git_blob": "b6c1fe248c95557c8217caa4ddf2b8bd9e36c47c",
+      "sha256": "932b496b19f5070ed7c567fa130afef51ada3ed9cccf0a572a7e98f7b26e9818",
+      "bytes": 46201
+    },
+    {
+      "path": "crates/hex-engine/src/mutable_instrument/resource_fixture.rs",
+      "git_blob": "5f21b958dd4d11dd7af3c6572f26769da434251e",
+      "sha256": "9a81a8c38349ffe1a995ddee085038c2eb0cd1e2a88b79ab133db4b2b301e703",
+      "bytes": 11234
+    },
+    {
+      "path": "crates/hex-engine/src/mutable_instrument/resource_tests.rs",
+      "git_blob": "8e49ac14d9feb2a69eb819d213939cd3c0d03d21",
+      "sha256": "0be9cdfdc2df38920ebd04c1fb3903b022c72b58f4e6b7e7bb141dab625b0b7a",
+      "bytes": 8935
+    },
+    {
+      "path": "crates/hex-engine/src/mutable_instrument/runtime_pair.rs",
+      "git_blob": "a21ca9b3736833f7eb344f52d68be5a5b940cde0",
+      "sha256": "53e0b18dd90e4c204259ba898fcfde1c1379c5792c8a14365391942cf5820c39",
+      "bytes": 6227
+    },
+    {
+      "path": "crates/hex-engine/src/mutable_instrument/runtime_pair/tests.rs",
+      "git_blob": "dbf786f3705dae56f35984419730193f643f7174",
+      "sha256": "db2e1c2b3e816246550710b0b9b4321f948a3bffd9fd147ab2fd56d78df84d7f",
+      "bytes": 9026
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources.rs",
+      "git_blob": "d6999b347e8b5194d766e49e8a31a11dc8d69991",
+      "sha256": "4ea6e4006c5004d1e4d87f8e435aad05c45104c8a8cbb00048ae2729bc6ac8ee",
+      "bytes": 12941
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources/effect_host_tests.rs",
+      "git_blob": "6d6be8a41ca7e0a07e50d6b13d4c50babf8e5865",
+      "sha256": "4dc2fc8d9ba775df132ea74872dba0acf9971db919ae0ca698f796855885aaf0",
+      "bytes": 4296
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources/effect_scope_tests.rs",
+      "git_blob": "072d60bda897e8db2c31a1a6637265003af61b97",
+      "sha256": "24401a80a99dde27b8f2d2a132609ac160bd0aa656c5fd80359e5660311210ab",
+      "bytes": 19974
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources/ingress.rs",
+      "git_blob": "b49d14958630a411f8703183f98b4235ad043c9d",
+      "sha256": "2455960dda9c692434a1c0c8a9f2daa60c56f12298ad4d0464dce090df965db0",
+      "bytes": 13781
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources/producer.rs",
+      "git_blob": "19b99674e317190a28d4088d6341b0dc6d99011e",
+      "sha256": "48780284c806aa0fa0968a92f18b0d2955c60186b65d89c6db2921ad215776f7",
+      "bytes": 16244
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources/producer/tests.rs",
+      "git_blob": "efbafbc29cf4313aa40aea1fd684e7d394700a63",
+      "sha256": "483cd80059e4099b85454c295ab855bcd7f739eeea54d16dbd13495a278e6ebd",
+      "bytes": 9996
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources/retained.rs",
+      "git_blob": "ba8a87773d47ef4cce70eaf47ff2e31cf32094c4",
+      "sha256": "29444530fecbd3de63c535dea3971709056673c6617d91299665b3ec9ba4ea74",
+      "bytes": 21718
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_resources/tests.rs",
+      "git_blob": "867c4472ee353abc07ebb0be1e66b1780d144bd4",
+      "sha256": "c45763a0d307a8bf9b396a71b14830dc81dc1785677527ef75571126c35324d0",
+      "bytes": 29973
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_view.rs",
+      "git_blob": "363da704c7a6ae1a82212d1b11ceae16bc3f6127",
+      "sha256": "3bb85cc2dc9528568cec0938cde591959fbcb287c3a660ac742b89b09b6880e3",
+      "bytes": 28018
+    },
+    {
+      "path": "crates/hex-engine/src/native_device_view/sampler_parameters.rs",
+      "git_blob": "cae7c159720bec2737613f2f9e02ee0e890959c5",
+      "sha256": "9a8a8dd32a5c73a8a3a00ea8f22cf67364cd993cfd1d1951f6a78d6ff9347cfc",
+      "bytes": 4795
+    },
+    {
+      "path": "crates/hex-engine/src/owned_shared.rs",
+      "git_blob": "bf8e144f192166a0d77b11880fb2b90970383e3d",
+      "sha256": "200ff1f3dadfbc5bda8f92e6aca355fa7ed9355fc2a5fa6ebc2b49f3f4a5d157",
+      "bytes": 12580
+    },
+    {
+      "path": "crates/hex-engine/src/pcm_arc.rs",
+      "git_blob": "08de5f268023ccb4c02fbc4daebfe3f1fdac3b11",
+      "sha256": "c378b3e9bd7f5d916d2e0b121166ed38d5123b39f3d81aa01451ccac34e27243",
+      "bytes": 5011
+    },
+    {
+      "path": "crates/hex-engine/src/playback.rs",
+      "git_blob": "86e00661546e6640ac151d2d044abf0279048b4d",
+      "sha256": "bf1d5cc1ee26b6064d9a2edc66ae90cfc5d26d3bd330b9cc1a39db6ee7baacca",
+      "bytes": 68849
+    },
+    {
+      "path": "crates/hex-engine/src/playback/candidate_storage.rs",
+      "git_blob": "bc5f885d801db111172483647d28f3eeebcac751",
+      "sha256": "511f2b2c9c8012126b38c8c72b2b7b6704995d8758f26db506b7c6f31d62f8c5",
+      "bytes": 3433
+    },
+    {
+      "path": "crates/hex-engine/src/playback/metronome/tests.rs",
+      "git_blob": "953dd56a411e0960acca2d33ea2ae33edee3237a",
+      "sha256": "d7b238bc1ee39360c6156188696fa5e17fd1f5eaaa96f104ba35c88b6632d231",
+      "bytes": 9562
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_revision.rs",
+      "git_blob": "daceb6651a8f58502bdc06cf92babf2f7e1f7e2a",
+      "sha256": "38919c60d2586658c90a7e7576ab1da0d218d4768e02b9f67f08452f006d8387",
+      "bytes": 37204
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_revision/assembly.rs",
+      "git_blob": "440748f842472d04396ba42f23431314f4a9ad00",
+      "sha256": "c5b1407b5215fc5e7f979e979a79d1a51f9414f79c1b27a216b8e238fcde138f",
+      "bytes": 29216
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_revision/assembly/compiler.rs",
+      "git_blob": "dbae9466b322f1112214b61726d43d0e429692df",
+      "sha256": "0c980e3d570c1490deb192bda238b03fa8aa372c5da7b63048e1b1e564f852fd",
+      "bytes": 3019
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_revision/compiled_reader.rs",
+      "git_blob": "467827dddddc3de8c39c1425e5062de28d9aed49",
+      "sha256": "20b7ae750f3fe4c32b69f36608b30518ba831661567839c522df884108bd2102",
+      "bytes": 31835
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_revision/descriptor_storage.rs",
+      "git_blob": "7905c1186ecabc556031712f080e400d405ccc43",
+      "sha256": "f05c4795985ec858ed345b3c05bddff94d292b7c2be9c98aaf2de28dbffc02e5",
+      "bytes": 2135
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_revision/descriptor_storage/tests.rs",
+      "git_blob": "8448399d4239c8feee081b2c4fa5287abbbd6fcc",
+      "sha256": "0a6d9df30ed7e56f782d1735f9c5180f0aab859e07f099dadfe7a6a4b4068a9e",
+      "bytes": 9146
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_revision/resource_tests.rs",
+      "git_blob": "e0e5720a09d8934d63608c5d4c063fb29d227c7a",
+      "sha256": "dd78fd92548e239609b6d6e74ffad35b00d0a131711cd7fcfb691885d95d6f71",
+      "bytes": 19385
+    },
+    {
+      "path": "crates/hex-engine/src/prepared_tempo/persistent.rs",
+      "git_blob": "d57de8f6dbe9651648411e2de2579902017b2d57",
+      "sha256": "2e6407c120f3ac65522f7573f4a776d19bba06e8af193c6a8b57c5f63c91658f",
+      "bytes": 5498
+    },
+    {
+      "path": "crates/hex-engine/src/project_output.rs",
+      "git_blob": "166c1fceab0a9d60d1432946ff8670b673b78564",
+      "sha256": "8f1792b3f961a16cd006bee9920da0e0455ac19d510f906f3e341e28e507c882",
+      "bytes": 12039
+    },
+    {
+      "path": "crates/hex-engine/src/retained_control_job.rs",
+      "git_blob": "8ec729dabcbdff83d6ede86e76a680d4925d02a5",
+      "sha256": "d6a889b28b1ce7c92e6a01e84440aafedf64f172b86fb45b3aa466ccacf7c906",
+      "bytes": 8154
+    },
+    {
+      "path": "crates/hex-engine/src/retained_control_job/cancellation.rs",
+      "git_blob": "3aefb8680a3ca4ccab78f8b70cdceb4d30e4070d",
+      "sha256": "70b41968e989e0a9352cc14a4fd141a67793d4e382de23f2a99ce5adcb008405",
+      "bytes": 9532
+    },
+    {
+      "path": "crates/hex-engine/src/retained_control_job/route.rs",
+      "git_blob": "5b76f9bac921501ac20af6cdd5b4a2d707f51031",
+      "sha256": "7f25e9e249c5137a6764e0392cedfac97ce687c473bf6c61841e1387e19d6004",
+      "bytes": 1939
+    },
+    {
+      "path": "crates/hex-engine/src/retained_control_job/tests.rs",
+      "git_blob": "0d8a07a6100fd2bb25dc71954073e6c799f3cce3",
+      "sha256": "62dc7e78b91521b9f3bd5c311c22c6d3313e7d7b4edcc808d2b692877af82ab4",
+      "bytes": 8995
+    },
+    {
+      "path": "crates/hex-engine/src/return_feed_plan.rs",
+      "git_blob": "25b9fbe2e6ecdf8a86a7ea742e00c6abf0971210",
+      "sha256": "275476af94e55eaf4433485e4ad4e69c56d5b5e6f1330c000fd3f41421f415f9",
+      "bytes": 15148
+    },
+    {
+      "path": "crates/hex-engine/src/return_feed_plan/borrowed.rs",
+      "git_blob": "53ca00877f9e72ce1787ac5c03b43389d0bb19fe",
+      "sha256": "56b4ef21a3b6379f61ca922129fea128a6ab87156c2ddae4e5e1c03645bbe167",
+      "bytes": 9352
+    },
+    {
+      "path": "crates/hex-engine/src/return_feed_plan/borrowed/tests.rs",
+      "git_blob": "6f485955862c5695e3b3345b91c681d40c23ab2b",
+      "sha256": "77a43a686febeb98035a5ca6c1b5ac6ef91f52ff2143ef14b4e8f8eb1023d0be",
+      "bytes": 5702
+    },
+    {
+      "path": "crates/hex-engine/src/return_feed_plan/persistent.rs",
+      "git_blob": "11cdde9c019826cf8f4ace71ddc13628cb99a785",
+      "sha256": "a92cfe5447973813c2992fc438e783512f0509fdc58c2815980fd1fc23360558",
+      "bytes": 16043
+    },
+    {
+      "path": "crates/hex-engine/src/return_feed_plan/persistent/construction.rs",
+      "git_blob": "6ae0824cc8c9a88d89b7883acc8c93c01541cd0c",
+      "sha256": "8d6f54ee515601838d56a4ed6f8f019672e286288e677d495ecf3b45ab29fbf5",
+      "bytes": 5301
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields.rs",
+      "git_blob": "107e58ce2033da76497b2846962e2c70398288cb",
+      "sha256": "8672410a52a05e42494107cb47940dbbb11fefe4d3b0f20f26a2d29d570184d1",
+      "bytes": 4088
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/captured_source.rs",
+      "git_blob": "3d4838efda92cbd25f840d2c805c7ab3016074c6",
+      "sha256": "bf1f0c2901afef262cb1fba752b5f1d355fa3a9dee30c8507839f1ad49cb0d76",
+      "bytes": 2513
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/event.rs",
+      "git_blob": "f4fd27b26be7ba9411df5ae5caf152b4ca0368f9",
+      "sha256": "f2a910a4ab89ad7137c7836bae47c2690023d81ec72e5bbc5a59f2545ea18ebb",
+      "bytes": 3569
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/family.rs",
+      "git_blob": "24b802d63cee968fe1eee3a3251ea5b43fd45beb",
+      "sha256": "cf4b5b8d6c0fa283a5c756411820cf19c286638fd828d821857c27253ad7f1c5",
+      "bytes": 10067
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/family_inventory.rs",
+      "git_blob": "0dca2eba34cf0492b8f61141051f2486cd145203",
+      "sha256": "fff3416f641c797ad78b197c929a4224802e3f4594818ed26037b5838769d2da",
+      "bytes": 5050
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/file_slots.rs",
+      "git_blob": "b94b86ab0d65afc40e895e29079a0fee6ae5df5b",
+      "sha256": "ce1ecb47dc0646ae5e235a23d62dc5dc17dc18cafe64566e260691646c401c29",
+      "bytes": 3557
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/native.rs",
+      "git_blob": "7b5ef02fea55373bbfbcdff2854610661eab3164",
+      "sha256": "29a68a9342194825efb5a05d4e50ae2c4046dbecf822005a2db68acc5d2a41e6",
+      "bytes": 9815
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/original_driver.rs",
+      "git_blob": "0d563facf939f4d04baede277ecf5d6267633a17",
+      "sha256": "1029e3091f49a128c1630367ad0a8c17f067609fc6d9891f8432ef8e874e4e4a",
+      "bytes": 13385
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/pending_session.rs",
+      "git_blob": "8e523a61f6902a98f8fe06ebe216f0067c00c4bf",
+      "sha256": "1e48d4c0044908788c9ce4a868b4e6e8c00d6a5a8254f17b435d89649374b867",
+      "bytes": 10369
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/physical.rs",
+      "git_blob": "b2297532682f03bc8e8a3bdb81ab24f4af384949",
+      "sha256": "7f33b349387935285bbe3ff9a8141e79691d844d26b117117f6217f1b52eb8b8",
+      "bytes": 7615
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/resident.rs",
+      "git_blob": "e2ca78e514b85732a1c6d49779c7d80b1434198f",
+      "sha256": "7519e76c06b30f748f7549ac335ed5613367f25425fdb45e5a4f4ac6b08e0c65",
+      "bytes": 6865
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/snapshot_view.rs",
+      "git_blob": "63b9b46e2b7e9398126030e027da8affe59c38f7",
+      "sha256": "35375e09efbea8d704e6a011a9af2c190cc6b3a14d06b26eb171f0c63837023d",
+      "bytes": 4979
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/spectrum.rs",
+      "git_blob": "e827b61c37b326f2ad4769de17733d69b52af917",
+      "sha256": "1d6a79a82e68154a8074f2b36cb240e3b96bfa2805c6ffed8238165bd7e94879",
+      "bytes": 6054
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/tests.rs",
+      "git_blob": "b2509a1deb58389bcfdac792658963aa730ba641",
+      "sha256": "6c8ce661d716d731bb5beced32475aa1db66148dc14849c461f2a9d2e2182c3b",
+      "bytes": 3449
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/waveform.rs",
+      "git_blob": "660a6d58531e2e780f06a340dc91be88355df4ef",
+      "sha256": "776455201a5d230666143a4c5e38525679c70f84a209a8f2ad9a4a6c1d979b23",
+      "bytes": 3841
+    },
+    {
+      "path": "crates/hex-engine/src/sampler_host_fields/worker.rs",
+      "git_blob": "046b8422313c754aba3c177852a8392a072c0d79",
+      "sha256": "1f90b53ecb869d3ffa6569551f66742e88aa5b249fc98d6004070727408d13d7",
+      "bytes": 10937
+    },
+    {
+      "path": "crates/hex-engine/src/session_audio_preparation.rs",
+      "git_blob": "d666760ca15ffaed531adce52a25a4b0ee6a55d2",
+      "sha256": "203db906dd5b842fa25c7f96c61eea2f95b3d34e683a20a6d5e38e306de654a5",
+      "bytes": 20320
+    },
+    {
+      "path": "crates/hex-engine/src/session_audio_preparation_tests.rs",
+      "git_blob": "58272ca629c4fef20908e205cee02468e580bf30",
+      "sha256": "26f17f129310fb753ba2bfcd15e7f35b5361a88ef5fb6bcba865065f5e0961ee",
+      "bytes": 14081
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory.rs",
+      "git_blob": "82067e11db09e9215e0c705acd42188c6caee34d",
+      "sha256": "c205019c218885ede6c77f40eacd598857e68a0ff918577220b57ffa5e7264d8",
+      "bytes": 77825
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/audio_assembly.rs",
+      "git_blob": "ebe96baa4f1b6c3f24ed6520cdef223fdb2876e2",
+      "sha256": "7b5ebb64a060383049af42c6aea8ef2ea1c153d48dc12c96dff60cd6ea1e31a6",
+      "bytes": 42323
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/audio_assembly/cleanup.rs",
+      "git_blob": "8570d63ae839328166cd2f74a349a33feb46cbb4",
+      "sha256": "06a216c39473eecc9a46b00a9995b951b6be43ef24a699ad1890be18ddb6c1cb",
+      "bytes": 13115
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/audio_assembly/compiler.rs",
+      "git_blob": "0fa6203f19bcb815b4f114ae94d85ea105d7613b",
+      "sha256": "f5a488846783ab0bfa75021bd71065bae62de0c930732ef2faa676fcbc885f15",
+      "bytes": 4253
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/audio_assembly/midi_cleanup_tests.rs",
+      "git_blob": "cf8848ee8c84737e66f9fbae625849373fefde4d",
+      "sha256": "8c9f17a4e6e3daf166de5be77c59df00d794989d1b6070d5acc3e40e0304c3dc",
+      "bytes": 10761
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/cleanup_preflight.rs",
+      "git_blob": "f359c7d0a650a4a7779a936b78c6edeeee6b88ae",
+      "sha256": "27e2ad745a85a02a9da4bbb7b6333cd4c0e92f052e7e1fe85a1b0657ff66c091",
+      "bytes": 5777
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/midi_storage_tests.rs",
+      "git_blob": "296f434d45361a773b06d4a2d38384ab2bb0c384",
+      "sha256": "1671891288b0186ce41f02633558afb805c7268b94e98baa579befd108b632dd",
+      "bytes": 10434
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/mutable_factory.rs",
+      "git_blob": "d410247befc0299002d00b9d28742748270c9e7a",
+      "sha256": "575ee93d7ccaa327fde4ce6b1ab411c18ec2e3e77ca1a3795f8716bffb7e627f",
+      "bytes": 5776
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/routed_midi.rs",
+      "git_blob": "ff28f3d1efee9cafcd50be0252f9be6c76988973",
+      "sha256": "ea602540a1024bd4bb832c97204977c8d11c00b7d30ae775896b0a472a8fb408",
+      "bytes": 9219
+    },
+    {
+      "path": "crates/hex-engine/src/session_inventory/routed_midi/tests.rs",
+      "git_blob": "d4f51743eddcaf4d2883e248f5ccb3a72b7540cd",
+      "sha256": "dc87038946b8ac1e1037d7825c79a2dfc051302924c43b295bd9f31534fa62b3",
+      "bytes": 8900
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback.rs",
+      "git_blob": "64b606a1a8d691c94ba6b65500c189c9344da477",
+      "sha256": "ea77a639485b810027e83bf3ca21b7a204109facb75bf1c85e5f8486c75647fa",
+      "bytes": 59351
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/analytic_continuation_tests.rs",
+      "git_blob": "f5449ab4c1f2b4e2df8c1566ba3e3ae2143da79f",
+      "sha256": "d4a99b0e8d01a54fd3b53503526b64c591520a57518213440afa502464bc6afb",
+      "bytes": 27006
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/analytic_import.rs",
+      "git_blob": "a1df80d99e0532217c7f17ceacc828b753e17dd8",
+      "sha256": "17e37caa3fb2de971dc005327a2f127acd07d73eb953f649878f10cc12897cc3",
+      "bytes": 12905
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/candidate_storage.rs",
+      "git_blob": "4e3db7faa1be2035e505524a1fb1d36eb690c941",
+      "sha256": "353b2d55c6ebb89d176a4c5403a6d1e2701ca41a7769b22bfb39f392c58830d3",
+      "bytes": 11138
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/candidate_storage/runtime_storage_tests.rs",
+      "git_blob": "67c5fed42eca4eff1ad766276e26aee1e44bb807",
+      "sha256": "554ce99a3342b2b3078d1a4ac6c6773efa5ab21d2748ce1ae5cf3a29cbc121ad",
+      "bytes": 4597
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/capture_routing_tests.rs",
+      "git_blob": "08af02c0578739401702bb234dd7407e9a316f49",
+      "sha256": "a97f25801b31a5d8398aa70860300f43541568c166ac4cf9540b60c103a85d7d",
+      "bytes": 6884
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/capture_tests.rs",
+      "git_blob": "6435c364fe063e40e72b870258899160e5036f03",
+      "sha256": "f6c118c954fc5f7361ef7d68f1f612d6cb1ce4d32c13086c5fb7a787ec8ac6cc",
+      "bytes": 49796
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/compensation_tests/monitor_clock.rs",
+      "git_blob": "c2c78844d3e42b6289e40736ec719f2833b2593b",
+      "sha256": "dab5e2242fa5fea0d286f40935e9ffdc3207494d841400b5a4a9d381906176c2",
+      "bytes": 6973
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/compressor_tests.rs",
+      "git_blob": "fe7727a559f1d9f9ee51e4ec250af478eef16d36",
+      "sha256": "79c5b5c5d02f3c58de32304697ef065e3b722f3a1b068ab0cdf6bcc393897169",
+      "bytes": 12000
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/device_capacity_tests.rs",
+      "git_blob": "9a7c4f4d3f57e9fbcb0e86cefe08243bdf8c81e3",
+      "sha256": "86bb7e24f4f26b22b12ed8b3fcacb1bf703204f0d3dfa5c69d9abda53ff642bb",
+      "bytes": 12495
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/effect_tail_budget_tests.rs",
+      "git_blob": "65a286282ea6a65a1aeb7a0b183d12ffbc898957",
+      "sha256": "0426b818785e43e07d5fbb64e347ba86098cf9197d0da6e5058c24a9fc6d4faf",
+      "bytes": 6906
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/gain_recording.rs",
+      "git_blob": "fc07a11656129e8d4cede665aa2c16858cec2d18",
+      "sha256": "63cb6bd2f86a605046e27b7ed7f8661af447495c68fe918d794b2d358f72822b",
+      "bytes": 6476
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/gate_tests.rs",
+      "git_blob": "e407f66a7768c22af4065a5dbd69b51bdb9f9094",
+      "sha256": "0603ee7b7f8359b222ef011c0cc7af1b2128f39c7d5038c4645d44dab4bc7f3f",
+      "bytes": 10430
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/handoff.rs",
+      "git_blob": "173329563ed7c919a7328aa948981d46e65a269f",
+      "sha256": "b8da42f386a4f027e3fe4bc0cd1285d0e7a9826bcff5fb22bb1f26bcd3cc42a1",
+      "bytes": 162279
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/harmonic_accounting.rs",
+      "git_blob": "033fc6eb4b34cad1679fc2c9054e3f7c3980e1ac",
+      "sha256": "8feea27072ba00b600db222f84a6b174f89dec53ef6bff4ebf9cfa46f5062f89",
+      "bytes": 9862
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/harmonic_accounting/inventory.rs",
+      "git_blob": "3b8b54abd6bebd0597036f2a63c74be1ac387492",
+      "sha256": "dc616e780c5bbf170e5cced9e558de43560f8146480aacec978c356a703aea3c",
+      "bytes": 13767
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/harmonic_accounting/payload.rs",
+      "git_blob": "334b98d5e7e972135e350138a135c0197510809b",
+      "sha256": "13e34da6099a6d086d13cc2e2656704bff4484906c15a0840fbc9f914517c91a",
+      "bytes": 8338
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/harmonic_import.rs",
+      "git_blob": "57cf60a41606c1ecb62f7252f7df60f0a2dbe641",
+      "sha256": "54349cd12e7dfc544a84a0e321f099bb3dea5eaeda678bd7c75ec6decc8fc1c9",
+      "bytes": 12875
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/harmonic_tests.rs",
+      "git_blob": "cb7cc2a39390771b97f65f2a7a62440377869bc8",
+      "sha256": "37b5afd3b7098671af10e5b3058cf5c7fa84745a2d816165e949120529887456",
+      "bytes": 21034
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/instrument_memory_budget_tests.rs",
+      "git_blob": "4becff1607a857ee7165446e31a83b2559a7b2fa",
+      "sha256": "3b4271f9a5cbedbd5d282ad876748c2ac201b2a445bed7913f03fbbcef84ff20",
+      "bytes": 10370
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/live_expression_tests.rs",
+      "git_blob": "c6c7887a0ef2f8045f6a61e27e9dcd771955d1fc",
+      "sha256": "18a3172411573c277953312831cee05a0ac817d2e0bf12a9da5ca4b96ede5548",
+      "bytes": 14763
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/mutable_checkpoint.rs",
+      "git_blob": "48a75bd968a5ea78e1714dd4b12dc735b9548a8f",
+      "sha256": "a74a025729b82eee91de8f006c13c6d2b640ef252e4e18ddeb62b0c3a493dff8",
+      "bytes": 15182
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/mutable_long_tail_tests.rs",
+      "git_blob": "24521778154337ea218e6d785dff606c3d2c7cde",
+      "sha256": "7b12a4663c76f18567f14eac81c9f23ba9f86b16720c21550b382f1056a69fef",
+      "bytes": 8436
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/operator_filter_tests.rs",
+      "git_blob": "7818d0c7738dcdd047f8a8d34b7cdce47e9cb11c",
+      "sha256": "33f7b324c346aee6f0cf9ff8df9b0c9363c1e685f79fe981b53c808883c1767d",
+      "bytes": 13878
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/preroll.rs",
+      "git_blob": "a5a8963699a0d4c117f5f160a592fc865a5f6e45",
+      "sha256": "f2bca7747ce07c91a0a29e832c9f3299b1d3dbe45dc06e3594ab4958bdf9d7ce",
+      "bytes": 20354
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/render.rs",
+      "git_blob": "9bc318e4c503280b875f76ff80844275dcd76dfc",
+      "sha256": "11ef8afed84e45b51766377a9c0b2594af72719380d6674a622776c0f09f3dbc",
+      "bytes": 94476
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/return_effect_tail_tests.rs",
+      "git_blob": "2dc4215de725de5a2221a625a0d30a4950f988b3",
+      "sha256": "ccc8631a505826b1b2cd9f95312dac83d47391de8106b4c2b36fe7fd040c53bc",
+      "bytes": 48747
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/return_effect_tails.rs",
+      "git_blob": "b4b136c6d9b2f78bc474280b18aa159df793391b",
+      "sha256": "1d6d37b60fa19f64d03cb26363cc56c750eb91bc9af7ddd617432a79c94357ef",
+      "bytes": 24630
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/return_feed_tests.rs",
+      "git_blob": "b2d6e9ed476379105f9b89e019b706f1854e7e43",
+      "sha256": "8ab1a56d9b1dafbc608a2b20518c545b78c9b2511c699eb0e4b86da7645fef04",
+      "bytes": 4667
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/routing_tests.rs",
+      "git_blob": "51f3acb51788eb7fdc168c14911da53cadfbdc19",
+      "sha256": "7a90a0f4c080d55cb1c7fb17a496bcd0092ba2bf1cfdaa59584928c26bd44342",
+      "bytes": 23411
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/saturator_tests.rs",
+      "git_blob": "c371eee186204a06a569c41ef3170d264baac70b",
+      "sha256": "f104c5771607afa71aedaf6cce1944a91ac3273a6ad55c40576c945891cb599d",
+      "bytes": 8499
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/silence_effect_tests.rs",
+      "git_blob": "a2d8fc050e956f1fd42e875e4c16c2d6e0ff9b8a",
+      "sha256": "291d201c0afe6f7d1958c7ce13fb080c720497efd84070817be3a423defd1608",
+      "bytes": 3146
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/source_loop_tests.rs",
+      "git_blob": "5e2e9bfaac5bbba5cbff9a1a24ac2145badb4696",
+      "sha256": "c392e25e4d09e9edd10d7d559723a5e375efb94468e35773a249ec71cd9e4f7d",
+      "bytes": 19602
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/stream_action_tests.rs",
+      "git_blob": "99a3b303c6eafbc665c5639be9003976dca63696",
+      "sha256": "748619a29b3f7a15757288e5442e3022137754157bc2c49e123d0e23f54613f1",
+      "bytes": 13912
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/tests.rs",
+      "git_blob": "c72c8dce73ccc731742bbdc61ab82551d6528242",
+      "sha256": "5084206a2f6bde0feee66b60f7c7714a38d8a2a7bdd88d27f95f0a13d6a61464",
+      "bytes": 437491
+    },
+    {
+      "path": "crates/hex-engine/src/session_playback/transport_loop_tests.rs",
+      "git_blob": "2f770789d1c902b19b4af25bc9ca2f0ca5ce6910",
+      "sha256": "a8c6be491bd66ddb26f48e929460325414977b4bfdf0432a0662ba3847313186",
+      "bytes": 30864
+    },
+    {
+      "path": "crates/hex-engine/src/session_shared_preparation.rs",
+      "git_blob": "66db51a92d47d3fcea861dc7bcc7870ff1f223fd",
+      "sha256": "92ecc77a520acddf12f2bd8381a3e64a0300dec34458c009b74b6d3860718a8f",
+      "bytes": 19536
+    },
+    {
+      "path": "crates/hex-engine/src/session_shared_preparation/compiler.rs",
+      "git_blob": "4b75b25a8be7cd6dffd7c615c339b1b9ce52fe27",
+      "sha256": "d9dee1c16b44b1759bb0118cb34ff1953de9c1ff8f9f1444fb947dd9d59edb68",
+      "bytes": 2737
+    },
+    {
+      "path": "crates/hex-engine/src/session_shared_preparation_tests.rs",
+      "git_blob": "b6a1c40eadea3d4950d96f15004aaf845dc3fbdb",
+      "sha256": "93ca0ea86bd6a32fe84c4bc22d8cb50c1040eb1400c97971ee96c3fa78583244",
+      "bytes": 13472
+    },
+    {
+      "path": "crates/hex-engine/src/session_structure_preparation.rs",
+      "git_blob": "53acdcc5e97ca303d0b4e275df99b97373475223",
+      "sha256": "2d810ce4bbbf4853c4db9686616c6ca8cac16b980ddccd695ccc21e36f329e09",
+      "bytes": 23710
+    },
+    {
+      "path": "crates/hex-engine/src/session_tempo_preparation.rs",
+      "git_blob": "9ee8079fadd3c0162998ae1f56e5c870a989d1fb",
+      "sha256": "15a3f88e1724e3a7bae39a3925a9a20897bdb57b12fc6f5c7acbdce7bbb73d25",
+      "bytes": 16010
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic.rs",
+      "git_blob": "417e69f64ed654139eb40d5257a81eaa8293d9e4",
+      "sha256": "fb21820a7d5ba5e5668ffcbf61ab452c3fb0201b7df08c7999a18fb253a06ffc",
+      "bytes": 46847
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic/cleanup_tests.rs",
+      "git_blob": "77dd6a6e350b3879b0fd6d5399564d7e8f072fe8",
+      "sha256": "20e27ea0bf59d6a5cedd62d427bf5e95dfac16205f8f8d0db1076f90fdc8facd",
+      "bytes": 3836
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic/inline_fixture.rs",
+      "git_blob": "911d37bff885723191beca489d7438c6e1c179cf",
+      "sha256": "c6624db42a62eaa2b2e8a3c2aeda7f31db07e901e4c999a9abe428ed23bad616",
+      "bytes": 5659
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic/resource_storage.rs",
+      "git_blob": "075e23eb8db5400cf2369ebc56bfb81b7c98b691",
+      "sha256": "a4337b0288583dc544d41781568c1a469f24a1813f11cbd06bb089c28a90be85",
+      "bytes": 12976
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic/resource_storage/arithmetic_tests.rs",
+      "git_blob": "935048179c192a9a1e92688fa9a29747fa6ab484",
+      "sha256": "f6f34fe1de1eb4955223c83478a795cefa310ea140bd375432d500241b27c435",
+      "bytes": 3158
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic/resource_tests.rs",
+      "git_blob": "78ed33e74b848f2a0f9835a6a75827fde5a6817e",
+      "sha256": "870dea4a00ab475a3955d295572640623dd1a111d8d7943fc03625a0419a55d8",
+      "bytes": 33478
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic/sampler_construction.rs",
+      "git_blob": "ee1010e01fa6d5de61133c1fa8954ed58b5ca461",
+      "sha256": "01312b91d75d75953e5ec3f6f6e703635755290b2dd9da365b1ba083c01bf71d",
+      "bytes": 18029
+    },
+    {
+      "path": "crates/hex-engine/src/shared_analytic/sampler_tests.rs",
+      "git_blob": "fc322ab31e30ffbedf848bb52b5a883c7753b57c",
+      "sha256": "8ca4e0b1da96bfdc177f5d5bdb91fc7818b5b8bbed628fa7868fa95b51609280",
+      "bytes": 24080
+    },
+    {
+      "path": "crates/hex-engine/src/shared_metadata.rs",
+      "git_blob": "f35af563efd58b4bd8ac43862eb2ac4a939a5931",
+      "sha256": "23b4278457795b9b2a39a3457a5664ece80a312bb41e22e47ba7fcaddb2fe029",
+      "bytes": 14471
+    },
+    {
+      "path": "crates/hex-engine/src/shared_sine.rs",
+      "git_blob": "7fdcd9df9abc25f4da3b43d80a69b6fabcb19272",
+      "sha256": "4e8028b49825190ea34797130004de85693cf284ef9180ab33b724cf9f84bbd8",
+      "bytes": 9693
+    },
+    {
+      "path": "crates/hex-engine/src/signal_graph.rs",
+      "git_blob": "fbb9c122ae585ec4d071265ff522cd648406229d",
+      "sha256": "eb08ca2ac511cbab8cf53aaf1912a770501cba051f3d2a666eecb6385fa5cb1b",
+      "bytes": 37297
+    },
+    {
+      "path": "crates/hex-engine/src/signal_graph/construction.rs",
+      "git_blob": "e2cc9a2493e01d0dc157bcae9635efc48284a095",
+      "sha256": "72b297fc7ac9d082f4927f06f3e240436f15842bd2cc36bb741dc4a6c74db48c",
+      "bytes": 10145
+    },
+    {
+      "path": "crates/hex-engine/src/signal_graph/storage.rs",
+      "git_blob": "cd5146fe6b7810d4edea278928fb2b3ab8694077",
+      "sha256": "0ef6cff181d31fce04c550280e8dce550086d1d4c8bf534dc694ab1092bbd98c",
+      "bytes": 3133
+    },
+    {
+      "path": "crates/hex-engine/src/signal_graph/tests.rs",
+      "git_blob": "804fdc7a46917ea1a7ea78a0205bb01c7f047fe8",
+      "sha256": "d7556f57fff4ed758e495256899e526e0815717eefb2db4139e66cb2271d4fe4",
+      "bytes": 39174
+    },
+    {
+      "path": "crates/hex-engine/src/signal_graph/tests/eq_automation.rs",
+      "git_blob": "89a4925c695fa7d8a622eb69823b027547723561",
+      "sha256": "10f58b5ddaf64c4c7b5867958104cda6f7a2ec2338f1567f3497af10dd212759",
+      "bytes": 12257
+    },
+    {
+      "path": "crates/hex-engine/src/signal_graph/typed_inputs.rs",
+      "git_blob": "0c306076edf5ed6fd462967b93b974bc9fa77382",
+      "sha256": "22b7aa6847655b119dad1df9f365b78236582e5b5ce9ec2a276f3c16b390f1a9",
+      "bytes": 4829
+    },
+    {
+      "path": "crates/hex-engine/src/signal_graph/typed_inputs/tests.rs",
+      "git_blob": "efb8d62bad559b266e020d21d8febd31379c5b4b",
+      "sha256": "44f8e190d005830154df1d82445f9b88cfeb7e9df46d234e15942d5c5917bd86",
+      "bytes": 7390
+    },
+    {
+      "path": "crates/hex-engine/src/track_output.rs",
+      "git_blob": "83e06490c9fff6a5f702349fb4c99a6484f7595d",
+      "sha256": "69a10680d1724fb26bedfffd2933246ec19892ef992c462a7f8ca2e5dac75872",
+      "bytes": 14216
+    },
+    {
+      "path": "crates/hex-engine/tests/compile_streamed_sources.rs",
+      "git_blob": "44ce50ef4434e0a101071a7a15a40d86f2a95e25",
+      "sha256": "59babf50652ca894b12de8c60f63919256ee59a26d7433eadda6b3f7bb69274e",
+      "bytes": 25408
+    },
+    {
+      "path": "crates/hex-engine/tests/device_chain.rs",
+      "git_blob": "223c0d8fe0654eea7fab97abaa00cc27b2adceb2",
+      "sha256": "6beff15e4eafdb66e66344afe4bb938187928b3b79f286399a73438fdcfb25ac",
+      "bytes": 30051
+    },
+    {
+      "path": "crates/hex-engine/tests/fm4_native_admission.rs",
+      "git_blob": "9eed826be5f591f952edec7076578200fa2e903c",
+      "sha256": "1bbcbe49f4e7b81fedc588b8643e35790d089bab1a880bee26a1b50b0d72b125",
+      "bytes": 7326
+    },
+    {
+      "path": "crates/hex-engine/tests/gain_envelope.rs",
+      "git_blob": "d28b9cb34521a0a1a614b67ffa62d563fe3a1804",
+      "sha256": "3495a4fc7352f2495354e39735099a19d88d7d1363e32dc82faef12ffaf12a8c",
+      "bytes": 17993
+    },
+    {
+      "path": "crates/hex-engine/tests/gain_envelope/touch.rs",
+      "git_blob": "39014929105bcf4968985292597c1ea318781fa0",
+      "sha256": "9f59392b6893c6b49855c6890a6fafcd5ad30202cc144e4584ab789621bf8cf1",
+      "bytes": 20824
+    },
+    {
+      "path": "crates/hex-engine/tests/midi_activity.rs",
+      "git_blob": "5a217419e83d34742805246290384bec56207104",
+      "sha256": "79e9abacae0ee7338fd66109cf4289e5644d12076c9114f787f6c7e836278388",
+      "bytes": 9950
+    },
+    {
+      "path": "crates/hex-engine/tests/midi_compile.rs",
+      "git_blob": "1b11b32442b3396119a31acd2a73dbbbce8db86f",
+      "sha256": "37e19f4bbcc4bc0a26afa7119d21da5c7d6952ec6b3a2cee34a3fe80e1522af5",
+      "bytes": 43866
+    },
+    {
+      "path": "crates/hex-engine/tests/observed_pages.rs",
+      "git_blob": "08ba8fbbdfc14632899a5316e6589b2c3784d83a",
+      "sha256": "d7247c0d19bb3cf67d124652be8157dea9513b1431976c748997d7b44aac6639",
+      "bytes": 17532
+    },
+    {
+      "path": "crates/hex-engine/tests/operator_native_admission.rs",
+      "git_blob": "226c322fa5df7370ca426e8875aaafe0249d1c7c",
+      "sha256": "dab230a740ea849cf81d28504a54aa7132683dd32c634f3c43661454aa0e6524",
+      "bytes": 37348
+    },
+    {
+      "path": "crates/hex-engine/tests/project_tuning.rs",
+      "git_blob": "55d5d9c45758038f1333b22886195699e555d29d",
+      "sha256": "9caa9188d202f446ffa580a9f45016be605a0ad089a6634d8a760f0efd045350",
+      "bytes": 9732
+    },
+    {
+      "path": "crates/hex-engine/tests/registered_instrument.rs",
+      "git_blob": "3a3b0f2a90d14ca4769c0f8c799009dde2f0f9dc",
+      "sha256": "43a2e14e65f715651de613c74b443dfdc856e3da2c51b4b82f90b5aec9c02569",
+      "bytes": 11695
+    },
+    {
+      "path": "crates/hex-engine/tests/return_routes.rs",
+      "git_blob": "a7a8d05a8a6c5918ea43f39ff1dd9eb5514a2aa3",
+      "sha256": "5376b67f80ef6be109258b8f8029766ac9440b59000ce388d258c1ec4ea9583d",
+      "bytes": 35791
+    },
+    {
+      "path": "crates/hex-engine/tests/session_audio_large.rs",
+      "git_blob": "96e6638c904a01c460f056b37a9a5e3e8787fe29",
+      "sha256": "249a437cc84f85abc11c28a479b15906dbf303a4ac8b35b39b776e4607a070cb",
+      "bytes": 6050
+    },
+    {
+      "path": "crates/hex-engine/tests/session_playback.rs",
+      "git_blob": "9edff4074e2ff177b3c8d5274df7e9efc1455bb5",
+      "sha256": "12b666c10c4b14cfe814569954ceecb62026f97be118d5ad0109ddd7659d11de",
+      "bytes": 65473
+    },
+    {
+      "path": "crates/hex-engine/tests/session_profile_oracle.rs",
+      "git_blob": "9c51996b8487ad7e4cd17eb19a08a146789a846b",
+      "sha256": "ed3509571c1315186f75935fc896eea3c3fc9c2a0af09a78b35b2e2396406e1e",
+      "bytes": 2911
+    },
+    {
+      "path": "crates/hex-engine/tests/session_streamed_audio.rs",
+      "git_blob": "0e61f55b3194cc1212123ea17b836ca6fbf74551",
+      "sha256": "97343ec0aff2ed9cf3bf0ab47ce06586a0dbe7da308e68aeec5d1c6108c696a4",
+      "bytes": 45139
+    },
+    {
+      "path": "crates/hex-engine/tests/tuning_admission.rs",
+      "git_blob": "537624adba5eaf240fbb5955beee4454a8bbe0ca",
+      "sha256": "19575620a1d83d35d813a95001d14993f471d542130d634071426913e573822e",
+      "bytes": 2812
+    },
+    {
+      "path": "crates/hex-export/src/buffered_file.rs",
+      "git_blob": "a72429b7373e0b6fc36ce9981bc300ded04fc6bd",
+      "sha256": "fbe340ea6d4e6b43c3ee4b05c85c6ea4794d9b1880c0a52a8eb22ccae2fa86f6",
+      "bytes": 9787
+    },
+    {
+      "path": "crates/hex-export/src/controlled.rs",
+      "git_blob": "731f770cb00174a3e9206dcc60d9c2446cbbf78b",
+      "sha256": "fcc777607d840d2021ca3e81b7e6eae05b148e149165050e6ce81fc009dbd335",
+      "bytes": 12049
+    },
+    {
+      "path": "crates/hex-export/src/lib.rs",
+      "git_blob": "d3bc4b82ea10c8192dcdd3aadb23840cd6426622",
+      "sha256": "9a1407185ca5cc4a807cdbc14fff32b171a586f4393332152067c853d033593e",
+      "bytes": 31377
+    },
+    {
+      "path": "crates/hex-export/src/publication.rs",
+      "git_blob": "432d1388f74b76565d1586fe29eef23565d8901d",
+      "sha256": "c9753073b7de4250a4c166aa45742628a48c154e54b9e3cf09ed72f5cafdb8ac",
+      "bytes": 5257
+    },
+    {
+      "path": "crates/hex-export/src/staged_file.rs",
+      "git_blob": "2b2df1f3b107a0519578be73c24b9d7251c481c1",
+      "sha256": "3b33f2b2120296e6aad95ae53ff43651e9c491216ad44791c72c1ded70af7887",
+      "bytes": 13255
+    },
+    {
+      "path": "crates/hex-export/src/stems.rs",
+      "git_blob": "a13917db01e91bbdd9deb3a5faa3c94067326a63",
+      "sha256": "e8ae799ea460b798f7d587bdd7173bcd39010edc7778df77bedb4c7aecc6dcdf",
+      "bytes": 10836
+    },
+    {
+      "path": "crates/hex-export/tests/compensated.rs",
+      "git_blob": "0384873a1488f84063b3c0924613206af648c1ba",
+      "sha256": "4679a463e2c73008f07d7b442cf4478d9b09201751c3b62a1c5785090d4015e7",
+      "bytes": 6053
+    },
+    {
+      "path": "crates/hex-export/tests/operator_native.rs",
+      "git_blob": "2da412416c81f439cdb2c1380fe1eb927ce025e0",
+      "sha256": "a6e6931b50c2e63c2ee5e7c42a0be6f3f012f8391592f29397b9a3d28fb423ed",
+      "bytes": 13594
+    },
+    {
+      "path": "crates/hex-export/tests/prepared_mutable.rs",
+      "git_blob": "3b76f0e5ea5153f14d5227fb96277cf03a603fe4",
+      "sha256": "d37d202f5bac0e36e82426350145635e39229230b64a9054dd59b2c2e8aac776",
+      "bytes": 23705
+    },
+    {
+      "path": "crates/hex-export/tests/return_routes.rs",
+      "git_blob": "1586ce9c8bbf5f83d73583a92ec190112888ac09",
+      "sha256": "fb17c9f85bc2326b3289bcf45d84e8e1b6d8425896633f29ed298b5bbe6e409e",
+      "bytes": 17002
+    },
+    {
+      "path": "crates/hex-lattice-contract/src/lib.rs",
+      "git_blob": "eefdbf93e6c6c3efff8ea1014c1163e2b3d4c3a6",
+      "sha256": "f71f0d966fe092991e5f92c9657f5805148404b3153fb5fbd15f19bcdd85d605",
+      "bytes": 41583
+    },
+    {
+      "path": "crates/hex-lattice-contract/src/state_storage.rs",
+      "git_blob": "34a21017edf925cec265321c6769263e597b6b5c",
+      "sha256": "21a92ca4a27d8ead301adc329cadaf0d36eb0652dd29e4890a2a9fc731eb026a",
+      "bytes": 6276
+    },
+    {
+      "path": "crates/hex-lattice/src/instrument_runtime.rs",
+      "git_blob": "9149ae45d0e4a8b1f34e88d782edb6adfef91d6c",
+      "sha256": "6bc9da6804dd316ddc0b3c49447bcf1e3931f9b2f2c55950c8fe22a1c16418b0",
+      "bytes": 70630
+    },
+    {
+      "path": "crates/hex-lattice/src/lib.rs",
+      "git_blob": "9335b409ac762f35f9779931f26d6436306b1daf",
+      "sha256": "b18d621738f029a1573ca35da6e3327d8a4c6c57fd733638f60a9c1e6b0577ce",
+      "bytes": 110260
+    },
+    {
+      "path": "crates/hex-lattice/src/owned_processor.rs",
+      "git_blob": "82a6cba68762db279824246992b5a4bcc4df0e35",
+      "sha256": "ef3e5ea49832f75b01accd622353e38926984fa81134444a587f3ce8fc64b896",
+      "bytes": 12407
+    },
+    {
+      "path": "crates/hex-lattice/src/resources.rs",
+      "git_blob": "3fb2d19ad0796b08dcec0659675f2ec0f67772ab",
+      "sha256": "d0628c66e1dce17c592e3cec00f78a808bb2d35376a55254e2d0f3c40fefd82d",
+      "bytes": 7939
+    },
+    {
+      "path": "crates/hex-lattice/src/runtime_ownership.rs",
+      "git_blob": "ccf3cdac1173f47d7293af41382634103a782282",
+      "sha256": "2f36f3b7732e5f94a329bfc8b96d1b73e5577f3105b1e510d24e547dee2112ca",
+      "bytes": 9803
+    },
+    {
+      "path": "crates/hex-lattice/tests/host_resource_validation.rs",
+      "git_blob": "3ce4ba8c467d7a5073d33dfca7e0fc0c3fd5f8a4",
+      "sha256": "d7c03a290a5ba3e5edb5c1d56eca79c4d0a4b1e5c34475952704d3e28dacfc09",
+      "bytes": 2693
+    },
+    {
+      "path": "crates/hex-lattice/tests/state_descriptors.rs",
+      "git_blob": "17d7950e195b109afa038143ea53493dd51b680d",
+      "sha256": "d82924c65162907057edff903e24fb34830c9ec1d6cceef2abcaf525e40a234f",
+      "bytes": 17472
+    },
+    {
+      "path": "crates/hex-media/README.md",
+      "git_blob": "18e5538569c2b81feaa1a17f990ec28573050f95",
+      "sha256": "76f4b7ae82a7d86d480119202eb4116d087e1f50ea8248dd931980d32a05f091",
+      "bytes": 7923
+    },
+    {
+      "path": "crates/hex-media/src/adpcm.rs",
+      "git_blob": "24885d8e240310423c6604d95c1e5a3224b8b06f",
+      "sha256": "2f12b352dbd4b2803b3e9ca0a4447e4f0ab6b4fb41e031a003ccd4d45f143cb8",
+      "bytes": 6880
+    },
+    {
+      "path": "crates/hex-media/src/device_source.rs",
+      "git_blob": "7e1a5ba286a7c2dd53e53e20c5ca41fbbdb57a77",
+      "sha256": "a305dccf56f5f9cf80f63bd2288d900528206d61dcd7917e5576fa5638658680",
+      "bytes": 8298
+    },
+    {
+      "path": "crates/hex-media/src/lib.rs",
+      "git_blob": "895c09cc5f70f5d22065dedc2c0fd42845d0d1b3",
+      "sha256": "a838d90112dec985c94759073b95335b593b4931e3e03db0d755d343740b629c",
+      "bytes": 14304
+    },
+    {
+      "path": "crates/hex-media/src/resample.rs",
+      "git_blob": "e7fefc3725cff792ed451aa284902803cb315cbc",
+      "sha256": "ba8989c120273886b330b8521a7cf04687d6fcc300e95ef78083a40b52267607",
+      "bytes": 32683
+    },
+    {
+      "path": "crates/hex-media/src/resample/window_source.rs",
+      "git_blob": "f2eb23058072f8e6213de025f725e6f33ffb8816",
+      "sha256": "467699935586936ad3150dd316bbfc2263094b668440660bdd711b8c25a12687",
+      "bytes": 2341
+    },
+    {
+      "path": "crates/hex-media/src/wav.rs",
+      "git_blob": "7e18be6e5af5d6f9879082b85d8c034f03a3dd6a",
+      "sha256": "e55093e60df9b60d986f6749c67326d50f9c1b54d930463f0ddb8170848480cc",
+      "bytes": 17379
+    },
+    {
+      "path": "crates/hex-media/src/wav_tests.rs",
+      "git_blob": "e89d1638f066a5003c20608ef7ff5b52492ea74f",
+      "sha256": "6a1e94f4bd540a8144230c7e0cc1987410e996427299fb3173993e3f4ea8c18b",
+      "bytes": 25417
+    },
+    {
+      "path": "crates/hex-media/src/waveform.rs",
+      "git_blob": "dd2b204556107d1b7bcf841473fb7028cd2b9696",
+      "sha256": "52b78081cd83afc4907e5ce0a9490912666c68945e6e7cf6487e9c83f4b1abbb",
+      "bytes": 21266
+    },
+    {
+      "path": "crates/hex-media/src/waveform/native_original.rs",
+      "git_blob": "ba260e3ee7f3bb978be0df9bc042aab63649461e",
+      "sha256": "3972e8adb8923e117a9a4476fd2576911613b49045b354750eb62e187768870f",
+      "bytes": 5467
+    },
+    {
+      "path": "crates/hex-media/src/waveform/native_original/tests.rs",
+      "git_blob": "eb3e3660f93c2385e633668bbee6a14a22c7012e",
+      "sha256": "0f30f90e432715ec8713dee9ea8ccdc19ca19246a2162b866d03c858d556b00f",
+      "bytes": 10712
+    },
+    {
+      "path": "crates/hex-media/src/waveform/read.rs",
+      "git_blob": "e9c72ae56a30e87f68a3e760bfd4972df05bb033",
+      "sha256": "5f775b3a67366e0faa055178e018e309d5027fbca74d47ca730b8ead66e58638",
+      "bytes": 4939
+    },
+    {
+      "path": "crates/hex-media/src/waveform/shared_storage_tests.rs",
+      "git_blob": "239379169f695b60ce7fb25a915baab63f2c3ea3",
+      "sha256": "9dbf788dcb412e562889c707ada68ba834360cac95b3c8009c3d4acceed19f11",
+      "bytes": 10356
+    },
+    {
+      "path": "crates/hex-project/README.md",
+      "git_blob": "4dd6eae595a4c3b73bcb5c1fee941facad7e1c2e",
+      "sha256": "f704ee3ecf331fb59cdc15ec85c7eadb773d3e34f4949b3ea3c8d316e278d734",
+      "bytes": 20851
+    },
+    {
+      "path": "crates/hex-project/src/audio_edit.rs",
+      "git_blob": "f362b52fe061edf4fc4711f9d865f1c5647deb9a",
+      "sha256": "e029b507d7f53a92e6ed5e1b937a707f89e976ccf318bf5e1f4443363d915235",
+      "bytes": 17204
+    },
+    {
+      "path": "crates/hex-project/src/audio_edit/commands.rs",
+      "git_blob": "2693f7e70267f063451b8586a4847264ff05cc13",
+      "sha256": "075b77330b0918e1871faaebbc3e0c00a428354b7acde750535079a42696c19e",
+      "bytes": 10907
+    },
+    {
+      "path": "crates/hex-project/src/audio_edit/stretch.rs",
+      "git_blob": "c045df2d600ecfc23f2ef2dcaae50b06b6635898",
+      "sha256": "9d90a86d74a3d44105ed2dde44c3d062420c7d62aeb7ac7964061391ac2b231f",
+      "bytes": 809
+    },
+    {
+      "path": "crates/hex-project/src/audio_edit/view.rs",
+      "git_blob": "9a4b48812c762b5458da51ff956a217928069a58",
+      "sha256": "71848e4979405b6fdb10a74923eaea452f4331c251d5ba1af1679699c33f5007",
+      "bytes": 17034
+    },
+    {
+      "path": "crates/hex-project/src/audio_edit/warp_projection.rs",
+      "git_blob": "2265a76ddd43298f44dd05a4d260d1b040ffe8fa",
+      "sha256": "c53743b533bf0962dbd8f73e8519c78c0e29acedc748fb4d12471ed63d030060",
+      "bytes": 5418
+    },
+    {
+      "path": "crates/hex-project/src/audio_event_read.rs",
+      "git_blob": "a9889eaa6f7871c7e2813589abb9fe6f44d34259",
+      "sha256": "d60bf396250427183b623071bff8996f81fc9d8759698536a9efa627078c9893",
+      "bytes": 14131
+    },
+    {
+      "path": "crates/hex-project/src/audio_event_read/events.rs",
+      "git_blob": "98eeacb356030c19196e9c546b9477b400f5e040",
+      "sha256": "b8c25a619e44bf8ffc2f69089b9aea345cd28886eabede3ba070c84844a1cdee",
+      "bytes": 6433
+    },
+    {
+      "path": "crates/hex-project/src/audio_events.rs",
+      "git_blob": "5e28a183365ce91d5cd5abc2d70d9f86e15416ca",
+      "sha256": "01b3eba2e01ca55f7ad12b87f2e8224b72a230c41ee0c9334d701c6db4ab9405",
+      "bytes": 27279
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview.rs",
+      "git_blob": "dee95a70356beb39eee809c2949bebd4a97a0151",
+      "sha256": "a325fc0370a765b0a3eda1771f143dda77dadf654e4f2296782dc5f20c7aea33",
+      "bytes": 14816
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview/materialize.rs",
+      "git_blob": "d3d8aab360b89afce752258bd4e79f531183d210",
+      "sha256": "9743c2ce96b4ae24cab729eff318107d6896c3765e0ce1f5720381e9f0800cd0",
+      "bytes": 5305
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview/operations.rs",
+      "git_blob": "0db3c7bc303aed9c90e8006fa5bf7e2b7994eb49",
+      "sha256": "df0640dde86fc23f232936b4ba2f218e927d56fef0ca299842d413de9b187fbb",
+      "bytes": 11594
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview/plain.rs",
+      "git_blob": "6a0c7beecc73d935477cf9a5da26857359bca731",
+      "sha256": "5a13fae1cb5b92b194c524347a598c03074a65f1f0b0f4178c6b19b8b9c7e783",
+      "bytes": 5662
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview/plan.rs",
+      "git_blob": "0719f335fc8c8a963c156d7f1a498fab796302d3",
+      "sha256": "dcb1a4a6485e4a3bcc7b486e7bdedb449c5ab1900d2d13ad2b6976940bcdc6a8",
+      "bytes": 19709
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview/validation.rs",
+      "git_blob": "8fd6de3f06d47c8047e3df2bc4b48d5ba32ecb06",
+      "sha256": "476b590b652fd03b965e5f5f7c3f9d9f00387a6bff537af1a0ab86ee3b7302dd",
+      "bytes": 6690
+    },
+    {
+      "path": "crates/hex-project/src/clip_fade_trim.rs",
+      "git_blob": "de23f506b0fa5d3c1563f6ad5ec1d7fba8739b0a",
+      "sha256": "cbd66635ab694d405a3d6da1f57a4f547ce94761fb0966704f46bf481d1b44a1",
+      "bytes": 447
+    },
+    {
+      "path": "crates/hex-project/src/device_assets.rs",
+      "git_blob": "0911cf790bffb319fef7713addd42bfa2e7d9b6d",
+      "sha256": "340b0b0d5b01c674d80f483b00d69de145ed14c3ba2558563ea57f593bafb7d1",
+      "bytes": 4065
+    },
+    {
+      "path": "crates/hex-project/src/device_assets/tests.rs",
+      "git_blob": "e7b3acadc989fa05403ee28ec5aa48367cfc4024",
+      "sha256": "2dd79a843e179e1845798cd8f10e3691ffdce8d25f60d57d0a532100d6a89e73",
+      "bytes": 7604
+    },
+    {
+      "path": "crates/hex-project/src/edit.rs",
+      "git_blob": "b2ab0013db5bc7ce39f7f574fe770dcf7801963b",
+      "sha256": "0921b24f19e32771d902c48cd1d20817a9d4ea5df8da1ffb2049f462aecc6afa",
+      "bytes": 89475
+    },
+    {
+      "path": "crates/hex-project/src/history.rs",
+      "git_blob": "64910d921c149508213ebb0d8a96c54a12fc5d39",
+      "sha256": "442c8325d434e8b4c023be4f1cbdfc0f49e7e4d98bebdb87498b621f52eb546e",
+      "bytes": 18691
+    },
+    {
+      "path": "crates/hex-project/src/history/original_sampler.rs",
+      "git_blob": "0a1c128fdcd16c6a31f42c54e6ff84f45075c6a8",
+      "sha256": "f5251d2a8b11d2c28e2d5cc9666b6c4573cb12d08355e6f59bdf0aeea948cbdd",
+      "bytes": 20196
+    },
+    {
+      "path": "crates/hex-project/src/history/original_sampler/tests.rs",
+      "git_blob": "ccfc35bb8d37ad8082cb0de2adc35a58bea1e36e",
+      "sha256": "b92bb16778121e096572cd605371785cc6d9ba9ba6e8c7e7ad1e138c2079cae8",
+      "bytes": 10304
+    },
+    {
+      "path": "crates/hex-project/src/lib.rs",
+      "git_blob": "517b8d475f64fe1efbb891508671e6636e17f21f",
+      "sha256": "c42866072cca4bea49affbc4597c1aad445aa6c59d9ad2f9294bb7e775121f55",
+      "bytes": 28481
+    },
+    {
+      "path": "crates/hex-project/src/midi.rs",
+      "git_blob": "589606c27ad23ce1a0c85393fa547e1a17f71ad3",
+      "sha256": "8ab4a17d9a54d1d8c6cbe55be7a3f3c84504cfef59a1f7a1bcbf8cbab7290c67",
+      "bytes": 51019
+    },
+    {
+      "path": "crates/hex-project/src/midi_storage.rs",
+      "git_blob": "101b132e6b357a63053977d13badc7fb99032d15",
+      "sha256": "2ba5541938f076dd4427be7a629f309c95c959ab42a31b3526d76f0f53c20216",
+      "bytes": 5886
+    },
+    {
+      "path": "crates/hex-project/src/snapshot.rs",
+      "git_blob": "ebc82109e1702b1d546fdae45bdd08c2cd33625f",
+      "sha256": "4165897764c66fa619b1a44d6636f8372386a677b91000ed72e7aac39b550340",
+      "bytes": 41985
+    },
+    {
+      "path": "crates/hex-project/src/sorted_entries.rs",
+      "git_blob": "d025527dd28ceffa157166c871a2f7fb285ecc9b",
+      "sha256": "98f9042bc981c723db78b00eacebde42b1370f502c0146ff0c0c70829d74d176",
+      "bytes": 8559
+    },
+    {
+      "path": "crates/hex-project/src/sorted_entries/tests.rs",
+      "git_blob": "7543463b4b8050b36e1d926e2c3edc6ad102a27d",
+      "sha256": "ae15a3474b9866cb33dc4bd6c52a0ccb56ff64cdb6173822d4a329444031abdd",
+      "bytes": 9087
+    },
+    {
+      "path": "crates/hex-project/src/storage_buffers.rs",
+      "git_blob": "f567e8dbf4fd9f2b401d4862f9dbff2f0d974297",
+      "sha256": "f02bc4e01eb43df33ac5722b222f75bdcb9fa672d2caf8513aad40e74d652573",
+      "bytes": 6266
+    },
+    {
+      "path": "crates/hex-project/src/time_range.rs",
+      "git_blob": "1f2d43766f32f2728c03a6b2518e7d17fb54b7a7",
+      "sha256": "56bfd131af42e173634289bd4eb1af46ec101ab55e77c5d9a1371fb3b1edf5cf",
+      "bytes": 18573
+    },
+    {
+      "path": "crates/hex-project/tests/audio_event_read.rs",
+      "git_blob": "9e873529da38b4da429387658186df81dfbfe447",
+      "sha256": "9c1d0690985ddbf99ba403b50d9052045fb01f4ae3e8d0f9210366141586c1f3",
+      "bytes": 10809
+    },
+    {
+      "path": "crates/hex-project/tests/audio_preview.rs",
+      "git_blob": "c3dbdc811b32d23aed4464366a962800a88f6563",
+      "sha256": "0f1dc02552638e471b9f67150d86f5eb77db1b43690ec54c2a2cb62b8e8bd519",
+      "bytes": 22066
+    },
+    {
+      "path": "crates/hex-session/README.md",
+      "git_blob": "43d9bddb2a13047dcb993f96630a6947d120a8c6",
+      "sha256": "0ecc321586cab78d2a2ae5101f7e5e3f1f23543b8a549061b351d26a0682de4f",
+      "bytes": 19333
+    },
+    {
+      "path": "crates/hex-session/examples/operator_enable_fixture.rs",
+      "git_blob": "653f158d853a952396b526f4fc21aeb7393add46",
+      "sha256": "c7198e09bb001e9a132493ca2814c6c4b7ce5696561bd91ecad1e9a29340c968",
+      "bytes": 11673
+    },
+    {
+      "path": "crates/hex-session/src/audio_edit_tests.rs",
+      "git_blob": "2901ec8cf015476dad839fd1ffc375ee846c3f34",
+      "sha256": "75fa595fd444e4cb4d08bd63564238e80016b33bc26a5abd5f4c9d2c25d1e340",
+      "bytes": 6674
+    },
+    {
+      "path": "crates/hex-session/src/audio_sources.rs",
+      "git_blob": "69ae2458b41822dfb271fdb148d5ddbb83228163",
+      "sha256": "f86f7fcd6587c8614bb9667ab22a4ebde41c0df3020e94ecc1b7929abf96b59b",
+      "bytes": 8801
+    },
+    {
+      "path": "crates/hex-session/src/clip_conversion.rs",
+      "git_blob": "21bc10d3674ff545738dce761d57c13a8e715bb9",
+      "sha256": "8ca5c38af1b1ff08b0f129ef0d0964641adeb565fbcfa6419e6ebf2f5f7d412c",
+      "bytes": 8057
+    },
+    {
+      "path": "crates/hex-session/src/comparison_transition.rs",
+      "git_blob": "924037312926c4cf3cd1698066c06e75e653b4d3",
+      "sha256": "59a637d80f002f3883292773ece2b343fbf9e08d89b960aa0481d39b08dc5c15",
+      "bytes": 3918
+    },
+    {
+      "path": "crates/hex-session/src/device_gesture.rs",
+      "git_blob": "172457c9f74f02e6decb6dd619163020b3a2c2c6",
+      "sha256": "ee2a4492f402ea2d523321488918a3c589846ad03c255988d0c9acfb93b0fa54",
+      "bytes": 59415
+    },
+    {
+      "path": "crates/hex-session/src/device_sample.rs",
+      "git_blob": "cd2ae8cab86c296392b0088aa8c96d00210c0391",
+      "sha256": "e7683fc1debca359b5082eb0724e0d0455edeaaa1867fd24ec99abbcff8ec8cd",
+      "bytes": 15314
+    },
+    {
+      "path": "crates/hex-session/src/device_sample/native_waveform.rs",
+      "git_blob": "8a9a7146807832e7155f3e90615b59a52ac11465",
+      "sha256": "1784f07baa131a78a70bce27997b1e338782168dfad828646643ed2a83b67ab6",
+      "bytes": 4233
+    },
+    {
+      "path": "crates/hex-session/src/device_sample/tests.rs",
+      "git_blob": "c26c08d754870847cb41b2a9f52923af954795fc",
+      "sha256": "59400dc7c3dea2a17144d0ec7e8185b555f1f116474e1a8f1920fc5da65d0c44",
+      "bytes": 47867
+    },
+    {
+      "path": "crates/hex-session/src/device_snapshot.rs",
+      "git_blob": "746543d88d4e1c7f8b48e4d885d6491a60decf81",
+      "sha256": "19f776a0b45777abe2ea0d3ca76a270a55e244b0df63e1135f86744bb900659f",
+      "bytes": 2477
+    },
+    {
+      "path": "crates/hex-session/src/import_batch.rs",
+      "git_blob": "dabeb5c33ca638c43db284c50d0ef18fb74c1a03",
+      "sha256": "0f8f9392bc3b60d0bd2f08095299d226b7f65995ec9f0a8330d182c998f7255d",
+      "bytes": 11022
+    },
+    {
+      "path": "crates/hex-session/src/import_batch_decode.rs",
+      "git_blob": "5469712fb1af37b42526ff08062f4511f8bc9514",
+      "sha256": "a07a593ab77b07deb38b3c299a30f0c7150a7402ed9e09bcbbd1144cf825ea95",
+      "bytes": 19582
+    },
+    {
+      "path": "crates/hex-session/src/import_batch_decode/tests.rs",
+      "git_blob": "c74c59c347947dbc0d09b69452e4eabd37446de1",
+      "sha256": "78125bb1600f7799ac1b732e92ebe19c13ecee93b0f3b4fd04b4ccbc0b615b61",
+      "bytes": 18451
+    },
+    {
+      "path": "crates/hex-session/src/lib.rs",
+      "git_blob": "cb7146bbfaf865ff68ebe84498ceb538741b72eb",
+      "sha256": "a443a421a9db9094ff740a564b896236ef08aaeecf6f1ea683eb8b088d62510e",
+      "bytes": 68733
+    },
+    {
+      "path": "crates/hex-session/src/original_audio.rs",
+      "git_blob": "f40e450b8d81ac01764805d045fca8d3a6ea3755",
+      "sha256": "4f765e4b380f09a9a9903e98c35db890708bc9eb0ba3fe0186d63c2a7770b465",
+      "bytes": 5672
+    },
+    {
+      "path": "crates/hex-session/src/resident_pcm.rs",
+      "git_blob": "8b79c97b63ec765cc7cdb6ebbacec53dd6ad5906",
+      "sha256": "24869ea0f7401964c8324e73fc8698b73779584a4ccd434327b499d0b44184bf",
+      "bytes": 1355
+    },
+    {
+      "path": "crates/hex-session/src/resident_pcm/tests.rs",
+      "git_blob": "27103092beee95ec0ce7b5dbfb0382fe3f457931",
+      "sha256": "bf2a7d7a880e6448ef3ad8e6c1988387fc01b9b3968ec40327902a6cc1995fd9",
+      "bytes": 20439
+    },
+    {
+      "path": "crates/hex-session/src/resource_plan.rs",
+      "git_blob": "ccc646a61427cd1806aec80632eb71626f611bd4",
+      "sha256": "a6b0ffdace465f4d3c7f0ddfd94343927ff63dddbc430ee08bf7627e9087656a",
+      "bytes": 11640
+    },
+    {
+      "path": "crates/hex-session/src/resource_plan/original_sampler.rs",
+      "git_blob": "bb87d36d6b12a03c7a30a02737cc41098d7a5b2f",
+      "sha256": "d5781b9b9c3f90421a64add4f075721e68d4a4e2f567eb7d6c8254c72d7802d0",
+      "bytes": 33359
+    },
+    {
+      "path": "crates/hex-session/src/resource_plan/original_sampler/tests.rs",
+      "git_blob": "82442c1f682ff44058c8b8fcdd439a2d7f2b0a99",
+      "sha256": "d9ee46c7d349e6d5ec9249374d6a1b1f7e93da433ad4e58e8f2f18d8b1de4a06",
+      "bytes": 16482
+    },
+    {
+      "path": "crates/hex-session/src/resource_plan/producer.rs",
+      "git_blob": "cd3a9d2bb0447cedcc8ae881bd4b1def0926d2e9",
+      "sha256": "87244adca7a657a7c0a2849faaf84f8af670306d4d1a171b624cfa08ad2f80f2",
+      "bytes": 4241
+    },
+    {
+      "path": "crates/hex-session/src/resource_plan/required_assets.rs",
+      "git_blob": "6a73079e556b44a8cf6ceb15a4f3cbd5bb599fc6",
+      "sha256": "7c06ad89cdf2fd5b98b93a3e9a4c584db5824a2101b15c48168e0b7d9de21d66",
+      "bytes": 3224
+    },
+    {
+      "path": "crates/hex-session/src/resource_plan/required_assets/tests.rs",
+      "git_blob": "268d1fab4737da46580392545f59c26c8ff35c9d",
+      "sha256": "ca99889e32504452a5c5b6ec7c1ef7a1db24ba030208ef0009e01ff776d954b8",
+      "bytes": 6505
+    },
+    {
+      "path": "crates/hex-session/src/resource_plan/tests.rs",
+      "git_blob": "d0076026304ef800092dd4347313740b38e168ca",
+      "sha256": "79a0ab897cd1a5a166bf8a9cd8bed095d465bbc8c4846ab85f61945be4364b0a",
+      "bytes": 51122
+    },
+    {
+      "path": "crates/hex-session/src/service.rs",
+      "git_blob": "188d370dddb5a3f11cd81ec710e2caa315e5354b",
+      "sha256": "4ecb3a0f73ee8132ad4b302142f8a9e30249f903bf14c879f17d323153be416b",
+      "bytes": 321452
+    },
+    {
+      "path": "crates/hex-session/src/service/audio_sink.rs",
+      "git_blob": "75a7d9f71d5b5e573a5cbfb735181facdfc07008",
+      "sha256": "35511ae8beb2f81f009f86d118dca03ef4e357e6ca4330ab5fc1bd6e63e1688a",
+      "bytes": 32821
+    },
+    {
+      "path": "crates/hex-session/src/service/canonical_audio_source.rs",
+      "git_blob": "25dc7b0d0266ead4bbd7292b158687f49f422441",
+      "sha256": "92b524fe913878ee21cc71b63e0d022835661a6536f237e1622cc5fbb4bc03fc",
+      "bytes": 24189
+    },
+    {
+      "path": "crates/hex-session/src/service/comparison_audio.rs",
+      "git_blob": "bf0dc06cb2c3552f4975a360fd07e0eb539457e5",
+      "sha256": "f9055f6f8992382dfd406aa5c7adcb4ede60ca9a1d7baf41807a8059b4d10405",
+      "bytes": 9181
+    },
+    {
+      "path": "crates/hex-session/src/service/event_fields.rs",
+      "git_blob": "010e91c7feeff212cf4288694b9c46319585448d",
+      "sha256": "b17e923d99726581f952b76c0da0fd6ba67a9bdd07a8087c15fd009f59ad6929",
+      "bytes": 4392
+    },
+    {
+      "path": "crates/hex-session/src/service/export_renderer.rs",
+      "git_blob": "07007c5c816e96d77421b4fc164d0ae6bf703263",
+      "sha256": "50a88e68d4ee15ba452d05b98798040db6215dfa5e22b561b1c19f38c5e8044a",
+      "bytes": 847
+    },
+    {
+      "path": "crates/hex-session/src/service/export_result_transport.rs",
+      "git_blob": "1605a2d607961b8f57dce06ed3f41069152a7396",
+      "sha256": "8535c51dd77d76f2cd0d5c0c64e00f10cd054b30c8acacc79286bcd41b797ca8",
+      "bytes": 3368
+    },
+    {
+      "path": "crates/hex-session/src/service/main_control_file.rs",
+      "git_blob": "272be4c64f946500ae4f8a33bf793189d9d7101a",
+      "sha256": "7f1c9106ed9a58b0a6699d9b89ed3c32684162fc00c45cbf0a212ad48c8f9311",
+      "bytes": 12702
+    },
+    {
+      "path": "crates/hex-session/src/service/main_control_file/tests.rs",
+      "git_blob": "d118bd8cbcffe2722ba4d2e43ce28ae7a82b7568",
+      "sha256": "86d5dd1b839634b73047b0973397c7e8142a26499a051681d9901d0f00061b04",
+      "bytes": 22746
+    },
+    {
+      "path": "crates/hex-session/src/service/recovery.rs",
+      "git_blob": "179c0d5e4f72aa3501deaf0d382ece78840149a9",
+      "sha256": "04085452528b620beb1d5a2814a68f6126872ae43502d6c6ac532d8d18a8d138",
+      "bytes": 11281
+    },
+    {
+      "path": "crates/hex-session/src/service/request_transport.rs",
+      "git_blob": "0d2fe141f6e3ff8f1020f0fa869fdf010ff1f1fd",
+      "sha256": "9fe7810e6f6e7ba15e87c7b346762f9d58559e748b3a554e68bddbee32b43979",
+      "bytes": 2275
+    },
+    {
+      "path": "crates/hex-session/src/service/shared_project_storage_tests.rs",
+      "git_blob": "f68bbc13ff74efcd23314e303e29c429e68e4c8c",
+      "sha256": "a0e754cc5e81f164ee368f58603ff37b2eb69e7d6416e44d98379c40c42ca372",
+      "bytes": 4445
+    },
+    {
+      "path": "crates/hex-session/src/service/source_events.rs",
+      "git_blob": "8c40f9b78723424d1a99a7e575eebee8b5f66230",
+      "sha256": "8cb33ba9f8d5506713c8162f7d88027967befdefd90d23c03d4d2e2abc6f5d14",
+      "bytes": 6033
+    },
+    {
+      "path": "crates/hex-session/src/service/verified_source_tests.rs",
+      "git_blob": "e0b9a8b07bd07e85e4ce4d46aa4cd4a740b06a3f",
+      "sha256": "6875c9e6cf1d4f7d36b70ae001185c48c9542543333ded91151f4dd9725191db",
+      "bytes": 14192
+    },
+    {
+      "path": "crates/hex-session/src/service/waveform_storage_tests.rs",
+      "git_blob": "e1ea2919f5f380f28c947d56714ab16cffec045b",
+      "sha256": "a7234ea2d5866e8ccf260eb7a8b087f63de61f88ff3cabbe2799fce1dc574e27",
+      "bytes": 6549
+    },
+    {
+      "path": "crates/hex-session/src/service/worker_roots.rs",
+      "git_blob": "f101fd56ed2ae4a8593bb713f04ff52bc01b6ab6",
+      "sha256": "56e562aa30c50473a03a7da94c11a022c16c19b0e1edefa8d8f71effebdb7926",
+      "bytes": 55878
+    },
+    {
+      "path": "crates/hex-session/src/service/worker_startup.rs",
+      "git_blob": "c89217ec6c7ff13358445d214ed05c03fbebfe02",
+      "sha256": "d0d2b3617e3a66ea9ada1eb8e7210df3693f329f8000a304d8361617acb8f369",
+      "bytes": 17701
+    },
+    {
+      "path": "crates/hex-session/src/session_cancellation.rs",
+      "git_blob": "5742428f996ebb2c5e4586183da1add0d2daf84c",
+      "sha256": "2b43358742b299f95243aa31eb8424bac8fbc12f12e2af2c1044dfa25ffb49ee",
+      "bytes": 1386
+    },
+    {
+      "path": "crates/hex-session/src/shared_project.rs",
+      "git_blob": "688bf84e7d7e78d6dbfbee9debbd37d331e02b2d",
+      "sha256": "2e1b1c38fa71c4a080ca68f0b35ab9f94f0d24bb36ec4002363df6d45e4b47b1",
+      "bytes": 7873
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports.rs",
+      "git_blob": "b45fc10a7cef903f783bb58ab249f1a315240529",
+      "sha256": "eb66f5d0e88fb07c9f5e82972e5c9dc4ca7840cf1442a1e368e0f401e4775b68",
+      "bytes": 22755
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/event.rs",
+      "git_blob": "d6c1804b118192ba03f91322ababddd623ea2f11",
+      "sha256": "f8b1125f2cf33f896a6464fac25b345c61b685e422919ee4f365ad9fcf6adb02",
+      "bytes": 8107
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/event/tests.rs",
+      "git_blob": "e6365f634064a65e062ad85ea7547539874694b2",
+      "sha256": "f79c1c2bcbeb91aecac8ee9b8c89592ccebedf83d96fbbcc250f439f93ce5a21",
+      "bytes": 8588
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/family.rs",
+      "git_blob": "37af9ef9054e0a9e2a044dd547b33486946114a8",
+      "sha256": "35fce48c045afc9c02afb4e6d576f0b1b49a85bef2bf65992fa02965623529a9",
+      "bytes": 52780
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/model_read.rs",
+      "git_blob": "2c7f62d258cdd2d3ecaa54da4a5428de193f0301",
+      "sha256": "1896533b9956eef5a1a6f9a259a6d34a710c12e569ad733416b0432553a4563a",
+      "bytes": 5951
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/model_read/tests.rs",
+      "git_blob": "9693d43d91ab05e01870b396df6421e76e5c74ac",
+      "sha256": "25b71be8d8f91f407f50aed235f4e68a1bc83f9ecb6f1ce87fbf12994fa1cf42",
+      "bytes": 7271
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/model_read/ui_consumers.rs",
+      "git_blob": "6a3bf7306a5439b75bea1c922ae99e72d3943720",
+      "sha256": "f5cbdc55fe87c56b34c50ff7951b36b3f08cfb2148c99cf3490d3766fb168eb0",
+      "bytes": 31322
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/native_editor_profile.rs",
+      "git_blob": "a26c4cec7d4f21b7702f80eb083c3149303e99ca",
+      "sha256": "de5738b7ac2feb5786f110539d44d3220c37371ec6d2ccda92e1bc93f1e29d3c",
+      "bytes": 4702
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/native_export_results.rs",
+      "git_blob": "8b1b79d6081dd345e97226c98b7effeef0e286c4",
+      "sha256": "339d7cf2b5bc79ff6a2f7a6bd4c2ea93402190c2d6090e8111a4cc94baf5d1e7",
+      "bytes": 9235
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/native_export_results/tests.rs",
+      "git_blob": "64a44ab4af55286dd7d540aa15c369c2e758ae89",
+      "sha256": "6a98c24ecc73a76c0bcd67b03662726a4bcd78a5a22a8693dc789d741f1687b4",
+      "bytes": 10921
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/native_requests.rs",
+      "git_blob": "a15b3d5c782f77e7f7785cb8212e11475985be2b",
+      "sha256": "e75a08820558a7037cdae002479f7ad5ad7e6e6fbb80c047055090d230454474",
+      "bytes": 38040
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/native_transport.rs",
+      "git_blob": "5231e0799fd9f479d97ebb890cb7a185ab16eeab",
+      "sha256": "e02ab82ddce63676390ada20a6af473505238a9d4790bf0b492d1ac60c56545e",
+      "bytes": 12931
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/native_transport/tests.rs",
+      "git_blob": "7d3f9633949bc00d5d6eedf80f1265e100fc5b87",
+      "sha256": "b51b25ac727cf6b3bd931fe104ffeec9539a40034cff56d10cf9289b8c401199",
+      "bytes": 16076
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/snapshot_retirement.rs",
+      "git_blob": "de9962cb161a12af905e38d8802f7401e207a16d",
+      "sha256": "8f9bae3544ebe2c0451494f92ab52a4c8f04b817f34d0453391dd27cb257d94c",
+      "bytes": 3492
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/source_event.rs",
+      "git_blob": "a99dc71dc5e886e276cb9d3d5dac5f7505857b10",
+      "sha256": "c4785b81441140c768939542cdadf5babce95ae52032cf950bb13ace5229e6ac",
+      "bytes": 8994
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/source_event/tests.rs",
+      "git_blob": "6100cd3433f487224388001448f31a0855fb1149",
+      "sha256": "07252254965b098218a0a7123f21d3bcc887ec0a88bdfaf4f566b91d5e48bf3a",
+      "bytes": 4716
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/source_queue.rs",
+      "git_blob": "64c5c8925925204751e1fbfadcf441ede728f0f0",
+      "sha256": "f60107d967d10af6dc303a3e18453dd0ff4a826f33e14a2664d7ae3c27a3957e",
+      "bytes": 13956
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/storage.rs",
+      "git_blob": "629b717a25bfd24dfc9e079f1888d0b7aee76e4c",
+      "sha256": "33f9b5b3de761b0481faa82bab639eddeeef6bda2fc99c3bc4d674db552786c5",
+      "bytes": 23987
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/tests.rs",
+      "git_blob": "764cbb6de566b1e654b26641422d9f60bee449f2",
+      "sha256": "02536cf7ca28fb55be455a893c0ccaec2e3731f5b77da4305fafa74dc4d2addd",
+      "bytes": 8524
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/transport.rs",
+      "git_blob": "bfd57c2c49427d8dae570830f48038782134c0d7",
+      "sha256": "a12d6c6c6ff6b34f7183dddbdc5a5cbaff5b81bd90e963b7b1835e8ecc99e760",
+      "bytes": 17837
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/transport/source_tests.rs",
+      "git_blob": "15b49de0acf125fd89b9096a33a1311d71d24b1c",
+      "sha256": "4275939f6d7ce6556ebe0f349a824240eba22c53c1f1455748a9f90a59b946eb",
+      "bytes": 8876
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/worker_control.rs",
+      "git_blob": "5ecf0c4cf93ae514000f20d430f78447818c7c6d",
+      "sha256": "4d4ed65513c1a88923179310adaefca85603199890f3a664c05634e2d4c50693",
+      "bytes": 10050
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/worker_export_results.rs",
+      "git_blob": "a9011233eabf36a7a01d40e8d3001011bf9dde94",
+      "sha256": "3aedf84842ea735bd1ef7a0e02a67f25a02e0795a45cc2c56e01c9469a5236d6",
+      "bytes": 3850
+    },
+    {
+      "path": "crates/hex-session/src/snapshot_exports/worker_requests.rs",
+      "git_blob": "dacaddc1f57f32d00d3a6e9e45a927c5d1d8aed9",
+      "sha256": "c39c8445e5956ca1ef6dae2402dc32d0ba3cc5748a775dfd8988d2e210a4577c",
+      "bytes": 3955
+    },
+    {
+      "path": "crates/hex-session/src/tuning_gesture.rs",
+      "git_blob": "1d57736ba9ae23096058a353b88c4e8b87d5020e",
+      "sha256": "05d8cdca829a1957acd889552bc5fa5aa6798c6be1fa8bf02a13478af141ee62",
+      "bytes": 24456
+    },
+    {
+      "path": "crates/hex-session/src/verified_import.rs",
+      "git_blob": "dc611505d00427083117dae08f8f456a61961121",
+      "sha256": "96b463b67fe3dc841407606e6c5aaba98a2b613fd228e7780547091ac97636be",
+      "bytes": 16786
+    },
+    {
+      "path": "crates/hex-session/tests/operator_seek.rs",
+      "git_blob": "9acec1d58744d8f571ff487fccf9cf6622ee2c13",
+      "sha256": "148c44ba2e7c805d76d1bd4abee1bd0ddc97af445bf4968853bfb8ea6dd0b7a6",
+      "bytes": 5506
+    },
+    {
+      "path": "crates/hex-session/tests/service.rs",
+      "git_blob": "f0a25515a2d1c76e6321520275d93e09a9bfbe27",
+      "sha256": "cad3437dde67ebcba26a537bb06d6be185e83ace8903757c0e4cebea80e5c102",
+      "bytes": 82196
+    },
+    {
+      "path": "crates/hex-session/tests/session.rs",
+      "git_blob": "2081e25690b13bd415e210e0939c523972eade47",
+      "sha256": "66cf345babf29e70e2a49b46bcdd104ab50e7d0c5f2c2e5f09d0be7f297e158f",
+      "bytes": 30497
+    },
+    {
+      "path": "crates/hex-storage/src/files.rs",
+      "git_blob": "df9b53e676fa7f45794b67ab3c1dd6b87c07912a",
+      "sha256": "f9e70347d4ce8f293c643e8325b77bbc8d785c41bd5f4f446a44c803fbb17da1",
+      "bytes": 22781
+    },
+    {
+      "path": "crates/hex-storage/src/journal.rs",
+      "git_blob": "92ea8daff7f336c049e237e557a9c43973a9dbeb",
+      "sha256": "70b7efa89456e48579038674078d32d6e1796a7c86745d6d1ff78443822aafb7",
+      "bytes": 28313
+    },
+    {
+      "path": "crates/hex-storage/src/lib.rs",
+      "git_blob": "fc04ccbac38eb2d0e231a70dd3186d58fdb2f87b",
+      "sha256": "9f64afb7c04c9bf36626e6830447f3a00232a5da68543d2154502ed7d6b173f7",
+      "bytes": 7526
+    },
+    {
+      "path": "crates/hex-stream/tests/callback_allocations.rs",
+      "git_blob": "9405d861c01c98c411d2954f94b08ed71cbd6740",
+      "sha256": "0c0254f78f07b9b0e2004d817729619f7804a64166d67b8f57011cc7e7bbb6d1",
+      "bytes": 10494
+    },
+    {
+      "path": "docs/native-device-resource-host.md",
+      "git_blob": "c4a84432a500e23b3f0fdf926bb4b569b085a5cd",
+      "sha256": "d7b0f835c513ee18f27ae763d751838542b7b98b5486b3fc5e1c42337a397f59",
+      "bytes": 61832
+    },
+    {
+      "path": "docs/native-document-token-storage.md",
+      "git_blob": "192ecef9bfaae0703dac2728e3d52946847f80c8",
+      "sha256": "f95d550d384704b5d3db3651c88bd3f3f60b1b32dbf5685f9acbbbcc6a99770e",
+      "bytes": 3910
+    },
+    {
+      "path": "docs/native-midi-storage.md",
+      "git_blob": "b56d04a2b51ced21ad5c5a5b0a7937c6cf20d907",
+      "sha256": "eba948d1838c6688e5ffd86abca5300e8ecc9ab3e14dd5b9feb2158e7fd33117",
+      "bytes": 5916
+    },
+    {
+      "path": "docs/native-state-storage.md",
+      "git_blob": "7176a3a3faf983591cb694d0f0d85efa78dc380c",
+      "sha256": "cd0429f7e833d22d000f7cf001b0d1c1218a3817506df576729b40b31fd33155",
+      "bytes": 3682
+    },
+    {
+      "path": "docs/retained-control-job-storage.md",
+      "git_blob": "88a89e9c3372d2b101d29210381f3973a18d6728",
+      "sha256": "0b47090f30ed802df28726aa3654deb4afcdfa879ff2ab90fea6688bff5c2646",
+      "bytes": 5776
+    },
+    {
+      "path": "docs/sampler-panel-mvp-2789.md",
+      "git_blob": "9d9146c3f8fb06d28603e3b26ff26afba4cee957",
+      "sha256": "04795ccbe23324c2b1b0355e7e3eebaf8c432e987984d0e766281021d7c569f8",
+      "bytes": 3813
+    },
+    {
+      "path": "docs/sampler-runtime-storage.md",
+      "git_blob": "65f937e6bc98cb364e21913724ecf5ad7711fed2",
+      "sha256": "9d7ae5ddfc07675bae579c8c052c9c1940b6a80f90995d0d45d91363dd95d78a",
+      "bytes": 31755
+    },
+    {
+      "path": "docs/sampler-ui-capability-migration-2789.md",
+      "git_blob": "02bc1a8a4237298d5925f521b57c9b82c17e8f58",
+      "sha256": "6c28ee1a1a13e6b02209f34820b3241d6d3ab1ee2ed0449f3bc83729cafcc400",
+      "bytes": 8285
+    },
+    {
+      "path": "docs/sampler.md",
+      "git_blob": "198a4cae3486e58d6b4e80957d01e92268b546bb",
+      "sha256": "f9392da73994b3c3adc2de2171c72c4bd7b8a5c427f8bfb1e0392a89defe0b4e",
+      "bytes": 134365
+    },
+    {
+      "path": "docs/shared-project-storage.md",
+      "git_blob": "7d18a0eea97c971793b96da3b96742828ad22a35",
+      "sha256": "6feca88ceb405f8a70f09050d45987c613a42cb39e3772103dca8507a9379b52",
+      "bytes": 13631
+    },
+    {
+      "path": "docs/waveform-storage.md",
+      "git_blob": "43ab70a4d7b6dbd3bc7b766183e51ebd7a2609d0",
+      "sha256": "dd3dc4bafac0212cd630716bca257243d80369ac4d9f63d26edd9ef9eb9d3a0c",
+      "bytes": 3741
+    },
+    {
+      "path": "scripts/check-architecture.py",
+      "git_blob": "3a4a611ce6ba87b30b5f68e0b5b7b549dbb61afe",
+      "sha256": "90e7dec1721a6fa76caffcd07baf07576ebbf1bb9c02af69f27490c3894cd6c1",
+      "bytes": 6034
+    },
+    {
+      "path": "scripts/check-device-layout.py",
+      "git_blob": "5ca43884731ad0adc78943b9b12d562083f584ce",
+      "sha256": "d2919db663f35d59143399de8857c4fe6f5ee6114d8e0152b06fd6ba371f3261",
+      "bytes": 11158
+    },
+    {
+      "path": "scripts/custody_mutex_policy.py",
+      "git_blob": "80f6974f154a922b888e7e9b8adf5fb3f8dcda5a",
+      "sha256": "ac4daf79b6407263b9ecbf21fc34fec379f43169fd385b25d871acfa241a3344",
+      "bytes": 7197
+    },
+    {
+      "path": "scripts/sampler_host_policy.py",
+      "git_blob": "24d70886e7ba0342bebe9a4155e8ac4c40831a55",
+      "sha256": "42ef1c251ab3d027eae502c0a21ef1f85380cf12b70dca4a781052191b30d71e",
+      "bytes": 73288
+    },
+    {
+      "path": "scripts/tests/test_custody_mutex_policy.py",
+      "git_blob": "146bc1f95d4a697c050648e21d742530040ab65e",
+      "sha256": "f6061b20aa23744bd1d345c828565a19d04fe343cd06497bd4b6d0b2ba63f26b",
+      "bytes": 4636
+    },
+    {
+      "path": "scripts/tests/test_sampler_host_policy.py",
+      "git_blob": "f3194149456178f72f7aff3061c58a6f7aa4d291",
+      "sha256": "0af8d4090bf1c8fde1e0e3ad2f303dee71baf8b4446a2bd6bc7ac089003da400",
+      "bytes": 42122
+    }
+  ]
+}

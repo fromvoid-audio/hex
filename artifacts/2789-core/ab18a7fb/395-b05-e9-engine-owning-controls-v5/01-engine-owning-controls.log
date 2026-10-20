@@ -1,0 +1,79 @@
+   Compiling hex-tuning v0.1.0 (/workspace/hex-integration-active/crates/hex-tuning)
+   Compiling hex-lattice-contract v0.1.0 (/workspace/hex-integration-active/crates/hex-lattice-contract)
+   Compiling hex-dsp v0.1.0 (/workspace/hex-integration-active/crates/hex-dsp)
+   Compiling hex-engine v0.1.0 (/workspace/hex-integration-active/crates/hex-engine)
+   Compiling hex-lattice v0.1.0 (/workspace/hex-integration-active/crates/hex-lattice)
+   Compiling hex-project v0.1.0 (/workspace/hex-integration-active/crates/hex-project)
+   Compiling hex-devices v0.1.0 (/workspace/hex-integration-active/crates/hex-devices)
+   Compiling hex-warp v0.1.0 (/workspace/hex-integration-active/crates/hex-warp)
+    Finished `test` profile [unoptimized] target(s) in 31.39s
+     Running unittests src/lib.rs (/workspace/hex-project-spectrum/artifacts/portable-target/debug/deps/hex_engine-212758a4a9407a87)
+
+running 64 tests
+test audio_preparation::arrangement_clips::root::lifecycle_tests::root_owned_opaque_context_refuses_before_children_or_context_are_moved ... ok
+test audio_preparation::arrangement_clips::root::lifecycle_tests::actual_context_only_wrong_route_is_discovered_and_parent_refuses_without_drop ... ok
+test audio_preparation::arrangement_clips::root::lifecycle_tests::root_owned_omitted_real_child_alias_fails_closure ... ok
+test audio_preparation::arrangement_clips::root::lifecycle_tests::root_owned_retirement_unwind_keeps_remaining_metadata_and_first_payload_rooted ... ok
+test audio_preparation::arrangement_clips::root::metadata_tests::fresh_feed_metadata_remains_charged_and_refuses_retry_after_disposal_panic ... ok
+test audio_preparation::arrangement_clips::root::metadata_tests::paired_signal_topology_retains_actual_compiler_runtime_aliases_and_control_destination ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::actual_alias_or_weak_refusal_pins_identical_revision_and_never_retries ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::borrowed_storage_checked_reservation_overflow_precedes_any_owner_borrow ... ok
+test audio_preparation::arrangement_clips::root::metadata_tests::fresh_arrangement_metadata_moves_actual_backings_and_latches_abnormal_disposal ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::borrowed_storage_inventory_covers_real_roots_without_retirement_admission ... ok
+test audio_preparation::arrangement_clips::root::lifecycle_tests::root_owned_wrong_route_and_occupied_slot_refuse_before_any_move ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::borrowed_storage_pressure_refuses_without_consuming_original_owners ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::child_destructor_panic_after_four_root_extraction_retains_bank_and_first_payload ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::child_alias_refusal_retains_partial_extraction_in_persistent_slots ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::borrowed_storage_retained_roles_and_failure_custody_never_drop_or_close_owners ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::four_actual_revision_roots_preserve_pcm_session_sources_aliases_and_capacity ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::new_touch_and_transformed_graphs_refuse_before_source_moves ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::four_root_reservations_refuse_handle_and_byte_pressure_before_bank_consumption ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::occupied_restore_destination_and_invalid_handle_preserve_all_four_owners ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::tuning_family_exhaustion_refuses_before_revision_children_or_bank_transfer ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::root_wrapping_adds_no_aliases_and_equal_content_revisions_have_distinct_roots ... ok
+test audio_preparation::arrangement_clips::root::tests::empty_main_carrier_survives_construct_transfer_restore_and_reuse ... ok
+test audio_preparation::arrangement_clips::root::tests::actual_resident_and_streamed_root_matches_legacy_pcm_and_preserves_context_handles ... ok
+test audio_preparation::arrangement_clips::root::tests::main_carrier_is_not_born_before_either_byte_reservation_admits_it ... ok
+test audio_preparation::arrangement_clips::root::tests::mismatched_root_association_refuses_reporting_and_restore_without_losing_owners ... ok
+test audio_preparation::arrangement_clips::root::tests::narrow_root_refuses_authored_main_before_taking_any_source ... ok
+test audio_preparation::arrangement_clips::root::tests::occupied_restore_target_and_caller_byte_pressure_keep_original_owners ... ok
+test audio_preparation::arrangement_clips::root::revision_tests::every_private_revision_reserve_transfer_and_install_error_or_panic_retains_custody ... ok
+test audio_preparation::arrangement_clips::root::lifecycle_tests::root_owned_actual_inventory_closes_in_both_placements_and_after_restoration ... ok
+test audio_preparation::arrangement_clips::root::tests::restored_root_child_destructor_panic_retains_first_payload_bank_and_remaining_owners ... ok
+test audio_preparation::arrangement_clips::root::tests::root_moves_add_no_aliases_and_equal_content_roots_retain_distinct_allocations ... ok
+test main_chain_review_tests::main_render_error_closes_transaction_for_immediate_handoff_and_retry ... ok
+test audio_preparation::arrangement_clips::root::tests::every_root_reserve_move_and_final_install_error_or_panic_retains_custody ... ok
+test signal_graph::construction::tests::graph_construction_cost_bounds_actual_retained_and_zero_latency_scratch ... ok
+test main_chain_review_tests::global_main_audition_cancellation_preserves_normal_pcm_after_restart ... ok
+test signal_graph::tests::audio_feed_gain_only_handoff_preserves_pending_samples_and_updates_new_source_gain ... ok
+test session_playback::tests::closed_candidate_main_checks_prepared_and_actual_runtime_before_any_groups ... ok
+test signal_graph::tests::compatible_gain_handoff_preserves_inflight_impulse_and_changed_latency_refuses ... ok
+test signal_graph::tests::delayed_origin_clock_reports_source_performance_and_transport_without_guesses ... ok
+test signal_graph::tests::compensated_stopped_and_live_handoffs_reject_rate_change_without_touching_donor ... ok
+test signal_graph::tests::actual_dry_and_seven_frame_paths_align_capture_and_both_renderers_across_partitions ... ok
+test signal_graph::tests::actual_delay_storage_limit_refuses_before_runtime_allocation ... ok
+test signal_graph::tests::eq_automation::return_eq_uses_the_same_arrangement_clock_with_and_without_compensation ... ok
+test signal_graph::tests::eq_automation::eq_automation_follows_arrangement_loop_and_seek_while_linear_export_advances ... ok
+test signal_graph::tests::gain_uses_delayed_content_frame_and_loop_history_survives_wrap ... ok
+test signal_graph::tests::independent_generator_five_and_audio_prefix_three_align_before_sum ... ok
+test signal_graph::tests::main_review_cumulative_latency_limit_includes_upstream_and_serial_main ... ok
+test signal_graph::tests::main_review_known_latency_handoff_preserves_history_and_refuses_changed_runtime_layout ... ok
+test signal_graph::tests::main_review_main_only_delay_retains_fast_pre_main_path_and_bypass ... ok
+test signal_graph::tests::eq_automation::eq_automation_reaches_live_and_offline_effects_with_partition_and_latency_invariance ... ok
+test signal_graph::tests::main_review_unknown_latency_refuses_before_candidate_publication ... ok
+test signal_graph::tests::profile_real_compensated_and_routed_graph ... ignored, release throughput evidence; run explicitly with --release --ignored --nocapture
+test signal_graph::tests::return_to_track_inputs_follow_combined_topology_with_zero_and_positive_latency ... ok
+test signal_graph::tests::serial_three_plus_five_matches_eight_and_return_feed_cumulative_delay ... ok
+test signal_graph::tests::typed_audio_track_inputs_align_before_prefix_and_preserve_main_capture ... ok
+test signal_graph::tests::unknown_latency_and_cumulative_overflow_refuse_actual_preparation ... ok
+test signal_graph::tests::main_review_serial_latency_reports_final_output_without_moving_pre_main_capture ... ok
+test signal_graph::tests::zero_latency_audio_feed_and_device_insertion_adopt_fresh_empty_delay_layouts_live ... ok
+test signal_graph::typed_inputs::tests::reserved_graph_shape_matches_compiled_routes_and_refuses_insertion_growth ... ok
+test signal_graph::tests::zero_latency_routed_tempo_edit_preserves_pcm_while_positive_history_refuses_atomically ... ok
+test signal_graph::typed_inputs::tests::reserved_typed_keys_preserve_identity_parallel_order_and_latency_plan ... ok
+test signal_graph::typed_inputs::tests::reserved_typed_keys_match_tree_reference_at_graph_limits_and_empty ... ok
+test signal_graph::tests::eq_automation::serial_main_origins_follow_actual_tempo_loop_seek_and_sample_rate ... ok
+test signal_graph::tests::eq_automation::main_eq_automation_follows_upstream_and_each_serial_input_origin ... ok
+
+test result: ok. 63 passed; 0 failed; 1 ignored; 0 measured; 809 filtered out; finished in 0.97s
+

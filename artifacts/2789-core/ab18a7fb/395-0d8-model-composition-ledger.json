@@ -1,0 +1,150 @@
+{
+  "base": "b05a9eaa61edc60f711acdc06d907f7525d6197c",
+  "source": "0d8ea48b411ed3ecdf9b435fc30b2e2c74d9cf35",
+  "paths": [
+    {
+      "path": "crates/hex-audio/tests/audio_preview_allocation.rs",
+      "before": null,
+      "frozen_after": "19254559047cdab93238eb9d0cd79543bdbafec6f203efd3fc4a3807c205cd61",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "19254559047cdab93238eb9d0cd79543bdbafec6f203efd3fc4a3807c205cd61"
+    },
+    {
+      "path": "crates/hex-project/README.md",
+      "before": "ada1f8232e71ed9d7acfd20d71344a9e6d1e9339b322bb48fc3d1cd400a93929",
+      "frozen_after": "28664d8965387814076bd866718b4503f984a4ac672c709b2ff635b92408b361",
+      "integration_before": "0acac7c47ff07de9e20ab56dda76c7fa2412afb9655e798f2b630626e6c35a9a",
+      "method": "three-way-clean",
+      "integration_after": "6a1a3908cd80bfd41bc34580c88850b03aeecd7abec2fcff200b70e4379268ee"
+    },
+    {
+      "path": "crates/hex-project/src/audio_edit.rs",
+      "before": "2439a18e84bfbf6b16118c01e9cf59c4bef2e06af258042dcedcc562fc0e0f01",
+      "frozen_after": "cd560cdbeed1319baefbc80a37ca2073cac57f8cc676fff8dd82184558f9683d",
+      "integration_before": "2439a18e84bfbf6b16118c01e9cf59c4bef2e06af258042dcedcc562fc0e0f01",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "cd560cdbeed1319baefbc80a37ca2073cac57f8cc676fff8dd82184558f9683d"
+    },
+    {
+      "path": "crates/hex-project/src/audio_edit/commands.rs",
+      "before": "0856cd728f09025e2a3632e84b8762d3c233729b85f4e4c474be94931cd17d8e",
+      "frozen_after": "075b77330b0918e1871faaebbc3e0c00a428354b7acde750535079a42696c19e",
+      "integration_before": "0856cd728f09025e2a3632e84b8762d3c233729b85f4e4c474be94931cd17d8e",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "075b77330b0918e1871faaebbc3e0c00a428354b7acde750535079a42696c19e"
+    },
+    {
+      "path": "crates/hex-project/src/audio_edit/stretch.rs",
+      "before": "ed5c0b1ee05225be6e9429fa6b31a3d2e0508e8fee6a487d5734d87072216a0d",
+      "frozen_after": "9d90a86d74a3d44105ed2dde44c3d062420c7d62aeb7ac7964061391ac2b231f",
+      "integration_before": "ed5c0b1ee05225be6e9429fa6b31a3d2e0508e8fee6a487d5734d87072216a0d",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "9d90a86d74a3d44105ed2dde44c3d062420c7d62aeb7ac7964061391ac2b231f"
+    },
+    {
+      "path": "crates/hex-project/src/audio_edit/view.rs",
+      "before": "13009a146c067872bd7d39fb4dcaf7aad678af2d2eedc404b460a7cfcfcf6038",
+      "frozen_after": "71848e4979405b6fdb10a74923eaea452f4331c251d5ba1af1679699c33f5007",
+      "integration_before": "13009a146c067872bd7d39fb4dcaf7aad678af2d2eedc404b460a7cfcfcf6038",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "71848e4979405b6fdb10a74923eaea452f4331c251d5ba1af1679699c33f5007"
+    },
+    {
+      "path": "crates/hex-project/src/audio_edit/warp_projection.rs",
+      "before": "ca9fa6195cea946000c00187f986e0bcf3ee69e3eb2f6e01d8b7a9a3c2d9c993",
+      "frozen_after": "c53743b533bf0962dbd8f73e8519c78c0e29acedc748fb4d12471ed63d030060",
+      "integration_before": "ca9fa6195cea946000c00187f986e0bcf3ee69e3eb2f6e01d8b7a9a3c2d9c993",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "c53743b533bf0962dbd8f73e8519c78c0e29acedc748fb4d12471ed63d030060"
+    },
+    {
+      "path": "crates/hex-project/src/audio_events.rs",
+      "before": "a45de2f2b3d045226a43d96bb167f59646c054a87cd8f2a8541ffdb29992056e",
+      "frozen_after": "85f896ec5787a9a40049d3a0be6a6dd5e3237f9ae1e5a369969e795ce7abb553",
+      "integration_before": "a45de2f2b3d045226a43d96bb167f59646c054a87cd8f2a8541ffdb29992056e",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "85f896ec5787a9a40049d3a0be6a6dd5e3237f9ae1e5a369969e795ce7abb553"
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview.rs",
+      "before": null,
+      "frozen_after": "bbdf0b1582f2ad55acc110f971049571123f3f7c46768a7965d0cd0f7d46163e",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "bbdf0b1582f2ad55acc110f971049571123f3f7c46768a7965d0cd0f7d46163e"
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview/materialize.rs",
+      "before": null,
+      "frozen_after": "9743c2ce96b4ae24cab729eff318107d6896c3765e0ce1f5720381e9f0800cd0",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "9743c2ce96b4ae24cab729eff318107d6896c3765e0ce1f5720381e9f0800cd0"
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview/operations.rs",
+      "before": null,
+      "frozen_after": "df0640dde86fc23f232936b4ba2f218e927d56fef0ca299842d413de9b187fbb",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "df0640dde86fc23f232936b4ba2f218e927d56fef0ca299842d413de9b187fbb"
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview/plain.rs",
+      "before": null,
+      "frozen_after": "5a13fae1cb5b92b194c524347a598c03074a65f1f0b0f4178c6b19b8b9c7e783",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "5a13fae1cb5b92b194c524347a598c03074a65f1f0b0f4178c6b19b8b9c7e783"
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview/plan.rs",
+      "before": null,
+      "frozen_after": "c9cb88f2d7d29a69ccf936c3077852a239d37cd2045735bc9995356e6b41aae4",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "c9cb88f2d7d29a69ccf936c3077852a239d37cd2045735bc9995356e6b41aae4"
+    },
+    {
+      "path": "crates/hex-project/src/audio_preview/validation.rs",
+      "before": null,
+      "frozen_after": "476b590b652fd03b965e5f5f7c3f9d9f00387a6bff537af1a0ab86ee3b7302dd",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "476b590b652fd03b965e5f5f7c3f9d9f00387a6bff537af1a0ab86ee3b7302dd"
+    },
+    {
+      "path": "crates/hex-project/src/clip_fade_trim.rs",
+      "before": "9fa0949c5a82188abd3877dfd5ea194709a5d4f547d6dcb7c8b2460f2db3e9d5",
+      "frozen_after": "cbd66635ab694d405a3d6da1f57a4f547ce94761fb0966704f46bf481d1b44a1",
+      "integration_before": "9fa0949c5a82188abd3877dfd5ea194709a5d4f547d6dcb7c8b2460f2db3e9d5",
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "cbd66635ab694d405a3d6da1f57a4f547ce94761fb0966704f46bf481d1b44a1"
+    },
+    {
+      "path": "crates/hex-project/src/edit.rs",
+      "before": "3c81c751a968c103ab7fcc3a02b4fd5232fa40c088959950eafa385a56d9e2cb",
+      "frozen_after": "3d9111db80ae4bc1877768eebb32ff5195b498e74423e05469caa5858d0dfe59",
+      "integration_before": "88c33eb1f53b320637b3dcabc4380246cd8648099bd97867f8c6e926d7dd90b2",
+      "method": "three-way-clean",
+      "integration_after": "0921b24f19e32771d902c48cd1d20817a9d4ea5df8da1ffb2049f462aecc6afa"
+    },
+    {
+      "path": "crates/hex-project/src/lib.rs",
+      "before": "f5733d7d277e2befc13626ddeadf6e4d99cc85f6f0e5074790c0f3f558d9b6fc",
+      "frozen_after": "6d19edeb945680f41d7c6621d3d225be0eb37cd04975e10469bf5f6a95db5470",
+      "integration_before": "3b9221ad6ac3187cffabba46b4333f641efd8bee402151b9b79a1a7ac52c3ede",
+      "method": "three-way-clean",
+      "integration_after": "55e71628b60b676d5b5f8772e8b4cea7dfb0e33cd9ae9cc026e1e4e3324fd8f3"
+    },
+    {
+      "path": "crates/hex-project/tests/audio_preview.rs",
+      "before": null,
+      "frozen_after": "0f1dc02552638e471b9f67150d86f5eb77db1b43690ec54c2a2cb62b8e8bd519",
+      "integration_before": null,
+      "method": "exact-before-hash-fastforward",
+      "integration_after": "0f1dc02552638e471b9f67150d86f5eb77db1b43690ec54c2a2cb62b8e8bd519"
+    }
+  ]
+}

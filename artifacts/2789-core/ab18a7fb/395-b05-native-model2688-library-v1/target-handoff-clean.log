@@ -1,0 +1,5 @@
+warning: version qualifier in `-p path+file:///workspace/hex-integration-active/crates/hex-audio#0.1.0` is ignored, cleaning all versions of `hex-audio` found
+warning: url qualifier in `-p path+file:///workspace/hex-integration-active/crates/hex-audio#0.1.0` ignored, cleaning all versions of `hex-audio` found
+warning: version qualifier in `-p path+file:///workspace/hex-integration-active/crates/hex-project#0.1.0` is ignored, cleaning all versions of `hex-project` found
+warning: url qualifier in `-p path+file:///workspace/hex-integration-active/crates/hex-project#0.1.0` ignored, cleaning all versions of `hex-project` found
+     Removed 7 files, 11.1MiB total
