@@ -258,9 +258,9 @@ pub(super) fn render_return_effect(
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 super::utility_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.compressor") {
-                super::compressor_panel::render_body(view, cx, id, device.state(), device_view)
+                super::compressor_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
-                super::saturator_panel::render_body(view, cx, id, device.state(), device_view)
+                super::saturator_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 super::gate_panel::render_body(view, cx, id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {

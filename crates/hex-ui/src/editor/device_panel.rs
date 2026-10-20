@@ -27,11 +27,11 @@ use std::{
 
 mod auto_pan_panel;
 mod bindings;
-pub(super) use bindings::effective_parameter_value;
 use bindings::{
     ControlPresentation, ControlText, ParameterControl, cancel_control,
     parameter_control_matches_identity,
 };
+pub(super) use bindings::{effective_parameter_value, effective_parameter_value_readonly};
 mod gesture_adapter;
 pub(super) use gesture_adapter::{
     NumericGestureLease, commit_owned_numeric_edit, dispatch_bound_numeric_gesture,
@@ -1516,9 +1516,9 @@ fn render_effect(
             let body = if device_view.type_id.as_str() == Ok("hex.utility") {
                 utility_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.compressor") {
-                compressor_panel::render_body(view, cx, device_id, device.state(), device_view)
+                compressor_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.saturator") {
-                saturator_panel::render_body(view, cx, device_id, device.state(), device_view)
+                saturator_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.gate") {
                 gate_panel::render_body(view, cx, device_id, device_view)
             } else if device_view.type_id.as_str() == Ok("hex.auto-pan") {

@@ -1,14 +1,15 @@
 //! Compact Compressor composition using the shared Lattice controls and plot.
 use super::{
     ControlPresentation, ControlText, DeviceControlIdentity, EditorView, ParameterKey,
-    effective_parameter_value, numeric_display::NumericDisplayCodec,
+    effective_parameter_value_readonly, numeric_display::NumericDisplayCodec,
     parameter_control_with_presentation,
 };
 use crate::theme;
 use gpui::{Context, Div, ElementId, Stateful, div, prelude::*, px, rgb};
 use hex_engine::{CompressorTransferCurve, NativeDeviceClass, NativeDeviceView};
-use hex_lattice_contract::{NativeDeviceState, ParameterId, ParameterValue};
+use hex_lattice_contract::{ParameterId, ParameterValue};
 use hex_project::DeviceId;
+use hex_session::snapshot_exports::{SnapshotSourceKey, SnapshotTransportError};
 
 pub(super) const FRAME_WIDTH: f32 = crate::device_composition::COMPRESSOR_FRAME_WIDTH;
 const THRESHOLD: ParameterId = ParameterId::from_static(1);
@@ -22,9 +23,24 @@ const DETECTOR: ParameterId = ParameterId::from_static(8);
 const PARAMETERS: [ParameterId; 5] = [THRESHOLD, RATIO, KNEE, OUTPUT, MIX];
 
 pub(super) struct PreviewCache {
-    state: NativeDeviceState,
+    source_key: SnapshotSourceKey,
     values: [ParameterValue; 5],
-    curve: Result<CompressorTransferCurve, String>,
+    curve: CompressorTransferCurve,
+}
+
+#[derive(Debug)]
+enum PreviewError {
+    Read(SnapshotTransportError),
+    Unavailable(&'static str),
+}
+impl PreviewError {
+    fn message(self) -> &'static str {
+        match self {
+            Self::Read(SnapshotTransportError::Busy) => "project read is busy",
+            Self::Read(_) => "project read is unavailable",
+            Self::Unavailable(message) => message,
+        }
+    }
 }
 
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -32,28 +48,26 @@ pub(super) fn cached_curve(
     view: &EditorView,
     device: DeviceId,
 ) -> Option<&CompressorTransferCurve> {
-    view.device_panel
-        .compressor_previews
-        .get(&device)?
-        .curve
-        .as_ref()
-        .ok()
+    let source_key = view.state.as_ref()?.source_key()?;
+    let cached = view.device_panel.compressor_previews.get(&device)?;
+    (cached.source_key == source_key).then_some(&cached.curve)
 }
 
 fn preview(
     view: &mut EditorView,
     device: DeviceId,
-    state: &NativeDeviceState,
     device_view: &NativeDeviceView,
-) -> Result<CompressorTransferCurve, String> {
+) -> Result<CompressorTransferCurve, PreviewError> {
+    // Resolve only scalar pending/gesture values. This path must not retire a
+    // candidate before the retained source read has succeeded.
     let mut values = [ParameterValue::Float(0.0); 5];
     for (index, id) in PARAMETERS.iter().enumerate() {
         let parameter = device_view
             .parameters
             .iter()
             .find(|parameter| parameter.descriptor.id == *id)
-            .ok_or_else(|| "missing compressor parameter".to_owned())?;
-        values[index] = effective_parameter_value(
+            .ok_or(PreviewError::Unavailable("missing compressor parameter"))?;
+        values[index] = effective_parameter_value_readonly(
             view,
             ParameterKey {
                 device,
@@ -62,49 +76,73 @@ fn preview(
             parameter.value,
         );
     }
-    if let Some(cached) = view.device_panel.compressor_previews.get(&device)
-        && cached.state == *state
-        && cached.values == values
-    {
-        return cached.curve.clone();
-    }
-    let curve = (|| {
-        let mut draft = state.clone();
-        for (id, value) in PARAMETERS.into_iter().zip(values) {
-            if hex_engine::native_device_parameter_for_class(NativeDeviceClass::Effect, &draft, id)
-                .map_err(|error| error.to_string())?
-                != value
-            {
-                draft = hex_engine::patch_native_device_parameter_for_class(
-                    NativeDeviceClass::Effect,
-                    &draft,
-                    id,
-                    value,
-                )
-                .map_err(|error| error.to_string())?;
+    let overrides: [(ParameterId, ParameterValue); 5] =
+        std::array::from_fn(|index| (PARAMETERS[index], values[index]));
+    let state = view
+        .state
+        .as_ref()
+        .ok_or(PreviewError::Unavailable("project is still loading"))?;
+    let source_key = state
+        .source_key()
+        .ok_or(PreviewError::Read(SnapshotTransportError::Stale))?;
+    let cache_hit = view
+        .device_panel
+        .compressor_previews
+        .get(&device)
+        .is_some_and(|cached| cached.source_key == source_key && cached.values == values);
+    let result = state
+        .read_with(|snapshot| {
+            let device = snapshot
+                .model()
+                .device(device)
+                .ok_or(hex_engine::Invalid("compressor is unavailable"))?;
+            let controls = device.controls()?;
+            if cache_hit {
+                // The strict current codec is still checked on a cache hit. Clone
+                // only the fixed scalar curve after the guard has ended below.
+                Ok(None)
+            } else {
+                controls.compressor_transfer_curve(&overrides).map(Some)
             }
+        })
+        .map_err(PreviewError::Read)?;
+    let curve = match result {
+        Ok(Some(curve)) => curve,
+        Ok(None) => {
+            return view
+                .device_panel
+                .compressor_previews
+                .get(&device)
+                .map(|cached| cached.curve.clone())
+                .ok_or(PreviewError::Unavailable(
+                    "compressor preview is unavailable",
+                ));
         }
-        hex_engine::native_compressor_transfer_curve(&draft).map_err(|error| error.to_string())
-    })();
+        Err(error) => {
+            // A successful read proved this candidate invalid. Busy returns
+            // above without replacing or retiring any existing cache entry.
+            view.device_panel.compressor_previews.remove(&device);
+            return Err(PreviewError::Unavailable(error.0));
+        }
+    };
     view.device_panel.compressor_previews.insert(
         device,
         PreviewCache {
-            state: state.clone(),
+            source_key,
             values,
             curve: curve.clone(),
         },
     );
-    curve
+    Ok(curve)
 }
 
 pub(super) fn render_body(
     view: &mut EditorView,
     cx: &mut Context<EditorView>,
     device: DeviceId,
-    state: &NativeDeviceState,
     device_view: &NativeDeviceView,
 ) -> Stateful<Div> {
-    let curve = preview(view, device, state, device_view);
+    let curve = preview(view, device, device_view);
     let identity = DeviceControlIdentity {
         class: NativeDeviceClass::Effect,
         type_id: device_view.type_id,
@@ -114,7 +152,7 @@ pub(super) fn render_body(
         .iter()
         .find(|p| p.descriptor.id == DETECTOR)
         .map(|p| {
-            effective_parameter_value(
+            effective_parameter_value_readonly(
                 view,
                 ParameterKey {
                     device,
@@ -176,7 +214,12 @@ pub(super) fn render_body(
                 graph = graph.child(plot);
             }
         }
-        Err(error) => graph = graph.child(theme::text(format!("preview unavailable · {error}"))),
+        Err(error) => {
+            graph = graph.child(theme::text(format!(
+                "preview unavailable · {}",
+                error.message()
+            )))
+        }
     }
     let field = |label: &str, control: Div| {
         div()

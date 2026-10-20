@@ -188,8 +188,17 @@ pub(super) struct ControlText {
     pub(super) codec: Option<numeric_display::NumericDisplayCodec>,
 }
 
-pub(crate) fn effective_parameter_value(
-    view: &mut EditorView,
+fn parameter_requests_are_idle(view: &EditorView) -> bool {
+    view.worker_requests_pending == 0
+        && view.pending_requests.is_empty()
+        && view.device_gesture_barriers.is_empty()
+        && view.device_gesture.snapshot().is_none()
+}
+
+/// Resolve display values without retiring a pending candidate. Read-dependent
+/// renderers use this before preflight so transport pressure cannot mutate it.
+pub(crate) fn effective_parameter_value_readonly(
+    view: &EditorView,
     key: ParameterKey,
     canonical_value: ParameterValue,
 ) -> ParameterValue {
@@ -225,22 +234,30 @@ pub(crate) fn effective_parameter_value(
             }
             _ => None,
         });
-    let pending_value = view.device_panel.pending_values.get(&key).copied();
-    if pending_value.is_some()
-        && view.worker_requests_pending == 0
-        && view.pending_requests.is_empty()
-        && view.device_gesture_barriers.is_empty()
-        && view.device_gesture.snapshot().is_none()
-    {
+    gesture_value.unwrap_or_else(|| {
+        if parameter_requests_are_idle(view) {
+            canonical_value
+        } else {
+            view.device_panel
+                .pending_values
+                .get(&key)
+                .copied()
+                .unwrap_or(canonical_value)
+        }
+    })
+}
+
+/// Render-time cleanup after source preflight uses the same effective-value law.
+pub(crate) fn effective_parameter_value(
+    view: &mut EditorView,
+    key: ParameterKey,
+    canonical_value: ParameterValue,
+) -> ParameterValue {
+    let value = effective_parameter_value_readonly(view, key, canonical_value);
+    if parameter_requests_are_idle(view) {
         view.device_panel.pending_values.remove(&key);
     }
-    gesture_value.unwrap_or_else(|| {
-        view.device_panel
-            .pending_values
-            .get(&key)
-            .copied()
-            .unwrap_or(canonical_value)
-    })
+    value
 }
 
 pub(super) fn render_parameter(

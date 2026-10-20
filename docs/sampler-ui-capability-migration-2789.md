@@ -69,6 +69,29 @@ cache reuse still depends on the actual waveform identity and mapping, not an
 invented source token. These changes have scoped format, diff and layout-guard
 checks, without another Cargo run or new UI test claim.
 
+The next bounded stage ports Saturator/Compressor transfer previews through
+actual borrowed native controls and fixed effective overrides (Compressor IDs
+1/2/5/6/7, retaining Detector 8 in its display). Their caches now hold only the
+fixed scalar curve, effective values and Native source key. They retain no
+native state or patched draft. A shared read-only effective-value helper uses
+the existing gesture/pending precedence while ignoring idle pending values
+without removing them before a read. Ordinary render cleanup delegates that
+same law after source preflight. Device-drag admission now returns transport
+refusal separately from a stale target and validates actual slot class/type,
+including Main/Return; its display-only bool wrapper does not mutate the drag.
+The inherited drag payload still uses generation/revision, not a new source-key
+contract, and no additional saturation/ABA guarantee is claimed for it.
+
+The frozen check for that six-file stage at HEAD `372a933a` completed with
+exit 101 and 542 actual compiler errors (543 headings), with unchanged source
+SHA-256 `987602b03f0dc74489e911507ae71345a8cd78e06a86c3a0dcd4c0c591d1de22`.
+Its raw `modern-transfer-drag` JSON/log/patch is retained alongside the earlier
+checks. There were no primary diagnostics in the two transfer panels, shared
+binding/value helper, scalar recipe, Sampler, nominal waveform, or newly ported
+drag-currentness method. The three earlier connection repairs were also absent
+from diagnostics. This remains a failed partial library check, not a passed
+UI test, strict check, complete migration or native/merge qualification.
+
 The sections below preserve the older b94-based component's source history;
 their unconnected-dispatch and unavailable-query descriptions are historical.
 

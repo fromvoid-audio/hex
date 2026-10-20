@@ -43,9 +43,8 @@ Return sample-rate argument, a field accessed as a method and a fallback body
 missing its element ID. The new scalar recipe, shared bindings, Sampler leaf
 and parameter-row reconciliation had no primary diagnostic in that run. The
 repaired source has scoped formatting and diff review only; this is not a clean
-UI build or a canonical binding/ACK test receipt. Existing specialized EQ,
-transfer-curve and audible meter adapters and remaining old cache consumers are
-still unported. Their compile failures are retained rather than hidden behind
+UI build or a canonical binding/ACK test receipt. At that diagnostic, specialized EQ, transfer-curve and audible meter adapters
+and remaining old cache consumers were still unported. Their compile failures are retained rather than hidden behind
 raw-state fallbacks.
 
 After that diagnostic, the owner-switch checked finalizer was moved before
@@ -57,6 +56,15 @@ the actual opaque source key and reject a different installed source before
 every initial/paint query, including equal saturated revision values. Those
 bounded corrections have scoped format/diff/layout-guard checks only. No current
 UI-source tests have run; existing focused Core query tests passed separately.
+
+A later bounded stage replaced the Saturator/Compressor owning state previews
+with actual borrowed native transfer queries and scalar/source-key caches,
+sharing a read-only effective-value helper with the existing bindings. The
+frozen partial library check at `372a933a` reported 542 compiler errors elsewhere
+and no primary diagnostic in those panels, the Sampler recipe or new helper.
+The earlier three connection errors were absent. EQ, audible meters, remaining
+readers and controller/backend ownership still prevent a clean UI build. This
+failed check adds no UI test, native or merge qualification.
 
 The production device-composition source guard passes with the real instrument
 dispatch. Earlier staged leaf tests (UI2, Engine2, Session30) remain evidence for
