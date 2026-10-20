@@ -6,7 +6,7 @@ use hex_engine::NativeDeviceClass;
 use hex_project::{Command, DeviceComparisonAction as Action, DeviceVariant as Slot};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicBool, AtomicUsize, Ordering},
+    atomic::{AtomicUsize, Ordering},
 };
 
 fn run(service: &Service, request: Request) -> Event {
@@ -105,7 +105,7 @@ fn comparison_metadata_both_modes_save_status_history_keep_exact_preparation_sou
         assert_eq!(source.sources().len(), 1, "real prepared media binding");
         let before_comparison_save = run(&service, Request::SaveNew(folder.join("before.hex")));
         assert!(
-            Arc::ptr_eq(
+            hex_engine::SharedMetadata::shares_owner_with(
                 before_comparison_save
                     .state
                     .canonical_audio_source
@@ -153,7 +153,7 @@ fn comparison_metadata_both_modes_save_status_history_keep_exact_preparation_sou
             &undo.state,
             &redo.state,
         ] {
-            assert!(Arc::ptr_eq(
+            assert!(hex_engine::SharedMetadata::shares_owner_with(
                 state.canonical_audio_source.as_ref().unwrap(),
                 &source
             ));
@@ -171,7 +171,7 @@ fn comparison_metadata_both_modes_save_status_history_keep_exact_preparation_sou
             }),
         );
         assert!(audio.state.comparison_audio.is_none());
-        assert!(!Arc::ptr_eq(
+        assert!(!hex_engine::SharedMetadata::shares_owner_with(
             audio.state.canonical_audio_source.as_ref().unwrap(),
             &source
         ));
@@ -187,14 +187,14 @@ fn comparison_metadata_both_modes_save_status_history_keep_exact_preparation_sou
 }
 
 struct Sink {
-    sources: Arc<Mutex<Vec<Arc<crate::service::CanonicalAudioSourceSnapshot>>>>,
+    sources: Arc<Mutex<Vec<crate::service::SharedCanonicalAudioSource>>>,
     polls: Arc<AtomicUsize>,
 }
 impl WorkerAudioSink for Sink {
-    fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+    fn initialize(&mut self, _: &dyn hex_engine::CancellationQuery) -> Result<u32, String> {
         Ok(48_000)
     }
-    fn canonical_changed(&mut self, source: Arc<crate::service::CanonicalAudioSourceSnapshot>) {
+    fn canonical_changed(&mut self, source: crate::service::SharedCanonicalAudioSource) {
         self.sources.lock().unwrap().push(source);
     }
     fn poll(&mut self) {

@@ -114,7 +114,7 @@ fn browser_enter_worker_refuses_unknown_wrong_class_and_stale_without_mutation()
         assert_eq!(refused.state.can_redo, initial.can_redo);
         assert!(refused.created.is_none());
         assert!(refused.playback.is_none());
-        assert!(Arc::ptr_eq(
+        assert!(hex_engine::SharedMetadata::shares_owner_with(
             refused.state.canonical_audio_source.as_ref().unwrap(),
             initial.canonical_audio_source.as_ref().unwrap()
         ));

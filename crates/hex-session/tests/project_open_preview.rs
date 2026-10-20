@@ -181,7 +181,7 @@ fn failed_open_preserves_acknowledged_preview_canonical_source_and_history() {
                 (failed.state.can_undo, failed.state.can_redo),
                 (before.state.can_undo, before.state.can_redo)
             );
-            assert!(Arc::ptr_eq(
+            assert!(hex_engine::SharedMetadata::shares_owner_with(
                 failed.state.canonical_audio_source.as_ref().unwrap(),
                 source
             ));
