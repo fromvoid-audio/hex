@@ -259,7 +259,12 @@ pub(super) fn exercise(
             pulse(visual);
             let project = hex_storage::load(saved).unwrap();
             let state = project.device(device).unwrap().state();
-            if hex_engine::sampler_parameter_value_on_control(parameter, state).unwrap() == value {
+            let ready = cx
+                .update(|cx| hex_ui::sampler_midi_test_ready(window, cx))
+                .unwrap();
+            if hex_engine::sampler_parameter_value_on_control(parameter, state).unwrap() == value
+                && ready
+            {
                 assert_eq!(
                     state.asset_references(),
                     original.state().asset_references()

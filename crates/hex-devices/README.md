@@ -4,14 +4,16 @@
 
 Own the independently tested, borrowed-PCM [Sampler playback kernel](../../docs/sampler.md)
 for pitched stereo regions, loops, reverse, linear ADSR and manual slice selection.
-This is a standalone prerequisite; Sampler is not yet in the native catalog.
+The native catalog exposes an explicit empty, silent sampler state; loading an
+original source remains a separate host-owned admission transaction.
 The same kernel also prepares scalar voices bound to exact borrowed mono/stereo
 resource identities, without retaining PCM owners or slice-marker storage.
 The bounded event-driven runtime prepares fixed 32-voice/1,024-event scalar
 state and processes borrowed PCM through the existing Lattice runtime pair. This
-does not admit resources into the native host or register a selectable device.
-Host device assets, panel, remaining Simpler functionality and measured reference
-agreement remain open under Pulse2679. No sample PCM is embedded in device state.
+does not itself admit resources into the native host. The host integrates bounded
+original-source loading, native playback and the sampler panel. Remaining Simpler
+functionality and measured reference agreement remain open under Pulse2679.
+No sample PCM is embedded in device state.
 
 Implement original native device DSP, including a linear stereo Utility processor,
 the stateless nonlinear [Saturator](../../docs/saturator.md),

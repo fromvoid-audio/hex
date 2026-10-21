@@ -164,7 +164,12 @@ pub(super) fn exercise(
         loop {
             pulse(visual);
             let stored = hex_storage::load(saved).unwrap();
-            if stored.device(device).unwrap().state() == &expected {
+            // Disk publication precedes the worker's completion event. Await
+            // that acknowledgment before attempting the next control gesture.
+            let ready = cx
+                .update(|cx| hex_ui::sampler_midi_test_ready(window, cx))
+                .unwrap();
+            if stored.device(device).unwrap().state() == &expected && ready {
                 assert_eq!(stored.tuning(), tuning(880.0));
                 assert_eq!(
                     stored.device(device).unwrap().state().asset_references(),

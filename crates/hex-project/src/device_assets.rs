@@ -264,3 +264,121 @@ mod replacement_tests {
         assert_eq!(editor.project(), &after);
     }
 }
+
+#[cfg(test)]
+mod first_binding_tests {
+    use crate::{Command, Created, Editor, Invalid, Project};
+    use hex_lattice_contract::{
+        DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot, DeviceTypeId, NativeDeviceState,
+    };
+    #[test]
+    fn first_source_binding_preserves_existing_device_and_refuses_stale_or_forged_metadata() {
+        let mut editor = Editor::new(Project::new(16000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "target".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let empty = NativeDeviceState::new(DeviceTypeId::from_static("test.resource"), 1, vec![0])
+            .unwrap()
+            .with_input_gain_millidb(3000)
+            .unwrap();
+        let Created::Device(device) = editor
+            .execute(Command::InsertInstrument {
+                track,
+                state: empty.clone(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        let before = editor.project().clone();
+        let template = NativeDeviceState::new(empty.type_id(), 1, vec![1])
+            .unwrap()
+            .with_host_metadata_from(&empty)
+            .unwrap();
+        let slot = DeviceAssetSlot::new(1).unwrap();
+        let command = || Command::ImportDeviceAssetReplacingInstrument {
+            track,
+            device,
+            expected_state: empty.clone(),
+            path: "original.wav".into(),
+            sample_rate: 8000,
+            frames: 4,
+            state: template.clone(),
+            source_slot: slot,
+        };
+        assert!(
+            editor
+                .execute_prepared::<(), Invalid>(command(), |_| Err(Invalid("prepare refused")))
+                .is_err()
+        );
+        assert_eq!(editor.project(), &before);
+        for case in 0..4 {
+            let mut bad = command();
+            if let Command::ImportDeviceAssetReplacingInstrument {
+                expected_state,
+                state,
+                source_slot,
+                ..
+            } = &mut bad
+            {
+                match case {
+                    0 => {
+                        *expected_state = expected_state
+                            .clone()
+                            .with_output_gain_millidb(1000)
+                            .unwrap()
+                    }
+                    1 => *state = state.clone().with_input_gain_millidb(0).unwrap(),
+                    2 => {
+                        *state = state
+                            .clone()
+                            .with_asset_references(vec![DeviceAssetReference {
+                                slot,
+                                asset: DeviceAssetKey::new(99).unwrap(),
+                            }])
+                            .unwrap()
+                    }
+                    _ => {
+                        let references = vec![DeviceAssetReference {
+                            slot: DeviceAssetSlot::new(2).unwrap(),
+                            asset: DeviceAssetKey::new(99).unwrap(),
+                        }];
+                        *expected_state = expected_state
+                            .clone()
+                            .with_asset_references(references.clone())
+                            .unwrap();
+                        *state = state.clone().with_asset_references(references).unwrap();
+                        *source_slot = slot;
+                    }
+                }
+            }
+            assert!(editor.execute(bad).is_err());
+            assert_eq!(editor.project(), &before);
+        }
+        let Created::Asset(asset) = editor.execute(command()).unwrap() else {
+            panic!("asset")
+        };
+        let after = editor.project().clone();
+        let bound = after.device(device).unwrap();
+        assert_eq!(bound.id(), device);
+        assert_eq!(bound.state().input_gain_millidb(), 3000);
+        assert_eq!(bound.state().payload(), &[1]);
+        assert_eq!(
+            bound.state().asset_references(),
+            &[DeviceAssetReference {
+                slot,
+                asset: DeviceAssetKey::new(asset.value()).unwrap()
+            }]
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project().device(device).unwrap().state(), &empty);
+        assert!(editor.project().assets().next().is_none());
+        assert!(editor.redo());
+        assert_eq!(editor.project(), &after);
+    }
+}

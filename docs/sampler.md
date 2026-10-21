@@ -7,7 +7,8 @@ contains the first original playback-kernel prerequisite. Source-first WAV loadi
 fills an empty MIDI instrument slot with a canonical sampler through explicit
 resident resource admission. The loaded instrument supports computer-keyboard
 audition, frame-zero Arrangement playback/Stop, local Console MIDI clips/scenes
-and private offline Main export. It remains outside the asset-free device catalog.
+and private offline Main export. The native device catalog lists **sampler** with
+an explicit empty, silent default.
 
 Stopped gain, pitch, original-source region, Classic loop and amplitude-envelope
 controls, the original-source waveform, source replacement, global control/source
@@ -16,6 +17,31 @@ SaveNew/SaveCurrent and original-content-checked reopen use the normal project
 flow. Nonzero seek, Pause, routed MIDI and active Arrangement chase remain
 unsupported. No Live parity, physical native interaction, device-deadline or
 listening acceptance is claimed.
+
+## catalog insertion and first load
+
+The ordinary device browser, add-device menu and insertion commands use the same
+`hex.instrument.sampler` identity as source-first loading. The asset-free default
+is exactly state version2 with payload `empty` and no asset references. It owns
+no PCM, source asset or placeholder waveform. Ordinary preparation produces silent
+analytic notes with no release tail; only this exact marker is admitted through
+that path. Missing references on a source-bearing authored state, malformed marker
+bytes and unsupported versions still refuse preparation.
+
+An empty panel asks the user to choose a WAV in the sample browser and use
+**load into sampler**. The worker captures the track, DeviceId, exact empty state,
+project generation and revision before decoding. The existing bounded original
+source import transaction fills that same device and publishes through the existing
+first-load native flow. Cancellation, stale targets, occupied slots and failed
+sources leave the model and history unchanged. After loading, existing controls,
+source replacement and original-source admission retain their prior contracts.
+
+Empty insertion supports ordinary Undo/Redo and current-format save/reopen.
+Undo of the initial source assignment remains unavailable under the existing native
+sampler history restrictions; this change does not add a loaded-to-empty callback
+transition. Loaded native graph restrictions also remain: adding another empty
+instrument beside a loaded sampler does not broaden the closed native graph class.
+Native UI and listening acceptance are separate from source checks.
 
 ## current source boundary
 

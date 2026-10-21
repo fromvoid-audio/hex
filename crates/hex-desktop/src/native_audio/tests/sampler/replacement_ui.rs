@@ -240,7 +240,11 @@ pub(super) fn exercise(
     loop {
         pulse(visual);
         let stored = hex_storage::load(saved).unwrap();
-        if stored.assets().count() == 2 {
+        if stored.assets().count() == 2
+            && cx
+                .update(|cx| hex_ui::sampler_midi_test_ready(window, cx))
+                .unwrap()
+        {
             let state = stored.device(device).unwrap().state();
             assert_eq!(
                 state.asset_references()[0].asset.value(),

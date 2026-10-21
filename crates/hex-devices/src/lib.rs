@@ -39,8 +39,9 @@ static BUILTIN_NATIVE_DEVICES: [&dyn hex_lattice::NativeDeviceDefinition; 7] = [
     &gate::GATE_DEFINITION,
     &auto_pan::AUTO_PAN_DEFINITION,
 ];
-static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 3] = [
+static BUILTIN_NATIVE_INSTRUMENTS: [&dyn NativeInstrumentDefinition; 4] = [
     &SINE_INSTRUMENT,
+    &sampler::catalog::DEFINITION,
     &fm4::device::FM4_DEFINITION,
     &operator_state::OPERATOR_METADATA,
 ];
