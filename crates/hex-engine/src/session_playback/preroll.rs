@@ -17,6 +17,12 @@ enum PrerollRuntimePolicy {
     Interactive,
 }
 
+type PrerollConstructor = fn(
+    Arc<PreparedRevision>,
+    bool,
+    Option<&crate::native_device_resources::PreparedDeviceResources>,
+) -> Result<SessionPlayback, SessionPlaybackError>;
+
 /// Why an Arrangement playback candidate could not be prepared.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ArrangementPrerollError {
@@ -238,19 +244,14 @@ impl SessionPlayback {
             return Err(ArrangementPrerollError::Cancelled);
         }
 
-        let mut candidate = match resources {
-            Some(resources) => Self::new_with_policy_scoped(
-                Arc::clone(&revision),
-                matches!(policy, PrerollRuntimePolicy::LinearExport),
-                Some(resources),
-            )?,
-            None => match policy {
-                PrerollRuntimePolicy::LinearExport => {
-                    Self::new_linear_arrangement_export(Arc::clone(&revision))?
-                }
-                PrerollRuntimePolicy::Interactive => Self::new(Arc::clone(&revision))?,
-            },
-        };
+        // One constructor dispatch keeps only one large inline runtime result
+        // live in this frame, including in unoptimized control/test builds.
+        let constructor: PrerollConstructor = Self::new_with_policy;
+        let mut candidate = constructor(
+            Arc::clone(&revision),
+            matches!(policy, PrerollRuntimePolicy::LinearExport),
+            resources,
+        )?;
         let actual_storage = candidate
             .accounted_runtime_storage_bytes()
             .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;

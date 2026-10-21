@@ -841,7 +841,7 @@ impl SessionPlayback {
         Ok(())
     }
     pub fn new(revision: Arc<PreparedRevision>) -> Result<Self, SessionPlaybackError> {
-        Self::new_with_policy(revision, false)
+        Self::new_with_policy(revision, false, None)
     }
 
     pub(crate) fn select_processor_audition(
@@ -1045,7 +1045,7 @@ impl SessionPlayback {
     pub fn new_linear_arrangement_export(
         revision: Arc<PreparedRevision>,
     ) -> Result<Self, SessionPlaybackError> {
-        Self::new_with_policy(revision, true)
+        Self::new_with_policy(revision, true, None)
     }
 
     /// Private-control export capability: the graph contains only scalar sampler
@@ -1095,13 +1095,14 @@ impl SessionPlayback {
     fn new_with_policy(
         revision: Arc<PreparedRevision>,
         linear_arrangement_export: bool,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
     ) -> Result<Self, SessionPlaybackError> {
         if revision.requires_control_sampler_sources() {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "sampler requires private offline export resources",
             ));
         }
-        Self::new_with_policy_scoped(revision, linear_arrangement_export, None)
+        Self::new_with_policy_scoped(revision, linear_arrangement_export, resources)
     }
     /// Construct ordinary mixed playback with the exact resource set used by its compiler.
     /// Leases are allocated on control and then owned by each actual mutable runtime.
