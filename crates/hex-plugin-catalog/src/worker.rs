@@ -113,6 +113,37 @@ fn drain(input: &mut UnixStream, output: &mut Vec<u8>, limit: usize) -> Result<b
     Ok(any)
 }
 
+// Observe direct-child retirement before deciding that currently empty channels
+// are final. A child can publish its last report between two parent operations.
+fn poll_and_drain<T>(
+    exit: &mut Option<T>,
+    observe: impl FnOnce() -> std::io::Result<Option<T>>,
+    streams: [(&mut UnixStream, &mut Vec<u8>, usize); 2],
+) -> Result<(bool, Option<String>), String> {
+    if exit.is_none() {
+        match observe() {
+            Ok(status) => *exit = status,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => {
+                return Err(format!(
+                    "scanner custody lost; cleanup unconfirmed; no further process operations: {e}"
+                ));
+            }
+        }
+    }
+    let mut received = false;
+    let mut error = None;
+    for (stream, bytes, maximum) in streams {
+        match drain(stream, bytes, maximum) {
+            Ok(value) => received |= value,
+            Err(value) => {
+                error.get_or_insert(value);
+            }
+        }
+    }
+    Ok((received, error))
+}
+
 fn discover(app: &Path, path: &Path, token: &Token) -> Result<(Report, String), String> {
     if token.cancelled() {
         return Err("scan cancelled".into());
@@ -148,17 +179,16 @@ fn discover(app: &Path, path: &Path, token: &Token) -> Result<(Report, String), 
     // No numeric PID/group operation other than this direct Child's try_wait.
     // A retained scanner may exceed its deadline while it retires a native child.
     loop {
-        let mut received = false;
-        for (stream, bytes, maximum) in [
-            (&mut output, &mut out, OUTPUT_LIMIT),
-            (&mut diagnostic, &mut err, ERROR_LIMIT),
-        ] {
-            match drain(stream, bytes, maximum) {
-                Ok(value) => received |= value,
-                Err(error) => {
-                    cause.get_or_insert(error);
-                }
-            }
+        let (received, error) = poll_and_drain(
+            &mut exit,
+            || child.try_wait(),
+            [
+                (&mut output, &mut out, OUTPUT_LIMIT),
+                (&mut diagnostic, &mut err, ERROR_LIMIT),
+            ],
+        )?;
+        if let Some(error) = error {
+            cause.get_or_insert(error);
         }
         if (token.cancelled() || cause.is_some() || started.elapsed() > Duration::from_secs(12))
             && !cancel_sent
@@ -177,18 +207,6 @@ fn discover(app: &Path, path: &Path, token: &Token) -> Result<(Report, String), 
                     if e.kind() == std::io::ErrorKind::WouldBlock
                         || e.kind() == std::io::ErrorKind::Interrupted => {}
                 Err(_) => cancel_sent = true,
-            }
-        }
-        if exit.is_none() {
-            match child.try_wait() {
-                Ok(Some(status)) => exit = Some(status),
-                Ok(None) => {}
-                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
-                Err(e) => {
-                    return Err(format!(
-                        "scanner custody lost; cleanup unconfirmed; no further process operations: {e}"
-                    ));
-                }
             }
         }
         if exit.is_some() && !received {
@@ -307,6 +325,56 @@ pub fn available_app() -> Result<PathBuf, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn final_report_published_at_reap_is_drained_without_waiting_for_eof() {
+        let (mut output, mut writer) = UnixStream::pair().unwrap();
+        let (mut diagnostic, mut diagnostic_writer) = UnixStream::pair().unwrap();
+        output.set_nonblocking(true).unwrap();
+        diagnostic.set_nonblocking(true).unwrap();
+        let payload = vec![b'x'; 8_000];
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        // The old loop observed empty input here, then reaped and broke,
+        // discarding the report published immediately before successful reap.
+        assert!(!drain(&mut output, &mut out, OUTPUT_LIMIT).unwrap());
+        let mut exit = None;
+        let (received, error) = poll_and_drain(
+            &mut exit,
+            || {
+                writer.write_all(&payload).unwrap();
+                diagnostic_writer.write_all(b"final diagnostic").unwrap();
+                Ok(Some(()))
+            },
+            [
+                (&mut output, &mut out, OUTPUT_LIMIT),
+                (&mut diagnostic, &mut err, ERROR_LIMIT),
+            ],
+        )
+        .unwrap();
+        assert!(received);
+        assert!(error.is_none());
+        assert_eq!(out, payload, "the report includes multiple read chunks");
+        for _ in 0..4 {
+            let (received, error) = poll_and_drain(
+                &mut exit,
+                || panic!("retired child must never be polled again"),
+                [
+                    (&mut output, &mut out, OUTPUT_LIMIT),
+                    (&mut diagnostic, &mut err, ERROR_LIMIT),
+                ],
+            )
+            .unwrap();
+            assert!(error.is_none());
+            if !received {
+                // Writers deliberately remain open: termination is not EOF-based.
+                assert_eq!(out, payload);
+                assert_eq!(err, b"final diagnostic");
+                return;
+            }
+        }
+        panic!("bounded final report did not finish draining");
+    }
+
     #[test]
     fn cancellation_wins_until_commit_and_never_claims_a_late_cancel() {
         let owner = Cancellation::default();
