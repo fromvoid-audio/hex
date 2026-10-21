@@ -7,7 +7,7 @@ contains the first original playback-kernel prerequisite. A bounded first-load
 browser action now fills an empty instrument slot with a canonical sampler and
 supports computer-keyboard audition, frame-zero Arrangement playback/Stop and
 offline Main export. Sampler
-is not registered in the general device catalog. Stopped gain and pitch editing are supported; other controls, replacement and user history remain unavailable. Current-format SaveNew/SaveCurrent and
+is not registered in the general device catalog. Stopped gain, pitch and source-region editing are supported; other controls, replacement and user history remain unavailable. Current-format SaveNew/SaveCurrent and
 original-content-checked reopen are supported through the normal project flow. No reference parity or
 physical native interaction/listening acceptance is claimed.
 
@@ -403,7 +403,7 @@ assets, loaded sampler instruments and the existing Utility-only effect chain.
 Project and MIDI-source loops, Session MIDI/launches, routing/return devices,
 mutable handoff, tails, checkpoints, live expression, preview and nonzero seeks
 remain closed. Source/configuration/topology edits refuse before canonical
-commit while this limited native owner is active, except the stopped gain/pitch
+commit while this limited native owner is active, except stopped gain/pitch/region
 transaction described below. New/Open explicitly retires it. Current-format
 reconstruction is supported; user history remains separate work.
 
@@ -801,3 +801,41 @@ stopped and a loaded sampler, confirm pitch0/+12/−12 changes keyboard and
 Arrangement pitch by one octave while retaining gain; enter0.5, Save/New/Open
 and verify persistence; attempt an edit while playing and confirm refusal.
 Region, loop, envelope, replacement and history controls remain separate work.
+
+
+## stopped original-frame region — pulse2969 / PR553
+
+The compact panel adds **start** and **end** beside gain and pitch in a two-column
+control grid. They read the actual nonempty half-open source interval `[start,end)`:
+start is included, end is excluded, in original-file frames, independently of
+project/output rate. Whole-frame numeric text and one-frame arrow steps are
+supported. Pointer scrubbing selects a visible whole-frame grid; small movements
+accumulate across grid crossings. Fractional text refuses without rounding. A
+one-frame source has fixed, noninteractive endpoints.
+
+UI limits use the retained asset's `source_frames`, never project-rate `frames`;
+they are hints only. The narrow codec patch enforces integer/global limits and
+current loop/slice invariants without moving loops, markers or clip ranges. The
+actual candidate prepares against retained original PCM before canonical commit,
+so an end beyond the real source refuses even if below the global codec bound.
+Gain, pitch, tuning, root/detune, source identity, mode, envelope and host trims
+remain unchanged. The same stopped fence/sealed-cell/admission/retirement path
+serves all four fields. No source ownership or callback law is added.
+
+Owning checks exercise actual endpoint fields, a small-motion pointer scrub,
+nonzero offset and exclusive end through independently specified keyboard and
+Arrangement PCM with A880, original8kHz/output16kHz, gain0.5 and pitch−12. Actual
+SaveCurrent/New/Open preserves accepted intervals. Typed tests cover empty,
+inverted, fractional and loop/slice-conflicting intervals; a native retained-WAV
+extent refusal preserves canonical state/history and old output. Existing stale,
+cancel, budget, Play/Stop, late-key, timeout, failure/retry/custody and allocation
+checks remain required. Bounds checks keep all rendered fields inside the compact
+grid. Shared-widget checks retain continuous gain/fractional-pitch behavior and
+exercise integer display/commit and fractional-text refusal.
+
+These are headless path checks. Physical interaction/display/device/listening and
+optimized delivery remain unexecuted. Finite later user checks: load a sample,
+stop transport, trim start/end to a nonempty region and audition keyboard and
+Arrangement; verify the exclusive end, Save/New/Open, and confirm an invalid or
+playing edit refuses. Loop/envelope editing, waveform selection, replacement and
+history remain separate work.

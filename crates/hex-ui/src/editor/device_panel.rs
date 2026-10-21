@@ -2005,9 +2005,27 @@ fn render_instrument(
             hex_engine::SamplerParameter::Transpose,
             cx,
         );
+        let start = view.sampler_parameter_control(
+            track,
+            device,
+            hex_engine::SamplerParameter::StartFrame,
+            cx,
+        );
+        let end = view.sampler_parameter_control(
+            track,
+            device,
+            hex_engine::SamplerParameter::EndFrame,
+            cx,
+        );
+        let controls = div()
+            .grid()
+            .grid_cols(2)
+            .gap(px(4.0))
+            .debug_selector(|| "sampler-controls".into())
+            .children([gain, pitch, start, end]);
         let body = crate::device_composition::body()
-            .child(gain)
-            .child(pitch)
+            .flex_col()
+            .child(controls)
             .p(px(5.0))
             .text_xs()
             .child(theme::text(format!(

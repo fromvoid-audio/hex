@@ -287,7 +287,7 @@ Sampler computer-keyboard audition reuses existing focus/physical-key/toggle
 state. An output-bound epoch is reserved before worker activation; correlated
 acknowledgement enables direct Client desired-key publication. Key up and terminal
 cancellation bypass worker I/O, with old-held/autorepeat suppression. Empty MIDI
-tracks can first-load samples. Captured final numeric gain and pitch edits share one stopped-only operation,
+tracks can first-load samples. Captured final numeric gain, pitch and original-frame region edits share one stopped-only operation,
 with truthful pending state; other controls/replacement/history remain unavailable.
-The two persistent widgets keep focus across revisions and reject stale gestures.
+The four persistent widgets keep focus across revisions and reject stale gestures. Region inputs are integral; actual retained-source extent is checked before canonical commit.
 See [the native keyboard boundary](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).

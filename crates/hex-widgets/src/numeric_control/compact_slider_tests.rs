@@ -463,3 +463,106 @@ fn filled_slider_instance_drag_axis_preserves_geometry_and_other_instances(
         }
     }
 }
+
+#[gpui::test]
+fn integer_readout_accumulates_small_pointer_moves_and_refuses_fractional_text(
+    cx: &mut TestAppContext,
+) {
+    cx.update(bind_numeric_control_keys);
+    let handle = *cx.add_window(|_, _| Empty);
+    let control = cx
+        .update_window(handle, |_, window, cx| {
+            let spec = NumericSpec::new(
+                0.0,
+                3.0,
+                0.0,
+                crate::NumericScale::Linear,
+                0,
+                Some("frames"),
+            )
+            .unwrap()
+            .with_integer_values()
+            .unwrap();
+            let control = cx.new(|cx| {
+                NumericControl::from_config(
+                    cx,
+                    NumericControlConfig::new(
+                        "whole-frames",
+                        "start",
+                        NumericControlKind::HorizontalSlider,
+                        spec,
+                        0.0,
+                        STYLE,
+                    )
+                    .unwrap()
+                    .with_appearance(NumericControlAppearance::InlineValue),
+                )
+            });
+            window.replace_root(cx, |_, _| Root {
+                control: control.clone(),
+                width: 136.0,
+            });
+            control
+        })
+        .unwrap();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let captured = events.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            captured.borrow_mut().push(*event)
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.0), px(140.0)));
+    visual.run_until_parked();
+    let start = visual.debug_bounds("whole-frames-value").unwrap().center();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    for offset in 1..=24 {
+        visual.simulate_mouse_move(
+            point(start.x, start.y - px(offset as f32)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+    }
+    visual.simulate_mouse_up(
+        point(start.x, start.y - px(24.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert_eq!(control.read_with(cx, |control, _| control.value()), 1.0);
+    assert!(
+        events
+            .borrow()
+            .iter()
+            .all(|event| event.value.fract() == 0.0)
+    );
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|event| event.phase == NumericEventPhase::Commit)
+            .count(),
+        1
+    );
+    events.borrow_mut().clear();
+    let field = visual.debug_bounds("whole-frames-value").unwrap().center();
+    visual.simulate_mouse_down(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(field, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("0.5 frames");
+    visual.simulate_keystrokes("enter");
+    control.read_with(cx, |control, _| {
+        assert!(control.is_editing());
+        assert!(control.invalid_text);
+        assert_eq!(control.value(), 1.0);
+    });
+    assert!(
+        !events
+            .borrow()
+            .iter()
+            .any(|event| event.phase == NumericEventPhase::Commit)
+    );
+    visual.simulate_keystrokes("escape right");
+    assert_eq!(control.read_with(cx, |control, _| control.value()), 2.0);
+}

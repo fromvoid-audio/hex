@@ -103,3 +103,73 @@ fn sampler_pitch_patch_preserves_other_authored_fields_and_rejects_invalid_value
         .unwrap();
     assert!(patch_sampler_parameter_on_control(SamplerParameter::Transpose, &other, 0.0).is_err());
 }
+
+#[test]
+fn sampler_region_patch_is_integral_half_open_and_preserves_loop_slice_and_other_fields() {
+    use hex_devices::sampler::{
+        GateMode, Region,
+        state::{AuthoredMode, SamplerState},
+    };
+    let mut settings = SamplerState::for_source_frames(8).unwrap();
+    settings.gain = 0.5;
+    settings.transpose_semitones = 12.0;
+    settings.root_note = 57;
+    settings.detune_cents = -23.0;
+    settings.mode = AuthoredMode::Classic {
+        loop_region: Some(Region { start: 2, end: 6 }),
+    };
+    let original = settings
+        .to_native()
+        .unwrap()
+        .with_input_gain_millidb(2000)
+        .unwrap()
+        .with_output_gain_millidb(-3000)
+        .unwrap();
+    let start =
+        patch_sampler_parameter_on_control(SamplerParameter::StartFrame, &original, 1.0).unwrap();
+    let end = patch_sampler_parameter_on_control(SamplerParameter::EndFrame, &start, 7.0).unwrap();
+    assert_eq!(
+        sampler_parameter_value_on_control(SamplerParameter::StartFrame, &end).unwrap(),
+        1.0
+    );
+    assert_eq!(
+        sampler_parameter_value_on_control(SamplerParameter::EndFrame, &end).unwrap(),
+        7.0
+    );
+    let reset = patch_sampler_parameter_on_control(SamplerParameter::EndFrame, &end, 8.0).unwrap();
+    assert_eq!(
+        patch_sampler_parameter_on_control(SamplerParameter::StartFrame, &reset, 0.0).unwrap(),
+        original
+    );
+    for (parameter, value) in [
+        (SamplerParameter::StartFrame, 3.0),
+        (SamplerParameter::EndFrame, 5.0),
+        (SamplerParameter::StartFrame, 8.0),
+        (SamplerParameter::EndFrame, 0.0),
+        (SamplerParameter::StartFrame, 0.5),
+        (SamplerParameter::EndFrame, 7.5),
+        (SamplerParameter::EndFrame, f64::NAN),
+        (SamplerParameter::EndFrame, f64::INFINITY),
+    ] {
+        assert!(
+            patch_sampler_parameter_on_control(parameter, &original, value).is_err(),
+            "{parameter:?} {value}"
+        );
+    }
+    settings.mode = AuthoredMode::Slice {
+        starts: vec![0, 2, 5],
+        base_note: 60,
+        gate: GateMode::Trigger,
+    };
+    let sliced = settings.to_native().unwrap();
+    assert!(
+        patch_sampler_parameter_on_control(SamplerParameter::StartFrame, &sliced, 1.0).is_err()
+    );
+    assert!(patch_sampler_parameter_on_control(SamplerParameter::EndFrame, &sliced, 5.0).is_err());
+    let shortened =
+        patch_sampler_parameter_on_control(SamplerParameter::EndFrame, &sliced, 6.0).unwrap();
+    assert_eq!(
+        patch_sampler_parameter_on_control(SamplerParameter::EndFrame, &shortened, 8.0).unwrap(),
+        sliced
+    );
+}

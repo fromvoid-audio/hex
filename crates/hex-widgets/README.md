@@ -250,3 +250,11 @@ increases with Horizontal; upward increases with Vertical. Omitting the option
 preserves the existing kind/readout convention. Fine motion keeps the existing
 Shift sensitivity. Text selection while editing remains independent of the drag
 axis. Arrange header pan opts into Vertical; other controls retain their defaults.
+
+
+`NumericSpec::with_integer_values` explicitly opts linear controls into a whole
+value grid bounded to±2^31 for unambiguous f64 normalization. Fractional external
+or typed values refuse; normalized pointer selection alone rounds to the nearest
+visible integer. Pointer distance accumulates between grid crossings without
+emitting fractional drafts or commits. Arrow steps default to1/1; fractional
+step overrides refuse. Other numeric specs retain their continuous behavior.

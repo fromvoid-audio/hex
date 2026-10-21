@@ -223,6 +223,9 @@ struct Press {
     origin: Point<Pixels>,
     last_position: Point<Pixels>,
     start_value: f64,
+    // Pointer position, not an authored/draft value. Retains sub-frame motion
+    // between integer grid crossings without emitting a fractional value.
+    integer_pointer_position: Option<f64>,
     target: PressTarget,
     dragging: bool,
 }
@@ -516,6 +519,7 @@ impl NumericControl {
             origin: event.position,
             last_position: event.position,
             start_value: self.draft,
+            integer_pointer_position: None,
             target,
             dragging: false,
         });
@@ -789,10 +793,23 @@ impl NumericControl {
             return (true, false);
         }
         let sensitivity = if shift { 1200.0 } else { 120.0 };
-        let next = match self
-            .spec
-            .adjust(self.draft, f64::from(primary_delta) / sensitivity)
-        {
+        let delta = f64::from(primary_delta) / sensitivity;
+        let adjusted = if self.spec.integer_values() {
+            let position = match press.integer_pointer_position {
+                Some(position) => position,
+                None => match self.spec.to_normalized(press.start_value) {
+                    Ok(position) => position,
+                    Err(_) => return (true, false),
+                },
+            };
+            let position = (position + delta).clamp(0.0, 1.0);
+            press.integer_pointer_position = Some(position);
+            self.press = Some(press);
+            self.spec.from_normalized(position)
+        } else {
+            self.spec.adjust(self.draft, delta)
+        };
+        let next = match adjusted {
             Ok(value) => value,
             Err(_) => return (true, false),
         };

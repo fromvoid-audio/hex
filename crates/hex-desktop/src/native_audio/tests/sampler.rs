@@ -649,9 +649,7 @@ fn rendered_mono_a880_sampler_keyboard_playing_and_blocked_release_are_literal(
     rendered_sampler_save_open(cx, false, false, true, false);
 }
 #[gpui::test]
-fn rendered_sampler_gain_and_pitch_edits_rebuild_stopped_current_and_persist(
-    cx: &mut gpui::TestAppContext,
-) {
+fn rendered_sampler_stopped_controls_rebuild_current_and_persist(cx: &mut gpui::TestAppContext) {
     rendered_sampler_save_open(cx, true, false, false, true);
 }
 fn rendered_sampler_save_open(
