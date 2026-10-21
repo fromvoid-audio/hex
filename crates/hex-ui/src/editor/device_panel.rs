@@ -1136,6 +1136,9 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Instrument, Some("hex.instrument.operator")) => {
             operator_panel::OPERATOR_FRAME_WIDTH
         }
+        (NativeDeviceClass::Instrument, Some("hex.instrument.sampler")) => {
+            crate::device_composition::SAMPLER_FRAME_WIDTH
+        }
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.eq8" | "hex.eq")) => eq8_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
