@@ -24,6 +24,8 @@ mod canonical_audio_source;
 mod comparison_audio;
 mod export_lane;
 mod resident_audio;
+mod resident_seek;
+pub use resident_seek::{ResidentArrangementSeekIntent, ResidentArrangementSeekResult};
 pub(crate) mod sampler_export;
 mod sampler_parameter;
 use audio_sink::WorkerEvents;
@@ -55,7 +57,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError},
     },
     thread::{self, JoinHandle},
@@ -343,6 +345,8 @@ impl GainLaneEdit {
 // (25,600 payload bytes). Boxing would hide storage and add control allocations.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    /// Scalar native seek; all candidate/source owners remain on control workers.
+    ResidentArrangementSeek(ResidentArrangementSeekIntent),
     /// Dedicated reference tone, independent of selected-track instruments.
     PrepareTuningAudition {
         revision: u64,
@@ -677,6 +681,8 @@ pub struct Service {
     export_busy: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     arrangement_seek: Option<ArrangementSeekWorker>,
+    resident_seek_results: Option<Receiver<ResidentArrangementSeekResult>>,
+    resident_seek_count: AtomicUsize,
     _worker: JoinHandle<()>,
 }
 
@@ -912,6 +918,18 @@ impl Service {
             None
         };
         let arrangement_seek = ArrangementSeekWorker::new().map_err(ServiceError::Worker)?;
+        let (seek_results_tx, seek_results_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
+        let (arrangement_seek, resident_seek) = if audio
+            .as_ref()
+            .is_some_and(|sink| sink.resident_publication_enabled())
+        {
+            (
+                None,
+                Some(resident_seek::Lane::new(arrangement_seek, seek_results_tx)),
+            )
+        } else {
+            (Some(arrangement_seek), None)
+        };
         let (request_tx, request_rx) = mpsc::sync_channel(REQUEST_CAPACITY);
         let (event_tx, event_rx) = mpsc::sync_channel(EVENT_CAPACITY);
         let (export_work_tx, export_work_rx) = mpsc::sync_channel(1);
@@ -993,6 +1011,7 @@ impl Service {
                     ExportLane::new(export_work_tx, finished_rx, export_worker),
                     actor_export_events,
                     recovery,
+                    resident_seek,
                 )
             })
             .map_err(ServiceError::Worker)?;
@@ -1004,7 +1023,9 @@ impl Service {
             export_events: export_event_rx,
             export_busy,
             shutdown,
-            arrangement_seek: Some(arrangement_seek),
+            arrangement_seek,
+            resident_seek_results: Some(seek_results_rx),
+            resident_seek_count: AtomicUsize::new(0),
             _worker: worker,
         })
     }
@@ -1012,6 +1033,25 @@ impl Service {
     /// Submit without waiting for worker capacity.
     #[allow(clippy::result_large_err)] // The rejected command is returned intact for retry.
     pub fn submit(&self, request: Request) -> Result<(), SubmitError> {
+        if matches!(&request, Request::ResidentArrangementSeek(_)) {
+            if self.arrangement_seek.is_some()
+                || self
+                    .resident_seek_count
+                    .fetch_update(Ordering::AcqRel, Ordering::Acquire, |n| {
+                        (n < REQUEST_CAPACITY).then(|| n + 1)
+                    })
+                    .is_err()
+            {
+                return Err(SubmitError::Busy(request));
+            }
+            return match try_submit(&self.requests, request) {
+                Ok(()) => Ok(()),
+                Err(error) => {
+                    self.resident_seek_count.fetch_sub(1, Ordering::AcqRel);
+                    Err(error)
+                }
+            };
+        }
         if matches!(&request, Request::Export(_) | Request::ExportRange { .. }) {
             if self
                 .export_busy
@@ -1062,6 +1102,23 @@ impl Service {
             .as_ref()
             .ok_or(ArrangementSeekSubmitError::Closed)?
             .submit(spec)
+    }
+
+    /// Submit scalar native seek intent without publishing an owning graph through the UI.
+    #[allow(clippy::result_large_err)] // Preserve the exact scalar request on bounded queue refusal.
+    pub fn submit_resident_arrangement_seek(
+        &self,
+        intent: ResidentArrangementSeekIntent,
+    ) -> Result<(), SubmitError> {
+        if self.arrangement_seek.is_some() {
+            return Err(SubmitError::Busy(Request::ResidentArrangementSeek(intent)));
+        }
+        self.submit(Request::ResidentArrangementSeek(intent))
+    }
+    pub fn try_resident_arrangement_seek_result(&self) -> Option<ResidentArrangementSeekResult> {
+        let result = self.resident_seek_results.as_ref()?.try_recv().ok()?;
+        self.resident_seek_count.fetch_sub(1, Ordering::AcqRel);
+        Some(result)
     }
 
     /// Consume a completed candidate without waiting.
@@ -1456,6 +1513,7 @@ fn run_tuning_library_operation_in(
     (result, prepared)
 }
 
+#[allow(clippy::too_many_arguments)] // Existing worker composition plus private ownership of the existing seek worker.
 fn run_worker(
     mut session: Session,
     history_capacity: usize,
@@ -1464,6 +1522,7 @@ fn run_worker(
     mut export_lane: ExportLane,
     export_events: SyncSender<ExportEvent>,
     recovery: Option<PathBuf>,
+    mut resident_seek: Option<resident_seek::Lane>,
 ) {
     let mut revision = 0_u64;
     let mut unsaved = false;
@@ -1623,7 +1682,24 @@ fn run_worker(
     if audio_error.is_some() && initial.error.is_none() {
         initial.error = audio_error;
     }
-    if !events.send_with_control_poll(initial, |audio| {
+    if !events.send_with_control_poll(initial, |mut audio| {
+        if let Some(seek) = resident_seek.as_mut() {
+            seek.drive(
+                &session,
+                resident_snapshot.as_ref(),
+                audio.as_deref_mut(),
+                export_lane.admission(compiled.as_ref().map(|(_, p)| {
+                    hex_engine::native_device_resources::ControlSamplerSelection {
+                        sources: current_sources.as_ref(),
+                        prepared: Some(p),
+                    }
+                })),
+                hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                },
+            );
+        }
         audio_sink::native_sampler::drive(
             audio,
             &session,
@@ -1647,7 +1723,24 @@ fn run_worker(
     while let Some(request) = events.next_request_with_control_poll(
         &requests,
         session.native_reservation.is_some(),
-        |audio| {
+        |mut audio| {
+            if let Some(seek) = resident_seek.as_mut() {
+                seek.drive(
+                    &session,
+                    resident_snapshot.as_ref(),
+                    audio.as_deref_mut(),
+                    export_lane.admission(compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p),
+                        }
+                    })),
+                    hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    },
+                );
+            }
             audio_sink::native_sampler::drive(
                 audio,
                 &session,
@@ -1665,6 +1758,11 @@ fn run_worker(
             )
         },
     ) {
+        let seek_intent = match &request {
+            Request::ResidentArrangementSeek(intent) => Some(intent.clone()),
+            _ => None,
+        };
+        let mut seek_submitted = false;
         let request_complete = !matches!(&request, Request::ContinueSamplerEdit);
         let mut sampler_edit_complete = None;
         if matches!(
@@ -2187,12 +2285,15 @@ fn run_worker(
                             },
                             &mut events,
                             &mut resident_snapshot,
-                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
-                                hex_engine::native_device_resources::ControlSamplerSelection {
-                                    sources: current_sources.as_ref(),
-                                    prepared: Some(prepared),
-                                }
-                            })),
+                            export_lane.admission_with_seeks(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                            ),
                         )
                         .map_err(|error| error.to_string().to_lowercase())
                     }) {
@@ -2323,12 +2424,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                })),
+                                }), resident_seek.as_ref()),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -2381,7 +2482,7 @@ fn run_worker(
                             if session.audio_mode() == DocumentAudioMode::Resident
                                 && let Some(sink) = events.resident_audio()
                             {
-                                let admission = export_lane.admission(compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }));
+                                let admission = export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }), resident_seek.as_ref());
                                 return job.run_with_storage_admission_using(
                                     &mut session, compiled.as_ref().map(|(_, prepared)| prepared.as_ref()), || actual,
                                     |session, prepared| admission.check_legacy_stage(session, prepared),
@@ -2397,7 +2498,7 @@ fn run_worker(
                                 &mut session,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                                 || actual,
-                                |session, prepared| export_lane.admission(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) })).check_legacy_stage(session, prepared),
+                                |session, prepared| export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()).check_legacy_stage(session, prepared),
                             )
                         })
                     };
@@ -2507,7 +2608,7 @@ fn run_worker(
                                     editor_revision: revision.saturating_add(1),
                                 },
                                 sink,
-                                export_lane.admission(current),
+                                export_lane.admission_with_seeks(current, resident_seek.as_ref()),
                                 resident_snapshot.as_ref(),
                             )?;
                             let prepared = Arc::clone(&snapshot.prepared);
@@ -2523,7 +2624,7 @@ fn run_worker(
                         session.import_service_snapshot_to_sampler(
                             decoded,
                             &cancel,
-                            export_lane.admission(current),
+                            export_lane.admission_with_seeks(current, resident_seek.as_ref()),
                             track,
                             empty_sampler,
                         )
@@ -2551,7 +2652,8 @@ fn run_worker(
                             prepared: Some(p.as_ref()),
                         }
                     });
-                    let admission = export_lane.admission(current);
+                    let admission =
+                        export_lane.admission_with_seeks(current, resident_seek.as_ref());
                     let assignment = if session.native_reservation.is_none() {
                         Err(SessionError::Invalid(
                             "sampler requires an explicit resident reservation",
@@ -2605,13 +2707,15 @@ fn run_worker(
                         project_generation,
                         editor_revision: revision.saturating_add(1),
                     };
-                    let admission =
-                        export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                    let admission = export_lane.admission_with_seeks(
+                        compiled.as_ref().map(|(_, prepared)| {
                             hex_engine::native_device_resources::ControlSamplerSelection {
                                 sources: current_sources.as_ref(),
                                 prepared: Some(prepared),
                             }
-                        }));
+                        }),
+                        resident_seek.as_ref(),
+                    );
                     let result = events
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
@@ -2646,8 +2750,10 @@ fn run_worker(
                             prepared: Some(p.as_ref()),
                         }
                     });
-                    match session.command_service_snapshot(command, export_lane.admission(current))
-                    {
+                    match session.command_service_snapshot(
+                        command,
+                        export_lane.admission_with_seeks(current, resident_seek.as_ref()),
+                    ) {
                         Ok((new, snapshot)) => {
                             created = Some(new);
                             unsaved = true;
@@ -2680,7 +2786,8 @@ fn run_worker(
                                 prepared: Some(p.as_ref()),
                             }
                         });
-                        let admission = export_lane.admission(current);
+                        let admission =
+                            export_lane.admission_with_seeks(current, resident_seek.as_ref());
                         decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
                             .map_err(|reason| reason.to_string())
                             .and_then(|decoded| {
@@ -2758,12 +2865,15 @@ fn run_worker(
                                 editor_revision: revision.saturating_add(1),
                             },
                             sink,
-                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
-                                hex_engine::native_device_resources::ControlSamplerSelection {
-                                    sources: current_sources.as_ref(),
-                                    prepared: Some(prepared),
-                                }
-                            })),
+                            export_lane.admission_with_seeks(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                            ),
                             &mut resident_snapshot,
                         )
                     })();
@@ -2780,12 +2890,15 @@ fn run_worker(
                     &mut session,
                     path,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                    export_lane.admission(compiled.as_ref().map(|(_, p)| {
-                        hex_engine::native_device_resources::ControlSamplerSelection {
-                            sources: current_sources.as_ref(),
-                            prepared: Some(p),
-                        }
-                    })),
+                    export_lane.admission_with_seeks(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                    ),
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -2801,12 +2914,15 @@ fn run_worker(
                     start,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                     false,
-                    export_lane.admission(compiled.as_ref().map(|(_, p)| {
-                        hex_engine::native_device_resources::ControlSamplerSelection {
-                            sources: current_sources.as_ref(),
-                            prepared: Some(p),
-                        }
-                    })),
+                    export_lane.admission_with_seeks(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                    ),
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -2823,12 +2939,15 @@ fn run_worker(
                         start,
                         compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                         true,
-                        export_lane.admission(compiled.as_ref().map(|(_, p)| {
-                            hex_engine::native_device_resources::ControlSamplerSelection {
-                                sources: current_sources.as_ref(),
-                                prepared: Some(p),
-                            }
-                        })),
+                        export_lane.admission_with_seeks(
+                            compiled.as_ref().map(|(_, p)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(p),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                        ),
                     ) {
                         Ok(prepared) => {
                             unsaved = true;
@@ -2848,12 +2967,15 @@ fn run_worker(
                     before_track,
                     start,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                    export_lane.admission(compiled.as_ref().map(|(_, p)| {
-                        hex_engine::native_device_resources::ControlSamplerSelection {
-                            sources: current_sources.as_ref(),
-                            prepared: Some(p),
-                        }
-                    })),
+                    export_lane.admission_with_seeks(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                    ),
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -2868,12 +2990,15 @@ fn run_worker(
                     track,
                     scene,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                    export_lane.admission(compiled.as_ref().map(|(_, p)| {
-                        hex_engine::native_device_resources::ControlSamplerSelection {
-                            sources: current_sources.as_ref(),
-                            prepared: Some(p),
-                        }
-                    })),
+                    export_lane.admission_with_seeks(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                    ),
                 ) {
                     Ok(prepared) => {
                         unsaved = true;
@@ -2904,7 +3029,8 @@ fn run_worker(
                             prepared: Some(p.as_ref()),
                         }
                     });
-                    let admission = export_lane.admission(current);
+                    let admission =
+                        export_lane.admission_with_seeks(current, resident_seek.as_ref());
                     match candidate.and_then(|candidate| {
                         let prepared = compile(&candidate, None)?;
                         if session.native_reservation.is_some() {
@@ -2964,7 +3090,8 @@ fn run_worker(
                             prepared: Some(p.as_ref()),
                         }
                     });
-                    let admission = export_lane.admission(current);
+                    let admission =
+                        export_lane.admission_with_seeks(current, resident_seek.as_ref());
                     let candidate = admission
                         .replacement_frame_allowance(&session)
                         .map_err(|e| e.to_string())
@@ -3055,12 +3182,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                })),
+                                }), resident_seek.as_ref()),
                             ) {
                                 Ok((_, prepared)) => {
                                     range_clipboard =
@@ -3103,12 +3230,15 @@ fn run_worker(
                             },
                             &mut events,
                             &mut resident_snapshot,
-                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
-                                hex_engine::native_device_resources::ControlSamplerSelection {
-                                    sources: current_sources.as_ref(),
-                                    prepared: Some(prepared),
-                                }
-                            })),
+                            export_lane.admission_with_seeks(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                            ),
                         ) {
                             Ok((_, prepared)) => {
                                 if session.project() != state.project.as_ref() {
@@ -3155,12 +3285,15 @@ fn run_worker(
                             },
                             &mut events,
                             &mut resident_snapshot,
-                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
-                                hex_engine::native_device_resources::ControlSamplerSelection {
-                                    sources: current_sources.as_ref(),
-                                    prepared: Some(prepared),
-                                }
-                            })),
+                            export_lane.admission_with_seeks(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                            ),
                         ) {
                             Ok((_, prepared)) => {
                                 if session.project() != state.project.as_ref() {
@@ -3226,12 +3359,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                })),
+                                }), resident_seek.as_ref()),
                             ) {
                                 Ok((result, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -3274,12 +3407,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                })),
+                                }), resident_seek.as_ref()),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -3347,32 +3480,33 @@ fn run_worker(
                         && session.audio_mode() == DocumentAudioMode::Resident =>
                 {
                     sampler_edit_complete = Some(edit.request_id());
-                    let result = (|| {
-                        if !edit
-                            .validate_resident(&session, project_generation, revision)
-                            .map_err(SessionError::NativeAudio)?
-                        {
-                            return Ok(None);
-                        }
-                        let sink = events
-                            .resident_audio()
-                            .ok_or(SessionError::Invalid("native worker unavailable"))?;
-                        session.sampler_resident_edit(
+                    let result =
+                        (|| {
+                            if !edit
+                                .validate_resident(&session, project_generation, revision)
+                                .map_err(SessionError::NativeAudio)?
+                            {
+                                return Ok(None);
+                            }
+                            let sink = events
+                                .resident_audio()
+                                .ok_or(SessionError::Invalid("native worker unavailable"))?;
+                            session.sampler_resident_edit(
                             edit,
                             hex_engine::AudioSourceContext {
                                 project_generation,
                                 editor_revision: revision.saturating_add(1),
                             },
                             sink,
-                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                            export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
                                 hex_engine::native_device_resources::ControlSamplerSelection {
                                     sources: current_sources.as_ref(),
                                     prepared: Some(prepared),
                                 }
-                            })),
+                            }), resident_seek.as_ref()),
                             resident_snapshot.as_ref(),
                         )
-                    })();
+                        })();
                     match result {
                         Ok(Some((new, snapshot))) => {
                             created = Some(new);
@@ -3430,7 +3564,7 @@ fn run_worker(
                             let audio = events.sampler_edit_audio().ok_or("sampler edit output is unavailable")?;
                             audio.sampler_edit_ready().ok_or("sampler edit fence is not ready")??;
                             let current = compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) });
-                            let prepared = edit.prepare(&mut session, export_lane.admission(current), context, audio)
+                            let prepared = edit.prepare(&mut session, export_lane.admission_with_seeks(current, resident_seek.as_ref()), context, audio)
                                 .map_err(|e| e.to_string())?;
                             // Authored commit is complete. Audio failure from here is truthful
                             // unavailability, never an invented rollback of the exclusive output.
@@ -3490,12 +3624,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                })),
+                                }), resident_seek.as_ref()),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -3557,12 +3691,15 @@ fn run_worker(
                             },
                             &mut events,
                             &mut resident_snapshot,
-                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
-                                hex_engine::native_device_resources::ControlSamplerSelection {
-                                    sources: current_sources.as_ref(),
-                                    prepared: Some(prepared),
-                                }
-                            })),
+                            export_lane.admission_with_seeks(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                            ),
                         ) {
                             Ok((result, prepared)) if session.project() != &before => {
                                 unsaved = true;
@@ -3597,12 +3734,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                })),
+                                }), resident_seek.as_ref()),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before => {
                                     unsaved = true;
@@ -3642,7 +3779,7 @@ fn run_worker(
                                 clip,
                                 &root,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                                |session, prepared| export_lane.admission(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) })).check_legacy_stage(session, std::slice::from_ref(prepared)),
+                                |session, prepared| export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()).check_legacy_stage(session, std::slice::from_ref(prepared)),
                             )
                         })
                     } else {
@@ -3656,12 +3793,15 @@ fn run_worker(
                             },
                             &mut events,
                             &mut resident_snapshot,
-                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
-                                hex_engine::native_device_resources::ControlSamplerSelection {
-                                    sources: current_sources.as_ref(),
-                                    prepared: Some(prepared),
-                                }
-                            })),
+                            export_lane.admission_with_seeks(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                            ),
                         )
                         .map_err(|e| e.to_string())
                     };
@@ -3717,13 +3857,15 @@ fn run_worker(
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident =>
                 {
-                    let admission =
-                        export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                    let admission = export_lane.admission_with_seeks(
+                        compiled.as_ref().map(|(_, prepared)| {
                             hex_engine::native_device_resources::ControlSamplerSelection {
                                 sources: current_sources.as_ref(),
                                 prepared: Some(prepared),
                             }
-                        }));
+                        }),
+                        resident_seek.as_ref(),
+                    );
                     let result = events
                         .resident_audio()
                         .ok_or(SessionError::Invalid("native worker unavailable"))
@@ -4113,6 +4255,40 @@ fn run_worker(
                         error = Some("tuning audition requires a compiled project".into());
                     }
                 }
+                Request::ResidentArrangementSeek(intent) => {
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    };
+                    let result = (|| -> Result<(), String> {
+                        let seek = resident_seek
+                            .as_mut()
+                            .ok_or("native seek worker unavailable")?;
+                        let current = resident_snapshot
+                            .as_ref()
+                            .ok_or("native seek source unavailable")?;
+                        let sink = events
+                            .resident_audio()
+                            .ok_or("native seek output unavailable")?;
+                        seek.submit(
+                            intent.clone(),
+                            &session,
+                            current,
+                            sink,
+                            export_lane.admission(compiled.as_ref().map(|(_, p)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(p),
+                                }
+                            })),
+                            context,
+                        )
+                    })();
+                    match result {
+                        Ok(()) => seek_submitted = true,
+                        Err(reason) => error = Some(reason),
+                    }
+                }
                 Request::PrepareComputerKeyboard {
                     project_generation: generation,
                     revision: expected_revision,
@@ -4397,6 +4573,16 @@ fn run_worker(
         // Ordinary gesture publications already carry the prepared live-keyboard
         // input and tuning hint, so keep that specialized preview intact.
         let prefer_rebased_preview = canonical_changed && playback_uses_preview;
+        if let Some(intent) = seek_intent.as_ref().filter(|_| !seek_submitted)
+            && let Some(seek) = resident_seek.as_mut()
+        {
+            seek.reject(
+                intent,
+                error
+                    .clone()
+                    .unwrap_or_else(|| "native seek unavailable".into()),
+            );
+        }
         let mut playback = if events.resident_publication_enabled()
             || hex_engine::native_device_resources::requires_private_sampler_sources(
                 session.project(),
@@ -4459,7 +4645,17 @@ fn run_worker(
             }
         }
         if let Some(job) = export_job.as_mut() {
-            if let Err(reason) = export_lane.prepare_job(job, &session, current_sources.as_ref()) {
+            if let Err(reason) = export_lane.prepare_job(
+                job,
+                &session,
+                current_sources.as_ref(),
+                resident_snapshot.as_ref().zip(
+                    events
+                        .resident_audio()
+                        .map(|sink| &*sink as &dyn WorkerAudioSink),
+                ),
+                resident_seek.as_ref(),
+            ) {
                 let failed = export_job.take();
                 if let Some(job) = failed {
                     export_completion = Some(ExportEvent {
@@ -4502,7 +4698,24 @@ fn run_worker(
                 active_tuning_gesture: tuning_gesture.snapshot(),
                 tuning_library,
             },
-            |audio| {
+            |mut audio| {
+                if let Some(seek) = resident_seek.as_mut() {
+                    seek.drive(
+                        &session,
+                        resident_snapshot.as_ref(),
+                        audio.as_deref_mut(),
+                        export_lane.admission(compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        })),
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                    );
+                }
                 audio_sink::native_sampler::drive(
                     audio,
                     &session,
@@ -7966,6 +8179,8 @@ mod service_tests {
             export_busy: Arc::new(AtomicBool::new(false)),
             shutdown: Arc::new(AtomicBool::new(false)),
             arrangement_seek: None,
+            resident_seek_results: None,
+            resident_seek_count: AtomicUsize::new(0),
             _worker: thread::spawn(|| {}),
         };
         assert!(matches!(

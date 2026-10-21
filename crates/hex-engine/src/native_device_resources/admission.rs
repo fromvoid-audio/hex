@@ -62,6 +62,12 @@ fn legacy<'a>(phase: &'a DeviceResourcePhase<'a>) -> impl Iterator<Item = &'a Au
                         )
                 }),
         )
+        .chain(
+            phase
+                .registered
+                .iter()
+                .flat_map(super::DeviceResourceAdmission::legacy_sources),
+        )
 }
 fn inspect(
     phase: &DeviceResourcePhase<'_>,

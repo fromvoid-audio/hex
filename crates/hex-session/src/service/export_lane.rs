@@ -65,6 +65,8 @@ impl ExportLane {
         current: Option<ControlSamplerSelection<'a>>,
     ) -> sampler_export::Admission<'a> {
         sampler_export::Admission {
+            registered: &[],
+            seeks: None,
             current,
             native: self.native_hold,
             export: self.active.as_ref().map(|a| a.snapshot.selection()),
@@ -83,11 +85,29 @@ impl ExportLane {
             }),
         }
     }
+    pub(super) fn admission_with_seeks<'a>(
+        &'a self,
+        current: Option<ControlSamplerSelection<'a>>,
+        seeks: Option<&'a super::resident_seek::Lane>,
+    ) -> sampler_export::Admission<'a> {
+        let admission = self.admission(current);
+        sampler_export::Admission {
+            seeks,
+            runtime_bytes: admission.runtime_bytes.saturating_add(
+                seeks
+                    .map_or(Ok(0), super::resident_seek::Lane::allowance)
+                    .unwrap_or(usize::MAX),
+            ),
+            ..admission
+        }
+    }
     pub(super) fn prepare_job(
         &mut self,
         job: &mut ExportJob,
         session: &Session,
         current_sources: Option<&hex_engine::native_device_resources::ControlSamplerSources>,
+        resident: Option<(&resident_audio::Snapshot, &dyn WorkerAudioSink)>,
+        seeks: Option<&super::resident_seek::Lane>,
     ) -> Result<(), String> {
         self.poll();
         if self.worker.is_none() {
@@ -105,13 +125,52 @@ impl ExportLane {
             }
             return Ok(());
         }
-        let current = ServiceExportSnapshot {
-            prepared: Arc::clone(&job.prepared),
-            sources: current_sources
-                .map(|s| s.capture_on_control())
-                .transpose()
-                .map_err(|e| format!("sampler export capture refused: {e:?}").to_lowercase())?,
+        let native_views = resident.map(|(_, sink)| sink.resident_admission());
+        let sets = resident.map(|(snapshot, _)| [&snapshot.resources]);
+        let revisions = resident.map(|(snapshot, _)| [snapshot.prepared.as_ref()]);
+        let mut registered = Vec::new();
+        if let (Some(sets), Some(revisions), Some(views)) = (&sets, &revisions, &native_views) {
+            registered.push(
+                hex_engine::native_device_resources::DeviceResourceAdmission::new(sets, &[])
+                    .with_prepared_revisions(revisions),
+            );
+            registered.extend_from_slice(views);
+        }
+        if let Some(seeks) = seeks {
+            registered.extend(seeks.views());
+        }
+        let seek_allowance = seeks.map_or(Ok(0), super::resident_seek::Lane::allowance)?;
+        let native_hold = resident.map_or(self.native_hold, |(_, sink)| sink.native_sampler_hold());
+        // Offline export retains its existing private source-borrowing renderer. It compiles a
+        // separate matching snapshot; an ordinary device-resource revision is never handed to
+        // the old private constructor. Current original banks and all actual native owners share
+        // this same admission ledger throughout compilation and dispatch.
+        let current = if resident.is_some() {
+            session
+                .prepare_service_snapshot(
+                    session.project(),
+                    sampler_export::Admission {
+                        registered: &registered,
+                        current: Some(ControlSamplerSelection {
+                            sources: current_sources,
+                            prepared: Some(&job.prepared),
+                        }),
+                        native: native_hold,
+                        runtime_bytes: seek_allowance,
+                        ..sampler_export::Admission::default()
+                    },
+                )
+                .map_err(|error| error.to_string())?
+        } else {
+            ServiceExportSnapshot {
+                prepared: Arc::clone(&job.prepared),
+                sources: current_sources
+                    .map(|s| s.capture_on_control())
+                    .transpose()
+                    .map_err(|e| format!("sampler export capture refused: {e:?}").to_lowercase())?,
+            }
         };
+        job.prepared = Arc::clone(&current.prepared);
         let runtime_bytes = match current.sources.as_ref() {
             Some(sources) => hex_engine::SessionPlayback::control_sampler_export_runtime_allowance(
                 &job.prepared,
@@ -135,7 +194,9 @@ impl ExportLane {
         let selections = [
             ControlSamplerSelection {
                 sources: current_sources,
-                prepared: Some(&job.prepared),
+                prepared: Some(resident.map_or(job.prepared.as_ref(), |(snapshot, _)| {
+                    snapshot.prepared.as_ref()
+                })),
             },
             current.selection(),
             ControlSamplerSelection {
@@ -150,13 +211,15 @@ impl ExportLane {
             .flat_map(|m| [&m.source_audio, &m.audio])
             .collect::<Vec<_>>();
         let phase = DeviceResourcePhase {
-            registered: &[],
+            registered: &registered,
             stores: &stores,
             selections: &selections,
             outbound: &[],
             legacy: &legacy,
             checked_runtime_bytes: runtime_bytes
-                .checked_add(self.native_hold.construction_bytes)
+                .checked_add(seek_allowance)
+                .ok_or("export seek allowance overflow")?
+                .checked_add(native_hold.construction_bytes)
                 .ok_or("native export reservation overflow")?,
             construction_bytes: 0,
         };
@@ -171,7 +234,7 @@ impl ExportLane {
         .map_err(|e| format!("export storage refused: {e:?}").to_lowercase())?;
         if inventory
             .retained_frames
-            .checked_add(self.native_hold.frames)
+            .checked_add(native_hold.frames)
             .is_none_or(|n| n > session.max_resident_frames)
         {
             return Err("resident audio frame limit reached".into());
@@ -274,7 +337,7 @@ mod tests {
                 std::process::id()
             ));
             let mut next = job(&snapshot, path.clone());
-            lane.prepare_job(&mut next, &session, snapshot.sources.as_ref())
+            lane.prepare_job(&mut next, &session, snapshot.sources.as_ref(), None, None)
                 .unwrap();
             let id = next.job_id;
             injected_terminal.send(id).unwrap();

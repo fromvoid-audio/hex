@@ -41,17 +41,21 @@ impl Inputs<'_> {
         let current =
             DeviceResourceAdmission::new(current_sets.as_ref().map_or(&[], |s| s.as_slice()), &[])
                 .with_prepared_revisions(current_revisions.as_ref().map_or(&[], |r| r.as_slice()));
+        let external = self.admission.registered_views();
         let mut registered = Vec::new();
         registered
             .try_reserve_exact(
                 native
                     .len()
+                    .checked_add(external.len())
+                    .ok_or(SessionError::Invalid("resident admission count overflow"))?
                     .checked_add(2)
                     .ok_or(SessionError::Invalid("resident admission count overflow"))?,
             )
             .map_err(|_| SessionError::Invalid("resident admission allocation failed"))?;
         registered.extend([candidate, current]);
         registered.extend_from_slice(native);
+        registered.extend_from_slice(&external);
         let selections = self
             .admission
             .current
@@ -169,6 +173,32 @@ impl Inputs<'_> {
             &snapshot.resources,
         )
         .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let metadata = ResidentPublicationMetadata {
+            context,
+            device_preview: None,
+            tuning_preview: None,
+            seek_request: None,
+            stopped_restore: false,
+            computer_keyboard_request: None,
+            gain_recording_track: snapshot.prepared.gain_recording_track(),
+            requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+        };
+        self.publish_runtime(
+            snapshot,
+            playback,
+            sink,
+            metadata,
+            ResidentPublicationPolicy::InheritRuntime,
+        )
+    }
+    fn publish_runtime(
+        &self,
+        snapshot: &Snapshot,
+        playback: Playback,
+        sink: &mut dyn WorkerAudioSink,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
         if self.shutdown.load(Ordering::Acquire)
             || self
                 .cancel
@@ -192,13 +222,6 @@ impl Inputs<'_> {
             .construction_bytes
             .checked_add(quoted)
             .ok_or(SessionError::Invalid("resident runtime allowance overflow"))?;
-        let metadata = ResidentPublicationMetadata {
-            context,
-            device_preview: None,
-            tuning_preview: None,
-            seek_request: None,
-            requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
-        };
         // The offline sink may capture configuration handles before final admission. Reserve
         // their bounded metadata overlap before that allocation; actual capacities are visited
         // again together with the old pending owner before acceptance.
@@ -213,7 +236,7 @@ impl Inputs<'_> {
             playback,
             Some(&snapshot.resources),
             metadata,
-            ResidentPublicationPolicy::InheritRuntime,
+            policy,
             self.limits.storage.max_retained_bytes,
             &mut |native| {
                 self.admit(
@@ -223,7 +246,17 @@ impl Inputs<'_> {
                     runtime,
                     0,
                 )
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+                // The hook returns immediately to enqueue/fixed offline custody. A late cancel
+                // still refuses here; no cancellation/refusal is reported after acceptance.
+                if self.shutdown.load(Ordering::Acquire)
+                    || self
+                        .cancel
+                        .is_some_and(|cancel| cancel.load(Ordering::Acquire))
+                {
+                    return Err("resident publication cancelled".into());
+                }
+                Ok(())
             },
         )
         .map_err(|refused| SessionError::NativeAudio(refused.error))
@@ -532,6 +565,63 @@ impl Session {
             }
         }
     }
+    pub(super) fn admit_resident_seek(
+        &self,
+        current: &Snapshot,
+        sink: &dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        extra_bytes: usize,
+    ) -> Result<(), SessionError> {
+        let inputs = self.resident_seek_inputs(admission, None, None)?;
+        inputs.admit(
+            &current.resources,
+            Some(&current.prepared),
+            &sink.resident_admission(),
+            sink.native_sampler_hold()
+                .construction_bytes
+                .checked_add(extra_bytes)
+                .ok_or(SessionError::Invalid("seek storage allowance overflow"))?,
+            0,
+        )
+    }
+    #[allow(clippy::too_many_arguments)] // Exact source/current graph, fence and cancellation remain explicit.
+    pub(super) fn publish_resident_seek(
+        &self,
+        snapshot: &Snapshot,
+        current: &Snapshot,
+        playback: Playback,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        cancelled: &AtomicBool,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        self.resident_seek_inputs(admission, Some(current), Some(cancelled))?
+            .publish_runtime(snapshot, playback, sink, metadata, policy)
+    }
+    fn resident_seek_inputs<'a>(
+        &'a self,
+        admission: sampler_export::Admission<'a>,
+        current: Option<&'a Snapshot>,
+        cancelled: Option<&'a AtomicBool>,
+    ) -> Result<Inputs<'a>, SessionError> {
+        Ok(Inputs {
+            native: NativeSamplerSources::Committed(&self.native_assets),
+            limits: self.native_reservation.ok_or(SessionError::Invalid(
+                "resident resource reservation unavailable",
+            ))?,
+            max_frames: self.max_resident_frames,
+            shutdown: &self.shutdown,
+            cancel: cancelled,
+            admission,
+            current,
+            legacy: self
+                .media
+                .values()
+                .flat_map(|media| [&media.source_audio, &media.audio])
+                .collect(),
+        })
+    }
     pub(super) fn publish_resident_snapshot(
         &self,
         context: hex_engine::AudioSourceContext,
@@ -687,6 +777,7 @@ mod tests {
         accepted: Mutex<Vec<(u64, thread::ThreadId)>>,
         refuse: AtomicBool,
         closed: AtomicUsize,
+        seek_attempts: AtomicUsize,
     }
     struct OfflineSink {
         observed: Arc<Observed>,
@@ -714,10 +805,17 @@ mod tests {
             playback: Playback,
             resources: Option<&PreparedDeviceResources>,
             metadata: ResidentPublicationMetadata,
-            _: ResidentPublicationPolicy,
+            policy: ResidentPublicationPolicy,
             metadata_limit: usize,
             admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
         ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+            if matches!(policy, ResidentPublicationPolicy::FreshIfUnchanged(_)) {
+                self.observed.seek_attempts.fetch_add(1, Ordering::Release);
+                return Err(ResidentPublicationRefusal {
+                    playback,
+                    error: "fixture has no fresh output".into(),
+                });
+            }
             let result = (|| {
                 let resources = resources
                     .ok_or("missing resources")?
@@ -828,6 +926,65 @@ mod tests {
         let loaded = receive();
         assert!(loaded.error.is_none(), "{:?}", loaded.error);
         assert!(loaded.playback.is_none());
+        let accepted_before_seek = observed.accepted.lock().unwrap().len();
+        let seek = ResidentArrangementSeekIntent {
+            request_id: 1,
+            project_generation: 0,
+            project_revision: loaded.state.revision,
+            destination_frame: 129,
+            start_playing: true,
+            fence: ResidentFreshRuntimeFence {
+                output_identity: 1,
+                active_audio_revision: 1,
+                route_generation: 0,
+                admitted_command_ticket: 0,
+            },
+            device_preview: None,
+            tuning_preview: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        service
+            .submit_resident_arrangement_seek(seek.clone())
+            .unwrap();
+        let submitted = receive();
+        assert!(submitted.error.is_none(), "{:?}", submitted.error);
+        assert!(
+            service.try_arrangement_seek_result().is_none(),
+            "native owners cannot escape through legacy result getter"
+        );
+        let result = wait_for_seek(&service);
+        assert_eq!(result.request_id, 1);
+        assert_eq!(result.project_revision, loaded.state.revision);
+        assert!(
+            result
+                .result
+                .unwrap_err()
+                .contains("fixture has no fresh output")
+        );
+        assert_eq!(
+            observed.seek_attempts.load(Ordering::Acquire),
+            1,
+            "same-source preroll completed on existing seek worker before final fresh-output refusal"
+        );
+        assert_eq!(
+            observed.accepted.lock().unwrap().len(),
+            accepted_before_seek
+        );
+        service
+            .submit_resident_arrangement_seek(ResidentArrangementSeekIntent {
+                request_id: 2,
+                project_revision: loaded.state.revision + 1,
+                ..seek
+            })
+            .unwrap();
+        let stale = receive();
+        assert!(stale.error.is_some());
+        assert!(
+            wait_for_seek(&service)
+                .result
+                .unwrap_err()
+                .contains("target changed")
+        );
         assert!(
             loaded
                 .state
@@ -1009,6 +1166,17 @@ mod tests {
         assert!(no_change.error.is_none(), "{:?}", no_change.error);
         assert_eq!(no_change.state.project, installed.state.project);
         assert_eq!(no_change.state.revision, installed.state.revision);
+        service
+            .submit(Request::Export(files.output().to_owned()))
+            .unwrap();
+        let queued_export = receive();
+        assert!(queued_export.error.is_none(), "{:?}", queued_export.error);
+        let exported = service
+            .export_events
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert!(exported.result.is_ok(), "{:?}", exported.result);
+        assert!(files.output().exists());
         let accepted = observed.accepted.lock().unwrap().len();
         let before_refusal_revision = observed.accepted.lock().unwrap().last().unwrap().0;
         observed.refuse.store(true, Ordering::Release);
@@ -1035,5 +1203,19 @@ mod tests {
                 .all(|(_, worker)| *worker != thread::current().id())
         );
         drop(service);
+    }
+
+    fn wait_for_seek(service: &Service) -> ResidentArrangementSeekResult {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Some(result) = service.try_resident_arrangement_seek_result() {
+                return result;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "native scalar seek result did not arrive"
+            );
+            thread::sleep(Duration::from_millis(1));
+        }
     }
 }

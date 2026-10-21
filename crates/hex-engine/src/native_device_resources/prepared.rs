@@ -696,6 +696,8 @@ pub(crate) fn inline_resource_factory_bytes(
 pub struct DeviceResourceAdmission<'a> {
     sets: &'a [&'a PreparedDeviceResources],
     revisions: &'a [&'a crate::PreparedRevision],
+    set: Option<&'a PreparedDeviceResources>,
+    revision: Option<&'a crate::PreparedRevision>,
     books: &'a [&'a DeviceResourcePublication],
     book: Option<&'a DeviceResourcePublication>,
     playback: Option<&'a crate::playback::Playback>,
@@ -711,6 +713,8 @@ impl<'a> DeviceResourceAdmission<'a> {
         Self {
             sets,
             revisions: &[],
+            set: None,
+            revision: None,
             books,
             book: None,
             playback: None,
@@ -738,20 +742,50 @@ impl<'a> DeviceResourceAdmission<'a> {
         self.revisions = revisions;
         self
     }
+    /// One actual captured set and its exact compiled revision, suitable for a bounded worker
+    /// job inventory without allocating a separate array of borrowed selections.
+    pub fn prepared_on_control(
+        set: &'a PreparedDeviceResources,
+        revision: &'a crate::PreparedRevision,
+    ) -> Self {
+        Self {
+            set: Some(set),
+            revision: Some(revision),
+            ..Self::default()
+        }
+    }
+    pub(super) fn legacy_sources(&self) -> impl Iterator<Item = &'a crate::Audio> + Clone {
+        self.revision.into_iter().flat_map(|revision| {
+            revision
+                .arrangement()
+                .tracks()
+                .iter()
+                .flat_map(|track| track.clips.iter().filter_map(|clip| clip.audio.as_ref()))
+                .chain(
+                    revision
+                        .session()
+                        .audio_clips()
+                        .iter()
+                        .filter_map(|clip| clip.resident_audio()),
+                )
+        })
+    }
     pub(super) fn visit(
         &self,
         ledger: &mut AudioRootStorageLedger<'a>,
     ) -> Result<u64, AudioStorageError> {
         let mut frames = 0u64;
-        for set in self.sets {
+        for set in self.sets.iter().copied().chain(self.set) {
             frames = frames
                 .checked_add(set.visit(ledger)?)
                 .ok_or(AudioStorageError::Overflow)?;
         }
-        for revision in self.revisions {
+        for revision in self.revisions.iter().copied().chain(self.revision) {
             let set = self
                 .sets
                 .iter()
+                .copied()
+                .chain(self.set)
                 .find(|set| Some(set.id()) == revision.device_resource_scope)
                 .ok_or(AudioStorageError::SourceMismatch)?;
             revision

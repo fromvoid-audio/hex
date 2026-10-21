@@ -27,6 +27,8 @@ impl ServiceExportSnapshot {
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Admission<'a> {
+    pub(crate) registered: &'a [resources::DeviceResourceAdmission<'a>],
+    pub(crate) seeks: Option<&'a super::resident_seek::Lane>,
     pub(crate) current: Option<ControlSamplerSelection<'a>>,
     pub(crate) native: NativeSamplerReservationHold,
     pub(crate) export: Option<ControlSamplerSelection<'a>>,
@@ -50,6 +52,17 @@ pub(crate) struct RecoverySourceStage<'a> {
     pub(crate) additional_frames: u64,
 }
 impl Admission<'_> {
+    pub(crate) fn registered_views(&self) -> Vec<resources::DeviceResourceAdmission<'_>> {
+        self.registered
+            .iter()
+            .copied()
+            .chain(
+                self.seeks
+                    .into_iter()
+                    .flat_map(super::resident_seek::Lane::views),
+            )
+            .collect()
+    }
     pub(crate) fn check_recovery_sources(
         &self,
         current: &Session,
@@ -84,7 +97,7 @@ impl Admission<'_> {
             .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>()))
             .ok_or(SessionError::Invalid("recovery source allowance overflow"))?;
         let phase = DeviceResourcePhase {
-            registered: &[],
+            registered: &self.registered_views(),
             stores: &stores,
             selections: &selections,
             outbound: &outbound,
@@ -193,8 +206,13 @@ impl Admission<'_> {
             .chain(candidate)
             .collect::<Vec<_>>();
         let outbound = self.outbound.into_iter().collect::<Vec<_>>();
+        let selected = self
+            .registered_views()
+            .into_iter()
+            .chain(registered.iter().copied())
+            .collect::<Vec<_>>();
         let phase = DeviceResourcePhase {
-            registered,
+            registered: &selected,
             stores: &[],
             selections: &selections,
             outbound: &outbound,
@@ -253,7 +271,7 @@ impl Admission<'_> {
             .collect::<Vec<_>>();
         let outbound = self.outbound.into_iter().collect::<Vec<_>>();
         let kept = DeviceResourcePhase {
-            registered: &[],
+            registered: &self.registered_views(),
             stores: &kept_stores,
             selections: &kept_selections,
             outbound: &outbound,
@@ -265,7 +283,7 @@ impl Admission<'_> {
             construction_bytes: 0,
         };
         let peak = DeviceResourcePhase {
-            registered: &[],
+            registered: &self.registered_views(),
             stores: &peak_stores,
             selections: &peak_selections,
             outbound: &outbound,
@@ -500,7 +518,7 @@ impl Session {
                     let stores = [native];
                     let outbound = admission.outbound.into_iter().collect::<Vec<_>>();
                     let kept = DeviceResourcePhase {
-                        registered: &[],
+                        registered: &admission.registered_views(),
                         stores: &stores,
                         selections: &retained,
                         outbound: &outbound,
@@ -512,7 +530,7 @@ impl Session {
                         construction_bytes: 0,
                     };
                     let peak = DeviceResourcePhase {
-                        registered: &[],
+                        registered: &admission.registered_views(),
                         stores: &stores,
                         selections: &construction,
                         outbound: &outbound,
@@ -773,7 +791,7 @@ impl Session {
                         .collect::<Vec<_>>();
                     let outbound = admission.outbound.into_iter().collect::<Vec<_>>();
                     let retained = DeviceResourcePhase {
-                        registered: &[],
+                        registered: &admission.registered_views(),
                         stores: &[],
                         selections: &kept,
                         outbound: &outbound,
@@ -785,7 +803,7 @@ impl Session {
                         construction_bytes: 0,
                     };
                     let construction = DeviceResourcePhase {
-                        registered: &[],
+                        registered: &admission.registered_views(),
                         stores: &[],
                         selections: &peak,
                         outbound: &outbound,

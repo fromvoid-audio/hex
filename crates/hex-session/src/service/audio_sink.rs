@@ -15,6 +15,9 @@ pub struct ResidentPublicationMetadata {
     pub device_preview: Option<DevicePreviewIdentity>,
     pub tuning_preview: Option<TuningPreviewIdentity>,
     pub seek_request: Option<u64>,
+    pub stopped_restore: bool,
+    pub computer_keyboard_request: Option<u64>,
+    pub gain_recording_track: Option<hex_project::TrackId>,
     pub requires_preroll: bool,
 }
 #[derive(Clone, Copy, Debug)]
