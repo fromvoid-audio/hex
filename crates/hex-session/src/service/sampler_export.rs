@@ -165,6 +165,24 @@ impl Admission<'_> {
         max_frames: u64,
         candidate: Option<ControlSamplerSelection<'_>>,
     ) -> Result<Option<DeviceResourceInventory>, SessionError> {
+        self.check_native_originals_registered(
+            originals,
+            legacy,
+            limits,
+            max_frames,
+            candidate,
+            &[],
+        )
+    }
+    pub(in crate::service) fn check_native_originals_registered(
+        &self,
+        originals: NativeSamplerSources<'_>,
+        legacy: &[&hex_engine::Audio],
+        limits: Option<crate::ResidentNativeReservation>,
+        max_frames: u64,
+        candidate: Option<ControlSamplerSelection<'_>>,
+        registered: &[resources::DeviceResourceAdmission<'_>],
+    ) -> Result<Option<DeviceResourceInventory>, SessionError> {
         let Some(limits) = limits else {
             return Ok(None);
         };
@@ -176,7 +194,7 @@ impl Admission<'_> {
             .collect::<Vec<_>>();
         let outbound = self.outbound.into_iter().collect::<Vec<_>>();
         let phase = DeviceResourcePhase {
-            registered: &[],
+            registered,
             stores: &[],
             selections: &selections,
             outbound: &outbound,

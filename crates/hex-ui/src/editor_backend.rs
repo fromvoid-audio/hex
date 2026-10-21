@@ -63,7 +63,15 @@ pub enum EditorAudioEvent {
 pub enum EditorPublicationState {
     Preparing,
     Busy,
-    Submitted { audio_revision: u64 },
+    Submitted {
+        audio_revision: u64,
+    },
+    /// Scalar correlation for an ordinary worker-owned graph; application still needs the exact
+    /// output/revision callback ACK. No prepared graph or native resource owner crosses here.
+    ResidentSubmitted {
+        audio_revision: u64,
+        metadata: hex_session::service::ResidentPublicationMetadata,
+    },
     Refused(String),
     Fault(String),
 }

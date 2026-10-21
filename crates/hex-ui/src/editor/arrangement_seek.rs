@@ -360,10 +360,12 @@ impl EditorView {
         let candidate = self.audible_playback.as_ref()?;
         let (audio, state) = match self.document_audio_mode {
             hex_session::DocumentAudioMode::Resident => {
-                return candidate
-                    .prepared_revision
-                    .as_ref()
-                    .map(|prepared| prepared.arrangement_seek_requires_preroll());
+                return candidate.worker_requires_preroll.or_else(|| {
+                    candidate
+                        .prepared_revision
+                        .as_ref()
+                        .map(|prepared| prepared.arrangement_seek_requires_preroll())
+                });
             }
             hex_session::DocumentAudioMode::VerifiedStreaming => {
                 (self.audio.as_ref()?, self.state.as_ref()?)

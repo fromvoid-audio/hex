@@ -1,5 +1,5 @@
-//! Captured edit intent validation. The native sink owns the callback fence and
-//! sealed pending cell; canonical state/history commit stays with Session.
+//! Captured sampler authoring intents for ordinary worker transactions and the explicit private
+//! CURRENT path. Only the latter uses a stopped callback fence; Session owns canonical/history commit.
 use super::*;
 pub(super) fn validate(
     session: &Session,
@@ -132,6 +132,66 @@ impl SamplerEdit {
                     .transpose()
                     .map(|edge| edge.is_some())
             }
+        }
+    }
+    /// Ordinary worker publication uses the captured identity and module validation, without the
+    /// private CURRENT fence or its history allowlist. Bypass keeps the authored device editable.
+    pub(super) fn validate_resident(
+        &mut self,
+        session: &Session,
+        generation: u64,
+        revision: u64,
+    ) -> Result<bool, String> {
+        let (request, expected_generation, expected_revision) = match self {
+            Self::Parameter(edit) => (edit.request_id, edit.project_generation, edit.revision),
+            Self::Midi(edit) => (edit.request_id, edit.project_generation, edit.revision),
+            Self::History(edit) => (edit.request_id, edit.project_generation, edit.revision),
+            Self::Replacement(edit) => (edit.request_id, edit.project_generation, edit.revision),
+        };
+        if request == 0
+            || expected_generation != generation
+            || expected_revision != revision
+            || self.cancel().load(Ordering::Acquire)
+        {
+            return Err("sampler edit target changed or was cancelled".into());
+        }
+        match self {
+            Self::Parameter(edit) => {
+                let device = session
+                    .project()
+                    .track(edit.track)
+                    .and_then(|track| track.instrument())
+                    .filter(|device| device.id() == edit.device)
+                    .ok_or("sampler edit target is unavailable")?;
+                let patched = hex_engine::patch_sampler_parameter_on_control(
+                    edit.parameter,
+                    device.state(),
+                    edit.value,
+                )
+                .map_err(|error| error.to_string())?;
+                Ok(patched != *device.state())
+            }
+            Self::Replacement(edit) => {
+                let device = session
+                    .project()
+                    .track(edit.track)
+                    .and_then(|track| track.instrument())
+                    .filter(|device| {
+                        device.id() == edit.device && device.state() == &edit.expected_state
+                    })
+                    .ok_or("sampler replacement target changed")?;
+                hex_engine::validate_sampler_replacement_on_control(device.state())
+                    .map_err(|error| error.to_string())?;
+                Ok(true)
+            }
+            Self::Midi(edit) => edit
+                .command
+                .prepare_sampler_midi_edit(session.project())
+                .map_err(|error| error.to_string()),
+            Self::History(edit) => Ok(session
+                .editor
+                .inspect_history(edit.redo, |_, _| ())
+                .is_some()),
         }
     }
     pub(super) fn prepare(

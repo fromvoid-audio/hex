@@ -411,7 +411,19 @@ impl EditorView {
             crate::EditorPublicationState::Busy => {
                 self.status = "audio busy · waiting to publish".into()
             }
-            crate::EditorPublicationState::Submitted { audio_revision } => {
+            crate::EditorPublicationState::Submitted { audio_revision }
+            | crate::EditorPublicationState::ResidentSubmitted { audio_revision, .. } => {
+                let metadata = match state {
+                    crate::EditorPublicationState::ResidentSubmitted { metadata, .. } => {
+                        Some(metadata)
+                    }
+                    _ => None,
+                };
+                if metadata.is_some_and(|metadata| metadata.context != context) {
+                    self.error =
+                        Some("audio publication metadata does not match its context".into());
+                    return;
+                }
                 if let Some(state) = self
                     .state
                     .as_ref()
@@ -424,13 +436,16 @@ impl EditorView {
                     && self.playback_candidates.len() < super::PLAYBACK_CANDIDATE_CAPACITY
                 {
                     self.playback_candidates.push_back(PlaybackCandidate {
+                        worker_requires_preroll: metadata.map(|metadata| metadata.requires_preroll),
                         audio_revision,
                         project_generation: context.project_generation,
                         state,
                         prepared_revision: None,
-                        seek_request_id: None,
-                        device_preview_identity: None,
-                        tuning_preview_identity: None,
+                        seek_request_id: metadata.and_then(|metadata| metadata.seek_request),
+                        device_preview_identity: metadata
+                            .and_then(|metadata| metadata.device_preview),
+                        tuning_preview_identity: metadata
+                            .and_then(|metadata| metadata.tuning_preview),
                     });
                 }
                 self.audio_admission.published(
@@ -699,6 +714,7 @@ impl EditorView {
                         .published(project_revision, audio_revision);
                 }
                 self.playback_candidates.push_back(PlaybackCandidate {
+                    worker_requires_preroll: None,
                     audio_revision,
                     project_generation: pending.project_generation,
                     state: pending.state,
@@ -1228,6 +1244,7 @@ impl EditorView {
                         || candidate.project_generation != source.context.project_generation
                 }) {
                     self.audible_playback = Some(PlaybackCandidate {
+                        worker_requires_preroll: None,
                         audio_revision: source.audio_revision,
                         project_generation: source.context.project_generation,
                         state: Arc::clone(state),
@@ -4246,6 +4263,7 @@ mod tests {
     fn candidate(audio_revision: u64, project_revision: u64, generation: u64) -> PlaybackCandidate {
         let project = Arc::new(Project::new(48_000).expect("project"));
         PlaybackCandidate {
+            worker_requires_preroll: None,
             audio_revision,
             project_generation: generation,
             state: Arc::new(ViewState {

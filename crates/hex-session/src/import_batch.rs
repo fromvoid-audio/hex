@@ -20,6 +20,36 @@ pub enum AudioBatchDestination {
     },
 }
 
+/// Actual control-side inputs for the existing reserved batch transaction. Borrowed native
+/// originals and legacy PCM remain separate; nothing here is a native constructor receipt.
+pub(crate) struct Preparation<'a> {
+    pub project: &'a Project,
+    pub media: &'a crate::MediaBank,
+    pub native: &'a hex_engine::native_device_resources::ResidentDeviceAssets,
+    pub table: Arc<hex_engine::SineTable>,
+    pub transforms: &'a hex_engine::audio_transform::AudioTransformPreparation,
+    pub waveforms: &'a std::cell::RefCell<
+        std::collections::BTreeMap<hex_project::ClipId, crate::service::AudioClipWaveform>,
+    >,
+    pub legacy: &'a [&'a hex_engine::Audio],
+    pub limits: Option<crate::ResidentNativeReservation>,
+    pub max_frames: u64,
+    pub shutdown: &'a std::sync::atomic::AtomicBool,
+    pub previous: Option<&'a hex_engine::PreparedRevision>,
+}
+pub(crate) fn prepare_asset_free(
+    input: Preparation<'_>,
+    admit: &mut dyn FnMut() -> Result<(), SessionError>,
+) -> Result<Arc<hex_engine::PreparedRevision>, SessionError> {
+    let revision = Arc::new(input.media.prepare(
+        input.project,
+        input.table,
+        input.previous.map(|artifact| artifact.session().as_ref()),
+    )?);
+    admit()?;
+    Ok(revision)
+}
+
 impl Session {
     /// Commit one prepared batch, compiling exactly once and making one Undo.
     /// `expected_project` must be the captured project. The caller owns generation
@@ -33,7 +63,33 @@ impl Session {
         destination: AudioBatchDestination,
         expected_project: &Project,
         previous: Option<&hex_engine::PreparedRevision>,
+        admit: impl FnMut() -> Result<(), SessionError>,
+    ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.import_prepared_batch_revision_using(
+            prepared,
+            destination,
+            expected_project,
+            previous,
+            true,
+            admit,
+            prepare_asset_free,
+        )
+    }
+    /// The preparation callback owns the final admission/cancellation boundary. It may enqueue
+    /// only after that check; once it succeeds this helper performs only reserved fixed moves.
+    #[allow(clippy::too_many_arguments)] // Existing transaction inputs plus explicit overwrite and final preparation.
+    pub(crate) fn import_prepared_batch_revision_using(
+        &mut self,
+        prepared: Vec<PreparedImport>,
+        destination: AudioBatchDestination,
+        expected_project: &Project,
+        previous: Option<&hex_engine::PreparedRevision>,
+        overwrite: bool,
         mut admit: impl FnMut() -> Result<(), SessionError>,
+        prepare: impl FnOnce(
+            Preparation<'_>,
+            &mut dyn FnMut() -> Result<(), SessionError>,
+        ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), SessionError> {
         admit()?;
         if self.project() != expected_project {
@@ -160,6 +216,17 @@ impl Session {
                         source_end: frames,
                     }
                 }
+                AudioBatchDestination::Track { track, .. } if !overwrite => {
+                    Command::ImportPreparedAudioClip {
+                        track,
+                        start: cursor,
+                        path: member.path,
+                        source_sample_rate: member.source_sample_rate,
+                        source_frames: member.source_frames,
+                        playback_frames: frames,
+                        conversion_version: member.conversion_version,
+                    }
+                }
                 AudioBatchDestination::Track { track, .. } => {
                     Command::ImportPreparedAudioClipWithOverwrite {
                         track,
@@ -196,6 +263,18 @@ impl Session {
         }
         let mut candidate_media = self.media_bank();
         let sine_table = self.sine_table();
+        let native = &self.native_assets;
+        let transforms = &self.audio_transforms;
+        let waveforms = &self.audio_clip_waveforms;
+        let legacy = self
+            .media
+            .values()
+            .chain(residents.iter())
+            .flat_map(|resident| [&resident.source_audio, &resident.audio])
+            .collect::<Vec<_>>();
+        let limits = self.native_reservation;
+        let max_frames = self.max_resident_frames;
+        let shutdown = &self.shutdown;
         let (_, (created, revision)) =
             self.editor
                 .execute_many_prepared(commands, |candidate, results| {
@@ -216,12 +295,22 @@ impl Session {
                             ));
                         }
                     }
-                    let revision = Arc::new(candidate_media.prepare(
-                        candidate,
-                        sine_table,
-                        previous.map(|artifact| artifact.session().as_ref()),
-                    )?);
-                    admit()?;
+                    let revision = prepare(
+                        Preparation {
+                            project: candidate,
+                            media: &candidate_media,
+                            native,
+                            table: sine_table,
+                            transforms,
+                            waveforms,
+                            legacy: &legacy,
+                            limits,
+                            max_frames,
+                            shutdown,
+                            previous,
+                        },
+                        &mut admit,
+                    )?;
                     Ok::<_, SessionError>((created, revision))
                 })?;
         // All fallible work is complete. Created/results correspond one-for-one.

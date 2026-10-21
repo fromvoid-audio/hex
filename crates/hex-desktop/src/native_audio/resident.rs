@@ -191,7 +191,10 @@ impl NativeAudioSink {
                     self.observe(
                         metadata.context,
                         "submitted",
-                        EditorPublicationState::Submitted { audio_revision },
+                        EditorPublicationState::ResidentSubmitted {
+                            audio_revision,
+                            metadata,
+                        },
                     );
                     Ok(ResidentPublicationAcceptance::Submitted {
                         output_identity,
@@ -268,9 +271,25 @@ impl NativeAudioSink {
             metadata,
             policy,
         } = pending;
-        if let Err(refused) =
-            self.publish_resident_graph(playback, resources.as_ref(), metadata, policy, 0, admit)
-        {
+        // Taking the pending Playback for enqueue does not free its captured configuration set.
+        // Select that actual local owner through the final check as well as the prospective book.
+        let sets = resources.as_ref().map(|resources| [resources]);
+        let capture =
+            DeviceResourceAdmission::new(sets.as_ref().map_or(&[], |sets| sets.as_slice()), &[]);
+        let mut with_capture = |views: &[DeviceResourceAdmission<'_>]| {
+            let [prospective, retired, pending] = views else {
+                return Err("resident retry admission shape changed".into());
+            };
+            admit(&[capture, *prospective, *retired, *pending])
+        };
+        if let Err(refused) = self.publish_resident_graph(
+            playback,
+            resources.as_ref(),
+            metadata,
+            policy,
+            0,
+            &mut with_capture,
+        ) {
             self.resident.pending = Some(Pending {
                 playback: refused.playback,
                 resources,

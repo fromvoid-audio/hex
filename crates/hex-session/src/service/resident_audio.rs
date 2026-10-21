@@ -230,6 +230,134 @@ impl Inputs<'_> {
     }
 }
 
+/// One command seam for typed worker requests and ordinary edits. The native consumer publishes
+/// inside Editor's reserved transaction; plain/headless and verified consumers keep their route.
+pub(super) fn execute_command(
+    session: &mut Session,
+    command: Command,
+    previous: Option<&PreparedRevision>,
+    context: hex_engine::AudioSourceContext,
+    events: &mut WorkerEvents,
+    resident: &mut Option<Snapshot>,
+    admission: sampler_export::Admission<'_>,
+) -> Result<(Created, Arc<PreparedRevision>), SessionError> {
+    if session.audio_mode() == DocumentAudioMode::Resident
+        && let Some(sink) = events.resident_audio()
+    {
+        let (created, snapshot) = session.command_resident_snapshot(
+            command,
+            context,
+            sink,
+            admission,
+            resident.as_ref(),
+        )?;
+        let prepared = Arc::clone(&snapshot.prepared);
+        *resident = Some(snapshot);
+        Ok((created, prepared))
+    } else {
+        session.command_prepared_revision(command, previous)
+    }
+}
+
+pub(super) fn prepare_import(
+    input: crate::import_batch::Preparation<'_>,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: Option<&Snapshot>,
+    admit: &mut dyn FnMut() -> Result<(), SessionError>,
+) -> Result<Snapshot, SessionError> {
+    let inputs = Inputs {
+        native: NativeSamplerSources::Committed(input.native),
+        limits: input.limits.ok_or(SessionError::Invalid(
+            "resident resource reservation unavailable",
+        ))?,
+        max_frames: input.max_frames,
+        shutdown: input.shutdown,
+        cancel: None,
+        admission,
+        current,
+        legacy: input.legacy.to_vec(),
+    };
+    let snapshot = inputs.prepare(
+        input.project,
+        sink,
+        input.media,
+        input.table,
+        input.transforms,
+        input.waveforms,
+    )?;
+    admit()?;
+    inputs.publish(&snapshot, sink, context)?;
+    Ok(snapshot)
+}
+
+#[allow(clippy::too_many_arguments)] // Captured file/destination and current publication union are one synchronous import.
+pub(super) fn import_file(
+    session: &mut Session,
+    path: PathBuf,
+    destination: AudioBatchDestination,
+    overwrite: bool,
+    context: hex_engine::AudioSourceContext,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    current: &mut Option<Snapshot>,
+) -> Result<Arc<PreparedRevision>, SessionError> {
+    if !overwrite
+        && let AudioBatchDestination::Console(crate::import_batch::ConsoleDestination::Cell {
+            track,
+            scene,
+        }) = destination
+        && session.project().session_cell(track, scene).is_some()
+    {
+        return Err(SessionError::Invalid("session target cell is occupied"));
+    }
+    let remaining = session
+        .max_resident_frames()
+        .checked_sub(session.resident_frames())
+        .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
+    let output_limit = usize::try_from(remaining)
+        .map_err(|_| SessionError::Invalid("resident frame limit exceeds addressable range"))?;
+    if output_limit == 0 {
+        return Err(SessionError::Invalid("resident audio frame limit reached"));
+    }
+    let path = absolute_document_path(&path).map_err(SessionError::NativeAudio)?;
+    let decoded = decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))?;
+    let prepared = PreparedImport::at_rate(
+        decoded,
+        session.project().sample_rate(),
+        ResampleLimits {
+            max_source_frames: IMPORT_FRAME_LIMIT,
+            max_output_frames: output_limit,
+        },
+    )?;
+    let expected = session.project().clone();
+    let mut accepted = None;
+    let (_, prepared) = session.import_prepared_batch_revision_using(
+        vec![prepared],
+        destination,
+        &expected,
+        current.as_ref().map(|snapshot| snapshot.prepared.as_ref()),
+        overwrite,
+        || Ok(()),
+        |input, admit| {
+            let snapshot =
+                prepare_import(input, context, sink, admission, current.as_ref(), admit)?;
+            let prepared = Arc::clone(&snapshot.prepared);
+            accepted = Some(snapshot);
+            Ok(prepared)
+        },
+    )?;
+    *current = accepted;
+    Ok(prepared)
+}
+
+enum Transition {
+    Command(Box<Command>),
+    History { redo: bool },
+    MidiCommand(Box<Command>),
+}
+
 impl Session {
     #[allow(clippy::too_many_arguments)] // Captured target, source, control union and final publication remain explicit.
     pub(super) fn import_resident_sampler(
@@ -242,6 +370,35 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<(Created, Snapshot), SessionError> {
+        let legacy = self
+            .media
+            .values()
+            .flat_map(|media| [&media.source_audio, &media.audio])
+            .chain(std::iter::once(decoded.audio()))
+            .collect::<Vec<_>>();
+        let sets = current.map(|snapshot| [&snapshot.resources]);
+        let revisions = current.map(|snapshot| [snapshot.prepared.as_ref()]);
+        let current_view =
+            DeviceResourceAdmission::new(sets.as_ref().map_or(&[], |sets| sets.as_slice()), &[])
+                .with_prepared_revisions(
+                    revisions
+                        .as_ref()
+                        .map_or(&[], |revisions| revisions.as_slice()),
+                );
+        let views = sink.resident_admission();
+        let registered = [current_view, views[0], views[1], views[2]];
+        sampler_export::Admission {
+            native: sink.native_sampler_hold(),
+            ..admission
+        }
+        .check_native_originals_registered(
+            NativeSamplerSources::Committed(&self.native_assets),
+            &legacy,
+            self.native_reservation,
+            self.max_resident_frames,
+            None,
+            &registered,
+        )?;
         let limits = self.native_reservation.ok_or(SessionError::Invalid(
             "resident resource reservation unavailable",
         ))?;
@@ -296,6 +453,85 @@ impl Session {
             },
         )
     }
+    pub(super) fn sampler_resident_edit(
+        &mut self,
+        edit: SamplerEdit,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        match edit {
+            SamplerEdit::Parameter(edit) => {
+                let original = self
+                    .project()
+                    .device(edit.device)
+                    .ok_or(SessionError::Invalid("sampler target is unavailable"))?
+                    .state();
+                let state = hex_engine::patch_sampler_parameter_on_control(
+                    edit.parameter,
+                    original,
+                    edit.value,
+                )?;
+                self.resident_transition(
+                    Transition::Command(Box::new(Command::ReplaceDeviceState {
+                        device: edit.device,
+                        state,
+                    })),
+                    context,
+                    sink,
+                    admission,
+                    current,
+                    Some(&edit.cancel),
+                )
+            }
+            SamplerEdit::Midi(edit) => self.resident_transition(
+                Transition::MidiCommand(edit.command),
+                context,
+                sink,
+                admission,
+                current,
+                Some(&edit.cancel),
+            ),
+            SamplerEdit::History(edit) => self.resident_transition(
+                Transition::History { redo: edit.redo },
+                context,
+                sink,
+                admission,
+                current,
+                Some(&edit.cancel),
+            ),
+            SamplerEdit::Replacement(edit) => {
+                if edit.cancel.load(Ordering::Acquire) {
+                    return Err(SessionError::Invalid("sampler replacement cancelled"));
+                }
+                let decoded = decode_wav_file(
+                    &edit.path,
+                    Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+                )?;
+                let (state, source_slot) = hex_engine::sampler_replacement_template_on_control(
+                    &edit.expected_state,
+                    decoded.audio().frames().len(),
+                )?;
+                self.import_resident_sampler(
+                    decoded,
+                    &edit.cancel,
+                    crate::native_assets::NativeAssetDestination::ExistingInstrument {
+                        track: edit.track,
+                        device: edit.device,
+                        expected_state: edit.expected_state,
+                        state,
+                        source_slot,
+                    },
+                    context,
+                    sink,
+                    admission,
+                    current,
+                )
+                .map(Some)
+            }
+        }
+    }
     pub(super) fn publish_resident_snapshot(
         &self,
         context: hex_engine::AudioSourceContext,
@@ -338,12 +574,53 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         current: Option<&Snapshot>,
     ) -> Result<(Created, Snapshot), SessionError> {
-        crate::validate_command_media(&command)?;
-        if let Command::PlaceClip { asset, .. } = &command
-            && self.native_assets.contains(*asset)
-            && !self.media.contains_key(asset)
-        {
-            return Err(SessionError::DeviceAssetClipUnsupported(*asset));
+        self.resident_transition(
+            Transition::Command(Box::new(command)),
+            context,
+            sink,
+            admission,
+            current,
+            None,
+        )?
+        .ok_or(SessionError::Invalid(
+            "resident command produced no transition",
+        ))
+    }
+    pub(super) fn history_resident_snapshot(
+        &mut self,
+        redo: bool,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Option<Snapshot>, SessionError> {
+        self.resident_transition(
+            Transition::History { redo },
+            context,
+            sink,
+            admission,
+            current,
+            None,
+        )
+        .map(|result| result.map(|(_, snapshot)| snapshot))
+    }
+    fn resident_transition(
+        &mut self,
+        transition: Transition,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+        cancel: Option<&AtomicBool>,
+    ) -> Result<Option<(Created, Snapshot)>, SessionError> {
+        if let Transition::Command(command) | Transition::MidiCommand(command) = &transition {
+            crate::validate_command_media(command)?;
+            if let Command::PlaceClip { asset, .. } = command.as_ref()
+                && self.native_assets.contains(*asset)
+                && !self.media.contains_key(asset)
+            {
+                return Err(SessionError::DeviceAssetClipUnsupported(*asset));
+            }
         }
         let inputs = Inputs {
             native: NativeSamplerSources::Committed(&self.native_assets),
@@ -352,7 +629,7 @@ impl Session {
             ))?,
             max_frames: self.max_resident_frames,
             shutdown: &self.shutdown,
-            cancel: None,
+            cancel,
             admission,
             current,
             legacy: self
@@ -365,13 +642,37 @@ impl Session {
         let table = self.sine_table();
         let transforms = &self.audio_transforms;
         let waveforms = &self.audio_clip_waveforms;
-        self.editor
-            .execute_prepared_transition(command, |_, project| {
-                let snapshot =
-                    inputs.prepare(project, sink, &media, table, transforms, waveforms)?;
-                inputs.publish(&snapshot, sink, context)?;
-                Ok(snapshot)
-            })
+        let prepare = |source: &Project, project: &Project| {
+            let snapshot = inputs.prepare(project, sink, &media, table, transforms, waveforms)?;
+            let context = if source == project {
+                hex_engine::AudioSourceContext {
+                    editor_revision: context.editor_revision.saturating_sub(1),
+                    ..context
+                }
+            } else {
+                context
+            };
+            inputs.publish(&snapshot, sink, context)?;
+            Ok(snapshot)
+        };
+        match transition {
+            Transition::Command(command) => self
+                .editor
+                .execute_prepared_transition(*command, prepare)
+                .map(Some),
+            Transition::MidiCommand(command) => self
+                .editor
+                .execute_midi_prepared_transition(*command, prepare)
+                .map(Some),
+            Transition::History { redo } => {
+                let result = if redo {
+                    self.editor.redo_prepared_transition(prepare)
+                } else {
+                    self.editor.undo_prepared_transition(prepare)
+                }?;
+                Ok(result.map(|snapshot| (Created::None, snapshot)))
+            }
+        }
     }
 }
 
@@ -544,11 +845,175 @@ mod tests {
         let installed = receive();
         assert!(installed.error.is_none(), "{:?}", installed.error);
         assert!(installed.playback.is_none());
+        for (request, expected) in [
+            (Request::Undo, &loaded.state.project),
+            (Request::Redo, &installed.state.project),
+        ] {
+            service.submit(request).unwrap();
+            let history = receive();
+            assert!(history.error.is_none(), "{:?}", history.error);
+            // Editor preserves the allocator high-water mark across Undo; compare restored
+            // authored objects and stable identities rather than that monotonic allocator.
+            assert_eq!(history.state.project.tracks(), expected.tracks());
+            assert_eq!(
+                history.state.project.assets().collect::<Vec<_>>(),
+                expected.assets().collect::<Vec<_>>()
+            );
+            assert!(history.playback.is_none());
+        }
+        let device = loaded
+            .state
+            .project
+            .track(sampler_track_id)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        for request in [
+            Request::Edit(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            }),
+            Request::ReplaceNativeDevice {
+                device,
+                class: hex_engine::NativeDeviceClass::Instrument,
+                type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+                    "hex.instrument.sine",
+                )),
+            },
+            Request::Edit(Command::RemoveInstrument {
+                track: sampler_track_id,
+            }),
+        ] {
+            service.submit(request).unwrap();
+            let edited = receive();
+            assert!(edited.error.is_none(), "{:?}", edited.error);
+            service.submit(Request::Undo).unwrap();
+            let undone = receive();
+            assert!(undone.error.is_none(), "{:?}", undone.error);
+            assert_eq!(undone.state.project, installed.state.project);
+        }
+        let current_revision = || observed.accepted.lock().unwrap().last().unwrap().0;
+        service
+            .submit(Request::SamplerEdit(SamplerEdit::Parameter(
+                SamplerParameterEdit {
+                    request_id: 2,
+                    project_generation: 0,
+                    revision: current_revision(),
+                    track: sampler_track_id,
+                    device,
+                    parameter: hex_engine::SamplerParameter::Gain,
+                    value: 0.5,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                },
+            )))
+            .unwrap();
+        let gain = receive();
+        assert!(gain.error.is_none(), "{:?}", gain.error);
+        assert_eq!(gain.sampler_edit_complete, Some(2));
+        assert_eq!(
+            hex_engine::sampler_parameter_value_on_control(
+                hex_engine::SamplerParameter::Gain,
+                gain.state.project.device(device).unwrap().state()
+            )
+            .unwrap(),
+            0.5
+        );
+        service.submit(Request::Undo).unwrap();
+        let reset = receive();
+        assert!(reset.error.is_none(), "{:?}", reset.error);
+        service
+            .submit(Request::SamplerEdit(SamplerEdit::Replacement(
+                SamplerReplacementEdit {
+                    request_id: 3,
+                    project_generation: 0,
+                    revision: reset.state.revision,
+                    track: sampler_track_id,
+                    device,
+                    expected_state: reset.state.project.device(device).unwrap().state().clone(),
+                    path: files.source().to_owned(),
+                    cancel: Arc::new(AtomicBool::new(false)),
+                },
+            )))
+            .unwrap();
+        let replaced = receive();
+        assert!(replaced.error.is_none(), "{:?}", replaced.error);
+        assert_eq!(replaced.sampler_edit_complete, Some(3));
+        assert_eq!(
+            replaced
+                .state
+                .project
+                .track(sampler_track_id)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id(),
+            device
+        );
+        service
+            .submit(Request::SamplerEdit(SamplerEdit::History(
+                SamplerHistoryEdit {
+                    request_id: 4,
+                    project_generation: 0,
+                    revision: replaced.state.revision,
+                    redo: false,
+                    cancel: Arc::new(AtomicBool::new(false)),
+                },
+            )))
+            .unwrap();
+        let restored = receive();
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        assert_eq!(
+            restored.state.project.tracks(),
+            installed.state.project.tracks()
+        );
+        service
+            .submit(Request::Import(files.source().to_owned()))
+            .unwrap();
+        let imported = receive();
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+        assert_eq!(
+            imported.state.project.tracks().len(),
+            installed.state.project.tracks().len() + 1
+        );
+        assert_eq!(
+            imported
+                .state
+                .project
+                .track(sampler_track_id)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id(),
+            device
+        );
+        assert!(imported.playback.is_none());
+        service.submit(Request::Undo).unwrap();
+        let undo_import = receive();
+        assert!(undo_import.error.is_none(), "{:?}", undo_import.error);
+        assert_eq!(
+            undo_import.state.project.tracks(),
+            installed.state.project.tracks()
+        );
+        service.submit(Request::Redo).unwrap();
+        let installed = receive();
+        assert!(installed.error.is_none(), "{:?}", installed.error);
+        assert_eq!(installed.state.project, imported.state.project);
+        service
+            .submit(Request::Edit(Command::Mute {
+                track: sampler_track_id,
+                muted: false,
+            }))
+            .unwrap();
+        let no_change = receive();
+        assert!(no_change.error.is_none(), "{:?}", no_change.error);
+        assert_eq!(no_change.state.project, installed.state.project);
+        assert_eq!(no_change.state.revision, installed.state.revision);
+        let accepted = observed.accepted.lock().unwrap().len();
+        let before_refusal_revision = observed.accepted.lock().unwrap().last().unwrap().0;
         observed.refuse.store(true, Ordering::Release);
         service
-            .submit(Request::Edit(Command::AddTrack {
-                name: "refused".into(),
-            }))
+            .submit(Request::Import(files.source().to_owned()))
             .unwrap();
         let refused = receive();
         assert!(
@@ -559,8 +1024,8 @@ mod tests {
                 .contains("fixture publication refused")
         );
         assert_eq!(refused.state.project, installed.state.project);
-        assert_eq!(refused.state.revision, installed.state.revision);
-        assert_eq!(observed.accepted.lock().unwrap().len(), 6);
+        assert_eq!(refused.state.revision, before_refusal_revision);
+        assert_eq!(observed.accepted.lock().unwrap().len(), accepted);
         assert!(
             observed
                 .accepted

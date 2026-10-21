@@ -1776,7 +1776,11 @@ impl Session {
     fn media_bank(&self) -> MediaBank {
         MediaBank {
             epoch: self.semantic_source_epoch,
-            device_only: self.native_assets.ids().collect(),
+            device_only: self
+                .native_assets
+                .ids()
+                .filter(|id| !self.media.contains_key(id))
+                .collect(),
             resident: self
                 .media
                 .iter()

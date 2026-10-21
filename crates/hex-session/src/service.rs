@@ -1804,9 +1804,13 @@ fn run_worker(
                 {
                     Some("finish or cancel the active gesture before sampler history".into())
                 } else {
-                    SamplerEdit::History(edit.clone())
-                        .validate(&session, project_generation, revision)
-                        .err()
+                    let mut edit = SamplerEdit::History(edit.clone());
+                    if events.resident_publication_enabled() {
+                        edit.validate_resident(&session, project_generation, revision)
+                            .err()
+                    } else {
+                        edit.validate(&session, project_generation, revision).err()
+                    }
                 }
             }
             Request::CompareDevice {
@@ -2173,12 +2177,24 @@ fn run_worker(
                         arrangement_device_command(session.project(), class, type_id, destination)
                     };
                     match command.and_then(|command| {
-                        session
-                            .command_prepared_revision(
-                                command,
-                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                            )
-                            .map_err(|error| error.to_string().to_lowercase())
+                        resident_audio::execute_command(
+                            &mut session,
+                            command,
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision.saturating_add(1),
+                            },
+                            &mut events,
+                            &mut resident_snapshot,
+                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            })),
+                        )
+                        .map_err(|error| error.to_string().to_lowercase())
                     }) {
                         Ok((_, prepared)) => {
                             // No Created::Track focus response: this drop preserves prior selection.
@@ -2297,9 +2313,22 @@ fn run_worker(
                     match command {
                         Ok(command) => {
                             let before_project = session.project().clone();
-                            match session.command_prepared_revision(
+                            match resident_audio::execute_command(
+                                &mut session,
                                 command,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision.saturating_add(1),
+                                },
+                                &mut events,
+                                &mut resident_snapshot,
+                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                })),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -2337,6 +2366,7 @@ fn run_worker(
                         revision,
                         active_gesture: device_gesture.snapshot().is_some(),
                     };
+                    let mut imported_resident = None;
                     let result = if context != actual {
                         Err(crate::import_batch_decode::AudioBatchError::ContextChanged)
                     } else {
@@ -2348,6 +2378,21 @@ fn run_worker(
                             Arc::clone(&control),
                         )
                         .and_then(|job| {
+                            if session.audio_mode() == DocumentAudioMode::Resident
+                                && let Some(sink) = events.resident_audio()
+                            {
+                                let admission = export_lane.admission(compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }));
+                                return job.run_with_storage_admission_using(
+                                    &mut session, compiled.as_ref().map(|(_, prepared)| prepared.as_ref()), || actual,
+                                    |session, prepared| admission.check_legacy_stage(session, prepared),
+                                    |input, admit| {
+                                        let snapshot = resident_audio::prepare_import(input,
+                                            hex_engine::AudioSourceContext { project_generation, editor_revision: revision.saturating_add(1) }, sink, admission, resident_snapshot.as_ref(), admit)?;
+                                        let prepared = Arc::clone(&snapshot.prepared);
+                                        imported_resident = Some(snapshot);
+                                        Ok(prepared)
+                                    });
+                            }
                             job.run_with_storage_admission(
                                 &mut session,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
@@ -2358,6 +2403,9 @@ fn run_worker(
                     };
                     match result {
                         Ok((_, prepared)) => {
+                            if let Some(snapshot) = imported_resident {
+                                resident_snapshot = Some(snapshot);
+                            }
                             unsaved = true;
                             replacement_revision = Some(prepared);
                             status = Some("audio batch imported · one undo".into());
@@ -2579,10 +2627,14 @@ fn run_worker(
                     match result {
                         Ok((new, snapshot)) => {
                             created = Some(new);
-                            unsaved = true;
-                            replacement_revision = Some(Arc::clone(&snapshot.prepared));
+                            if session.project() != state.project.as_ref() {
+                                unsaved = true;
+                                replacement_revision = Some(Arc::clone(&snapshot.prepared));
+                                status = Some("resident edit accepted · waiting for audio".into());
+                            } else {
+                                status = Some("no change".into());
+                            }
                             resident_snapshot = Some(snapshot);
-                            status = Some("resident edit accepted · waiting for audio".into());
                         }
                         Err(reason) => error = Some(reason.to_string()),
                     }
@@ -2646,6 +2698,82 @@ fn run_worker(
                             status = Some("native device source imported".into());
                         }
                         Err(reason) => error = Some(reason),
+                    }
+                }
+                request @ (Request::Import(_)
+                | Request::ImportToTrack { .. }
+                | Request::ImportToTrackWithOverwrite { .. }
+                | Request::ImportToNewTrack { .. }
+                | Request::ImportToSession { .. })
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident =>
+                {
+                    let result = (|| {
+                        let (path, destination, overwrite) = match request {
+                            Request::Import(path) => (
+                                path,
+                                AudioBatchDestination::NewTracks {
+                                    before_track: None,
+                                    start: 0,
+                                },
+                                false,
+                            ),
+                            Request::ImportToTrack { path, track, start } => {
+                                (path, AudioBatchDestination::Track { track, start }, false)
+                            }
+                            Request::ImportToTrackWithOverwrite { path, track, start } => {
+                                (path, AudioBatchDestination::Track { track, start }, true)
+                            }
+                            Request::ImportToNewTrack {
+                                path,
+                                before_track,
+                                start,
+                            } => (
+                                path,
+                                AudioBatchDestination::NewTracks {
+                                    before_track,
+                                    start,
+                                },
+                                false,
+                            ),
+                            Request::ImportToSession { path, track, scene } => (
+                                path,
+                                AudioBatchDestination::Console(
+                                    crate::import_batch::ConsoleDestination::Cell { track, scene },
+                                ),
+                                false,
+                            ),
+                            _ => return Err(SessionError::Invalid("audio import request changed")),
+                        };
+                        let sink = events
+                            .resident_audio()
+                            .ok_or(SessionError::Invalid("native worker unavailable"))?;
+                        resident_audio::import_file(
+                            &mut session,
+                            path,
+                            destination,
+                            overwrite,
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision.saturating_add(1),
+                            },
+                            sink,
+                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            })),
+                            &mut resident_snapshot,
+                        )
+                    })();
+                    match result {
+                        Ok(prepared) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("audio imported".into());
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
                     }
                 }
                 Request::Import(path) => match import(
@@ -2917,9 +3045,22 @@ fn run_worker(
                 Request::CutTimeRange(range) => {
                     match session.project().capture_time_range(&range) {
                         Ok(captured) => {
-                            match session.command_prepared_revision(
+                            match resident_audio::execute_command(
+                                &mut session,
                                 Command::DeleteTimeRange { range },
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision.saturating_add(1),
+                                },
+                                &mut events,
+                                &mut resident_snapshot,
+                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                })),
                             ) {
                                 Ok((_, prepared)) => {
                                     range_clipboard =
@@ -2938,7 +3079,8 @@ fn run_worker(
                 }
                 Request::PasteTimeRange { track, frame } => {
                     if let Some(clipboard) = &range_clipboard {
-                        match session.command_prepared_revision(
+                        match resident_audio::execute_command(
+                            &mut session,
                             match clipboard {
                                 ArrangementClipboard::Range(clipboard) => {
                                     Command::PasteTimeRangeOnSourceTracks {
@@ -2955,6 +3097,18 @@ fn run_worker(
                                 },
                             },
                             compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision.saturating_add(1),
+                            },
+                            &mut events,
+                            &mut resident_snapshot,
+                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            })),
                         ) {
                             Ok((_, prepared)) => {
                                 if session.project() != state.project.as_ref() {
@@ -2977,7 +3131,8 @@ fn run_worker(
                 }
                 Request::InsertTimeRange { track, frame } => {
                     if let Some(clipboard) = &range_clipboard {
-                        match session.command_prepared_revision(
+                        match resident_audio::execute_command(
+                            &mut session,
                             match clipboard {
                                 ArrangementClipboard::Range(clipboard) => {
                                     Command::InsertTimeRangeOnSourceTracks {
@@ -2994,6 +3149,18 @@ fn run_worker(
                                 },
                             },
                             compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision.saturating_add(1),
+                            },
+                            &mut events,
+                            &mut resident_snapshot,
+                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            })),
                         ) {
                             Ok((_, prepared)) => {
                                 if session.project() != state.project.as_ref() {
@@ -3049,9 +3216,22 @@ fn run_worker(
                     match command {
                         Ok(command) => {
                             let before_project = session.project().clone();
-                            match session.command_prepared_revision(
+                            match resident_audio::execute_command(
+                                &mut session,
                                 command,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision.saturating_add(1),
+                                },
+                                &mut events,
+                                &mut resident_snapshot,
+                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                })),
                             ) {
                                 Ok((result, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -3084,9 +3264,22 @@ fn run_worker(
                     match replacement {
                         Ok(state) => {
                             let before_project = session.project().clone();
-                            match session.command_prepared_revision(
+                            match resident_audio::execute_command(
+                                &mut session,
                                 Command::ReplaceDeviceState { device, state },
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision.saturating_add(1),
+                                },
+                                &mut events,
+                                &mut resident_snapshot,
+                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                })),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -3147,6 +3340,49 @@ fn run_worker(
                             }
                         }
                         Err(reason) => error = Some(reason),
+                    }
+                }
+                Request::SamplerEdit(mut edit)
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident =>
+                {
+                    sampler_edit_complete = Some(edit.request_id());
+                    let result = (|| {
+                        if !edit
+                            .validate_resident(&session, project_generation, revision)
+                            .map_err(SessionError::NativeAudio)?
+                        {
+                            return Ok(None);
+                        }
+                        let sink = events
+                            .resident_audio()
+                            .ok_or(SessionError::Invalid("native worker unavailable"))?;
+                        session.sampler_resident_edit(
+                            edit,
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision.saturating_add(1),
+                            },
+                            sink,
+                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            })),
+                            resident_snapshot.as_ref(),
+                        )
+                    })();
+                    match result {
+                        Ok(Some((new, snapshot))) => {
+                            created = Some(new);
+                            unsaved = true;
+                            replacement_revision = Some(Arc::clone(&snapshot.prepared));
+                            resident_snapshot = Some(snapshot);
+                            status = Some("sampler edit committed".into());
+                        }
+                        Ok(None) => status = Some("no change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
                     }
                 }
                 Request::SamplerEdit(mut edit) => {
@@ -3244,9 +3480,22 @@ fn run_worker(
                     match patched {
                         Ok(state) => {
                             let before_project = session.project().clone();
-                            match session.command_prepared_revision(
+                            match resident_audio::execute_command(
+                                &mut session,
                                 Command::ReplaceDeviceState { device, state },
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision.saturating_add(1),
+                                },
+                                &mut events,
+                                &mut resident_snapshot,
+                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                })),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -3298,9 +3547,22 @@ fn run_worker(
                         error = Some("gain draft refused · device edit is still applying".into());
                     } else {
                         let before = session.project().clone();
-                        match session.command_prepared_revision(
+                        match resident_audio::execute_command(
+                            &mut session,
                             edit.command(track),
                             compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision.saturating_add(1),
+                            },
+                            &mut events,
+                            &mut resident_snapshot,
+                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            })),
                         ) {
                             Ok((result, prepared)) if session.project() != &before => {
                                 unsaved = true;
@@ -3325,9 +3587,22 @@ fn run_worker(
                     match candidate {
                         Ok(command) => {
                             let before = session.project().clone();
-                            match session.command_prepared_revision(
+                            match resident_audio::execute_command(
+                                &mut session,
                                 command,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision.saturating_add(1),
+                                },
+                                &mut events,
+                                &mut resident_snapshot,
+                                export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                })),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before => {
                                     unsaved = true;
@@ -3371,12 +3646,24 @@ fn run_worker(
                             )
                         })
                     } else {
-                        session
-                            .command_prepared_revision(
-                                Command::ConvertAudioClipToMidi(clip),
-                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                            )
-                            .map_err(|e| e.to_string())
+                        resident_audio::execute_command(
+                            &mut session,
+                            Command::ConvertAudioClipToMidi(clip),
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision.saturating_add(1),
+                            },
+                            &mut events,
+                            &mut resident_snapshot,
+                            export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            })),
+                        )
+                        .map_err(|e| e.to_string())
                     };
                     match result {
                         Ok((result, prepared)) => {
@@ -3424,6 +3711,43 @@ fn run_worker(
                         }
                         Ok(_) => status = Some("no change".into()),
                         Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                    }
+                }
+                request @ (Request::Undo | Request::Redo)
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident =>
+                {
+                    let admission =
+                        export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(prepared),
+                            }
+                        }));
+                    let result = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native worker unavailable"))
+                        .and_then(|sink| {
+                            session.history_resident_snapshot(
+                                matches!(request, Request::Redo),
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision.saturating_add(1),
+                                },
+                                sink,
+                                admission,
+                                resident_snapshot.as_ref(),
+                            )
+                        });
+                    match result {
+                        Ok(Some(snapshot)) => {
+                            unsaved = true;
+                            replacement_revision = Some(Arc::clone(&snapshot.prepared));
+                            resident_snapshot = Some(snapshot);
+                            status = Some("history committed".into());
+                        }
+                        Ok(None) => status = Some("no history change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
                     }
                 }
                 Request::Undo => match session.comparison_history(
