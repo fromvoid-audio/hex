@@ -13,9 +13,10 @@ validated frame-based audio clips and beat-based MIDI clips, shared track contro
 and bounded undo/redo. Commands
 are transactional; failed edits leave state and history unchanged. No PCM is
 stored in history. `Editor::inspect_history` borrows the actual next global edge;
-`instrument_state_history_delta` exhaustively compares neutral authored fields,
-allowing only one existing instrument state and the existing monotonic ID/epoch
-normalization. Prepared history remains the sole committing path; DSP validation
+`instrument_history_delta` exhaustively compares neutral authored fields,
+allowing one existing instrument state, at most one catalog addition/removal with
+identical shared assets, and the existing monotonic ID/epoch normalization.
+Prepared history remains the sole committing path; DSP validation
 belongs to callers. Each asset records its original source rate/frame count and
 its prepared project-rate playback frame count plus conversion version. Clip
 source intervals use playback frames. Optional `OriginalSourceFacts` marks an

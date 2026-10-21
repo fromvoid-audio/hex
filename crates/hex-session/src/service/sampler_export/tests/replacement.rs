@@ -93,3 +93,82 @@ fn appended_original_allowance_counts_unassigned_old_bank_native_hold_and_captur
     assert_eq!(session.native_storage_on_control().unwrap(), storage);
     assert!(session.source_overviews().shares_storage_with(&overview));
 }
+
+#[test]
+fn replacement_history_requires_exact_forward_template_and_shared_catalog_in_both_directions() {
+    use super::super::super::sampler_parameter::validate_history_pair;
+    let files = Files::new(true);
+    let (session, _source) = direct_sampler(&files);
+    let mut editor = hex_project::Editor::new(session.project().clone(), 16).unwrap();
+    let track = editor.project().tracks()[0].id();
+    let device = editor.project().track(track).unwrap().instrument().unwrap();
+    let id = device.id();
+    let old = device.state().clone();
+    let (state, source_slot) =
+        hex_engine::sampler_replacement_template_on_control(&old, 6).unwrap();
+    editor
+        .execute(Command::ImportDeviceAssetReplacingInstrument {
+            track,
+            device: id,
+            expected_state: old,
+            path: files.output.clone(),
+            sample_rate: 12000,
+            frames: 6,
+            state,
+            source_slot,
+        })
+        .unwrap();
+    editor.inspect_history(false, |current, target| {
+        assert!(validate_history_pair(current, target).is_ok());
+        for (parameter, value) in [
+            (hex_engine::SamplerParameter::Gain, 0.5),
+            (hex_engine::SamplerParameter::Transpose, 12.0),
+            (hex_engine::SamplerParameter::StartFrame, 1.0),
+            (hex_engine::SamplerParameter::LoopEnabled, 1.0),
+        ] {
+            let mut altered = hex_project::Editor::new(current.clone(), 1).unwrap();
+            let state = hex_engine::patch_sampler_parameter_on_control(
+                parameter,
+                current.device(id).unwrap().state(),
+                value,
+            )
+            .unwrap();
+            altered
+                .execute(Command::ReplaceDeviceState { device: id, state })
+                .unwrap();
+            assert!(
+                validate_history_pair(altered.project(), target).is_err(),
+                "{parameter:?}"
+            );
+        }
+        let mut unrelated = hex_project::Editor::new(current.clone(), 1).unwrap();
+        unrelated
+            .execute(Command::ImportDeviceAsset {
+                path: files.source.clone(),
+                sample_rate: 8000,
+                frames: 4,
+            })
+            .unwrap();
+        assert!(validate_history_pair(unrelated.project(), target).is_err());
+    });
+    editor
+        .undo_prepared_transition::<(), hex_project::Invalid>(|a, b| {
+            assert!(validate_history_pair(a, b).is_ok());
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+    assert!(
+        editor
+            .inspect_history(true, |a, b| validate_history_pair(a, b))
+            .unwrap()
+            .is_ok()
+    );
+    editor
+        .redo_prepared_transition::<(), hex_project::Invalid>(|a, b| {
+            assert!(validate_history_pair(a, b).is_ok());
+            Ok(())
+        })
+        .unwrap()
+        .unwrap();
+}

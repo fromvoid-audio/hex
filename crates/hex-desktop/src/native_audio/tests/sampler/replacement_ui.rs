@@ -158,6 +158,24 @@ pub(super) fn exercise(
             .overviews
             .matches_context(applied().unwrap().context)
     );
+    // Global history remains bound to its actual top while another Utility
+    // track is selected; source and settings restore together without disk I/O.
+    let old = applied().unwrap();
+    visual.simulate_keystrokes("cmd-z");
+    wait_next(visual, old);
+    assert!(visual.debug_bounds(other_frame).is_some());
+    let undone = view();
+    assert_eq!(undone.asset, before.asset);
+    assert_eq!(undone.source_frames, before.source_frames);
+    assert_eq!(undone.overviews.len(), 2);
+    assert!(undone.overviews.shares_storage_with(&changed.overviews));
+    let old = applied().unwrap();
+    visual.simulate_keystrokes("cmd-shift-z");
+    wait_next(visual, old);
+    assert!(visual.debug_bounds(other_frame).is_some());
+    let redone = view();
+    assert_eq!(redone.asset, changed.asset);
+    assert_eq!(redone.source_frames, changed.source_frames);
     // Same device ID, larger source: actual retained endpoint widget must be
     // rebuilt for the new bounds, not keep the previous four-frame range.
     let center = visual.debug_bounds(target_selector).unwrap().center();
