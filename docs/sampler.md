@@ -746,8 +746,8 @@ Save/offline export. It reports audio unavailable, not applied or rolled back.
 Explicit audio retry can rebuild a refused sampler output; requesting that retry
 on an already working sampler refuses before disturbing it. Only a matching
 actual native installation establishes readiness. Gain adds an ordinary authored
-history step, but sampler Undo/Redo remains gated until its separate lifecycle
-work is complete.
+history step. Same-source configuration Undo/Redo now uses that lifecycle; see
+[stopped configuration history](#stopped-configuration-history).
 
 Owning checks exercise the real numeric field through fresh native CURRENT,
 literal keyboard and Arrangement PCM at gain1/0.5/0, SaveCurrent/New/Open,
@@ -990,4 +990,52 @@ Finite later user checks on an exact optimized candidate: load a WAV, confirm it
 identity and original-rate waveform, edit start/end and loop points immediately,
 compare markers with the audible region/wrap, and Save/New/Open. Confirm layout
 and horizontal scrolling in a smaller window. Waveform gestures, replacement,
-history, broader playback and qualified native delivery remain separate work.
+replacement history, broader playback and qualified native delivery remain separate work.
+
+
+## stopped configuration history
+
+Global Undo/Redo accepts the actual next canonical history edge when exactly one
+existing, non-bypassed sampler instrument differs only in the eleven supported
+panel fields: gain, transpose, source start/end, Classic loop enable/start/end,
+and ADSR. Source bindings, provider, device identity, bypass/comparison and every
+other project field must be identical. Selection does not choose a history target.
+Unsupported load/removal/replacement, routing, tuning or other steps refuse in
+place; history is never searched or skipped. Empty history completes without
+requesting audio. Ordinary non-sampler Undo/Redo retains its existing behavior.
+
+`Editor::inspect_history` borrows the current project and actual stack top before
+any audio fence. A neutral exhaustive project comparison accounts only for the
+existing monotonic ID and gain-touch epoch normalization. The engine checks the
+closed sampler configuration delta; project has no DSP dependency. The same
+classifier runs again inside normalized `undo/redo_prepared_transition`, before
+the shared service snapshot preparer seals a native candidate or commits history.
+An unrelated active gesture refuses before a sampler history request can finalize
+it. The UI's ordinary gesture barrier finishes before capturing the history intent.
+
+Parameter and history edits share one pending operation, UI serial, cancellation
+flag and final `sampler_edit_complete` correlation. History captures direction,
+project generation and revision, independent of selection. The initial worker ACK
+is not application. New/Open and stale/cancelled context retire the intent. The
+first Undo/Redo shortcut cancels an interacting uncommitted sampler numeric draft
+and consumes the shortcut; the next shortcut moves global history.
+
+History uses the existing stopped callback fence, overlap admission and exact
+sealed-cell drain/adoption. Precommit refusal preserves authored project, stack
+position, original PCM and overview table. Success moves the actual history edge,
+advances the worker revision once and marks the document dirty; overview backing
+is reused with the new context. A postcommit output-open failure retains the new
+history position and authored state for Save/export, reports audio unavailable,
+and supports explicit retry. There is no second undo stack or replacement command
+standing in for Undo/Redo, no source reload and no callback DSP change.
+
+Owning headless checks cover ordered retained numeric controls and global
+shortcuts while another device is selected, cancelled drafts, literal current
+Arrangement PCM, redo clearing, repeated load-boundary refusal, empty history,
+stale/cancelled/playing/post-seal refusal, resource/hook refusal, exact-cell
+identity, postcommit open failure/Save/export/retry, and Save/New/Open with source
+metadata and peak backing checks. Callback allocation probes retain zero total
+and signed-net counts/bytes for their fixtures. These checks do not establish
+physical device deadlines, UI/input/listening acceptance or Live parity. Sample
+replacement/removal history, Session/Console playback and nonzero seek remain
+outside this increment; optimized native delivery and user acceptance remain open.

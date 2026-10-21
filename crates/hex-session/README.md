@@ -314,7 +314,8 @@ asset's immutable actual catalog content facts, including unassigned sources,
 without a history edit. Open reconstructs original PCM through native ingress
 before any derivative alias, compares the actual catalog with saved facts, and
 prepares a private snapshot before canonical adoption. New/Open preserve the
-explicit capability. History and runtime tools still refuse; native frame-zero
+explicit capability. Same-source stopped configuration history is supported;
+other history steps and runtime tools refuse. Native frame-zero
 Arrangement Play/Stop uses a fresh CURRENT through desktop. See
 [the sampler boundary](../../docs/sampler.md) for admission scope and remaining
 user-facing dependencies.
@@ -322,8 +323,8 @@ user-facing dependencies.
 Private sampler PrepareComputerKeyboard uses the actual native sink's installed
 CURRENT activation and returns metadata acknowledgement, without legacy Playback
 replacement. The UI input object stays on control. Empty-track first load is
-supported; native source/configuration edits, history and other runtime tools
-retain their existing refusals. See
+supported; stopped panel configuration edits and their global Undo/Redo use the
+existing native fence. Source changes, other history steps and runtime tools refuse. See
 [the keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
 
 Sampler gain is one captured stopped-only final edit. The worker polls native
@@ -352,3 +353,12 @@ Native PCM/frame/storage reservations remain unchanged. See
 The nondefault `source-overview-test-support` feature exposes only peak fixture
 construction for UI and existing desktop allocator probes, with no native source
 admission capability or production allocation-counter dependency.
+
+
+Stopped sampler parameter/history edits share one pending operation and final
+correlation. History inspects the actual next global edge without consuming it,
+then reclassifies the normalized candidate inside the shared prepared transaction.
+It accepts only one existing instrument's same-source panel configuration delta;
+selection is irrelevant. Refusal preserves history/audio/cache, and postcommit
+open failure retains authored state/save/export with explicit retry. See the
+[configuration history contract](../../docs/sampler.md#stopped-configuration-history).

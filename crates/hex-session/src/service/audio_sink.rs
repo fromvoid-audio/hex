@@ -221,7 +221,7 @@ impl WorkerEvents {
                 .as_mut()
                 .is_some_and(|a| a.sampler_edit_ready().is_some())
             {
-                return Some(Request::ContinueSamplerParameter);
+                return Some(Request::ContinueSamplerEdit);
             }
             match requests.recv_timeout(Duration::from_millis(5)) {
                 Ok(request) => {

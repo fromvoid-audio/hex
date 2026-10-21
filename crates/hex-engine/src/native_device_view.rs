@@ -217,6 +217,45 @@ pub fn patch_sampler_parameter_on_control(
     })
 }
 
+/// Classify the closed set of panel configuration fields while preserving every
+/// other codec/host field and the exact source binding. Control thread only.
+pub fn is_sampler_configuration_history_on_control(
+    current: &NativeDeviceState,
+    target: &NativeDeviceState,
+) -> Result<bool, Invalid> {
+    use hex_devices::sampler::state::{AuthoredMode, SamplerState};
+    let mut allowed = SamplerState::from_native(current).map_err(sampler_state_error)?;
+    let next = SamplerState::from_native(target).map_err(sampler_state_error)?;
+    allowed.region = next.region;
+    allowed.gain = next.gain;
+    allowed.transpose_semitones = next.transpose_semitones;
+    let hex_devices::sampler::Envelope {
+        attack_seconds,
+        decay_seconds,
+        sustain,
+        release_seconds,
+    } = next.envelope;
+    allowed.envelope.attack_seconds = attack_seconds;
+    allowed.envelope.decay_seconds = decay_seconds;
+    allowed.envelope.sustain = sustain;
+    allowed.envelope.release_seconds = release_seconds;
+    if let (
+        AuthoredMode::Classic {
+            loop_enabled,
+            loop_region,
+        },
+        AuthoredMode::Classic {
+            loop_enabled: next_enabled,
+            loop_region: next_region,
+        },
+    ) = (&mut allowed.mode, &next.mode)
+    {
+        *loop_enabled = *next_enabled;
+        *loop_region = *next_region;
+    }
+    Ok(allowed.replace_in(current).map_err(sampler_state_error)? == *target)
+}
+
 fn sampler_state_error(error: hex_lattice_contract::DeviceContractError) -> Invalid {
     Invalid(match error {
         hex_lattice_contract::DeviceContractError::InvalidStateVersion => {

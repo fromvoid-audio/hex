@@ -1591,7 +1591,7 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
-        let sampler_parameter_complete = event.sampler_parameter_complete;
+        let sampler_edit_complete = event.sampler_edit_complete;
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
         let retired_trim = self.trim_request_complete(&event);
@@ -2401,7 +2401,7 @@ impl EditorView {
         if let Some(reason) = self.take_effect_bus_barrier_error() {
             self.error = Some(reason.into());
         }
-        self.finish_sampler_parameter(sampler_parameter_complete);
+        self.finish_sampler_parameter(sampler_edit_complete);
         self.first_sampler_load_complete(sampler_load_complete, sampler_load_succeeded);
         self.reconcile_publication_observation();
         if event.request_complete
@@ -2420,6 +2420,15 @@ impl EditorView {
     }
 
     pub(super) fn enqueue(&mut self, request: Request) -> bool {
+        if matches!(request, Request::Undo | Request::Redo)
+            && self.state.as_ref().is_some_and(|state| {
+                hex_engine::native_device_resources::requires_private_sampler_sources(
+                    &state.project,
+                )
+            })
+        {
+            return self.submit_sampler_history(matches!(request, Request::Redo));
+        }
         self.enqueue_request(request, false)
     }
 
@@ -2619,6 +2628,7 @@ impl EditorView {
                 | Request::PasteTimeRange { .. }
                 | Request::InsertTimeRange { .. }
                 | Request::Undo
+                | Request::SamplerEdit(hex_session::service::SamplerEdit::History(_))
                 | Request::Redo
                 | Request::RestorePlayback { .. }
                 | Request::RestoreStoppedPlayback
