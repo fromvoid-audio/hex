@@ -95,7 +95,7 @@ impl ControlSamplerSources {
             .iter()
             .filter(|t| {
                 t.instrument()
-                    .is_some_and(|d| d.state().type_id() == hex_devices::sampler::state::TYPE_ID)
+                    .is_some_and(|d| hex_devices::sampler::state::requires_source(d.state()))
             })
             .count();
         if count == 0 {
@@ -109,7 +109,7 @@ impl ControlSamplerSources {
             .tracks()
             .iter()
             .filter_map(|t| t.instrument())
-            .filter(|d| d.state().type_id() == hex_devices::sampler::state::TYPE_ID)
+            .filter(|d| hex_devices::sampler::state::requires_source(d.state()))
         {
             let state = device.state();
             minimum = minimum
@@ -150,7 +150,7 @@ impl ControlSamplerSources {
         for track in project.tracks() {
             let Some(device) = track
                 .instrument()
-                .filter(|d| d.state().type_id() == hex_devices::sampler::state::TYPE_ID)
+                .filter(|d| hex_devices::sampler::state::requires_source(d.state()))
             else {
                 continue;
             };
@@ -235,7 +235,7 @@ impl ControlSamplerSources {
         for track in project.tracks() {
             let Some(device) = track
                 .instrument()
-                .filter(|d| d.state().type_id() == hex_devices::sampler::state::TYPE_ID)
+                .filter(|d| hex_devices::sampler::state::requires_source(d.state()))
             else {
                 continue;
             };
@@ -380,7 +380,7 @@ pub(crate) fn prepare_instrument(
     context: &hex_lattice::DevicePreparationContext<'_>,
     sources: Option<&ControlSamplerSources>,
 ) -> Result<Box<dyn hex_lattice::PreparedNativeInstrument>, crate::Invalid> {
-    if state.type_id() == hex_devices::sampler::state::TYPE_ID {
+    if hex_devices::sampler::state::requires_source(state) {
         sources
             .ok_or(crate::Invalid(
                 "sampler requires a private control source scope",

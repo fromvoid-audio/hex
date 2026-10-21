@@ -48,8 +48,179 @@ pub(super) fn request(before: &Event, track: hex_project::TrackId, path: PathBuf
             .project_generation,
         revision: before.state.revision,
         track,
+        empty_sampler: None,
         path,
         cancel: Arc::new(AtomicBool::new(false)),
+    }
+}
+fn insert_empty(s: &Service, track: hex_project::TrackId) -> Event {
+    s.submit(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: Box::new(hex_lattice_contract::DeviceTypeId::from_static(
+            "hex.instrument.sampler",
+        )),
+        before: None,
+    })
+    .unwrap();
+    let inserted = event(s);
+    assert!(inserted.error.is_none(), "{:?}", inserted.error);
+    let device = inserted
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    assert!(hex_engine::is_empty_sampler_state_on_control(
+        device.state()
+    ));
+    assert_eq!(inserted.state.project.assets().count(), 0);
+    inserted
+}
+fn empty_request(before: &Event, track: hex_project::TrackId, path: PathBuf) -> Request {
+    let mut request = request(before, track, path);
+    let device = before
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    if let Request::LoadFirstSampler { empty_sampler, .. } = &mut request {
+        *empty_sampler = Some((device.id(), device.state().clone()));
+    }
+    request
+}
+#[test]
+fn catalog_sampler_ordinary_insert_history_save_reopen_and_fill_preserve_device_identity() {
+    let files = Files::new(true);
+    let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
+    let (track, before) = authored(&service);
+    let inserted = insert_empty(&service, track);
+    let device = inserted
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .clone();
+    assert!(inserted.playback.is_some());
+    service.submit(Request::Undo).unwrap();
+    let undone = event(&service);
+    assert!(undone.error.is_none(), "{:?}", undone.error);
+    assert_eq!(undone.state.project.tracks(), before.state.project.tracks());
+    assert_eq!(undone.state.project.assets().count(), 0);
+    service.submit(Request::Redo).unwrap();
+    let redone = event(&service);
+    assert!(redone.error.is_none(), "{:?}", redone.error);
+    assert_eq!(redone.state.project, inserted.state.project);
+    let saved = files.source.with_file_name("empty.hex");
+    service.submit(Request::SaveNew(saved.clone())).unwrap();
+    let saved_event = event(&service);
+    assert!(saved_event.save_complete && saved_event.error.is_none());
+    assert_eq!(
+        hex_storage::load(&saved)
+            .unwrap()
+            .track(track)
+            .unwrap()
+            .instrument(),
+        Some(&device)
+    );
+    service.submit(Request::Open(saved)).unwrap();
+    let reopened = event(&service);
+    assert!(
+        reopened.open_complete && reopened.error.is_none(),
+        "{:?}",
+        reopened.error
+    );
+    assert_eq!(
+        reopened.state.project.track(track).unwrap().instrument(),
+        Some(&device)
+    );
+    assert!(reopened.state.project.assets().next().is_none());
+    service
+        .submit(empty_request(&reopened, track, files.source.clone()))
+        .unwrap();
+    let loaded = event(&service);
+    assert!(loaded.error.is_none(), "{:?}", loaded.error);
+    let filled = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap();
+    assert_eq!(filled.id(), device.id());
+    assert_eq!(filled.state().type_id(), device.state().type_id());
+    assert_eq!(filled.state().asset_references().len(), 1);
+    assert_eq!(loaded.state.project.assets().count(), 1);
+    assert!(
+        hex_engine::sampler_parameter_value_on_control(
+            hex_engine::SamplerParameter::EndFrame,
+            filled.state()
+        )
+        .is_ok()
+    );
+}
+#[test]
+fn empty_sampler_load_refuses_stale_cancelled_bad_source_and_wrong_device_without_mutation() {
+    for case in [
+        "cancel", "revision", "device", "state", "missing", "corrupt",
+    ] {
+        let files = Files::new(false);
+        let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
+        let (track, _) = authored(&service);
+        let before = insert_empty(&service, track);
+        let mut load = empty_request(&before, track, files.source.clone());
+        if let Request::LoadFirstSampler {
+            revision,
+            empty_sampler,
+            cancel,
+            path,
+            ..
+        } = &mut load
+        {
+            match case {
+                "cancel" => cancel.store(true, Ordering::Release),
+                "revision" => *revision += 1,
+                "device" => {
+                    let mut model =
+                        hex_project::Editor::new((*before.state.project).clone(), 1).unwrap();
+                    let Created::Device(other) = model
+                        .execute(Command::InsertDevice {
+                            track,
+                            before: None,
+                            state: hex_engine::default_native_device_state(
+                                hex_lattice_contract::DeviceTypeId::from_static("hex.utility"),
+                            )
+                            .unwrap(),
+                        })
+                        .unwrap()
+                    else {
+                        panic!("effect")
+                    };
+                    empty_sampler.as_mut().unwrap().0 = other
+                }
+                "state" => {
+                    empty_sampler.as_mut().unwrap().1 =
+                        hex_project::default_instrument_state().unwrap()
+                }
+                "missing" => *path = path.with_file_name("missing.wav"),
+                "corrupt" => fs::write(path, b"invalid wav").unwrap(),
+                _ => unreachable!(),
+            }
+        }
+        service.submit(load).unwrap();
+        let refused = event(&service);
+        assert!(refused.error.is_some(), "{case}");
+        assert_eq!(refused.state.project, before.state.project, "{case}");
+        assert_eq!(refused.state.revision, before.state.revision);
+        assert_eq!(
+            (refused.state.can_undo, refused.state.can_redo),
+            (before.state.can_undo, before.state.can_redo)
+        );
     }
 }
 #[test]

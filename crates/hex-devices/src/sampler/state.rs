@@ -8,6 +8,24 @@ pub const STATE_VERSION: u32 = 2;
 pub const SOURCE_SLOT: u32 = 1;
 const PREFIX: usize = 96;
 
+/// An explicit source-free catalog state, distinct from an unbound authored source.
+pub fn empty_state() -> Result<NativeDeviceState, Error> {
+    NativeDeviceState::new(TYPE_ID, STATE_VERSION, b"empty".to_vec())
+}
+/// Host gains are ordinary metadata; no reference, altered marker or other
+/// payload can masquerade as an empty sampler.
+pub fn is_empty_state(state: &NativeDeviceState) -> bool {
+    state.type_id() == TYPE_ID
+        && state.state_version() == STATE_VERSION
+        && state.payload() == b"empty"
+        && state.asset_references().is_empty()
+}
+/// Conservative private-source classification: malformed sampler states still
+/// enter the strict refusal path rather than silently becoming empty.
+pub fn requires_source(state: &NativeDeviceState) -> bool {
+    state.type_id() == TYPE_ID && !is_empty_state(state)
+}
+
 /// Prepare the actual authored configuration against a retained host inventory.
 /// This returns scalar storage only; it is not a native root admission API.
 pub fn prepare_runtime_on_control(

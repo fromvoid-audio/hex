@@ -1136,6 +1136,9 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Instrument, Some("hex.instrument.operator")) => {
             operator_panel::OPERATOR_FRAME_WIDTH
         }
+        (NativeDeviceClass::Instrument, Some("hex.instrument.sampler")) => {
+            crate::device_composition::SAMPLER_FRAME_WIDTH
+        }
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.eq8" | "hex.eq")) => eq8_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
@@ -1978,7 +1981,25 @@ fn render_instrument(
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
     let leading = bypass_action(device, NativeDeviceClass::Instrument, selected, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
-    let rendered = if is_sampler {
+    let rendered = if hex_engine::is_empty_sampler_state_on_control(device.state()) {
+        device_frame(
+            device_drag_title(
+                view,
+                cx,
+                device,
+                NativeDeviceClass::Instrument,
+                theme::text("sampler"),
+            ),
+            theme::device_frame_style(selected),
+            leading,
+            header_actions,
+            crate::device_composition::body()
+                .p(px(8.0))
+                .child(theme::text(
+                    "empty sampler · choose a wav in the sample browser and load into sampler",
+                )),
+        )
+    } else if is_sampler {
         let name = view
             .state
             .as_ref()

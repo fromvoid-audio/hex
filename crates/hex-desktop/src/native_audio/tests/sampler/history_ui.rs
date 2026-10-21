@@ -163,6 +163,9 @@ pub(super) fn exercise(
                 .unwrap()
                 .state()
                 == &states[index]
+                && cx
+                    .update(|cx| hex_ui::sampler_midi_test_ready(window, cx))
+                    .unwrap()
             {
                 break;
             }

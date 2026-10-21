@@ -632,6 +632,43 @@ impl Session {
         };
         self.import_service_snapshot_destination(decoded, cancel, admission, destination, None)
     }
+    pub(in crate::service) fn import_service_snapshot_to_sampler(
+        &mut self,
+        decoded: hex_media::DecodedAudio,
+        cancel: &AtomicBool,
+        admission: Admission<'_>,
+        track: hex_project::TrackId,
+        empty: Option<(
+            hex_project::DeviceId,
+            hex_lattice_contract::NativeDeviceState,
+        )>,
+    ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
+        let Some((device, expected_state)) = empty else {
+            return self.import_service_snapshot_to(decoded, cancel, admission, Some(track));
+        };
+        if !hex_engine::is_empty_sampler_state_on_control(&expected_state) {
+            return Err(SessionError::Invalid(
+                "sampler load requires the exact empty state",
+            ));
+        }
+        let (state, source_slot) = hex_engine::sampler_replacement_template_on_control(
+            &expected_state,
+            decoded.audio().frames().len(),
+        )?;
+        self.import_service_snapshot_destination(
+            decoded,
+            cancel,
+            admission,
+            crate::native_assets::NativeAssetDestination::ExistingInstrument {
+                track,
+                device,
+                expected_state,
+                state,
+                source_slot,
+            },
+            None,
+        )
+    }
     pub(in crate::service) fn replace_sampler_service_snapshot(
         &mut self,
         decoded: hex_media::DecodedAudio,

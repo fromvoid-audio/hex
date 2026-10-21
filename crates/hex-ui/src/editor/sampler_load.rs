@@ -79,7 +79,9 @@ impl EditorView {
         let replacement = if let Some(device) = track.instrument() {
             hex_engine::validate_sampler_replacement_on_control(device.state())
                 .map_err(|_| "sample replacement currently requires classic mode")?;
-            if !self.first_sampler_current() {
+            if !hex_engine::is_empty_sampler_state_on_control(device.state())
+                && !self.first_sampler_current()
+            {
                 return Err("wait for sampler audio before replacing its sample");
             }
             Some((device.id(), device.state().clone()))
@@ -117,39 +119,42 @@ impl EditorView {
     ) {
         use super::context_menu::EditorContextAction;
         use crate::context_menu::{MenuItem, PopupMenu};
-        let (label, action) = if let Some(pending) = self.sampler_load.pending.as_ref() {
-            (
-                "cancel sampler load",
-                EditorContextAction::CancelSamplerLoad {
-                    request_id: pending.id,
-                },
-            )
-        } else if let Some(id) = self.sampler_replacement_pending_id() {
-            (
-                "cancel sample replacement",
-                EditorContextAction::CancelSamplerLoad { request_id: id },
-            )
-        } else {
-            if !device_panel::finalize_controls(self, cx) {
-                return;
-            }
-            let target = match self.first_sampler_target(path) {
-                Ok(t) => t,
-                Err(e) => {
-                    self.error = Some(e.into());
-                    cx.notify();
+        let (label, action) =
+            if let Some(pending) = self.sampler_load.pending.as_ref() {
+                (
+                    "cancel sampler load",
+                    EditorContextAction::CancelSamplerLoad {
+                        request_id: pending.id,
+                    },
+                )
+            } else if let Some(id) = self.sampler_replacement_pending_id() {
+                (
+                    "cancel sample replacement",
+                    EditorContextAction::CancelSamplerLoad { request_id: id },
+                )
+            } else {
+                if !device_panel::finalize_controls(self, cx) {
                     return;
                 }
+                let target = match self.first_sampler_target(path) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        self.error = Some(e.into());
+                        cx.notify();
+                        return;
+                    }
+                };
+                (
+                    if target.replacement.as_ref().is_some_and(|(_, state)| {
+                        !hex_engine::is_empty_sampler_state_on_control(state)
+                    }) {
+                        "replace sampler sample"
+                    } else {
+                        "load into sampler"
+                    },
+                    EditorContextAction::LoadFirstSampler(target),
+                )
             };
-            (
-                if target.replacement.is_some() {
-                    "replace sampler sample"
-                } else {
-                    "load into sampler"
-                },
-                EditorContextAction::LoadFirstSampler(target),
-            )
-        };
         let previous_focus = self
             .context_menu
             .take()
@@ -181,7 +186,11 @@ impl EditorView {
             self.error = Some("sampler load target changed".into());
             return;
         }
-        if target.replacement.is_some() {
+        if target
+            .replacement
+            .as_ref()
+            .is_some_and(|(_, state)| !hex_engine::is_empty_sampler_state_on_control(state))
+        {
             self.submit_sampler_replacement(target);
             cx.notify();
             return;
@@ -196,6 +205,7 @@ impl EditorView {
             project_generation: target.generation,
             revision: target.revision,
             track: target.track,
+            empty_sampler: target.replacement.clone(),
             path: target.path.clone(),
             cancel: Arc::clone(&cancel),
         };

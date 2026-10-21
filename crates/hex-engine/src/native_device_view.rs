@@ -217,8 +217,16 @@ pub fn patch_sampler_parameter_on_control(
     })
 }
 
+/// Exact asset-free catalog state; all other sampler states require source validation.
+pub fn is_empty_sampler_state_on_control(state: &NativeDeviceState) -> bool {
+    hex_devices::sampler::state::is_empty_state(state)
+}
+
 /// Refuse unsupported modes before the host decodes any replacement media.
 pub fn validate_sampler_replacement_on_control(state: &NativeDeviceState) -> Result<(), Invalid> {
+    if is_empty_sampler_state_on_control(state) {
+        return Ok(());
+    }
     let authored = hex_devices::sampler::state::SamplerState::from_native(state)
         .map_err(sampler_state_error)?;
     if matches!(
@@ -240,7 +248,11 @@ pub fn sampler_replacement_template_on_control(
 ) -> Result<(NativeDeviceState, hex_lattice_contract::DeviceAssetSlot), Invalid> {
     validate_sampler_replacement_on_control(state)?;
     use hex_devices::sampler::state::{AuthoredMode, SamplerState};
-    let mut authored = SamplerState::from_native(state).map_err(sampler_state_error)?;
+    let mut authored = if is_empty_sampler_state_on_control(state) {
+        SamplerState::for_source_frames(frames).map_err(sampler_state_error)?
+    } else {
+        SamplerState::from_native(state).map_err(sampler_state_error)?
+    };
     let whole = SamplerState::for_source_frames(frames)
         .map_err(sampler_state_error)?
         .region;
@@ -250,7 +262,14 @@ pub fn sampler_replacement_template_on_control(
         loop_region: whole,
     };
     Ok((
-        authored.replace_in(state).map_err(sampler_state_error)?,
+        if is_empty_sampler_state_on_control(state) {
+            authored
+                .to_native()
+                .and_then(|s| s.with_host_metadata_from(state))
+                .map_err(sampler_state_error)?
+        } else {
+            authored.replace_in(state).map_err(sampler_state_error)?
+        },
         hex_lattice_contract::DeviceAssetSlot::new(hex_devices::sampler::state::SOURCE_SLOT)
             .map_err(sampler_state_error)?,
     ))
@@ -783,7 +802,8 @@ mod tests {
         assert!(effects.iter().any(|entry| entry.name == "compressor"));
         assert!(effects.iter().any(|entry| entry.name == "gate"));
         assert!(effects.iter().any(|entry| entry.name == "auto pan"));
-        assert_eq!(instruments.len(), 3);
+        assert_eq!(instruments.len(), 4);
+        assert!(instruments.iter().any(|entry| entry.name == "sampler"));
         let sine = instruments
             .iter()
             .find(|entry| entry.name == "sine")

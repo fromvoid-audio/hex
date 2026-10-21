@@ -383,7 +383,7 @@ pub enum Command {
         state: hex_lattice_contract::NativeDeviceState,
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
-    /// Atomically import an original source and rebind an existing instrument.
+    /// Atomically import an original source and bind or rebind an existing instrument.
     /// Captured identity/state/provider must still match; no IDs are predicted.
     ImportDeviceAssetReplacingInstrument {
         track: TrackId,
@@ -2182,12 +2182,13 @@ impl Project {
                     || state.input_gain_millidb() != expected_state.input_gain_millidb()
                     || state.output_gain_millidb() != expected_state.output_gain_millidb()
                     || state.asset_references() != expected_state.asset_references()
-                    || state
-                        .asset_references()
-                        .iter()
-                        .filter(|r| r.slot == source_slot)
-                        .count()
-                        != 1
+                    || (!state.asset_references().is_empty()
+                        && state
+                            .asset_references()
+                            .iter()
+                            .filter(|r| r.slot == source_slot)
+                            .count()
+                            != 1)
                 {
                     return Err(Invalid(
                         "instrument replacement must preserve provider and host metadata",
@@ -2203,18 +2204,25 @@ impl Project {
                     self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
                 let key = hex_lattice_contract::DeviceAssetKey::new(asset.value())
                     .map_err(|_| Invalid("invalid device source id"))?;
-                let references = state
-                    .asset_references()
-                    .iter()
-                    .map(|reference| hex_lattice_contract::DeviceAssetReference {
-                        slot: reference.slot,
-                        asset: if reference.slot == source_slot {
-                            key
-                        } else {
-                            reference.asset
-                        },
-                    })
-                    .collect();
+                let references = if state.asset_references().is_empty() {
+                    vec![hex_lattice_contract::DeviceAssetReference {
+                        slot: source_slot,
+                        asset: key,
+                    }]
+                } else {
+                    state
+                        .asset_references()
+                        .iter()
+                        .map(|reference| hex_lattice_contract::DeviceAssetReference {
+                            slot: reference.slot,
+                            asset: if reference.slot == source_slot {
+                                key
+                            } else {
+                                reference.asset
+                            },
+                        })
+                        .collect()
+                };
                 let state = state
                     .with_asset_references(references)
                     .map_err(|_| Invalid("invalid device source binding"))?;

@@ -1,10 +1,11 @@
-//! Original borrowed-PCM playback prerequisite for the planned Sampler device.
+//! Original sampler kernel and its explicit empty catalog state.
 //!
-//! This module is not a registered instrument or a claim of Simpler parity.
+//! The catalog default is silent; source-bearing playback requires host admission.
 //! The control owner validates PCM once and retains it for every borrowed voice.
 //! Rendering is deterministic, allocation-free and independent of block size.
 //! See `docs/sampler.md` for host asset and reference acceptance still required.
 mod binding;
+pub mod catalog;
 mod envelope;
 mod plan;
 mod runtime;
