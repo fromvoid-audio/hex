@@ -107,6 +107,12 @@ pub struct AudioBatchMemberFailure {
     pub explanation: String,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SamplerLoadCompletion {
+    pub request_id: u64,
+    pub project_generation: u64,
+    pub track: hex_project::TrackId,
+}
 /// A worker response. `playback` is present only when a new graph was compiled.
 pub struct Event {
     pub state: Arc<ViewState>,
@@ -116,6 +122,8 @@ pub struct Event {
     /// Original failing batch member, kept separate from app-owned explanation.
     pub audio_batch_failure: Option<AudioBatchMemberFailure>,
     pub request_complete: bool,
+    /// Metadata-only completion of one first-load action, on success or refusal.
+    pub sampler_load_complete: Option<SamplerLoadCompletion>,
     pub computer_keyboard_complete: Option<u64>,
     pub tuning_audition_complete: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
@@ -397,6 +405,15 @@ pub enum Request {
         path: PathBuf,
         cancel: Arc<AtomicBool>,
     },
+    /// One captured first-load transaction; never replaces an occupied slot.
+    LoadFirstSampler {
+        request_id: u64,
+        project_generation: u64,
+        revision: u64,
+        track: hex_project::TrackId,
+        path: PathBuf,
+        cancel: Arc<AtomicBool>,
+    },
     /// Canonical assignment for private frame-zero offline sampler export.
     AssignSampler {
         track: hex_project::TrackId,
@@ -494,6 +511,7 @@ impl Request {
             self,
             Request::Undo
                 | Request::AssignSampler { .. }
+                | Request::LoadFirstSampler { .. }
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
@@ -1413,6 +1431,7 @@ fn run_worker(
                 error: None,
                 audio_batch_failure: None,
                 request_complete: false,
+                sampler_load_complete: None,
                 computer_keyboard_complete: None,
                 tuning_audition_complete: None,
                 live_expression_complete: None,
@@ -1443,6 +1462,7 @@ fn run_worker(
             error: Some(error),
             audio_batch_failure: None,
             request_complete: false,
+            sampler_load_complete: None,
             computer_keyboard_complete: None,
             tuning_audition_complete: None,
             live_expression_complete: None,
@@ -1711,6 +1731,19 @@ fn run_worker(
         let private_sampler = hex_engine::native_device_resources::requires_private_sampler_sources(
             session.project(),
         );
+        let sampler_load_complete = match &request {
+            Request::LoadFirstSampler {
+                request_id,
+                project_generation,
+                track,
+                ..
+            } => Some(SamplerLoadCompletion {
+                request_id: *request_id,
+                project_generation: *project_generation,
+                track: *track,
+            }),
+            _ => None,
+        };
         let native_edit_refusal = export_lane
             .native_hold
             .current_context
@@ -1718,6 +1751,7 @@ fn run_worker(
             && matches!(
                 &request,
                 Request::AssignSampler { .. }
+                    | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::ImportDeviceAsset { .. }
             );
@@ -1725,6 +1759,7 @@ fn run_worker(
             && !matches!(
                 &request,
                 Request::AssignSampler { .. }
+                    | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::ImportDeviceAsset { .. }
                     | Request::Export(_)
@@ -2152,6 +2187,84 @@ fn run_worker(
                                 });
                             }
                         }
+                    }
+                }
+                Request::LoadFirstSampler {
+                    request_id: _,
+                    project_generation: target_generation,
+                    revision: target_revision,
+                    track,
+                    path,
+                    cancel,
+                } => {
+                    let result = (|| -> Result<_, SessionError> {
+                        if target_generation != project_generation || target_revision != revision {
+                            return Err(SessionError::Invalid("sampler load target changed"));
+                        }
+                        let target = session
+                            .project()
+                            .track(track)
+                            .ok_or(SessionError::Invalid("sampler track no longer exists"))?;
+                        if target.instrument().is_some() {
+                            return Err(SessionError::Invalid(
+                                "first sampler load requires an empty instrument slot; replacement is unavailable",
+                            ));
+                        }
+                        if !target
+                            .midi_clips()
+                            .iter()
+                            .any(|clip| !clip.notes().is_empty())
+                        {
+                            return Err(SessionError::Invalid(
+                                "add arrangement midi notes before loading this sampler",
+                            ));
+                        }
+                        if private_sampler {
+                            return Err(SessionError::Invalid(
+                                "first sampler load only; active sampler replacement is unavailable",
+                            ));
+                        }
+                        if session.audio_mode() != DocumentAudioMode::Resident
+                            || session.native_reservation.is_none()
+                        {
+                            return Err(SessionError::Invalid(
+                                "sampler requires explicit resident document admission",
+                            ));
+                        }
+                        if cancel.load(Ordering::Acquire) {
+                            return Err(SessionError::Invalid("sampler load cancelled"));
+                        }
+                        let decoded = decode_wav_file(
+                            path,
+                            Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+                        )?;
+                        if cancel.load(Ordering::Acquire) {
+                            return Err(SessionError::Invalid("sampler load cancelled"));
+                        }
+                        let current = compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        });
+                        session.import_service_snapshot_to(
+                            decoded,
+                            &cancel,
+                            export_lane.admission(current),
+                            Some(track),
+                        )
+                    })();
+                    match result {
+                        Ok((asset, snapshot)) => {
+                            created = Some(asset);
+                            unsaved = true;
+                            replacement_revision = Some(snapshot.prepared);
+                            replacement_sources = Some(snapshot.sources);
+                            status = Some(if events.native_audio_requested() {
+                                "sample loaded into sampler · preparing frame-zero arrangement audio"
+                            } else { "sample loaded into sampler · offline export supported · native playback unavailable" }.into());
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
                     }
                 }
                 Request::AssignSampler { track, asset } => {
@@ -3653,6 +3766,7 @@ fn run_worker(
                 status,
                 error,
                 request_complete: true,
+                sampler_load_complete,
                 computer_keyboard_complete,
                 tuning_audition_complete,
                 live_expression_complete,

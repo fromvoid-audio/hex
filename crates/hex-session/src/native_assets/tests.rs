@@ -476,3 +476,68 @@ fn native_asset_import_preserves_positive_ordinary_track_and_clip_imports() {
         pointer
     );
 }
+
+#[test]
+fn first_sampler_staged_prepare_failure_or_late_cancel_keeps_source_model_and_history() {
+    for late_cancel in [false, true] {
+        let fixture = Fixture::new();
+        let mut s = session();
+        let cancel = AtomicBool::new(false);
+        let first = asset(
+            s.import_device_asset(fixture.decoded(), &cancel, None)
+                .unwrap()
+                .0,
+        );
+        let Created::Track(track) = s
+            .editor
+            .execute(Command::AddMidiTrack {
+                name: "target".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let pointer = s
+            .native_source(first)
+            .unwrap()
+            .resident_frames()
+            .unwrap()
+            .as_ptr();
+        let before = s.project().clone();
+        let storage = s.native_storage_on_control().unwrap();
+        let history = (s.can_undo(), s.can_redo());
+        let (state, source_slot) =
+            hex_engine::native_device_resources::sampler_import_template_on_control(4).unwrap();
+        let refused = s.import_device_asset_prepared(
+            fixture.decoded(),
+            &cancel,
+            NativeAssetDestination::EmptyInstrument {
+                track,
+                state,
+                source_slot,
+            },
+            |candidate, _, _, _, _, _| {
+                assert_eq!(candidate.assets().count(), before.assets().count() + 1);
+                assert!(candidate.track(track).unwrap().instrument().is_some());
+                if late_cancel {
+                    cancel.store(true, Ordering::Release);
+                    Ok(())
+                } else {
+                    Err(SessionError::Invalid("injected staged preparation refusal"))
+                }
+            },
+        );
+        assert!(refused.is_err());
+        assert_eq!(s.project(), &before);
+        assert_eq!(s.native_storage_on_control().unwrap(), storage);
+        assert_eq!((s.can_undo(), s.can_redo()), history);
+        assert_eq!(
+            s.native_source(first)
+                .unwrap()
+                .resident_frames()
+                .unwrap()
+                .as_ptr(),
+            pointer
+        );
+    }
+}

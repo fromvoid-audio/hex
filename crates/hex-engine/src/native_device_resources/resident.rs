@@ -78,6 +78,19 @@ impl StagedNativeAssetView<'_> {
         super::admission::inspect_staged_union(retained, construction, reservation, self)
     }
 }
+/// Pure authored template for a prepared source import. No source identity or
+/// processing capability is granted; the candidate binds its freshly allocated
+/// AssetId and resource preparation still validates the actual staged bank.
+pub fn sampler_import_template_on_control(
+    frames: usize,
+) -> Result<(NativeDeviceState, hex_lattice_contract::DeviceAssetSlot), ResourcePreparationError> {
+    let state = hex_devices::sampler::state::SamplerState::for_source_frames(frames)
+        .and_then(|s| s.to_native())
+        .map_err(|_| ResourcePreparationError::InvalidScope)?;
+    let slot = hex_lattice_contract::DeviceAssetSlot::new(hex_devices::sampler::state::SOURCE_SLOT)
+        .map_err(|_| ResourcePreparationError::InvalidScope)?;
+    Ok((state, slot))
+}
 impl ResidentDeviceAssets {
     pub fn contains(&self, asset: AssetId) -> bool {
         self.assets.iter().any(|(id, _)| *id == asset)

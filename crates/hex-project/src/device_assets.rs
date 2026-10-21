@@ -38,3 +38,81 @@ impl Project {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{Command, Created, Editor};
+    use hex_lattice_contract::{DeviceAssetSlot, DeviceTypeId, NativeDeviceState};
+    #[test]
+    fn prepared_source_and_empty_instrument_binding_share_one_commit_and_undo() {
+        let mut editor = Editor::new(Project::new(16000).unwrap(), 8).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "sample".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let before = editor.project().snapshot();
+        let command = || Command::ImportDeviceAssetIntoEmptyInstrument {
+            track,
+            path: "source.wav".into(),
+            sample_rate: 8000,
+            frames: 4,
+            state: NativeDeviceState::new(
+                DeviceTypeId::new("test.instrument.resource").unwrap(),
+                1,
+                vec![],
+            )
+            .unwrap(),
+            source_slot: DeviceAssetSlot::new(1).unwrap(),
+        };
+        let rejected: Result<_, Invalid> = editor.execute_prepared(command(), |candidate| {
+            assert_eq!(candidate.assets().count(), 1);
+            let target = candidate.track(track).unwrap().instrument().unwrap();
+            assert_eq!(target.state().asset_references().len(), 1);
+            Err::<(), _>(Invalid("prepared source refused"))
+        });
+        assert!(rejected.is_err());
+        assert_eq!(editor.project().snapshot(), before);
+        let (Created::Asset(asset), ()) = editor
+            .execute_prepared(command(), |_| Ok::<_, Invalid>(()))
+            .unwrap()
+        else {
+            panic!("asset")
+        };
+        assert_eq!(
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .state()
+                .asset_references()[0]
+                .asset
+                .value(),
+            asset.value()
+        );
+        let loaded = editor.project().snapshot();
+        assert!(editor.execute(command()).is_err());
+        assert_eq!(editor.project().snapshot(), loaded);
+        assert!(editor.undo());
+        assert_eq!(editor.project().assets().count(), 0);
+        assert!(
+            editor
+                .project()
+                .track(track)
+                .unwrap()
+                .instrument()
+                .is_none()
+        );
+        assert!(editor.undo());
+        assert!(
+            editor.project().track(track).is_none(),
+            "one source+binding command makes one undo entry"
+        );
+    }
+}

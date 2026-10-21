@@ -11,7 +11,10 @@ also uses hex-session's neutral worker sink/source snapshots, hex-engine's
 consuming preparation contracts, hex-stream's verified constructor metadata, and hex-media's bounded reader-limit
 values (the existing Session/stream workers perform all file decoding).
 The nondefault `allocation-probe` test feature substitutes only output-open
-completion through the actual native endpoint constructor. Its dev-only
+completion through the actual native endpoint constructor. It also enables the
+existing GPUI UI test support for a rendered browser-action -> real Service ->
+CURRENT fixture with caller-owned temporary settings/discovery roots. No
+physical app window or device is opened by that fixture. Its dev-only
 hex-project, hex-tuning and allocation-counter dependencies exercise real canonical edits,
 absolute tuning references
 and zero-total/net callback allocations; none is a production desktop edge.

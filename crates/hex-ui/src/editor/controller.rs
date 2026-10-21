@@ -1590,10 +1590,13 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
+        let sampler_load_complete = event.sampler_load_complete;
+        let sampler_load_succeeded = event.error.is_none();
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
         let group_copy_intent = self.group_copy_request_complete(&event);
         if event.project_replaced {
+            self.retire_first_sampler_load();
             self.cancel_open_after_save();
             self.invalidate_prepared_seek();
             if let Some(audio) = self.audio.as_mut() {
@@ -2378,6 +2381,7 @@ impl EditorView {
         if let Some(reason) = self.take_effect_bus_barrier_error() {
             self.error = Some(reason.into());
         }
+        self.first_sampler_load_complete(sampler_load_complete, sampler_load_succeeded);
         self.reconcile_publication_observation();
         if event.request_complete
             && !event.gesture_request
@@ -2539,6 +2543,7 @@ impl EditorView {
             self.cancel_midi_stroke();
         }
         if request.is_project_open() {
+            self.cancel_first_sampler_load(None);
             if let Some(control) = &self.audio_batch {
                 control.request_cancel();
             }
@@ -2575,6 +2580,7 @@ impl EditorView {
                 | Request::LoadDevicePreset { .. }
                 | Request::SetDeviceParameter { .. }
                 | Request::Import(_)
+                | Request::LoadFirstSampler { .. }
                 | Request::ImportAudioBatch { .. }
                 | Request::ImportToTrack { .. }
                 | Request::ImportToTrackWithOverwrite { .. }

@@ -1976,43 +1976,105 @@ fn render_instrument(
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
     let leading = bypass_action(device, NativeDeviceClass::Instrument, selected, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
-    let rendered = match &device_view {
-        Ok(device_view) => {
-            if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
-                let body = operator_panel::render_body(view, cx, device_id, device_view);
-                device_frame(
-                    device_drag_title(
+    let rendered = if device.state().type_id().as_str() == Ok("hex.instrument.sampler") {
+        let name = view
+            .state
+            .as_ref()
+            .and_then(|s| {
+                let reference = device.state().asset_references().first()?;
+                s.project
+                    .assets()
+                    .find(|a| a.id().value() == reference.asset.value())?
+                    .path()
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "missing sample identity".into());
+        let readiness = if view.first_sampler_current() {
+            "play from start · stop"
+        } else {
+            "audio not ready · offline export supported"
+        };
+        let body = crate::device_composition::body()
+            .p(px(5.0))
+            .text_xs()
+            .child(theme::text(format!(
+                "{name} · {readiness} · sample controls and replacement unavailable"
+            )));
+        device_frame(
+            theme::text("sampler"),
+            theme::device_frame_style(selected),
+            div(),
+            div(),
+            body,
+        )
+    } else {
+        match &device_view {
+            Ok(device_view) => {
+                if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
+                    let body = operator_panel::render_body(view, cx, device_id, device_view);
+                    device_frame(
+                        device_drag_title(
+                            view,
+                            cx,
+                            device,
+                            NativeDeviceClass::Instrument,
+                            theme::text(device_view.name.clone()),
+                        ),
+                        theme::device_frame_style(selected),
+                        leading,
+                        header_actions,
+                        body,
+                    )
+                } else {
+                    let body = parameter_rows::body(
                         view,
+                        window,
                         cx,
-                        device,
-                        NativeDeviceClass::Instrument,
-                        theme::text(device_view.name.clone()),
-                    ),
-                    theme::device_frame_style(selected),
-                    leading,
-                    header_actions,
-                    body,
-                )
-            } else {
-                let body = parameter_rows::body(
-                    view,
-                    window,
-                    cx,
-                    device_id,
-                    DeviceControlIdentity {
-                        class: NativeDeviceClass::Instrument,
-                        type_id: device_view.type_id,
-                    },
-                    device_view,
-                );
+                        device_id,
+                        DeviceControlIdentity {
+                            class: NativeDeviceClass::Instrument,
+                            type_id: device_view.type_id,
+                        },
+                        device_view,
+                    );
 
+                    device_frame(
+                        device_drag_title(
+                            view,
+                            cx,
+                            device,
+                            NativeDeviceClass::Instrument,
+                            theme::text(device_view.name.clone()),
+                        ),
+                        theme::device_frame_style(selected),
+                        leading,
+                        header_actions,
+                        body,
+                    )
+                }
+            }
+            Err(error) => {
+                let body = crate::device_composition::unsupported_body(theme::text(format!(
+                    "unsupported instrument state · {error}"
+                )))
+                .id(ElementId::Name(
+                    format!("device-body-{}", device_id.value()).into(),
+                ))
+                .debug_selector(move || format!("device-body-{}", device_id.value()));
                 device_frame(
                     device_drag_title(
                         view,
                         cx,
                         device,
                         NativeDeviceClass::Instrument,
-                        theme::text(device_view.name.clone()),
+                        theme::text(
+                            device
+                                .state()
+                                .type_id()
+                                .as_str()
+                                .unwrap_or("unknown instrument"),
+                        ),
                     ),
                     theme::device_frame_style(selected),
                     leading,
@@ -2020,34 +2082,6 @@ fn render_instrument(
                     body,
                 )
             }
-        }
-        Err(error) => {
-            let body = crate::device_composition::unsupported_body(theme::text(format!(
-                "unsupported instrument state · {error}"
-            )))
-            .id(ElementId::Name(
-                format!("device-body-{}", device_id.value()).into(),
-            ))
-            .debug_selector(move || format!("device-body-{}", device_id.value()));
-            device_frame(
-                device_drag_title(
-                    view,
-                    cx,
-                    device,
-                    NativeDeviceClass::Instrument,
-                    theme::text(
-                        device
-                            .state()
-                            .type_id()
-                            .as_str()
-                            .unwrap_or("unknown instrument"),
-                    ),
-                ),
-                theme::device_frame_style(selected),
-                leading,
-                header_actions,
-                body,
-            )
         }
     };
     view.device_panel.views.insert(

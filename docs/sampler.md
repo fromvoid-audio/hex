@@ -3,9 +3,12 @@
 Requested 17 October 2026: a native equivalent of Ableton Live **Simpler**, named
 **sampler** in Hex. This does not target the separate Ableton Sampler instrument.
 Pulse2679 owns the full request; [PR296](https://github.com/PORTALSURFER/hex/pull/296)
-contains the first original playback-kernel prerequisite. Sampler is **not yet
-registered, selectable or usable as a device in Hex**. No reference parity or
-native interaction/listening acceptance is claimed.
+contains the first original playback-kernel prerequisite. A bounded first-load
+browser action now fills an empty instrument slot with a canonical sampler and
+supports frame-zero Arrangement playback/Stop and offline Main export. Sampler
+is not registered in the general device catalog; controls, replacement, live
+keyboard, save/reopen and history remain unavailable. No reference parity or
+physical native interaction/listening acceptance is claimed.
 
 ## current source boundary
 
@@ -487,3 +490,57 @@ and one-under tests cover empty-clip and 3/21/256 nonoverlapping-note fixtures a
 that a refused compiler was never entered. Removing each of the three review
 repairs reproduces its focused failure; raw RED/GREEN evidence is retained with
 PR548's local artifacts. The interrupted earlier audit is not merge evidence.
+
+
+## first browser load — pulse2965 / PR549
+
+With a resident document, select a track containing authored Arrangement MIDI
+notes and an empty instrument slot. Right-click a WAV row and choose `load into
+sampler`. The intent captures the original path, track, project generation and
+revision. Later selection/focus changes do not retarget the load or get reversed
+by its completion. A pending row menu offers `cancel sampler load`; cancellation
+is cooperative before canonical commit. A late cancellation cannot pretend to
+roll back an already committed assignment. Missing/corrupt/oversize media,
+stale targets, occupied slots and the unchanged resident/source limits refuse
+without an asset orphan or another history commit.
+
+One Session worker request stages original-rate PCM and prepares one neutral
+Project command that creates the asset, sampler state and binding in one Editor
+transition. The candidate sidecar borrows the actual staged source before commit;
+no UI import-then-assign sequence or public PCM owner is introduced. Canonical
+commit and native preparation are separate: output failure retains the valid
+assignment for offline export and reports unavailable audio. Active sampler
+replacement remains refused by the existing native owner guard.
+
+The panel displays canonical sample identity and read-only readiness/limitations.
+Frame-zero UI Play requires callback-confirmed source context, canonical revision,
+project generation and output identity. There is no public seek candidate for
+private sampler CURRENT. Nonzero seek, Pause, Session launch, live keyboard,
+active edits, history and save/reopen remain explicit unsupported operations.
+Stop resets the existing native runtime; Play then starts from frame zero again.
+Existing browser Enter and drag import behavior is unchanged.
+
+Owning checks cover the one-commit/Undo project boundary, staged preparation
+refusal/late cancellation with actual source custody, real worker mono/stereo
+mismatched-rate file export, duplicate/stale/invalid requests, correlated UI
+cancellation and actual rendered right-click/menu -> real Service -> actual
+native CURRENT -> keyboard Play/Stop/replay literal stereo PCM with zero
+callback total/net allocations in the measured fixture. The headless output-open
+factory is the only substituted native boundary. Feature-only UI startup uses
+private temporary settings/home/discovery roots before any startup I/O. GPUI's
+NoopTextSystem cannot verify bundled font registration; production font startup
+is unchanged. These checks do not establish physical device deadlines, visuals,
+listening or installation. Exact required merge evidence belongs to PR549/Pulse.
+
+Finite future user checklist, after a separately qualified optimized build:
+
+1. Author an Arrangement MIDI note before activation, select its empty instrument
+   slot, then right-click an original WAV and choose `load into sampler`.
+2. Change selected track while loading; confirm the original target owns the
+   sample, its canonical filename is visible, and focus stays where moved.
+3. Play from start, Stop, then Play again; compare both starts and stereo image.
+4. Repeat with a mono WAV and a WAV whose rate differs from the output; export
+   Main and compare playback. Record the exact source/build and device settings.
+5. Check missing/corrupt media, pending cancellation and an occupied slot refuse
+   clearly. Do not use save/reopen, replacement, live keyboard or nonzero seeking
+   as supported workflows yet.
