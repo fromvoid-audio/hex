@@ -31,7 +31,7 @@ def git(root: Path, *args: str, env=None) -> bytes:
 
 def metadata_path(path: str) -> bool:
     """Only prose is metadata. Assets, generated datasets and policy are inputs."""
-    return (path in {"README.md", "todo.md"}
+    return (path == "README.md"
             or path.startswith("docs/") and path.endswith(".md"))
 
 

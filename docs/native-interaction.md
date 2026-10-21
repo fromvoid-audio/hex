@@ -14,8 +14,8 @@ only behavior affected by a later change, recording that source and reason.
 | accepted behavior | evidence and limits |
 | --- | --- |
 | time-chunk landing preview | 9 October, source `4181d68`, PR9; presented preview looked good and worked as expected; [time selection](time-selection.md) |
-| selected-track ripple insertion | 9 October, PR11, source `c7ae2d5`; [request evidence](../todo.md) |
-| Option-copy, keyboard paste anchoring, stable zoom during growth, Space restart, File menu | 9 October combined editing/menu review, PR12–16; [time selection](time-selection.md), [navigation](arrangement-navigation.md), [request evidence](../todo.md) |
+| selected-track ripple insertion | 9 October, PR11, source `c7ae2d5`; [request evidence](https://github.com/PORTALSURFER/hex/blob/0c7bb72d1ad8dd136b11adf05759c200797fc962/todo.md) |
+| Option-copy, keyboard paste anchoring, stable zoom during growth, Space restart, File menu | 9 October combined editing/menu review, PR12–16; [time selection](time-selection.md), [navigation](arrangement-navigation.md), [request evidence](https://github.com/PORTALSURFER/hex/blob/0c7bb72d1ad8dd136b11adf05759c200797fc962/todo.md) |
 | captured time gestures and edge scrolling | 9 October, source `25b797e`, PR17 merged `a250f83`; [time selection](time-selection.md) |
 | invisible full-height clip edge resizing | 9 October user report; subsequent bracket cursor appearance/scaling and through-clip grid were still unreviewed; [clip resizing](clip-resizing.md) |
 | value-drag cursor appearance/restoration, typing and Undo in PR155 | 11 October finite user report; [native input](native-input.md); the later distinct knob Undo failure #2374 remains open |
