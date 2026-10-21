@@ -1,4 +1,5 @@
-//! Asset-free catalog entry. Only the exact empty state has an analytic runtime.
+//! Registered sampler preparation. Empty is analytic silence; loaded is mutable
+//! borrowed-PCM processing whose exact resource custody remains with the host.
 use hex_lattice::{NativeInstrumentDefinition, PreparedAnalyticNote, PreparedNativeInstrument};
 use hex_lattice_contract::{
     DeviceContractError as Error, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
@@ -46,18 +47,65 @@ impl NativeDeviceMetadata for SamplerDefinition {
     }
 }
 impl NativeInstrumentDefinition for SamplerDefinition {
+    fn supports_asset_resources(&self) -> bool {
+        true
+    }
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
         context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, Error> {
-        if !super::state::is_empty_state(state) {
+        prepare(state, context, super::runtime::MAX_EVENTS)
+    }
+    fn prepare_instrument_with_runtime_limits(
+        &self,
+        state: &NativeDeviceState,
+        context: &hex_lattice::DevicePreparationContext<'_>,
+        limits: hex_lattice::NativeInstrumentRuntimeLimits,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, Error> {
+        prepare(state, context, limits.max_events_per_block)
+    }
+}
+fn prepare(
+    state: &NativeDeviceState,
+    context: &hex_lattice::DevicePreparationContext<'_>,
+    max_events: usize,
+) -> Result<Box<dyn PreparedNativeInstrument>, Error> {
+    if !(1..=super::runtime::MAX_EVENTS).contains(&max_events)
+        || !(8_000..=192_000).contains(&context.sample_rate)
+    {
+        return Err(Error::InvalidParameterValue);
+    }
+    if super::state::is_empty_state(state) {
+        if !context.resources.is_empty() {
             return Err(Error::AssetResourcesUnavailable);
         }
-        if !(8_000..=192_000).contains(&context.sample_rate) {
-            return Err(Error::InvalidParameterValue);
-        }
         Ok(Box::new(EmptySampler))
+    } else {
+        Ok(Box::new(PreparedSamplerInstrument(
+            super::state::prepare_runtime_on_control(state, context, max_events)?,
+        )))
+    }
+}
+/// Scalar instrument adapter shared by registry preparation and the obsolete private host path.
+/// It owns no PCM or source lease and grants no independent registry/publication admission.
+pub struct PreparedSamplerInstrument(super::PreparedSamplerRuntime);
+impl PreparedSamplerInstrument {
+    pub fn from_runtime_on_control(runtime: super::PreparedSamplerRuntime) -> Self {
+        Self(runtime)
+    }
+}
+impl PreparedNativeInstrument for PreparedSamplerInstrument {
+    fn algorithmic_latency_frames(&self) -> Option<u32> {
+        Some(0)
+    }
+    fn prepare_note(&self, _: u8, _: u8) -> Result<PreparedAnalyticNote, Error> {
+        Err(Error::UnsupportedProcessingClass)
+    }
+    fn prepare_mutable_runtime(
+        &self,
+    ) -> Result<Option<Box<dyn hex_lattice::PreparedMutableInstrumentRuntime>>, Error> {
+        Ok(Some(Box::new(self.0.clone())))
     }
 }
 struct EmptySampler;
@@ -140,5 +188,155 @@ mod tests {
                 .prepare_instrument(&bound_marker, &context)
                 .is_err()
         );
+    }
+    #[test]
+    fn registered_loaded_sampler_uses_exact_original_rate_pcm_and_refuses_unleased_bindings() {
+        use hex_lattice::{
+            BorrowedDeviceResources, DevicePreparationContext, DeviceResourceIdentity,
+            DeviceResourcePcm, DeviceResourceView, NativeInstrumentEvent,
+            NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+        };
+        use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+        let registry = crate::native_instrument_registry().unwrap();
+        let slot = DeviceAssetSlot::new(1).unwrap();
+        let asset = DeviceAssetKey::new(9).unwrap();
+        let state = super::super::state::SamplerState::for_source_frames(4)
+            .unwrap()
+            .to_native()
+            .unwrap()
+            .with_asset_references(vec![DeviceAssetReference { slot, asset }])
+            .unwrap();
+        let pcm = [0.25, 0.75, -0.25, 0.0];
+        let view = DeviceResourceView {
+            slot,
+            identity: DeviceResourceIdentity {
+                asset,
+                content: [2; 32],
+                derivation_version: 1,
+                derivation: [3; 32],
+            },
+            sample_rate: 8000,
+            pcm: DeviceResourcePcm::Mono(&pcm),
+        };
+        let views = [view];
+        let resources = BorrowedDeviceResources(&views);
+        let tuning = hex_lattice::TuningTable::default();
+        let context = DevicePreparationContext {
+            sample_rate: 16000,
+            tuning: &tuning,
+            resources: &resources,
+        };
+        let host_limits = NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 2 * 1024 * 1024,
+            max_events_per_block: 259,
+            max_active_occurrences: 32,
+            max_tail_frames: 16000 * 600,
+        };
+        let prepared = registry
+            .prepare_instrument_with_runtime_limits(&state, &context, host_limits)
+            .unwrap();
+        assert!(prepared.prepare_note(60, 127).is_err());
+        assert!(
+            registry
+                .prepare_instrument_with_runtime_limits(
+                    &state,
+                    &context,
+                    NativeInstrumentRuntimeLimits {
+                        max_events_per_block: 0,
+                        ..host_limits
+                    }
+                )
+                .is_err()
+        );
+        let small = registry
+            .prepare_instrument_with_runtime_limits(
+                &state,
+                &context,
+                NativeInstrumentRuntimeLimits {
+                    max_events_per_block: 1,
+                    ..host_limits
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            small
+                .prepare_mutable_runtime()
+                .unwrap()
+                .unwrap()
+                .max_events_per_block(),
+            1
+        );
+        let standalone = registry.prepare_instrument(&state, &context).unwrap();
+        assert_eq!(
+            standalone
+                .prepare_mutable_runtime()
+                .unwrap()
+                .unwrap()
+                .max_events_per_block(),
+            super::super::runtime::MAX_EVENTS
+        );
+        let factory = prepared.prepare_mutable_runtime().unwrap().unwrap();
+        let mut pair = NativeInstrumentRuntimePair::new(
+            factory.as_ref(),
+            NativeInstrumentRuntimeLimits {
+                max_pair_bytes: 2 * 1024 * 1024,
+                max_events_per_block: host_limits.max_events_per_block,
+                max_active_occurrences: 32,
+                max_tail_frames: 16000 * 600,
+            },
+        )
+        .unwrap();
+        let mut output = [[0.0; 2]; 8];
+        pair.begin_block();
+        pair.process_block(
+            &[NativeInstrumentEvent::NoteOn {
+                frame_offset: 0,
+                occurrence_id: 1,
+                pitch: 60,
+                velocity: 127,
+            }],
+            &mut output,
+            &resources,
+        )
+        .unwrap();
+        pair.commit_block();
+        assert_eq!(
+            output,
+            [0.25, 0.5, 0.75, 0.25, -0.25, -0.125, 0.0, 0.0].map(|v| [v; 2])
+        );
+        let empty = DevicePreparationContext {
+            resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+            ..context
+        };
+        assert!(registry.prepare_instrument(&state, &empty).is_err());
+        let bad_views = [DeviceResourceView {
+            identity: DeviceResourceIdentity {
+                asset: DeviceAssetKey::new(10).unwrap(),
+                ..view.identity
+            },
+            ..view
+        }];
+        let bad = BorrowedDeviceResources(&bad_views);
+        assert!(
+            registry
+                .prepare_instrument(
+                    &state,
+                    &DevicePreparationContext {
+                        resources: &bad,
+                        ..context
+                    }
+                )
+                .is_err()
+        );
+        // An ordinary definition refuses bindings before trying to migrate the
+        // deliberately unsupported authored version or executing its provider.
+        let ordinary = NativeDeviceState::new(crate::SINE_INSTRUMENT_TYPE_ID, 999, vec![])
+            .unwrap()
+            .with_asset_references(state.asset_references().to_vec())
+            .unwrap();
+        assert!(matches!(
+            registry.prepare_instrument(&ordinary, &context),
+            Err(Error::AssetResourcesUnavailable)
+        ));
     }
 }

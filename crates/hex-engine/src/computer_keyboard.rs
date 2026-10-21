@@ -246,6 +246,7 @@ pub(crate) struct ComputerKeyboardRuntime {
     supported: [bool; NOTES],
     context: Option<Box<dyn PreparedSharedAnalyticContext>>,
     mutable: Option<NativeInstrumentRuntimePair>,
+    pub(crate) resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     retarget: Option<Box<dyn hex_lattice::PreparedInstrumentHistoryRetarget>>,
     tuning_family: Option<crate::prepared_revision::TuningContinuationFamily>,
     tuning_preservation: bool,
@@ -327,8 +328,44 @@ impl ComputerKeyboardRuntime {
                 .prepare_mutable_runtime()
                 .map_err(|_| Invalid("computer keyboard runtime preparation failed"))?,
         };
+        Self::prepare_from_capabilities(
+            track,
+            input,
+            sample_rate,
+            Some(instrument),
+            factory.as_deref(),
+            None,
+        )
+    }
+    pub(crate) fn prepare_resource_mutable(
+        track: TrackId,
+        input: Arc<ComputerKeyboardInput>,
+        sample_rate: u32,
+        factory: &dyn hex_lattice::PreparedMutableInstrumentRuntime,
+        resources: crate::native_device_resources::PreparedDeviceResourceLease,
+    ) -> Result<Self, Invalid> {
+        Self::prepare_from_capabilities(
+            track,
+            input,
+            sample_rate,
+            None,
+            Some(factory),
+            Some(resources),
+        )
+    }
+    fn prepare_from_capabilities(
+        track: TrackId,
+        input: Arc<ComputerKeyboardInput>,
+        sample_rate: u32,
+        instrument: Option<&dyn hex_lattice::PreparedNativeInstrument>,
+        factory: Option<&dyn hex_lattice::PreparedMutableInstrumentRuntime>,
+        resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+    ) -> Result<Self, Invalid> {
+        let resource_view = resources.as_ref().map_or(
+            &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+            |lease| lease.resources(),
+        );
         let retarget = factory
-            .as_ref()
             .map(|factory| factory.prepare_history_retarget_target())
             .transpose()
             .map_err(|_| Invalid("computer keyboard retarget preparation failed"))?
@@ -337,10 +374,9 @@ impl ComputerKeyboardRuntime {
                 _ => None,
             });
         let mutable = factory
-            .as_ref()
             .map(|factory| {
                 NativeInstrumentRuntimePair::new(
-                    factory.as_ref(),
+                    factory,
                     NativeInstrumentRuntimeLimits {
                         max_pair_bytes: 2 * 1024 * 1024,
                         max_events_per_block: 259,
@@ -356,6 +392,9 @@ impl ComputerKeyboardRuntime {
             .map_err(|_| Invalid("computer keyboard runtime exceeds its storage budget"))?;
         let context = if mutable.is_none() {
             instrument
+                .ok_or(Invalid(
+                    "computer keyboard analytic capability is unavailable",
+                ))?
                 .prepare_shared_analytic_context()
                 .map_err(|_| Invalid("computer keyboard context preparation failed"))?
         } else {
@@ -384,19 +423,20 @@ impl ComputerKeyboardRuntime {
                 if let Some(runtime) = mutable.as_ref() {
                     // Validate against the actual native runtime too. A provider's
                     // optional source validator may not cover every pitch domain.
-                    supported[index] = instrument.validate_event_note(pitch, velocity).is_ok()
-                        && runtime
-                            .preflight_event_batch(
-                                &[NativeInstrumentEvent::NoteOn {
-                                    frame_offset: 0,
-                                    occurrence_id: 1,
-                                    pitch,
-                                    velocity,
-                                }],
-                                1,
-                                &hex_lattice::EMPTY_DEVICE_RESOURCES,
-                            )
-                            .is_ok();
+                    supported[index] = instrument.is_none_or(|instrument| {
+                        instrument.validate_event_note(pitch, velocity).is_ok()
+                    }) && runtime
+                        .preflight_event_batch(
+                            &[NativeInstrumentEvent::NoteOn {
+                                frame_offset: 0,
+                                occurrence_id: 1,
+                                pitch,
+                                velocity,
+                            }],
+                            1,
+                            resource_view,
+                        )
+                        .is_ok();
                     continue;
                 }
                 let sampler = if let Some(context) = &context {
@@ -406,6 +446,9 @@ impl ComputerKeyboardRuntime {
                         .map(Sampler::Shared)
                 } else {
                     instrument
+                        .ok_or(Invalid(
+                            "computer keyboard analytic capability is unavailable",
+                        ))?
                         .prepare_note(pitch, velocity)
                         .ok()
                         .map(Sampler::Inline)
@@ -426,6 +469,7 @@ impl ComputerKeyboardRuntime {
             ));
         }
         let result = Self {
+            resources,
             track,
             instrument_id: None,
             expression: None,
@@ -460,6 +504,14 @@ impl ComputerKeyboardRuntime {
             return Err(Invalid("computer keyboard storage exceeds its budget"));
         }
         Ok(result)
+    }
+    pub(crate) fn set_resource_identity(
+        &mut self,
+        device: hex_project::DeviceId,
+        tuning: hex_lattice::TuningTable,
+    ) {
+        self.instrument_id = Some(device);
+        self.tuning = tuning;
     }
     pub(crate) fn set_tuning_family(
         &mut self,
@@ -661,6 +713,15 @@ impl ComputerKeyboardRuntime {
         Some((notes, len))
     }
     pub(crate) fn can_preserve_from(&self, previous: &Self) -> bool {
+        let resources_match = match (&self.resources, &previous.resources) {
+            (None, None) => true,
+            (Some(current), Some(previous)) => current.compatible(previous),
+            _ => false,
+        };
+        if !resources_match {
+            return false;
+        }
+
         // The requests_preservation_from cut decides whether the input is live.
         // Structural preflight and commit must not re-read asynchronous cancel.
         if !self.preserves_input_identity(previous)
@@ -845,6 +906,10 @@ impl ComputerKeyboardRuntime {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), Invalid> {
+        let resources = self
+            .resources
+            .as_ref()
+            .map_or(resources, |lease| lease.resources());
         if output.is_empty() {
             return Ok(());
         }

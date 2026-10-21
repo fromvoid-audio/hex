@@ -32,6 +32,8 @@ pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
 mod applied_source;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod device_resources_tests;
 #[cfg(test)]
 mod project_spectrum_tests;
 mod runtime_view;
@@ -835,6 +837,7 @@ pub struct PublicationControl {
     revision: u64,
     command_storage_bytes: usize,
     legacy_pcm_frames: u64,
+    device_resources: Option<hex_engine::native_device_resources::DeviceResourcePublication>,
     resident_forwarding: Option<Arc<resident_forwarding::ResidentForwarding>>,
     #[cfg(all(test, feature = "allocation-probe"))]
     endpoint_probe: Option<crate::native_callback_owner::DropProbe>,
@@ -946,6 +949,7 @@ pub fn channel_with_spectrum(
                 revision: 0,
                 command_storage_bytes,
                 legacy_pcm_frames: 0,
+                device_resources: None,
                 resident_forwarding: None,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 endpoint_probe: None,
@@ -1122,6 +1126,55 @@ impl PublicationControl {
         capture_runtime_fence(&self.status)
     }
 
+    /// Reserve the ordinary registered-resource subtree before any publication/client exposure.
+    /// Configure this capability even for an initially resource-free project so a later sampler
+    /// does not reopen the output. Limits grant no custody or complete graph provenance. Legacy
+    /// clip PCM remains a separate conservative capacity allowance; its old graph is destroyed on
+    /// control before that allowance is released. Exact runtime leases may migrate into tails and
+    /// retain their source obligations across returns of the publication which introduced them.
+    pub fn configure_device_resource_publication_on_control(
+        &mut self,
+        reservation: hex_engine::AudioStorageLedgerReservation,
+    ) -> Result<(), &'static str> {
+        if self.device_resources.is_some()
+            || self.revision != 0
+            || self.status.client_exposed.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
+            || self.candidate_root.domains_configured()
+        {
+            return Err("device resource publication requires a vacant unexposed ordinary output");
+        }
+        // One queue, active, deferred, callback-held, control-held and construction owner, plus
+        // the existing retirement queue. Each Playback's track/tail/keyboard bound is unchanged.
+        let max_obligations = self
+            .publications
+            .buffer()
+            .capacity()
+            .checked_add(RETIRED)
+            .and_then(|n| n.checked_add(5))
+            .and_then(|n| {
+                n.checked_mul(
+                    hex_engine::native_device_resources::MAX_PLAYBACK_DEVICE_RESOURCE_LEASES,
+                )
+            })
+            .ok_or("device resource publication capacity overflow")?;
+        let resources =
+            hex_engine::native_device_resources::DeviceResourcePublication::reserve_on_control(
+                reservation,
+                max_obligations,
+            )
+            .map_err(|_| "device resource publication reservation refused")?;
+        self.device_resources = Some(resources);
+        Ok(())
+    }
+
+    pub fn outstanding_device_resource_leases(&self) -> usize {
+        self.device_resources
+            .as_ref()
+            .map_or(0, |resources| resources.outstanding_leases())
+    }
+
     pub fn publish(&mut self, playback: Playback) -> Result<u64, PublishError> {
         self.publish_with_policy(playback, PublicationPolicy::InheritRuntime)
     }
@@ -1146,6 +1199,57 @@ impl PublicationControl {
         self.publish_with_pcm_obligation(playback, policy, control_context_generation, false)
     }
     fn publish_with_pcm_obligation(
+        &mut self,
+        playback: Playback,
+        policy: PublicationPolicy,
+        control_context_generation: u64,
+        forwarded_pcm: bool,
+    ) -> Result<u64, PublishError> {
+        let Some(mut resources) = self.device_resources.take() else {
+            if playback.contains_device_resource_leases() {
+                return Err(PublishError {
+                    reason: "device resource publication was not reserved for this output",
+                    playback,
+                });
+            }
+            return self.publish_unaccounted_pcm_obligation(
+                playback,
+                policy,
+                control_context_generation,
+                forwarded_pcm,
+            );
+        };
+        let existing_pcm = if self.resident_forwarding.is_some() {
+            self.resident_forwarding_pcm_frames()
+        } else {
+            Some(self.legacy_pcm_frames)
+        };
+        let legacy_pcm = existing_pcm.and_then(|frames| {
+            if forwarded_pcm {
+                Some(frames)
+            } else {
+                frames.checked_add(playback.resident_pcm_capacity_frames()?)
+            }
+        });
+        let result = if let Some(legacy_pcm) = legacy_pcm {
+            resources.publish_on_control(playback, legacy_pcm, |playback| {
+                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, forwarded_pcm)
+            }).map_err(|error| match error {
+                hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } => PublishError {
+                    reason: "device resource publication storage reservation exceeded", playback,
+                },
+                hex_engine::native_device_resources::DeviceResourcePublishError::Publication(error) => error,
+            })
+        } else {
+            Err(PublishError {
+                reason: "resident pcm obligation unavailable or overflowing",
+                playback,
+            })
+        };
+        self.device_resources = Some(resources);
+        result
+    }
+    fn publish_unaccounted_pcm_obligation(
         &mut self,
         playback: Playback,
         policy: PublicationPolicy,
@@ -1268,8 +1372,17 @@ impl PublicationControl {
                     }
                 }
                 ReturnedPublication::Legacy(publication) => {
-                    let (frames, forwarded) = (publication.pcm_frames, publication.forwarded_pcm);
-                    drop(publication); // actual owner destruction precedes obligation release
+                    let Publication {
+                        pcm_frames: frames,
+                        forwarded_pcm: forwarded,
+                        playback,
+                        ..
+                    } = publication;
+                    if let Some(resources) = self.device_resources.as_mut() {
+                        resources.retire_on_control(playback);
+                    } else {
+                        drop(playback);
+                    } // actual owner destruction precedes obligation release
                     if forwarded {
                         if let Some(bridge) = &self.resident_forwarding {
                             bridge.release_pcm_after_drop(frames);
@@ -1307,7 +1420,8 @@ impl PublicationControl {
         &mut self,
         reservation: crate::AudioCandidateDomainReservation,
     ) -> Result<(), &'static str> {
-        if self.status.client_exposed.load(Acquire)
+        if self.device_resources.is_some()
+            || self.status.client_exposed.load(Acquire)
             || !self.native_custody
             || self.revision != 0
             || self.status.closing.load(Acquire)

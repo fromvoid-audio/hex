@@ -270,7 +270,10 @@ pub(crate) fn compile_current_sampler_track(
         return Err(Invalid("native midi bank destination is occupied"));
     }
     let limits = MutableInstrumentLimits::from_factory(prepared)?;
-    let instrument = crate::native_device_resources::PreparedControlSampler(prepared.clone());
+    let instrument =
+        hex_devices::sampler::catalog::PreparedSamplerInstrument::from_runtime_on_control(
+            prepared.clone(),
+        );
     compile_instrument_track_with_empty_bank(
         project,
         track,

@@ -15,16 +15,21 @@ pub(crate) mod current_sampler;
 mod ingress;
 mod resident;
 pub use resident::sampler_import_template_on_control;
+mod prepared;
 mod snapshot;
 pub use admission::{
     ControlSamplerInventory, ControlSamplerOutbound, ControlSamplerPhase, ControlSamplerSelection,
     inspect_control_sampler_union,
 };
 pub use ingress::ResidentAudioIngressRefusal;
+pub(crate) use prepared::CompilerDeviceResources;
+pub use prepared::{
+    DeviceResourcePublication, DeviceResourcePublishError, MAX_PLAYBACK_DEVICE_RESOURCE_LEASES,
+    PreparedDeviceResourceLease, PreparedDeviceResources,
+};
 pub use resident::{ResidentDeviceAssets, StagedNativeAssetView};
-pub(crate) use snapshot::PreparedControlSampler;
-pub(crate) use snapshot::prepare_instrument;
 pub use snapshot::{ControlSamplerSources, DispatchedSourceObligation};
+pub(crate) use snapshot::{InstrumentResourcePreparation, prepare_instrument};
 
 /// Expected original decoded source facts, captured by the media owner on control.
 #[derive(Clone, Copy, Debug)]

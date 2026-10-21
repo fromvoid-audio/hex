@@ -31,6 +31,17 @@ const MAX_MUTABLE_TAIL_SECONDS: u64 = 600;
 pub(crate) fn max_mutable_tail_frames(sample_rate: u32) -> Option<u64> {
     u64::from(sample_rate).checked_mul(MAX_MUTABLE_TAIL_SECONDS)
 }
+pub(crate) fn runtime_limits(
+    sample_rate: u32,
+) -> Result<NativeInstrumentRuntimeLimits, crate::Invalid> {
+    Ok(NativeInstrumentRuntimeLimits {
+        max_pair_bytes: MAX_STATEFUL_RUNTIME_PAIR_BYTES,
+        max_events_per_block: MAX_MUTABLE_EVENTS_PER_QUERY,
+        max_active_occurrences: MAX_SIMULTANEOUS_VOICES_PER_TRACK,
+        max_tail_frames: max_mutable_tail_frames(sample_rate)
+            .ok_or(crate::Invalid("mutable instrument tail budget overflow"))?,
+    })
+}
 pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
 /// Combined declared DSP storage for committed/scratch pairs in one active
@@ -208,6 +219,7 @@ impl MutableOccurrenceKey {
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
+    pub(crate) resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     pub(crate) expression_identity: Option<hex_project::DeviceId>,
     pub(crate) expression: Option<crate::live_expression::Snapshot>,
     primary: Vec<MutableOccurrence>,
@@ -225,7 +237,8 @@ pub(crate) struct MutableInstrumentTail {
 
 impl MutableInstrumentTrackRuntime {
     pub(crate) fn is_concrete_current_sampler(&self) -> bool {
-        self.expression.is_none()
+        self.resources.is_none()
+            && self.expression.is_none()
             && self
                 .pair
                 .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
@@ -237,6 +250,7 @@ impl MutableInstrumentTrackRuntime {
     ) -> Result<(), crate::AudioStorageError> {
         let Self {
             pair,
+            resources,
             expression_identity: _,
             expression,
             primary,
@@ -244,7 +258,7 @@ impl MutableInstrumentTrackRuntime {
             next_id: _,
             next_id_scratch: _,
         } = self;
-        if expression.is_some() {
+        if expression.is_some() || resources.is_some() {
             return Err(crate::AudioStorageError::UnsupportedGraph);
         }
         let (first, second) = pair
@@ -326,6 +340,7 @@ impl MutableInstrumentTrackRuntime {
         }
         Ok(Self {
             pair,
+            resources: None,
             expression_identity: None,
             expression: None,
             primary,
@@ -462,7 +477,8 @@ impl MutableInstrumentTrackRuntime {
     /// owner. The canonical revision descriptor and route checks remain the
     /// caller's responsibility.
     pub(crate) fn can_inherit_from(&self, previous: &Self) -> bool {
-        self.primary.capacity() >= previous.primary.len()
+        self.resource_history_matches(previous)
+            && self.primary.capacity() >= previous.primary.len()
             && self.scratch.capacity() >= previous.primary.len()
             && self.pair.can_inherit_from(&previous.pair)
     }
@@ -474,7 +490,8 @@ impl MutableInstrumentTrackRuntime {
         &mut self,
         previous: &Self,
     ) -> Result<(), MutableInstrumentRuntimeError> {
-        if self.primary.capacity() < previous.primary.len()
+        if !self.resource_history_matches(previous)
+            || self.primary.capacity() < previous.primary.len()
             || self.scratch.capacity() < previous.primary.len()
             || !self.pair.can_inherit_from(&previous.pair)
         {
@@ -499,12 +516,20 @@ impl MutableInstrumentTrackRuntime {
 
     /// Read-only preflight for a prepared instrument-state retarget. The
     /// candidate inventory owns `proof` until control retires this graph.
+    fn resource_history_matches(&self, previous: &Self) -> bool {
+        match (&self.resources, &previous.resources) {
+            (None, None) => true,
+            (Some(current), Some(previous)) => current.compatible(previous),
+            _ => false,
+        }
+    }
     pub(crate) fn can_retarget_from(
         &self,
         previous: &Self,
         proof: &dyn hex_lattice::PreparedInstrumentHistoryRetarget,
     ) -> bool {
-        self.primary.capacity() >= previous.primary.len()
+        self.resource_history_matches(previous)
+            && self.primary.capacity() >= previous.primary.len()
             && self.scratch.capacity() >= previous.primary.len()
             && self.pair.can_retarget_from(&previous.pair, proof)
     }
@@ -821,6 +846,10 @@ impl MutableInstrumentTrackRuntime {
             };
             (offset, is_on, occurrence_id)
         });
+        let resources = self
+            .resources
+            .as_ref()
+            .map_or(resources, |lease| lease.resources());
         self.pair
             .process_block_with_clock(events, frames, clock, resources)
             .map_err(map_runtime_error)

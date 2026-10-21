@@ -212,6 +212,7 @@ impl RevisionAssembly {
             .or(self.revision_value.as_ref());
         if let Some(PreparedRevision {
             resource_scope,
+            device_resource_scope,
             tuning_family: _,
             arrangement,
             session,
@@ -220,7 +221,7 @@ impl RevisionAssembly {
             gain_recording_track,
         }) = revision
         {
-            if *resource_scope != self.current_sampler_scope {
+            if *resource_scope != self.current_sampler_scope || device_resource_scope.is_some() {
                 return Err(Error::UnsupportedGraph);
             }
             if self.arrangement.is_some()
@@ -372,6 +373,7 @@ impl RevisionAssembly {
             (Some(arrangement), Some(session), Some(midi_preview)) => {
                 self.revision_value = Some(PreparedRevision {
                     resource_scope: self.current_sampler_scope,
+                    device_resource_scope: None,
                     tuning_family: TuningContinuationFamily::fresh()
                         .map_err(|_| Error::Overflow)?,
                     arrangement,
@@ -430,6 +432,7 @@ impl RevisionAssembly {
         }
         if let Some(PreparedRevision {
             resource_scope: _,
+            device_resource_scope: _,
             tuning_family: _,
             arrangement,
             session,
@@ -549,6 +552,7 @@ impl RevisionAssembly {
         {
             let PreparedRevision {
                 resource_scope: _,
+                device_resource_scope: _,
                 tuning_family: _,
                 arrangement,
                 session,
