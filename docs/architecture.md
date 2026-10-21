@@ -8,7 +8,8 @@ Original fixture implementation/history remains in frozen PR199/#20.
 
 The production macOS VST3 design selects a per-instance native helper with an
 explicit asynchronous audio bridge; see [the VST3 hosting decision](vst3-hosting-boundary.md).
-It is a reviewed design boundary, not implemented installed-plugin admission.
+Factory discovery is implemented for explicitly selected trusted bundles;
+persistent instances and the audio bridge are not yet implemented.
 The separate CLAP VM profile above is unchanged.
 
 ## Implemented
@@ -635,18 +636,36 @@ publication queue returns this opaque candidate before inheritance or rendering;
 legacy publication remains separate. [Never-installed disposal](never-installed-audio-disposal.md)
 describes terminal anchoring, retained failure and the unresolved native gates.
 
-## controlled standalone VST3 tooling
+## VST3 discovery and standalone tooling
 
-`hex-plugin-scan` has no workspace dependencies and is not imported by the app,
-engine, audio or session crates. Its Linux-only supervisor admits explicit
-original SDK fixtures through caller-owned build receipts. Separately built C++
-children own factory discovery or bounded offline component processing; foreign
-objects and SDK pointers never enter the Rust supervisor or audio callback.
-Production/installed plugin scanning and application hosting remain refused.
-The receipt records pinned MIT SDK provenance, compiler/header/runtime closure
-and licenses; process cleanup contains ordinary fixture faults, without claiming
-a security sandbox. See the crate README for the finite wire, lifecycle and test
-contracts. Other platforms expose refusal stubs, not a translation fallback.
+`hex-plugin-scan` has no workspace dependencies. Its library supplies copied
+factory/report data and fixed packaged-tool identity checks; process-global
+signals and native-child custody remain private to its standalone executable.
+The Linux-only supervisor retains its separate original-fixture/offline profile.
+On native macOS arm64, the application resolves only its qualified packaged
+standalone scanner/native helper. Foreign factories execute in the native child,
+never in Rust, GPUI, Session, engine or audio callbacks. This trusted same-user
+boundary contains ordinary faults; it is not a malicious-code sandbox.
+
+`hex-ui -> hex-plugin-catalog -> hex-plugin-scan` is the control-side metadata
+edge. The catalog crate owns bounded current-format records and selected-bundle
+worker coordination. One active operation per browser sends a stdin cancellation
+byte to its outer scanner, drains bounded copied output and retains that direct
+Child until reap; it never kills the outer process group while native cleanup may
+still be owned there. Unexpected custody loss is reported as unconfirmed, without
+further process operations. The standalone owner completes native retirement
+before potentially blocked result output.
+
+Catalog publication uses a fresh read and nonblocking advisory writer lock,
+create-new temporary file, file sync and atomic rename. Failed rescans retain last
+good metadata with a visible failure; malformed existing files are preserved.
+After-rename directory-sync failure reports the published-but-unconfirmed state.
+Startup/reload only reads metadata: it never rescans or loads foreign code.
+UI projections are cached and virtualized; foreign UID/module keys never become
+native-device insertion payloads. Rows explicitly report hosting unavailable.
+Optional Factory2 classification, folder/root management and ordinary persistent
+hosting remain separate increments; generic processor labels do not imply an
+instrument/effect classification or successful playback.
 
 `hex-clap-scan` owns the corresponding separate CLAP format boundary, with no
 workspace dependency edges. Its descriptor and controlled offline children cover

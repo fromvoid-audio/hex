@@ -13,6 +13,7 @@ ALLOWED = {
     'hex-midi': set(),
     'hex-clap-scan': set(),
     'hex-plugin-scan': set(),
+    'hex-plugin-catalog': {'hex-plugin-scan'},
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
     'hex-project': {'hex-lattice-contract', 'hex-tuning'},
@@ -30,7 +31,7 @@ ALLOWED = {
     'hex-widgets': set(),
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
     'hex-audio': {'hex-engine', 'hex-stream'},
-    'hex-ui': {'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
+    'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
     # Desktop injects the Session sink and binds neutral source facts to actual
     # audio/stream constructor custody; Session has no device/stream edge.
     'hex-desktop': {'hex-mts', 'hex-midi', 'hex-diagnostics', 'hex-ui', 'hex-audio', 'hex-engine', 'hex-session', 'hex-stream', 'hex-media'},
@@ -61,8 +62,8 @@ BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'corem
               'signal-hook': {'hex-plugin-scan', 'hex-clap-scan'},
               # Safe publication and standalone child ownership only.
               'rustix': {'hex-export', 'hex-plugin-scan', 'hex-clap-scan'},
-              # Advisory journal locks stay on the storage/control boundary.
-              'fs2': {'hex-storage'}}
+              # Advisory document/catalog locks stay on their storage/control boundaries.
+              'fs2': {'hex-storage', 'hex-plugin-catalog'}}
 # Build-only hash checks of observed pinned rtrb constructor files. This does
 # not permit cryptography or a new dependency on the stream runtime path.
 BUILD_BOUNDARIES = {'coremidi': {'hex-midi'}, 'sha2': {'hex-stream'}}

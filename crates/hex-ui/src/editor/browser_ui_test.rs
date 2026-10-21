@@ -5236,3 +5236,6 @@ fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_lo
     })
     .unwrap();
 }
+
+#[path = "browser_plugin_ui_test.rs"]
+mod plugin_browser;

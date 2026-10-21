@@ -2707,6 +2707,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-plugin-catalog"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "hex-plugin-scan",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "hex-plugin-scan"
 version = "0.1.0"
 dependencies = [
@@ -2789,6 +2799,7 @@ dependencies = [
  "hex-media",
  "hex-midi",
  "hex-mts",
+ "hex-plugin-catalog",
  "hex-preferences",
  "hex-project",
  "hex-session",

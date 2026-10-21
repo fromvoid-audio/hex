@@ -369,3 +369,10 @@ Filesystem work belongs on a control worker, never UI/audio callbacks. The
 selected sealed app/local receipt remains a caller trust root; this is not
 malicious tamper resistance or an authentication service. Discovery remains
 factory-only, with no processing instance or native browser insertion.
+
+
+`macos::report` contains copied serde records shared with the catalog/control
+client. Its cleanup publication predicate is the standalone owner's existing
+normal-direct-reap gate; exporting data does not export signal registration or
+native child ownership. The application links only neutral records/package
+inspection through `hex-plugin-catalog`, never `macos_owner.rs`.

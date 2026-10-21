@@ -1,14 +1,14 @@
 //! Private standalone Mac process owner. Never linked into GPUI or the library.
+use hex_plugin_scan::macos::report::{Cleanup, GroupOutcome, Report};
 use hex_plugin_scan::{
     Discovery,
     macos::{
         build_identity::Build,
-        identity::{Bundle, Executable},
+        identity::Bundle,
         protocol::{self, Attempt},
     },
 };
 use rustix::process::{self, Pid, Signal, WaitId, WaitIdOptions};
-use serde::Serialize;
 use std::{
     io::{Read, Write},
     os::{
@@ -55,54 +55,6 @@ fn signals() -> Result<(SignalGuard, Arc<AtomicBool>), String> {
         );
     }
     Ok((guard, cancelled))
-}
-
-#[derive(Clone, Debug, Serialize)]
-#[serde(tag = "status", rename_all = "snake_case")]
-pub enum GroupOutcome {
-    Sent,
-    Absent,
-    PermissionDenied { errno: i32 },
-    Failed { errno: i32, error: String },
-}
-impl GroupOutcome {
-    fn compatible_with_direct_retirement(&self, exited: bool) -> bool {
-        matches!(self, Self::Sent | Self::Absent)
-            || (exited && matches!(self, Self::PermissionDenied { .. }))
-    }
-}
-
-#[derive(Clone, Debug, Default, Serialize)]
-pub struct Cleanup {
-    pub direct_reaped: bool,
-    pub direct_exit_code: Option<i32>,
-    pub direct_exit_signal: Option<i32>,
-    pub custody_lost: bool,
-    pub cleanup_unconfirmed: bool,
-    pub exit_observed_before_signals: bool,
-    pub original_group_term: Option<GroupOutcome>,
-    pub original_group_kill: Option<GroupOutcome>,
-    pub direct_kill: Option<String>,
-    pub descendants: &'static str,
-    pub pending: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct Report {
-    pub profile: &'static str,
-    pub request: u64,
-    pub generation: u64,
-    pub receipt_sha256: String,
-    pub helper_sha256: String,
-    pub bundle: Bundle,
-    pub executable: Option<Executable>,
-    pub bundle_identifier: Option<String>,
-    pub discovery: Option<Discovery>,
-    pub interruption: Option<&'static str>,
-    pub error: Option<String>,
-    pub stdout: String,
-    pub stderr: String,
-    pub cleanup: Cleanup,
 }
 
 pub struct Pending {
@@ -215,21 +167,7 @@ fn retire_child(process: &mut impl ChildOperations, cleanup: &mut Cleanup) -> Re
 }
 
 fn may_publish(cleanup: &Cleanup) -> bool {
-    cleanup.direct_reaped
-        && cleanup.direct_exit_code == Some(0)
-        && !cleanup.pending
-        && !cleanup.custody_lost
-        && !cleanup.cleanup_unconfirmed
-        && [
-            cleanup.original_group_term.as_ref(),
-            cleanup.original_group_kill.as_ref(),
-        ]
-        .into_iter()
-        .all(|value| {
-            value.is_some_and(|outcome| {
-                outcome.compatible_with_direct_retirement(cleanup.exit_observed_before_signals)
-            })
-        })
+    cleanup.may_publish()
 }
 
 fn interruption(
@@ -387,7 +325,7 @@ pub fn run(
     let mut owner = Pending {
         process: NativeChild { child, pid },
         cleanup: Cleanup {
-            descendants: "unknown",
+            descendants: "unknown".into(),
             pending: true,
             ..Cleanup::default()
         },
@@ -554,7 +492,7 @@ pub fn run(
     }
     let cleanup = owner.cleanup.clone();
     let report = Report {
-        profile: "explicit-user-trusted-macos-factory-only",
+        profile: "explicit-user-trusted-macos-factory-only".into(),
         request: attempt.request,
         generation: attempt.generation,
         receipt_sha256: build.receipt_sha256,
@@ -563,7 +501,7 @@ pub fn run(
         executable,
         bundle_identifier: identifier,
         discovery,
-        interruption: stopped,
+        interruption: stopped.map(str::to_owned),
         error: cause,
         stdout: String::from_utf8_lossy(&out).into_owned(),
         stderr: String::from_utf8_lossy(&err).into_owned(),
@@ -628,7 +566,7 @@ mod tests {
         };
         let mut cleanup = Cleanup {
             pending: true,
-            descendants: "unknown",
+            descendants: "unknown".into(),
             ..Cleanup::default()
         };
         assert!(retire_child(&mut kernel, &mut cleanup).is_err());
@@ -648,7 +586,7 @@ mod tests {
         };
         let mut cleanup = Cleanup {
             pending: true,
-            descendants: "unknown",
+            descendants: "unknown".into(),
             ..Cleanup::default()
         };
         retire_child(&mut kernel, &mut cleanup).expect("owned retirement");
@@ -675,7 +613,7 @@ mod tests {
             };
             let mut cleanup = Cleanup {
                 pending: true,
-                descendants: "unknown",
+                descendants: "unknown".into(),
                 ..Cleanup::default()
             };
             assert_eq!(retire_child(&mut kernel, &mut cleanup).is_err(), running);
@@ -712,7 +650,7 @@ mod tests {
         };
         let mut cleanup = Cleanup {
             pending: true,
-            descendants: "unknown",
+            descendants: "unknown".into(),
             ..Cleanup::default()
         };
         retire_child(&mut kernel, &mut cleanup).expect("retire");
