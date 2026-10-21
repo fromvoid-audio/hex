@@ -4,26 +4,71 @@ use hex_lattice_contract::{
     DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor, ParameterValue,
 };
 
-/// Authored sampler level only. This metadata read does not register the device
-/// or grant native resource/runtime admission.
-pub fn sampler_gain_on_control(state: &NativeDeviceState) -> Result<f64, Invalid> {
-    hex_devices::sampler::state::SamplerState::from_native(state)
-        .map(|s| s.gain)
-        .map_err(|_| Invalid("sampler state is invalid"))
+/// Closed authored sampler controls. This metadata never registers the device
+/// or grants resource/runtime admission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum SamplerParameter {
+    Gain,
+    Transpose,
 }
-pub fn patch_sampler_gain_on_control(
+impl SamplerParameter {
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Gain => "gain",
+            Self::Transpose => "pitch",
+        }
+    }
+    pub const fn bounds(self) -> (f64, f64) {
+        match self {
+            Self::Gain => (0.0, 4.0),
+            Self::Transpose => (-48.0, 48.0),
+        }
+    }
+    pub const fn default_value(self) -> f64 {
+        match self {
+            Self::Gain => 1.0,
+            Self::Transpose => 0.0,
+        }
+    }
+    pub const fn unit(self) -> Option<&'static str> {
+        match self {
+            Self::Gain => None,
+            Self::Transpose => Some("st"),
+        }
+    }
+}
+pub fn sampler_parameter_value_on_control(
+    parameter: SamplerParameter,
     state: &NativeDeviceState,
-    gain: f64,
+) -> Result<f64, Invalid> {
+    let authored = hex_devices::sampler::state::SamplerState::from_native(state)
+        .map_err(|_| Invalid("sampler state is invalid"))?;
+    Ok(match parameter {
+        SamplerParameter::Gain => authored.gain,
+        SamplerParameter::Transpose => authored.transpose_semitones,
+    })
+}
+pub fn patch_sampler_parameter_on_control(
+    parameter: SamplerParameter,
+    state: &NativeDeviceState,
+    value: f64,
 ) -> Result<NativeDeviceState, Invalid> {
-    if !gain.is_finite() || !(0.0..=4.0).contains(&gain) {
-        return Err(Invalid("sampler gain must be between zero and four"));
+    let (min, max) = parameter.bounds();
+    if !value.is_finite() || !(min..=max).contains(&value) {
+        return Err(Invalid(match parameter {
+            SamplerParameter::Gain => "sampler gain must be between zero and four",
+            SamplerParameter::Transpose => "sampler pitch must be between -48 and 48 semitones",
+        }));
     }
     let mut authored = hex_devices::sampler::state::SamplerState::from_native(state)
         .map_err(|_| Invalid("sampler state is invalid"))?;
-    authored.gain = gain;
+    match parameter {
+        SamplerParameter::Gain => authored.gain = value,
+        SamplerParameter::Transpose => authored.transpose_semitones = value,
+    }
     authored
         .replace_in(state)
-        .map_err(|_| Invalid("sampler gain is invalid"))
+        .map_err(|_| Invalid("sampler setting is invalid"))
 }
 
 /// Reserved host parameter. Device codecs never own this identifier.

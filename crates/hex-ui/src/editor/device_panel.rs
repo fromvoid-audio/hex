@@ -1990,20 +1990,28 @@ fn render_instrument(
                     .map(|n| n.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| "missing sample identity".into());
-        let readiness = if view.sampler_gain_pending() {
-            "preparing gain · waiting for audio"
+        let readiness = if view.sampler_parameter_pending() {
+            "preparing sampler edit · waiting for audio"
         } else if view.first_sampler_current() {
             "computer keyboard · play from start · stop"
         } else {
             "audio not ready · offline export supported"
         };
-        let gain = view.sampler_gain_control(track, device, cx);
+        let gain =
+            view.sampler_parameter_control(track, device, hex_engine::SamplerParameter::Gain, cx);
+        let pitch = view.sampler_parameter_control(
+            track,
+            device,
+            hex_engine::SamplerParameter::Transpose,
+            cx,
+        );
         let body = crate::device_composition::body()
             .child(gain)
+            .child(pitch)
             .p(px(5.0))
             .text_xs()
             .child(theme::text(format!(
-                "{name} · {readiness} · gain edits require stopped audio · other controls and replacement unavailable"
+                "{name} · {readiness} · edits require stopped audio · other controls and replacement unavailable"
             )));
         device_frame(
             theme::text("sampler"),

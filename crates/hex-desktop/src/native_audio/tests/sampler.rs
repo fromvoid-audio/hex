@@ -649,7 +649,9 @@ fn rendered_mono_a880_sampler_keyboard_playing_and_blocked_release_are_literal(
     rendered_sampler_save_open(cx, false, false, true, false);
 }
 #[gpui::test]
-fn rendered_sampler_gain_edits_rebuild_stopped_current_and_persist(cx: &mut gpui::TestAppContext) {
+fn rendered_sampler_gain_and_pitch_edits_rebuild_stopped_current_and_persist(
+    cx: &mut gpui::TestAppContext,
+) {
     rendered_sampler_save_open(cx, true, false, false, true);
 }
 fn rendered_sampler_save_open(
@@ -707,7 +709,7 @@ fn rendered_sampler_save_open(
     else {
         panic!("track")
     };
-    let loaded_revision = if stereo {
+    let loaded_revision = if stereo && !gain {
         if empty { 3 } else { 5 }
     } else {
         let event = h.run(Request::Edit(Command::SetTuning(tuning(880.0))));
@@ -877,7 +879,7 @@ fn rendered_sampler_save_open(
     }
     let stored = hex_storage::load(&saved).unwrap();
     assert!(stored.assets().all(|a| a.original_source().is_some()));
-    if !stereo {
+    if !stereo || gain {
         assert_eq!(stored.tuning(), tuning(880.0));
     }
     let previous_save = hex_storage::recovery_path(&saved).unwrap();

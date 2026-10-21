@@ -24,7 +24,7 @@ mod canonical_audio_source;
 mod comparison_audio;
 mod export_lane;
 pub(crate) mod sampler_export;
-mod sampler_gain;
+mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
     NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts, WorkerAudioSink,
@@ -114,15 +114,16 @@ pub struct SamplerLoadCompletion {
     pub project_generation: u64,
     pub track: hex_project::TrackId,
 }
-/// One completed sampler gain gesture, bound to its captured canonical target.
+/// One completed sampler parameter gesture, bound to its captured canonical target.
 #[derive(Clone, Debug)]
-pub struct SamplerGainEdit {
+pub struct SamplerParameterEdit {
     pub request_id: u64,
     pub project_generation: u64,
     pub revision: u64,
     pub track: hex_project::TrackId,
     pub device: hex_project::DeviceId,
-    pub gain: f64,
+    pub parameter: hex_engine::SamplerParameter,
+    pub value: f64,
     pub cancel: Arc<AtomicBool>,
 }
 /// A worker response. `playback` is present only when a new graph was compiled.
@@ -136,7 +137,7 @@ pub struct Event {
     pub request_complete: bool,
     /// Metadata-only completion of one first-load action, on success or refusal.
     pub sampler_load_complete: Option<SamplerLoadCompletion>,
-    pub sampler_gain_complete: Option<u64>,
+    pub sampler_parameter_complete: Option<u64>,
     pub computer_keyboard_complete: Option<u64>,
     pub tuning_audition_complete: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
@@ -407,9 +408,9 @@ pub enum Request {
         expected: hex_project::DeviceVariant,
         action: hex_project::DeviceComparisonAction,
     },
-    SetSamplerGain(SamplerGainEdit),
+    SetSamplerParameter(SamplerParameterEdit),
     /// Worker-local continuation after a bounded native callback fence.
-    ContinueSamplerGain,
+    ContinueSamplerParameter,
     SetDeviceParameter {
         device: hex_project::DeviceId,
         parameter: hex_lattice_contract::ParameterId,
@@ -1448,7 +1449,7 @@ fn run_worker(
                 audio_batch_failure: None,
                 request_complete: false,
                 sampler_load_complete: None,
-                sampler_gain_complete: None,
+                sampler_parameter_complete: None,
                 computer_keyboard_complete: None,
                 tuning_audition_complete: None,
                 live_expression_complete: None,
@@ -1480,7 +1481,7 @@ fn run_worker(
             audio_batch_failure: None,
             request_complete: false,
             sampler_load_complete: None,
-            sampler_gain_complete: None,
+            sampler_parameter_complete: None,
             computer_keyboard_complete: None,
             tuning_audition_complete: None,
             live_expression_complete: None,
@@ -1528,7 +1529,7 @@ fn run_worker(
         return;
     }
 
-    let mut pending_sampler_gain: Option<SamplerGainEdit> = None;
+    let mut pending_sampler_parameter: Option<SamplerParameterEdit> = None;
     while let Some(request) = events.next_request_with_control_poll(
         &requests,
         session.native_reservation.is_some(),
@@ -1550,8 +1551,8 @@ fn run_worker(
             )
         },
     ) {
-        let request_complete = !matches!(&request, Request::ContinueSamplerGain);
-        let mut sampler_gain_complete = None;
+        let request_complete = !matches!(&request, Request::ContinueSamplerParameter);
+        let mut sampler_parameter_complete = None;
         if matches!(
             &request,
             Request::NewWithAudioMode { .. }
@@ -1559,11 +1560,11 @@ fn run_worker(
                 | Request::OpenWith { .. }
                 | Request::OpenWithAudioMode { .. }
         ) {
-            if let Some(gain) = pending_sampler_gain.take() {
+            if let Some(gain) = pending_sampler_parameter.take() {
                 gain.cancel.store(true, Ordering::Release);
-                sampler_gain_complete = Some(gain.request_id);
-                if let Some(audio) = events.sampler_gain_audio() {
-                    audio.cancel_sampler_gain();
+                sampler_parameter_complete = Some(gain.request_id);
+                if let Some(audio) = events.sampler_edit_audio() {
+                    audio.cancel_sampler_edit();
                 }
             }
         }
@@ -1795,8 +1796,8 @@ fn run_worker(
             && !matches!(
                 &request,
                 Request::RestartAudio { .. }
-                    | Request::SetSamplerGain(_)
-                    | Request::ContinueSamplerGain
+                    | Request::SetSamplerParameter(_)
+                    | Request::ContinueSamplerParameter
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
@@ -2914,26 +2915,27 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
-                Request::SetSamplerGain(gain) => {
+                Request::SetSamplerParameter(edit) => {
                     let result = (|| -> Result<bool, String> {
-                        if pending_sampler_gain.is_some() {
-                            return Err("sampler gain is already preparing".into());
+                        if pending_sampler_parameter.is_some() {
+                            return Err("sampler edit is already preparing".into());
                         }
-                        sampler_gain::validate(&session, project_generation, revision, &gain)?;
+                        sampler_parameter::validate(&session, project_generation, revision, &edit)?;
                         let state = session
                             .project()
-                            .device(gain.device)
+                            .device(edit.device)
                             .ok_or("sampler target is unavailable")?
                             .state();
-                        if hex_engine::sampler_gain_on_control(state).map_err(|e| e.to_string())?
-                            == gain.gain
+                        if hex_engine::sampler_parameter_value_on_control(edit.parameter, state)
+                            .map_err(|e| e.to_string())?
+                            == edit.value
                         {
                             return Ok(false);
                         }
                         events
-                            .sampler_gain_audio()
-                            .ok_or("sampler gain requires native audio")?
-                            .begin_sampler_gain(hex_engine::AudioSourceContext {
+                            .sampler_edit_audio()
+                            .ok_or("sampler edit requires native audio")?
+                            .begin_sampler_edit(hex_engine::AudioSourceContext {
                                 project_generation,
                                 editor_revision: revision,
                             })?;
@@ -2941,37 +2943,37 @@ fn run_worker(
                     })();
                     match result {
                         Ok(true) => {
-                            pending_sampler_gain = Some(gain);
+                            pending_sampler_parameter = Some(edit);
                             status =
-                                Some("preparing sampler gain · waiting for stopped audio".into());
+                                Some("preparing sampler edit · waiting for stopped audio".into());
                         }
                         Ok(false) => {
-                            sampler_gain_complete = Some(gain.request_id);
+                            sampler_parameter_complete = Some(edit.request_id);
                             status = Some("no change".into());
                         }
                         Err(reason) => {
-                            sampler_gain_complete = Some(gain.request_id);
+                            sampler_parameter_complete = Some(edit.request_id);
                             error = Some(reason);
                         }
                     }
                 }
-                Request::ContinueSamplerGain => {
-                    if let Some(gain) = pending_sampler_gain.take() {
-                        sampler_gain_complete = Some(gain.request_id);
+                Request::ContinueSamplerParameter => {
+                    if let Some(edit) = pending_sampler_parameter.take() {
+                        sampler_parameter_complete = Some(edit.request_id);
                         let result = (|| -> Result<(Created, sampler_export::ServiceExportSnapshot), String> {
-                            sampler_gain::validate(&session, project_generation, revision, &gain)?;
-                            let next = revision.checked_add(1).ok_or("sampler gain revision exhausted")?;
+                            sampler_parameter::validate(&session, project_generation, revision, &edit)?;
+                            let next = revision.checked_add(1).ok_or("sampler edit revision exhausted")?;
                             let context = hex_engine::AudioSourceContext { project_generation, editor_revision: next };
-                            let audio = events.sampler_gain_audio().ok_or("sampler gain output is unavailable")?;
-                            audio.sampler_gain_ready().ok_or("sampler gain fence is not ready")??;
-                            let original = session.project().device(gain.device).ok_or("sampler target is unavailable")?.state();
-                            let patched = hex_engine::patch_sampler_gain_on_control(original, gain.gain).map_err(|e| e.to_string())?;
+                            let audio = events.sampler_edit_audio().ok_or("sampler edit output is unavailable")?;
+                            audio.sampler_edit_ready().ok_or("sampler edit fence is not ready")??;
+                            let original = session.project().device(edit.device).ok_or("sampler target is unavailable")?.state();
+                            let patched = hex_engine::patch_sampler_parameter_on_control(edit.parameter, original, edit.value).map_err(|e| e.to_string())?;
                             let current = compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) });
-                            let prepared = session.command_service_snapshot_with_native(Command::ReplaceDeviceState { device: gain.device, state: patched },
-                                export_lane.admission(current), Some((context, audio, &gain.cancel))).map_err(|e| e.to_string())?;
+                            let prepared = session.command_service_snapshot_with_native(Command::ReplaceDeviceState { device: edit.device, state: patched },
+                                export_lane.admission(current), Some((context, audio, &edit.cancel))).map_err(|e| e.to_string())?;
                             // Authored commit is complete. Audio failure from here is truthful
                             // unavailability, never an invented rollback of the exclusive output.
-                            if let Err(reason) = audio.commit_sampler_gain(context) { error = Some(reason); }
+                            if let Err(reason) = audio.commit_sampler_edit(context) { error = Some(reason); }
                             Ok(prepared)
                         })();
                         match result {
@@ -2980,17 +2982,17 @@ fn run_worker(
                                 unsaved = true;
                                 replacement_revision = Some(snapshot.prepared);
                                 replacement_sources = Some(snapshot.sources);
-                                status = Some("sampler gain changed · preparing audio".into());
+                                status = Some("sampler edit changed · preparing audio".into());
                             }
                             Err(reason) => {
-                                if let Some(audio) = events.sampler_gain_audio() {
-                                    audio.cancel_sampler_gain();
+                                if let Some(audio) = events.sampler_edit_audio() {
+                                    audio.cancel_sampler_edit();
                                 }
                                 error = Some(reason);
                             }
                         }
-                    } else if let Some(audio) = events.sampler_gain_audio() {
-                        audio.cancel_sampler_gain();
+                    } else if let Some(audio) = events.sampler_edit_audio() {
+                        audio.cancel_sampler_edit();
                     }
                 }
                 Request::SetDeviceParameter {
@@ -3925,7 +3927,7 @@ fn run_worker(
                 error,
                 request_complete,
                 sampler_load_complete,
-                sampler_gain_complete,
+                sampler_parameter_complete,
                 computer_keyboard_complete,
                 tuning_audition_complete,
                 live_expression_complete,

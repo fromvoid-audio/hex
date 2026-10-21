@@ -81,7 +81,7 @@ pub(super) struct NativeAudioSink {
     last_state: Option<(AudioSourceContext, &'static str)>,
     blocked: Option<AudioSourceContext>,
     sampler: Option<sampler::Sampler>,
-    sampler_gain: Option<sampler::GainPending>,
+    sampler_parameter: Option<sampler::EditPending>,
     ordinary_pcm_frames: u64,
     verified_pcm_frames: u64,
     suspended_output: Option<u64>,
@@ -115,7 +115,7 @@ impl NativeAudioSink {
             last_state: None,
             blocked: None,
             sampler: None,
-            sampler_gain: None,
+            sampler_parameter: None,
             ordinary_pcm_frames: 0,
             verified_pcm_frames: 0,
             suspended_output: None,
@@ -816,23 +816,23 @@ impl WorkerAudioSink for NativeAudioSink {
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.advance_sampler(input);
     }
-    fn begin_sampler_gain(&mut self, context: AudioSourceContext) -> Result<(), String> {
-        self.begin_gain(context)
+    fn begin_sampler_edit(&mut self, context: AudioSourceContext) -> Result<(), String> {
+        self.begin_edit(context)
     }
-    fn sampler_gain_ready(&mut self) -> Option<Result<(), String>> {
-        self.gain_ready()
+    fn sampler_edit_ready(&mut self) -> Option<Result<(), String>> {
+        self.edit_ready()
     }
-    fn prepare_sampler_gain(
+    fn prepare_sampler_edit(
         &mut self,
         input: hex_session::service::NativeSamplerInput<'_>,
     ) -> Result<(), String> {
-        self.prepare_gain(input)
+        self.prepare_edit(input)
     }
-    fn commit_sampler_gain(&mut self, context: AudioSourceContext) -> Result<(), String> {
-        self.commit_gain(context)
+    fn commit_sampler_edit(&mut self, context: AudioSourceContext) -> Result<(), String> {
+        self.commit_edit(context)
     }
-    fn cancel_sampler_gain(&mut self) {
-        self.cancel_gain();
+    fn cancel_sampler_edit(&mut self) {
+        self.cancel_edit();
     }
     fn prepare_sampler_keyboard(
         &mut self,
@@ -867,7 +867,7 @@ impl WorkerAudioSink for NativeAudioSink {
         self.sampler_hold()
     }
     fn poll(&mut self) {
-        self.poll_gain_timeout();
+        self.poll_edit_timeout();
         self.poll_open();
         self.deliver_open();
         if let Some(mut output) = self.output.take() {
