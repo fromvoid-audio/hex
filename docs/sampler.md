@@ -989,8 +989,8 @@ These are headless fixtures, not physical display/input/device/listening accepta
 Finite later user checks on an exact optimized candidate: load a WAV, confirm its
 identity and original-rate waveform, edit start/end and loop points immediately,
 compare markers with the audible region/wrap, and Save/New/Open. Confirm layout
-and horizontal scrolling in a smaller window. Waveform gestures, replacement,
-replacement history, broader playback and qualified native delivery remain separate work.
+and horizontal scrolling in a smaller window. Waveform gestures, broader playback
+and qualified native delivery remain separate work.
 
 
 ## stopped configuration history
@@ -1000,7 +1000,7 @@ existing, non-bypassed sampler instrument differs only in the eleven supported
 panel fields: gain, transpose, source start/end, Classic loop enable/start/end,
 and ADSR. Source bindings, provider, device identity, bypass/comparison and every
 other project field must be identical. Selection does not choose a history target.
-Unsupported load/removal/replacement, routing, tuning or other steps refuse in
+Unsupported load/removal, routing, tuning or other steps refuse in
 place; history is never searched or skipped. Empty history completes without
 requesting audio. Ordinary non-sampler Undo/Redo retains its existing behavior.
 
@@ -1037,7 +1037,7 @@ identity, postcommit open failure/Save/export/retry, and Save/New/Open with sour
 metadata and peak backing checks. Callback allocation probes retain zero total
 and signed-net counts/bytes for their fixtures. These checks do not establish
 physical device deadlines, UI/input/listening acceptance or Live parity. Sample
-replacement/removal history, Session/Console playback and nonzero seek remain
+removal history, Session/Console playback and nonzero seek remain
 outside this increment; optimized native delivery and user acceptance remain open.
 
 
@@ -1086,9 +1086,18 @@ through history eviction or a new collector. Repeated replacement may refuse the
 existing caps. Both old and new original files remain relevant to later Open;
 missing media is reported through normal relinking rather than silently removed.
 
-Replacement creates one canonical history edge. That edge currently refuses
-native Undo/Redo in place without consumption or skipping; configuration history
-after replacement continues to work. Endpoint widgets refresh their numeric
+Replacement creates one canonical history edge. Global Undo/Redo restores that
+exact edge through the same stopped History transaction. The neutral comparison
+permits exactly one catalog addition/removal with identical shared assets; Session
+requires the forward state to equal the adopted Classic replacement template with
+only its designated binding changed to that new asset. Undo validates this same
+relation in reverse, restoring old trim, loop and non-source settings. Normalized
+history is rechecked before commit. Sources come from the committed bank without
+decode or file access; all original banks and peak rows remain charged even when
+Undo removes a source from the canonical catalog. An over-budget transition
+refuses without consuming the edge or clearing Redo. Configuration edits keep
+their actual global order on either side. Save serializes only canonical assets;
+Open retains its existing fresh-history behavior. Endpoint widgets refresh their numeric
 bounds when the source length changes even though device identity stays stable.
 The owning rendered regression fails with the old cached four-frame bounds and
 passes when editing frame5 immediately after a six-frame replacement.
@@ -1101,5 +1110,13 @@ unsupported modes before decode, stale/corrupt/cancel/post-seal/tight-frame refu
 unused-original plus captured-export admission, exact sealed/drained identity,
 postcommit open failure/Save/export/retry, old held-key epoch revocation with a
 fresh-key new-PCM check, and zero total/signed-net callback allocations for the fixtures. These are not physical UI/input/device/listening
-acceptance or Live parity. Replacement history, other playback entry paths and
+acceptance or Live parity. Removal history, other playback entry paths and
 qualified optimized native delivery remain separate work.
+
+Replacement-history regressions delete both WAVs after admission, verify exact
+old/new state and distinct original-coordinate PCM, and exercise actual browser
+global shortcuts while another Utility track remains selected. A real frame-cap
+fixture retains four-, six- and two-frame originals, undoes to six, then refuses
+the next four-frame candidate because12 retained +6 current +4 candidate exceeds20.
+The uncatalogued two-frame original remains charged; Redo still succeeds. These
+headless checks do not establish physical UI, audio deadlines or listening acceptance.

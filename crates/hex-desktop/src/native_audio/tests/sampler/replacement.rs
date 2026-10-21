@@ -118,7 +118,7 @@ pub(super) fn intent(
         cancel: Arc::new(AtomicBool::new(false)),
     }
 }
-fn accept(h: &mut Harness, edit: SamplerReplacementEdit) -> Arc<ViewState> {
+pub(super) fn accept(h: &mut Harness, edit: SamplerReplacementEdit) -> Arc<ViewState> {
     let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     let before = h.run(Request::SamplerEdit(SamplerEdit::Replacement(edit)));
     assert!(before.sampler_edit_complete.is_none());
@@ -306,7 +306,7 @@ fn sampler_replacement_commits_one_new_original_preserves_controls_resets_bounds
         (6000, -6000)
     );
     assert_literal(&rendered(&mut h));
-    // Later configuration history works; the replacement edge itself refuses in place.
+    // Configuration and replacement share the actual global history order.
     let mut gain = gain::edit(&changed, track, device);
     gain.value = 0.25;
     let quieter = history::complete(&mut h, Request::SamplerEdit(SamplerEdit::Parameter(gain)));
@@ -315,18 +315,59 @@ fn sampler_replacement_commits_one_new_original_preserves_controls_resets_bounds
         Request::SamplerEdit(SamplerEdit::History(history::history(&quieter, false))),
     );
     assert_eq!(restored.project, changed.project);
-    for _ in 0..2 {
-        h.service
-            .as_ref()
-            .unwrap()
-            .submit(Request::SamplerEdit(SamplerEdit::History(
-                history::history(&restored, false),
-            )))
-            .unwrap();
-        let refused = h.next();
-        assert!(refused.error.as_ref().unwrap().contains("history step"));
-        gain::unchanged(&restored, &refused);
+    // Both files disappear after admission: source history uses retained originals.
+    let old_path = before.project.assets().next().unwrap().path().to_path_buf();
+    fs::remove_file(&old_path).unwrap();
+    fs::remove_file(&path).unwrap();
+    let undone = history::complete(
+        &mut h,
+        Request::SamplerEdit(SamplerEdit::History(history::history(&restored, false))),
+    );
+    assert_eq!(
+        undone.project.device(device).unwrap().state(),
+        before.project.device(device).unwrap().state()
+    );
+    let old_pcm = rendered(&mut h);
+    for (actual, expected) in old_pcm.iter().zip([
+        [0.25, 0.0],
+        [0.171875, 0.03125],
+        [0.09375, 0.0625],
+        [0.015625, 0.09375],
+    ]) {
+        for channel in 0..2 {
+            assert!((actual[channel] - expected[channel] * 0.5011872_f32).abs() < 0.0000001);
+        }
     }
+    assert_eq!(undone.project.assets().count(), 1);
+    assert_eq!(
+        undone.source_overviews.len(),
+        2,
+        "unused source backing remains charged"
+    );
+    assert!(undone.source_overviews.get(asset.id()).is_some());
+    let undone_path = files.0.join("undone.hex");
+    h.run(Request::SaveNew(undone_path.clone()));
+    let undone_saved = hex_storage::load(&undone_path).unwrap();
+    assert_eq!(
+        undone_saved.assets().count(),
+        1,
+        "retained bank rows are not invented canonical assets"
+    );
+    assert_eq!(
+        undone_saved.device(device).unwrap().state(),
+        before.project.device(device).unwrap().state()
+    );
+    let restored = history::complete(
+        &mut h,
+        Request::SamplerEdit(SamplerEdit::History(history::history(&undone, true))),
+    );
+    assert_eq!(
+        restored.project.device(device).unwrap().state(),
+        changed.project.device(device).unwrap().state()
+    );
+    assert_eq!(restored.project.assets().count(), 2);
+    assert_literal(&rendered(&mut h));
+    incoming(&files);
     // A repeated import retains the previous unused four-frame original. Its
     // additional bank+native overlap exceeds24, rather than silently collecting it.
     let cells = h.observation.lock().unwrap().gain_cells.len();
@@ -498,4 +539,124 @@ fn sampler_replacement_unsupported_mode_refuses_before_media_decode_or_audio_fen
         assert!(h.observation.lock().unwrap().gain_prepared.is_none());
         assert_eq!(rendered(&mut h), original);
     }
+}
+
+#[test]
+fn sampler_replacement_history_keeps_uncatalogued_originals_charged_and_refusal_keeps_redo() {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (files, mut h, track, device, initial) = gain::current(20);
+    let six_path = incoming(&files);
+    let six = accept(&mut h, intent(&initial, track, six_path.clone()));
+    let two_path = files.0.join("two.wav");
+    let mut bytes = fs::read(&six_path).unwrap();
+    bytes.truncate(44 + 8);
+    bytes[4..8].copy_from_slice(&44_u32.to_le_bytes());
+    bytes[40..44].copy_from_slice(&8_u32.to_le_bytes());
+    fs::write(&two_path, bytes).unwrap();
+    let two = accept(&mut h, intent(&six, track, two_path.clone()));
+    assert_eq!(two.project.assets().count(), 3);
+    fs::remove_file(six_path).unwrap();
+    fs::remove_file(two_path).unwrap();
+    let six_again = history::complete(
+        &mut h,
+        Request::SamplerEdit(SamplerEdit::History(history::history(&two, false))),
+    );
+    assert_eq!(
+        six_again.project.device(device).unwrap().state(),
+        six.project.device(device).unwrap().state()
+    );
+    assert_eq!(six_again.project.assets().count(), 2);
+    assert_eq!(six_again.source_overviews.len(), 3);
+    let expected = rendered(&mut h);
+    assert_eq!(
+        &expected[..4],
+        &[
+            [0.25, 0.125],
+            [-0.3125, 0.21875],
+            [-0.1875, 0.0],
+            [0.09375, -0.0625]
+        ]
+    );
+    let cells = h.observation.lock().unwrap().gain_cells.len();
+    // Twelve original frames remain owned, including the uncatalogued two.
+    // Current six plus candidate four would require22, beyond the real limit20.
+    for _ in 0..2 {
+        h.run(Request::SamplerEdit(SamplerEdit::History(
+            history::history(&six_again, false),
+        )));
+        h.render();
+        let refused = h.next();
+        assert!(
+            refused.error.as_ref().unwrap().contains("frame"),
+            "{:?}",
+            refused.error
+        );
+        gain::unchanged(&six_again, &refused);
+        assert_eq!(h.observation.lock().unwrap().gain_cells.len(), cells);
+        assert_eq!(rendered(&mut h), expected);
+    }
+    let redone = history::complete(
+        &mut h,
+        Request::SamplerEdit(SamplerEdit::History(history::history(&six_again, true))),
+    );
+    assert_eq!(
+        redone.project.device(device).unwrap().state(),
+        two.project.device(device).unwrap().state()
+    );
+    assert_eq!(redone.project.assets().count(), 3);
+    assert_eq!(redone.source_overviews.len(), 3);
+}
+
+#[test]
+fn sampler_replacement_history_stale_cancel_playing_and_postseal_refuse_without_consuming() {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (files, mut h, track, _, initial) = gain::current(24);
+    let changed = accept(&mut h, intent(&initial, track, incoming(&files)));
+    let expected = rendered(&mut h);
+    for case in 0..5 {
+        let mut edit = history::history(&changed, false);
+        match case {
+            0 => edit.revision += 1,
+            1 => edit
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Release),
+            2 => h
+                .audio
+                .as_mut()
+                .unwrap()
+                .control
+                .command(PlaybackCommand::Play)
+                .unwrap(),
+            3 => {
+                h.observation.lock().unwrap().cancel_edit_after_seal =
+                    Some(Arc::clone(&edit.cancel))
+            }
+            _ => edit.project_generation += 1,
+        }
+        h.service
+            .as_ref()
+            .unwrap()
+            .submit(Request::SamplerEdit(SamplerEdit::History(edit)))
+            .unwrap();
+        let event = h.next();
+        let refused = if event.sampler_edit_complete.is_some() {
+            event
+        } else {
+            h.render();
+            h.next()
+        };
+        assert!(refused.error.is_some(), "case{case}");
+        gain::unchanged(&changed, &refused);
+        assert_eq!(rendered(&mut h), expected);
+    }
+    let restored = history::complete(
+        &mut h,
+        Request::SamplerEdit(SamplerEdit::History(history::history(&changed, false))),
+    );
+    assert_eq!(restored.project.assets().count(), 1);
+    gain::original_pcm(&mut h);
 }

@@ -179,14 +179,81 @@ impl SamplerEdit {
     }
 }
 pub(super) fn validate_history_pair(source: &Project, target: &Project) -> Result<(), String> {
-    let (_, current, next) = source
-        .instrument_state_history_delta(target)
-        .ok_or("next history step is not a same-source sampler configuration edit")?;
-    if current.bypassed()
-        || !hex_engine::is_sampler_configuration_history_on_control(current.state(), next.state())
+    let delta = source
+        .instrument_history_delta(target)
+        .ok_or("next history step is not a supported sampler change")?;
+    if delta.current.bypassed() {
+        return Err("next history step is not an active sampler change".into());
+    }
+    match delta.assets {
+        hex_project::InstrumentAssetHistoryDelta::Unchanged => {
+            if !hex_engine::is_sampler_configuration_history_on_control(
+                delta.current.state(),
+                delta.target.state(),
+            )
             .map_err(|e| e.to_string())?
+            {
+                return Err(
+                    "next history step is not a supported sampler configuration edit".into(),
+                );
+            }
+            Ok(())
+        }
+        hex_project::InstrumentAssetHistoryDelta::Added(new_asset) => {
+            validate_replacement_history_forward(
+                source,
+                target,
+                delta.current.state(),
+                delta.target.state(),
+                new_asset,
+            )
+        }
+        hex_project::InstrumentAssetHistoryDelta::Removed(new_asset) => {
+            validate_replacement_history_forward(
+                target,
+                source,
+                delta.target.state(),
+                delta.current.state(),
+                new_asset,
+            )
+        }
+    }
+}
+fn validate_replacement_history_forward(
+    old_project: &Project,
+    new_project: &Project,
+    old: &hex_lattice_contract::NativeDeviceState,
+    new: &hex_lattice_contract::NativeDeviceState,
+    added: &hex_project::Asset,
+) -> Result<(), String> {
+    let frames = usize::try_from(added.source_frames())
+        .map_err(|_| "sampler original frame count exceeds range")?;
+    let (template, slot) = hex_engine::sampler_replacement_template_on_control(old, frames)
+        .map_err(|e| e.to_string())?;
+    let reference = old
+        .asset_references()
+        .first()
+        .filter(|r| old.asset_references().len() == 1 && r.slot == slot)
+        .ok_or("replacement history requires one original source binding")?;
+    let old_asset = old_project
+        .assets()
+        .find(|asset| asset.id().value() == reference.asset.value())
+        .ok_or("replacement history old source is unavailable")?;
+    if old_asset.id() == added.id()
+        || old_project.asset(added.id()).is_some()
+        || new_project.asset(old_asset.id()) != Some(old_asset)
     {
-        return Err("next history step is not a supported sampler configuration edit".into());
+        return Err("next history step does not preserve the old sampler catalog source".into());
+    }
+    let expected = template
+        .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+            slot,
+            asset: hex_lattice_contract::DeviceAssetKey::new(added.id().value())
+                .map_err(|_| "invalid sampler history source identity")?,
+        }])
+        .map_err(|_| "invalid sampler history source binding")?;
+    if expected != *new {
+        return Err("next history step is not an exact classic source replacement".into());
     }
     Ok(())
 }

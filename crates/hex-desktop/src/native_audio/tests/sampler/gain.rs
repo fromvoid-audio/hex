@@ -219,27 +219,46 @@ fn sampler_history_postcommit_open_failure_keeps_authored_history_save_export_an
 fn sampler_replacement_postcommit_open_failure_keeps_new_source_save_export_and_explicit_retry() {
     postcommit_open_failure(FailedEdit::Replacement);
 }
+#[test]
+fn sampler_replacement_history_postcommit_open_failure_keeps_restored_source_save_export_and_retry()
+{
+    postcommit_open_failure(FailedEdit::ReplacementHistory);
+}
 #[derive(Clone, Copy)]
 enum FailedEdit {
     Gain,
     History,
     Replacement,
+    ReplacementHistory,
 }
 fn postcommit_open_failure(kind: FailedEdit) {
     let _serial = NATIVE_FIXTURE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (files, mut h, track, device, before) =
-        current(if matches!(kind, FailedEdit::Replacement) {
+    let (files, mut h, track, device, before) = current(
+        if matches!(
+            kind,
+            FailedEdit::Replacement | FailedEdit::ReplacementHistory
+        ) {
             24
         } else {
             12
-        });
+        },
+    );
     let (before, request, expected_gain) = if matches!(kind, FailedEdit::Replacement) {
         let request = Request::SamplerEdit(hex_session::service::SamplerEdit::Replacement(
             super::replacement::intent(&before, track, super::replacement::incoming(&files)),
         ));
         (before, request, 1.0)
+    } else if matches!(kind, FailedEdit::ReplacementHistory) {
+        let changed = super::replacement::accept(
+            &mut h,
+            super::replacement::intent(&before, track, super::replacement::incoming(&files)),
+        );
+        let request = Request::SamplerEdit(hex_session::service::SamplerEdit::History(
+            super::history::history(&changed, false),
+        ));
+        (changed, request, 1.0)
     } else if matches!(kind, FailedEdit::History) {
         let changed = super::history::complete(
             &mut h,
