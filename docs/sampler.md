@@ -3,13 +3,19 @@
 Requested 17 October 2026: a native equivalent of Ableton Live **Simpler**, named
 **sampler** in Hex. This does not target the separate Ableton Sampler instrument.
 Pulse2679 owns the full request; [PR296](https://github.com/PORTALSURFER/hex/pull/296)
-contains the first original playback-kernel prerequisite. A bounded first-load
-browser action now fills an empty instrument slot with a canonical sampler and
-supports computer-keyboard audition, frame-zero Arrangement playback/Stop and
-offline Main export. Sampler
-is not registered in the general device catalog. Stopped gain, pitch, source-region and Classic-loop editing are supported; other controls, replacement and user history remain unavailable. Current-format SaveNew/SaveCurrent and
-original-content-checked reopen are supported through the normal project flow. No reference parity or
-physical native interaction/listening acceptance is claimed.
+contains the first original playback-kernel prerequisite. Source-first WAV loading
+fills an empty MIDI instrument slot with a canonical sampler through explicit
+resident resource admission. The loaded instrument supports computer-keyboard
+audition, frame-zero Arrangement playback/Stop, local Console MIDI clips/scenes
+and private offline Main export. It remains outside the asset-free device catalog.
+
+Stopped gain, pitch, original-source region, Classic loop and amplitude-envelope
+controls, the original-source waveform, source replacement, global control/source
+Undo/Redo and bounded MIDI composition after loading are supported. Current-format
+SaveNew/SaveCurrent and original-content-checked reopen use the normal project
+flow. Nonzero seek, Pause, routed MIDI and active Arrangement chase remain
+unsupported. No Live parity, physical native interaction, device-deadline or
+listening acceptance is claimed.
 
 ## current source boundary
 
