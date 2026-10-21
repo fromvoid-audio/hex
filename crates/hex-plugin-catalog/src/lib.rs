@@ -1,4 +1,5 @@
 //! Selected-plugin browser records and control work. Never called by audio.
+pub mod roots;
 pub mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod worker;
@@ -10,7 +11,7 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-pub const MAX_MODULES: usize = 64;
+pub const MAX_MODULES: usize = 512;
 pub const MAX_CLASSES: usize = 2048;
 pub const MAX_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 
@@ -459,6 +460,31 @@ mod tests {
             bytes,
             "unsupported alpha catalog remains intact"
         );
+    }
+
+    #[test]
+    fn representative_standard_library_survives_save_reload_and_search_within_fixed_byte_bound() {
+        let fixture = Fixture::new();
+        storage::update(&fixture.catalog(), |catalog| {
+            for n in 0..320 {
+                let path = fixture.0.join(format!("Original{n}.vst3"));
+                let mut value = report(path.clone());
+                let discovery = value.discovery.as_mut().unwrap();
+                let mut controller = discovery.classes[0].clone();
+                controller.cid[15] = 2;
+                controller.category = "Component Controller Class".into();
+                discovery.classes.push(controller);
+                catalog.record(path, Ok((value, "e".repeat(40))))?;
+            }
+            Ok(())
+        })
+        .unwrap();
+        let bytes = fs::read(fixture.catalog()).unwrap();
+        assert!(bytes.len() <= MAX_CATALOG_BYTES);
+        let saved = Catalog::load(&fixture.catalog()).unwrap();
+        assert_eq!(saved.entries.len(), 320);
+        assert_eq!(saved.rows("vendor").len(), 320);
+        assert_eq!(fs::read(fixture.catalog()).unwrap(), bytes);
     }
 
     #[test]

@@ -305,9 +305,10 @@ before Save/Open. The fixed-height overview has no input gestures; source/loop
 markers use original frames. See [the overview contract](../../docs/sampler.md#original-source-waveform-overview).
 
 
-The vst3 browser source explicitly selects one trusted bundle, dispatches its
-packaged standalone scanner on a control worker and restores a bounded persistent
-last-good catalog. Source/class bytes stay unchanged; display passes through
+The vst3 browser source explicitly selects one trusted bundle or scans the trusted
+standard user/system folders. A bounded control worker owns one packaged scanner
+at a time and restores a persistent last-good catalog. Cancelled folder batches
+never publish partial results; skipped links and failed modules have visible status. Source/class bytes stay unchanged; display passes through
 `theme::text`. Plugin rows use foreign UID/module identities, support search and
 history in vst3/all, and expose no native-device drag/insertion. Enter reports
 hosting unavailable. Startup/reload does not load plugin code; missing packaged

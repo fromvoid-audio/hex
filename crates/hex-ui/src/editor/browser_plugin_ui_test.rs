@@ -196,3 +196,115 @@ fn browser_vst3_selected_native_worker_persists_real_row_and_reload_without_fore
         "reload must not rewrite or rescan foreign code"
     );
 }
+
+fn wait_plugin_browser(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) -> bool {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        visual.run_until_parked();
+        if editor.read_with(visual, |view, _| {
+            !view.browser.plugins.loading && !view.browser.plugins.busy
+        }) {
+            return true;
+        }
+        if std::time::Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::yield_now();
+    }
+}
+fn copy_original_plugin(source: &std::path::Path, target: &std::path::Path) {
+    std::fs::create_dir(target).unwrap();
+    for entry in std::fs::read_dir(source).unwrap() {
+        let entry = entry.unwrap();
+        let destination = target.join(entry.file_name());
+        assert!(!entry.file_type().unwrap().is_symlink());
+        if entry.file_type().unwrap().is_dir() {
+            copy_original_plugin(&entry.path(), &destination);
+        } else {
+            std::fs::copy(entry.path(), destination).unwrap();
+        }
+    }
+}
+#[gpui::test]
+#[ignore = "explicit original signed package and owned native fixture roots required"]
+fn browser_vst3_standard_folder_button_scans_owned_roots_and_restores_type_search(
+    cx: &mut TestAppContext,
+) {
+    let app = std::path::PathBuf::from(
+        std::env::var_os("HEX_VST3_CATALOG_TEST_APP").expect("explicit signed original package"),
+    );
+    let fixtures = std::path::PathBuf::from(
+        std::env::var_os("HEX_VST3_CATALOG_FIXTURES").expect("explicit original fixtures"),
+    )
+    .join("hex-vst3-host.app/Contents/Resources/factory-fixtures");
+    let (handle, editor, _track, directory, _wave) = browser_drag_fixture(cx);
+    let physical = directory.0.canonicalize().unwrap();
+    let roots = physical.join("owned-standard-root");
+    std::fs::create_dir(&roots).unwrap();
+    copy_original_plugin(
+        &fixtures.join("factory2-instrument.vst3"),
+        &roots.join("A.vst3"),
+    );
+    copy_original_plugin(
+        &fixtures.join("factory2-effect.vst3"),
+        &roots.join("B.vst3"),
+    );
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    if !wait_plugin_browser(&mut visual, &editor) {
+        std::mem::forget(directory);
+        panic!("owned roots retained at {physical:?}; startup unresolved");
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.set_plugin_test_app(app, physical.join("browser.json"));
+        view.set_plugin_test_roots(vec![roots, physical.join("missing-standard-root")]);
+        view.select_browser_source(BrowserSection::Plugins, cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let button = visual
+        .debug_bounds("browser-vst3-scan-standard")
+        .expect("rendered standard-folder action");
+    visual.simulate_mouse_down(button.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(button.center(), MouseButton::Left, Modifiers::default());
+    if !wait_plugin_browser(&mut visual, &editor) {
+        std::mem::forget(directory);
+        panic!(
+            "owned roots retained at {physical:?}; scanner retirement unresolved; no forced termination"
+        );
+    }
+    editor.read_with(&visual, |view, cx| {
+        let rows = view.browser_visible_plugins(cx);
+        assert_eq!(rows.len(), 2, "{}", view.browser.plugins.status);
+        assert!(view.browser.plugins.status.contains("2 discovered"));
+        assert_ne!(
+            rows[0].module, rows[1].module,
+            "same reported UID in different modules remains visible"
+        );
+        assert_eq!(rows[0].cid, rows[1].cid);
+    });
+    assert!(visual.debug_bounds("browser-vst3-row-1").is_some());
+    editor.update(&mut visual, |view, cx| {
+        view.browser
+            .search
+            .update(cx, |input, cx| input.restore_query("instrument", cx))
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        let rows = view.browser_visible_plugins(cx);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].status, "vst3 instrument · hosting unavailable");
+    });
+    let stored = std::fs::read(physical.join("plugin-catalog.json")).unwrap();
+    editor.update(&mut visual, |view, cx| view.start_plugin_catalog(cx));
+    if !wait_plugin_browser(&mut visual, &editor) {
+        std::mem::forget(directory);
+        panic!("owned roots retained at {physical:?}; reload unresolved");
+    }
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.browser_visible_plugins(cx).len(), 1)
+    });
+    assert_eq!(
+        std::fs::read(physical.join("plugin-catalog.json")).unwrap(),
+        stored
+    );
+}

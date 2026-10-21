@@ -648,8 +648,8 @@ never in Rust, GPUI, Session, engine or audio callbacks. This trusted same-user
 boundary contains ordinary faults; it is not a malicious-code sandbox.
 
 `hex-ui -> hex-plugin-catalog -> hex-plugin-scan` is the control-side metadata
-edge. The catalog crate owns bounded current-format records and selected-bundle
-worker coordination. One active operation per browser sends a stdin cancellation
+edge. The catalog crate owns bounded current-format records, selected-bundle and
+explicit standard-folder worker coordination. One active operation per browser sends a stdin cancellation
 byte to its outer scanner, drains bounded copied output and retains that direct
 Child until reap; it never kills the outer process group while native cleanup may
 still be owned there. Unexpected custody loss is reported as unconfirmed, without
@@ -671,8 +671,15 @@ version1 format. No historical Mac packet reader or catalog migration is retaine
 Catalog version2 validates complete bounded optional field groups and displays
 instrument/effect/both only for exact SDK `Instrument`/`Fx` tokens; unknowns stay
 explicit. Class vendor and type labels participate in search. These reported
-labels do not establish processing capability or playback. Folder/root management
-and ordinary persistent hosting remain separate increments.
+labels do not establish processing capability or playback. Explicit standard
+user/system folder scans enumerate at most4096 entries/1024 directories with
+8-level recursion, stop at bundle boundaries and skip links with a visible count.
+The catalog accepts512 modules/2048 classes/4MiB; the module bound covers a locally
+observed318 installed bundles, without executing them. Each owned scan chain must
+retire before the next; uncertainty stops the batch. Cancelled pending results are
+discarded before a single publication boundary and fresh writer-locked merge.
+Custom roots, duplicate/stale selection, quarantine and persistent hosting remain
+separate increments; source enumeration is not vendor compatibility evidence.
 
 `hex-clap-scan` owns the corresponding separate CLAP format boundary, with no
 workspace dependency edges. Its descriptor and controlled offline children cover

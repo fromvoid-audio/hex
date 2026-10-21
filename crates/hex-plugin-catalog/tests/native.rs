@@ -210,3 +210,84 @@ fn actual_optional_factory_types_persist_and_search_without_foreign_restart_work
     assert_eq!(restored.rows("type unknown").len(), 1);
     assert_eq!(fs::read(fixture.catalog()).unwrap(), bytes);
 }
+
+#[test]
+#[ignore = "explicit original signed package and native fixtures required"]
+fn folder_batch_publishes_known_failures_and_actual_types_then_preserves_restart() {
+    let f = Fixture::new();
+    let root = f.0.join("root");
+    fs::create_dir(&root).unwrap();
+    copy(&module("malformed-count"), &root.join("A-bad.vst3"));
+    copy(&module("factory2-instrument"), &root.join("vendor/B.vst3"));
+    copy(&module("factory2-effect"), &root.join("C.vst3"));
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(root.join("C.vst3"), root.join("linked.vst3")).unwrap();
+    let owner = Cancellation::default();
+    let result = worker::scan_folders(
+        &f.catalog(),
+        &app(),
+        &[root, f.0.join("missing")],
+        owner.token(),
+    );
+    assert!(result.catalog.is_some(), "{}", result.status);
+    assert!(
+        result.status.contains("2 discovered · 1 failed"),
+        "{}",
+        result.status
+    );
+    assert!(result.status.contains("1 linked entries skipped"));
+    let bytes = fs::read(f.catalog()).unwrap();
+    let saved = Catalog::load(&f.catalog()).unwrap();
+    assert_eq!(saved.entries.len(), 3);
+    assert_eq!(saved.rows("instrument").len(), 1);
+    assert_eq!(saved.rows("effect").len(), 1);
+    assert!(saved.rows("").iter().any(|r| r.cid.is_none()));
+    assert_eq!(fs::read(f.catalog()).unwrap(), bytes);
+}
+#[test]
+#[ignore = "explicit original signed package and native fixtures required"]
+fn cancelled_folder_batch_retires_current_chain_without_publishing_pending_results() {
+    let f = Fixture::new();
+    let root = f.0.join("root");
+    fs::create_dir(&root).unwrap();
+    let first = root.join("A-hang.vst3");
+    copy(&module("normal"), &first);
+    let owner = Cancellation::default();
+    assert!(
+        worker::scan(&f.catalog(), &app(), first.clone(), owner.token())
+            .catalog
+            .is_some()
+    );
+    let before = fs::read(f.catalog()).unwrap();
+    copy(&module("entry-hang"), &first);
+    copy(&module("factory2-effect"), &root.join("B-not-started.vst3"));
+    let owner = Cancellation::default();
+    let token = owner.token();
+    let catalog = f.catalog();
+    let package = app();
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let thread = std::thread::spawn(move || {
+        let result = worker::scan_folders(&catalog, &package, &[root], token);
+        let _ = tx.send(result);
+    });
+    std::thread::sleep(Duration::from_millis(200));
+    assert!(owner.cancel());
+    let result = match rx.recv_timeout(Duration::from_secs(15)) {
+        Ok(value) => value,
+        Err(error) => {
+            f.1.store(true, Ordering::Release);
+            panic!(
+                "owned folder scanner unresolved: {error}; fixture retained at {:?}",
+                f.0
+            );
+        }
+    };
+    thread.join().unwrap();
+    assert!(result.catalog.is_none());
+    assert!(result.status.contains("cancelled"), "{}", result.status);
+    assert_eq!(
+        fs::read(f.catalog()).unwrap(),
+        before,
+        "cancelled batch never promotes a partial catalog"
+    );
+}

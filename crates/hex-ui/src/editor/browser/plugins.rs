@@ -2,6 +2,14 @@
 use super::*;
 use hex_plugin_catalog::{Catalog, Row};
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+enum PluginScan {
+    Selected(PathBuf),
+    Standard,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    TestFolders(Vec<PathBuf>),
+}
+
 #[derive(Default)]
 pub(super) struct Plugins {
     catalog: Catalog,
@@ -14,6 +22,13 @@ pub(super) struct Plugins {
     app: Option<PathBuf>,
     #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
     cancellation: Option<hex_plugin_catalog::worker::Cancellation>,
+    #[cfg(all(
+        test,
+        feature = "ui-test-support",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    test_roots: Option<Vec<PathBuf>>,
 }
 impl Plugins {
     fn replace(&mut self, catalog: Catalog) {
@@ -113,6 +128,15 @@ impl EditorView {
         self.browser.plugins.app = Some(app);
         self.browser.plugins.writable = true;
     }
+    #[cfg(all(
+        test,
+        feature = "ui-test-support",
+        target_os = "macos",
+        target_arch = "aarch64"
+    ))]
+    pub(super) fn set_plugin_test_roots(&mut self, roots: Vec<PathBuf>) {
+        self.browser.plugins.test_roots = Some(roots);
+    }
     pub(super) fn browser_visible_plugins(&self, cx: &App) -> Arc<Vec<Row>> {
         if !matches!(
             self.browser.section,
@@ -197,6 +221,14 @@ impl EditorView {
                     }),
             )
             .child(
+                div().id("scan-standard-vst3")
+                    .debug_selector(|| "browser-vst3-scan-standard".into())
+                    .text_xs().cursor_pointer()
+                    .text_color(rgb(theme::color(if can_scan { theme::PaletteRole::Text } else { theme::PaletteRole::Muted })))
+                    .on_mouse_down(MouseButton::Left, cx.listener(|view, _, _, cx| view.scan_standard_plugins(cx)))
+                    .child(theme::text("scan trusted standard folders")),
+            )
+            .child(
                 div()
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
@@ -211,7 +243,7 @@ impl EditorView {
                     .text_xs()
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(
-                        "selected plugin code runs as your user · discovery only",
+                        "plugin code in selected bundles/folders runs as your user · discovery only",
                     )),
             )
     }
@@ -248,11 +280,31 @@ impl EditorView {
     }
     pub(super) fn scan_trusted_plugin(&mut self, path: PathBuf, cx: &mut Context<Self>) {
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        self.start_plugin_scan(PluginScan::Selected(path), cx);
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let _ = (path, cx);
+    }
+    fn scan_standard_plugins(&mut self, cx: &mut Context<Self>) {
+        #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+        {
+            #[cfg(all(test, feature = "ui-test-support"))]
+            if let Some(roots) = self.browser.plugins.test_roots.clone() {
+                self.start_plugin_scan(PluginScan::TestFolders(roots), cx);
+                return;
+            }
+            self.start_plugin_scan(PluginScan::Standard, cx);
+        }
+        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+        let _ = cx;
+    }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    fn start_plugin_scan(&mut self, request: PluginScan, cx: &mut Context<Self>) {
         {
             use hex_plugin_catalog::worker::{self, Cancellation};
             if self.browser.plugins.busy
                 || self.browser.plugins.loading
                 || !self.browser.plugins.writable
+                || self.browser.plugins.picking
             {
                 return;
             }
@@ -263,13 +315,26 @@ impl EditorView {
             let token = cancellation.token();
             self.browser.plugins.cancellation = Some(cancellation);
             self.browser.plugins.busy = true;
-            self.browser.plugins.status = "scanning selected trusted plugin…".into();
+            self.browser.plugins.status = match &request {
+                PluginScan::Selected(_) => "scanning selected trusted plugin…",
+                _ => "scanning trusted standard folders…",
+            }
+            .into();
             let catalog = self.plugin_catalog_path();
             let this = cx.entity().downgrade();
             cx.spawn(async move |_, cx| {
                 let result = cx
                     .background_executor()
-                    .spawn(async move { worker::scan(&catalog, &app, path, token) })
+                    .spawn(async move {
+                        match request {
+                            PluginScan::Selected(path) => worker::scan(&catalog, &app, path, token),
+                            PluginScan::Standard => worker::scan_standard(&catalog, &app, token),
+                            #[cfg(all(test, feature = "ui-test-support"))]
+                            PluginScan::TestFolders(roots) => {
+                                worker::scan_folders(&catalog, &app, &roots, token)
+                            }
+                        }
+                    })
                     .await;
                 let _ = this.update(cx, |view, cx| {
                     view.browser.plugins.busy = false;
@@ -283,10 +348,6 @@ impl EditorView {
             })
             .detach();
             cx.notify();
-        }
-        #[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
-        {
-            let _ = (path, cx);
         }
     }
     pub(super) fn browser_plugin_row(
