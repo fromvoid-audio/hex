@@ -35,34 +35,19 @@ impl EditorView {
         let Some(audio) = self.audio.as_ref() else {
             return false;
         };
-        let Some(source) = state.canonical_audio_source.as_ref() else {
-            return false;
-        };
-        let Some(applied) = audio
-            .control
-            .status()
-            .and_then(|s| s.applied_audio_source())
-        else {
+        let Some(audible) = self.audible_playback.as_ref() else {
             return false;
         };
         self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && hex_engine::native_device_resources::requires_private_sampler_sources(&state.project)
-            && applied.context == source.context()
-            && applied.context.project_generation == self.project_generation
-            && state.audio_authoring_revision(applied.context) == Some(state.revision)
-            && audio.control.output_identity() == Some(applied.output_identity)
-    }
-    pub(super) fn sampler_console_current(&self) -> bool {
-        self.first_sampler_current()
-            && self
-                .audio
-                .as_ref()
-                .and_then(|a| a.control.status())
-                .is_some_and(|s| {
-                    s.sampler_console_available()
-                        && s.session_capability()
-                            == Some(hex_engine::SessionCapabilityStatus::Available)
-                })
+            && self.applied_project_revision() == Some(state.revision)
+            && audible.project_generation == self.project_generation
+            && audible.state.revision == state.revision
+            && audible.device_preview_identity.is_none()
+            && audible.tuning_preview_identity.is_none()
+            && audio.control.status().is_some_and(|status| {
+                status.applied_revision.load(Ordering::Acquire) == audible.audio_revision
+            })
     }
     pub(super) fn first_sampler_target(&self, path: PathBuf) -> Result<Target, &'static str> {
         if self.edit_pending() {
@@ -79,11 +64,6 @@ impl EditorView {
         let replacement = if let Some(device) = track.instrument() {
             hex_engine::validate_sampler_replacement_on_control(device.state())
                 .map_err(|_| "sample replacement currently requires classic mode")?;
-            if !hex_engine::is_empty_sampler_state_on_control(device.state())
-                && !self.first_sampler_current()
-            {
-                return Err("wait for sampler audio before replacing its sample");
-            }
             Some((device.id(), device.state().clone()))
         } else {
             None
@@ -292,7 +272,7 @@ impl EditorView {
                     .map(|n| n.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| "sample".into());
-        self.status = format!("loaded {name} into sampler · computer keyboard or play from start");
+        self.status = format!("loaded {name} into sampler");
     }
 }
 

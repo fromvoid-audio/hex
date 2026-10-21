@@ -674,6 +674,9 @@ pub(super) struct EditorView {
     viewport: Option<Viewport>,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
+    // One existing read-only view per transient protocol, never a prepared graph/resource set.
+    resident_device_preview: Option<hex_session::service::DevicePreview>,
+    resident_tuning_preview: Option<hex_session::service::TuningPreview>,
     audio_admission: AudioAdmissionStatus,
     session_routes: session_route_view::RouteView,
     prepared_seek: Option<arrangement_seek::PendingSeek>,
@@ -1252,6 +1255,8 @@ impl EditorView {
             viewport: None,
             playback_candidates: VecDeque::new(),
             audible_playback: None,
+            resident_device_preview: None,
+            resident_tuning_preview: None,
             audio_admission: AudioAdmissionStatus::default(),
             session_routes: session_route_view::RouteView::default(),
             prepared_seek: None,
@@ -1461,10 +1466,6 @@ impl EditorView {
         });
         let start_frame = self.playback_start_frame();
         let command = match self.play_toggle_action(device_playing, start_frame) {
-            arrangement_seek::ToggleAction::Pause if self.has_sampler_source() => {
-                self.stop();
-                return;
-            }
             arrangement_seek::ToggleAction::Pause => PlaybackCommand::Pause,
             arrangement_seek::ToggleAction::PlayFrom(frame) => PlaybackCommand::PlayFrom(frame),
             arrangement_seek::ToggleAction::PreparedPlayFrom(frame) => {
@@ -1472,11 +1473,7 @@ impl EditorView {
                 return;
             }
             arrangement_seek::ToggleAction::Unavailable => {
-                self.error = Some(if self.has_sampler_source() {
-                    "sampler audio is not ready · wait before playing".into()
-                } else {
-                    "playback source is unavailable · cannot seek safely".into()
-                });
+                self.error = Some("playback source is unavailable · cannot seek safely".into());
                 return;
             }
         };
@@ -1488,23 +1485,12 @@ impl EditorView {
     }
 
     fn playback_start_frame(&self) -> u64 {
-        // The private sampler CURRENT supports Play from zero and priority Stop,
-        // not cursor/selection seeks or Pause. Keep the editor cursor intact.
-        if self.has_sampler_source() {
-            return 0;
-        }
         if let Some(selection) = self.normalized_time_selection() {
             return selection.start();
         }
         self.edit_cursor
             .filter(|cursor| cursor.generation == self.project_generation)
             .map_or(0, |cursor| cursor.frame)
-    }
-
-    fn has_sampler_source(&self) -> bool {
-        self.state.as_ref().is_some_and(|state| {
-            hex_engine::native_device_resources::requires_private_sampler_sources(&state.project)
-        })
     }
 
     pub(super) fn toggle_solo(&mut self, track: TrackId, exclusive: bool) {

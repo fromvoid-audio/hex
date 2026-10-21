@@ -138,6 +138,20 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
             cx.notify();
         });
         visual.run_until_parked();
+        if case == 0 {
+            for prefix in [
+                "device-drag-title",
+                "device-bypass",
+                "instrument-replace",
+                "instrument-remove",
+            ] {
+                let selector = Box::leak(format!("{prefix}-{}", device.value()).into_boxed_str());
+                assert!(
+                    visual.debug_bounds(selector).is_some(),
+                    "loaded sampler retains the ordinary {prefix} action without an audio output"
+                );
+            }
+        }
         assert_eq!(
             visual.debug_bounds("sampler-source-waveform").is_some(),
             valid,

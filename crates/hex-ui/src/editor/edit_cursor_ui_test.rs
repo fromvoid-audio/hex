@@ -1583,9 +1583,7 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
 }
 
 #[gpui::test]
-fn sampler_space_uses_supported_start_instead_of_edit_cursor_or_time_selection(
-    cx: &mut TestAppContext,
-) {
+fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestAppContext) {
     cx.update(super::bind_editor_keys);
     let mut model = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
     let Created::Track(track) = model
@@ -1635,8 +1633,10 @@ fn sampler_space_uses_supported_start_instead_of_edit_cursor_or_time_selection(
         editor.read_with(cx, |view, _| {
             assert_eq!(
                 view.last_transport_command,
-                Some(hex_engine::playback::PlaybackCommand::PlayFrom(0)),
-                "sampler default play must use its supported beginning, selection={selection}"
+                Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                    if selection { 28_000 } else { 73_000 }
+                )),
+                "sampler uses the ordinary selected start, selection={selection}"
             );
         });
     }
@@ -1647,11 +1647,11 @@ fn sampler_space_uses_supported_start_instead_of_edit_cursor_or_time_selection(
     });
     visual.simulate_keystrokes("space");
     editor.read_with(cx, |view, _| {
-        assert!(
-            view.last_transport_command.is_none(),
-            "sampler toggles priority Stop, never unsupported Pause"
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::Pause),
+            "sampler uses ordinary pause without resetting the cursor"
         );
-        assert!(!view.play_intent.desired_playing(true));
-        assert_eq!(view.status.as_str(), "stopped · returned to start");
+        assert_eq!(view.edit_cursor.unwrap().frame, 73_000);
     });
 }
