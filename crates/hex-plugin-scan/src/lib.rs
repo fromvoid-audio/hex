@@ -1,4 +1,5 @@
 //! Controlled discovery records only; no plugin loading or audio-host API.
+pub mod macos;
 pub mod offline_protocol;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -302,6 +303,13 @@ impl<'a> Decoder<'a> {
     }
 }
 pub fn decode_packet(bytes: &[u8], request: u64) -> Result<Discovery, String> {
+    decode_packet_for_platform(bytes, request, platform())
+}
+fn decode_packet_for_platform(
+    bytes: &[u8],
+    request: u64,
+    expected_platform: &str,
+) -> Result<Discovery, String> {
     if bytes.len() < 12 || bytes.len() > MAX_PACKET + 12 || &bytes[..8] != b"HVSCAN01" {
         return Err("invalid packet header".into());
     }
@@ -320,7 +328,7 @@ pub fn decode_packet(bytes: &[u8], request: u64) -> Result<Discovery, String> {
     let sdk = d.text(40)?;
     let public_sdk = d.text(40)?;
     let platform_id = d.text(32)?;
-    if sdk != SDK || public_sdk != PUBLIC_SDK || platform_id != platform() {
+    if sdk != SDK || public_sdk != PUBLIC_SDK || platform_id != expected_platform {
         return Err("helper claim differs from pinned identity".into());
     }
     let factory_flags = d.u32()?;
