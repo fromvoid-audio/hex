@@ -17,7 +17,8 @@ NATIVE = Path(__file__).resolve().parent
 ROOT = NATIVE.parents[2]
 APP = Path("hex-vst3-host.app")
 EXECUTABLE = APP / "Contents/MacOS/hex-vst3-host"
-SOURCES = ("macos_bootstrap.py", "macos_helper.mm", "macos_fixture.cpp", "build.py")
+SOURCES = ("macos_bootstrap.py", "macos_helper.mm", "macos_fixture.cpp", "build.py",
+           "macos_scan.mm", "macos_scan_wire.hpp", "macos_factory_fixture.cpp", "launch_ignored.cpp")
 MAX_FILE = 16 * 1024 * 1024
 
 
@@ -40,7 +41,7 @@ def command(args, **kwargs):
     return subprocess.check_output(args, text=True, timeout=120, **kwargs).strip()
 
 
-def macho(path, filetype):
+def macho(path, filetype, architecture="arm64"):
     if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_FILE:
         raise ValueError("missing, linked or oversized native binary: " + str(path))
     with path.open("rb") as f:
@@ -48,7 +49,8 @@ def macho(path, filetype):
     if len(header) != 32:
         raise ValueError("truncated Mach-O binary")
     magic, cpu, subtype, kind, commands, size, _, reserved = struct.unpack("<8I", header)
-    if (magic, cpu, subtype, kind, reserved) != (0xFEEDFACF, 0x0100000C, 0, filetype, 0):
+    expected_cpu, expected_subtype = (0x0100000C, 0) if architecture == "arm64" else (0x01000007, 3)
+    if (magic, cpu, subtype, kind, reserved) != (0xFEEDFACF, expected_cpu, expected_subtype, filetype, 0):
         raise ValueError("expected native arm64 Mach-O with the declared binary role")
     if commands < 1 or commands > 4096 or size < commands * 8 or size > path.stat().st_size - 32:
         raise ValueError("invalid Mach-O command bounds")
@@ -91,6 +93,8 @@ def verify(receipt, run=False):
         raise ValueError("missing or changed bundle contents")
     executable = root / EXECUTABLE
     macho(executable, 2)
+    scan_executable = root / APP / "Contents/MacOS/hex-vst3-factory-scan"
+    macho(scan_executable, 2)
     for name in ("effect", "instrument"):
         fixture = root / APP / "Contents/Resources/fixtures" / (name + ".vst3")
         info = plistlib.loads((fixture / "Contents/Info.plist").read_bytes())
@@ -148,10 +152,12 @@ def build(sdk, output):
               "-ffile-prefix-map=" + str(ROOT) + "=hex-source"]
     commands, closure, runtime = [], {}, {}
 
-    def compile_one(source, destination, extra):
+    def compile_one(source, destination, extra, architecture="arm64"):
         destination.parent.mkdir(parents=True, exist_ok=True)
         dep = output / (destination.parent.parent.parent.name + "-" + source + ".d")
-        args = common + ["-MD", "-MF", str(dep), str(NATIVE / source), "-o", str(destination)] + extra
+        flags = common.copy()
+        flags[flags.index("-arch") + 1] = architecture
+        args = flags + ["-MD", "-MF", str(dep), str(NATIVE / source), "-o", str(destination)] + extra
         commands.append(args)
         subprocess.run(args, check=True, timeout=120)
         # Clang's Make dependency output escapes whitespace with backslashes.
@@ -165,7 +171,7 @@ def build(sdk, output):
                 raise ValueError("unreviewed compiler input: " + str(path))
             base, label = owner
             closure[label + "/" + str(path.relative_to(base))] = sha(path)
-        macho(destination, 8 if "-bundle" in extra else 2)
+        macho(destination, 8 if "-bundle" in extra else 2, architecture)
         # Ad hoc signatures qualify local original fixtures only, not distribution.
         subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(destination.parent.parent.parent)], check=True, timeout=120)
         runtime[str(destination.relative_to(output))] = command(["/usr/bin/otool", "-L", str(destination)]).splitlines()[1:]
@@ -181,8 +187,41 @@ def build(sdk, output):
         binary = bundle / "Contents/MacOS/fixture"
         compile_one("macos_fixture.cpp", binary, ["-bundle", "-framework", "CoreFoundation", "-DHEX_INSTRUMENT=" + str(instrument)])
         digests[name] = sha(binary)
+    factory_fixtures = []
+    modes = ["normal", "entry-hang", "entry-crash", "enumerate-hang", "malformed-count", "malformed-string",
+             "duplicate-uid", "exit-fail", "exit-hang", "exit-crash", "flood", "open-channel-child",
+             "leave-group-hang", "enumerate-crash", "load-hang", "load-crash"]
+
+    def factory_bundle(name):
+        bundle = resources / "factory-fixtures" / (name + ".vst3")
+        (bundle / "Contents/MacOS").mkdir(parents=True)
+        (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "fixture", "CFBundleIdentifier": "org.portalsurfer.hex.factory-fixture." + name,
+            "CFBundlePackageType": "BNDL", "CFBundleVersion": "1"}, sort_keys=True))
+        return bundle
+
+    for mode, name in enumerate(modes):
+        bundle = factory_bundle(name)
+        compile_one("macos_factory_fixture.cpp", bundle / "Contents/MacOS/fixture",
+                    ["-bundle", "-framework", "CoreFoundation", "-DHEX_FACTORY_MODE=" + str(mode)])
+        factory_fixtures.append({"name": name, "bundle": str(bundle.relative_to(output))})
+    wrong = factory_bundle("wrong-architecture")
+    compile_one("macos_factory_fixture.cpp", wrong / "Contents/MacOS/fixture",
+                ["-bundle", "-framework", "CoreFoundation"], architecture="x86_64")
+    factory_fixtures.append({"name": "wrong-architecture", "bundle": str(wrong.relative_to(output))})
+    universal = factory_bundle("universal")
+    normal = resources / "factory-fixtures/normal.vst3/Contents/MacOS/fixture"
+    args = ["xcrun", "lipo", "-create", str(normal), str(wrong / "Contents/MacOS/fixture"), "-output", str(universal / "Contents/MacOS/fixture")]
+    commands.append(args)
+    subprocess.run(args, check=True, timeout=120)
+    subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(universal)], check=True, timeout=120)
+    if set(command(["xcrun", "lipo", "-archs", str(universal / "Contents/MacOS/fixture")]).split()) != {"arm64", "x86_64"}:
+        raise ValueError("universal fixture architectures changed")
+    runtime[str((universal / "Contents/MacOS/fixture").relative_to(output))] = command(["/usr/bin/otool", "-L", str(universal / "Contents/MacOS/fixture")]).splitlines()[1:]
+    factory_fixtures.append({"name": "universal", "bundle": str(universal.relative_to(output))})
     header = output / "fixture_identity.hpp"
-    header.write_text('#define HEX_SDK_PIN "' + PINS["sdk"] + '"\n' + "".join(
+    header.write_text('#define HEX_SDK_PIN "' + PINS["sdk"] + '"\n' +
+                      '#define HEX_PUBLIC_SDK_PIN "' + PINS["public.sdk"] + '"\n' + "".join(
         '#define HEX_' + name.upper() + '_SHA256 "' + digest + '"\n' for name, digest in digests.items()))
     (output / APP / "Contents/Info.plist").write_bytes(plistlib.dumps({
         "CFBundleExecutable": "hex-vst3-host", "CFBundleIdentifier": "org.portalsurfer.hex.vst3.bootstrap",
@@ -190,16 +229,25 @@ def build(sdk, output):
     }, sort_keys=True))
     # CommonCrypto's legacy one-shot function remains available for local identity.
     compile_one("macos_helper.mm", output / EXECUTABLE, ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations"])
+    scan_executable = APP / "Contents/MacOS/hex-vst3-factory-scan"
+    compile_one("macos_scan.mm", output / scan_executable, ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations"])
+    reply_hang = APP / "Contents/MacOS/hex-vst3-factory-scan-reply-hang"
+    compile_one("macos_scan.mm", output / reply_hang,
+                ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations", "-DHEX_SCAN_HANG_AFTER_REPLY=1"])
+    compile_one("launch_ignored.cpp", output / APP / "Contents/MacOS/hex-vst3-launch-ignored", [])
     (resources / "sdk-notices.json").write_text(json.dumps(licenses, indent=2) + "\n")
     subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(output / APP)], check=True, timeout=120)
     receipt = {"version": 1, "scope": "original-macos-bootstrap", "platform": "darwin-arm64",
-               "sdk_pins": PINS, "source_sha256": source_digest(),
+               "sdk_pins": PINS, "source_sha256": source_digest(), "factory_scan_helper": str(scan_executable),
+               "factory_fixtures": factory_fixtures,
+               "factory_scan_fault_helper": str(reply_hang),
                "source_commit": command(["git", "rev-parse", "HEAD"], cwd=ROOT),
                "source_dirty": bool(command(["git", "status", "--porcelain"], cwd=ROOT)),
                "compiler": {"path": str(compiler), "sha256": sha(compiler), "version": command([str(compiler), "--version"])},
                "build_tools": {name: {"path": path, "sha256": sha(Path(path))} for name, path in
                                [("linker", command(["xcrun", "--find", "ld"])),
-                                ("codesign", "/usr/bin/codesign"), ("otool", "/usr/bin/otool")]},
+                                ("codesign", "/usr/bin/codesign"), ("otool", "/usr/bin/otool"),
+                                ("lipo", command(["xcrun", "--find", "lipo"]))]},
                "apple_sdk": {"path": str(apple_sdk), "version": command(["xcrun", "--sdk", "macosx", "--show-sdk-version"]),
                              "settings_sha256": sha(apple_sdk / "SDKSettings.json")},
                "runtime": {"os_build": command(["/usr/bin/sw_vers", "-buildVersion"]), "dependencies": runtime,
