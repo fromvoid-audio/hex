@@ -11,7 +11,7 @@ fn run() -> i32 {
     if !matches!(arguments.len(), 3 | 4) || arguments[1] != "--trust-user-code" {
         let _ = writeln!(
             std::io::stderr(),
-            "usage: hex-vst3-scan-macos <controlled-macos.json> --trust-user-code <one.vst3> [deadline-ms]; selected module executes as your user"
+            "usage: hex-vst3-scan-macos <controlled-macos.json|--bundled> --trust-user-code <one.vst3> [deadline-ms]; selected module executes as your user"
         );
         return 2;
     }
@@ -25,7 +25,15 @@ fn run() -> i32 {
             }
         },
     };
-    let prepared = Build::inspect(&PathBuf::from(&arguments[0])).and_then(|build| {
+    let prepared_build = if arguments[0] == "--bundled" {
+        std::env::current_exe()
+            .map_err(|e| format!("packaged scanner path unavailable: {e}"))
+            .and_then(|path| hex_plugin_scan::macos::package::Package::from_scanner(&path))
+            .map(|package| package.build)
+    } else {
+        Build::inspect(&PathBuf::from(&arguments[0]))
+    };
+    let prepared = prepared_build.and_then(|build| {
         Bundle::inspect(&PathBuf::from(&arguments[2])).map(|bundle| (build, bundle))
     });
     let result = prepared.and_then(|(build, bundle)| {

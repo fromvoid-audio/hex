@@ -136,7 +136,10 @@ impl Build {
             ("pluginterfaces", "4f547e8e102b47de4a8b8aaf343c73b700786372"),
         ];
         if data["version"] != 1
-            || data["scope"] != "original-macos-bootstrap"
+            || !matches!(
+                data["scope"].as_str(),
+                Some("original-macos-bootstrap" | "native-macos-factory-discovery")
+            )
             || data["platform"] != "darwin-arm64"
             || data["source_sha256"] != native_source()
             || data["factory_scan_helper"] != HELPER
@@ -166,10 +169,44 @@ impl Build {
             }
             files.insert(name.clone(), digest.to_owned());
         }
+        if data["scope"] == "native-macos-factory-discovery" {
+            let allowed = [
+                "hex-vst3-host.app/Contents/Info.plist",
+                "hex-vst3-host.app/Contents/MacOS/hex-vst3-factory-scan",
+                "hex-vst3-host.app/Contents/Resources/sdk-notices.json",
+                "hex-vst3-host.app/Contents/_CodeSignature/CodeResources",
+            ];
+            if files.len() != allowed.len()
+                || allowed.iter().any(|key| !files.contains_key(*key))
+                || data["factory_fixtures"] != serde_json::json!([])
+                || !data["factory_scan_fault_helper"].is_null()
+            {
+                return Err("minimal discovery package contains unexpected or fault assets".into());
+            }
+        }
         let path = path
             .canonicalize()
             .map_err(|_| "helper receipt path failed")?;
-        let root = path.parent().ok_or("helper root missing")?.to_path_buf();
+        let parent = path.parent().ok_or("helper root missing")?;
+        let root = if data["package_layout"].is_null() {
+            parent.to_path_buf()
+        } else if data["package_layout"] == "hex-app-discovery-v1"
+            && data["scope"] == "native-macos-factory-discovery"
+            && path.file_name().and_then(|v| v.to_str()) == Some("vst3-discovery.json")
+            && parent.file_name().and_then(|v| v.to_str()) == Some("Resources")
+            && parent
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|v| v.to_str())
+                == Some("Contents")
+        {
+            parent
+                .parent()
+                .ok_or("app contents missing")?
+                .join("Helpers")
+        } else {
+            return Err("unknown discovery package layout".into());
+        };
         if inventory(&root)? != files {
             return Err("helper bundle content changed".into());
         }
