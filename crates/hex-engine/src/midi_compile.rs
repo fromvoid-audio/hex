@@ -1,4 +1,12 @@
-//! Bounded control-side compilation of MIDI edges and stateless note spans.
+//! Bounded control-side compilation of MIDI edges and prepared note spans.
+//!
+//! Validate/count projected occurrences before allocating banks. Convert absolute on/off beats
+//! independently through canonical timing, refuse zero-frame gates and sort equal-frame note-offs
+//! before note-ons with stable authored identity ordering. Prepared event edges alone produce no
+//! audio. Rendering borrows admitted fixed span/query storage; no per-sample beat conversion,
+//! voice preparation or note bank allocation belongs on callback. Named occurrence/edge/runtime
+//! limits here and in mutable_instrument are independent bounds, not physical device-deadline
+//! evidence.
 use crate::Invalid;
 use hex_lattice::PreparedNativeInstrument;
 use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, NoteId, Project, Track, TrackId};

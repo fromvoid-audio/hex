@@ -1,4 +1,12 @@
-//! Registered analytic instrument preparation and compact immutable note samplers.
+//! Registered instrument preparation and compact immutable note samplers.
+//!
+//! Effects and instruments resolve through separate registries; a missing or malformed present
+//! instrument must refuse rather than fall back to another type. Preparation validates authored
+//! state and tuning on control. Analytic notes are copyable scalar samplers; shared contexts and
+//! mutable factories declare their own bounded storage and processing capabilities. Mutable
+//! committed/scratch histories participate in a whole-block transaction, with compatibility
+//! checked before any history transfer. These trusted native interfaces provide no foreign-code
+//! sandbox or host resource lease.
 use super::{MAX_NATIVE_DEVICE_TYPES, PreparedMutableInstrumentRuntime, StereoFrame};
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,

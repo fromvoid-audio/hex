@@ -1,6 +1,16 @@
-//! Control-verified resource facts and per-configuration NONOWNING scope maps.
-//! The actual input storage must live in the retained host root. These values,
-//! digests and tokens do not grant native publication or retirement admission.
+//! Control-verified resource facts and per-configuration nonowning scope maps.
+//!
+//! [`DeviceResourceCatalog`] holds checked facts/tokens; [`DeviceResourceScope`] maps authored
+//! slots within one exact configuration.
+//! The actual immutable input bank remains in retained host custody. Equal content cannot
+//! authorize a foreign catalog/bank token or replace an outgoing voice's original scope.
+//! Original-rate device PCM and project-rate clip derivatives remain different roles, even for a
+//! common asset ID. Control verifies original rate/extent and hashes under explicit frame-work and
+//! metadata reservations, checking cancellation between sources and bounded chunks. The normalized
+//! stereo content hash includes its domain prefix, rate, extent and f32 bit patterns, not the
+//! asset ID or encoded WAV bytes. Hashing never runs in sample/process callbacks. These facts
+//! alone authorize neither native publication nor retirement; the current loaded sampler uses the
+//! separate private [`ControlSamplerSources`] root.
 use crate::{AudioInputStorageAndObligations, AudioSourceToken, AudioStorageError};
 use hex_lattice::{DeviceResourceIdentity, DeviceResourcePcm, DeviceResourceView, DeviceResources};
 use hex_lattice_contract::{

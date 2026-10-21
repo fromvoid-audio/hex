@@ -1,4 +1,12 @@
-//! Explicit desktop-owned, off-callback MTS-ESP publication.
+//! # Purpose
+//! Own explicit desktop-controlled MTS-ESP tuning publication outside audio callbacks.
+//!
+//! # Dependencies
+//! Uses hex-tuning and the existing native mts-esp-master-adapter boundary.
+//!
+//! # Does not own
+//! Does not own project tuning history, instrument DSP or a second tuning model. Process-global
+//! native ownership and publisher shutdown remain explicit lifecycle operations.
 use hex_tuning::ProjectTuning;
 use mts_esp_master_adapter::{Error as NativeError, ScaleMetadata, TuningPublication};
 use std::{

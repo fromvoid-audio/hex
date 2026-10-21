@@ -1,5 +1,12 @@
-//! Borrowed, control-only DATA inventory and unresolved owning HANDLEs.
-//! No owner is cloned or transferred; this is never publication/lifetime authority.
+//! Borrowed control-only DATA inventory and unresolved owning HANDLEs.
+//!
+//! Shared allocations deduplicate by the actual borrowed owner, charge location and matching
+//! constructor declaration, never equal PCM or metadata. Exclusive containers use their actual
+//! owning field, capacity and element stride. Every physical owning handle is counted separately;
+//! inventory does not clone or transfer it. Refused additions invalidate the partial ledger.
+//! require_known_storage concerns only its listed DATA; require_complete still refuses unresolved
+//! retirement. These counts exclude unknown allocator/OS costs and grant no publication or
+//! lifetime authority.
 use crate::{AudioPreparationCustody, AudioStorageError, OwnedAudioInputs, StreamedSourceMetadata};
 use std::{any::Any, sync::Arc};
 mod sources;

@@ -1,7 +1,13 @@
-//! Headless, bounded mixed-route Session playback over one prepared revision.
+//! Headless, bounded mixed-route playback over one prepared revision.
 //!
-//! Prepared native `playback::Playback` delegates mixed routing to this kernel;
-//! legacy finite Arrangement playback and offline export remain independent.
+//! Each track has one Arrangement, Session or Silence owner. Arrangement position and the
+//! monotonic performance clock are distinct frame domains; route transitions use canonical
+//! prepared musical timing. An exhausted Session one-shot keeps its route until an explicit
+//! change. Compatible handoffs inherit actual runtime history; cut voices retain their original
+//! sampler, suffix/mix and bounded tail owner. Tail banks are preallocated, and ownership moves
+//! only after complete preflight; retired runtime/context destruction belongs on control. The
+//! private loaded-sampler constructor retains its narrower transport/source class and must not be
+//! treated as ordinary mixed-instrument publication.
 use crate::prepared_tempo::{
     AnchoredSessionTempoView, PreparedPeriodicSessionTempo, SessionBaseTimingView,
     SessionClockAnchor, SessionTimingView,
