@@ -1,3 +1,12 @@
+//! Native canonical editor view and bounded UI intent coordination.
+//!
+//! Session owns the editable project and prepare-before-commit workers; this module owns
+//! display/selection/focus and captured typed requests. Render cached summaries and visible
+//! content, never decode or perform filesystem/audio setup in painting. Pending requests preserve
+//! captured generation/revision/target identity. Canonical commit and native applied-source
+//! acknowledgment are separate states; do not claim current playback from a submitted revision
+//! alone. Native keyboard/pointer delivery uses the pinned excluded GPUI dependency boundary, with
+//! no unsafe workspace bridge.
 mod arrangement;
 mod arrangement_audio_panel;
 mod arrangement_device_drop;

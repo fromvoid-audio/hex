@@ -420,7 +420,7 @@ impl PreparedSessionInventory {
         previous: Option<&Self>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
-        samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+        samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Self, crate::Invalid> {
         Self::prepare_with_resolver_scoped(
             project,
@@ -466,7 +466,7 @@ impl PreparedSessionInventory {
             &'a hex_project::Asset,
             u32,
         ) -> Result<PreparedAudioSourceRef<'a>, crate::Invalid>,
-        samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+        samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Self, crate::Invalid> {
         crate::gain_envelope::validate_project(project)?;
         let routed_plan = RoutedMidiPlan::prepare(project)?;

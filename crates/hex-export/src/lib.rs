@@ -1,4 +1,13 @@
-//! Fixed-block linear PCM16 WAV export with create-new publication.
+//! # Purpose
+//! Render fixed-block linear PCM16 WAV files and publish create-new outputs.
+//!
+//! # Dependencies
+//! Uses hex-engine and the standard library; callers supply the exact prepared revision and any
+//! required private source scope.
+//!
+//! # Does not own
+//! Does not edit projects, resolve missing media, normalize musical output or overwrite an
+//! existing destination implicitly.
 
 use hex_engine::{PreparedRevision, Project, Renderer, SessionPlayback, SessionPlaybackCommand};
 use std::{

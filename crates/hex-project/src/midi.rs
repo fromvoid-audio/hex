@@ -1,4 +1,11 @@
-//! Validated MIDI clip source, arrangement and note metadata.
+//! Validated MIDI source, Arrangement placement and note metadata.
+//!
+//! MIDI timing uses checked Q32.32 quarter-note beats, independent of audio frame anchors. Source
+//! extent/start and retained loop markers are independent of a clip's finite Arrangement length.
+//! Notes keep stable distinct IDs even at equal pitch; channel, pitch, velocity and positive
+//! duration are validated before mutation. Source shrink refuses notes it would invalidate.
+//! Copy-on-write identity tokens retain the actual source, preventing address reuse from making
+//! stale prepared artifacts appear current. The project Editor owns atomic history, not this view.
 use crate::edit::{Command, MidiNoteUpdate};
 use crate::{
     BeatTime, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MidiSourcePlayback, NoteId, Project,

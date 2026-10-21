@@ -1,4 +1,11 @@
-//! Device adapter for the canonical compiled playback handoff.
+//! Native adapter for canonical compiled playback and host sample conversion.
+//!
+//! A complete bounded stereo chunk is validated through its final channel/sample conversion before
+//! host copying, gain-delivery confirmation or spectrum capture. Failure silences/stops the failed
+//! chunk and latches its cause; already committed prefix output remains intact. Float output
+//! preserves finite range, integer output uses the native conversion law, and extra channels
+//! receive silence. Stream setup, reopen and final teardown stay on the lifecycle/control lane,
+//! not the callback.
 use crate::spectrum_worker::{
     SpectrumReader, SpectrumStamp, SpectrumTargetId, spawn_spectrum_worker,
 };

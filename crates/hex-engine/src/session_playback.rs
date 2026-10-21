@@ -1,7 +1,13 @@
-//! Headless, bounded mixed-route Session playback over one prepared revision.
+//! Headless, bounded mixed-route playback over one prepared revision.
 //!
-//! Prepared native `playback::Playback` delegates mixed routing to this kernel;
-//! legacy finite Arrangement playback and offline export remain independent.
+//! Each track has one Arrangement, Session or Silence owner. Arrangement position and the
+//! monotonic performance clock are distinct frame domains; route transitions use canonical
+//! prepared musical timing. An exhausted Session one-shot keeps its route until an explicit
+//! change. Compatible handoffs inherit actual runtime history; cut voices retain their original
+//! sampler, suffix/mix and bounded tail owner. Tail banks are preallocated, and ownership moves
+//! only after complete preflight; retired runtime/context destruction belongs on control. The
+//! private loaded-sampler constructor retains its narrower transport/source class and must not be
+//! treated as ordinary mixed-instrument publication.
 use crate::prepared_tempo::{
     AnchoredSessionTempoView, PreparedPeriodicSessionTempo, SessionBaseTimingView,
     SessionClockAnchor, SessionTimingView,
@@ -440,6 +446,46 @@ fn effective_midi_route(
 }
 
 impl SessionPlayback {
+    pub(crate) fn device_resource_lease_on_control(
+        &self,
+        track: TrackId,
+    ) -> Result<Option<crate::native_device_resources::PreparedDeviceResourceLease>, crate::Invalid>
+    {
+        let index = self
+            .routes
+            .iter()
+            .position(|route| route.id == track)
+            .ok_or(crate::Invalid("device resource track is unavailable"))?;
+        self.mutable_instruments
+            .get(index)
+            .and_then(Option::as_ref)
+            .and_then(|runtime| runtime.resources.as_ref())
+            .map(|lease| {
+                lease
+                    .capture_on_control()
+                    .map_err(|_| crate::Invalid("device resource lease capture refused"))
+            })
+            .transpose()
+    }
+    pub(crate) fn device_resource_leases(
+        &self,
+    ) -> impl Iterator<Item = &crate::native_device_resources::PreparedDeviceResourceLease> {
+        self.mutable_instruments
+            .iter()
+            .flatten()
+            .filter_map(|runtime| runtime.resources.as_ref())
+            .chain(
+                self.tail_mutable_instruments
+                    .iter()
+                    .flatten()
+                    .filter_map(|tail| tail.runtime.resources.as_ref()),
+            )
+            .chain(
+                self.computer_keyboard
+                    .iter()
+                    .filter_map(|keyboard| keyboard.resources.as_ref()),
+            )
+    }
     pub(crate) fn computer_keyboard_latency_supported(&self) -> bool {
         self.compensation
             .as_ref()
@@ -470,8 +516,8 @@ impl SessionPlayback {
         if allowance > runtime_limit {
             return Err(Error::ReservationExceeded);
         }
-        let mut playback =
-            Self::new_with_policy_scoped(revision, false).map_err(|_| Error::UnsupportedGraph)?;
+        let mut playback = Self::new_with_policy_scoped(revision, false, None)
+            .map_err(|_| Error::UnsupportedGraph)?;
         playback
             .current_sampler_keyboards
             .try_reserve_exact(sources.metadata.configurations().len())
@@ -795,7 +841,7 @@ impl SessionPlayback {
         Ok(())
     }
     pub fn new(revision: Arc<PreparedRevision>) -> Result<Self, SessionPlaybackError> {
-        Self::new_with_policy(revision, false)
+        Self::new_with_policy(revision, false, None)
     }
 
     pub(crate) fn select_processor_audition(
@@ -999,7 +1045,7 @@ impl SessionPlayback {
     pub fn new_linear_arrangement_export(
         revision: Arc<PreparedRevision>,
     ) -> Result<Self, SessionPlaybackError> {
-        Self::new_with_policy(revision, true)
+        Self::new_with_policy(revision, true, None)
     }
 
     /// Private-control export capability: the graph contains only scalar sampler
@@ -1014,7 +1060,7 @@ impl SessionPlayback {
             ));
         }
         let allowance = Self::control_sampler_export_runtime_allowance(&revision, sources)?;
-        let playback = Self::new_with_policy_scoped(revision, true)?;
+        let playback = Self::new_with_policy_scoped(revision, true, None)?;
         if playback
             .accounted_runtime_storage_bytes()
             .is_none_or(|n| n > allowance)
@@ -1049,18 +1095,39 @@ impl SessionPlayback {
     fn new_with_policy(
         revision: Arc<PreparedRevision>,
         linear_arrangement_export: bool,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
     ) -> Result<Self, SessionPlaybackError> {
         if revision.requires_control_sampler_sources() {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
                 "sampler requires private offline export resources",
             ));
         }
-        Self::new_with_policy_scoped(revision, linear_arrangement_export)
+        Self::new_with_policy_scoped(revision, linear_arrangement_export, resources)
     }
+    /// Construct ordinary mixed playback with the exact resource set used by its compiler.
+    /// Leases are allocated on control and then owned by each actual mutable runtime.
+    pub fn new_with_device_resources(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+    ) -> Result<Self, SessionPlaybackError> {
+        if revision.resource_scope.is_some() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "private sampler scope is not an ordinary resource set",
+            ));
+        }
+        Self::new_with_policy_scoped(revision, false, Some(resources))
+    }
+
     fn new_with_policy_scoped(
         revision: Arc<PreparedRevision>,
         linear_arrangement_export: bool,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
     ) -> Result<Self, SessionPlaybackError> {
+        if revision.device_resource_scope != resources.map(|resources| resources.id()) {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "device resource set differs from prepared revision",
+            ));
+        }
         let arrangement_tracks = revision.arrangement().tracks();
         let session_tracks = revision.session().tracks();
         if arrangement_tracks.len() != session_tracks.len()
@@ -1180,6 +1247,11 @@ impl SessionPlayback {
                 .map_err(SessionPlaybackError::from)?;
             let mut runtime = runtime;
             if let Some(runtime) = runtime.as_mut() {
+                runtime.resources = resources
+                    .map(|resources| resources.lease_on_control(id))
+                    .transpose()
+                    .map_err(|_| SessionPlaybackError::MutableInstrumentRuntime)?
+                    .flatten();
                 runtime.expression_identity = track.instrument_id;
             }
             mutable_instruments.push(runtime);

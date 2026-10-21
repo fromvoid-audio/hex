@@ -1,4 +1,13 @@
-//! Selected-plugin browser records and control work. Never called by audio.
+//! # Purpose
+//! Own selected-plugin browser records and bounded control-worker discovery.
+//!
+//! # Dependencies
+//! Uses hex-plugin-scan, serde/serde_json and fs2 for controlled discovery, persistence and file
+//! coordination.
+//!
+//! # Does not own
+//! Does not load plugins in the app, create audio instances or execute callback work. A persisted
+//! discovery record is not runtime-host eligibility.
 pub mod storage;
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 pub mod worker;

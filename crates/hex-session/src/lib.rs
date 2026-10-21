@@ -1,4 +1,15 @@
-//! Control-side owner of canonical editing state and its bounded decoded media.
+//! # Purpose
+//! Own canonical editing state, retained media, bounded workers and prepare-before-commit
+//! coordination.
+//!
+//! # Dependencies
+//! Uses hex-project, hex-engine, hex-media, hex-storage, hex-export, hex-tuning and neutral
+//! hex-lattice-contract.
+//!
+//! # Does not own
+//! Does not own GPUI, CPAL, page endpoints or callback DSP. Typed requests carry captured
+//! identity; successful canonical preparation is distinct from actual native publication and
+//! acknowledgment.
 pub mod gain_recording;
 
 use hex_engine::{Audio, Project as PlaybackProject};

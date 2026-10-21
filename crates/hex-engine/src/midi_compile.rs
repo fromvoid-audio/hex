@@ -1,4 +1,12 @@
-//! Bounded control-side compilation of MIDI edges and stateless note spans.
+//! Bounded control-side compilation of MIDI edges and prepared note spans.
+//!
+//! Validate/count projected occurrences before allocating banks. Convert absolute on/off beats
+//! independently through canonical timing, refuse zero-frame gates and sort equal-frame note-offs
+//! before note-ons with stable authored identity ordering. Prepared event edges alone produce no
+//! audio. Rendering borrows admitted fixed span/query storage; no per-sample beat conversion,
+//! voice preparation or note bank allocation belongs on callback. Named occurrence/edge/runtime
+//! limits here and in mutable_instrument are independent bounds, not physical device-deadline
+//! evidence.
 use crate::Invalid;
 use hex_lattice::PreparedNativeInstrument;
 use hex_project::{BeatTime, ClipId, MidiClip, MidiNote, NoteId, Project, Track, TrackId};
@@ -270,7 +278,10 @@ pub(crate) fn compile_current_sampler_track(
         return Err(Invalid("native midi bank destination is occupied"));
     }
     let limits = MutableInstrumentLimits::from_factory(prepared)?;
-    let instrument = crate::native_device_resources::PreparedControlSampler(prepared.clone());
+    let instrument =
+        hex_devices::sampler::catalog::PreparedSamplerInstrument::from_runtime_on_control(
+            prepared.clone(),
+        );
     compile_instrument_track_with_empty_bank(
         project,
         track,

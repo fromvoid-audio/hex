@@ -41,6 +41,7 @@ impl ComputerKeyboardRuntime {
             }
         }
         Ok(Box::new(Self {
+            resources: None,
             track,
             instrument_id: Some(device),
             expression: None,

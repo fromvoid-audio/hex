@@ -1,6 +1,12 @@
-//! Once-only, coupled native closure custody, adapted from original177
-//! 8d444c06. Backend guard destruction moves a carrier; only lifecycle control
-//! destroys its contents. Receiving a carrier is not final-active quiescence.
+//! Once-only coupled custody for native callback and error guards.
+//!
+//! Backend guard destruction moves a carrier; only lifecycle control destroys its contents.
+//! Final-active extraction requires the exact root-bound release authority, normal completion of
+//! the original stream-handle destructor and release of both terminal guard anchors. Silence,
+//! Pause, shutdown acknowledgment or merely receiving a carrier establishes none of those
+//! conditions. Destruction failure retains Pending and exclusive output custody without retry.
+//! This proves nonrenderability through the supported application callback paths, not
+//! independently observed AudioUnit stop/uninitialize/dispose success.
 use crate::prepared::{Callback, Status};
 #[cfg(all(test, feature = "allocation-probe"))]
 mod endpoint_tests;

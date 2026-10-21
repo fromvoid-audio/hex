@@ -1,4 +1,13 @@
 //! Exact control-side products for one accepted canonical project revision.
+//!
+//! Arrangement, Session inventory and display summaries are prepared together before the canonical
+//! edit/history transaction commits. Preparation failure leaves the previous project, IDs, redo
+//! and accepted audio source intact. Musical compatibility uses authored source/device identity,
+//! not equal filenames or display metadata. A private resource_scope binds source-bearing sampler
+//! coefficients to their sealed ControlSamplerSources sidecar; an ordinary runtime constructor
+//! refuses that private graph. The separate device_resource_scope stores only the exact registered
+//! resource-set identity: ordinary runtime construction must receive that matching set and retain
+//! actual source leases before playback.
 use crate::{
     Invalid, MidiArrangementPreview, PreparedSessionInventory, Project as PlaybackProject,
     compile::PreparedAudioSource,
@@ -89,6 +98,7 @@ impl TuningContinuationFamily {
 /// runtime route ownership is maintained by the playback kernel.
 pub struct PreparedRevision {
     pub(crate) resource_scope: Option<u64>,
+    pub(crate) device_resource_scope: Option<u64>,
     tuning_family: TuningContinuationFamily,
     arrangement: crate::owned_shared::OwnedShared<PlaybackProject>,
     session: crate::owned_shared::OwnedShared<PreparedSessionInventory>,
@@ -357,7 +367,7 @@ impl PreparedRevision {
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         transforms: &crate::audio_transform::AudioTransformPreparation,
-        samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+        samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Self, Invalid> {
         transforms.compile_transaction(|| {
             crate::gain_envelope::validate_project(project)?;
@@ -415,8 +425,8 @@ impl PreparedRevision {
                 midi_bank_references,
             )?;
             Ok(Self {
-                resource_scope: samplers
-                    .map(crate::native_device_resources::ControlSamplerSources::id),
+                resource_scope: samplers.and_then(|sources| sources.private_scope()),
+                device_resource_scope: samplers.and_then(|sources| sources.device_scope()),
                 tuning_family: TuningContinuationFamily::fresh()?,
                 arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
                 session: crate::owned_shared::OwnedShared::new_owned(session),
@@ -425,6 +435,47 @@ impl PreparedRevision {
                 gain_recording_track: None,
             })
         })
+    }
+
+    /// Compile through the ordinary registered-instrument path against exact original-source
+    /// configurations. The returned revision owns no PCM; playback construction must supply the
+    /// same set. The caller reserves every factory's two full PCM scans, including repeated
+    /// Arrangement/Session/shared-context preparation, with no hidden precomputed sampler cache.
+    /// This is aggregate compiler frame work, not maximum source extent: an enabled instrument
+    /// currently has three factory invocations, each with two PCM scans (two invocations when
+    /// bypassed). Consumers must reserve this separate bounded work without reducing or increasing
+    /// their original resident import/storage extent limit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_device_resources(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        max_scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, Invalid> {
+        resources.validate_project(project)?;
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        let preparation = crate::native_device_resources::CompilerDeviceResources::new(
+            resources,
+            max_scan_frames,
+            cancel,
+        );
+        Self::prepare_with_registries_and_sampler_sources(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            &effects,
+            &instruments,
+            transforms,
+            Some(&preparation),
+        )
     }
 
     /// Control-only scalar compilation against an exact sealed source sidecar.
@@ -556,6 +607,7 @@ impl PreparedRevision {
         )?;
         Ok(Self {
             resource_scope: None,
+            device_resource_scope: None,
             tuning_family: TuningContinuationFamily::fresh()?,
             arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
             session: crate::owned_shared::OwnedShared::new_owned(session),

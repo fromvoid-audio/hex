@@ -45,7 +45,11 @@ impl Control {
         publication.status.split_endpoints.store(true, Release);
         let output_identity = publication.candidate_root.root_id();
         let status = Arc::clone(&publication.status);
-        let resident_forwarding = resident_forwarding::ResidentForwarding::new();
+        let resident_forwarding = publication
+            .resident_forwarding
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
         publication.resident_forwarding = Some(Arc::clone(&resident_forwarding));
         let (endpoints, client) = reserve(ClientEndpoints {
             output_identity,
@@ -112,7 +116,9 @@ impl Client {
 
     pub(crate) fn activate(&mut self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
-            endpoints.status.client_exposed.store(true, Release);
+            endpoints
+                .resident_forwarding
+                .expose_client_on_control(&endpoints.status);
         }
     }
     pub(crate) fn guard(&self) -> &Guard<ClientEndpoints> {
