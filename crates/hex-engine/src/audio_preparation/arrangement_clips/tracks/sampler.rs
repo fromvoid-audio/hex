@@ -60,8 +60,24 @@ pub(crate) fn compiler_workspace_quote(
                 .ok_or(AudioStorageError::Overflow)?,
         )
         .ok_or(AudioStorageError::Overflow)?;
+    // NoteKeys is Vec<u16>, appended once per emitted authored note. Pinned
+    // RawVec grows from min4 slots, then doubles; max(4,3N) also covers old+new
+    // allocation overlap during growth, before the old key buffer is freed.
+    // https://github.com/rust-lang/rust/blob/1.94.0/library/alloc/src/raw_vec/mod.rs
+    let key_slots = if notes == 0 {
+        0
+    } else {
+        notes
+            .checked_mul(3)
+            .ok_or(AudioStorageError::Overflow)?
+            .max(4)
+    };
+    let keys = key_slots
+        .checked_mul(mem::size_of::<u16>())
+        .ok_or(AudioStorageError::Overflow)?;
     notes
         .checked_mul(density_stride)
+        .and_then(|n| n.checked_add(keys))
         .and_then(|n| n.checked_add(sort_bytes))
         .and_then(|n| n.checked_add(clips.checked_mul(mem::size_of::<usize>())?))
         .ok_or(AudioStorageError::Overflow)

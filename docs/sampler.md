@@ -477,12 +477,13 @@ replacement still refuses before canonical commit.
 Native MIDI compilation now starts after the other fixed constructor backings
 exist. Before compiler entry, admission checks their actual simultaneous bytes,
 all tracks' finite final MIDI bound and conservative temporary clip-count,
-stable-sort, onset and density-edge workspace. Retained and construction limits
+note-key growth (including old/new allocation overlap), stable-sort, onset and
+density-edge workspace. Retained and construction limits
 are checked separately; the historical workspace overlap remains in the storage
 seal after temporaries are freed. The pinned Rust1.94 driftsort quote includes its 48-element scratch minimum
 above the 20-element insertion path, using max(N,48) element slots; this scratch
 does not overlap density sorting, and the quote safely sums phase bounds. Empty MIDI clips still reserve clip-count workspace. Owning exact
-and one-under tests cover empty-clip and 21/256 nonoverlapping-note fixtures and observe
+and one-under tests cover empty-clip and 3/21/256 nonoverlapping-note fixtures and observe
 that a refused compiler was never entered. Removing each of the three review
 repairs reproduces its focused failure; raw RED/GREEN evidence is retained with
 PR548's local artifacts. The interrupted earlier audit is not merge evidence.

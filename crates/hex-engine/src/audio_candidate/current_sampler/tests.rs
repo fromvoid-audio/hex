@@ -199,7 +199,7 @@ fn current_sampler_actual_constructor_has_literal_pcm_stop_replay_and_closed_cus
 
 #[test]
 fn sampler_compiler_reserves_empty_clip_and_note_workspace_before_entering() {
-    for note_count in [0, 21, 256] {
+    for note_count in [0, 3, 21, 256] {
         let (project, asset) = fixture();
         let mut editor = Editor::new(project, 8).unwrap();
         let track = editor.project().tracks()[0].id();
