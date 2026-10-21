@@ -295,14 +295,30 @@ pub trait PreparedNativeInstrument: Send + Sync {
 /// registry from effects because they prepare authored notes rather than a
 /// stereo effect matrix.
 pub trait NativeInstrumentDefinition: NativeDeviceMetadata {
+    /// Opt into immutable, host-retained resource inventories. The default
+    /// refuses asset bindings before migration or provider execution.
+    fn supports_asset_resources(&self) -> bool {
+        false
+    }
     fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
         context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError>;
+
+    /// Prepare against an explicit host runtime ceiling. Existing providers
+    /// retain their ordinary factory; runtime construction validates its limits.
+    fn prepare_instrument_with_runtime_limits(
+        &self,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+        _limits: crate::NativeInstrumentRuntimeLimits,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        self.prepare_instrument(state, context)
+    }
 }
 
-/// Bounded immutable registry for native analytic instruments.
+/// Bounded immutable registry for native instruments.
 pub struct NativeInstrumentRegistry<'a> {
     definitions: &'a [&'a dyn NativeInstrumentDefinition],
 }
@@ -434,25 +450,52 @@ impl<'a> NativeInstrumentRegistry<'a> {
         )
     }
 
-    /// Prepare the exact effective table; resource bindings refuse before
-    /// provider migration until the host supplies actual resource leases.
+    /// Prepare the exact effective configuration. Ordinary definitions refuse resource bindings
+    /// before migration; opted-in definitions receive a validated inventory whose lifetime remains
+    /// the host's responsibility.
     pub fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
         context: &crate::DevicePreparationContext<'_>,
     ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
-        state.require_asset_free_processing()?;
-        context.validate_for(state)?;
+        self.prepare_instrument_checked(state, context, None)
+    }
+
+    /// The same state/capability/resource validation with explicit host limits.
+    pub fn prepare_instrument_with_runtime_limits(
+        &self,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+        limits: crate::NativeInstrumentRuntimeLimits,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
+        self.prepare_instrument_checked(state, context, Some(limits))
+    }
+
+    fn prepare_instrument_checked(
+        &self,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+        limits: Option<crate::NativeInstrumentRuntimeLimits>,
+    ) -> Result<Box<dyn PreparedNativeInstrument>, DeviceContractError> {
         let definition = self
             .definition(state.type_id())
             .ok_or(DeviceContractError::WrongDeviceType)?;
+        if !definition.supports_asset_resources() {
+            state.require_asset_free_processing()?;
+        }
+        context.validate_for(state)?;
         let current = self.validate_current(
             definition,
             definition
                 .migrate_state(state)?
                 .with_host_metadata_from(state)?,
         )?;
-        definition.prepare_instrument(&current, context)
+        match limits {
+            Some(limits) => {
+                definition.prepare_instrument_with_runtime_limits(&current, context, limits)
+            }
+            None => definition.prepare_instrument(&current, context),
+        }
     }
 
     fn validate_current(

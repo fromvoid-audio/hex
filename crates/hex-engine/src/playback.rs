@@ -309,6 +309,16 @@ pub struct Playback {
     playing: bool,
 }
 impl Playback {
+    pub(crate) fn device_resource_leases(
+        &self,
+    ) -> impl Iterator<Item = &crate::native_device_resources::PreparedDeviceResourceLease> {
+        self.session_runtime
+            .iter()
+            .flat_map(|runtime| runtime.device_resource_leases())
+    }
+    pub fn contains_device_resource_leases(&self) -> bool {
+        self.device_resource_leases().next().is_some()
+    }
     /// Conservative control-side PCM capacity of this actual immutable graph.
     /// Shared clip leaves are counted once within the graph; no owner escapes.
     pub fn resident_pcm_capacity_frames(&self) -> Option<u64> {
@@ -450,7 +460,30 @@ impl Playback {
         {
             return Err(Invalid("computer keyboard tuning does not match playback"));
         }
-        let mut candidate = Box::new(if let Some(hint) = hint {
+        let resources = runtime.device_resource_lease_on_control(track)?;
+        let mut candidate = Box::new(if let Some(resources) = resources {
+            if hint.is_some() {
+                return Err(Invalid("resource keyboard tuning hints are unsupported"));
+            }
+            let factory = self
+                .prepared_revision
+                .as_ref()
+                .and_then(|revision| revision.session().mutable_instrument_factory(track))
+                .ok_or(Invalid("resource keyboard mutable factory is unavailable"))?;
+            let mut keyboard =
+                crate::computer_keyboard::ComputerKeyboardRuntime::prepare_resource_mutable(
+                    track,
+                    input,
+                    project.sample_rate(),
+                    factory,
+                    resources,
+                )?;
+            keyboard.set_resource_identity(
+                canonical.id(),
+                project.tuning().table().map_err(|error| Invalid(error.0))?,
+            );
+            keyboard
+        } else if let Some(hint) = hint {
             crate::computer_keyboard::ComputerKeyboardRuntime::prepare_for_tuning(
                 project, track, input, family, hint,
             )?
@@ -673,6 +706,21 @@ impl Playback {
         prepared_revision: Arc<PreparedRevision>,
     ) -> Result<Self, crate::SessionPlaybackError> {
         let runtime = SessionPlayback::new(Arc::clone(&prepared_revision))?;
+        Ok(Self::from_parts(
+            prepared_revision,
+            Some(Box::new(runtime)),
+            None,
+        ))
+    }
+
+    /// Build the ordinary Session/Arrangement runtime against its compiler's exact original-source
+    /// set. Source custody stays in runtime leases and follows outgoing runtime tails.
+    pub fn try_from_prepared_with_device_resources(
+        prepared_revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+    ) -> Result<Self, crate::SessionPlaybackError> {
+        let runtime =
+            SessionPlayback::new_with_device_resources(Arc::clone(&prepared_revision), resources)?;
         Ok(Self::from_parts(
             prepared_revision,
             Some(Box::new(runtime)),

@@ -159,6 +159,26 @@ pub struct AudioRootStorageLedger<'a> {
     valid: bool,
 }
 impl<'a> AudioRootStorageLedger<'a> {
+    pub(crate) fn reserved_metadata_minimum(
+        reservation: AudioStorageLedgerReservation,
+    ) -> Option<usize> {
+        std::mem::size_of::<Self>()
+            .checked_add(
+                reservation
+                    .data_rows
+                    .checked_mul(std::mem::size_of::<Data<'_>>())?,
+            )?
+            .checked_add(
+                reservation
+                    .handle_rows
+                    .checked_mul(std::mem::size_of::<Handle<'_>>())?,
+            )?
+            .checked_add(
+                reservation
+                    .root_rows
+                    .checked_mul(std::mem::size_of::<Root<'_>>())?,
+            )
+    }
     pub fn try_new_on_control(
         reservation: AudioStorageLedgerReservation,
     ) -> Result<Self, AudioStorageError> {

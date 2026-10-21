@@ -9,8 +9,9 @@
 //! metadata reservations, checking cancellation between sources and bounded chunks. The normalized
 //! stereo content hash includes its domain prefix, rate, extent and f32 bit patterns, not the
 //! asset ID or encoded WAV bytes. Hashing never runs in sample/process callbacks. These facts
-//! alone authorize neither native publication nor retirement; the current loaded sampler uses the
-//! separate private [`ControlSamplerSources`] root.
+//! alone authorize neither native publication nor retirement. Ordinary registered instruments use
+//! [`PreparedDeviceResources`] and runtime-owned leases; the obsolete private constructor retains
+//! its separately closed [`ControlSamplerSources`] root.
 use crate::{AudioInputStorageAndObligations, AudioSourceToken, AudioStorageError};
 use hex_lattice::{DeviceResourceIdentity, DeviceResourcePcm, DeviceResourceView, DeviceResources};
 use hex_lattice_contract::{
@@ -25,16 +26,21 @@ pub(crate) mod current_sampler;
 mod ingress;
 mod resident;
 pub use resident::sampler_import_template_on_control;
+mod prepared;
 mod snapshot;
 pub use admission::{
     ControlSamplerInventory, ControlSamplerOutbound, ControlSamplerPhase, ControlSamplerSelection,
     inspect_control_sampler_union,
 };
 pub use ingress::ResidentAudioIngressRefusal;
+pub(crate) use prepared::CompilerDeviceResources;
+pub use prepared::{
+    DeviceResourcePublication, DeviceResourcePublishError, MAX_PLAYBACK_DEVICE_RESOURCE_LEASES,
+    PreparedDeviceResourceLease, PreparedDeviceResources,
+};
 pub use resident::{ResidentDeviceAssets, StagedNativeAssetView};
-pub(crate) use snapshot::PreparedControlSampler;
-pub(crate) use snapshot::prepare_instrument;
 pub use snapshot::{ControlSamplerSources, DispatchedSourceObligation};
+pub(crate) use snapshot::{InstrumentResourcePreparation, prepare_instrument};
 
 /// Expected original decoded source facts, captured by the media owner on control.
 #[derive(Clone, Copy, Debug)]

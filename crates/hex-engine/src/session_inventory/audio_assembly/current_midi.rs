@@ -134,7 +134,9 @@ impl SessionAssembly {
                 })
                 .ok_or(AudioStorageError::SourceMismatch)?;
             let prepared =
-                crate::native_device_resources::PreparedControlSampler(config.prepared.clone());
+                hex_devices::sampler::catalog::PreparedSamplerInstrument::from_runtime_on_control(
+                    config.prepared.clone(),
+                );
             for note in clip.source().notes() {
                 prepared
                     .validate_event_note(note.pitch(), note.velocity())
