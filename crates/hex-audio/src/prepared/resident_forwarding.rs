@@ -208,6 +208,10 @@ impl PublicationControl {
     }
 }
 
+pub(super) fn constructor_storage_quote() -> usize {
+    std::mem::size_of::<ResidentForwarding>()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

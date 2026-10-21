@@ -160,6 +160,19 @@ impl ArrangementClips {
         project: &hex_project::Project,
         stages: Stages,
     ) -> Result<(), AudioStorageError> {
+        self.reserve_with_sampler(slots, inputs, project, stages, None)
+    }
+    pub(super) fn reserve_with_sampler(
+        &mut self,
+        slots: &[SourceSlot],
+        inputs: &OwnedAudioInputs,
+        project: &hex_project::Project,
+        stages: Stages,
+        samplers: Option<(
+            &crate::native_device_resources::current_sampler::CurrentSamplerMetadata,
+            &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+        )>,
+    ) -> Result<(), AudioStorageError> {
         let Stages {
             assemble_tracks: tracks,
             assemble_returns: returns,
@@ -252,16 +265,29 @@ impl ArrangementClips {
             }
         }
         if tracks {
-            self.tracks.reserve(project, &self.rows)?;
+            if samplers.is_some() {
+                self.tracks
+                    .reserve_with_sampler(project, &self.rows, samplers)?;
+            } else {
+                self.tracks.reserve(project, &self.rows)?;
+            }
         }
         if returns {
             self.returns.reserve(project)?;
         }
         if preview {
-            self.preview.reserve(project)?;
+            if samplers.is_some() {
+                self.preview.reserve_with_current_sampler(project, true)?;
+            } else {
+                self.preview.reserve(project)?;
+            }
         }
         if root {
-            self.root.reserve(project)?;
+            if samplers.is_some() {
+                self.root.reserve_with_sampler(project, true)?;
+            } else {
+                self.root.reserve(project)?;
+            }
         }
         #[cfg(test)]
         if self.mismatch {

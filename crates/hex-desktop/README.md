@@ -12,8 +12,9 @@ consuming preparation contracts, hex-stream's verified constructor metadata, and
 values (the existing Session/stream workers perform all file decoding).
 The nondefault `allocation-probe` test feature substitutes only output-open
 completion through the actual native endpoint constructor. Its dev-only
-hex-project and allocation-counter dependencies exercise real canonical edits
-and zero-total/net callback allocations; neither is a production desktop edge.
+hex-project, hex-tuning and allocation-counter dependencies exercise real canonical edits,
+absolute tuning references
+and zero-total/net callback allocations; none is a production desktop edge.
 Desktop binds those existing responsibilities; Session gains no audio/stream
 edge and Desktop owns no independent scheduler, source worker or editable model.
 

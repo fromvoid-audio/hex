@@ -2734,6 +2734,24 @@ impl Callback {
     }
 }
 
+/// Known channel payload/capacity quote for the pinned worker factory.
+pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
+    std::mem::size_of::<Status>()
+        .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
+        .checked_add(crate::sample_preview::constructor_storage_quote()?)?
+        .checked_add(crate::gain_recording::constructor_storage_quote()?)?
+        .checked_add(spectrum_target::constructor_storage_quote()?)?
+        .checked_add(processor_audition::constructor_storage_quote()?)?
+        .checked_add(endpoints::constructor_endpoint_storage_quote()?)
+}
+pub(crate) fn worker_publication_queue_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    ChannelStorage::ring_bytes::<QueuedPublication>(1)?
+        .checked_add(ChannelStorage::ring_bytes::<ReturnedPublication>(RETIRED)?)?
+        .checked_add(ChannelStorage::ring_bytes::<QueuedCommand>(COMMANDS)?)?
+        .checked_add(crate::native_callback_owner::worker_boundary_storage_quote()?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

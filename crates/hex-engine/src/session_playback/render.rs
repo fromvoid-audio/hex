@@ -19,7 +19,36 @@ impl SessionPlayback {
         output: &mut [Frame],
         sources: &crate::native_device_resources::ControlSamplerSources,
     ) -> Result<(), SessionPlaybackError> {
-        self.render_internal::<dyn MediaPages>(output, None, None, None, Some(sources))
+        self.render_internal::<dyn MediaPages>(
+            output,
+            None,
+            None,
+            None,
+            Some(crate::native_device_resources::SamplerSourcesRef::Control(
+                sources,
+            )),
+        )
+    }
+
+    pub(crate) fn render_current_sampler<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut ProjectOutputTap<'_, '_>>,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+    ) -> Result<(), SessionPlaybackError> {
+        self.candidate_admission_open = false;
+        let capture = project.map(|p| p as &mut dyn CaptureSink);
+        self.render_internal(
+            output,
+            pages,
+            observer,
+            capture,
+            Some(crate::native_device_resources::SamplerSourcesRef::Current(
+                sources,
+            )),
+        )
     }
 
     /// Render transactionally while optionally observing stable device IDs at
@@ -236,13 +265,13 @@ impl SessionPlayback {
         pages: Option<&mut P>,
         observer: Option<&mut crate::NodeSignalObserver<'_>>,
         mut capture: Option<&mut dyn CaptureSink>,
-        sources: Option<&crate::native_device_resources::ControlSamplerSources>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         if self.revision.resource_scope.is_some()
             && self.revision.resource_scope != sources.map(|s| s.id())
         {
             return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
-                "sampler requires its exact offline export source scope",
+                "sampler requires its exact source scope",
             ));
         }
         output.fill([0.0; 2]);
@@ -366,7 +395,7 @@ impl SessionPlayback {
         mut pages: Option<&mut P>,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
-        sources: Option<&crate::native_device_resources::ControlSamplerSources>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let width =
             u64::try_from(output.len()).map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;
@@ -655,7 +684,7 @@ impl SessionPlayback {
         frame_offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
-        sources: Option<&crate::native_device_resources::ControlSamplerSources>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         let revision = Arc::clone(&self.revision);
         let tracks = revision.arrangement().tracks();
@@ -1618,7 +1647,7 @@ fn process_mutable_tail<T: MidiTiming + ?Sized>(
 }
 
 struct MutableInstrumentChunkContext<'a, T: ?Sized> {
-    sources: Option<&'a crate::native_device_resources::ControlSamplerSources>,
+    sources: Option<crate::native_device_resources::SamplerSourcesRef<'a>>,
     revision: &'a PreparedRevision,
     routes: &'a [super::TrackRoute],
     runtimes: &'a mut [Option<MutableInstrumentTrackRuntime>],

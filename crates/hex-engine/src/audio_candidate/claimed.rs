@@ -297,8 +297,7 @@ impl ClaimedAudioCandidateRuntime {
             .runtime
             .as_mut()
             .ok_or(crate::PlaybackActionError::SessionNotPrepared)?
-            .playback
-            .try_apply_action(action)
+            .apply_action(action)
     }
     pub fn render(&mut self, output: &mut [crate::Frame]) -> Result<(), crate::Invalid> {
         if self.inner.phase != ClaimedPhase::Current {
@@ -308,8 +307,7 @@ impl ClaimedAudioCandidateRuntime {
             .runtime
             .as_mut()
             .ok_or(crate::Invalid("candidate runtime unavailable"))?
-            .playback
-            .render(output)
+            .render_with_signal_observers(output, None, None)
     }
     /// Pure exact next-chunk demand. A proposed Play/Pause flag is speculative;
     /// neither transport nor page readiness is committed by this observation.
@@ -348,6 +346,9 @@ impl ClaimedAudioCandidateRuntime {
         }
         let next = self.inner.runtime.as_mut().ok_or_else(invalid)?;
         let old = previous.inner.runtime.as_mut().ok_or_else(invalid)?;
+        if next.sampler_sources.is_some() || old.sampler_sources.is_some() {
+            return Err(invalid());
+        }
         next.playback
             .preview_stream_handoff(&mut old.playback, maximum_frames, playing, visit)
     }
@@ -376,6 +377,9 @@ impl ClaimedAudioCandidateRuntime {
         }
         let next_runtime = self.inner.runtime.as_mut().ok_or_else(invalid)?;
         let old_runtime = old.inner.runtime.as_mut().ok_or_else(invalid)?;
+        if next_runtime.sampler_sources.is_some() || old_runtime.sampler_sources.is_some() {
+            return Err(invalid());
+        }
         let transfer = groups::Transfer::new(
             &mut self.inner.groups,
             &mut old.inner.groups,

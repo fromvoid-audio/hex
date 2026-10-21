@@ -67,7 +67,10 @@ impl SessionPlayback {
             || compensation.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
-            || mutable_instruments.iter().any(Option::is_some)
+            || mutable_instruments
+                .iter()
+                .flatten()
+                .any(|r| revision.resource_scope.is_none() || !r.is_concrete_current_sampler())
             || tail_groups.iter().any(Option::is_some)
             || tail_mutable_instruments.iter().any(Option::is_some)
             || retained_contexts.iter().any(Option::is_some)
@@ -96,6 +99,19 @@ impl SessionPlayback {
         l.vec(return_scratch)?;
         return_effect_tails.visit_empty_candidate_storage(l)?;
         l.vec(mutable_instruments)?;
+        for (index, runtime) in mutable_instruments.iter().enumerate() {
+            if let Some(runtime) = runtime {
+                if revision
+                    .arrangement()
+                    .tracks()
+                    .get(index)
+                    .is_none_or(|t| t.instrument_id != runtime.expression_identity)
+                {
+                    return Err(AudioStorageError::SourceMismatch);
+                }
+                runtime.visit_current_sampler_storage(l)?;
+            }
+        }
         l.vec(mutable_events)?;
         l.vec(tail_groups)?;
         l.vec(tail_mutable_instruments)?;

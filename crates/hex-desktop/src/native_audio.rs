@@ -20,6 +20,7 @@ use std::sync::{
     mpsc::{self, SyncSender, TrySendError},
 };
 
+mod sampler;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests;
 
@@ -77,6 +78,10 @@ pub(super) struct NativeAudioSink {
     last_context: Option<AudioSourceContext>,
     last_state: Option<(AudioSourceContext, &'static str)>,
     blocked: Option<AudioSourceContext>,
+    sampler: Option<sampler::Sampler>,
+    sampler_budget_wait: Option<hex_session::service::NativeSamplerRetryFacts>,
+    output_hold: hex_session::service::NativeSamplerReservationHold,
+    retired_sampler_hold: hex_session::service::NativeSamplerReservationHold,
     #[cfg(all(test, feature = "allocation-probe"))]
     output_factory: Option<OutputFactory>,
 }
@@ -103,6 +108,10 @@ impl NativeAudioSink {
             last_context: None,
             last_state: None,
             blocked: None,
+            sampler: None,
+            sampler_budget_wait: None,
+            output_hold: Default::default(),
+            retired_sampler_hold: Default::default(),
             #[cfg(all(test, feature = "allocation-probe"))]
             output_factory: None,
         }
@@ -110,6 +119,7 @@ impl NativeAudioSink {
     fn relinquish_output(&mut self) {
         // Publication/StreamOwner relinquish before any event can backpressure.
         // All accepted construction stays inside Root's terminal/lifecycle book.
+        self.retain_relinquished_output();
         drop(self.output.take());
         self.opening = None;
         self.open_pending = false;
@@ -123,6 +133,7 @@ impl NativeAudioSink {
         self.last_context = None;
         self.last_state = None;
         self.blocked = None;
+        self.sampler_budget_wait = None;
     }
     fn request_open(&mut self, rate: Option<u32>, request: Option<u64>) {
         self.opening = None;
@@ -139,7 +150,7 @@ impl NativeAudioSink {
         if let Some(factory) = self.output_factory.as_mut() {
             match factory(self.requested_rate) {
                 Ok(Some(output)) => {
-                    self.output = Some(output);
+                    self.opened_output(output);
                     self.open_pending = false;
                 }
                 Ok(None) => {}
@@ -168,7 +179,7 @@ impl NativeAudioSink {
         };
         match opening.try_take() {
             Ok(Some(Ok(output))) => {
-                self.output = Some(output);
+                self.opened_output(output);
                 self.open_pending = false;
                 self.opening = None;
             }
@@ -186,6 +197,9 @@ impl NativeAudioSink {
         }
     }
     fn deliver_open(&mut self) {
+        if self.sampler_blocks_client() {
+            return;
+        }
         let Some(snapshot) = self.desired.as_ref() else {
             return;
         };
@@ -755,12 +769,20 @@ impl WorkerAudioSink for NativeAudioSink {
         self.request_open(Some(rate), Some(request_id));
         Ok(())
     }
+    fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
+        self.advance_sampler(input);
+    }
+    fn native_sampler_hold(&self) -> hex_session::service::NativeSamplerReservationHold {
+        self.sampler_hold()
+    }
     fn poll(&mut self) {
         self.poll_open();
         self.deliver_open();
         if let Some(mut output) = self.output.take() {
             if self.output_generation.is_some() {
-                if self
+                if self.sampler.is_some() {
+                    self.poll_sampler_output(&mut output);
+                } else if self
                     .desired
                     .as_ref()
                     .is_some_and(|s| s.audio_mode() == DocumentAudioMode::VerifiedStreaming)
@@ -776,6 +798,7 @@ impl WorkerAudioSink for NativeAudioSink {
         self.flush_events();
     }
     fn close(&mut self) {
+        self.shutdown_sampler();
         self.relinquish_output();
         self.desired = None;
     }
@@ -783,13 +806,15 @@ impl WorkerAudioSink for NativeAudioSink {
 
 pub(super) fn backend() -> Result<EditorBackend, String> {
     let source_reservation = AudioPolicy::source_reservation();
+    let resident_native = AudioPolicy::new()?.resident_native;
     let (events, audio_events) = mpsc::sync_channel(4);
     let recovery = hex_session::service::untitled_recovery_path()?;
-    let service = Service::with_audio_sink(
+    let service = Service::with_audio_sink_and_native_reservation(
         32,
         MAX_RESIDENT_FRAMES,
         Some(recovery),
         Box::new(NativeAudioSink::new(events)),
+        resident_native,
     )
     .map_err(|e| e.to_string())?;
     Ok(EditorBackend {

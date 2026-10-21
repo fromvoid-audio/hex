@@ -5,6 +5,7 @@ use super::*;
 
 #[derive(Clone, Copy, Debug)]
 pub struct AudioCandidateReservationQuote {
+    pub source_capacity: usize,
     pub data_rows: usize,
     pub handle_rows: usize,
     pub member_rows: usize,
@@ -32,6 +33,13 @@ impl AudioCandidateReservationQuote {
         for track in project.tracks() {
             counts.add(Kind::Track, 1)?;
             counts.add(Kind::Clip, track.clips().len())?;
+            counts.add(Kind::Clip, track.midi_clips().len())?;
+            if track.instrument().is_some() {
+                counts.add(Kind::Sampler, 1)?;
+            }
+            for clip in track.midi_clips() {
+                counts.add(Kind::MidiNote, clip.notes().len())?;
+            }
             counts.add(Kind::Device, track.devices().len())?;
             counts.add(Kind::Point, track.gain_envelope().len())?;
         }
@@ -39,6 +47,7 @@ impl AudioCandidateReservationQuote {
             counts,
             project.tracks().len(),
             project.return_tracks().len(),
+            sources,
         )
     }
     /// Ceiling from existing canonical cardinality limits, used only to bound
@@ -56,6 +65,8 @@ impl AudioCandidateReservationQuote {
             (Kind::Return, hex_project::MAX_RETURN_TRACKS),
             (Kind::Clip, hex_project::MAX_CLIPS),
             (Kind::Device, hex_project::MAX_DEVICES),
+            (Kind::Sampler, hex_project::MAX_TRACKS),
+            (Kind::MidiNote, hex_project::MAX_NOTES),
             (Kind::Cell, hex_project::MAX_SESSION_CELLS),
             (Kind::Scene, hex_project::MAX_SCENES),
             (Kind::Point, hex_project::MAX_GAIN_POINTS),
@@ -68,15 +79,23 @@ impl AudioCandidateReservationQuote {
             counts,
             hex_project::MAX_TRACKS,
             hex_project::MAX_RETURN_TRACKS,
+            sources,
         )
+    }
+    /// Resident constructor cardinalities use the canonical asset ceiling,
+    /// independently of any streaming worker's configured source capacity.
+    pub fn for_supported_resident_limits() -> Result<Self, AudioStorageError> {
+        Self::for_supported_limits(hex_project::MAX_ASSETS)
     }
     fn from_counts(
         counts: Counts,
         tracks: usize,
         returns: usize,
+        sources: usize,
     ) -> Result<Self, AudioStorageError> {
         let groups = crate::session_playback::candidate_group_reservation(tracks, returns)?;
         Ok(Self {
+            source_capacity: sources,
             data_rows: counts.rows,
             handle_rows: counts.handles,
             member_rows: groups.checked_mul(2).ok_or(AudioStorageError::Overflow)?,
@@ -115,6 +134,7 @@ impl AudioCandidateReservationQuote {
 // gain/meter/chain. Device: original payload, fresh config, definition, meter and
 // concrete runtime twins. Clip/Cell: pair + metadata + source handles. Changes
 // still face the actual ledger; exceeding a quote is an explicit refusal.
+#[derive(Clone, Copy)]
 enum Kind {
     Fixed,
     Source,
@@ -125,6 +145,8 @@ enum Kind {
     Track,
     Clip,
     Device,
+    Sampler,
+    MidiNote,
 }
 #[derive(Default)]
 struct Counts {
@@ -143,6 +165,8 @@ impl Counts {
             Kind::Point => (4, 2),
             Kind::Track => (64, 32),
             Kind::Device => (32, 32),
+            Kind::Sampler => (32, 8),
+            Kind::MidiNote => (0, 0),
         };
         let rows = rows.checked_mul(count).ok_or(AudioStorageError::Overflow)?;
         let handles = handles
@@ -163,6 +187,32 @@ impl Counts {
             .max(std::mem::size_of::<crate::Track>())
             .max(std::mem::size_of::<crate::PreparedSessionCell>())
             .max(std::mem::size_of::<crate::StreamedSourceMetadata>());
+        if matches!(kind, Kind::MidiNote) {
+            let stride = std::mem::size_of::<crate::midi_compile::CompiledNoteSpan>()
+                .checked_add(std::mem::size_of::<crate::midi_compile::SpanNode>())
+                .ok_or(AudioStorageError::Overflow)?;
+            self.bytes = self
+                .bytes
+                .checked_add(
+                    count
+                        .checked_mul(stride)
+                        .ok_or(AudioStorageError::Overflow)?,
+                )
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        if matches!(kind, Kind::Sampler) {
+            self.bytes = self
+                .bytes
+                .checked_add(
+                    count
+                        .checked_mul(std::mem::size_of::<
+                            hex_devices::sampler::PreparedSamplerRuntime,
+                        >())
+                        .and_then(|n| n.checked_mul(2))
+                        .ok_or(AudioStorageError::Overflow)?,
+                )
+                .ok_or(AudioStorageError::Overflow)?;
+        }
         self.bytes = self
             .bytes
             .checked_add(

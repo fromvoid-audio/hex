@@ -475,6 +475,33 @@ impl Playback {
         let runtime = SessionPlayback::new_audio_candidate(Arc::clone(&revision))?;
         Ok(Self::from_parts(revision, Some(Box::new(runtime)), None))
     }
+    pub(crate) fn new_current_sampler_candidate(
+        revision: Arc<PreparedRevision>,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+    ) -> Result<Self, crate::AudioStorageError> {
+        let runtime =
+            SessionPlayback::new_current_sampler_candidate(Arc::clone(&revision), sources)?;
+        Ok(Self::from_parts(revision, Some(Box::new(runtime)), None))
+    }
+    pub(crate) fn render_current_sampler<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+    ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("current sampler runtime missing"))?
+            .render_current_sampler(output, pages, observer, project, sources)
+            .map_err(|e| Invalid(e.diagnostic_message()))?;
+        self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
+        Ok(())
+    }
     pub(crate) fn validate_candidate_runtime_storage(
         &self,
         metadata: usize,

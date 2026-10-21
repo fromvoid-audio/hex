@@ -1,6 +1,7 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
+mod sampler;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
 use hex_session::service::{Event, Request};
@@ -16,6 +17,7 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 struct Observation {
+    native_hold: hex_session::service::NativeSamplerReservationHold,
     latest: Option<(AudioSourceContext, AudioCandidateDomainToken, usize)>,
     command_ready: Option<(AudioSourceContext, u64)>,
     change_source_after_capture: Option<PathBuf>,
@@ -49,6 +51,13 @@ impl WorkerAudioSink for ObservedSink {
             fs::write(path, bytes).unwrap();
         }
         self.inner.canonical_changed(source);
+    }
+    fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
+        self.inner.native_sampler_input(input);
+        self.observation.lock().unwrap().native_hold = self.inner.native_sampler_hold();
+    }
+    fn native_sampler_hold(&self) -> hex_session::service::NativeSamplerReservationHold {
+        self.inner.native_sampler_hold()
     }
     fn restart_audio(&mut self, generation: u64, request: u64) -> Result<(), String> {
         self.inner.restart_audio(generation, request)

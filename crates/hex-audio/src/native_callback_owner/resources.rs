@@ -11,6 +11,11 @@ pub(crate) struct ChannelStorage {
     pub(crate) shared_handles: usize,
 }
 impl ChannelStorage {
+    pub(crate) fn ring_bytes<T>(capacity: usize) -> Option<usize> {
+        capacity
+            .checked_mul(std::mem::size_of::<T>())?
+            .checked_add(std::mem::size_of::<rtrb::RingBuffer<T>>())
+    }
     pub(crate) fn ring<T>(ring: &rtrb::RingBuffer<T>) -> Option<Self> {
         Some(Self {
             data_bytes: ring
@@ -199,4 +204,18 @@ impl NativeCandidateBoundary {
             && self.spectrum_reaper_bound
             && self.root == root
     }
+}
+
+/// Normal worker factory's fixed payloads; both carriers and all endpoints are
+/// quoted before opening. A live constructor still validates actual capacities.
+pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
+    std::mem::size_of::<NativeCallbackOwner>()
+        .checked_add(std::mem::size_of::<ErrorCallbackOwner>())?
+        .checked_add(std::mem::size_of::<OnceLock<Mutex<Box<NativeCallbackOwner>>>>())?
+        .checked_add(std::mem::size_of::<OnceLock<Mutex<Box<ErrorCallbackOwner>>>>())?
+        .checked_add(std::mem::size_of::<NativeRetirement>())?
+        .checked_add(std::mem::size_of::<Guard<NativeCallbackOwner>>())?
+        .checked_add(std::mem::size_of::<Guard<ErrorCallbackOwner>>())?
+        .checked_add(crate::prepared::worker_boundary_storage_quote()?)?
+        .checked_add(crate::spectrum_worker::constructor_storage_quote()?)
 }

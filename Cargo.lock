@@ -2615,6 +2615,7 @@ dependencies = [
  "hex-project",
  "hex-session",
  "hex-stream",
+ "hex-tuning",
  "hex-ui",
 ]
 

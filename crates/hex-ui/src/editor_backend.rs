@@ -35,6 +35,12 @@ pub struct EditorBackend {
 
 /// Readiness and publication observations delivered to the UI.
 pub enum EditorAudioEvent {
+    /// Close only the named old UI endpoint for a preflighted fresh-output
+    /// handoff. This is neither native drain proof nor a project edit.
+    RelinquishClient {
+        old_output_identity: u64,
+        target: AudioSourceContext,
+    },
     Opened {
         project_generation: u64,
         restart_request: Option<u64>,
