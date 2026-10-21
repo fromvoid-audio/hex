@@ -751,6 +751,16 @@ fn rendered_sampler_save_open(
     else {
         panic!("track")
     };
+    if matches!(controls, Some(ControlsFixture::History)) {
+        h.run(Request::AddNativeDevice {
+            track: other,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(hex_session::device_gesture::DeviceTypeId::from_static(
+                "hex.utility",
+            )),
+            before: None,
+        });
+    }
     let mut loaded_revision = if stereo && !gain {
         if empty { 3 } else { 5 }
     } else {

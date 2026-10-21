@@ -24,6 +24,10 @@ pub(super) fn exercise(
         Box::leak(format!("sampler-{}-{}-value", p.key(), device.value()).into_boxed_str())
     };
     let target_selector = Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
+    let other_device = initial.track(other).unwrap().devices().first().unwrap();
+    assert_eq!(other_device.state().type_id().as_str(), Ok("hex.utility"));
+    let other_device_selector =
+        Box::leak(format!("effect-device-{}", other_device.id().value()).into_boxed_str());
     let other_selector = Box::leak(format!("track-name-{}", other.value()).into_boxed_str());
     let other_selected = Box::leak(format!("selected-track-{}", other.value()).into_boxed_str());
     let pulse = |visual: &mut VisualTestContext| {
@@ -118,6 +122,11 @@ pub(super) fn exercise(
     visual.simulate_keystrokes("cmd-z");
     let other_center = visual.debug_bounds(other_selector).unwrap().center();
     visual.simulate_click(other_center, Modifiers::default());
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(other_device_selector).is_some(),
+        "actual other device panel must be selected"
+    );
     let selected_focus = visual.update(|w, cx| w.focused(cx));
     wait_next(visual, old);
     assert_eq!(visual.update(|w, cx| w.focused(cx)), selected_focus);
@@ -137,6 +146,7 @@ pub(super) fn exercise(
         visual.simulate_keystrokes(keys);
         wait_next(visual, old);
         assert!(visual.debug_bounds(other_selected).is_some());
+        assert!(visual.debug_bounds(other_device_selector).is_some());
         let source = read_view();
         assert!(
             source
