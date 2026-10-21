@@ -2429,6 +2429,19 @@ impl EditorView {
         {
             return self.submit_sampler_history(matches!(request, Request::Redo));
         }
+        let request = match request {
+            Request::Edit(command)
+                if command.supports_sampler_midi_edit()
+                    && self.state.as_ref().is_some_and(|state| {
+                        hex_engine::native_device_resources::requires_private_sampler_sources(
+                            &state.project,
+                        )
+                    }) =>
+            {
+                return self.submit_sampler_midi(command);
+            }
+            request => request,
+        };
         self.enqueue_request(request, false)
     }
 
@@ -2629,6 +2642,7 @@ impl EditorView {
                 | Request::InsertTimeRange { .. }
                 | Request::Undo
                 | Request::SamplerEdit(hex_session::service::SamplerEdit::History(_))
+                | Request::SamplerEdit(hex_session::service::SamplerEdit::Midi(_))
                 | Request::Redo
                 | Request::RestorePlayback { .. }
                 | Request::RestoreStoppedPlayback

@@ -1,3 +1,5 @@
+mod composition;
+mod composition_ui;
 mod console;
 mod controls;
 mod envelope;
@@ -699,6 +701,12 @@ fn rendered_sampler_replacement_preserves_captured_target_cancel_sound_and_saved
 fn rendered_sampler_console_cell_scene_and_stop_use_actual_current(cx: &mut gpui::TestAppContext) {
     rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Console));
 }
+#[gpui::test]
+fn rendered_loaded_sampler_creates_arrange_midi_clip_through_fresh_current(
+    cx: &mut gpui::TestAppContext,
+) {
+    rendered_sampler_save_open(cx, true, true, false, Some(ControlsFixture::Composition));
+}
 #[derive(Clone, Copy)]
 enum ControlsFixture {
     Scalar,
@@ -709,6 +717,7 @@ enum ControlsFixture {
     History,
     Replacement,
     Console,
+    Composition,
 }
 fn rendered_sampler_save_open(
     cx: &mut gpui::TestAppContext,
@@ -1123,6 +1132,9 @@ fn rendered_sampler_save_open(
     }
     if gain {
         match controls.unwrap() {
+            ControlsFixture::Composition => {
+                composition_ui::exercise(cx, &mut visual, &mut h, window, track, &saved)
+            }
             ControlsFixture::Console => {
                 console::exercise(cx, &mut visual, &mut h, window, track, &saved)
             }

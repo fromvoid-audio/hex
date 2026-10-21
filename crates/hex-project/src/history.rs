@@ -3,10 +3,15 @@ use std::collections::VecDeque;
 
 /// Bounded snapshot history on the control thread. Oldest edits expire at capacity.
 /// IDs never rewind across undo, redo or branching, so stale references stay stale.
+struct HistoryEntry {
+    project: Project,
+    midi_effect: Option<crate::MidiHistoryEffect>,
+}
+
 pub struct Editor {
     project: Project,
-    undo: VecDeque<Project>,
-    redo: Vec<Project>,
+    undo: VecDeque<HistoryEntry>,
+    redo: Vec<HistoryEntry>,
     capacity: usize,
 }
 impl Editor {
@@ -43,7 +48,17 @@ impl Editor {
         } else {
             self.undo.back()
         }?;
-        Some(inspect(&self.project, target))
+        Some(inspect(&self.project, &target.project))
+    }
+
+    /// Origin of the actual adjacent edge, minted only by canonical single-command execution.
+    pub fn next_midi_history_effect(&self, redo: bool) -> Option<crate::MidiHistoryEffect> {
+        if redo {
+            self.redo.last()
+        } else {
+            self.undo.back()
+        }?
+        .midi_effect
     }
 
     pub fn execute(&mut self, command: Command) -> Result<Created, Invalid> {
@@ -78,10 +93,47 @@ impl Editor {
         command: Command,
         prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
     ) -> Result<(Created, T), E> {
+        self.execute_transition(command, false, prepare)
+    }
+    /// Closed MIDI edit: refuse unsupported or out-of-scope effects before the
+    /// preparation hook can seal a native candidate.
+    pub fn execute_midi_prepared_transition<T, E: From<Invalid>>(
+        &mut self,
+        command: Command,
+        prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
+    ) -> Result<(Created, T), E> {
+        self.execute_transition(command, true, prepare)
+    }
+    fn execute_transition<T, E: From<Invalid>>(
+        &mut self,
+        command: Command,
+        require_midi: bool,
+        prepare: impl FnOnce(&Project, &Project) -> Result<T, E>,
+    ) -> Result<(Created, T), E> {
+        let plan = crate::midi_history::Plan::capture(&command, &self.project);
+        let plan = if require_midi {
+            plan?
+        } else {
+            plan.ok().flatten()
+        };
+        if require_midi && plan.is_none() {
+            return Err(E::from(Invalid("unsupported midi edit command")));
+        }
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
         candidate.validate_device_asset_references()?;
         candidate.validate_playable_routes()?;
+        let effect = plan.and_then(|p| p.finish(result, &self.project, &candidate));
+        if require_midi && candidate != self.project && effect.is_none() {
+            return Err(E::from(Invalid(
+                "midi command changed unsupported project state",
+            )));
+        }
+        if candidate != self.project {
+            self.undo
+                .try_reserve(1)
+                .map_err(|_| E::from(Invalid("could not reserve edit history")))?;
+        }
         let prepared = prepare(&self.project, &candidate)?;
         // No-op controls should neither add history nor erase a redo branch.
         if candidate == self.project {
@@ -91,7 +143,10 @@ impl Editor {
         if self.undo.len() == self.capacity {
             self.undo.pop_front();
         }
-        self.undo.push_back(previous);
+        self.undo.push_back(HistoryEntry {
+            project: previous,
+            midi_effect: effect,
+        });
         self.redo.clear();
         Ok((result, prepared))
     }
@@ -127,7 +182,10 @@ impl Editor {
             if self.undo.len() == self.capacity {
                 self.undo.pop_front();
             }
-            self.undo.push_back(previous);
+            self.undo.push_back(HistoryEntry {
+                project: previous,
+                midi_effect: None,
+            });
             self.redo.clear();
         }
         Ok((results, prepared))
@@ -137,10 +195,14 @@ impl Editor {
         let Some(mut previous) = self.undo.pop_back() else {
             return false;
         };
-        previous.next_id = previous.next_id.max(self.project.next_id);
-        previous.retain_gain_touch_epochs_from(&self.project);
-        self.redo
-            .push(std::mem::replace(&mut self.project, previous));
+        previous.project.next_id = previous.project.next_id.max(self.project.next_id);
+        previous
+            .project
+            .retain_gain_touch_epochs_from(&self.project);
+        self.redo.push(HistoryEntry {
+            project: std::mem::replace(&mut self.project, previous.project),
+            midi_effect: previous.midi_effect,
+        });
         true
     }
 
@@ -161,7 +223,8 @@ impl Editor {
         let Some(previous) = self.undo.back() else {
             return Ok(None);
         };
-        let mut candidate = previous.clone();
+        let mut candidate = previous.project.clone();
+        let effect = previous.midi_effect;
         candidate.next_id = candidate.next_id.max(self.project.next_id);
         candidate.retain_gain_touch_epochs_from(&self.project);
         self.redo
@@ -171,8 +234,10 @@ impl Editor {
         let Some(_) = self.undo.pop_back() else {
             return Err(E::from(Invalid("undo history changed during preparation")));
         };
-        self.redo
-            .push(std::mem::replace(&mut self.project, candidate));
+        self.redo.push(HistoryEntry {
+            project: std::mem::replace(&mut self.project, candidate),
+            midi_effect: effect,
+        });
         Ok(Some(prepared))
     }
 
@@ -180,10 +245,12 @@ impl Editor {
         let Some(mut next) = self.redo.pop() else {
             return false;
         };
-        next.next_id = next.next_id.max(self.project.next_id);
-        next.retain_gain_touch_epochs_from(&self.project);
-        self.undo
-            .push_back(std::mem::replace(&mut self.project, next));
+        next.project.next_id = next.project.next_id.max(self.project.next_id);
+        next.project.retain_gain_touch_epochs_from(&self.project);
+        self.undo.push_back(HistoryEntry {
+            project: std::mem::replace(&mut self.project, next.project),
+            midi_effect: next.midi_effect,
+        });
         true
     }
 
@@ -204,7 +271,8 @@ impl Editor {
         let Some(next) = self.redo.last() else {
             return Ok(None);
         };
-        let mut candidate = next.clone();
+        let mut candidate = next.project.clone();
+        let effect = next.midi_effect;
         candidate.next_id = candidate.next_id.max(self.project.next_id);
         candidate.retain_gain_touch_epochs_from(&self.project);
         self.undo
@@ -217,8 +285,10 @@ impl Editor {
         if self.undo.len() == self.capacity {
             self.undo.pop_front();
         }
-        self.undo
-            .push_back(std::mem::replace(&mut self.project, candidate));
+        self.undo.push_back(HistoryEntry {
+            project: std::mem::replace(&mut self.project, candidate),
+            midi_effect: effect,
+        });
         Ok(Some(prepared))
     }
 }

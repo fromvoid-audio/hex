@@ -3,13 +3,19 @@
 Requested 17 October 2026: a native equivalent of Ableton Live **Simpler**, named
 **sampler** in Hex. This does not target the separate Ableton Sampler instrument.
 Pulse2679 owns the full request; [PR296](https://github.com/PORTALSURFER/hex/pull/296)
-contains the first original playback-kernel prerequisite. A bounded first-load
-browser action now fills an empty instrument slot with a canonical sampler and
-supports computer-keyboard audition, frame-zero Arrangement playback/Stop and
-offline Main export. Sampler
-is not registered in the general device catalog. Stopped gain, pitch, source-region and Classic-loop editing are supported; other controls, replacement and user history remain unavailable. Current-format SaveNew/SaveCurrent and
-original-content-checked reopen are supported through the normal project flow. No reference parity or
-physical native interaction/listening acceptance is claimed.
+contains the first original playback-kernel prerequisite. Source-first WAV loading
+fills an empty MIDI instrument slot with a canonical sampler through explicit
+resident resource admission. The loaded instrument supports computer-keyboard
+audition, frame-zero Arrangement playback/Stop, local Console MIDI clips/scenes
+and private offline Main export. It remains outside the asset-free device catalog.
+
+Stopped gain, pitch, original-source region, Classic loop and amplitude-envelope
+controls, the original-source waveform, source replacement, global control/source
+Undo/Redo and bounded MIDI composition after loading are supported. Current-format
+SaveNew/SaveCurrent and original-content-checked reopen use the normal project
+flow. Nonzero seek, Pause, routed MIDI and active Arrangement chase remain
+unsupported. No Live parity, physical native interaction, device-deadline or
+listening acceptance is claimed.
 
 ## current source boundary
 
@@ -1127,7 +1133,7 @@ Native CURRENT can compile finite authored local Console MIDI cells, including
 Session source loops, multiple sampler tracks and scenes mixed with ordinary
 audio cells. The existing Session clock, quantization, templates and renderer
 remain authoritative. Routed MIDI, nonzero seek, Pause, active Arrangement chase
-and composition edits after loading remain outside this increment. Private
+remain outside the Console playback increment. Private
 offline export does not acquire this Console capability.
 
 Each source/event template is born in the same constructor as its exact sampler
@@ -1156,3 +1162,41 @@ boundary crossing, retrigger release, atomic scene capacity refusal, exact/under
 compiler reservations, actual native launch/tuning/cancel/Stop allocation probes
 and rendered Console interaction. Physical interaction, listening and optimized
 candidate acceptance remain separate.
+
+
+## Stopped composition after source load
+
+The existing MIDI editor can create finite Arrange clips and Console MIDI cells,
+append an empty scene, copy an Arrange MIDI clip into an empty Console cell,
+duplicate/remove Arrange MIDI clips, draw/edit/update/remove notes and use the
+existing source controls after loading a sampler. Source-loop support remains
+subject to the native constructor's existing constraints. Painting requires an
+empty interval: overlap with audio or MIDI is refused before preparation. Scene
+rename/reorder/removal, track topology, arbitrary command batches, routed MIDI
+and nonzero seek are outside this composition contract.
+
+A closed command family routes one owned canonical command through the same
+stopped-edit fence, resource admission, sealed candidate and fresh output adoption
+as parameter and source replacement edits. The generic edit refusal remains in
+place. Borrowed no-op preflight validates numbers and normalizes owned update
+batches in place; it does not clone/replay the Project or allocate another command
+vector. A no-op never fences audio or changes either history stack.
+
+Canonical single-command execution privately mints fixed Copy MIDI effect
+metadata from the borrowed command/source and actual successful result. It lives
+with each snapshot in the existing global history. Undo and Redo carry the same
+original forward edge metadata with the displaced project. Exact adjacent
+snapshots are checked in forward orientation, both before the fence and inside
+the normalized prepared history transition. Unrelated project, audio, device,
+asset, routing, scene or clip changes refuse; unsupported adjacent edges are never
+skipped. Generic batches retain no single-command MIDI provenance. Destination
+history capacity is reserved before any native preparation hook can seal output.
+The original Project candidate transaction remains the only project clone.
+
+Headless native regressions cover mixed parameter/MIDI history, literal stereo
+PCM, Save source-fact enrichment, stale/cancel/playing/post-seal/budget refusal,
+no-op stability, and postcommit hardware-open failure with Save/export/retry.
+Rendered GPUI regressions exercise the existing editor after real load and reopen;
+callback probes require zero total and signed-net allocation/free counts and bytes.
+These fixtures do not establish physical UI, audio deadlines, listening or Live
+parity. Optimized user acceptance remains separate.
