@@ -1084,7 +1084,7 @@ class NativeDiscoveryPackageTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="hex-discovery-package-")
         self.addCleanup(self.temporary.cleanup)
-        self.app = Path(self.temporary.name) / "hex.app"
+        self.app = Path(self.temporary.name).resolve() / "hex.app"
         self.contents = self.app / "Contents"
         (self.contents / "MacOS").mkdir(parents=True)
         (self.contents / "Resources").mkdir()
