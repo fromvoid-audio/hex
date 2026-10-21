@@ -1,7 +1,7 @@
 # Canonical musical time contract
 
-Status: implemented in project/storage/editor; `plan.md` and `../todo.md` track
-verification and remaining native interaction checks.
+Status: implemented in project/storage/editor; [Pulse](https://pulse.iocore.dev/) tracks verification and remaining native
+interaction checks.
 
 Musical time belongs to the std-only canonical project model. Beats are
 nonnegative Q32.32 quarter notes, persisted as u64 raw units. Tempo is integer
