@@ -20,7 +20,9 @@ use std::{
 pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
+mod native_assets;
 mod resident_pcm;
+pub use native_assets::ResidentNativeReservation;
 mod verified_import;
 use audio_sources::MediaBank;
 pub use audio_sources::{
@@ -43,6 +45,8 @@ pub enum SessionError {
     Media(MediaInvalid),
     Engine(hex_engine::Invalid),
     Allocation,
+    NativeResource(hex_engine::native_device_resources::ResourcePreparationError),
+    DeviceAssetClipUnsupported(AssetId),
 }
 
 impl fmt::Display for SessionError {
@@ -52,6 +56,14 @@ impl fmt::Display for SessionError {
             Self::Project(error) => write!(f, "project edit failed: {error}"),
             Self::Media(error) => write!(f, "media preparation failed: {error}"),
             Self::Engine(error) => write!(f, "playback compile failed: {error}"),
+            Self::NativeResource(reason) => write!(
+                f,
+                "native source admission refused: {}",
+                format!("{reason:?}").to_lowercase()
+            ),
+            Self::DeviceAssetClipUnsupported(_) => {
+                f.write_str("device-only source needs an accounted clip derivative")
+            }
             Self::Allocation => f.write_str("could not reserve session media memory"),
         }
     }
@@ -63,7 +75,10 @@ impl Error for SessionError {
             Self::Project(error) => Some(error),
             Self::Media(error) => Some(error),
             Self::Engine(error) => Some(error),
-            Self::Invalid(_) | Self::Allocation => None,
+            Self::Invalid(_)
+            | Self::Allocation
+            | Self::NativeResource(_)
+            | Self::DeviceAssetClipUnsupported(_) => None,
         }
     }
 }
@@ -166,6 +181,8 @@ pub struct Session {
     shutdown: Arc<std::sync::atomic::AtomicBool>,
     sine_table: Arc<hex_engine::SineTable>,
     media: HashMap<AssetId, ResidentAsset>,
+    native_assets: hex_engine::native_device_resources::ResidentDeviceAssets,
+    native_reservation: Option<ResidentNativeReservation>,
     verified_sources: BTreeMap<AssetId, VerifiedAudioFile>,
     semantic_source_epoch: u64,
     audio_mode: DocumentAudioMode,
@@ -174,6 +191,29 @@ pub struct Session {
     max_resident_frames: u64,
     resident_waveform_bins: usize,
     resident_waveform_bytes: usize,
+}
+
+/// Public and private editing paths share the same media-custody boundary.
+/// These commands require an owned prepared import/bounce transaction instead.
+fn validate_command_media(command: &Command) -> Result<(), SessionError> {
+    if matches!(
+        command,
+        Command::AddAsset { .. }
+            | Command::ImportDeviceAsset { .. }
+            | Command::ImportDeviceAssetIntoEmptyInstrument { .. }
+            | Command::ImportAudioTrack { .. }
+            | Command::ImportPreparedAudioTrack { .. }
+            | Command::ImportPreparedAudioTrackAt { .. }
+            | Command::ImportPreparedAudioClip { .. }
+            | Command::ImportPreparedAudioClipWithOverwrite { .. }
+            | Command::ImportPreparedSessionAudioClip { .. }
+            | Command::ConvertMidiClipToAudio { .. }
+    ) {
+        return Err(SessionError::Invalid(
+            "audio media must be committed through a prepared import",
+        ));
+    }
+    Ok(())
 }
 
 impl Session {
@@ -192,6 +232,8 @@ impl Session {
             editor: Editor::new(Project::new(sample_rate)?, history_capacity)?,
             sine_table: Arc::new(hex_engine::SineTable::new()),
             media: HashMap::new(),
+            native_assets: hex_engine::native_device_resources::ResidentDeviceAssets::default(),
+            native_reservation: None,
             verified_sources: BTreeMap::new(),
             semantic_source_epoch: 0,
             audio_mode: DocumentAudioMode::Resident,
@@ -212,6 +254,12 @@ impl Session {
         max_resident_frames: u64,
         decoded_assets: Vec<(AssetId, DecodedAudio)>,
     ) -> Result<Self, SessionError> {
+        if hex_engine::native_device_resources::requires_private_sampler_sources(&project) {
+            return Err(SessionError::Invalid(
+                "sampler reopening requires qualified original source reconstruction",
+            ));
+        }
+
         let mut prepared_assets: Vec<(AssetId, PreparedImport)> = Vec::new();
         prepared_assets
             .try_reserve_exact(decoded_assets.len())
@@ -295,6 +343,35 @@ impl Session {
         prepared_assets: Vec<(AssetId, PreparedImport)>,
         sine_table: Arc<hex_engine::SineTable>,
     ) -> Result<Self, SessionError> {
+        Self::from_prepared_with_native_limits(
+            project,
+            history_capacity,
+            max_resident_frames,
+            prepared_assets,
+            sine_table,
+            None,
+        )
+    }
+    pub(crate) fn from_prepared_with_native_limits(
+        project: Project,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        prepared_assets: Vec<(AssetId, PreparedImport)>,
+        sine_table: Arc<hex_engine::SineTable>,
+        native: Option<ResidentNativeReservation>,
+    ) -> Result<Self, SessionError> {
+        if hex_engine::native_device_resources::requires_private_sampler_sources(&project) {
+            return Err(SessionError::Invalid(
+                "sampler reopening requires qualified original source reconstruction",
+            ));
+        }
+        let native_assets = hex_engine::native_device_resources::ResidentDeviceAssets::default();
+        if let Some(limits) = native {
+            native_assets
+                .storage_on_control(0, limits.storage)
+                .map_err(hex_engine::native_device_resources::ResourcePreparationError::from)?;
+        }
+
         device_comparison::validate_project(&project)?;
         let asset_count = project.assets().count();
         let editor = Editor::new(project, history_capacity)?;
@@ -373,6 +450,8 @@ impl Session {
             editor,
             sine_table,
             media,
+            native_assets,
+            native_reservation: native,
             verified_sources: BTreeMap::new(),
             semantic_source_epoch: 0,
             audio_mode: DocumentAudioMode::Resident,
@@ -521,20 +600,6 @@ impl Session {
         &mut self,
         command: Command,
     ) -> Result<(Created, PlaybackProject), SessionError> {
-        if matches!(
-            &command,
-            Command::AddAsset { .. }
-                | Command::ImportAudioTrack { .. }
-                | Command::ImportPreparedAudioTrack { .. }
-                | Command::ImportPreparedAudioTrackAt { .. }
-                | Command::ImportPreparedAudioClip { .. }
-                | Command::ImportPreparedAudioClipWithOverwrite { .. }
-                | Command::ImportPreparedSessionAudioClip { .. }
-        ) {
-            return Err(SessionError::Invalid(
-                "audio media must be committed through a prepared import",
-            ));
-        }
         let (created, prepared) = self.command_prepared_revision(command, None)?;
         Ok((created, prepared.arrangement().as_ref().clone()))
     }
@@ -552,19 +617,6 @@ impl Session {
         ),
         SessionError,
     > {
-        if matches!(
-            &command,
-            Command::AddAsset { .. }
-                | Command::ImportAudioTrack { .. }
-                | Command::ImportPreparedAudioTrack { .. }
-                | Command::ImportPreparedAudioTrackAt { .. }
-                | Command::ImportPreparedAudioClip { .. }
-                | Command::ImportPreparedAudioClipWithOverwrite { .. }
-        ) {
-            return Err(SessionError::Invalid(
-                "audio media must be committed through a prepared import",
-            ));
-        }
         let (created, prepared) = self.command_prepared_revision(command, None)?;
         Ok((
             created,
@@ -593,18 +645,11 @@ impl Session {
             &Arc<hex_engine::PreparedRevision>,
         ) -> Result<T, SessionError>,
     ) -> Result<(Created, (Arc<hex_engine::PreparedRevision>, T)), SessionError> {
-        if matches!(
-            &command,
-            Command::AddAsset { .. }
-                | Command::ImportAudioTrack { .. }
-                | Command::ImportPreparedAudioTrack { .. }
-                | Command::ImportPreparedAudioTrackAt { .. }
-                | Command::ImportPreparedAudioClip { .. }
-                | Command::ImportPreparedAudioClipWithOverwrite { .. }
-        ) {
-            return Err(SessionError::Invalid(
-                "audio media must be committed through a prepared import",
-            ));
+        validate_command_media(&command)?;
+        if let Command::PlaceClip { asset, .. } = &command
+            && self.native_assets.contains(*asset)
+        {
+            return Err(SessionError::DeviceAssetClipUnsupported(*asset));
         }
         let media = self.media_bank();
         let sine_table = self.sine_table();
@@ -1027,8 +1072,15 @@ impl Session {
                         .flat_map(|m| [&m.source_audio, &m.audio]),
                 )?,
             )
-            .filter(|total| *total <= self.max_resident_frames)
+            .filter(|total| {
+                self.native_assets
+                    .capacity_frames()
+                    .ok()
+                    .and_then(|n| n.checked_add(*total))
+                    .is_some_and(|n| n <= self.max_resident_frames)
+            })
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
+        self.validate_native_legacy_budget(new_resident_frames)?;
         if self.media.try_reserve(1).is_err() {
             return Err(SessionError::Allocation);
         }
@@ -1151,8 +1203,15 @@ impl Session {
                         .flat_map(|m| [&m.source_audio, &m.audio]),
                 )?,
             )
-            .filter(|total| *total <= self.max_resident_frames)
+            .filter(|total| {
+                self.native_assets
+                    .capacity_frames()
+                    .ok()
+                    .and_then(|n| n.checked_add(*total))
+                    .is_some_and(|n| n <= self.max_resident_frames)
+            })
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
+        self.validate_native_legacy_budget(new_resident_frames)?;
         self.media
             .try_reserve(1)
             .map_err(|_| SessionError::Allocation)?;
@@ -1261,8 +1320,15 @@ impl Session {
                         .flat_map(|m| [&m.source_audio, &m.audio]),
                 )?,
             )
-            .filter(|total| *total <= self.max_resident_frames)
+            .filter(|total| {
+                self.native_assets
+                    .capacity_frames()
+                    .ok()
+                    .and_then(|n| n.checked_add(*total))
+                    .is_some_and(|n| n <= self.max_resident_frames)
+            })
             .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
+        self.validate_native_legacy_budget(new_resident_frames)?;
         self.media
             .try_reserve(1)
             .map_err(|_| SessionError::Allocation)?;
@@ -1545,6 +1611,7 @@ impl Session {
     fn media_bank(&self) -> MediaBank {
         MediaBank {
             epoch: self.semantic_source_epoch,
+            device_only: self.native_assets.ids().collect(),
             resident: self
                 .media
                 .iter()
@@ -1565,6 +1632,7 @@ fn prepare_with_waveforms(
     transforms: &hex_engine::audio_transform::AudioTransformPreparation,
     retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
 ) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
+    media.validate_clip_sources(project)?;
     device_comparison::validate_project(project)?;
     let mut old = retained
         .try_borrow_mut()

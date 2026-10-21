@@ -177,6 +177,8 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
 }
 
 pub(crate) struct Publication {
+    pcm_frames: u64,
+    forwarded_pcm: bool,
     revision: u64,
     /// UI/control project context this compiled playback belongs to. This is
     /// audio publication metadata, not project schema or engine state.
@@ -814,6 +816,7 @@ pub struct PublicationControl {
     rate: u32,
     revision: u64,
     command_storage_bytes: usize,
+    legacy_pcm_frames: u64,
     resident_forwarding: Option<Arc<resident_forwarding::ResidentForwarding>>,
     #[cfg(all(test, feature = "allocation-probe"))]
     endpoint_probe: Option<crate::native_callback_owner::DropProbe>,
@@ -924,6 +927,7 @@ pub fn channel_with_spectrum(
                 rate,
                 revision: 0,
                 command_storage_bytes,
+                legacy_pcm_frames: 0,
                 resident_forwarding: None,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 endpoint_probe: None,
@@ -1121,6 +1125,15 @@ impl PublicationControl {
         policy: PublicationPolicy,
         control_context_generation: u64,
     ) -> Result<u64, PublishError> {
+        self.publish_with_pcm_obligation(playback, policy, control_context_generation, false)
+    }
+    fn publish_with_pcm_obligation(
+        &mut self,
+        playback: Playback,
+        policy: PublicationPolicy,
+        control_context_generation: u64,
+        forwarded_pcm: bool,
+    ) -> Result<u64, PublishError> {
         let reason = if self.candidate_root.domains_configured() {
             Some("constructor publication does not adopt legacy playback")
         } else if self.status.publication_pending.gain_active() {
@@ -1139,6 +1152,21 @@ impl PublicationControl {
         if let Some(reason) = reason {
             return Err(PublishError { reason, playback });
         }
+        let Some(pcm_frames) = playback.resident_pcm_capacity_frames() else {
+            return Err(PublishError {
+                reason: "resident pcm capacity overflow",
+                playback,
+            });
+        };
+        let Some(next_pcm) =
+            self.legacy_pcm_frames
+                .checked_add(if forwarded_pcm { 0 } else { pcm_frames })
+        else {
+            return Err(PublishError {
+                reason: "resident pcm obligation overflow",
+                playback,
+            });
+        };
         if !self.status.publication_pending.reserve_publication() {
             return Err(PublishError {
                 reason: "playback publication already pending",
@@ -1156,6 +1184,8 @@ impl PublicationControl {
         let mut playback = playback;
         playback.set_device_metering(true);
         let publication = Publication {
+            pcm_frames,
+            forwarded_pcm,
             revision,
             control_context_generation,
             policy,
@@ -1169,6 +1199,7 @@ impl PublicationControl {
                 playback: *publication.playback,
             });
         }
+        self.legacy_pcm_frames = next_pcm;
         self.revision = revision;
         self.status.submitted_revision.store(revision, Release);
         self.latest_fresh_runtime_cancellation = cancellation;
@@ -1217,7 +1248,20 @@ impl PublicationControl {
                         break;
                     }
                 }
-                ReturnedPublication::Legacy(publication) => drop(publication),
+                ReturnedPublication::Legacy(publication) => {
+                    let (frames, forwarded) = (publication.pcm_frames, publication.forwarded_pcm);
+                    drop(publication); // actual owner destruction precedes obligation release
+                    if forwarded {
+                        if let Some(bridge) = &self.resident_forwarding {
+                            bridge.release_pcm_after_drop(frames);
+                        }
+                    } else {
+                        self.legacy_pcm_frames = self
+                            .legacy_pcm_frames
+                            .checked_sub(frames)
+                            .unwrap_or(u64::MAX);
+                    }
+                }
                 ReturnedPublication::Candidate(returned) => {
                     if let Err(returned) = self.candidate_root.ingest(returned) {
                         self.held_control_return = Some(ReturnedPublication::Candidate(returned));
@@ -2732,6 +2776,24 @@ impl Callback {
                 .store(active.playback.metronome_enabled(), Relaxed);
         }
     }
+}
+
+/// Known channel payload/capacity quote for the pinned worker factory.
+pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
+    std::mem::size_of::<Status>()
+        .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
+        .checked_add(crate::sample_preview::constructor_storage_quote()?)?
+        .checked_add(crate::gain_recording::constructor_storage_quote()?)?
+        .checked_add(spectrum_target::constructor_storage_quote()?)?
+        .checked_add(processor_audition::constructor_storage_quote()?)?
+        .checked_add(endpoints::constructor_endpoint_storage_quote()?)
+}
+pub(crate) fn worker_publication_queue_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    ChannelStorage::ring_bytes::<QueuedPublication>(1)?
+        .checked_add(ChannelStorage::ring_bytes::<ReturnedPublication>(RETIRED)?)?
+        .checked_add(ChannelStorage::ring_bytes::<QueuedCommand>(COMMANDS)?)?
+        .checked_add(crate::native_callback_owner::worker_boundary_storage_quote()?)
 }
 
 #[cfg(test)]
@@ -5347,6 +5409,8 @@ mod tests {
         control
             .publications
             .push(QueuedPublication::Legacy(Publication {
+                pcm_frames: 0,
+                forwarded_pcm: false,
                 revision: 99,
                 control_context_generation: 0,
                 policy: PublicationPolicy::InstallFreshRuntime,
@@ -5685,6 +5749,8 @@ mod tests {
             callback
                 .retired
                 .push(ReturnedPublication::Legacy(Publication {
+                    pcm_frames: 0,
+                    forwarded_pcm: false,
                     revision,
                     control_context_generation: 0,
                     policy: PublicationPolicy::InstallFreshRuntime,
@@ -6196,6 +6262,8 @@ mod tests {
         let (mut control, mut callback) = channel(48_000).unwrap();
         let (playback, weak_revision, _, _) = session_audio_graph();
         callback.held_retirement = Some(ReturnedPublication::Legacy(Publication {
+            pcm_frames: 0,
+            forwarded_pcm: false,
             revision: 1,
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
@@ -6309,6 +6377,8 @@ mod tests {
                 callback
                     .retired
                     .push(ReturnedPublication::Legacy(Publication {
+                        pcm_frames: 0,
+                        forwarded_pcm: false,
                         revision,
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
@@ -6382,6 +6452,8 @@ mod tests {
                 callback
                     .retired
                     .push(ReturnedPublication::Legacy(Publication {
+                        pcm_frames: 0,
+                        forwarded_pcm: false,
                         revision,
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
@@ -6394,6 +6466,8 @@ mod tests {
         }
         let (held, held_weak) = graph();
         callback.held_retirement = Some(ReturnedPublication::Legacy(Publication {
+            pcm_frames: 0,
+            forwarded_pcm: false,
             revision: 4,
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
@@ -6540,6 +6614,8 @@ mod tests {
             control
                 .publications
                 .push(QueuedPublication::Legacy(Publication {
+                    pcm_frames: 0,
+                    forwarded_pcm: false,
                     revision: 3,
                     control_context_generation: 0,
                     policy: PublicationPolicy::InheritRuntime,

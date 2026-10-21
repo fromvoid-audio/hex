@@ -306,6 +306,28 @@ pub struct Playback {
     playing: bool,
 }
 impl Playback {
+    /// Conservative control-side PCM capacity of this actual immutable graph.
+    /// Shared clip leaves are counted once within the graph; no owner escapes.
+    pub fn resident_pcm_capacity_frames(&self) -> Option<u64> {
+        let sources = || {
+            self.project
+                .tracks()
+                .iter()
+                .flat_map(|t| t.clips.iter().filter_map(|c| c.audio.as_ref()))
+                .chain(self.prepared_revision.iter().flat_map(|r| {
+                    r.session()
+                        .audio_clips()
+                        .iter()
+                        .filter_map(|c| c.resident_audio())
+                }))
+        };
+        sources().enumerate().try_fold(0u64, |n, (i, source)| {
+            if sources().take(i).any(|old| old.shares_pcm_with(source)) {
+                return Some(n);
+            }
+            n.checked_add(u64::try_from(source.pcm_capacity_frames()).ok()?)
+        })
+    }
     /// Control-side attachment validated against the exact compiled instrument instance.
     pub fn prepare_live_expression(
         &mut self,
@@ -474,6 +496,33 @@ impl Playback {
     ) -> Result<Self, crate::AudioStorageError> {
         let runtime = SessionPlayback::new_audio_candidate(Arc::clone(&revision))?;
         Ok(Self::from_parts(revision, Some(Box::new(runtime)), None))
+    }
+    pub(crate) fn new_current_sampler_candidate(
+        revision: Arc<PreparedRevision>,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+    ) -> Result<Self, crate::AudioStorageError> {
+        let runtime =
+            SessionPlayback::new_current_sampler_candidate(Arc::clone(&revision), sources)?;
+        Ok(Self::from_parts(revision, Some(Box::new(runtime)), None))
+    }
+    pub(crate) fn render_current_sampler<P: MediaPages + ?Sized>(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut P>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+    ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("current sampler runtime missing"))?
+            .render_current_sampler(output, pages, observer, project, sources)
+            .map_err(|e| Invalid(e.diagnostic_message()))?;
+        self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
+        Ok(())
     }
     pub(crate) fn validate_candidate_runtime_storage(
         &self,

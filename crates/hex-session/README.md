@@ -293,3 +293,22 @@ The control-only `native_streaming_fixture` example writes create-new original
 It uses existing verified-reader fingerprints and storage APIs, without changing
 Session/media limits. See `docs/streaming-100-track-workload.md` for its explicit
 large headless smoke and separate required native/listening acceptance.
+
+
+Opt-in original native device-source admission uses
+`Service::with_native_reservation` / `Session::with_native_reservation` and
+`ImportDeviceAsset`. Its explicit resident ledger bounds actual native roots,
+PCM and construction overlap alongside legacy PCM; encoded/decode peaks and
+ordinary editor/view storage are separate. It atomically returns an unassigned
+canonical asset ID, without a clip derivative or owning source escape. Existing
+constructors remain opt-out. See `docs/sampler.md` for limits, tests and the still
+pending prepared/export/native custody integration.
+
+
+Explicit resident-native reservation supports canonical sampler assignment and
+private frame-zero Main export. The service retains source-bearing sidecars and
+captured-job custody on control; public playback/canonical-source events stay
+resource-free. New/Open preserve the capability, while sampler reopen, history,
+native playback and runtime tools explicitly refuse. See
+[the sampler boundary](../../docs/sampler.md) for admission scope and remaining
+user-facing dependencies.

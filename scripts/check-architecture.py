@@ -40,20 +40,23 @@ ALLOWED = {
 # mutable-instrument fixtures. They do not grant production audio/export code
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
+    # Real decoded WAV -> sealed source scope -> sampler PCM oracles only.
+    'hex-media': {'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     # Verified-mode source limits for real worker/key-handler failure fixtures only.
     'hex-ui': {'hex-media'},
     'hex-engine': {'hex-tuning'},
     'hex-session': {'hex-tuning'},
     # Actual Session -> native adapter fixtures, never a production editor model.
-    'hex-desktop': {'hex-project'},
+    'hex-desktop': {'hex-project', 'hex-tuning'},
     'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }
 BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},
-              # Source and controlled scanner identities never enter DSP.
-              'sha2': {'hex-media', 'hex-plugin-scan', 'hex-clap-scan'},
+              # Source/scanner identities and bounded control-side hashes of
+              # the engine's actual retained PCM bank; never callback DSP.
+              'sha2': {'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan'},
               # Child disposition belongs only to the standalone scanners.
               'signal-hook': {'hex-plugin-scan', 'hex-clap-scan'},
               # Safe publication and standalone child ownership only.

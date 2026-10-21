@@ -128,6 +128,18 @@ fn publication_observation_disposition(
     }
 }
 
+fn relinquish_client_matches(
+    generation: u64,
+    revision: Option<u64>,
+    output: Option<u64>,
+    old_output: u64,
+    target: hex_engine::AudioSourceContext,
+) -> bool {
+    generation == target.project_generation
+        && revision.is_none_or(|r| r <= target.editor_revision)
+        && output == Some(old_output)
+}
+
 impl EditorView {
     /// Consume only the worker's ordered comparison proof. Runtime/source owners,
     /// output identity, publication tickets and audio revision never change here.
@@ -395,9 +407,7 @@ impl EditorView {
             return;
         };
         match state {
-            crate::EditorPublicationState::Preparing => {
-                self.status = "preparing streamed audio".into()
-            }
+            crate::EditorPublicationState::Preparing => self.status = "preparing audio".into(),
             crate::EditorPublicationState::Busy => {
                 self.status = "audio busy · waiting to publish".into()
             }
@@ -469,6 +479,27 @@ impl EditorView {
                 | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
             };
             match event {
+                crate::EditorAudioEvent::RelinquishClient {
+                    old_output_identity,
+                    target,
+                } => {
+                    if !relinquish_client_matches(
+                        self.project_generation,
+                        self.state.as_ref().map(|s| s.revision),
+                        self.audio
+                            .as_ref()
+                            .and_then(|a| a.control.output_identity()),
+                        old_output_identity,
+                        target,
+                    ) {
+                        continue;
+                    }
+                    if let Some(mut audio) = self.audio.take() {
+                        audio.control.close();
+                    }
+                    self.status = "preparing sampler audio".into();
+                    changed = true;
+                }
                 crate::EditorAudioEvent::Opened {
                     project_generation,
                     restart_request,
@@ -1559,10 +1590,13 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
+        let sampler_load_complete = event.sampler_load_complete;
+        let sampler_load_succeeded = event.error.is_none();
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
         let group_copy_intent = self.group_copy_request_complete(&event);
         if event.project_replaced {
+            self.retire_first_sampler_load();
             self.cancel_open_after_save();
             self.invalidate_prepared_seek();
             if let Some(audio) = self.audio.as_mut() {
@@ -2347,6 +2381,7 @@ impl EditorView {
         if let Some(reason) = self.take_effect_bus_barrier_error() {
             self.error = Some(reason.into());
         }
+        self.first_sampler_load_complete(sampler_load_complete, sampler_load_succeeded);
         self.reconcile_publication_observation();
         if event.request_complete
             && !event.gesture_request
@@ -2508,6 +2543,7 @@ impl EditorView {
             self.cancel_midi_stroke();
         }
         if request.is_project_open() {
+            self.cancel_first_sampler_load(None);
             if let Some(control) = &self.audio_batch {
                 control.request_cancel();
             }
@@ -2544,6 +2580,7 @@ impl EditorView {
                 | Request::LoadDevicePreset { .. }
                 | Request::SetDeviceParameter { .. }
                 | Request::Import(_)
+                | Request::LoadFirstSampler { .. }
                 | Request::ImportAudioBatch { .. }
                 | Request::ImportToTrack { .. }
                 | Request::ImportToTrackWithOverwrite { .. }
@@ -2661,6 +2698,12 @@ impl EditorView {
     }
 
     pub(super) fn request_seek(&mut self, frame: u64) {
+        if self.state.as_ref().is_some_and(|s| {
+            hex_engine::native_device_resources::requires_private_sampler_sources(&s.project)
+        }) {
+            self.error = Some("sampler native playback supports play from start and stop".into());
+            return;
+        }
         if self.stopped_playback_restore.is_some() {
             self.error = Some("restoring stopped playback · wait before seeking".into());
             return;
@@ -2849,6 +2892,13 @@ impl EditorView {
         command: hex_engine::SessionPlaybackCommand,
         revision: u64,
     ) {
+        if self.state.as_ref().is_some_and(|s| {
+            hex_engine::native_device_resources::requires_private_sampler_sources(&s.project)
+        }) {
+            self.error = Some("sampler session launch is unavailable".into());
+            return;
+        }
+
         let Some(audio) = self.audio.as_ref() else {
             self.error = Some("session playback requires an audio output".into());
             return;
@@ -2893,6 +2943,13 @@ impl EditorView {
         command: hex_engine::SessionPlaybackCommand,
         revision: u64,
     ) {
+        if self.state.as_ref().is_some_and(|s| {
+            hex_engine::native_device_resources::requires_private_sampler_sources(&s.project)
+        }) {
+            self.error = Some("sampler session launch is unavailable".into());
+            return;
+        }
+
         self.invalidate_prepared_seek();
         if !matches!(
             command,
@@ -2992,6 +3049,20 @@ impl EditorView {
     }
 
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
+        if self.state.as_ref().is_some_and(|s| {
+            hex_engine::native_device_resources::requires_private_sampler_sources(&s.project)
+        }) && matches!(
+            action,
+            PlaybackAction::Transport(
+                PlaybackCommand::Pause
+                    | PlaybackCommand::Seek(1..)
+                    | PlaybackCommand::PlayFrom(1..)
+            ) | PlaybackAction::Session(_)
+                | PlaybackAction::LaunchAndPlay(_)
+        ) {
+            self.error = Some("sampler native playback supports play from start and stop".into());
+            return;
+        }
         if self.stopped_playback_restore.is_some() && intent_desired_playing(action) == Some(true) {
             self.error = Some("restoring stopped playback · wait before playing".into());
             return;
@@ -3203,7 +3274,12 @@ fn reconcile_verified_source_binding(
     source: Option<hex_audio::prepared::AppliedAudioSource>,
 ) -> (bool, Option<hex_audio::prepared::AppliedAudioSource>) {
     if let Some(source) = source
-        && mode == hex_session::DocumentAudioMode::VerifiedStreaming
+        && (mode == hex_session::DocumentAudioMode::VerifiedStreaming
+            || current.is_some_and(|state| {
+                hex_engine::native_device_resources::requires_private_sampler_sources(
+                    &state.project,
+                )
+            }))
         && output_identity == Some(source.output_identity)
         && source.context.project_generation == generation
         && let Some(revision) =
@@ -4696,6 +4772,151 @@ mod comparison_source_binding_tests {
         assert_eq!(
             status.current().unwrap().project.revision,
             audio.state.revision
+        );
+    }
+}
+
+#[cfg(test)]
+mod sampler_native_ui_protocol_tests {
+    use super::*;
+    #[test]
+    fn targeted_release_ignores_newer_authoring_other_output_and_other_document() {
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 4,
+            editor_revision: 7,
+        };
+        assert!(relinquish_client_matches(4, Some(6), Some(12), 12, context));
+        assert!(!relinquish_client_matches(
+            4,
+            Some(8),
+            Some(12),
+            12,
+            context
+        ));
+        assert!(!relinquish_client_matches(
+            4,
+            Some(7),
+            Some(13),
+            12,
+            context
+        ));
+        assert!(!relinquish_client_matches(
+            5,
+            Some(7),
+            Some(12),
+            12,
+            context
+        ));
+    }
+    #[test]
+    fn native_sampler_applied_source_recovers_lost_submitted_metadata_without_legacy_promotion() {
+        // UI protocol metadata only; actual native proof/PCM is covered by the
+        // Service/Desktop eligible publication and callback integration probes.
+        let service = hex_session::service::Service::new(16000, 8, 0).unwrap();
+        let end = Instant::now() + std::time::Duration::from_secs(5);
+        let event = loop {
+            match service.try_event() {
+                Ok(e) => break e,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {
+                    assert!(Instant::now() < end);
+                    std::thread::yield_now();
+                }
+                Err(e) => panic!("{e}"),
+            }
+        };
+        let context = event
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context();
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(16000).unwrap(), 4).unwrap();
+        let hex_project::Created::Track(track) = editor
+            .execute(hex_project::Command::AddMidiTrack {
+                name: "sampler".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        editor
+            .execute(hex_project::Command::InsertInstrument {
+                track,
+                state: hex_lattice_contract::NativeDeviceState::new(
+                    hex_lattice_contract::DeviceTypeId::new("hex.instrument.sampler").unwrap(),
+                    1,
+                    vec![],
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let state = ViewState {
+            canonical_audio_source: event.state.canonical_audio_source.clone(),
+            comparison_audio: None,
+            project: Arc::new(editor.project().clone()),
+            waveforms: Default::default(),
+            audio_clip_waveforms: Default::default(),
+            midi_preview: event.state.midi_preview.clone(),
+            gain_preview: event.state.gain_preview.clone(),
+            timeline_frames: 16000,
+            can_undo: false,
+            can_redo: false,
+            revision: context.editor_revision,
+            unsaved: false,
+            document_path: None,
+        };
+        let mut admission = super::super::audio_admission::AudioAdmissionStatus::default();
+        admission.canonical_revision(super::super::audio_admission::ProjectRevision {
+            generation: context.project_generation,
+            revision: state.revision,
+        });
+        let source = hex_audio::prepared::AppliedAudioSource {
+            context,
+            output_identity: 12,
+            audio_revision: 3,
+        };
+        assert_eq!(
+            reconcile_verified_source_binding(
+                &mut admission,
+                hex_session::DocumentAudioMode::Resident,
+                Some(13),
+                context.project_generation,
+                Some(&state),
+                Some(source)
+            ),
+            (false, None)
+        );
+        assert_eq!(
+            reconcile_verified_source_binding(
+                &mut admission,
+                hex_session::DocumentAudioMode::Resident,
+                Some(12),
+                context.project_generation,
+                Some(&state),
+                Some(source)
+            )
+            .1,
+            Some(source)
+        );
+        let stale = hex_audio::prepared::AppliedAudioSource {
+            context: hex_engine::AudioSourceContext {
+                editor_revision: context.editor_revision + 1,
+                ..context
+            },
+            ..source
+        };
+        assert_eq!(
+            reconcile_verified_source_binding(
+                &mut admission,
+                hex_session::DocumentAudioMode::Resident,
+                Some(12),
+                context.project_generation,
+                Some(&state),
+                Some(stale)
+            )
+            .1,
+            None
         );
     }
 }

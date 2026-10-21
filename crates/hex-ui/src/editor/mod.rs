@@ -95,6 +95,7 @@ mod refresh;
 mod render;
 mod return_tracks;
 mod routing_controls;
+mod sampler_load;
 mod save;
 mod scrub;
 mod seek;
@@ -528,6 +529,60 @@ pub(super) fn open_backend(cx: &mut App, backend: crate::EditorBackend) -> Resul
     Ok(())
 }
 
+#[cfg(feature = "ui-test-support")]
+pub(crate) fn sampler_load_fixture(
+    cx: &mut gpui::TestAppContext,
+    backend: crate::EditorBackend,
+    root: std::path::PathBuf,
+    directory: std::path::PathBuf,
+) -> Result<gpui::AnyWindowHandle, String> {
+    if !root.is_absolute()
+        || !root.starts_with(std::env::temp_dir())
+        || !directory.starts_with(&root)
+    {
+        return Err("sampler fixture requires an owned temporary root".into());
+    }
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join("Music")).map_err(|e| e.to_string())?;
+    let preferences = root.join("browser.json");
+    let places =
+        hex_preferences::BrowserPlaces::new(vec![directory.clone()]).map_err(|e| e.to_string())?;
+    hex_preferences::save(&preferences, &places).map_err(|e| e.to_string())?;
+    cx.update(move |cx| {
+        // GPUI's headless TestPlatform uses NoopTextSystem, which cannot
+        // register fonts. This fixture exercises input/render contracts only;
+        // production startup still requires verified bundled fonts.
+        bind_editor_keys(cx);
+        menus::install(cx, &[]);
+        dialogs::install_project_actions(cx);
+        let window = cx
+            .open_window(editor_window_options(cx), move |window, cx| {
+                cx.new(|cx| {
+                    let mut view = EditorView::new_with_browser_paths(
+                        window,
+                        cx,
+                        backend.service,
+                        Err("preparing audio output".into()),
+                        (
+                            preferences,
+                            root.join("recent.json"),
+                            root.join("theme.json"),
+                            root.join("project-directory.json"),
+                        ),
+                        Some(sampler_load::FixturePaths { home, directory }),
+                        #[cfg(test)]
+                        test_environment::Inputs::default(),
+                    );
+                    view.audio_events = backend.audio_events;
+                    view.source_reservation = Some(backend.source_reservation);
+                    view
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(window.into())
+    })
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct EnqueuedNativeDeviceDrop {
@@ -595,6 +650,7 @@ pub(super) struct EditorView {
     device_panel: device_panel::DevicePanelState,
     project_spectrum: project_spectrum::ProjectSpectrumState,
     worker_requests_pending: usize,
+    sampler_load: sampler_load::State,
     audio_batch: Option<Arc<hex_session::import_batch_decode::AudioBatchControl>>,
     audio_batch_progress: Option<hex_session::import_batch_decode::AudioBatchProgress>,
     pending_playback: Option<PendingPlayback>,
@@ -788,6 +844,8 @@ impl EditorView {
                     std::path::PathBuf::new(),
                     std::path::PathBuf::new(),
                 ),
+                #[cfg(feature = "ui-test-support")]
+                None,
                 test_environment::Inputs {
                     defaults: [true; 4],
                     ..Default::default()
@@ -816,6 +874,8 @@ impl EditorView {
                 std::path::PathBuf::new(),
                 std::path::PathBuf::new(),
             ),
+            #[cfg(feature = "ui-test-support")]
+            None,
             test_environment::Inputs {
                 defaults: [false, false, true, true],
                 ..Default::default()
@@ -880,6 +940,8 @@ impl EditorView {
                 directory.join("theme.json"),
                 project_preferences,
             ),
+            #[cfg(feature = "ui-test-support")]
+            None,
             test_environment::Inputs {
                 directory: Some(directory.join("samples")),
                 ..Default::default()
@@ -907,6 +969,8 @@ impl EditorView {
                 std::path::PathBuf::new(),
                 std::path::PathBuf::new(),
             ),
+            #[cfg(feature = "ui-test-support")]
+            None,
             test_environment::Inputs {
                 existing_environment: Some(environment),
                 directory: Some(directory),
@@ -936,6 +1000,8 @@ impl EditorView {
                 theme_preferences_path,
                 project_directory::default_preferences_path(),
             ),
+            #[cfg(feature = "ui-test-support")]
+            None,
             #[cfg(test)]
             test_environment::Inputs {
                 defaults: [false, false, false, true],
@@ -955,6 +1021,7 @@ impl EditorView {
             std::path::PathBuf,
             std::path::PathBuf,
         ),
+        #[cfg(feature = "ui-test-support")] fixture_paths: Option<sampler_load::FixturePaths>,
         #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
         #[cfg(test)]
@@ -1160,6 +1227,7 @@ impl EditorView {
             device_panel: device_panel::DevicePanelState::default(),
             project_spectrum: Default::default(),
             worker_requests_pending: 0,
+            sampler_load: Default::default(),
             audio_batch: None,
             audio_batch_progress: None,
             pending_playback: None,
@@ -1299,6 +1367,11 @@ impl EditorView {
         if let Some(directory) = test_paths.directory {
             view.browser.directory = directory.clone();
             view.browser.places = vec![directory];
+        }
+        #[cfg(feature = "ui-test-support")]
+        if let Some(paths) = fixture_paths {
+            view.browser
+                .set_native_sampler_fixture_paths(paths.home, paths.directory);
         }
         view.browser_scan_initial(cx);
         view.start_recent_projects_load(cx);

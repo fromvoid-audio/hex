@@ -7,7 +7,7 @@ publish.workspace = true
 
 [features]
 # Constructor/adapter integration only; no physical device is opened by fixtures.
-allocation-probe = ["hex-audio/allocation-probe"]
+allocation-probe = ["hex-audio/allocation-probe", "hex-ui/ui-test-support"]
 
 [dependencies]
 hex-mts = { path = "../hex-mts" }
@@ -22,6 +22,7 @@ hex-media = { path = "../hex-media" }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
 
 [dev-dependencies]
+hex-tuning = { path = "../hex-tuning" }
 hex-project = { path = "../hex-project" }
 allocation-counter = "=0.8.1"
 

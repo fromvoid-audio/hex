@@ -71,6 +71,7 @@ pub use audio_only_inputs::{
     AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource, OwnedAudioSourceView,
     ResidentSourceRefusal, StreamedSourceRefusal,
 };
+pub mod native_device_resources;
 mod owned_shared;
 mod pcm_arc;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};

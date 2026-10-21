@@ -729,6 +729,44 @@ native/user-test delivery remain separate work; this entry does not claim them.
   and finite optimized operator checklist. PR241 remains the later edit/fault pass;
   original24/177 broader acceptance stays open.
 
+## sampler unassigned native asset import — #2962 / PR546
+
+Real Session-worker source admission is implemented with explicit caller byte,
+construction, row/work and combined frame limits, one retained original PCM
+owner and atomic canonical metadata commit. Ordinary clip reuse refuses until
+an accounted derivative exists. Focused worker/PCM/budget/cancellation/ID-failure
+checks are recorded with PR546; required exact merge-plan evidence remains
+external. This is source admission, not a usable app sampler or native release.
+Canonical assignment and actual export-worker integration are implemented by the
+next focused candidate below. See [sampler contract](docs/sampler.md) for scope.
+
+## sampler canonical private export — #2963 / PR547
+
+The explicit-reservation service can assign an admitted original source to a
+canonical sampler and export frame-zero Main using normal prepared revision and
+SessionPlayback processing. Real mono/stereo file PCM, New/Open captured-source
+custody, finite union refusal and worker teardown have focused headless checks.
+Source owners remain in a private sidecar, outside public playback/native events.
+Required exact merge qualification is recorded externally; this entry does not
+establish native playback, UI controls, history/reopen, listening or optimized
+app delivery. Those remain the next functional dependencies toward the MVP.
+
+## sampler fresh native arrangement current — #2964 / PR548
+
+The explicit resident desktop path preflights original PCM and an actual sampler
+Arrangement runtime, drains the old output through its exclusive lease, adopts
+the intact sealed cell and stages it before exposing the new Client. Play from
+zero, Stop/reset and replay use the normal SessionPlayback resource renderer.
+Real Service/adapter headless checks cover mono/stereo original-rate conversion,
+A440/A880 tuning, gate, independent export, zero callback allocations/frees,
+shared-capacity refusal, cancellation and failed-open recovery. Native owners
+stay outside public snapshots and source events; scalar context remains public.
+The 8M union frame cap and separate 32MiB mutable limit remain unchanged.
+Required exact merge qualification is recorded externally. Native UI/listening,
+physical deadlines and optimized delivery remain separate; controls, general
+editing/history and save/reopen are still needed for the usable sampler MVP.
+See [the native scope](docs/sampler.md#fresh-native-arrangement-current--pulse2964--pr548).
+
 ## Sampler / Simpler request — #2679 / PR296, 17 october 2026
 
 The requested device is named sampler and targets Ableton Simpler, including
@@ -747,6 +785,21 @@ Pulse2679 retains the complete user request; PR296 is its first focused kernel
 prerequisite. Linux cannot run the installed macOS Live reference or provide
 native macOS listening/visual evidence. Full local CI and final PR evidence
 are recorded on the ticket; targeted checks do not authorize merge.
+
+## sampler first browser load — #2965 / PR549
+
+A WAV row context action captures an authored-MIDI track's empty instrument
+slot and submits one atomic source/assignment request. Original PCM and its
+candidate sidecar pass the existing resident union before one canonical commit.
+Stale/duplicate/cancelled/invalid requests preserve state; completion preserves
+newer selection/focus. The read-only panel names the canonical sample. Frame-zero
+UI Play checks callback-confirmed source/context/output; actual rendered
+browser-to-native Play/Stop/replay has literal mismatched-rate stereo and zero
+callback allocation evidence. Worker mono/stereo export and staged failure
+custody have focused checks. Required exact merge evidence is recorded on the
+canonical PR/ticket; physical UI/fonts/audio, optimized delivery, controls,
+replacement, keyboard, history and save/reopen remain outstanding. See
+[the first-load contract and finite checklist](docs/sampler.md#first-browser-load--pulse2965--pr549).
 
 ## Global browser search — #2659 / PR275, 17 october 2026
 
@@ -6376,3 +6429,141 @@ or full required rerun while those current findings remain unresolved.
   by the original guard; no production guard was weakened.
   Source checks remain separate from merger qualification, installed native
   interaction and user acceptance.
+## canonical test fixture roots — pulse2911 / PR503
+
+Ordinary runner, compiler-PATH and real UI-build fixtures resolve their owned
+temporary roots before deriving paths, matching the runner's physical target
+identity on macOS. Deliberate symlink controls remain explicit and production
+guards are unchanged. The pre-fix compiler-PATH suite failed on `/var` versus
+`/private/var`; exact-candidate tooling results are retained in the PR and Pulse.
+Standalone UI-root correction is included here so each split step can pass the
+complete tooling plan; explicit marker lookups and alias regressions follow in
+2912/2913. No native application or audio acceptance is implied.
+
+## actual fixture owner markers — pulse2912 / PR504
+
+Launch recovery reads the prior runner's selected owner marker; the UI build
+fixture retains the successful optimized build's reported release-owner path.
+Neither independently hashes a configured path spelling. Existing tests still
+check stale-owner and external-cache preservation, dirty-build refusal, READY
+owner/artifact preservation and real compiled-consumer freshness. Required
+exact-source tooling results are retained in the PR and Pulse. No production
+runner, launch, packaging or ownership policy changes.
+
+## aliased temporary-parent regressions — pulse2913 / PR505
+
+A deterministic symlinked temporary parent exercises the shared fixture's actual
+owner lookup, same-target reuse and external-cache preservation. The original
+pre-2911 setup fails this regression; corrected fixtures pass. A separate real
+metadata-resolution control confirms recreated-target recovery still refuses an
+explicit lexical parent alias even when it resolves to the same physical target.
+Existing foreign-owner, stale-artifact, source-change, CAS and lock controls stay
+intact. Combined exact-source tooling qualification is recorded in PR505/Pulse;
+no global TMPDIR override or production safety change is used.
+
+## borrowed sampler source binding — pulse2923 / PR509
+
+The existing sampler kernel now prepares scalar voices against exact borrowed
+mono/stereo resource identities. Voices do not capture PCM owners or slice-marker
+storage; missing or changed resources cannot retarget an existing voice. Existing
+stereo, pitch, reverse, loop, envelope and checked lifetime behavior is preserved.
+Five source-binding/PCM fixtures supplement the original sampler regressions.
+Required exact-candidate results and the before/after standalone release profile
+are recorded with PR509 and Pulse2923. Native resource admission, registration,
+loading, app playback and optimized delivery remain open under2783/2789; this
+kernel increment does not complete the playable sampler MVP.
+
+## bounded resize-modifier fixture — pulse2924 / PR510
+
+The stationary snap/Shift-stretch gesture fixture uses the supported 8 kHz
+project/source rate with the same two-second source and placement. It still
+submits the actual Beats stretch and waits for its terminal worker completion,
+with unchanged five-second deadline and behavioral assertions. Other resize
+fixtures retain their 48 kHz default. No production UI or DSP behavior changes.
+The two original full-audit deadline failures and exact repair validation remain
+recorded with PR510/Pulse2924; Sampler PR509 requires fresh qualification after
+this prerequisite merges.
+
+## bounded resize boundary fixture workload — pulse2924 / PR510
+
+The large expansion test keeps its two-second source, timeline geometry and 8x
+cap at a supported 8khz rate, preserving real Beats preparation, release and
+Undo under the same ten-second deadline. Other stretch-limit fixtures remain
+48khz. Read-only sampling identified actual Beats synthesis in the previous
+48khz worker; isolated success alone did not qualify the failed full UI run.
+The separate EQ capacity deadline remains under diagnosis; no production or
+queue-capacity change is included.
+
+## bounded EQ capacity replay fixture — pulse2924 / PR510
+
+The full 32-stream capacity oracle drains real worker edits without forcing a
+whole-window redraw on every poll, then paints the settled result. Actual mouse
+input, overflow refusal, terminal state, all six Undo checks and the five-second
+guard remain. A replay-specific sample showed redundant GPUI drawing dominating
+the polling window while the session worker mostly waited for requests. The
+shared device test pump and production behavior remain unchanged.
+
+## bounded sampler runtime pair — pulse2927 / PR513
+
+The device-only mutable runtime prepares tuned key coefficients on control and
+processes borrowed mono/stereo PCM through the existing Lattice runtime pair.
+The authored root uses A440 12-TET, so absolute project retuning affects root
+playback; slice keys retain region selection. An independent actual-pair PCM
+regression fails with the previous cancelled-retune law and passes with this law.
+Fixed voices/events, caller ceilings, Trigger natural end, Gate release, exact
+source checks and transactional history stay explicit. Owning tests cover actual
+pair PCM, refusal/rollback, tuning/velocity, reset and quiescence. Exact source,
+required core qualification and inspection-only allocation limits are recorded
+with the canonical PR. Host resource admission, registry/loading and all three
+app playback paths remain open; this does not complete the usable sampler MVP.
+
+## app-only Python self-test impact — pulse2926 / PR512
+
+Ordinary UI-only or core-only Rust merge inputs retain eight explicit shared
+invariants and the cheap selection-policy tests. All tooling/configuration,
+Python-test, unknown or mixed changes and explicit full/release audits retain
+comprehensive discovery. Rust features/configurations, guards and target custody
+are unchanged. Actual selected IDs, excluded groups and reasons participate in
+the hashed plan; missing/zero/all-skipped requested tests still refuse. The
+shared subset is measured separately without Cargo; exact full-policy bootstrap
+evidence and limits are recorded with the canonical PR. Sampler PR513 remains
+held and its interrupted report is not requalified by this tooling change.
+The delivery receiver also compares the freshly resolved full-audit commands,
+preventing a core/shared-Python merge report from becoming native/release
+qualification. A consumer regression proved refusal before pending/build; full
+and explicit-development positives remain covered.
+
+## retained stereo source scopes — pulse2929 / PR514
+
+A bounded extraction from preserved PR389 verifies original stereo PCM facts and
+maps authored slots within each prepared configuration to the existing sealed
+input bank. Content hashes do not replace bank/token identity or grant leases.
+Cancellation, frame-work and actual metadata reservations refuse without bank
+mutation. Same-slot configurations retain their own actual source selection.
+The actual-bank analytic/effect/mutable borrow probe requires supported native
+construction and zero total/net allocation and free; synthetic coverage remains.
+Exact source/check evidence is retained with the focused PR. Mono native ingress,
+retained graph/context owners, union accounting and all host publication/export
+retirement remain under2783. Loading/registration and actual musical playback
+remain2789/2902/2903; no usable-sampler or native deadline acceptance is claimed.
+
+## original-rate decoded source ingress — pulse2930 / PR515
+
+The existing normalized-stereo WAV producer can consume original decoded Audio
+into native source custody while moving the same PCM Vec. Refusal returns the
+original owner/path/metadata; bank construction remains separately bounded.
+Real mono/stereo file tests connect this producer to the sealed bank, exact scope
+and actual sampler PCM, retaining a separate project-rate derivative as a negative
+discriminator. Native mono storage is not a prerequisite for this truthful path.
+Host current/outgoing/checkpoint/export union and deferred retirement remain open;
+no native admission, app loading or optimized delivery is established here.
+
+## loaded sampler state to actual runtime — pulse2961 / PR545
+
+A strict current NativeDeviceState codec now carries loaded musical settings and
+one exact source-slot binding. Its production control preparer validates the
+actual resource and supplies the existing scalar sampler runtime. Codec refusal,
+authored settings/absolute-tuning PCM and real WAV -> state -> sampler tests cover
+the boundary. Generic registry/native publication and browser admission stay
+closed. Prepared-project/export ownership and worker final destruction remain
+the next functional integration; this is not a playable-app completion claim.

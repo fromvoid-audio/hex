@@ -425,6 +425,25 @@ impl SessionPlayback {
         }
         Self::new(revision).map_err(|_| crate::AudioStorageError::UnsupportedGraph)
     }
+    pub(crate) fn new_current_sampler_candidate(
+        revision: Arc<PreparedRevision>,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+    ) -> Result<Self, crate::AudioStorageError> {
+        if revision.resource_scope != Some(sources.metadata.id) {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        let allowance = Self::linear_export_runtime_allowance(&revision)
+            .map_err(|_| crate::AudioStorageError::ReservationExceeded)?;
+        let playback = Self::new_with_policy_scoped(revision, false)
+            .map_err(|_| crate::AudioStorageError::UnsupportedGraph)?;
+        if playback
+            .accounted_runtime_storage_bytes()
+            .is_none_or(|n| n > allowance)
+        {
+            return Err(crate::AudioStorageError::ReservationExceeded);
+        }
+        Ok(playback)
+    }
     pub(crate) fn validate_candidate_runtime_storage(
         &self,
         metadata: usize,
@@ -570,6 +589,19 @@ impl SessionPlayback {
             visit(1, index, owner.is_some())?;
         }
         for (index, owner) in mutable_instruments.iter().enumerate() {
+            if let Some(owner) = owner {
+                if self.revision.resource_scope.is_none()
+                    || !owner.is_concrete_current_sampler()
+                    || self
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .get(index)
+                        .is_none_or(|t| t.instrument_id != owner.expression_identity)
+                {
+                    return Err(crate::AudioStorageError::UnsupportedGraph);
+                }
+            }
             visit(2, index, owner.is_some())?;
         }
         for (index, owner) in tail_mutable_instruments.iter().enumerate() {
@@ -856,7 +888,62 @@ impl SessionPlayback {
         Self::new_with_policy(revision, true)
     }
 
+    /// Private-control export capability: the graph contains only scalar sampler
+    /// coefficients. Every block must borrow this exact sealed source sidecar.
+    pub fn new_control_sampler_export(
+        revision: Arc<PreparedRevision>,
+        sources: &crate::native_device_resources::ControlSamplerSources,
+    ) -> Result<Self, SessionPlaybackError> {
+        if revision.resource_scope != Some(sources.id()) {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler export source scope differs",
+            ));
+        }
+        let allowance = Self::control_sampler_export_runtime_allowance(&revision, sources)?;
+        let playback = Self::new_with_policy_scoped(revision, true)?;
+        if playback
+            .accounted_runtime_storage_bytes()
+            .is_none_or(|n| n > allowance)
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler export runtime exceeds its checked allowance",
+            ));
+        }
+        Ok(playback)
+    }
+    pub fn control_sampler_export_runtime_allowance(
+        revision: &PreparedRevision,
+        sources: &crate::native_device_resources::ControlSamplerSources,
+    ) -> Result<usize, SessionPlaybackError> {
+        if revision.resource_scope != Some(sources.id()) {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler export source scope differs",
+            ));
+        }
+        Self::linear_export_runtime_allowance(revision)
+    }
+    pub fn linear_export_runtime_allowance(
+        revision: &PreparedRevision,
+    ) -> Result<usize, SessionPlaybackError> {
+        let bytes = preroll::arrangement_runtime_storage_preflight_bytes(revision)
+            .filter(|n| *n <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+            .ok_or(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler export runtime exceeds its independent runtime limit",
+            ))?;
+        Ok(bytes)
+    }
     fn new_with_policy(
+        revision: Arc<PreparedRevision>,
+        linear_arrangement_export: bool,
+    ) -> Result<Self, SessionPlaybackError> {
+        if revision.requires_control_sampler_sources() {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler requires private offline export resources",
+            ));
+        }
+        Self::new_with_policy_scoped(revision, linear_arrangement_export)
+    }
+    fn new_with_policy_scoped(
         revision: Arc<PreparedRevision>,
         linear_arrangement_export: bool,
     ) -> Result<Self, SessionPlaybackError> {

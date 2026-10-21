@@ -174,12 +174,43 @@ pub(crate) fn fresh_source_epoch() -> Result<u64, SessionError> {
 }
 pub(crate) struct MediaBank {
     pub(crate) epoch: u64,
+    pub(crate) device_only: std::collections::BTreeSet<AssetId>,
     pub(crate) resident: BTreeMap<AssetId, Audio>,
     pub(crate) verified: BTreeMap<AssetId, VerifiedAudioFile>,
 }
 impl MediaBank {
+    pub(crate) fn validate_clip_sources(
+        &self,
+        project: &Project,
+    ) -> Result<(), hex_engine::Invalid> {
+        for track in project.tracks() {
+            if track
+                .clips()
+                .iter()
+                .any(|clip| self.device_only.contains(&clip.asset()))
+            {
+                return Err(hex_engine::Invalid(
+                    "device-only source needs an accounted clip derivative",
+                ));
+            }
+        }
+        for cell in project.session_cells() {
+            if let hex_project::SessionCellContent::Audio(clip) = cell.content()
+                && self.device_only.contains(&clip.asset())
+            {
+                return Err(hex_engine::Invalid(
+                    "device-only source needs an accounted clip derivative",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn contains_key(&self, id: &AssetId) -> bool {
-        self.resident.contains_key(id) || self.verified.contains_key(id)
+        // Namespace membership is distinct from playable clip availability.
+        self.resident.contains_key(id)
+            || self.verified.contains_key(id)
+            || self.device_only.contains(id)
     }
     pub(crate) fn insert(&mut self, id: AssetId, audio: Audio) -> Option<Audio> {
         self.resident.insert(id, audio)
@@ -190,6 +221,7 @@ impl MediaBank {
         table: Arc<hex_engine::SineTable>,
         previous: Option<&PreparedSessionInventory>,
     ) -> Result<PreparedRevision, hex_engine::Invalid> {
+        self.validate_clip_sources(project)?;
         if self.verified.is_empty() {
             return PreparedRevision::prepare(project, &self.resident, table, previous);
         }

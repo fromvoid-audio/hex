@@ -29,6 +29,7 @@ impl SessionPlayback {
                     offset,
                     observer,
                     capture,
+                    None,
                 )?;
                 self.compensation
                     .as_ref()

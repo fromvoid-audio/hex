@@ -239,7 +239,67 @@ pub(crate) fn compile_instrument_track(
     mutable_limits: Option<MutableInstrumentLimits>,
     shared_context: Option<(u16, &crate::shared_analytic::SharedContextOwner)>,
     shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    previews: Option<&mut Vec<crate::MidiClipPreview>>,
+) -> Result<Option<crate::InstrumentTrack>, Invalid> {
+    compile_instrument_track_with_empty_bank(
+        project,
+        track,
+        instrument,
+        mutable_limits,
+        shared_context,
+        shared_contexts,
+        previews,
+        crate::midi_note_bank::PreparedMidiNoteBank::empty,
+    )
+}
+
+#[cfg(test)]
+thread_local! { pub(crate) static CURRENT_SAMPLER_COMPILER_ENTRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+/// The actual native constructor owns the bank declaration at allocation birth.
+/// Reuse the same validated occurrence compiler; no alternate MIDI scheduler.
+pub(crate) fn compile_current_sampler_track(
+    project: &Project,
+    track: &Track,
+    prepared: &hex_devices::sampler::PreparedSamplerRuntime,
+    contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
+    declaration: &mut Option<crate::owned_shared::SharedDeclaration>,
+) -> Result<Option<crate::InstrumentTrack>, Invalid> {
+    #[cfg(test)]
+    CURRENT_SAMPLER_COMPILER_ENTRIES.with(|n| n.set(n.get() + 1));
+    if declaration.is_some() {
+        return Err(Invalid("native midi bank destination is occupied"));
+    }
+    let limits = MutableInstrumentLimits::from_factory(prepared)?;
+    let instrument = crate::native_device_resources::PreparedControlSampler(prepared.clone());
+    compile_instrument_track_with_empty_bank(
+        project,
+        track,
+        Some(&instrument),
+        Some(limits),
+        None,
+        contexts,
+        None,
+        || {
+            let bank = crate::owned_shared::OwnedShared::new_owned(
+                crate::midi_note_bank::PreparedMidiNoteBank::empty_value(),
+            );
+            let (bank, paired) = bank.into_paired_parts_on_control();
+            *declaration = Some(paired);
+            bank
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn compile_instrument_track_with_empty_bank(
+    project: &Project,
+    track: &Track,
+    instrument: Option<&dyn PreparedNativeInstrument>,
+    mutable_limits: Option<MutableInstrumentLimits>,
+    shared_context: Option<(u16, &crate::shared_analytic::SharedContextOwner)>,
+    shared_contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
     mut previews: Option<&mut Vec<crate::MidiClipPreview>>,
+    empty_bank: impl FnOnce() -> Arc<crate::midi_note_bank::PreparedMidiNoteBank>,
 ) -> Result<Option<crate::InstrumentTrack>, Invalid> {
     // MIDI clip timing and editor previews are project data even when the
     // selected instrument is absent or bypassed; only note sampling is silent.
@@ -419,7 +479,7 @@ pub(crate) fn compile_instrument_track(
         nodes,
         root,
         timeline_end,
-        bank: bank.unwrap_or_else(crate::midi_note_bank::PreparedMidiNoteBank::empty),
+        bank: bank.unwrap_or_else(empty_bank),
         shared_contexts,
         mutable,
     }))

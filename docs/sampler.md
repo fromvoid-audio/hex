@@ -3,18 +3,51 @@
 Requested 17 October 2026: a native equivalent of Ableton Live **Simpler**, named
 **sampler** in Hex. This does not target the separate Ableton Sampler instrument.
 Pulse2679 owns the full request; [PR296](https://github.com/PORTALSURFER/hex/pull/296)
-contains the first original playback-kernel prerequisite. Sampler is **not yet
-registered, selectable or usable as a device in Hex**. No reference parity or
-native interaction/listening acceptance is claimed.
+contains the first original playback-kernel prerequisite. A bounded first-load
+browser action now fills an empty instrument slot with a canonical sampler and
+supports frame-zero Arrangement playback/Stop and offline Main export. Sampler
+is not registered in the general device catalog; controls, replacement, live
+keyboard, save/reopen and history remain unavailable. No reference parity or
+physical native interaction/listening acceptance is claimed.
 
 ## current source boundary
 
-`hex-devices::sampler` accepts borrowed, validated finite stereo PCM at its
-original rate. Construction happens on control; no decoding, paths, asset IDs,
-project edits, queues, shared-owner clones or resource destruction occur in the
-kernel. `Sample` validation scans PCM once. Preparing another voice does not
-scan or copy the sample. The caller must keep PCM and slice-marker storage alive
-for all borrowed configurations/voices; Rust enforces these lifetimes.
+`hex-devices::sampler` separates scalar source-coordinate preparation from
+borrowed original-rate Mono/Stereo PCM queries. The original `Sample`/`Voice`
+stereo API delegates to that same law. `SampleShape` describes bounded DSP facts;
+it never establishes physical storage, provenance or a source lease.
+
+`PreparedSamplerPlan::bind_source_on_control` checks the actual borrowed view's
+shape/rate and finite PCM once. Its prepared voices carry only copyable scalar
+coefficients, slot and full content/derivation identity; slice marker storage may
+be released after voice preparation. Rendering borrows the retained host
+configuration and refuses missing/replaced identities, rates or layouts with
+silence. There is no per-note PCM scan/copy, owning source handle, forged static
+borrow or second cache. The host must still prove complete admission/custody and
+retain the exact source configuration for current, carried and outgoing voices.
+This adapter boundary does not register the device or open resource processing.
+
+The original stereo adapter retains its control-validated immutable `Sample`
+contract. Its shared interpolation specialization avoids checking those same
+finite samples again per frame; raw borrowed-PCM queries still check the queried
+endpoints and emit silence for nonfinite values. Both paths use the same source
+coordinate, envelope and interpolation implementation.
+
+Pulse2923 / PR509 compares the existing optimized `profile_sampler` fixture on
+macOS arm64, Apple M5 Pro:48kHz,128-frame blocks,100 warmup blocks and2,000 timed
+blocks per row, using `Instant` with allocation and voice preparation outside
+timing. Source before extraction is91a4883a (same kernel as main0e425030).
+The first generalized query was slower; that result is retained separately.
+
+| Voices | Before p50 µs | Final p50 µs |
+| --- | ---: | ---: |
+| 1 | 1.417 | 0.792 |
+| 16 | 16.875 | 12.375 |
+| 32 | 41.667 | 26.708 |
+
+All three output checksums match. Raw p95/p99/max values and the exact final
+source are retained with the PR. These single-run timings include uncontrolled
+machine load; they establish no native callback deadline or matched Live result.
 
 The kernel implements these original laws, pending reference measurement:
 
@@ -30,7 +63,7 @@ The kernel implements these original laws, pending reference measurement:
 | Envelope | Original linear attack/decay/sustain/release, rounded output-frame durations; release starts from the level at note-off, including during attack/decay. Default is immediate unity with immediate release. Trigger ignores note-off but retains the authored attack/decay/sustain. |
 | Level | Linear gain0–4; velocity depth0–1; original linear stereo balance−1–1 preserving both channels at center. Finite f64 interpolation/gain avoids intermediate f32 overflow. Values beyond finite f32 saturate only at its representation boundary. No normal-range clipping or normalization. |
 | Rendering | Arbitrary age queries or caller-owned block fills; no mutable cursor or block-size-dependent result. Overflowed block ages emit silence rather than wrapping. |
-| Lifetime | A nonlooping voice reports its natural output-frame length; a looping voice reports no natural end. Gate release and Trigger natural-end retention must be handled separately by the future host adapter. |
+| Lifetime | A nonlooping voice reports its natural output-frame length; a looping voice reports no natural end. Gate release and Trigger natural-end retention are handled separately by the runtime below; actual host custody remains required. |
 
 Kernel limits: 8–192kHz input/output; 16,777,216 source frames maximum
 (128MiB stereo f32); seven-bit MIDI; at most128 nonempty slices fitting above
@@ -60,6 +93,40 @@ Loop release, Trigger slices after short notes, irregular partitions and u64
 boundary refusal are covered. Strict device all-target Clippy passes. Final
 exact-source full CI remains required; these are kernel tests, not host callback
 or native/listening evidence.
+
+## bounded event-driven runtime prerequisite
+
+`BoundSamplerPlan::prepare_runtime_on_control` prepares all 128 key coefficients
+against project tuning and the exact borrowed source identity. Classic and
+One-Shot interpret the authored root note in A440 12-TET and divide each absolute
+project note frequency by that fixed root frequency. Uniform project retuning
+therefore changes root playback too; it is not cancelled by a tuned denominator.
+Authored transpose/detune and source/output-rate conversion still apply. This is
+an original contract, without a measured Live parity claim. Slice keys retain
+their region-selection law and ignore project pitch retuning.
+`PreparedSamplerRuntime` implements the existing Lattice mutable-instrument factory: at most 32 fixed voice slots and 1,024 events
+per block, further restricted by the caller's voice/event/byte/tail ceilings.
+The prepared factory and its two runtime twins retain scalar data only, without
+owning PCM or marker storage. Fixed buffering latency is zero.
+
+Actual NoteOn/NoteOff processing uses occurrence identity, output-frame event
+ordering, the existing velocity law and Gate release. Trigger voices survive
+note-off until natural source exhaustion. Event preflight simulates capacity and
+lifetime changes in fixed scratch data before output or history changes; the
+ordinary runtime pair supplies speculative commit/rollback. Reset clears both
+histories, and exact compatible scalar configurations may copy active history.
+Changed source identity refuses before rendering, preserving the prior state.
+Valid expression events are currently ignored; modulation is not implemented.
+
+Owning tests process original mono/stereo PCM through the actual
+`NativeInstrumentRuntimePair`, including short-note Trigger retirement,
+partitions, capacity refusal/rollback, source/slice refusal, absolute and
+nonuniform tuning, velocity, gated release, reset/quiescence and caller-budget
+refusal. Allocation-free
+processing is checked by source inspection of fixed arrays and borrowed views;
+this is not an instrumented callback or physical deadline result. No new native
+audio allocation fixture, host publication, registration or UI is added here.
+The existing standalone kernel profile above does not measure this runtime pair.
 
 ## host integration contract still required
 
@@ -148,3 +215,332 @@ installed-build/hash check or reference experiment was possible. The existing
 documented reference is Live12.4.6; recheck its build/hash before taking captures.
 Record source settings, original fixture hashes, exact actions, numerical
 tolerances and per-feature results using the repository research template.
+
+## loaded authored state and control preparation — pulse2961 / PR545
+
+`sampler::state::SamplerState` encodes current finite musical settings in
+`NativeDeviceState` under `hex.instrument.sampler`, current state version1.
+It contains no PCM or file path. The existing Classic/One-Shot/Slice, region,
+loop/reverse, pitch/gain/balance/velocity and amplitude-envelope laws are retained;
+no new DSP is added. Strict decode refuses unsupported versions, malformed or
+truncated payloads, reserved fields, nonfinite/out-of-domain values and invalid
+source-slot declarations. This is the current alpha format, without historical
+readers or conversion. Replacing settings preserves actual host gains and the
+same asset-reference storage; source replacement remains a separate host edit.
+
+`prepare_runtime_on_control` is the production state-to-runtime boundary for the
+next prepared-project/export compiler. It requires one actual source in slot1,
+resolves its exact asset identity, validates actual source shape/rate and authored
+bounds, then prepares scalar coefficients against the effective project tuning.
+Unbound settings may be assembled on control but cannot prepare a loaded runtime.
+The generic registry's asset-free admission rule remains unchanged; no builtin,
+browser or native publication registration is added.
+
+Owning tests cover payload roundtrips/refusals, actual decoded-state PCM, source
+refusals and authored gain/pitch/region plus absolute project tuning in a real
+runtime pair. The real mono/stereo WAV producer fixture now passes through this
+canonical state and control preparer before its literal PCM oracle. Marker and
+state storage can retire after control preparation; actual source ownership must
+still survive processing. These checks do not complete host/export custody,
+project-to-WAV export, controls, app playback or optimized delivery.
+
+
+## unassigned native source worker admission — pulse2962 / PR546
+
+`Service::with_native_reservation` opts its initial resident Session into an
+explicit `ResidentNativeReservation`: ledger data/handle/root rows, retained
+bytes, construction bytes and maximum frames per finite PCM scan/hash pass.
+Existing constructors remain opt-out; `Request::ImportDeviceAsset` then refuses
+visibly. The request runs the existing bounded WAV decoder and consumes its
+original-rate normalized stereo PCM through the PR515 constructor bridge. It
+returns the actual `Created::Asset` without inserting a track or clip.
+
+One canonical asset namespace has two mutually exclusive custody arms: the
+ordinary clip media map and `ResidentDeviceAssets`, a bounded Vec of asset IDs
+and boxed sealed input-bank/catalog roots. No original PCM is copied, resampled,
+aliased into the clip map or exposed through an owning clone. Mono files use the
+existing explicit stereo normalization. Source rate, frames and path remain
+original. `ImportDeviceAsset` stores checked expected conversion metadata, not
+a materialized clip derivative; `AddAsset` still requires project-rate PCM.
+Arrangement and Session clip resolution visibly refuses device-only IDs until
+an accounted derivative path exists. Undo can leave source custody retained,
+just like ordinary clip media, within the same finite limits.
+
+The reservation domain starts with owned decoded source admission. Actual PCM
+Vec capacity, constructor-paired wrapper, native bank/source/obligation metadata,
+catalog backing, boxed root payloads, destination Vec and ledger capacities are
+inventoried together; old destination backing overlaps new backing only in the
+construction charge. The source Vec moves through bank preparation; its
+allocation/obligation/catalog buffers remain in the final root, without temporary
+owning clones. Legacy resident PCM uses its existing unique-capacity accounting
+as an explicit allowance in this same check; it gains no native provenance.
+Ordinary imports, including batches, check the combined frame and byte limits.
+Repeated borrowing does not create a handle; separately decoded equal-content
+files remain separately charged. Allocator-private overhead, stack workspaces,
+ordinary project/history/waveform/view preparation (including the transient
+nonowning ID set), encoded file buffers and decoder scratch/pre-admission decode
+peak are outside this inventory. Existing independent file/decode limits remain.
+This is an admission inventory, not a total process/RSS or lifetime proof.
+
+Staging preserves the old vector/canonical state on refusal. The Editor's
+candidate closure prepares native custody and ordinary playback, then checks
+cancellation before fixed source moves and the infallible canonical history
+commit. No callback owner is published. File decode, staging failure drops and
+Session teardown remain on the `hex-session` control worker by ownership and
+control-flow inspection; these checks do not instrument arbitrary destructors.
+At PR546, New/Open kept their existing constructor policy. PR547 below extends
+the explicit service reservation across replacement, without native source reopen.
+
+Focused tests cover the real worker result, literal decoded PCM/Vec identity,
+source metadata at a different project rate, exact/one-byte-under retained and
+construction limits, rows/work/frames, independent equal-content sources,
+pre-cancel and staged callback refusal, ID exhaustion, ordinary import limits
+and explicit clip refusal. Next: canonical sampler assignment through normal
+PreparedRevision and the actual export worker with an independent WAV PCM oracle,
+extending this same reservation through captured export and Session custody.
+Native publication/checkpoints, app playback, native controls/history/reopen,
+full native qualification and optimized delivery remain outstanding.
+
+
+## private canonical assignment and offline export — pulse2963 / PR547
+
+`Service::with_native_reservation` now accepts `AssignSampler { track, asset }`
+for an admitted original-rate source. It creates or replaces canonical loaded
+sampler state and compiles a normal `PreparedRevision`. Its sampler factories
+contain scalar configuration only. A private service sidecar owns the exact
+constructor-paired source bank, catalog and per-device scope. Configuration,
+rate, effective tuning, source references and host gains must match that scope;
+the generic lattice registry remains asset-free.
+
+The existing export worker and `SessionPlayback` render frame-zero Main through
+that borrowed scope into the ordinary controlled WAV publication path. No second
+sampler scheduler or DSP renderer is introduced. Public Session preparation
+callbacks, canonical audio sources and `Event.playback` do not receive this
+source-bearing snapshot. Generic runtime constructors, native storage admission,
+mutable checkpoints and nonzero seeks refuse the private-source class. The
+service reports offline export support and unavailable native playback. History,
+save/reopen reconstruction, preview, recording and runtime gestures still refuse.
+CapturedMix/stems and nonzero-range export remain unsupported for this slice.
+
+The explicit resident reservation is a service capability carried into New/Open
+before admitted construction. Streaming documents refuse sampler operations.
+Opening loaded sampler metadata refuses before ordinary media decoding; it does
+not silently turn the original source into a clip derivative. A captured old
+export remains independent of the replacement document.
+
+Admission visits the actual union of current/staged native stores, sidecars,
+scalar factories, current and captured-export legacy PCM and the existing checked
+runtime construction allowance. Shared native DATA is charged once while each
+physical source wrapper/handle is charged separately. A sealed non-cloneable
+outbound obligation accompanies exactly one fresh job capture. Before dispatch,
+inspection visits the actual job owner; after dispatch, it visits the retained
+anchor and charges the absent job field using its constructor-paired identity.
+Actual owner plus token, duplicate token and wrong snapshot/job bindings refuse.
+The token does not traverse or clone source DATA. It and its fixed lane container
+stay charged until matching post-drop terminal or confirmed worker join; a
+changed Arc count, cancellation, UI poll, disconnected notification or timeout
+cannot discharge it. Generic ledger handle checks are unchanged.
+
+Private completion follows destruction of the actual renderer/runtime/job source.
+The Session worker drains it while idle, before admissions and during public-event
+backpressure. Failed queue transfer destroys the returned job before the anchor.
+Service Drop sets shutdown and remains nonjoining; the control worker closes the
+export input and joins the exporter while retaining its anchor. UI-result
+backpressure observes shutdown so it cannot deadlock that join.
+
+This domain starts at decoded-source admission. Original encoded buffers, decoder
+scratch/pre-admission decode peak, ordinary project/history/view/waveform and nonowning selection
+bookkeeping, allocator-private overhead, stack and total process RSS remain
+outside it. The existing mutable runtime/preroll 32MiB limit is independent and
+unchanged; immutable source PCM does not inflate that private-state limit.
+
+Focused evidence includes real mono and stereo 8kHz source import into a 16kHz
+project, canonical assignment and literal half-step PCM16 WAV comparison;
+actual scope survival and no public graph source ownership; token conservation
+and duplicate/foreign refusal; exact/one-byte-under retained and construction
+limits; failed queue transfer; a held export across New, ordinary media Open and
+new source assignment; cancellation and create-new file failure followed by a
+successful export. A feature-only final-field observer retains no source owner
+or weak alias and confirms source bank/catalog teardown on the control thread,
+without UI export polling, including prompt Service Drop during blocked export.
+These are headless control/export checks, not native UI, device deadlines,
+listening, full release qualification or optimized delivery. Exact required
+merge-run evidence belongs to the canonical PR receipt.
+
+
+Ordinary track/clip/Session import, whole prepared batches and MIDI bounce also
+check the actual staged original/derivative PCM against current plus captured
+export custody before their existing atomic commit. No reservation ceilings are
+mutated and no summary totals are subtracted. Legacy dedup borrows an iterator;
+it creates no owning PCM handle or temporary dedup heap buffer. The regression
+reproduces a 4-frame captured export plus a 4-frame original and 8-frame
+converted import incorrectly fitting a 15-frame ceiling. Exact/one-under track,
+clip and whole-batch cases now preserve canonical/media/history state on refusal.
+
+
+Private sampler Edit uses the same media-creation guard as public Session Edit.
+AddAsset, ImportDeviceAsset and ordinary prepared-media/conversion commands
+require their real prepared import/bounce transaction; metadata-only Edit cannot
+invent unverified source custody. The owning regression records both AddAsset
+and ImportDeviceAsset accepting nonexistent files before the fix and refusing
+after it, with identical project/history/revision and independently checked
+subsequent sampler export PCM.
+
+## fresh native arrangement current — pulse2964 / PR548
+
+The desktop's explicit resident reservation now supports canonical sampler
+Arrangement playback from frame zero, Stop/reset and replay. A synchronous
+Session-worker borrow supplies the exact original PCM and canonical source
+context to `NativeAudioSink`; the sink copies original-rate frames into a
+persistent, never-published constructor cell. No path reread, resampling or
+source-bearing Event is involved. The public canonical snapshot carries only
+its existing legacy bindings and exact context; its public quote/constructor
+continues to refuse sampler preparation.
+
+This is one closed constructor class: finite Arrangement MIDI, resident source
+assets, loaded sampler instruments and the existing Utility-only effect chain.
+Project and MIDI-source loops, Session MIDI/launches, routing/return devices,
+mutable handoff, tails, checkpoints, live expression, preview and nonzero seeks
+remain closed. Source/configuration/topology edits refuse before canonical
+commit while this limited native owner is active. New/Open explicitly retires
+it; history and loaded-project reconstruction remain separate work.
+
+Construction regenerates the catalog, device scope and authored tuning against
+the newly copied bank. The actual `SessionPlayback`, sampler runtime twins,
+finite event backings and bank handles participate in the existing constructor
+inventory and storage seal. The resource facade borrows the same bank into the
+existing `process_segment_with_resources` path. It introduces no second sampler
+scheduler, callback source lookup, preparation or owner clone.
+
+Preflight and sealing happen before disturbing the old output. A targeted UI
+message relinquishes only the matching old Client. Successful acquisition of
+an exclusive fresh output lease proves old output retirement. The intact cell
+then moves into a virgin publication reservation; exact generation, editor
+revision, rate, source capacity and actual storage checks precede the move.
+The engine root, runtime addresses, bank and scope survive it. Destination
+staging reseals actual storage before the new Client becomes visible. A cleared
+Option, UI acknowledgement or Stop is never a source-release proof. Stale and
+failed unpublished cells are cleaned on control; an incomplete cleanup remains
+in bounded quarantine and blocks another preflight rather than being dropped
+or retried by a destructor.
+
+The desktop derives its finite resident policy from supported constructor
+cardinalities and a pure quote of the actual fixed native publication/control
+backings. That quote is neither the configured DATA ceiling nor an RSS claim;
+fresh construction checks its actual backing against the quote. Admission adds
+native current/preflight/retiring/control holds to the same Session/export
+union. Original and copied PCM share the unchanged 8,000,000-frame ceiling;
+immutable metadata does not raise the independent 32MiB mutable-runtime limit.
+Retained and construction-peak bounds remain distinct. Holds survive until
+actual cleanup or a fresh exclusive lease proves teardown. Capacity changes
+request a fresh synchronous borrow and full admission, without granting space.
+
+Headless owning checks exercise real Service WAV import and assignment through
+the desktop adapter and eligible CURRENT: mono/stereo 8kHz originals in a 16kHz
+project, A440/A880 targets, literal PCM, note gate, Stop and identical replay.
+The fixture removes its source file before assignment. A concurrent independent
+export checks literal PCM without changing the native clock. Callback probes
+cover install, rendering, gate, Stop and replay with zero total and signed-net
+allocations/frees. Additional cases cover insufficient shared frame capacity
+without old-output disturbance, New during drain, failed fresh output and
+new-context recovery, wrong context/rate/capacity/DATA adoption refusal, and
+control cleanup. A protocol regression checks lost Submitted metadata and
+stale targeted Client-release messages; it is not native input evidence.
+
+These are source/headless checks. Native UI interaction, listening, physical
+device deadlines, optimized application delivery, sampler controls, general
+editing/history and save/reopen remain unverified or unsupported. The exact
+required merge-plan receipt belongs to the canonical PR, independently of this
+description.
+
+Final-review boundary checks also cover the ordinary graph already playing
+before sampler preparation. Resident forwarding records actual graph PCM
+capacities under its existing finite request-slot mutex. Suspending that same
+slot and reading its obligations is atomic with respect to another forwarding
+request; transport and priority Stop remain independent. Admission refreshes the
+native hold after suspension rather than trusting an earlier worker sample.
+Accepted current, queued and returned graphs stay charged until actual control
+owner destruction. Refused owning responses conservatively keep their charge
+through Root teardown, including after response collection. Verified constructor
+resident copies carry their preparation/submission capacity hold through actual
+return recovery; cancelled or failed preparation residuals conservatively stay charged until teardown.
+Shared PCM across separate publications may be conservatively charged more than
+once. These are selected PCM/construction roles, not total process RSS or an
+inventory of arbitrary external legacy graphs.
+
+New/Open cancels an old sampler context before requesting or polling another
+output. A new ordinary output therefore receives its ordinary control/runtime
+hold even if opening completes before the next private sampler input. Failed
+cleanup retains custody and prevents another open. An already admitted canonical
+offline assignment survives native budget/preparation/device-open refusal, with
+truthful unavailable/refused audio status. This does not roll back the user's
+edit. Canonical import/source admission remains atomic, and active limited native
+replacement still refuses before canonical commit.
+
+Native MIDI compilation now starts after the other fixed constructor backings
+exist. Before compiler entry, admission checks their actual simultaneous bytes,
+all tracks' finite final MIDI bound and conservative temporary clip-count,
+note-key growth (including old/new allocation overlap), stable-sort, onset and
+density-edge workspace. Retained and construction limits
+are checked separately; the historical workspace overlap remains in the storage
+seal after temporaries are freed. The pinned Rust1.94 driftsort quote includes its 48-element scratch minimum
+above the 20-element insertion path, using max(N,48) element slots; this scratch
+does not overlap density sorting, and the quote safely sums phase bounds. Empty MIDI clips still reserve clip-count workspace. Owning exact
+and one-under tests cover empty-clip and 3/21/256 nonoverlapping-note fixtures and observe
+that a refused compiler was never entered. Removing each of the three review
+repairs reproduces its focused failure; raw RED/GREEN evidence is retained with
+PR548's local artifacts. The interrupted earlier audit is not merge evidence.
+
+
+## first browser load — pulse2965 / PR549
+
+With a resident document, select a track containing authored Arrangement MIDI
+notes and an empty instrument slot. Right-click a WAV row and choose `load into
+sampler`. The intent captures the original path, track, project generation and
+revision. Later selection/focus changes do not retarget the load or get reversed
+by its completion. A pending row menu offers `cancel sampler load`; cancellation
+is cooperative before canonical commit. A late cancellation cannot pretend to
+roll back an already committed assignment. Missing/corrupt/oversize media,
+stale targets, occupied slots and the unchanged resident/source limits refuse
+without an asset orphan or another history commit.
+
+One Session worker request stages original-rate PCM and prepares one neutral
+Project command that creates the asset, sampler state and binding in one Editor
+transition. The candidate sidecar borrows the actual staged source before commit;
+no UI import-then-assign sequence or public PCM owner is introduced. Canonical
+commit and native preparation are separate: output failure retains the valid
+assignment for offline export and reports unavailable audio. Active sampler
+replacement remains refused by the existing native owner guard.
+
+The panel displays canonical sample identity and read-only readiness/limitations.
+Frame-zero UI Play requires callback-confirmed source context, canonical revision,
+project generation and output identity. There is no public seek candidate for
+private sampler CURRENT. Nonzero seek, Pause, Session launch, live keyboard,
+active edits, history and save/reopen remain explicit unsupported operations.
+Stop resets the existing native runtime; Play then starts from frame zero again.
+Existing browser Enter and drag import behavior is unchanged.
+
+Owning checks cover the one-commit/Undo project boundary, staged preparation
+refusal/late cancellation with actual source custody, real worker mono/stereo
+mismatched-rate file export, duplicate/stale/invalid requests, correlated UI
+cancellation and actual rendered right-click/menu -> real Service -> actual
+native CURRENT -> keyboard Play/Stop/replay literal stereo PCM with zero
+callback total/net allocations in the measured fixture. The headless output-open
+factory is the only substituted native boundary. Feature-only UI startup uses
+private temporary settings/home/discovery roots before any startup I/O. GPUI's
+NoopTextSystem cannot verify bundled font registration; production font startup
+is unchanged. These checks do not establish physical device deadlines, visuals,
+listening or installation. Exact required merge evidence belongs to PR549/Pulse.
+
+Finite future user checklist, after a separately qualified optimized build:
+
+1. Author an Arrangement MIDI note before activation, select its empty instrument
+   slot, then right-click an original WAV and choose `load into sampler`.
+2. Change selected track while loading; confirm the original target owns the
+   sample, its canonical filename is visible, and focus stays where moved.
+3. Play from start, Stop, then Play again; compare both starts and stereo image.
+4. Repeat with a mono WAV and a WAV whose rate differs from the output; export
+   Main and compare playback. Record the exact source/build and device settings.
+5. Check missing/corrupt media, pending cancellation and an occupied slot refuse
+   clearly. Do not use save/reopen, replacement, live keyboard or nonzero seeking
+   as supported workflows yet.

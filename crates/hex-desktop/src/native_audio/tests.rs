@@ -1,6 +1,7 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
+mod sampler;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
 use hex_session::service::{Event, Request};
@@ -16,6 +17,10 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 struct Observation {
+    native_hold: hex_session::service::NativeSamplerReservationHold,
+    blocked: Option<AudioSourceContext>,
+    fresh_before_input: Option<(EditorAudio, Arc<Mutex<Option<HeadlessBackend>>>)>,
+    fresh_before_input_checked: bool,
     latest: Option<(AudioSourceContext, AudioCandidateDomainToken, usize)>,
     command_ready: Option<(AudioSourceContext, u64)>,
     change_source_after_capture: Option<PathBuf>,
@@ -48,7 +53,48 @@ impl WorkerAudioSink for ObservedSink {
             *last ^= 1;
             fs::write(path, bytes).unwrap();
         }
+        let force =
+            if self.inner.desired.as_ref().is_some_and(|s| {
+                s.context().project_generation != source.context().project_generation
+            }) {
+                self.observation.lock().unwrap().fresh_before_input.take()
+            } else {
+                None
+            };
+        if let Some((audio, backend)) = force {
+            drop(audio);
+            backend.lock().unwrap().take();
+            self.inner.canonical_changed(source);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while self.inner.output.is_none() {
+                self.inner.poll_open();
+                assert!(
+                    Instant::now() < deadline,
+                    "fresh output did not complete before input"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(
+                self.inner.sampler.is_none(),
+                "old sampler must cancel before output opening"
+            );
+            assert_eq!(
+                self.inner.output_hold.retained_bytes,
+                self.inner.policy.as_ref().unwrap().legacy_hold_bytes
+            );
+            self.observation.lock().unwrap().fresh_before_input_checked = true;
+            return;
+        }
         self.inner.canonical_changed(source);
+    }
+    fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
+        self.inner.native_sampler_input(input);
+        let mut observation = self.observation.lock().unwrap();
+        observation.native_hold = self.inner.native_sampler_hold();
+        observation.blocked = self.inner.blocked;
+    }
+    fn native_sampler_hold(&self) -> hex_session::service::NativeSamplerReservationHold {
+        self.inner.native_sampler_hold()
     }
     fn restart_audio(&mut self, generation: u64, request: u64) -> Result<(), String> {
         self.inner.restart_audio(generation, request)
@@ -196,7 +242,9 @@ impl Harness {
                     // Same UI ordering: detach old endpoint on canonical
                     // generation change, BEFORE waiting for new Opened.
                     self.audio = None;
-                    self.backend.lock().unwrap().take();
+                    if !self.observation.lock().unwrap().fresh_before_input_checked {
+                        self.backend.lock().unwrap().take();
+                    }
                 }
                 self.context = Some(context);
                 return event;
@@ -319,7 +367,10 @@ impl Drop for Harness {
         // graph/domain destruction run autonomously on existing workers.
         drop(self.service.take());
         self.audio = None;
-        self.backend.lock().unwrap().take();
+        self.backend
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         while let Ok(event) = self.events.try_recv() {
             drop(event);
         }

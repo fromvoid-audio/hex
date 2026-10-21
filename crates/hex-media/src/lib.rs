@@ -8,6 +8,8 @@ use std::{
 };
 
 mod adpcm;
+mod native_source;
+pub use native_source::{NativeDecodedAudio, NativeSourceRefusal};
 mod resample;
 mod resample_kernel;
 mod stream;

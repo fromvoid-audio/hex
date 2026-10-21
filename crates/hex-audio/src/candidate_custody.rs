@@ -219,6 +219,20 @@ fn lock<T>(value: &Mutex<T>) -> MutexGuard<'_, T> {
     value.lock().unwrap_or_else(PoisonError::into_inner)
 }
 impl CandidateRoot {
+    pub(crate) fn actual_control_backing_bytes(&self) -> Option<usize> {
+        self.0.eligible.actual_control_backing_bytes()
+    }
+    pub(crate) fn worker_control_storage_quote(
+        reservation: AudioCandidatePublicationReservation,
+    ) -> Option<usize> {
+        std::mem::size_of::<Inner>()
+            .checked_add(crate::prepared::RETIRED.checked_mul(std::mem::size_of::<Slot>())?)?
+            .checked_add(eligible::pages::signal_data_bytes()?)?
+            .checked_add(crate::prepared::worker_publication_queue_storage_quote()?)?
+            .checked_add(eligible::publication::publication_backing_quote(
+                reservation,
+            )?)
+    }
     pub(crate) fn new(capacity: usize) -> Result<Self, &'static str> {
         let root = NEXT_ROOT
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| n.checked_add(1))
@@ -432,6 +446,45 @@ impl CandidateRoot {
             .0
             .eligible
             .reserve_runtime_preparation(reservation, domains);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn reserve_runtime_adoption(
+        &self,
+        reservation: AudioCandidatePreparationReservation,
+    ) -> Result<AudioCandidatePreparationToken, AudioCandidatePreparationRefusal> {
+        let bank = lock(&self.0.bank);
+        if bank.closing || bank.retiring {
+            return Err(AudioCandidatePreparationRefusal {
+                reason: "candidate Root is closing",
+                domains: Vec::new(),
+            });
+        }
+        drop(bank);
+        let result = self.0.eligible.reserve_runtime_adoption(reservation);
+        crate::lifecycle::request_candidate_cleanup(self);
+        result
+    }
+    pub(crate) fn check_current_sampler_preparation_context(
+        &self,
+        token: AudioCandidatePreparationToken,
+        expected: hex_engine::AudioSourceContext,
+    ) -> Result<(), &'static str> {
+        self.0
+            .eligible
+            .check_current_sampler_preparation_context(token, expected)
+    }
+    pub(crate) fn adopt_runtime_preparation(
+        &self,
+        token: AudioCandidatePreparationToken,
+        context: hex_engine::AudioSourceContext,
+        rate: u32,
+        cell: &mut Option<hex_engine::AudioCandidatePreparation>,
+    ) -> Result<(), &'static str> {
+        let result = self
+            .0
+            .eligible
+            .adopt_runtime_preparation(self, token, context, rate, cell);
         crate::lifecycle::request_candidate_cleanup(self);
         result
     }

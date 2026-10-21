@@ -2615,6 +2615,7 @@ dependencies = [
  "hex-project",
  "hex-session",
  "hex-stream",
+ "hex-tuning",
  "hex-ui",
 ]
 
@@ -2645,6 +2646,7 @@ dependencies = [
  "hex-project",
  "hex-tuning",
  "hex-warp",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -2680,7 +2682,10 @@ version = "0.1.0"
 name = "hex-media"
 version = "0.1.0"
 dependencies = [
+ "hex-devices",
  "hex-engine",
+ "hex-lattice",
+ "hex-lattice-contract",
  "hex-project",
  "sha2 0.10.9",
 ]
