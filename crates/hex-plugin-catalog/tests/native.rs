@@ -232,8 +232,16 @@ fn folder_batch_publishes_known_failures_and_actual_types_then_preserves_restart
     assert!(result.catalog.is_some(), "{}", result.status);
     assert!(
         result.status.contains("2 discovered · 1 failed"),
-        "{}",
-        result.status
+        "{}; records: {:?}",
+        result.status,
+        result
+            .catalog
+            .as_ref()
+            .unwrap()
+            .entries
+            .iter()
+            .map(|e| (&e.path, &e.failure))
+            .collect::<Vec<_>>()
     );
     assert!(result.status.contains("1 linked entries skipped"));
     let bytes = fs::read(f.catalog()).unwrap();
