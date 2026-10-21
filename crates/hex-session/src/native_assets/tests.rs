@@ -68,6 +68,8 @@ fn assert_refused_unchanged(s: &mut Session, fixture: &Fixture, cancel: &AtomicB
     let undo = s.can_undo();
     let redo = s.can_redo();
     let count = s.native_assets.ids().count();
+    let overviews = s.source_overviews();
+    let peak_usage = s.source_overview_usage();
     assert!(
         s.import_device_asset(fixture.decoded(), cancel, None)
             .is_err()
@@ -76,6 +78,8 @@ fn assert_refused_unchanged(s: &mut Session, fixture: &Fixture, cancel: &AtomicB
     assert_eq!(s.can_undo(), undo);
     assert_eq!(s.can_redo(), redo);
     assert_eq!(s.native_assets.ids().count(), count);
+    assert!(s.source_overviews().shares_storage_with(&overviews));
+    assert_eq!(s.source_overview_usage(), peak_usage);
 }
 #[test]
 fn native_asset_import_keeps_original_pcm_capacity_and_rejects_clip_reuse() {
@@ -540,4 +544,39 @@ fn first_sampler_staged_prepare_failure_or_late_cancel_keeps_source_model_and_hi
             pointer
         );
     }
+}
+
+#[test]
+fn peak_budget_and_late_precommit_cancellation_preserve_source_editor_history_and_cache() {
+    let fixture = Fixture::new();
+    let cancel = AtomicBool::new(false);
+    let standard = crate::source_overview::OverviewBudget::standard()
+        .unwrap()
+        .usage();
+    let mut s = session();
+    s.overview_budget =
+        crate::source_overview::OverviewBudget::with_limits(2047, standard.max_metadata_bytes)
+            .unwrap();
+    assert_refused_unchanged(&mut s, &fixture, &cancel);
+    s.overview_budget =
+        crate::source_overview::OverviewBudget::with_limits(4096, standard.max_metadata_bytes)
+            .unwrap();
+    s.import_device_asset(fixture.decoded(), &cancel, None)
+        .unwrap();
+    let before = s.project().snapshot();
+    let history = (s.can_undo(), s.can_redo());
+    let cache = s.source_overviews();
+    let usage = s.source_overview_usage();
+    assert!(
+        s.import_device_asset_with_admission(fixture.decoded(), &cancel, None, || {
+            cancel.store(true, Ordering::Release);
+            Ok(())
+        })
+        .is_err()
+    );
+    assert_eq!(s.project().snapshot(), before);
+    assert_eq!((s.can_undo(), s.can_redo()), history);
+    assert!(s.source_overviews().shares_storage_with(&cache));
+    assert_eq!(s.source_overview_usage(), usage);
+    assert_eq!(s.native_assets.ids().count(), 1);
 }

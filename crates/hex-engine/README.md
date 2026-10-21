@@ -608,3 +608,9 @@ fence; it exposes no source owner, mutable runtime or alternate rendering path.
 Sampler release activity is a narrow control-side query of the authored gate
 mode: Trigger One-Shot/Slice keep their stored release but report it inactive.
 The query never converts a mode or exposes PCM/runtime ownership.
+
+The staged native asset view can borrow its exact original source for synchronous
+control-side peak summaries. This lifetime-bound borrow exposes no bank/source
+owner, clone, scope or publication authority. Session owns the derived overview
+and its separate control-memory budget; the engine/native/export snapshots do
+not acquire that cache.

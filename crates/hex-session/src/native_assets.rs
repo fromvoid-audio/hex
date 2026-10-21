@@ -32,6 +32,11 @@ pub(crate) enum NativeAssetDestination {
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
 }
+pub(crate) struct ReconstructedOriginalSources<'a> {
+    pub assets: hex_engine::native_device_resources::ResidentDeviceAssets,
+    pub overview_budget: crate::source_overview::OverviewBudget,
+    pub cancel: &'a AtomicBool,
+}
 impl Session {
     pub fn with_native_reservation(
         mut self,
@@ -164,6 +169,8 @@ impl Session {
         let media = self.media_bank();
         let table = self.sine_table();
         let legacy = pcm_bytes(self.resident_frames)?;
+        let overview_budget = &self.overview_budget;
+        let old_overviews = &self.source_overviews;
         let native_assets = &mut self.native_assets;
         let shutdown = &self.shutdown;
         let transforms = &self.audio_transforms;
@@ -187,32 +194,53 @@ impl Session {
                 source_slot,
             },
         };
-        let (created, (prepared, _summary)) =
-            self.editor
-                .execute_prepared_transition(command, |old, candidate| {
-                    let id = candidate
-                        .assets()
-                        .find(|a| old.asset(a.id()).is_none())
-                        .map(|a| a.id())
-                        .ok_or(SessionError::Invalid(
-                            "native import candidate has no asset",
+        let (created, ((prepared, source_overviews), _summary)) = self
+            .editor
+            .execute_prepared_transition(command, |old, candidate| {
+                let id = candidate
+                    .assets()
+                    .find(|a| old.asset(a.id()).is_none())
+                    .map(|a| a.id())
+                    .ok_or(SessionError::Invalid(
+                        "native import candidate has no asset",
+                    ))?;
+                native_assets.insert_checked_on_control(
+                    (id, source),
+                    legacy,
+                    reservation.storage,
+                    reservation.max_scan_frames,
+                    cancel,
+                    |stage| {
+                        let source = stage.source(id).ok_or(SessionError::Invalid(
+                            "staged original source is unavailable",
                         ))?;
-                    native_assets.insert_checked_on_control(
-                        (id, source),
-                        legacy,
-                        reservation.storage,
-                        reservation.max_scan_frames,
-                        cancel,
-                        |stage| {
-                            let prepared =
-                                prepare(candidate, &media, table, transforms, waveforms, stage)?;
-                            if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
-                                return Err(ResourcePreparationError::Cancelled.into());
-                            }
-                            Ok::<_, SessionError>(prepared)
-                        },
-                    )
-                })?;
+                        let frames = source.resident_frames().ok_or(SessionError::Invalid(
+                            "staged original source is not resident",
+                        ))?;
+                        let facts = stage.original_source_facts_on_control(id)?;
+                        let overview =
+                            crate::source_overview::OriginalSourceOverview::prepare_cancellable(
+                                overview_budget,
+                                frames,
+                                source.sample_rate(),
+                                facts,
+                                |_| {
+                                    cancel.load(Ordering::Acquire)
+                                        || shutdown.load(Ordering::Acquire)
+                                },
+                            )?;
+                        let source_overviews =
+                            old_overviews.inserted(overview_budget, id, overview)?;
+                        let prepared =
+                            prepare(candidate, &media, table, transforms, waveforms, stage)?;
+                        if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
+                            return Err(ResourcePreparationError::Cancelled.into());
+                        }
+                        Ok::<_, SessionError>((prepared, source_overviews))
+                    },
+                )
+            })?;
+        self.source_overviews = source_overviews;
         Ok((created, prepared))
     }
 }

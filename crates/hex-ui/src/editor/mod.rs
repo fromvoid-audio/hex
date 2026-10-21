@@ -1656,6 +1656,36 @@ pub(super) struct ArrangementPan {
 }
 
 #[cfg(feature = "ui-test-support")]
+pub(crate) fn sampler_source_fixture_view(
+    window: gpui::AnyWindowHandle,
+    track: hex_project::TrackId,
+    cx: &gpui::App,
+) -> Result<Option<crate::SamplerSourceTestView>, String> {
+    window
+        .read(cx, |view: gpui::Entity<EditorView>, cx| {
+            let view = view.read(cx);
+            let state = view.state.as_ref()?;
+            let device = state.project.track(track)?.instrument()?;
+            let reference = device.state().asset_references().first()?;
+            let asset = state
+                .project
+                .assets()
+                .find(|a| a.id().value() == reference.asset.value())?;
+            Some(crate::SamplerSourceTestView {
+                device: device.id(),
+                asset: asset.id(),
+                generation: view.project_generation,
+                revision: state.revision,
+                source_frames: asset.source_frames(),
+                playback_frames: asset.playback_frames(),
+                original_source: asset.original_source(),
+                overviews: state.source_overviews.clone(),
+            })
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "ui-test-support")]
 pub(crate) fn sampler_keyboard_fixture_status(
     window: gpui::AnyWindowHandle,
     cx: &gpui::App,

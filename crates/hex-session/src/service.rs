@@ -83,6 +83,8 @@ pub struct ViewState {
     pub comparison_audio: Option<ComparisonAudioBinding>,
     pub project: Arc<Project>,
     pub waveforms: BTreeMap<hex_project::AssetId, Arc<Waveform>>,
+    /// Peak-only original-source table; cloned handles allocate no rows or PCM.
+    pub source_overviews: crate::OriginalSourceOverviews,
     /// Worker-built transformed root peaks and exact audible crop coordinates.
     pub audio_clip_waveforms: BTreeMap<hex_project::ClipId, AudioClipWaveform>,
     /// Control-prepared MIDI clip summaries matching this project revision.
@@ -828,16 +830,43 @@ impl Service {
         audio: Option<Box<dyn WorkerAudioSink>>,
         native: Option<crate::ResidentNativeReservation>,
     ) -> Result<Self, ServiceError> {
+        Self::start_configured_in_overview_domain(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            recovery,
+            exporter,
+            audio,
+            native,
+            crate::source_overview::OverviewBudget::standard().map_err(ServiceError::Session)?,
+        )
+    }
+    #[allow(clippy::too_many_arguments)] // Existing worker composition plus one shared derived-data domain.
+    fn start_configured_in_overview_domain(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: Option<PathBuf>,
+        exporter: Exporter,
+        audio: Option<Box<dyn WorkerAudioSink>>,
+        native: Option<crate::ResidentNativeReservation>,
+        overview_budget: crate::source_overview::OverviewBudget,
+    ) -> Result<Self, ServiceError> {
         let shutdown = Arc::new(AtomicBool::new(false));
         let session = if audio.is_none() {
             Some(
-                Session::new(sample_rate, history_capacity, max_resident_frames)
-                    .and_then(|session| match native {
-                        Some(reservation) => session.with_native_reservation(reservation),
-                        None => Ok(session),
-                    })
-                    .map_err(ServiceError::Session)?
-                    .with_shutdown(Arc::clone(&shutdown)),
+                Session::new_with_overview_budget(
+                    sample_rate,
+                    history_capacity,
+                    max_resident_frames,
+                    overview_budget.clone(),
+                )
+                .and_then(|session| match native {
+                    Some(reservation) => session.with_native_reservation(reservation),
+                    None => Ok(session),
+                })
+                .map_err(ServiceError::Session)?
+                .with_shutdown(Arc::clone(&shutdown)),
             )
         } else {
             None
@@ -882,8 +911,12 @@ impl Service {
                             Ok(rate) => (rate, None),
                             Err(error) => (48_000, Some(error)),
                         };
-                        let Ok(session) = Session::new(rate, history_capacity, max_resident_frames)
-                        else {
+                        let Ok(session) = Session::new_with_overview_budget(
+                            rate,
+                            history_capacity,
+                            max_resident_frames,
+                            overview_budget.clone(),
+                        ) else {
                             return;
                         };
                         if let Some(error) = error {
@@ -896,9 +929,12 @@ impl Service {
                                     events.startup_failed(format!(
                                         "native resident reservation unavailable: {reason}"
                                     ));
-                                    let Ok(session) =
-                                        Session::new(rate, history_capacity, max_resident_frames)
-                                    else {
+                                    let Ok(session) = Session::new_with_overview_budget(
+                                        rate,
+                                        history_capacity,
+                                        max_resident_frames,
+                                        overview_budget.clone(),
+                                    ) else {
                                         return;
                                     };
                                     session
@@ -1099,6 +1135,12 @@ fn view_state_bound(
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),
+        source_overviews: session
+            .source_overviews()
+            .at_context(hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision: revision,
+            }),
         audio_clip_waveforms: session.audio_clip_waveforms().unwrap_or_default(),
         midi_preview,
         timeline_frames: latest_content_end
@@ -1130,6 +1172,7 @@ fn preview_view_state(
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: canonical.waveforms.clone(),
+        source_overviews: canonical.source_overviews.clone(),
         audio_clip_waveforms: canonical.audio_clip_waveforms.clone(),
         midi_preview: Arc::clone(prepared.midi_preview()),
         timeline_frames: content_end
@@ -2523,12 +2566,13 @@ fn run_worker(
                 },
                 Request::NewWithAudioMode { mode, reservation } => {
                     open_complete = true;
-                    let candidate = Session::new_with_audio_mode(
+                    let candidate = Session::new_with_audio_mode_in_overview_domain(
                         session.project().sample_rate(),
                         history_capacity,
                         session.max_resident_frames(),
                         mode,
                         reservation,
+                        session.overview_budget.clone(),
                     )
                     .and_then(|candidate| match session.native_reservation {
                         Some(limits) => candidate.with_native_reservation(limits),

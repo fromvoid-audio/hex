@@ -59,6 +59,12 @@ fn unchanged(before: &hex_session::service::ViewState, after: &hex_session::serv
         (before.can_undo, before.can_redo)
     );
     assert_eq!(after.state.document_path, before.document_path);
+    assert!(
+        after
+            .state
+            .source_overviews
+            .shares_storage_with(&before.source_overviews)
+    );
 }
 fn original_pcm(h: &mut Harness) {
     let identity = h.audio.as_ref().unwrap().control.output_identity();

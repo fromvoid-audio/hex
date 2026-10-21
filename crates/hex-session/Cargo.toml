@@ -8,6 +8,10 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Peak-only construction/allocator probes; no native source authority.
+source-overview-test-support = []
+
 [dependencies]
 hex-storage = { path = "../hex-storage" }
 hex-engine = { path = "../hex-engine" }

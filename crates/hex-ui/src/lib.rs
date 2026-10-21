@@ -78,6 +78,27 @@ pub fn open_sampler_load_test_backend(
     editor::sampler_load_fixture(cx, backend, root, directory)
 }
 
+/// Read-only headless source metadata and peak-only table; no native owner.
+#[cfg(feature = "ui-test-support")]
+pub struct SamplerSourceTestView {
+    pub device: hex_project::DeviceId,
+    pub asset: hex_project::AssetId,
+    pub generation: u64,
+    pub revision: u64,
+    pub source_frames: u64,
+    pub playback_frames: u64,
+    pub original_source: Option<hex_project::OriginalSourceFacts>,
+    pub overviews: hex_session::OriginalSourceOverviews,
+}
+#[cfg(feature = "ui-test-support")]
+pub fn sampler_source_test_view(
+    window: gpui::AnyWindowHandle,
+    track: hex_project::TrackId,
+    cx: &gpui::App,
+) -> Result<Option<SamplerSourceTestView>, String> {
+    editor::sampler_source_fixture_view(window, track, cx)
+}
+
 /// Read-only headless fixture diagnostics; no runtime/source/input owner escape.
 #[cfg(feature = "ui-test-support")]
 pub fn sampler_keyboard_test_status(

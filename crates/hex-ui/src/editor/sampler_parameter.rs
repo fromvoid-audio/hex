@@ -58,11 +58,58 @@ impl Target {
                     && s.project
                         .track(self.track)
                         .and_then(|t| t.instrument())
-                        .is_some_and(|d| d.id() == self.device && !d.bypassed())
+                        .is_some_and(|d| {
+                            d.id() == self.device
+                                && !d.bypassed()
+                                && (!self.parameter.is_source_frame()
+                                    || view.sampler_source_target_current(d))
+                        })
             })
     }
 }
 impl EditorView {
+    fn sampler_source_target_current(&self, device: &hex_project::Device) -> bool {
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Some(reference) = device
+            .state()
+            .asset_references()
+            .first()
+            .filter(|_| device.state().asset_references().len() == 1)
+        else {
+            return false;
+        };
+        state
+            .project
+            .assets()
+            .find(|a| a.id().value() == reference.asset.value())
+            .is_some_and(|asset| self.sampler_source_overview(asset).is_some())
+    }
+    /// Same committed view, source namespace, original coordinates and optional
+    /// saved content facts. Fresh import facts come from the staged native bank.
+    pub(super) fn sampler_source_overview(
+        &self,
+        asset: &hex_project::Asset,
+    ) -> Option<&hex_session::OriginalSourceOverview> {
+        let state = self.state.as_ref()?;
+        if !state
+            .source_overviews
+            .matches_context(hex_engine::AudioSourceContext {
+                project_generation: self.project_generation,
+                editor_revision: state.revision,
+            })
+        {
+            return None;
+        }
+        state.source_overviews.get(asset.id()).filter(|overview| {
+            overview.source_frames() == asset.source_frames()
+                && overview.sample_rate() == asset.source_sample_rate()
+                && asset
+                    .original_source()
+                    .is_none_or(|facts| facts == overview.content())
+        })
+    }
     pub(super) fn sampler_parameter_pending(&self) -> bool {
         self.sampler_parameter.pending.is_some()
     }
@@ -165,7 +212,7 @@ impl EditorView {
                         .assets()
                         .find(|asset| asset.id().value() == reference.asset.value())
                 })
-                .filter(|asset| asset.original_source().is_some())
+                .filter(|asset| self.sampler_source_overview(asset).is_some())
                 .map(|asset| asset.source_frames());
             let Some(frames) =
                 frames.filter(|n| *n > 0 && *n <= SamplerParameter::EndFrame.bounds().1 as u64)
@@ -396,3 +443,6 @@ impl EditorView {
             .into_any_element()
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests;

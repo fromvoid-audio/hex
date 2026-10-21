@@ -653,10 +653,11 @@ impl Admission<'_> {
         let Some(limits) = current.native_reservation else {
             return Ok(current.max_resident_frames);
         };
-        let candidate = Session::new(
+        let candidate = Session::new_with_overview_budget(
             current.project().sample_rate(),
             1,
             current.max_resident_frames,
+            current.overview_budget.clone(),
         )?
         .with_native_reservation(limits)?;
         let empty = ControlSamplerSelection {

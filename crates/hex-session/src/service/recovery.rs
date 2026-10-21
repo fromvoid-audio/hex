@@ -152,12 +152,13 @@ pub(super) fn open_source_with_limits(
             .ok_or("verified source reservation is required")?
             .validate()
             .map_err(|e| e.to_string())?;
-        let mut candidate = Session::new_with_audio_mode(
+        let mut candidate = Session::new_with_audio_mode_in_overview_domain(
             project.sample_rate(),
             history_capacity,
             current.max_resident_frames(),
             mode,
             Some(reservation),
+            current.overview_budget.clone(),
         )
         .and_then(|candidate| match native {
             Some(limits) => candidate.with_native_reservation(limits),
@@ -368,16 +369,21 @@ pub(super) fn open_source_with_limits(
             prepared_assets,
             current.sine_table(),
             native,
-            originals,
+            crate::native_assets::ReconstructedOriginalSources {
+                assets: originals,
+                overview_budget: current.overview_budget.clone(),
+                cancel: &current.shutdown,
+            },
         )
     } else {
-        Session::from_prepared_with_native_limits(
+        Session::from_prepared_with_native_limits_in_overview_domain(
             project,
             history_capacity,
             current.max_resident_frames(),
             prepared_assets,
             current.sine_table(),
             native,
+            current.overview_budget.clone(),
         )
     }
     .map_err(|error| error.to_string().to_lowercase())?;

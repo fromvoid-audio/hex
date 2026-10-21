@@ -8,7 +8,7 @@ use hex_widgets::{DeviceLayout, DeviceSectionSurface, device_compact_section, de
 /// The accepted native device body, below the shared fourteen-pixel header.
 pub(crate) const BODY_HEIGHT: f32 = 168.0;
 pub(crate) const GENERIC_FRAME_WIDTH: f32 = 286.0;
-pub(crate) const SAMPLER_FRAME_WIDTH: f32 = 520.0;
+pub(crate) const SAMPLER_FRAME_WIDTH: f32 = 720.0;
 pub(crate) const UTILITY_FRAME_WIDTH: f32 = 144.0;
 pub(crate) const SATURATOR_FRAME_WIDTH: f32 = 230.0;
 pub(crate) const EQ8_FRAME_WIDTH: f32 = 600.0;
