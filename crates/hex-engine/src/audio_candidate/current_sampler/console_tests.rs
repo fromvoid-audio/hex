@@ -595,3 +595,165 @@ fn current_sampler_console_scene_capacity_refusal_preserves_pending_routes_and_p
     }
     assert_eq!(results[0], results[1]);
 }
+
+#[test]
+fn current_sampler_console_held_note_crosses_quantized_cut_with_literal_release_and_new_voice() {
+    let mut results = Vec::new();
+    for partitions in [&[8_usize][..], &[3, 1, 4][..], &[1, 1, 1, 2, 3][..]] {
+        let (project, asset) = fixture();
+        let track = project.tracks()[0].id();
+        let device = project.tracks()[0].instrument().unwrap();
+        let mut state = hex_devices::sampler::state::SamplerState::for_source_frames(4).unwrap();
+        state.mode = hex_devices::sampler::state::AuthoredMode::Classic {
+            loop_enabled: true,
+            loop_region: hex_devices::sampler::Region { start: 0, end: 4 },
+        };
+        state.envelope = hex_devices::sampler::Envelope {
+            attack_seconds: 0.0,
+            decay_seconds: 0.0,
+            sustain: 1.0,
+            release_seconds: 2.0 / 16000.0,
+        };
+        let native = state
+            .to_native()
+            .unwrap()
+            .with_asset_references(device.state().asset_references().to_vec())
+            .unwrap();
+        let mut editor = Editor::new(project.clone(), 16).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: device.id(),
+                state: native,
+            })
+            .unwrap();
+        let mut clips = Vec::new();
+        for (name, pitch, quarters) in [("held", 60, 5), ("incoming", 72, 1)] {
+            let Created::Scene(scene) = editor
+                .execute(Command::AddScene { name: name.into() })
+                .unwrap()
+            else {
+                panic!("scene")
+            };
+            let length = BeatTime::from_quarters(quarters).unwrap();
+            let Created::SessionClip(clip) = editor
+                .execute(Command::CreateSessionMidiClip {
+                    track,
+                    scene,
+                    name: name.into(),
+                    source_length: length,
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start: BeatTime::ZERO,
+                    duration: length,
+                    pitch,
+                    channel: 0,
+                    velocity: 127,
+                })
+                .unwrap();
+            clips.push(clip);
+        }
+        let source = crate::OwnedAudioSource::try_resident(
+            8000,
+            vec![[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]],
+        )
+        .ok()
+        .unwrap();
+        let mut cell = prepare(editor.project(), vec![(asset, source)]);
+        let owner = cell.owner_on_control().unwrap();
+        owner
+            .test_apply_action(crate::PlaybackAction::LaunchAndPlay(
+                crate::SessionPlaybackCommand::LaunchClip {
+                    clip: clips[0],
+                    quantization: crate::LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        owner.test_render(&mut [[0.0; 2]; 1]).unwrap();
+        owner
+            .test_apply_action(crate::PlaybackAction::Session(
+                crate::SessionPlaybackCommand::LaunchClip {
+                    clip: clips[1],
+                    quantization: crate::LaunchQuantization::FourQuarter,
+                },
+            ))
+            .unwrap();
+        let route = owner
+            .inner
+            .runtime
+            .as_ref()
+            .unwrap()
+            .playback
+            .session_route_status(0)
+            .unwrap();
+        assert_eq!(route.pending.unwrap().performance_frame, 32000);
+        let mut remaining = 31996;
+        while remaining != 0 {
+            let count = remaining.min(64);
+            owner.test_render(&mut [[0.0; 2]; 64][..count]).unwrap();
+            remaining -= count;
+        }
+        assert_eq!(
+            owner
+                .inner
+                .runtime
+                .as_ref()
+                .unwrap()
+                .playback
+                .test_current_sampler_route_proofs(0),
+            Some((1, 1, 0))
+        );
+        let mut pcm = Vec::new();
+        for count in partitions {
+            let mut block = vec![[0.0; 2]; *count];
+            owner.test_render(&mut block).unwrap();
+            pcm.extend(block);
+            if owner.test_transport().unwrap().1 == 32001 {
+                assert_eq!(
+                    owner
+                        .inner
+                        .runtime
+                        .as_ref()
+                        .unwrap()
+                        .playback
+                        .test_current_sampler_route_proofs(0),
+                    Some((2, 1, 1))
+                );
+            }
+        }
+        // A's loop is audible and held through frame31999. At32000 A receives
+        // NoteOff while B starts, then A's two-frame release ends. B keeps looping.
+        assert_eq!(
+            pcm,
+            [
+                [-0.0625, 0.125],
+                [0.0; 2],
+                [0.0625, -0.125],
+                [0.25, -0.5],
+                [0.65625, -0.0625],
+                [-0.125, 0.25],
+                [0.0; 2],
+                [0.125, -0.25]
+            ]
+        );
+        let playback = &owner.inner.runtime.as_ref().unwrap().playback;
+        let route = playback.session_route_status(0).unwrap();
+        assert_eq!(
+            route.owner,
+            crate::SessionPlaybackOwner::Session { clip: clips[1] }
+        );
+        assert!(route.pending.is_none());
+        assert_eq!(
+            playback.test_current_sampler_route_proofs(0),
+            Some((2, 1, 0))
+        );
+        results.push(pcm);
+        cell.cleanup_on_control().unwrap();
+    }
+    assert!(results.windows(2).all(|r| r[0] == r[1]));
+}

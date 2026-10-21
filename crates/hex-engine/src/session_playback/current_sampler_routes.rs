@@ -38,6 +38,29 @@ fn rebase(frame: u64, source: u64, performance: u64) -> Result<u64, SessionPlayb
     .ok_or(SessionPlaybackError::ArithmeticOverflow)
 }
 impl SessionPlayback {
+    #[cfg(test)]
+    pub(crate) fn test_current_sampler_route_proofs(
+        &self,
+        index: usize,
+    ) -> Option<(u64, usize, usize)> {
+        let route = self.routes.get(index)?;
+        let proofs = self
+            .mutable_instruments
+            .get(index)?
+            .as_ref()?
+            .transition_proofs(false);
+        Some((
+            route.current_incarnation,
+            proofs
+                .iter()
+                .filter(|p| !p.note_off_sent && p.gate_end_frame > self.performance_frame)
+                .count(),
+            proofs
+                .iter()
+                .filter(|p| p.note_off_sent && p.quiet_deadline_frame > self.performance_frame)
+                .count(),
+        ))
+    }
     pub(super) fn current_sampler_route_track(&self, index: usize) -> bool {
         self.current_sampler_console
             && self.revision.resource_scope.is_some()

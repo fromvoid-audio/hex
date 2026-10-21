@@ -517,6 +517,15 @@ impl Playback {
             .as_ref()
             .is_some_and(|r| r.current_sampler_console_available())
     }
+    #[cfg(test)]
+    pub(crate) fn test_current_sampler_route_proofs(
+        &self,
+        index: usize,
+    ) -> Option<(u64, usize, usize)> {
+        self.session_runtime
+            .as_ref()?
+            .test_current_sampler_route_proofs(index)
+    }
     pub(crate) fn current_sampler_keyboard_epoch(&self) -> Option<u64> {
         let epoch = self
             .session_runtime

@@ -239,3 +239,163 @@ fn sampler_console_actual_current_launch_stop_cancel_and_tuning_are_callback_all
         );
     }
 }
+
+#[test]
+fn sampler_console_held_quantized_cut_is_literal_partition_independent_and_callback_allocation_free()
+ {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let mut results = Vec::new();
+    for partitions in [&[8_usize][..], &[3, 1, 4][..]] {
+        let files = Files::new();
+        let mut h = Harness::resident_sampler(12);
+        let (track, asset) = authored(&mut h, &files, true, false, false);
+        let mut clips = Vec::new();
+        for (name, pitch, quarters) in [("held", 60, 5), ("incoming", 72, 1)] {
+            let Some(Created::Scene(scene)) = h
+                .run(Request::Edit(Command::AddScene { name: name.into() }))
+                .created
+            else {
+                panic!("scene")
+            };
+            let length = BeatTime::from_quarters(quarters).unwrap();
+            let Some(Created::SessionClip(clip)) = h
+                .run(Request::Edit(Command::CreateSessionMidiClip {
+                    track,
+                    scene,
+                    name: name.into(),
+                    source_length: length,
+                }))
+                .created
+            else {
+                panic!("clip")
+            };
+            h.run(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: length,
+                pitch,
+                channel: 0,
+                velocity: 127,
+            }));
+            clips.push(clip);
+        }
+        let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+        let assigned = h.run(Request::AssignSampler { track, asset });
+        let device = assigned
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        h.open_sampler(old);
+        h.applied(h.context.unwrap());
+        let mut state = assigned.state;
+        for (parameter, value) in [
+            (hex_engine::SamplerParameter::LoopEnabled, 1.0),
+            (hex_engine::SamplerParameter::ReleaseMs, 0.125),
+        ] {
+            let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+            let mut edit = super::gain::edit(&state, track, device);
+            edit.parameter = parameter;
+            edit.value = value;
+            h.run(Request::SamplerEdit(
+                hex_session::service::SamplerEdit::Parameter(edit),
+            ));
+            h.render();
+            let committed = h.next();
+            assert!(committed.error.is_none(), "{:?}", committed.error);
+            state = committed.state;
+            h.open_sampler(old);
+            h.applied(h.context.unwrap());
+        }
+        let action = |clip, quantization| {
+            PlaybackAction::Session(Session::LaunchClip { clip, quantization })
+        };
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .action_with_ticket(PlaybackAction::LaunchAndPlay(Session::LaunchClip {
+                clip: clips[0],
+                quantization: Quantization::Immediate,
+            }))
+            .unwrap();
+        h.render(); // frame64, A is held and loops independently of the note gate.
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .action_with_ticket(action(clips[1], Quantization::FourQuarter))
+            .unwrap();
+        let mut remaining = 31997 - 64;
+        {
+            let mut slot = h.backend.lock().unwrap();
+            let backend = slot.as_mut().unwrap();
+            while remaining != 0 {
+                let count = remaining.min(64);
+                super::envelope::render(backend, &mut [[0.0; 2]; 64][..count]);
+                remaining -= count;
+            }
+            let mut routes = [hex_audio::prepared::SessionRouteEntry::default(); 4];
+            let count = backend
+                .status()
+                .unwrap()
+                .session_routes(&mut routes)
+                .unwrap()
+                .count;
+            let route = routes[..count]
+                .iter()
+                .find(|r| r.track_id == track.value())
+                .unwrap();
+            assert_eq!(
+                route.owner,
+                hex_audio::prepared::SessionRouteOwner::Session {
+                    clip_id: clips[0].value()
+                }
+            );
+            assert_eq!(route.pending.unwrap().performance_frame, 32000);
+            let mut pcm = Vec::new();
+            for count in partitions {
+                let mut block = vec![[0.0; 2]; *count];
+                super::envelope::render(backend, &mut block);
+                pcm.extend(block);
+            }
+            assert_eq!(
+                pcm,
+                [
+                    [-0.0625, 0.125],
+                    [0.0; 2],
+                    [0.0625, -0.125],
+                    [0.25, -0.5],
+                    [0.65625, -0.0625],
+                    [-0.125, 0.25],
+                    [0.0; 2],
+                    [0.125, -0.25]
+                ]
+            );
+            let count = backend
+                .status()
+                .unwrap()
+                .session_routes(&mut routes)
+                .unwrap()
+                .count;
+            let route = routes[..count]
+                .iter()
+                .find(|r| r.track_id == track.value())
+                .unwrap();
+            assert_eq!(
+                route.owner,
+                hex_audio::prepared::SessionRouteOwner::Session {
+                    clip_id: clips[1].value()
+                }
+            );
+            assert!(route.pending.is_none());
+            results.push(pcm);
+        }
+    }
+    assert_eq!(results[0], results[1]);
+}
