@@ -1,8 +1,10 @@
-# Implementation issues and decisions
+# Historical implementation constraints and decisions
 
-This document records discovered constraints, unresolved behavior and their next
-acceptance step. `todo.md` owns task status; `docs/plan.md` owns milestone order.
-These entries do not imply that a Live behavior has been confirmed.
+This retained document is historical technical reference, not an active issue
+list. Dated next steps, statuses and unchecked behavior below may be superseded.
+Do not append task plans or progress here. Current issues, priorities, dependencies
+and acceptance live in [Pulse](https://pulse.iocore.dev/). These historical entries
+do not imply that a Live behavior has been confirmed.
 
 | ID | Issue / current decision | Next evidence or implementation step |
 | --- | --- | --- |
@@ -449,7 +451,7 @@ normal enter/exit/resize cycle and modifier editing still need isolated acceptan
 
 Fresh snap-check bundle restores coordinate input and completes controlled grid
 authoring and compact snapped/free gesture/save checks; saved fixtures are listed
-in todo.md. The prior coordinate failure's cause remains unknown. Held-modifier
+in [historical work-log evidence](https://github.com/PORTALSURFER/hex/blob/0c7bb72d1ad8dd136b11adf05759c200797fc962/todo.md). The prior coordinate failure's cause remains unknown. Held-modifier
 dragging is still unavailable in the documented automation API. A later cleanup
 observation unexpectedly showed an empty revision-0 workspace instead of the
 saved revision-12 fixture; only the snap-check process was present in read-only

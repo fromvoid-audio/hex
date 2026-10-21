@@ -1,6 +1,7 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
+mod sampler;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
 use hex_session::service::{Event, Request};
@@ -16,6 +17,22 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 struct Observation {
+    gain_prepared: Option<hex_engine::AudioCandidateIdentity>,
+    sampler_cancel_count: u64,
+    sampler_begin_count: u64,
+    gain_cells: Vec<(
+        hex_engine::AudioCandidateIdentity,
+        hex_engine::AudioCandidateIdentity,
+    )>,
+    fail_gain_open: bool,
+    expire_gain_fence: bool,
+    cancel_edit_after_seal: Option<Arc<AtomicBool>>,
+    native_hold: hex_session::service::NativeSamplerReservationHold,
+    pause_poll: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
+    pause_keyboard_activation: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
+    blocked: Option<AudioSourceContext>,
+    fresh_before_input: Option<(EditorAudio, Arc<Mutex<Option<HeadlessBackend>>>)>,
+    fresh_before_input_checked: bool,
     latest: Option<(AudioSourceContext, AudioCandidateDomainToken, usize)>,
     command_ready: Option<(AudioSourceContext, u64)>,
     change_source_after_capture: Option<PathBuf>,
@@ -48,12 +65,149 @@ impl WorkerAudioSink for ObservedSink {
             *last ^= 1;
             fs::write(path, bytes).unwrap();
         }
+        let force =
+            if self.inner.desired.as_ref().is_some_and(|s| {
+                s.context().project_generation != source.context().project_generation
+            }) {
+                self.observation.lock().unwrap().fresh_before_input.take()
+            } else {
+                None
+            };
+        if let Some((audio, backend)) = force {
+            drop(audio);
+            backend.lock().unwrap().take();
+            self.inner.canonical_changed(source);
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while self.inner.output.is_none() {
+                self.inner.poll_open();
+                assert!(
+                    Instant::now() < deadline,
+                    "fresh output did not complete before input"
+                );
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            assert!(
+                self.inner.sampler.is_none(),
+                "old sampler must cancel before output opening"
+            );
+            assert_eq!(
+                self.inner.output_hold.retained_bytes,
+                self.inner.policy.as_ref().unwrap().legacy_hold_bytes
+            );
+            self.observation.lock().unwrap().fresh_before_input_checked = true;
+            return;
+        }
         self.inner.canonical_changed(source);
+    }
+    fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
+        self.inner.native_sampler_input(input);
+        let mut observation = self.observation.lock().unwrap();
+        observation.native_hold = self.inner.native_sampler_hold();
+        observation.blocked = self.inner.blocked;
+    }
+    fn prepare_sampler_keyboard(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        output: u64,
+        epoch: u64,
+        track: u64,
+        device: u64,
+    ) -> Result<(), String> {
+        let hook = self
+            .observation
+            .lock()
+            .unwrap()
+            .pause_keyboard_activation
+            .take();
+        if let Some((entered, release)) = hook {
+            entered.send(()).unwrap();
+            assert!(
+                !matches!(
+                    release.recv_timeout(Duration::from_secs(10)),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                ),
+                "worker gate timed out"
+            );
+        }
+        self.inner
+            .prepare_sampler_keyboard(context, output, epoch, track, device)
+    }
+    fn begin_sampler_edit(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        self.inner.begin_sampler_edit(context)?;
+        self.observation.lock().unwrap().sampler_begin_count += 1;
+        Ok(())
+    }
+    fn sampler_edit_ready(&mut self) -> Option<Result<(), String>> {
+        if std::mem::take(&mut self.observation.lock().unwrap().expire_gain_fence) {
+            self.inner.expire_gain_fence_for_test();
+        }
+        self.inner.sampler_edit_ready()
+    }
+    fn prepare_sampler_edit(
+        &mut self,
+        input: hex_session::service::NativeSamplerInput<'_>,
+    ) -> Result<(), String> {
+        self.inner.prepare_sampler_edit(input)?;
+        self.observation.lock().unwrap().gain_prepared = self.inner.pending_gain_cell_identity();
+        if let Some(cancel) = self
+            .observation
+            .lock()
+            .unwrap()
+            .cancel_edit_after_seal
+            .take()
+        {
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
+        Ok(())
+    }
+    fn commit_sampler_edit(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        if std::mem::take(&mut self.observation.lock().unwrap().fail_gain_open) {
+            let mut original = self.inner.output_factory.take().unwrap();
+            let mut first = true;
+            self.inner.output_factory = Some(Box::new(move |rate| {
+                if std::mem::take(&mut first) {
+                    Err("fixture hardware open failed".into())
+                } else {
+                    original(rate)
+                }
+            }));
+        }
+        let before = self.inner.pending_gain_cell_identity();
+        self.inner.commit_sampler_edit(context)?;
+        let after = self.inner.draining_gain_cell_identity();
+        let mut observed = self.observation.lock().unwrap();
+        assert_eq!(before, observed.gain_prepared);
+        observed.gain_cells.push((before.unwrap(), after.unwrap()));
+        Ok(())
+    }
+    fn cancel_sampler_edit(&mut self) {
+        self.inner.cancel_sampler_edit();
+        self.observation.lock().unwrap().sampler_cancel_count += 1;
+    }
+    fn native_sampler_hold(&self) -> hex_session::service::NativeSamplerReservationHold {
+        self.inner.native_sampler_hold()
     }
     fn restart_audio(&mut self, generation: u64, request: u64) -> Result<(), String> {
         self.inner.restart_audio(generation, request)
     }
     fn poll(&mut self) {
+        let hook = self.observation.lock().unwrap().pause_poll.take();
+        if let Some((entered, release)) = hook {
+            entered.send(()).unwrap();
+            assert!(
+                !matches!(
+                    release.recv_timeout(Duration::from_secs(10)),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                ),
+                "worker gate timed out"
+            );
+        }
         self.inner.poll();
         if let Some(context) = self.inner.last_context
             && let Some(domain) = self
@@ -196,7 +350,9 @@ impl Harness {
                     // Same UI ordering: detach old endpoint on canonical
                     // generation change, BEFORE waiting for new Opened.
                     self.audio = None;
-                    self.backend.lock().unwrap().take();
+                    if !self.observation.lock().unwrap().fresh_before_input_checked {
+                        self.backend.lock().unwrap().take();
+                    }
                 }
                 self.context = Some(context);
                 return event;
@@ -319,7 +475,10 @@ impl Drop for Harness {
         // graph/domain destruction run autonomously on existing workers.
         drop(self.service.take());
         self.audio = None;
-        self.backend.lock().unwrap().take();
+        self.backend
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
         while let Ok(event) = self.events.try_recv() {
             drop(event);
         }

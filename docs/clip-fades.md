@@ -2,7 +2,7 @@
 
 This is an original Hex policy. The installed Live fade-controller analysis has
 not established a rendered curve or its units; it does not prove compatibility.
-Implementation and acceptance status are tracked in `plan.md` and `../todo.md`.
+Implementation and acceptance status are tracked in [Pulse](https://pulse.iocore.dev/).
 
 All positions and lengths below are project-rate frames. A clip envelope stores
 `span`, `offset`, `fade_in`, `fade_out`, two silent endpoint offsets and two integer curve bends. The span must be positive, each fade

@@ -15,12 +15,32 @@ use std::sync::{
 
 pub const COMPUTER_KEY_COUNT: usize = 17;
 pub const COMPUTER_KEY_VELOCITIES: [u8; 7] = [20, 40, 60, 80, 100, 120, 127];
+
+/// The existing physical-key word law, shared by all scalar input boundaries.
+pub fn valid_key_word(word: u64) -> bool {
+    word == 0
+        || ((1..=128).contains(&(word & 255))
+            && word >> 16 != 0
+            && COMPUTER_KEY_VELOCITIES.contains(&((word >> 8) as u8)))
+}
+
+/// Scalar desired-key snapshot for one output-bound native CURRENT activation.
+/// It carries no source, runtime or admission authority.
+#[derive(Clone, Copy, Debug)]
+pub struct CurrentSamplerKeyboardFrame {
+    pub epoch: u64,
+    pub track: u64,
+    pub device: u64,
+    pub words: [u64; COMPUTER_KEY_COUNT],
+}
 const VOICES: usize = 64;
 const NOTES: usize = 128 * COMPUTER_KEY_VELOCITIES.len();
 const MAX_STORAGE: usize = 3 * 1024 * 1024;
 
 /// One immutable activation lease. Cancellation bypasses every worker/audio queue.
 /// Control is the sole desired-note writer; each physical key is independent.
+/// Native sampler inputs remain control-only and carry an output/epoch pair;
+/// UI lifecycle cancellation pairs `cancel` with the direct Client epoch revoke.
 /// Create a fresh lease for every activation. Cancellation is terminal, including
 /// after a successful graph replacement; held keys require release and a fresh press.
 #[derive(Debug)]
@@ -28,6 +48,7 @@ pub struct ComputerKeyboardInput {
     cancelled: AtomicBool,
     notes: [AtomicU64; COMPUTER_KEY_COUNT],
     rejected: AtomicBool,
+    native_activation: Option<(u64, u64)>,
 }
 impl Default for ComputerKeyboardInput {
     fn default() -> Self {
@@ -35,10 +56,27 @@ impl Default for ComputerKeyboardInput {
             cancelled: AtomicBool::new(false),
             notes: std::array::from_fn(|_| AtomicU64::new(0)),
             rejected: AtomicBool::new(false),
+            native_activation: None,
         }
     }
 }
 impl ComputerKeyboardInput {
+    pub fn with_native_sampler_activation(output: u64, epoch: u64) -> Result<Self, Invalid> {
+        if output == 0 || epoch == 0 {
+            return Err(Invalid("sampler keyboard activation identity is invalid"));
+        }
+        Ok(Self {
+            native_activation: Some((output, epoch)),
+            ..Self::default()
+        })
+    }
+    pub fn native_sampler_activation(&self) -> Option<(u64, u64)> {
+        self.native_activation
+    }
+    pub fn key_word(&self, index: usize) -> Option<u64> {
+        self.notes.get(index).map(|n| n.load(Acquire))
+    }
+
     pub fn cancel(&self) {
         self.cancelled.store(true, Release);
     }
@@ -144,11 +182,66 @@ pub struct ComputerKeyboardTuningHint {
     promoted: bool,
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static CURRENT_SAMPLER_CONSTRUCTION_ENTRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+mod current_sampler;
+
+/// Native CURRENT has no UI input owner. Its copied desired words arrive only
+/// through the already-rooted output mailbox; ordinary playback keeps its lease.
+enum KeyboardInput {
+    Lease(Arc<ComputerKeyboardInput>),
+    Current {
+        words: [u64; COMPUTER_KEY_COUNT],
+        cancelled: bool,
+        rejected: bool,
+    },
+}
+impl KeyboardInput {
+    fn lease(&self) -> Option<&Arc<ComputerKeyboardInput>> {
+        match self {
+            Self::Lease(input) => Some(input),
+            Self::Current { .. } => None,
+        }
+    }
+    fn same_lease(&self, other: &Self) -> bool {
+        match (self.lease(), other.lease()) {
+            (Some(a), Some(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
+    fn cancel(&mut self) {
+        match self {
+            Self::Lease(input) => input.cancel(),
+            Self::Current { cancelled, .. } => *cancelled = true,
+        }
+    }
+    fn is_cancelled(&self) -> bool {
+        match self {
+            Self::Lease(input) => input.is_cancelled(),
+            Self::Current { cancelled, .. } => *cancelled,
+        }
+    }
+    fn reject(&mut self) {
+        match self {
+            Self::Lease(input) => input.rejected.store(true, Release),
+            Self::Current { rejected, .. } => *rejected = true,
+        }
+    }
+    fn word(&self, index: usize) -> u64 {
+        match self {
+            Self::Lease(input) => input.notes[index].load(Acquire),
+            Self::Current { words, .. } => words[index],
+        }
+    }
+}
+
 pub(crate) struct ComputerKeyboardRuntime {
     track: TrackId,
     instrument_id: Option<hex_project::DeviceId>,
     expression: Option<crate::live_expression::Snapshot>,
-    input: Arc<ComputerKeyboardInput>,
+    input: KeyboardInput,
     samplers: Vec<Option<Sampler>>,
     supported: [bool; NOTES],
     context: Option<Box<dyn PreparedSharedAnalyticContext>>,
@@ -336,7 +429,7 @@ impl ComputerKeyboardRuntime {
             track,
             instrument_id: None,
             expression: None,
-            input,
+            input: KeyboardInput::Lease(input),
             samplers,
             supported,
             context,
@@ -378,7 +471,7 @@ impl ComputerKeyboardRuntime {
         Some(ComputerKeyboardTuningHint {
             family: self.tuning_family?,
             track: self.track,
-            input: Arc::clone(&self.input),
+            input: Arc::clone(self.input.lease()?),
             promoted: self.mutable.is_some(),
         })
     }
@@ -434,7 +527,7 @@ impl ComputerKeyboardRuntime {
             && self.tuning_family == previous.tuning_family
             && self.track == previous.track
             && self.instrument_id == previous.instrument_id
-            && Arc::ptr_eq(&self.input, &previous.input)
+            && self.input.same_lease(&previous.input)
     }
 
     pub(crate) fn storage_bytes(&self) -> Option<usize> {
@@ -444,9 +537,11 @@ impl ComputerKeyboardRuntime {
                     .as_ref()
                     .map_or(0, |proof| proof.declared_fixed_storage_bytes()),
             )?
-            .checked_add(
-                std::mem::size_of::<ComputerKeyboardInput>() + 2 * std::mem::size_of::<usize>(),
-            )?
+            .checked_add(if self.input.lease().is_some() {
+                std::mem::size_of::<ComputerKeyboardInput>() + 2 * std::mem::size_of::<usize>()
+            } else {
+                0
+            })?
             .checked_add(
                 self.samplers
                     .capacity()
@@ -508,7 +603,7 @@ impl ComputerKeyboardRuntime {
         self.preserve_on_handoff = true;
     }
     fn preserves_input_identity(&self, previous: &Self) -> bool {
-        self.preserve_on_handoff && Arc::ptr_eq(&self.input, &previous.input)
+        self.preserve_on_handoff && self.input.same_lease(&previous.input)
     }
     pub(crate) fn requests_preservation_from(&self, previous: &Self) -> bool {
         self.preserves_input_identity(previous) && !self.input.is_cancelled()
@@ -715,7 +810,7 @@ impl ComputerKeyboardRuntime {
             if self.lease_detached || self.input.is_cancelled() || self.faulted {
                 0
             } else {
-                self.input.notes[index].load(Acquire)
+                self.input.word(index)
             }
         });
         self.boundary = true;
@@ -741,6 +836,14 @@ impl ComputerKeyboardRuntime {
         &mut self,
         output: &mut [Frame],
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), Invalid> {
+        self.render_with_resources(output, clock, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+    }
+    pub(crate) fn render_with_resources(
+        &mut self,
+        output: &mut [Frame],
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), Invalid> {
         if output.is_empty() {
             return Ok(());
@@ -792,7 +895,7 @@ impl ComputerKeyboardRuntime {
                     .ok_or(Invalid("computer keyboard velocity is invalid"))?;
                 let sampler = velocity_index * 128 + usize::from(pitch);
                 if !self.supported[sampler] {
-                    self.input.rejected.store(true, Release);
+                    self.input.reject();
                     continue;
                 }
                 let capacity = self
@@ -804,7 +907,7 @@ impl ComputerKeyboardRuntime {
                     NativeInstrumentRuntimePair::max_events_per_block,
                 );
                 if self.scratch.iter().flatten().count() >= capacity || len >= event_capacity {
-                    self.input.rejected.store(true, Release);
+                    self.input.reject();
                     self.faulted = true;
                     self.input.cancel();
                     self.scratch.fill(None);
@@ -816,7 +919,7 @@ impl ComputerKeyboardRuntime {
                     break;
                 }
                 let Some(slot) = self.scratch.iter_mut().find(|slot| slot.is_none()) else {
-                    self.input.rejected.store(true, Release);
+                    self.input.reject();
                     self.faulted = true;
                     self.scratch.fill(None);
                     if let Some(runtime) = &mut self.mutable {
@@ -851,12 +954,7 @@ impl ComputerKeyboardRuntime {
         }
         if let Some(runtime) = &mut self.mutable {
             runtime
-                .process_block_with_clock(
-                    &events[..len],
-                    output,
-                    clock,
-                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
-                )
+                .process_block_with_clock(&events[..len], output, clock, resources)
                 .map_err(|_| Invalid("computer keyboard runtime refused a note block"))?;
         } else {
             for voice in self.scratch.iter().flatten() {

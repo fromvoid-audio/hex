@@ -314,3 +314,24 @@ silent exact-end start. Snapshots expose absolute frame/total length using one
 additional constructor-allocated atomic cursor; generation acknowledgements keep
 old requests isolated. Constructor channel accounting includes its paired payload.
 UI hit normalization/decoding stays outside this crate and project transport.
+
+
+The opt-in headless worker fixture exposes a read-only backend shutdown request.
+It grants no stop/dispose or retirement proof. The test driver must actually
+drop both callback carriers; the existing lifecycle owner then proves quiescence
+and the real exclusive output lease must be available before reopening. Sampler
+UI save/open fixtures use this path, not a UI acknowledgement or physical device.
+
+Sampler keyboard input uses a fixed inline Status mailbox, included in the
+existing boundary storage quote. The publication worker validates actual CURRENT
+binding; Client key/cancel methods publish scalar words/epochs directly. Separate
+single-writer binding and per-key sequences have bounded callback reads. Callback
+revocation/refusal has its own sole-writer atomic words; no input/source owner is
+attached, no callback CAS retry or new retirement path is introduced. See
+[the keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
+
+Stopped sampler gain uses one inline scalar edit fence. The callback consumes
+the captured admitted command prefix before acknowledging actual stopped CURRENT.
+Producer serials refuse raced/new commands without replay, while Stop and existing
+keyboard release/cancel remain effective. A timed-out abort retains one bounded
+retirement until callback handles the earlier prefix or endpoints are torn down.

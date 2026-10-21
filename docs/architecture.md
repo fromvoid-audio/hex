@@ -6,6 +6,11 @@ boundary for a finite offline profile; no foreign execution tuple is qualified.
 This design enables no plugin loading, entitlement, dependency or Rust FFI change.
 Original fixture implementation/history remains in frozen PR199/#20.
 
+The production macOS VST3 design selects a per-instance native helper with an
+explicit asynchronous audio bridge; see [the VST3 hosting decision](vst3-hosting-boundary.md).
+It is a reviewed design boundary, not implemented installed-plugin admission.
+The separate CLAP VM profile above is unchanged.
+
 ## Implemented
 
 The native device DSP system is named **lattice**. Its staged implementation,

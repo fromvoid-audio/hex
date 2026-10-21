@@ -11,9 +11,13 @@ also uses hex-session's neutral worker sink/source snapshots, hex-engine's
 consuming preparation contracts, hex-stream's verified constructor metadata, and hex-media's bounded reader-limit
 values (the existing Session/stream workers perform all file decoding).
 The nondefault `allocation-probe` test feature substitutes only output-open
-completion through the actual native endpoint constructor. Its dev-only
-hex-project and allocation-counter dependencies exercise real canonical edits
-and zero-total/net callback allocations; neither is a production desktop edge.
+completion through the actual native endpoint constructor. It also enables the
+existing GPUI UI test support for a rendered browser-action -> real Service ->
+CURRENT fixture with caller-owned temporary settings/discovery roots. No
+physical app window or device is opened by that fixture. Its dev-only
+hex-storage, hex-project, hex-tuning and allocation-counter dependencies exercise real saved-document/previous-save readback, canonical edits,
+absolute tuning references
+and zero-total/net callback allocations; none is a production desktop edge.
 Desktop binds those existing responsibilities; Session gains no audio/stream
 edge and Desktop owns no independent scheduler, source worker or editable model.
 
@@ -28,3 +32,9 @@ Read ../../AGENTS.md and ../../docs/architecture.md before extending this crate.
 
 Session logging is injected by desktop through `hex-diagnostics`; only that
 crate's worker owns log file I/O. See [session diagnostics](../../docs/diagnostics.md).
+
+The shared stopped sampler gain/pitch path seals one pending cell while old CURRENT remains
+installed. Successful canonical preparation commits first, then drains/adopts the
+same cell through the existing fresh-output path. The sink retains and accounts
+old/new overlap, cleans on control, reports postcommit open failure truthfully and
+allows explicit retry of refused sampler audio. No seamless carry is claimed.

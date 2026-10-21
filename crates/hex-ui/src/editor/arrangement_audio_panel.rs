@@ -957,6 +957,7 @@ mod tests {
                 comparison_audio: old.comparison_audio.clone(),
                 project: Arc::new(hex_project::Project::from_snapshot(snapshot).unwrap()),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: old.gain_preview.clone(),

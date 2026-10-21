@@ -11,7 +11,7 @@ pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
 }
 pub(crate) struct ClientEndpoints {
-    output_identity: u64,
+    pub(super) output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
     spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
@@ -432,6 +432,7 @@ impl Drop for Client {
 }
 impl ClientEndpoints {
     fn stop(&self) {
+        self.status.sampler_keyboard.revoke_all();
         self.status
             .pending_stop_marker
             .store(self.command_ticket.saturating_add(1), Release);
@@ -456,6 +457,10 @@ fn enqueue_action(
     audition: &mut processor_audition::ProcessorAuditionTargetControl,
     action: PlaybackAction,
 ) -> Result<u64, PlaybackAction> {
+    let sampler_edit_gate = status.sampler_edit.gate();
+    if sampler_edit_gate & 1 != 0 && !sampler_edit::is_stop(action) {
+        return Err(action);
+    }
     if status.closing.load(Acquire) || revision == 0 {
         return Err(action);
     }
@@ -466,10 +471,15 @@ fn enqueue_action(
         .push(QueuedCommand {
             ticket: next,
             action,
+            sampler_edit_gate,
         })
         .map_err(|PushError::Full(q)| q.action)?;
     *ticket = next;
     status.admitted_ticket.store(next, Release);
+    if matches!(action, PlaybackAction::Transport(PlaybackCommand::Stop)) {
+        status.sampler_keyboard.revoke_all();
+    }
+
     if action_invalidates_processor_audition(action) {
         let _ = audition.cancel_immediately();
     }
@@ -487,4 +497,18 @@ pub(super) fn legacy_enqueue(
         &mut control.processor_audition,
         action,
     )
+}
+
+pub(super) fn constructor_endpoint_storage_quote() -> Option<usize> {
+    std::mem::size_of::<ClientEndpoints>()
+        .checked_add(std::mem::size_of::<PublicationControl>())?
+        .checked_add(std::mem::size_of::<
+            std::sync::OnceLock<std::sync::Mutex<Box<ClientEndpoints>>>,
+        >())?
+        .checked_add(std::mem::size_of::<
+            std::sync::OnceLock<std::sync::Mutex<Box<PublicationControl>>>,
+        >())?
+        .checked_add(std::mem::size_of::<Client>())?
+        .checked_add(std::mem::size_of::<WorkerControl>())?
+        .checked_add(resident_forwarding::constructor_storage_quote())
 }

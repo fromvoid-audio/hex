@@ -40,8 +40,8 @@ Drag start refreshes source metadata to avoid stale cached file duration.
 
 Rendered checks cover floating→locked→floating, exact import request and off-lane
 cancel; a source-rate conversion regression compares preview duration at the
-project rate. Native external file dragging remains unsupported. Final checks
-and user interaction/listening acceptance are tracked in todo.md.
+project rate. Native external file dragging remains unsupported. Current checks and user interaction/listening acceptance are tracked in
+[Pulse](https://pulse.iocore.dev/).
 
 
 Final checks: 200 UI tests pass, one existing ignored; preferences/session

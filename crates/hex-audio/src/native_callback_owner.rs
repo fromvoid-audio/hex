@@ -5,7 +5,9 @@ use crate::prepared::{Callback, Status};
 #[cfg(all(test, feature = "allocation-probe"))]
 mod endpoint_tests;
 mod resources;
-pub(crate) use resources::{ChannelStorage, NativeCandidateBoundary};
+pub(crate) use resources::{
+    ChannelStorage, NativeCandidateBoundary, worker_boundary_storage_quote,
+};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// Sealed application-callback nonrenderability authority. It is not an OS

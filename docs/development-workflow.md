@@ -15,7 +15,7 @@ equivalence from matching names.
 
 | Merge input | Required execution |
 | --- | --- |
-| Prose only: README, todo, docs Markdown | changed local links, conflict/whitespace checks, editorial claim review |
+| Prose only: README and docs Markdown | changed local links, conflict/whitespace checks, editorial claim review |
 | Known launcher/packaging Python and their tests | complete script tests, including private real Cargo/signing fixtures, source guards and format |
 | UI/widgets Rust with supported reverse dependencies | shared Python invariants, script guards, default UI/widgets tests, UI support-feature tests, actual gallery, default and feature strict Clippy, desktop build |
 | App-owned core Rust source only | shared Python invariants plus every Rust/guard configuration in the complete audit |

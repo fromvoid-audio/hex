@@ -91,6 +91,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         sample_rate: RATE,
         next_id: 102 + clips_total,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: PathBuf::from("profile-source.wav"),
             source_sample_rate: RATE,
