@@ -45,16 +45,16 @@ Native UI, listening and physical audio deadlines require separate evidence.
 ## Headless tools
 
 ```sh
-cargo run -p hex-cli --locked -- --help
 cargo run -p hex-cli --locked -- demo artifacts/hex-demo.wav
 cargo run -p hex-cli --locked -- render-project project.hex output.wav
 cargo run -p hex-cli --locked -- recover-project project.hex recovered.hex
 python3 crates/hex-plugin-scan/native/build.py --help
-cargo run -p hex-plugin-scan --locked -- --help
 ```
 
 Use original/licensed fixtures and create-new destinations; preserve projects and
-media. Inspect each command's help before importing, recovering or replacing files.
+media. Inspect command usage before importing, recovering or replacing files.
+The standalone scanners print usage when run without arguments; they accept
+controlled build receipts, not arbitrary installed third-party plugin paths.
 
 ## Find information
 

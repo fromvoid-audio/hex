@@ -13,5 +13,5 @@ plugin content or choose Hex's distribution license. Locked Rust dependencies
 retain their own notices in their source distributions.
 
 For commands use `python3 crates/hex-plugin-scan/native/build.py --help` and
-`cargo run -p hex-plugin-scan --locked -- --help`. Protocol and ownership
+`cargo run -p hex-plugin-scan --locked` (prints usage and exits nonzero without arguments). Protocol and ownership
 contracts belong beside their original Rust/C++ implementations.

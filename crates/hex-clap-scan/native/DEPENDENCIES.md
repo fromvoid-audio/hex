@@ -12,5 +12,5 @@ notice does not choose Hex's distribution license or license plugin content.
 Rust dependencies retain their own notices in the locked crate distributions.
 
 For commands use `python3 crates/hex-clap-scan/native/build.py --help` and
-`cargo run -p hex-clap-scan --locked -- --help`. Protocol and ownership contracts
+`cargo run -p hex-clap-scan --locked` (prints usage and exits nonzero without arguments). Protocol and ownership contracts
 belong beside their original Rust/C++ implementations.
