@@ -973,7 +973,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
             start_playing: true,
             project_generation: 0,
             project_revision: state.revision,
-            prepared_revision: prepared,
+            prepared_revision: Some(prepared),
             device_preview_identity: None,
         },
         fence,

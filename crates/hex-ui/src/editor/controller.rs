@@ -446,6 +446,8 @@ impl EditorView {
     }
 
     fn reset_output_publication_tracking(&mut self, output_identity: Option<u64>) {
+        self.invalidate_prepared_seek();
+        self.prepared_seek = None;
         self.playback_candidates.clear();
         self.audible_playback = None;
         self.applied_project_revision = None;
@@ -531,6 +533,37 @@ impl EditorView {
                         },
                         audio_revision,
                     );
+                    if let Some(metadata) = metadata {
+                        self.gain_recorder
+                            .published(metadata.gain_recording_track, audio_revision);
+                    }
+                }
+                if metadata.is_some_and(|metadata| metadata.stopped_restore)
+                    && self
+                        .stopped_playback_restore
+                        .is_some_and(|restore| match restore {
+                            super::audio_admission::StoppedPlaybackRestore::Preparing
+                            | super::audio_admission::StoppedPlaybackRestore::Ready => true,
+                            super::audio_admission::StoppedPlaybackRestore::Published(previous) => {
+                                audio_revision >= previous
+                            }
+                        })
+                {
+                    self.stopped_playback_restore = Some(
+                        super::audio_admission::StoppedPlaybackRestore::Published(audio_revision),
+                    );
+                }
+                if let Some(request_id) = metadata.and_then(|metadata| metadata.seek_request)
+                    && let Some(pending) = self.prepared_seek.as_mut().filter(|pending| {
+                        pending.prepared_revision.is_none()
+                            && pending.request_id == request_id
+                            && pending.project_generation == context.project_generation
+                            && pending.project_revision == authoring_revision
+                    })
+                {
+                    pending.stage =
+                        super::arrangement_seek::SeekStage::Published { audio_revision };
+                    pending.cancellation_retry |= pending.cancelled;
                 }
                 if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming
                     && let Some(generation) = self.pending_recovery_generation
@@ -1849,23 +1882,8 @@ impl EditorView {
             if current {
                 if let Some(error) = event.error {
                     self.error = Some(error.into());
-                    if self
-                        .computer_keyboard
-                        .input
-                        .as_ref()
-                        .is_some_and(|i| i.native_sampler_activation().is_some())
-                    {
-                        self.cancel_computer_keyboard();
-                        self.computer_keyboard.suspended = true;
-                    }
-                } else if self
-                    .computer_keyboard
-                    .input
-                    .as_ref()
-                    .is_some_and(|i| i.native_sampler_activation().is_some())
-                {
-                    self.computer_keyboard.native_ready = true;
-                    self.publish_computer_keyboard();
+                    self.cancel_computer_keyboard();
+                    self.computer_keyboard.suspended = true;
                 }
                 if let Some(playback) = event.playback {
                     let previous_reset = self
@@ -4897,7 +4915,7 @@ mod sampler_native_ui_protocol_tests {
     use super::*;
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
-    fn resident_preview_uses_exact_view_without_publishing_canonical_audio(
+    fn resident_publication_correlates_preview_restart_and_stopped_restore(
         cx: &mut gpui::TestAppContext,
     ) {
         let service = hex_session::service::Service::new(16_000, 8, 0).unwrap();
@@ -4952,6 +4970,9 @@ mod sampler_native_ui_protocol_tests {
                 device_preview: Some(identity),
                 tuning_preview: None,
                 seek_request: None,
+                stopped_restore: false,
+                computer_keyboard_request: None,
+                gain_recording_track: None,
                 requires_preroll: true,
             };
             let before = view.audio_admission;
@@ -5018,6 +5039,35 @@ mod sampler_native_ui_protocol_tests {
                 },
             );
             assert_eq!(view.playback_candidates.len(), 1);
+            view.stopped_playback_restore =
+                Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing);
+            let mut canonical_metadata = metadata;
+            canonical_metadata.device_preview = None;
+            view.apply_publication_observation(
+                context,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: 8,
+                    metadata: canonical_metadata,
+                },
+            );
+            assert_eq!(
+                view.stopped_playback_restore,
+                Some(super::super::audio_admission::StoppedPlaybackRestore::Preparing),
+                "an ordinary canonical submission cannot complete stopped restoration"
+            );
+            canonical_metadata.stopped_restore = true;
+            view.apply_publication_observation(
+                context,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: 9,
+                    metadata: canonical_metadata,
+                },
+            );
+            assert_eq!(
+                view.stopped_playback_restore,
+                Some(super::super::audio_admission::StoppedPlaybackRestore::Published(9)),
+                "only the tagged submission binds restoration to its actual audio revision"
+            );
         });
     }
 

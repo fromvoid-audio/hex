@@ -15,7 +15,7 @@ use hex_session::arrangement_seek::{
     MAX_SEEK_WORK_FRAMES,
 };
 use hex_session::service::DevicePreviewIdentity;
-use std::sync::Arc;
+use std::sync::{Arc, atomic::AtomicBool};
 
 // Scalar-only test witness at the real Service handback boundary. This does
 // not retain a graph, replace the worker or assert a native destruction time.
@@ -60,7 +60,7 @@ pub(super) struct SeekIntent {
     pub start_playing: bool,
     pub project_generation: u64,
     pub project_revision: u64,
-    pub prepared_revision: Arc<PreparedRevision>,
+    pub prepared_revision: Option<Arc<PreparedRevision>>,
     pub device_preview_identity: Option<DevicePreviewIdentity>,
 }
 
@@ -76,7 +76,7 @@ pub(super) struct PendingSeek {
     pub mode: ArrangementSeekMode,
     pub project_generation: u64,
     pub project_revision: u64,
-    pub prepared_revision: Arc<PreparedRevision>,
+    pub prepared_revision: Option<Arc<PreparedRevision>>,
     pub device_preview_identity: Option<DevicePreviewIdentity>,
     pub destination_frame: u64,
     pub work_budget_frames: u64,
@@ -85,6 +85,7 @@ pub(super) struct PendingSeek {
     pub stage: SeekStage,
     pub cancelled: bool,
     pub cancellation_retry: bool,
+    pub worker_cancel: Arc<AtomicBool>,
 }
 
 impl PendingSeek {
@@ -94,7 +95,7 @@ impl PendingSeek {
             start_playing: self.start_playing,
             project_generation: self.project_generation,
             project_revision: self.project_revision,
-            prepared_revision: Arc::clone(&self.prepared_revision),
+            prepared_revision: self.prepared_revision.clone(),
             device_preview_identity: self.device_preview_identity,
         }
     }
@@ -104,7 +105,10 @@ impl PendingSeek {
             && result.mode == self.mode
             && result.generation == self.project_generation
             && result.revision == self.project_revision
-            && Arc::ptr_eq(&result.prepared_revision, &self.prepared_revision)
+            && self
+                .prepared_revision
+                .as_ref()
+                .is_some_and(|prepared| Arc::ptr_eq(&result.prepared_revision, prepared))
             && result.destination_frame == self.destination_frame
             && result.work_budget_frames == self.work_budget_frames
             && result.start_playing == self.start_playing
@@ -112,7 +116,7 @@ impl PendingSeek {
     }
 
     pub fn defers_replacement(&self) -> bool {
-        self.stage != SeekStage::Preparing
+        self.prepared_revision.is_none() || self.stage != SeekStage::Preparing
     }
 }
 
@@ -120,13 +124,25 @@ fn latch_latest_intent(slot: &mut Option<SeekIntent>, intent: SeekIntent) {
     *slot = Some(intent);
 }
 
+fn seek_source_matches(
+    candidate: &super::PlaybackCandidate,
+    prepared: &Option<Arc<PreparedRevision>>,
+) -> bool {
+    match (candidate.prepared_revision.as_ref(), prepared.as_ref()) {
+        (Some(actual), Some(expected)) => Arc::ptr_eq(actual, expected),
+        (None, None) => candidate.worker_requires_preroll.is_some(),
+        _ => false,
+    }
+}
+
 impl SeekIntent {
     pub fn spec(&self) -> Option<ArrangementSeekSpec> {
+        let prepared = self.prepared_revision.as_ref()?;
         (self.destination_frame <= MAX_SEEK_WORK_FRAMES).then(|| ArrangementSeekSpec {
             mode: ArrangementSeekMode::Interactive,
             generation: self.project_generation,
             revision: self.project_revision,
-            prepared_revision: Arc::clone(&self.prepared_revision),
+            prepared_revision: Arc::clone(prepared),
             destination_frame: self.destination_frame,
             work_budget_frames: self.destination_frame,
             start_playing: self.start_playing,
@@ -141,7 +157,7 @@ impl PendingSeek {
             mode: ArrangementSeekMode::Interactive,
             project_generation: intent.project_generation,
             project_revision: intent.project_revision,
-            prepared_revision: Arc::clone(&intent.prepared_revision),
+            prepared_revision: intent.prepared_revision.clone(),
             device_preview_identity: intent.device_preview_identity,
             destination_frame: intent.destination_frame,
             work_budget_frames: intent.destination_frame,
@@ -150,6 +166,7 @@ impl PendingSeek {
             stage: SeekStage::Preparing,
             cancelled: false,
             cancellation_retry: false,
+            worker_cancel: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -397,13 +414,12 @@ impl EditorView {
 
     pub(super) fn current_preroll_source(
         &self,
-    ) -> Option<(Arc<hex_engine::PreparedRevision>, u64, u64)> {
+    ) -> Option<(Option<Arc<hex_engine::PreparedRevision>>, u64, u64)> {
         let state = self.state.as_ref()?;
         let candidate = self.audible_playback.as_ref()?;
-        let prepared = candidate.prepared_revision.as_ref()?;
-        requires_preroll(Some(prepared))?.then(|| {
+        self.current_seek_requires_preroll()?.then(|| {
             (
-                Arc::clone(prepared),
+                candidate.prepared_revision.clone(),
                 candidate.audio_revision,
                 state.revision,
             )
@@ -431,7 +447,7 @@ impl EditorView {
             prepared_revision,
             device_preview_identity: self.active_seek_preview(),
         };
-        if intent.spec().is_none() {
+        if intent.destination_frame > MAX_SEEK_WORK_FRAMES {
             self.error = Some("seek exceeds the bounded arrangement preroll range".into());
             return;
         }
@@ -443,6 +459,9 @@ impl EditorView {
         if let Some(pending) = self.prepared_seek.as_ref()
             && pending.defers_replacement()
         {
+            if pending.prepared_revision.is_none() && pending.stage == SeekStage::Preparing {
+                self.invalidate_prepared_seek();
+            }
             latch_latest_intent(&mut self.latched_seek_intent, intent);
             self.status = "seek queued · waiting for the current graph".into();
             return;
@@ -479,14 +498,6 @@ impl EditorView {
                 .map(|seek| seek.start_playing),
             start_frame,
             self.current_seek_requires_preroll()
-                .or_else(|| {
-                    // The private sampler CURRENT owns its prepared runtime in
-                    // native audio, so it deliberately has no public seek
-                    // candidate. Frame-zero Play is checked by that actual
-                    // client's current-context admission; nonzero seek remains
-                    // unsupported and must not enter the preroll path.
-                    (start_frame == 0 && self.first_sampler_current()).then_some(false)
-                })
                 .or_else(|| self.audio.is_none().then_some(false)),
         )
     }
@@ -512,9 +523,8 @@ impl EditorView {
             if let Some(audible) = self.audible_playback.as_ref().filter(|audible| {
                 audible.device_preview_identity == Some(current)
                     && audible.tuning_preview_identity.is_none()
-            }) && let Some(prepared) = audible.prepared_revision.as_ref()
-            {
-                intent.prepared_revision = Arc::clone(prepared);
+            }) {
+                intent.prepared_revision = audible.prepared_revision.clone();
                 audio_revision = audible.audio_revision;
             }
             if self
@@ -533,6 +543,10 @@ impl EditorView {
                 Some("arrangement seek requires the current applied arrangement graph".into());
             return;
         };
+        if intent.prepared_revision.is_none() {
+            self.admit_worker_owned_seek(intent, fence);
+            return;
+        }
         let Some(spec) = intent.spec() else {
             self.error = Some("seek exceeds the bounded arrangement preroll range".into());
             return;
@@ -561,6 +575,99 @@ impl EditorView {
         }
     }
 
+    fn admit_worker_owned_seek(&mut self, intent: SeekIntent, fence: FreshRuntimeFence) {
+        let Some(request_id) = self.seek_request_serial.checked_add(1) else {
+            self.error = Some("arrangement seek request identity exhausted".into());
+            return;
+        };
+        let Some(output_identity) = self
+            .audio
+            .as_ref()
+            .and_then(|audio| audio.control.output_identity())
+        else {
+            self.error = Some("arrangement seek output is unavailable".into());
+            return;
+        };
+        let pending = PendingSeek::from_intent(request_id, &intent, fence);
+        let request = hex_session::service::ResidentArrangementSeekIntent {
+            request_id,
+            project_generation: intent.project_generation,
+            project_revision: intent.project_revision,
+            destination_frame: intent.destination_frame,
+            start_playing: intent.start_playing,
+            fence: hex_session::service::ResidentFreshRuntimeFence {
+                output_identity,
+                active_audio_revision: fence.expected_active_revision(),
+                route_generation: fence.route_state_generation(),
+                admitted_command_ticket: fence.admitted_command_ticket(),
+            },
+            device_preview: intent.device_preview_identity,
+            tuning_preview: None,
+            cancelled: Arc::clone(&pending.worker_cancel),
+        };
+        match self.service.submit_resident_arrangement_seek(request) {
+            Ok(()) => {
+                self.seek_request_serial = request_id;
+                self.prepared_seek = Some(pending);
+                self.status = "preparing arrangement seek".into();
+                self.error = None;
+            }
+            Err(hex_session::service::SubmitError::Full(_)) => {
+                self.error = Some("arrangement seek request queue is full".into());
+            }
+            Err(hex_session::service::SubmitError::Closed(_)) => {
+                self.error = Some("arrangement seek worker is unavailable".into());
+            }
+            Err(hex_session::service::SubmitError::Busy(_)) => {
+                self.error = Some("arrangement seek worker is busy".into());
+            }
+        }
+    }
+
+    fn poll_worker_owned_seek(&mut self) -> bool {
+        let Some(result) = self.service.try_resident_arrangement_seek_result() else {
+            return false;
+        };
+        let Some(pending) = self.prepared_seek.as_mut().filter(|pending| {
+            pending.prepared_revision.is_none()
+                && pending.request_id == result.request_id
+                && pending.project_generation == result.project_generation
+                && pending.project_revision == result.project_revision
+        }) else {
+            return true;
+        };
+        match result.result {
+            Ok(hex_session::service::ResidentPublicationAcceptance::Submitted {
+                output_identity,
+                audio_revision,
+            }) if self
+                .audio
+                .as_ref()
+                .and_then(|audio| audio.control.output_identity())
+                == Some(output_identity) =>
+            {
+                pending.stage = SeekStage::Published { audio_revision };
+                if pending.cancelled {
+                    let control = self.audio.as_ref().map(|audio| &audio.control);
+                    pending.cancellation_retry = cancel_published_seek(control, pending)
+                        == Some(FreshRuntimeCancellationResult::Busy);
+                }
+            }
+            Ok(_) => {
+                self.prepared_seek = None;
+                self.error = Some("arrangement seek output is no longer available".into());
+            }
+            Err(error) => {
+                let cancelled = pending.cancelled;
+                self.prepared_seek = None;
+                if !cancelled {
+                    self.error = Some(error.into());
+                }
+            }
+        }
+        true
+    }
+
     fn capture_seek_admission_fence(
         &self,
         intent: &super::arrangement_seek::SeekIntent,
@@ -579,10 +686,7 @@ impl EditorView {
             || audible.audio_revision != applied
             || audible.project_generation != intent.project_generation
             || audible.state.revision != intent.project_revision
-            || audible
-                .prepared_revision
-                .as_ref()
-                .is_none_or(|prepared| !Arc::ptr_eq(prepared, &intent.prepared_revision))
+            || !seek_source_matches(audible, &intent.prepared_revision)
             || self.worker_requests_pending != 0
             || !self.pending_requests.is_empty()
             || self.opening_project
@@ -611,7 +715,7 @@ impl EditorView {
     }
 
     pub(super) fn tick_prepared_arrangement_seek(&mut self) -> bool {
-        let mut changed = false;
+        let mut changed = self.poll_worker_owned_seek();
         if let Some(pending) = self.prepared_seek.as_ref().filter(|pending| {
             !pending.cancelled
                 && !self.seek_source_is_current(
@@ -667,6 +771,11 @@ impl EditorView {
         let Some(pending) = self.prepared_seek.as_ref() else {
             return changed;
         };
+        if pending.prepared_revision.is_none() {
+            // Native completion is scalar-only. Its actual graph can only be consumed by the
+            // canonical worker; never use the legacy headless graph-return path here.
+            return changed;
+        }
         if pending.cancelled || pending.stage != super::arrangement_seek::SeekStage::Preparing {
             return changed;
         }
@@ -785,10 +894,7 @@ impl EditorView {
             && audible.audio_revision == active_revision
             && audible.project_generation == pending.project_generation
             && audible.state.revision == pending.project_revision
-            && audible
-                .prepared_revision
-                .as_ref()
-                .is_some_and(|prepared| Arc::ptr_eq(prepared, &pending.prepared_revision))
+            && seek_source_matches(audible, &pending.prepared_revision)
             && routes.audio_revision == pending.fence.expected_active_revision()
             && routes.route_state_generation == pending.fence.route_state_generation()
             && routes.count <= entries.len()
@@ -884,11 +990,27 @@ impl EditorView {
             self.service.invalidate_arrangement_seek();
             return;
         };
+        pending
+            .worker_cancel
+            .store(true, std::sync::atomic::Ordering::Release);
         match pending.stage {
             super::arrangement_seek::SeekStage::Preparing => {
-                self.service.invalidate_arrangement_seek();
+                if pending.prepared_revision.is_none() {
+                    // The final enqueue can race cancellation. Retain scalar correlation until
+                    // completion supplies the revision needed by conditional cancellation.
+                    pending.cancelled = true;
+                    self.prepared_seek = Some(pending);
+                } else {
+                    self.service.invalidate_arrangement_seek();
+                }
             }
             super::arrangement_seek::SeekStage::CandidateReady => {
+                let Some(prepared_revision) = pending.prepared_revision.clone() else {
+                    self.error =
+                        Some("worker-owned seek returned an unexpected local candidate".into());
+                    self.prepared_seek = Some(pending);
+                    return;
+                };
                 if self
                     .pending_playback
                     .as_ref()
@@ -900,7 +1022,7 @@ impl EditorView {
                         mode: pending.mode,
                         generation: pending.project_generation,
                         revision: pending.project_revision,
-                        prepared_revision: pending.prepared_revision,
+                        prepared_revision,
                         destination_frame: pending.destination_frame,
                         work_budget_frames: pending.work_budget_frames,
                         start_playing: pending.start_playing,

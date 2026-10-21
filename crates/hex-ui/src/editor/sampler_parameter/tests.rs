@@ -159,4 +159,16 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
         );
         assert_eq!(visual.debug_bounds(selector).is_some(), valid, "case{case}");
     }
+    editor.update(cx, |view, _| {
+        view.computer_keyboard.enabled = true;
+        view.computer_keyboard.suspended = false;
+        assert!(view.tick_computer_keyboard());
+        assert!(
+            view.computer_keyboard.input.is_some(),
+            "sampler keyboard preparation uses the ordinary input without a private output epoch"
+        );
+        assert_eq!(view.computer_keyboard.target, Some((2, 7, track)));
+        view.cancel_computer_keyboard();
+        view.computer_keyboard.enabled = false;
+    });
 }
