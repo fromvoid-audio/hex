@@ -160,7 +160,7 @@ fn replacement_history_requires_exact_forward_template_and_shared_catalog_in_bot
         .unwrap();
     assert!(
         editor
-            .inspect_history(true, |a, b| validate_history_pair(a, b))
+            .inspect_history(true, validate_history_pair)
             .unwrap()
             .is_ok()
     );
