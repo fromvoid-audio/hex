@@ -45,6 +45,18 @@ impl AudioCandidateReservationQuote {
             counts.add(Kind::Device, track.devices().len())?;
             counts.add(Kind::Point, track.gain_envelope().len())?;
         }
+        for cell in project.session_cells() {
+            if let hex_project::SessionCellContent::Midi(clip) = cell.content() {
+                counts.session_clips = counts
+                    .session_clips
+                    .checked_add(1)
+                    .ok_or(AudioStorageError::Overflow)?;
+                counts.session_notes = counts
+                    .session_notes
+                    .checked_add(clip.source().notes().len())
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
         Self::from_counts(
             counts,
             project.tracks().len(),
@@ -77,6 +89,8 @@ impl AudioCandidateReservationQuote {
         ] {
             counts.add(kind, count)?;
         }
+        counts.session_clips = hex_project::MAX_SESSION_CELLS;
+        counts.session_notes = hex_project::MAX_NOTES;
         Self::from_counts(
             counts,
             hex_project::MAX_TRACKS,
@@ -96,17 +110,27 @@ impl AudioCandidateReservationQuote {
         sources: usize,
     ) -> Result<Self, AudioStorageError> {
         let groups = crate::session_playback::candidate_group_reservation(tracks, returns)?;
+        let (session_bytes, session_workspace) =
+            crate::session_inventory::audio_assembly::current_midi::cardinality_quote(
+                counts.session_notes,
+                counts.session_clips,
+            )?;
         Ok(Self {
             source_capacity: sources,
             compiler_workspace_bytes: crate::audio_preparation::sampler_workspace_bound(
                 counts.notes,
                 counts.clips,
-            )?,
+            )?
+            .checked_add(session_workspace)
+            .ok_or(AudioStorageError::Overflow)?,
             data_rows: counts.rows,
             handle_rows: counts.handles,
             member_rows: groups.checked_mul(2).ok_or(AudioStorageError::Overflow)?,
             transfer_rows: groups,
-            metadata_data_bytes: counts.bytes,
+            metadata_data_bytes: counts
+                .bytes
+                .checked_add(session_bytes)
+                .ok_or(AudioStorageError::Overflow)?,
         })
     }
     /// Add a separately bounded input bank and the existing mutable-runtime
@@ -159,6 +183,8 @@ enum Kind {
 struct Counts {
     notes: usize,
     clips: usize,
+    session_clips: usize,
+    session_notes: usize,
     rows: usize,
     handles: usize,
     bytes: usize,

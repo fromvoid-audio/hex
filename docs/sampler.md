@@ -1120,3 +1120,39 @@ fixture retains four-, six- and two-frame originals, undoes to six, then refuses
 the next four-frame candidate because12 retained +6 current +4 candidate exceeds20.
 The uncatalogued two-frame original remains charged; Redo still succeeds. These
 headless checks do not establish physical UI, audio deadlines or listening acceptance.
+
+## Constructor-owned Console playback
+
+Native CURRENT can compile finite authored local Console MIDI cells, including
+Session source loops, multiple sampler tracks and scenes mixed with ordinary
+audio cells. The existing Session clock, quantization, templates and renderer
+remain authoritative. Routed MIDI, nonzero seek, Pause, active Arrangement chase
+and composition edits after loading remain outside this increment. Private
+offline export does not acquire this Console capability.
+
+Each source/event template is born in the same constructor as its exact sampler
+factory and original PCM bank. Its paired source, event, empty note-bank and
+context handles, names, backing vectors and compiler workspace participate in
+reservation, sealing, restore and control cleanup. No generic prepared-source
+bridge or additional PCM bank is used. The preflight capacity aggregates retain
+the conservative compiler reservation when actual vectors occupy fewer bytes;
+the closed ledger still visits actual backing independently.
+
+An immediate transition validates the entire command before committing route
+changes and outgoing primary gate cuts. A quantized transition preflights every
+due destination before cutting speculative gates and routes in the existing
+render transaction. NoteOff precedes incoming NoteOn; the same sampler runtime
+continues releases under MIDI, audio or silent routes. A checked route incarnation
+distinguishes retriggers while the previous release is alive. The first segment
+after a cut is one frame. Reservations independently bound surviving releases,
+factory voices, occurrence proofs, onsets and events; refusal preserves the old
+route and pending request, and cancellation does not cut voices. Generic mutable
+route guards and generic inheritance refusals remain intact.
+
+The UI requires the actual applied source/output/generation/revision and callback
+Console capability. Submission, constructor hold and legacy output do not qualify.
+Headless tests cover literal mixed PCM, loops and block partitions, quantized
+boundary crossing, retrigger release, atomic scene capacity refusal, exact/under
+compiler reservations, actual native launch/tuning/cancel/Stop allocation probes
+and rendered Console interaction. Physical interaction, listening and optimized
+candidate acceptance remain separate.

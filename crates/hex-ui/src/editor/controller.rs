@@ -2926,7 +2926,8 @@ impl EditorView {
     ) {
         if self.state.as_ref().is_some_and(|s| {
             hex_engine::native_device_resources::requires_private_sampler_sources(&s.project)
-        }) {
+        }) && !self.sampler_console_current()
+        {
             self.error = Some("sampler session launch is unavailable".into());
             return;
         }
@@ -2977,7 +2978,8 @@ impl EditorView {
     ) {
         if self.state.as_ref().is_some_and(|s| {
             hex_engine::native_device_resources::requires_private_sampler_sources(&s.project)
-        }) {
+        }) && !self.sampler_console_current()
+        {
             self.error = Some("sampler session launch is unavailable".into());
             return;
         }
@@ -3083,15 +3085,21 @@ impl EditorView {
     fn queue_playback_action(&mut self, action: PlaybackAction, revision: Option<u64>) {
         if self.state.as_ref().is_some_and(|s| {
             hex_engine::native_device_resources::requires_private_sampler_sources(&s.project)
-        }) && matches!(
+        }) && (matches!(
             action,
             PlaybackAction::Transport(
                 PlaybackCommand::Pause
                     | PlaybackCommand::Seek(1..)
                     | PlaybackCommand::PlayFrom(1..)
-            ) | PlaybackAction::Session(_)
-                | PlaybackAction::LaunchAndPlay(_)
-        ) {
+            ) | PlaybackAction::Session(
+                hex_engine::SessionPlaybackCommand::Seek(1..)
+                    | hex_engine::SessionPlaybackCommand::Pause
+            )
+        ) || (matches!(
+            action,
+            PlaybackAction::Session(_) | PlaybackAction::LaunchAndPlay(_)
+        ) && !self.sampler_console_current()))
+        {
             self.error = Some("sampler native playback supports play from start and stop".into());
             return;
         }

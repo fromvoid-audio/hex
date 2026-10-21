@@ -75,8 +75,8 @@ impl SessionAssembly {
     pub(crate) fn dispose_next(&mut self) -> Result<(), AudioStorageError> {
         self.unpack_on_control()?;
         self.phase = AssemblyPhase::Cleaning;
-        if !self.unused_midi.is_empty() || self.unused_midi.capacity() != 0 {
-            return Err(AudioStorageError::UnknownStorage);
+        if self.dispose_current_sampler_midi()? {
+            return Ok(());
         }
         if !self.unused_mutable.is_empty() {
             self.current_sampler_bytes(None)?;
@@ -226,9 +226,16 @@ impl SessionAssembly {
             return Err(AudioStorageError::Capacity);
         }
         // Only empty headers/scalar declaration rows; backing remains charged.
-        if !self.sampler_factories.is_empty() {
+        if !self.unused_midi.is_empty()
+            || !self.sampler_midi.is_empty()
+            || !self.sampler_factories.is_empty()
+        {
             return Err(AudioStorageError::SourceMismatch);
         }
+        drop(mem::take(&mut self.unused_midi));
+        drop(mem::take(&mut self.sampler_midi));
+        self.sampler_midi_scope = None;
+        self.sampler_context_address = None;
         drop(mem::take(&mut self.unused_mutable));
         drop(mem::take(&mut self.sampler_factories));
         self.scenes.clear();
