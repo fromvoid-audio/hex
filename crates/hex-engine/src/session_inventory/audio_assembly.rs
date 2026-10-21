@@ -12,6 +12,7 @@ use crate::{
 };
 use std::mem;
 mod cleanup;
+mod current_sampler;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SessionAssemblyCapacity {
@@ -26,6 +27,7 @@ pub struct SessionAssemblyCapacity {
     pub meter_copy_bytes: usize,
     pub meter_bytes: usize,
     pub meter_owned_allocations: usize,
+    pub sampler_factory_bytes: usize,
 }
 impl SessionAssemblyCapacity {
     pub(crate) fn bytes(self) -> Result<usize, AudioStorageError> {
@@ -39,6 +41,7 @@ impl SessionAssemblyCapacity {
             self.pair_bytes,
             self.meter_copy_bytes,
             self.meter_bytes,
+            self.sampler_factory_bytes,
         ]
         .into_iter()
         .try_fold(0_usize, |n, b| {
@@ -178,6 +181,7 @@ pub(crate) struct SessionAssembly {
     growth: usize,
     unused_midi: Vec<PreparedSessionMidiClip>,
     unused_mutable: Vec<PreparedMutableTrackInstrument>,
+    sampler_factories: Vec<current_sampler::FactoryBinding>,
     name_pending: bool,
     scene_cursor: usize,
     track_cursor: usize,
@@ -309,8 +313,6 @@ impl SessionAssembly {
                 || i.midi_source_roots.capacity() != 0
                 || !i.midi_clips.is_empty()
                 || i.midi_clips.capacity() != 0
-                || !i.mutable_instruments.is_empty()
-                || i.mutable_instruments.capacity() != 0
                 || i.mutable_history_retarget_storage_bytes != 0
                 || i.midi_note_bank_storage_bytes != 0
                 || i.midi_note_bank_reference_count != 0
@@ -319,9 +321,10 @@ impl SessionAssembly {
                 return Err(AudioStorageError::UnknownStorage);
             }
         }
-        if self.unused_midi.capacity() != 0 || self.unused_mutable.capacity() != 0 {
+        if self.unused_midi.capacity() != 0 {
             return Err(AudioStorageError::UnknownStorage);
         }
+        let sampler_factory_bytes = self.current_sampler_bytes(external)?;
         let copy_meter = self.meter_copy.capacity();
         let meter_copy_bytes = copy_meter
             .layout
@@ -366,6 +369,7 @@ impl SessionAssembly {
                 )
             };
         let report = SessionAssemblyCapacity {
+            sampler_factory_bytes,
             meter_copy_bytes,
             meter_bytes,
             meter_owned_allocations,
@@ -614,7 +618,7 @@ impl SessionAssembly {
                 scene_cell_ranges: mem::take(&mut self.ranges),
                 tracks: mem::take(&mut self.tracks),
                 midi_clips: Vec::new(),
-                mutable_instruments: Vec::new(),
+                mutable_instruments: mem::take(&mut self.unused_mutable),
                 mutable_history_retarget_storage_bytes: 0,
                 audio_clips: mem::take(&mut self.audio),
                 work: SessionWorkEnvelope::default(),
@@ -842,6 +846,7 @@ impl SessionAssembly {
             growth,
             unused_midi,
             unused_mutable,
+            sampler_factories,
             name_pending: _,
             scene_cursor: _,
             track_cursor: _,
@@ -870,6 +875,8 @@ impl SessionAssembly {
         l.vec(pairs)?;
         l.vec(unused_midi)?;
         l.vec(unused_mutable)?;
+        l.vec(sampler_factories)?;
+        self.visit_current_sampler_factories(l, external)?;
         for scene in scenes {
             l.string(&scene.name)?;
         }

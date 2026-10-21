@@ -488,3 +488,17 @@ pub(super) fn legacy_enqueue(
         action,
     )
 }
+
+pub(super) fn constructor_endpoint_storage_quote() -> Option<usize> {
+    std::mem::size_of::<ClientEndpoints>()
+        .checked_add(std::mem::size_of::<PublicationControl>())?
+        .checked_add(std::mem::size_of::<
+            std::sync::OnceLock<std::sync::Mutex<Box<ClientEndpoints>>>,
+        >())?
+        .checked_add(std::mem::size_of::<
+            std::sync::OnceLock<std::sync::Mutex<Box<PublicationControl>>>,
+        >())?
+        .checked_add(std::mem::size_of::<Client>())?
+        .checked_add(std::mem::size_of::<WorkerControl>())?
+        .checked_add(resident_forwarding::constructor_storage_quote())
+}

@@ -313,7 +313,7 @@ impl ControlSamplerSources {
         })
     }
 }
-struct PreparedControlSampler(hex_devices::sampler::PreparedSamplerRuntime);
+pub(crate) struct PreparedControlSampler(pub(crate) hex_devices::sampler::PreparedSamplerRuntime);
 impl hex_lattice::PreparedNativeInstrument for PreparedControlSampler {
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)

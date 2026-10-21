@@ -149,7 +149,16 @@ fn sampler_service_real_mono_stereo_assign_and_controlled_file_pcm() {
         assert!(event(&service).error.is_none());
         let assigned = assign(&service, files.source.clone());
         assert!(assigned.playback.is_none());
-        assert!(assigned.state.canonical_audio_source.is_none());
+        assert!(
+            assigned
+                .state
+                .canonical_audio_source
+                .as_ref()
+                .unwrap()
+                .sources()
+                .is_empty(),
+            "public context must not own original sampler PCM"
+        );
         assert!(assigned.device_preview.is_none());
         assert!(
             assigned
@@ -529,7 +538,15 @@ fn sampler_unsupported_operations_refuse_without_source_or_document_escape() {
         assert!(refused.error.is_some());
         assert_eq!(refused.state.revision, assigned.state.revision);
         assert!(refused.playback.is_none());
-        assert!(refused.state.canonical_audio_source.is_none());
+        assert!(
+            refused
+                .state
+                .canonical_audio_source
+                .as_ref()
+                .unwrap()
+                .sources()
+                .is_empty()
+        );
     }
     assert!(!saved.exists());
     for (start, signal) in [
@@ -586,6 +603,7 @@ fn captured_export_new_and_media_open_check_complete_union_before_adoption() {
     let source = anchor.sources.as_ref().unwrap();
     let (_dispatched_job_owner, obligation) = source.capture_for_dispatch_on_control(1).unwrap();
     let admission = Admission {
+        native: NativeSamplerReservationHold::default(),
         current: Some(snapshot.selection()),
         export: Some(anchor.selection()),
         runtime_bytes: hex_engine::SessionPlayback::control_sampler_export_runtime_allowance(
@@ -778,6 +796,7 @@ fn legacy_staged_owner_union_has_independent_exact_byte_limits_before_commit() {
         .with_native_reservation(reservation())
         .unwrap();
     let admission = Admission {
+        native: NativeSamplerReservationHold::default(),
         current: None,
         export: Some(anchor.selection()),
         outbound: Some(resources::ControlSamplerOutbound {

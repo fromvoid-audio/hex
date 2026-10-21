@@ -24,8 +24,10 @@ mod canonical_audio_source;
 mod comparison_audio;
 mod export_lane;
 pub(crate) mod sampler_export;
-pub use audio_sink::WorkerAudioSink;
 use audio_sink::WorkerEvents;
+pub use audio_sink::{
+    NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts, WorkerAudioSink,
+};
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
 mod device_comparison;
@@ -705,6 +707,26 @@ impl Service {
         )
     }
 
+    pub fn with_audio_sink_and_native_reservation(
+        history_capacity: usize,
+        max_resident_frames: u64,
+        recovery: Option<PathBuf>,
+        audio: Box<dyn WorkerAudioSink>,
+        native: crate::ResidentNativeReservation,
+    ) -> Result<Self, ServiceError> {
+        Self::start_configured(
+            48_000,
+            history_capacity,
+            max_resident_frames,
+            recovery,
+            Arc::new(|path, prepared, start, frames| {
+                hex_export::render_prepared_new(path, Arc::clone(prepared), start, frames)
+                    .map_err(|e| e.to_string().to_lowercase())
+            }),
+            Some(audio),
+            Some(native),
+        )
+    }
     fn with_exporter_and_recovery(
         sample_rate: u32,
         history_capacity: usize,
@@ -832,6 +854,23 @@ impl Service {
                         if let Some(error) = error {
                             events.startup_failed(error);
                         }
+                        let session = match native {
+                            Some(limits) => match session.with_native_reservation(limits) {
+                                Ok(session) => session,
+                                Err(reason) => {
+                                    events.startup_failed(format!(
+                                        "native resident reservation unavailable: {reason}"
+                                    ));
+                                    let Ok(session) =
+                                        Session::new(rate, history_capacity, max_resident_frames)
+                                    else {
+                                        return;
+                                    };
+                                    session
+                                }
+                            },
+                            None => session,
+                        };
                         session.with_shutdown(worker_shutdown)
                     }
                 };
@@ -1011,19 +1050,17 @@ fn view_state_bound(
         } else {
             binding.as_ref().and_then(|(_, proof)| proof.clone())
         },
-        canonical_audio_source:
-            if hex_engine::native_device_resources::requires_private_sampler_sources(&project) {
-                None
-            } else {
-                binding.map(|(source, _)| source).or_else(|| {
-                    Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
-                        &project,
-                        project_generation,
-                        revision,
-                        session,
-                    )))
-                })
-            },
+        // This existing projection contains legacy audio bindings and exact
+        // context only. It never contains native_assets/Sampler PCM owners; the
+        // private worker borrow is the sole sampler native construction input.
+        canonical_audio_source: binding.map(|(source, _)| source).or_else(|| {
+            Some(Arc::new(CanonicalAudioSourceSnapshot::capture(
+                &project,
+                project_generation,
+                revision,
+                session,
+            )))
+        }),
         gain_preview: hex_engine::GainAutomationPreview::prepare(&project).map(Arc::new),
         project,
         waveforms: session.waveforms(),
@@ -1433,14 +1470,46 @@ fn run_worker(
     if audio_error.is_some() && initial.error.is_none() {
         initial.error = audio_error;
     }
-    if !events.send_with_control_poll(initial, || export_lane.poll()) {
+    if !events.send_with_control_poll(initial, |audio| {
+        audio_sink::native_sampler::drive(
+            audio,
+            &session,
+            hex_engine::AudioSourceContext {
+                project_generation,
+                editor_revision: revision,
+            },
+            &mut export_lane,
+            compiled.as_ref().map(|(_, p)| {
+                hex_engine::native_device_resources::ControlSamplerSelection {
+                    sources: current_sources.as_ref(),
+                    prepared: Some(p),
+                }
+            }),
+        )
+    }) {
         return;
     }
 
     while let Some(request) = events.next_request_with_control_poll(
         &requests,
         session.native_reservation.is_some(),
-        || export_lane.poll(),
+        |audio| {
+            audio_sink::native_sampler::drive(
+                audio,
+                &session,
+                hex_engine::AudioSourceContext {
+                    project_generation,
+                    editor_revision: revision,
+                },
+                &mut export_lane,
+                compiled.as_ref().map(|(_, p)| {
+                    hex_engine::native_device_resources::ControlSamplerSelection {
+                        sources: current_sources.as_ref(),
+                        prepared: Some(p),
+                    }
+                }),
+            )
+        },
     ) {
         let mut computer_keyboard_complete = None;
         let mut tuning_audition_complete = None;
@@ -1642,6 +1711,16 @@ fn run_worker(
         let private_sampler = hex_engine::native_device_resources::requires_private_sampler_sources(
             session.project(),
         );
+        let native_edit_refusal = export_lane
+            .native_hold
+            .current_context
+            .is_some_and(|c| c.project_generation == project_generation)
+            && matches!(
+                &request,
+                Request::AssignSampler { .. }
+                    | Request::Edit(_)
+                    | Request::ImportDeviceAsset { .. }
+            );
         let sampler_refusal = private_sampler
             && !matches!(
                 &request,
@@ -1655,8 +1734,10 @@ fn run_worker(
                     | Request::OpenWith { .. }
                     | Request::OpenWithAudioMode { .. }
             );
-        if sampler_refusal {
-            error=Some("sampler supports private offline export; native playback, history, save and runtime tools are unavailable".into());
+        if native_edit_refusal {
+            error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
+        } else if sampler_refusal {
+            error=Some(if events.native_audio_requested() {"sampler supports frame-zero arrangement play and stop; history, save and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, history, save and runtime tools are unavailable"}.into());
             if let Request::PrepareComputerKeyboard { request_id, .. } = &request {
                 computer_keyboard_complete = Some(*request_id);
             }
@@ -2115,8 +2196,12 @@ fn run_worker(
                             replacement_revision = Some(snapshot.prepared);
                             replacement_sources = Some(snapshot.sources);
                             status = Some(
-                                "sampler offline export supported · native playback unavailable"
-                                    .into(),
+                                if events.native_audio_requested() {
+                                    "sampler assigned · preparing frame-zero native arrangement"
+                                } else {
+                                    "sampler offline export supported · native playback unavailable"
+                                }
+                                .into(),
                             );
                         }
                         Err(reason) => error = Some(reason.to_string()),
@@ -2137,8 +2222,12 @@ fn run_worker(
                             replacement_revision = Some(snapshot.prepared);
                             replacement_sources = Some(snapshot.sources);
                             status = Some(
-                                "sampler offline export supported · native playback unavailable"
-                                    .into(),
+                                if events.native_audio_requested() {
+                                    "sampler assigned · preparing frame-zero native arrangement"
+                                } else {
+                                    "sampler offline export supported · native playback unavailable"
+                                }
+                                .into(),
                             );
                         }
                         Err(reason) => error = Some(reason.to_string()),
@@ -3587,7 +3676,23 @@ fn run_worker(
                 active_tuning_gesture: tuning_gesture.snapshot(),
                 tuning_library,
             },
-            || export_lane.poll(),
+            |audio| {
+                audio_sink::native_sampler::drive(
+                    audio,
+                    &session,
+                    hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision,
+                    },
+                    &mut export_lane,
+                    compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p),
+                        }
+                    }),
+                )
+            },
         ) {
             return;
         }

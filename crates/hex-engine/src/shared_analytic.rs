@@ -259,6 +259,24 @@ pub(crate) struct SharedAnalyticContextTable {
 }
 
 impl SharedAnalyticContextTable {
+    /// The closed native sampler constructor has no analytic owners. Its
+    /// validated tuning remains inline in the actual constructor allocation.
+    pub(crate) fn current_sampler_table(tuning: hex_lattice::TuningTable) -> Result<Self, Invalid> {
+        let tuning_identity = if tuning.is_neutral() {
+            TuningIdentity::default()
+        } else {
+            TuningIdentity(
+                NEXT_TUNING_ID
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                    .map_err(|_| Invalid("tuning identity exhausted"))?,
+            )
+        };
+        Ok(Self {
+            tuning,
+            tuning_identity,
+            ..Self::default()
+        })
+    }
     /// Exhaustive audited empty-table payload check for the opt-in compiler.
     /// Vec headers belong to this outer payload; nonzero spare capacities or
     /// nested handles are unsupported rather than assumed free/complete.

@@ -51,6 +51,7 @@ pub(crate) struct RevisionAssembly {
     handles: [u64; 4],
     reserved_bytes: usize,
     reserved: bool,
+    current_sampler_scope: Option<u64>,
     extraction_attempted: [bool; 4],
     extracted: usize,
     #[cfg(test)]
@@ -124,6 +125,13 @@ impl RevisionAssembly {
     }
 
     pub(crate) fn reserve(&mut self, project: &hex_project::Project) -> Result<(), Error> {
+        self.reserve_with_sampler(project, None)
+    }
+    pub(crate) fn reserve_with_sampler(
+        &mut self,
+        project: &hex_project::Project,
+        scope: Option<u64>,
+    ) -> Result<(), Error> {
         if self.reserved
             || self.owner.is_some()
             || self.revision_value.is_some()
@@ -138,30 +146,39 @@ impl RevisionAssembly {
         {
             return Err(Error::Capacity);
         }
-        // Empty mutable descriptors are permitted only for this exhaustive class.
-        for track in project.tracks() {
-            if track.instrument().is_some()
-                || track
-                    .devices()
-                    .iter()
-                    .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
-                || !track.midi_clips().is_empty()
-            {
+        if scope.is_some() {
+            if !crate::native_device_resources::current_sampler::validate_project(project)? {
                 return Err(Error::UnsupportedGraph);
             }
-        }
-        for bus in project.return_tracks() {
-            if !bus.devices().is_empty() {
-                return Err(Error::UnsupportedGraph);
+        } else {
+            // Empty mutable descriptors are permitted only for this exhaustive class.
+            for track in project.tracks() {
+                if track.instrument().is_some()
+                    || track
+                        .devices()
+                        .iter()
+                        .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+                    || !track.midi_clips().is_empty()
+                {
+                    return Err(Error::UnsupportedGraph);
+                }
+            }
+            for bus in project.return_tracks() {
+                if !bus.devices().is_empty() {
+                    return Err(Error::UnsupportedGraph);
+                }
+            }
+            for cell in project.session_cells() {
+                match cell.content() {
+                    hex_project::SessionCellContent::Audio(_)
+                    | hex_project::SessionCellContent::Stop => {}
+                    hex_project::SessionCellContent::Midi(_) => {
+                        return Err(Error::UnsupportedGraph);
+                    }
+                }
             }
         }
-        for cell in project.session_cells() {
-            match cell.content() {
-                hex_project::SessionCellContent::Audio(_)
-                | hex_project::SessionCellContent::Stop => {}
-                hex_project::SessionCellContent::Midi(_) => return Err(Error::UnsupportedGraph),
-            }
-        }
+        self.current_sampler_scope = scope;
         self.reserved_bytes = 0;
         for parts in [
             OwnedShared::<PlaybackProject>::declared_parts(),
@@ -203,7 +220,7 @@ impl RevisionAssembly {
             gain_recording_track,
         }) = revision
         {
-            if resource_scope.is_some() {
+            if *resource_scope != self.current_sampler_scope {
                 return Err(Error::UnsupportedGraph);
             }
             if self.arrangement.is_some()
@@ -354,7 +371,7 @@ impl RevisionAssembly {
         ) {
             (Some(arrangement), Some(session), Some(midi_preview)) => {
                 self.revision_value = Some(PreparedRevision {
-                    resource_scope: None,
+                    resource_scope: self.current_sampler_scope,
                     tuning_family: TuningContinuationFamily::fresh()
                         .map_err(|_| Error::Overflow)?,
                     arrangement,
@@ -448,6 +465,7 @@ impl RevisionAssembly {
         if self.session_value.is_some() {
             session.restore_revision(&mut self.session_value);
         }
+        self.current_sampler_scope = None;
         self.reserved = false;
         self.handles = [0; 4];
         self.reserved_bytes = 0;
@@ -506,6 +524,7 @@ impl RevisionAssembly {
             handles,
             reserved_bytes: _,
             reserved: _,
+            current_sampler_scope: _,
             extraction_attempted: _,
             extracted: _,
             #[cfg(test)]

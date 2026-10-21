@@ -21,6 +21,7 @@ impl ServiceExportSnapshot {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Admission<'a> {
     pub(crate) current: Option<ControlSamplerSelection<'a>>,
+    pub(crate) native: NativeSamplerReservationHold,
     pub(crate) export: Option<ControlSamplerSelection<'a>>,
     pub(crate) runtime_bytes: usize,
     pub(crate) outbound: Option<resources::ControlSamplerOutbound<'a>>,
@@ -69,11 +70,18 @@ impl Admission<'_> {
             selections: &selections,
             outbound: &outbound,
             legacy: &legacy,
-            checked_runtime_bytes: self.runtime_bytes,
+            checked_runtime_bytes: self
+                .runtime_bytes
+                .checked_add(self.native.construction_bytes)
+                .ok_or(SessionError::Invalid("native reservation overflow"))?,
             construction_bytes: 0,
         };
         let inventory = resources::inspect_control_sampler_union(&phase, &phase, limits.storage)?;
-        if inventory.retained_frames > session.max_resident_frames {
+        if inventory
+            .retained_frames
+            .checked_add(self.native.frames)
+            .is_none_or(|n| n > session.max_resident_frames)
+        {
             return Err(SessionError::Invalid("resident audio frame limit reached"));
         }
         Ok(Some(inventory))
@@ -119,7 +127,10 @@ impl Admission<'_> {
             selections: &kept_selections,
             outbound: &outbound,
             legacy: &kept_legacy,
-            checked_runtime_bytes: self.runtime_bytes,
+            checked_runtime_bytes: self
+                .runtime_bytes
+                .checked_add(self.native.retained_bytes)
+                .ok_or(SessionError::Invalid("native reservation overflow"))?,
             construction_bytes: 0,
         };
         let peak = ControlSamplerPhase {
@@ -127,7 +138,10 @@ impl Admission<'_> {
             selections: &peak_selections,
             outbound: &outbound,
             legacy: &peak_legacy,
-            checked_runtime_bytes: self.runtime_bytes,
+            checked_runtime_bytes: self
+                .runtime_bytes
+                .checked_add(self.native.construction_bytes)
+                .ok_or(SessionError::Invalid("native reservation overflow"))?,
             construction_bytes: compiler_bytes,
         };
         let inventory = match stage {
@@ -135,7 +149,11 @@ impl Admission<'_> {
             None => resources::inspect_control_sampler_union(&kept, &peak, reservation.storage),
         }
         .map_err(SessionError::from)?;
-        if inventory.retained_frames > future.max_resident_frames {
+        if inventory
+            .retained_frames
+            .checked_add(self.native.frames)
+            .is_none_or(|n| n > future.max_resident_frames)
+        {
             return Err(SessionError::Invalid("resident audio frame limit reached"));
         }
         Ok(inventory)
@@ -266,7 +284,10 @@ impl Session {
                         selections: &retained,
                         outbound: &outbound,
                         legacy: &current_legacy,
-                        checked_runtime_bytes: admission.runtime_bytes,
+                        checked_runtime_bytes: admission
+                            .runtime_bytes
+                            .checked_add(admission.native.construction_bytes)
+                            .ok_or(SessionError::Invalid("native reservation overflow"))?,
                         construction_bytes: 0,
                     };
                     let peak = ControlSamplerPhase {
@@ -274,12 +295,19 @@ impl Session {
                         selections: &construction,
                         outbound: &outbound,
                         legacy: &current_legacy,
-                        checked_runtime_bytes: admission.runtime_bytes,
+                        checked_runtime_bytes: admission
+                            .runtime_bytes
+                            .checked_add(admission.native.construction_bytes)
+                            .ok_or(SessionError::Invalid("native reservation overflow"))?,
                         construction_bytes: extra,
                     };
                     let inventory =
                         resources::inspect_control_sampler_union(&kept, &peak, limits.storage)?;
-                    if inventory.retained_frames > max_frames {
+                    if inventory
+                        .retained_frames
+                        .checked_add(admission.native.frames)
+                        .is_none_or(|n| n > max_frames)
+                    {
                         return Err(SessionError::Invalid("resident audio frame limit reached"));
                     }
                 }
@@ -387,7 +415,10 @@ impl Session {
                         selections: &kept,
                         outbound: &outbound,
                         legacy: &legacy_refs,
-                        checked_runtime_bytes: admission.runtime_bytes,
+                        checked_runtime_bytes: admission
+                            .runtime_bytes
+                            .checked_add(admission.native.construction_bytes)
+                            .ok_or(SessionError::Invalid("native reservation overflow"))?,
                         construction_bytes: 0,
                     };
                     let construction = ControlSamplerPhase {
@@ -395,11 +426,18 @@ impl Session {
                         selections: &peak,
                         outbound: &outbound,
                         legacy: &legacy_refs,
-                        checked_runtime_bytes: admission.runtime_bytes,
+                        checked_runtime_bytes: admission
+                            .runtime_bytes
+                            .checked_add(admission.native.construction_bytes)
+                            .ok_or(SessionError::Invalid("native reservation overflow"))?,
                         construction_bytes: extra,
                     };
                     let inventory = stage.inspect(&retained, &construction, limits.storage)?;
-                    if inventory.retained_frames > maximum {
+                    if inventory
+                        .retained_frames
+                        .checked_add(admission.native.frames)
+                        .is_none_or(|n| n > maximum)
+                    {
                         return Err(SessionError::Invalid("resident audio frame limit reached"));
                     }
                     Ok(())
@@ -482,7 +520,11 @@ impl Admission<'_> {
             .map_err(|_| SessionError::Invalid("resident byte allowance exceeds frame range"))?;
         Ok(current
             .max_resident_frames
-            .checked_sub(base.retained_frames)
+            .checked_sub(
+                base.retained_frames
+                    .checked_add(self.native.frames)
+                    .ok_or(SessionError::Invalid("native frame reservation overflow"))?,
+            )
             .ok_or(SessionError::Invalid(
                 "captured export exceeds resident frame reservation",
             ))?

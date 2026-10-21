@@ -2,6 +2,10 @@
 //! Session owns no device or page endpoints and never interprets their tokens.
 use super::*;
 use std::time::Duration;
+pub(super) mod native_sampler;
+pub use native_sampler::{
+    NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
+};
 
 /// A single worker-owned desktop adapter. Initialization and every method run
 /// on the existing Session worker, including while the UI event queue is full.
@@ -16,6 +20,12 @@ pub trait WorkerAudioSink: Send {
     /// On generation replacement relinquish the previous publication/output
     /// first. Replacement opening must be polled, not awaited in this method.
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
+    /// Synchronous private canonical/original PCM input; no borrow may survive.
+    fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
+    /// Hold remains charged through actual native teardown, never a UI ACK.
+    fn native_sampler_hold(&self) -> NativeSamplerReservationHold {
+        NativeSamplerReservationHold::default()
+    }
     /// Advance bounded preparation/return work; no UI polling is required.
     fn poll(&mut self);
     /// Start a correlated reopen on the existing lifecycle lane. Implementations
@@ -64,6 +74,9 @@ impl WorkerEvents {
         }
         Ok(rate)
     }
+    pub(super) fn native_audio_requested(&self) -> bool {
+        self.audio.is_some()
+    }
     pub(super) fn startup_failed(&mut self, error: String) {
         self.startup_error = Some(format!("audio unavailable: {error}"));
     }
@@ -88,7 +101,7 @@ impl WorkerEvents {
     pub(super) fn send_with_control_poll(
         &mut self,
         mut event: Event,
-        mut control_poll: impl FnMut(),
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
     ) -> bool {
         if let Some(source) = &event.state.canonical_audio_source {
             if self.last_context != Some(source.context()) {
@@ -103,7 +116,11 @@ impl WorkerEvents {
                 return false;
             }
             self.poll();
-            control_poll();
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
             match self.sender.try_send(event) {
                 Ok(()) => return true,
                 Err(TrySendError::Disconnected(_)) => return false,
@@ -118,12 +135,20 @@ impl WorkerEvents {
         &mut self,
         requests: &Receiver<Request>,
         bounded: bool,
-        mut control_poll: impl FnMut(),
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
     ) -> Option<Request> {
-        control_poll();
+        control_poll(
+            self.audio
+                .as_mut()
+                .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+        );
         if self.audio.is_none() && !bounded {
             let result = requests.recv().ok();
-            control_poll();
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
             return result;
         }
         loop {
@@ -131,10 +156,18 @@ impl WorkerEvents {
                 return None;
             }
             self.poll();
-            control_poll();
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
             match requests.recv_timeout(Duration::from_millis(5)) {
                 Ok(request) => {
-                    control_poll();
+                    control_poll(
+                        self.audio
+                            .as_mut()
+                            .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                    );
                     return Some(request);
                 }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,

@@ -78,6 +78,9 @@ impl CanonicalAudioSourceSnapshot {
     pub fn candidate_reservation_quote(
         &self,
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        if hex_engine::native_device_resources::requires_private_sampler_sources(&self.project) {
+            return Err(hex_engine::AudioStorageError::UnsupportedGraph);
+        }
         hex_engine::AudioCandidateReservationQuote::for_project(
             &self.project,
             self.required_sources().count(),

@@ -425,6 +425,25 @@ impl SessionPlayback {
         }
         Self::new(revision).map_err(|_| crate::AudioStorageError::UnsupportedGraph)
     }
+    pub(crate) fn new_current_sampler_candidate(
+        revision: Arc<PreparedRevision>,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+    ) -> Result<Self, crate::AudioStorageError> {
+        if revision.resource_scope != Some(sources.metadata.id) {
+            return Err(crate::AudioStorageError::SourceMismatch);
+        }
+        let allowance = Self::linear_export_runtime_allowance(&revision)
+            .map_err(|_| crate::AudioStorageError::ReservationExceeded)?;
+        let playback = Self::new_with_policy_scoped(revision, false)
+            .map_err(|_| crate::AudioStorageError::UnsupportedGraph)?;
+        if playback
+            .accounted_runtime_storage_bytes()
+            .is_none_or(|n| n > allowance)
+        {
+            return Err(crate::AudioStorageError::ReservationExceeded);
+        }
+        Ok(playback)
+    }
     pub(crate) fn validate_candidate_runtime_storage(
         &self,
         metadata: usize,
@@ -570,6 +589,19 @@ impl SessionPlayback {
             visit(1, index, owner.is_some())?;
         }
         for (index, owner) in mutable_instruments.iter().enumerate() {
+            if let Some(owner) = owner {
+                if self.revision.resource_scope.is_none()
+                    || !owner.is_concrete_current_sampler()
+                    || self
+                        .revision
+                        .arrangement()
+                        .tracks()
+                        .get(index)
+                        .is_none_or(|t| t.instrument_id != owner.expression_identity)
+                {
+                    return Err(crate::AudioStorageError::UnsupportedGraph);
+                }
+            }
             visit(2, index, owner.is_some())?;
         }
         for (index, owner) in tail_mutable_instruments.iter().enumerate() {

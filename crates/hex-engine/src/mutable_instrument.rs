@@ -224,6 +224,45 @@ pub(crate) struct MutableInstrumentTail {
 }
 
 impl MutableInstrumentTrackRuntime {
+    pub(crate) fn is_concrete_current_sampler(&self) -> bool {
+        self.expression.is_none()
+            && self
+                .pair
+                .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
+                .is_some()
+    }
+    pub(crate) fn visit_current_sampler_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            pair,
+            expression_identity: _,
+            expression,
+            primary,
+            scratch,
+            next_id: _,
+            next_id_scratch: _,
+        } = self;
+        if expression.is_some() {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
+        let (first, second) = pair
+            .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
+            .ok_or(crate::AudioStorageError::UnsupportedGraph)?;
+        ledger.vec(primary)?;
+        ledger.vec(scratch)?;
+        ledger.bytes(
+            crate::audio_storage::Owner::exclusive(pair),
+            crate::audio_storage::Location("current-sampler-primary", 0),
+            first,
+        )?;
+        ledger.bytes(
+            crate::audio_storage::Owner::exclusive(pair),
+            crate::audio_storage::Location("current-sampler-scratch", 0),
+            second,
+        )
+    }
     /// Conservative checkpoint charge derived from the prepared declaration
     /// and both fixed occurrence-ledger buffers. Call before `new` so a store
     /// can reject count/aggregate overages before invoking the runtime factory.

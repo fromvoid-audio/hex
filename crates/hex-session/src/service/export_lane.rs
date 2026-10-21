@@ -19,6 +19,7 @@ pub(super) struct ExportLane {
     worker: Option<JoinHandle<()>>,
     pub(super) active: Option<ActiveExport>,
     next_id: u64,
+    pub(super) native_hold: NativeSamplerReservationHold,
 }
 impl ExportLane {
     pub(super) fn new(
@@ -32,6 +33,7 @@ impl ExportLane {
             worker: Some(worker),
             active: None,
             next_id: 1,
+            native_hold: NativeSamplerReservationHold::default(),
         }
     }
     pub(super) fn poll(&mut self) {
@@ -64,6 +66,7 @@ impl ExportLane {
     ) -> sampler_export::Admission<'a> {
         sampler_export::Admission {
             current,
+            native: self.native_hold,
             export: self.active.as_ref().map(|a| a.snapshot.selection()),
             runtime_bytes: self.active.as_ref().map_or(0, |a| a.runtime_bytes),
             outbound: self.active.as_ref().and_then(|a| {
@@ -151,7 +154,9 @@ impl ExportLane {
             selections: &selections,
             outbound: &[],
             legacy: &legacy,
-            checked_runtime_bytes: runtime_bytes,
+            checked_runtime_bytes: runtime_bytes
+                .checked_add(self.native_hold.construction_bytes)
+                .ok_or("native export reservation overflow")?,
             construction_bytes: 0,
         };
         let reservation = session
@@ -163,7 +168,11 @@ impl ExportLane {
             reservation.storage,
         )
         .map_err(|e| format!("export storage refused: {e:?}").to_lowercase())?;
-        if inventory.retained_frames > session.max_resident_frames {
+        if inventory
+            .retained_frames
+            .checked_add(self.native_hold.frames)
+            .is_none_or(|n| n > session.max_resident_frames)
+        {
             return Err("resident audio frame limit reached".into());
         }
         job.sources = job_sources;

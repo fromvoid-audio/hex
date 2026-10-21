@@ -47,7 +47,7 @@ DEV_ALLOWED = {
     'hex-engine': {'hex-tuning'},
     'hex-session': {'hex-tuning'},
     # Actual Session -> native adapter fixtures, never a production editor model.
-    'hex-desktop': {'hex-project'},
+    'hex-desktop': {'hex-project', 'hex-tuning'},
     'hex-audio': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-media', 'hex-tuning'},
     'hex-export': {'hex-project', 'hex-lattice-contract', 'hex-lattice', 'hex-tuning'},
 }

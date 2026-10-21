@@ -382,3 +382,108 @@ invent unverified source custody. The owning regression records both AddAsset
 and ImportDeviceAsset accepting nonexistent files before the fix and refusing
 after it, with identical project/history/revision and independently checked
 subsequent sampler export PCM.
+
+## fresh native arrangement current — pulse2964 / PR548
+
+The desktop's explicit resident reservation now supports canonical sampler
+Arrangement playback from frame zero, Stop/reset and replay. A synchronous
+Session-worker borrow supplies the exact original PCM and canonical source
+context to `NativeAudioSink`; the sink copies original-rate frames into a
+persistent, never-published constructor cell. No path reread, resampling or
+source-bearing Event is involved. The public canonical snapshot carries only
+its existing legacy bindings and exact context; its public quote/constructor
+continues to refuse sampler preparation.
+
+This is one closed constructor class: finite Arrangement MIDI, resident source
+assets, loaded sampler instruments and the existing Utility-only effect chain.
+Project and MIDI-source loops, Session MIDI/launches, routing/return devices,
+mutable handoff, tails, checkpoints, live expression, preview and nonzero seeks
+remain closed. Source/configuration/topology edits refuse before canonical
+commit while this limited native owner is active. New/Open explicitly retires
+it; history and loaded-project reconstruction remain separate work.
+
+Construction regenerates the catalog, device scope and authored tuning against
+the newly copied bank. The actual `SessionPlayback`, sampler runtime twins,
+finite event backings and bank handles participate in the existing constructor
+inventory and storage seal. The resource facade borrows the same bank into the
+existing `process_segment_with_resources` path. It introduces no second sampler
+scheduler, callback source lookup, preparation or owner clone.
+
+Preflight and sealing happen before disturbing the old output. A targeted UI
+message relinquishes only the matching old Client. Successful acquisition of
+an exclusive fresh output lease proves old output retirement. The intact cell
+then moves into a virgin publication reservation; exact generation, editor
+revision, rate, source capacity and actual storage checks precede the move.
+The engine root, runtime addresses, bank and scope survive it. Destination
+staging reseals actual storage before the new Client becomes visible. A cleared
+Option, UI acknowledgement or Stop is never a source-release proof. Stale and
+failed unpublished cells are cleaned on control; an incomplete cleanup remains
+in bounded quarantine and blocks another preflight rather than being dropped
+or retried by a destructor.
+
+The desktop derives its finite resident policy from supported constructor
+cardinalities and a pure quote of the actual fixed native publication/control
+backings. That quote is neither the configured DATA ceiling nor an RSS claim;
+fresh construction checks its actual backing against the quote. Admission adds
+native current/preflight/retiring/control holds to the same Session/export
+union. Original and copied PCM share the unchanged 8,000,000-frame ceiling;
+immutable metadata does not raise the independent 32MiB mutable-runtime limit.
+Retained and construction-peak bounds remain distinct. Holds survive until
+actual cleanup or a fresh exclusive lease proves teardown. Capacity changes
+request a fresh synchronous borrow and full admission, without granting space.
+
+Headless owning checks exercise real Service WAV import and assignment through
+the desktop adapter and eligible CURRENT: mono/stereo 8kHz originals in a 16kHz
+project, A440/A880 targets, literal PCM, note gate, Stop and identical replay.
+The fixture removes its source file before assignment. A concurrent independent
+export checks literal PCM without changing the native clock. Callback probes
+cover install, rendering, gate, Stop and replay with zero total and signed-net
+allocations/frees. Additional cases cover insufficient shared frame capacity
+without old-output disturbance, New during drain, failed fresh output and
+new-context recovery, wrong context/rate/capacity/DATA adoption refusal, and
+control cleanup. A protocol regression checks lost Submitted metadata and
+stale targeted Client-release messages; it is not native input evidence.
+
+These are source/headless checks. Native UI interaction, listening, physical
+device deadlines, optimized application delivery, sampler controls, general
+editing/history and save/reopen remain unverified or unsupported. The exact
+required merge-plan receipt belongs to the canonical PR, independently of this
+description.
+
+Final-review boundary checks also cover the ordinary graph already playing
+before sampler preparation. Resident forwarding records actual graph PCM
+capacities under its existing finite request-slot mutex. Suspending that same
+slot and reading its obligations is atomic with respect to another forwarding
+request; transport and priority Stop remain independent. Admission refreshes the
+native hold after suspension rather than trusting an earlier worker sample.
+Accepted current, queued and returned graphs stay charged until actual control
+owner destruction. Refused owning responses conservatively keep their charge
+through Root teardown, including after response collection. Verified constructor
+resident copies carry their preparation/submission capacity hold through actual
+return recovery; cancelled or failed preparation residuals conservatively stay charged until teardown.
+Shared PCM across separate publications may be conservatively charged more than
+once. These are selected PCM/construction roles, not total process RSS or an
+inventory of arbitrary external legacy graphs.
+
+New/Open cancels an old sampler context before requesting or polling another
+output. A new ordinary output therefore receives its ordinary control/runtime
+hold even if opening completes before the next private sampler input. Failed
+cleanup retains custody and prevents another open. An already admitted canonical
+offline assignment survives native budget/preparation/device-open refusal, with
+truthful unavailable/refused audio status. This does not roll back the user's
+edit. Canonical import/source admission remains atomic, and active limited native
+replacement still refuses before canonical commit.
+
+Native MIDI compilation now starts after the other fixed constructor backings
+exist. Before compiler entry, admission checks their actual simultaneous bytes,
+all tracks' finite final MIDI bound and conservative temporary clip-count,
+note-key growth (including old/new allocation overlap), stable-sort, onset and
+density-edge workspace. Retained and construction limits
+are checked separately; the historical workspace overlap remains in the storage
+seal after temporaries are freed. The pinned Rust1.94 driftsort quote includes its 48-element scratch minimum
+above the 20-element insertion path, using max(N,48) element slots; this scratch
+does not overlap density sorting, and the quote safely sums phase bounds. Empty MIDI clips still reserve clip-count workspace. Owning exact
+and one-under tests cover empty-clip and 3/21/256 nonoverlapping-note fixtures and observe
+that a refused compiler was never entered. Removing each of the three review
+repairs reproduces its focused failure; raw RED/GREEN evidence is retained with
+PR548's local artifacts. The interrupted earlier audit is not merge evidence.

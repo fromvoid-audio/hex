@@ -751,6 +751,22 @@ Required exact merge qualification is recorded externally; this entry does not
 establish native playback, UI controls, history/reopen, listening or optimized
 app delivery. Those remain the next functional dependencies toward the MVP.
 
+## sampler fresh native arrangement current — #2964 / PR548
+
+The explicit resident desktop path preflights original PCM and an actual sampler
+Arrangement runtime, drains the old output through its exclusive lease, adopts
+the intact sealed cell and stages it before exposing the new Client. Play from
+zero, Stop/reset and replay use the normal SessionPlayback resource renderer.
+Real Service/adapter headless checks cover mono/stereo original-rate conversion,
+A440/A880 tuning, gate, independent export, zero callback allocations/frees,
+shared-capacity refusal, cancellation and failed-open recovery. Native owners
+stay outside public snapshots and source events; scalar context remains public.
+The 8M union frame cap and separate 32MiB mutable limit remain unchanged.
+Required exact merge qualification is recorded externally. Native UI/listening,
+physical deadlines and optimized delivery remain separate; controls, general
+editing/history and save/reopen are still needed for the usable sampler MVP.
+See [the native scope](docs/sampler.md#fresh-native-arrangement-current--pulse2964--pr548).
+
 ## Sampler / Simpler request — #2679 / PR296, 17 october 2026
 
 The requested device is named sampler and targets Ableton Simpler, including
