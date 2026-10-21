@@ -209,18 +209,38 @@ fn sampler_gain_fence_observes_earlier_play_and_refuses_later_play_without_repla
 
 #[test]
 fn sampler_gain_postcommit_open_failure_keeps_authored_gain_save_export_and_explicit_retry() {
-    postcommit_open_failure(false);
+    postcommit_open_failure(FailedEdit::Gain);
 }
 #[test]
 fn sampler_history_postcommit_open_failure_keeps_authored_history_save_export_and_explicit_retry() {
-    postcommit_open_failure(true);
+    postcommit_open_failure(FailedEdit::History);
 }
-fn postcommit_open_failure(undo: bool) {
+#[test]
+fn sampler_replacement_postcommit_open_failure_keeps_new_source_save_export_and_explicit_retry() {
+    postcommit_open_failure(FailedEdit::Replacement);
+}
+#[derive(Clone, Copy)]
+enum FailedEdit {
+    Gain,
+    History,
+    Replacement,
+}
+fn postcommit_open_failure(kind: FailedEdit) {
     let _serial = NATIVE_FIXTURE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let (files, mut h, track, device, before) = current(12);
-    let (before, request, expected_gain) = if undo {
+    let (files, mut h, track, device, before) =
+        current(if matches!(kind, FailedEdit::Replacement) {
+            24
+        } else {
+            12
+        });
+    let (before, request, expected_gain) = if matches!(kind, FailedEdit::Replacement) {
+        let request = Request::SamplerEdit(hex_session::service::SamplerEdit::Replacement(
+            super::replacement::intent(&before, track, super::replacement::incoming(&files)),
+        ));
+        (before, request, 1.0)
+    } else if matches!(kind, FailedEdit::History) {
         let changed = super::history::complete(
             &mut h,
             Request::SamplerEdit(hex_session::service::SamplerEdit::Parameter(edit(
@@ -236,6 +256,11 @@ fn postcommit_open_failure(undo: bool) {
             &before, track, device,
         )));
         (before, request, 0.5)
+    };
+    let expected_pcm = if matches!(kind, FailedEdit::Replacement) {
+        [0.25_f32, 0.125]
+    } else {
+        [0.125 * expected_gain as f32, -0.25 * expected_gain as f32]
     };
     let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     h.observation.lock().unwrap().fail_gain_open = true;
@@ -311,11 +336,11 @@ fn postcommit_open_failure(undo: bool) {
     let bytes = fs::read(path).unwrap();
     assert_eq!(
         i16::from_le_bytes([bytes[44], bytes[45]]),
-        (4096.0 * expected_gain) as i16
+        (expected_pcm[0] * 32768.0) as i16
     );
     assert_eq!(
         i16::from_le_bytes([bytes[46], bytes[47]]),
-        (-8192.0 * expected_gain) as i16
+        (expected_pcm[1] * 32768.0) as i16
     );
     h.service
         .as_ref()
@@ -376,10 +401,7 @@ fn postcommit_open_failure(undo: bool) {
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    assert_eq!(
-        h.render()[0],
-        [0.125 * expected_gain as f32, -0.25 * expected_gain as f32]
-    );
+    assert_eq!(h.render()[0], expected_pcm);
 }
 
 #[test]

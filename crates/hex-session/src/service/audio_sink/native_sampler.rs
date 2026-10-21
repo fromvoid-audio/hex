@@ -22,12 +22,52 @@ pub struct NativeSamplerRetryFacts {
     export_present: bool,
     outbound_job: Option<u64>,
 }
+/// The actual committed or still-staged transaction, borrowed only on control.
+/// Neither variant projects an owning source or a temporary committed store.
+#[derive(Clone, Copy)]
+pub(in crate::service) enum NativeSamplerSources<'a> {
+    Committed(&'a hex_engine::native_device_resources::ResidentDeviceAssets),
+    Staged(&'a hex_engine::native_device_resources::StagedNativeAssetView<'a>),
+}
+impl NativeSamplerSources<'_> {
+    fn source(&self, asset: hex_project::AssetId) -> Option<hex_engine::OwnedAudioSourceView<'_>> {
+        match self {
+            Self::Committed(store) => store.source(asset),
+            Self::Staged(stage) => stage.source(asset),
+        }
+    }
+    pub(in crate::service) fn inspect(
+        self,
+        phase: &hex_engine::native_device_resources::ControlSamplerPhase<'_>,
+        limits: hex_engine::AudioStorageLedgerReservation,
+    ) -> Result<
+        hex_engine::native_device_resources::ControlSamplerInventory,
+        hex_engine::native_device_resources::ResourcePreparationError,
+    > {
+        use hex_engine::native_device_resources::{self as resources, ControlSamplerPhase};
+        match self {
+            Self::Committed(store) => {
+                let stores = [store];
+                let actual = ControlSamplerPhase {
+                    stores: &stores,
+                    selections: phase.selections,
+                    outbound: phase.outbound,
+                    legacy: phase.legacy,
+                    checked_runtime_bytes: phase.checked_runtime_bytes,
+                    construction_bytes: phase.construction_bytes,
+                };
+                resources::inspect_control_sampler_union(&actual, &actual, limits)
+            }
+            Self::Staged(stage) => stage.inspect(phase, phase, limits),
+        }
+    }
+}
 /// This borrow cannot be cloned, retained by a sink or obtained from an Event.
 pub struct NativeSamplerInput<'a> {
     pub(in crate::service) project: &'a Project,
     pub(in crate::service) media:
         &'a std::collections::HashMap<hex_project::AssetId, crate::ResidentAsset>,
-    pub(in crate::service) native: &'a hex_engine::native_device_resources::ResidentDeviceAssets,
+    pub(in crate::service) originals: NativeSamplerSources<'a>,
     pub(in crate::service) reservation: Option<crate::ResidentNativeReservation>,
     pub(in crate::service) audio_mode: crate::DocumentAudioMode,
     pub(in crate::service) max_frames: u64,
@@ -95,7 +135,7 @@ impl NativeSamplerInput<'_> {
         for asset in self.project.assets().filter(|a| self.needed(a.id())) {
             let length = if self.sampler_asset(asset.id()) {
                 let source = self
-                    .native
+                    .originals
                     .source(asset.id())
                     .ok_or("sampler original source is unavailable")?;
                 source
@@ -159,8 +199,8 @@ impl NativeSamplerInput<'_> {
             .flat_map(|m| [&m.source_audio, &m.audio])
             .collect::<Vec<_>>();
         admission
-            .check_native_parts(
-                self.native,
+            .check_native_originals(
+                self.originals,
                 &legacy,
                 self.reservation,
                 self.max_frames,
@@ -180,7 +220,7 @@ impl NativeSamplerInput<'_> {
             if self.sampler_asset(asset.id()) {
                 cell.copy_original_source_on_control(
                     asset.id(),
-                    self.native
+                    self.originals
                         .source(asset.id())
                         .ok_or(hex_engine::AudioStorageError::SourceMismatch)?,
                 )?;
@@ -220,7 +260,7 @@ pub(in crate::service) fn drive(
         audio.native_sampler_input(NativeSamplerInput {
             project: session.project(),
             media: &session.media,
-            native: &session.native_assets,
+            originals: NativeSamplerSources::Committed(&session.native_assets),
             reservation: session.native_reservation,
             audio_mode: session.audio_mode,
             max_frames: session.max_resident_frames,

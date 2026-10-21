@@ -129,6 +129,18 @@ pub struct SamplerParameterEdit {
     pub value: f64,
     pub cancel: Arc<AtomicBool>,
 }
+/// One captured existing-device source replacement; all file work stays on control.
+#[derive(Clone, Debug)]
+pub struct SamplerReplacementEdit {
+    pub request_id: u64,
+    pub project_generation: u64,
+    pub revision: u64,
+    pub track: hex_project::TrackId,
+    pub device: hex_project::DeviceId,
+    pub expected_state: hex_lattice_contract::NativeDeviceState,
+    pub path: PathBuf,
+    pub cancel: Arc<AtomicBool>,
+}
 /// Global history intent bound to one project revision, never to UI selection.
 #[derive(Clone, Debug)]
 pub struct SamplerHistoryEdit {

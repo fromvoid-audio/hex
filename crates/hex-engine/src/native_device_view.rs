@@ -217,6 +217,45 @@ pub fn patch_sampler_parameter_on_control(
     })
 }
 
+/// Refuse unsupported modes before the host decodes any replacement media.
+pub fn validate_sampler_replacement_on_control(state: &NativeDeviceState) -> Result<(), Invalid> {
+    let authored = hex_devices::sampler::state::SamplerState::from_native(state)
+        .map_err(sampler_state_error)?;
+    if matches!(
+        authored.mode,
+        hex_devices::sampler::state::AuthoredMode::Classic { .. }
+    ) {
+        Ok(())
+    } else {
+        Err(Invalid(
+            "sample replacement currently requires classic mode",
+        ))
+    }
+}
+/// Preserve every non-source setting and host envelope; reset only source bounds
+/// and Classic loop points. The project transaction binds the new asset identity.
+pub fn sampler_replacement_template_on_control(
+    state: &NativeDeviceState,
+    frames: usize,
+) -> Result<(NativeDeviceState, hex_lattice_contract::DeviceAssetSlot), Invalid> {
+    validate_sampler_replacement_on_control(state)?;
+    use hex_devices::sampler::state::{AuthoredMode, SamplerState};
+    let mut authored = SamplerState::from_native(state).map_err(sampler_state_error)?;
+    let whole = SamplerState::for_source_frames(frames)
+        .map_err(sampler_state_error)?
+        .region;
+    authored.region = whole;
+    authored.mode = AuthoredMode::Classic {
+        loop_enabled: false,
+        loop_region: whole,
+    };
+    Ok((
+        authored.replace_in(state).map_err(sampler_state_error)?,
+        hex_lattice_contract::DeviceAssetSlot::new(hex_devices::sampler::state::SOURCE_SLOT)
+            .map_err(sampler_state_error)?,
+    ))
+}
+
 /// Classify the closed set of panel configuration fields while preserving every
 /// other codec/host field and the exact source binding. Control thread only.
 pub fn is_sampler_configuration_history_on_control(

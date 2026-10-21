@@ -12,6 +12,10 @@ pub(super) struct Target {
     pub(super) revision: u64,
     pub(super) track: TrackId,
     pub(super) path: PathBuf,
+    pub(super) replacement: Option<(
+        hex_project::DeviceId,
+        hex_lattice_contract::NativeDeviceState,
+    )>,
 }
 struct Pending {
     id: u64,
@@ -60,16 +64,22 @@ impl EditorView {
             .selected_track
             .and_then(|id| state.project.track(id))
             .ok_or("select a midi track before loading a sampler")?;
-        if track.instrument().is_some() {
-            return Err(
-                "first sampler load requires an empty instrument slot; replacement is unavailable",
-            );
-        }
+        let replacement = if let Some(device) = track.instrument() {
+            hex_engine::validate_sampler_replacement_on_control(device.state())
+                .map_err(|_| "sample replacement currently requires classic mode")?;
+            if !self.first_sampler_current() {
+                return Err("wait for sampler audio before replacing its sample");
+            }
+            Some((device.id(), device.state().clone()))
+        } else {
+            None
+        };
         Ok(Target {
             generation: self.project_generation,
             revision: state.revision,
             track: track.id(),
             path,
+            replacement,
         })
     }
     pub(super) fn first_sampler_target_current(&self, target: &Target) -> bool {
@@ -78,7 +88,12 @@ impl EditorView {
                 s.revision == target.revision
                     && s.project
                         .track(target.track)
-                        .is_some_and(|t| t.instrument().is_none())
+                        .is_some_and(|t| match &target.replacement {
+                            None => t.instrument().is_none(),
+                            Some((id, state)) => t.instrument().is_some_and(|device| {
+                                device.id() == *id && device.state() == state && !device.bypassed()
+                            }),
+                        })
             })
     }
     pub(super) fn open_first_sampler_menu(
@@ -97,6 +112,11 @@ impl EditorView {
                     request_id: pending.id,
                 },
             )
+        } else if let Some(id) = self.sampler_replacement_pending_id() {
+            (
+                "cancel sample replacement",
+                EditorContextAction::CancelSamplerLoad { request_id: id },
+            )
         } else {
             if !device_panel::finalize_controls(self, cx) {
                 return;
@@ -110,7 +130,11 @@ impl EditorView {
                 }
             };
             (
-                "load into sampler",
+                if target.replacement.is_some() {
+                    "replace sampler sample"
+                } else {
+                    "load into sampler"
+                },
                 EditorContextAction::LoadFirstSampler(target),
             )
         };
@@ -145,6 +169,11 @@ impl EditorView {
             self.error = Some("sampler load target changed".into());
             return;
         }
+        if target.replacement.is_some() {
+            self.submit_sampler_replacement(target);
+            cx.notify();
+            return;
+        }
         let Some(id) = self.sampler_load.serial.checked_add(1) else {
             self.error = Some("sampler load request id exhausted".into());
             return;
@@ -172,6 +201,7 @@ impl EditorView {
         cx.notify();
     }
     pub(super) fn cancel_first_sampler_load(&mut self, request_id: Option<u64>) {
+        self.cancel_sampler_replacement(request_id);
         if let Some(pending) = self.sampler_load.pending.as_ref()
             && request_id.is_none_or(|id| id == pending.id)
         {
@@ -188,6 +218,7 @@ impl EditorView {
             .pending
             .as_ref()
             .is_some_and(|p| p.id == id)
+            || self.sampler_replacement_pending_id() == Some(id)
     }
     pub(super) fn first_sampler_load_complete(
         &mut self,

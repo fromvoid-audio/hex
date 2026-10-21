@@ -31,6 +31,13 @@ pub(crate) enum NativeAssetDestination {
         state: hex_lattice_contract::NativeDeviceState,
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
+    ExistingInstrument {
+        track: hex_project::TrackId,
+        device: hex_project::DeviceId,
+        expected_state: hex_lattice_contract::NativeDeviceState,
+        state: hex_lattice_contract::NativeDeviceState,
+        source_slot: hex_lattice_contract::DeviceAssetSlot,
+    },
 }
 pub(crate) struct ReconstructedOriginalSources<'a> {
     pub assets: hex_engine::native_device_resources::ResidentDeviceAssets,
@@ -96,7 +103,7 @@ impl Session {
             decoded,
             cancel,
             NativeAssetDestination::Unassigned,
-            |candidate, media, table, transforms, waveforms, _stage| {
+            |candidate, media, table, transforms, waveforms, _stage, _media_assets| {
                 let prepared = prepare_with_waveforms(
                     candidate,
                     media,
@@ -122,6 +129,7 @@ impl Session {
             &hex_engine::audio_transform::AudioTransformPreparation,
             &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
             &hex_engine::native_device_resources::StagedNativeAssetView<'_>,
+            &std::collections::HashMap<hex_project::AssetId, crate::ResidentAsset>,
         ) -> Result<T, SessionError>,
     ) -> Result<(Created, T), SessionError> {
         let reservation = self.native_reservation.ok_or(SessionError::Invalid(
@@ -171,6 +179,7 @@ impl Session {
         let legacy = pcm_bytes(self.resident_frames)?;
         let overview_budget = &self.overview_budget;
         let old_overviews = &self.source_overviews;
+        let media_assets = &self.media;
         let native_assets = &mut self.native_assets;
         let shutdown = &self.shutdown;
         let transforms = &self.audio_transforms;
@@ -187,6 +196,22 @@ impl Session {
                 source_slot,
             } => Command::ImportDeviceAssetIntoEmptyInstrument {
                 track,
+                path,
+                sample_rate: source_rate,
+                frames,
+                state,
+                source_slot,
+            },
+            NativeAssetDestination::ExistingInstrument {
+                track,
+                device,
+                expected_state,
+                state,
+                source_slot,
+            } => Command::ImportDeviceAssetReplacingInstrument {
+                track,
+                device,
+                expected_state,
                 path,
                 sample_rate: source_rate,
                 frames,
@@ -231,8 +256,15 @@ impl Session {
                             )?;
                         let source_overviews =
                             old_overviews.inserted(overview_budget, id, overview)?;
-                        let prepared =
-                            prepare(candidate, &media, table, transforms, waveforms, stage)?;
+                        let prepared = prepare(
+                            candidate,
+                            &media,
+                            table,
+                            transforms,
+                            waveforms,
+                            stage,
+                            media_assets,
+                        )?;
                         if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
                             return Err(ResourcePreparationError::Cancelled.into());
                         }

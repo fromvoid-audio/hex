@@ -18,6 +18,8 @@ static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 struct Observation {
     gain_prepared: Option<hex_engine::AudioCandidateIdentity>,
+    sampler_cancel_count: u64,
+    sampler_begin_count: u64,
     gain_cells: Vec<(
         hex_engine::AudioCandidateIdentity,
         hex_engine::AudioCandidateIdentity,
@@ -134,7 +136,9 @@ impl WorkerAudioSink for ObservedSink {
         &mut self,
         context: hex_engine::AudioSourceContext,
     ) -> Result<(), String> {
-        self.inner.begin_sampler_edit(context)
+        self.inner.begin_sampler_edit(context)?;
+        self.observation.lock().unwrap().sampler_begin_count += 1;
+        Ok(())
     }
     fn sampler_edit_ready(&mut self) -> Option<Result<(), String>> {
         if std::mem::take(&mut self.observation.lock().unwrap().expire_gain_fence) {
@@ -184,6 +188,7 @@ impl WorkerAudioSink for ObservedSink {
     }
     fn cancel_sampler_edit(&mut self) {
         self.inner.cancel_sampler_edit();
+        self.observation.lock().unwrap().sampler_cancel_count += 1;
     }
     fn native_sampler_hold(&self) -> hex_session::service::NativeSamplerReservationHold {
         self.inner.native_sampler_hold()

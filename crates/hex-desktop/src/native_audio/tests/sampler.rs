@@ -4,6 +4,8 @@ mod gain;
 mod history;
 mod history_ui;
 mod overview;
+mod replacement;
+mod replacement_ui;
 use super::*;
 mod keyboard;
 use hex_project::{BeatTime, Command, Created};
@@ -686,6 +688,12 @@ fn rendered_sampler_history_uses_global_order_cancels_drafts_and_persists(
 ) {
     rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::History));
 }
+#[gpui::test]
+fn rendered_sampler_replacement_preserves_captured_target_cancel_sound_and_saved_sources(
+    cx: &mut gpui::TestAppContext,
+) {
+    rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Replacement));
+}
 #[derive(Clone, Copy)]
 enum ControlsFixture {
     Scalar,
@@ -694,6 +702,7 @@ enum ControlsFixture {
     TriggerSlice,
     Overview,
     History,
+    Replacement,
 }
 fn rendered_sampler_save_open(
     cx: &mut gpui::TestAppContext,
@@ -713,7 +722,18 @@ fn rendered_sampler_save_open(
     let source = wav(&files, stereo);
     let path = samples.join("original.wav");
     fs::rename(source, &path).unwrap();
-    let mut h = Harness::resident_sampler(if gain { 12 } else { 8 });
+    if matches!(controls, Some(ControlsFixture::Replacement)) {
+        let incoming = replacement::incoming(&files);
+        fs::rename(incoming, samples.join("replacement.wav")).unwrap();
+    }
+    let mut h =
+        Harness::resident_sampler(if matches!(controls, Some(ControlsFixture::Replacement)) {
+            24
+        } else if gain {
+            12
+        } else {
+            8
+        });
     h.next();
     let Some(Created::Track(track)) = h
         .run(Request::Edit(Command::AddMidiTrack {
@@ -751,7 +771,10 @@ fn rendered_sampler_save_open(
     else {
         panic!("track")
     };
-    if matches!(controls, Some(ControlsFixture::History)) {
+    if matches!(
+        controls,
+        Some(ControlsFixture::History | ControlsFixture::Replacement)
+    ) {
         h.run(Request::AddNativeDevice {
             track: other,
             class: hex_engine::NativeDeviceClass::Effect,
@@ -1065,6 +1088,9 @@ fn rendered_sampler_save_open(
     }
     if gain {
         match controls.unwrap() {
+            ControlsFixture::Replacement => {
+                replacement_ui::exercise(cx, &mut visual, &mut h, window, track, &saved)
+            }
             ControlsFixture::History => {
                 history_ui::exercise(cx, &mut visual, &mut h, window, track, &saved)
             }
