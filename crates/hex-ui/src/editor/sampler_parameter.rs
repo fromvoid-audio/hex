@@ -28,9 +28,30 @@ struct Control {
     _subscription: gpui::Subscription,
 }
 struct Pending {
-    target: Target,
+    target: PendingTarget,
     id: u64,
     cancel: Arc<AtomicBool>,
+}
+enum PendingTarget {
+    Parameter(Target),
+    History { generation: u64, revision: u64 },
+}
+impl PendingTarget {
+    fn current(&self, view: &EditorView) -> bool {
+        match self {
+            Self::Parameter(target) => target.current(view),
+            Self::History {
+                generation,
+                revision,
+            } => {
+                view.project_generation == *generation
+                    && view
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == *revision)
+            }
+        }
+    }
 }
 #[derive(Default)]
 pub(super) struct State {
@@ -136,7 +157,7 @@ impl EditorView {
             .sampler_parameter
             .pending
             .as_ref()
-            .is_some_and(|p| !p.target.current(self))
+            .is_some_and(|p| p.cancel.load(Ordering::Acquire) || !p.target.current(self))
         {
             self.retire_sampler_parameter();
             return true;
@@ -174,8 +195,77 @@ impl EditorView {
             value,
             cancel: Arc::clone(&cancel),
         };
-        if self.enqueue(Request::SetSamplerParameter(request)) {
-            self.sampler_parameter.pending = Some(Pending { target, id, cancel });
+        if self.enqueue(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::Parameter(request),
+        )) {
+            self.sampler_parameter.pending = Some(Pending {
+                target: PendingTarget::Parameter(target),
+                id,
+                cancel,
+            });
+        }
+    }
+    /// A local numeric draft is not canonical history. Cancel it and consume the
+    /// shortcut; a subsequent press may move the global history edge.
+    pub(super) fn cancel_sampler_drafts(&mut self, cx: &mut Context<Self>) -> bool {
+        let controls = self
+            .sampler_parameter
+            .controls
+            .values_mut()
+            .filter_map(|control| {
+                if control.entity.read(cx).is_interacting() {
+                    control.gesture = None;
+                    Some(control.entity.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        let cancelled = !controls.is_empty();
+        for entity in controls {
+            entity.update(cx, |widget, cx| widget.cancel(cx));
+        }
+        cancelled
+    }
+    /// Called after the ordinary gesture barrier, before queuing global history.
+    /// Capture only project context: selecting another device cannot retarget it.
+    pub(super) fn submit_sampler_history(&mut self, redo: bool) -> bool {
+        if self.edit_pending() {
+            self.error = Some("sampler history refused · another edit is applying".into());
+            return false;
+        }
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
+            self.error = Some("sampler edit request identity exhausted".into());
+            return false;
+        };
+        let generation = self.project_generation;
+        let revision = state.revision;
+        let cancel = Arc::new(AtomicBool::new(false));
+        let request = hex_session::service::SamplerHistoryEdit {
+            request_id: id,
+            project_generation: generation,
+            revision,
+            redo,
+            cancel: Arc::clone(&cancel),
+        };
+        self.sampler_parameter.serial = id;
+        if self.enqueue(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::History(request),
+        )) {
+            self.sampler_parameter.pending = Some(Pending {
+                target: PendingTarget::History {
+                    generation,
+                    revision,
+                },
+                id,
+                cancel,
+            });
+            true
+        } else {
+            false
         }
     }
     pub(super) fn sampler_parameter_control(

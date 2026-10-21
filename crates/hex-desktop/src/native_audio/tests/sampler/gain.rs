@@ -4,7 +4,7 @@ use hex_engine::SamplerParameter::{
     EndFrame, Gain, LoopEnabled, LoopEndFrame, LoopStartFrame, StartFrame, Transpose,
 };
 
-fn current(
+pub(super) fn current(
     limit: u64,
 ) -> (
     Files,
@@ -30,7 +30,7 @@ fn current(
     h.applied(h.context.unwrap());
     (files, h, track, device, assigned.state)
 }
-fn edit(
+pub(super) fn edit(
     state: &hex_session::service::ViewState,
     track: hex_project::TrackId,
     device: hex_project::DeviceId,
@@ -51,7 +51,10 @@ fn edit(
         cancel: Arc::new(AtomicBool::new(false)),
     }
 }
-fn unchanged(before: &hex_session::service::ViewState, after: &hex_session::service::Event) {
+pub(super) fn unchanged(
+    before: &hex_session::service::ViewState,
+    after: &hex_session::service::Event,
+) {
     assert_eq!(after.state.revision, before.revision);
     assert_eq!(after.state.project.snapshot(), before.project.snapshot());
     assert_eq!(
@@ -66,7 +69,7 @@ fn unchanged(before: &hex_session::service::ViewState, after: &hex_session::serv
             .shares_storage_with(&before.source_overviews)
     );
 }
-fn original_pcm(h: &mut Harness) {
+pub(super) fn original_pcm(h: &mut Harness) {
     let identity = h.audio.as_ref().unwrap().control.output_identity();
     h.audio.as_ref().unwrap().control.stop();
     assert_eq!(h.render(), [[0.0; 2]; 64]);
@@ -122,17 +125,21 @@ fn sampler_gain_stale_invalid_cancelled_and_tight_budget_refusals_preserve_actua
             h.service
                 .as_ref()
                 .unwrap()
-                .submit(Request::SetSamplerParameter(gain))
+                .submit(Request::SamplerEdit(
+                    hex_session::service::SamplerEdit::Parameter(gain),
+                ))
                 .unwrap();
             let refused = h.next();
             assert!(refused.error.is_some());
             unchanged(&before, &refused);
-            assert_eq!(refused.sampler_parameter_complete, Some(1));
+            assert_eq!(refused.sampler_edit_complete, Some(1));
         }
     }
     original_pcm(&mut h);
-    let initial = h.run(Request::SetSamplerParameter(edit(&before, track, device)));
-    assert!(initial.sampler_parameter_complete.is_none());
+    let initial = h.run(Request::SamplerEdit(
+        hex_session::service::SamplerEdit::Parameter(edit(&before, track, device)),
+    ));
+    assert!(initial.sampler_edit_complete.is_none());
     unchanged(&before, &initial);
     h.render();
     let refused = h.next();
@@ -146,7 +153,7 @@ fn sampler_gain_stale_invalid_cancelled_and_tight_budget_refusals_preserve_actua
         "worker continuation is not another UI acknowledgement"
     );
     unchanged(&before, &refused);
-    assert_eq!(refused.sampler_parameter_complete, Some(1));
+    assert_eq!(refused.sampler_edit_complete, Some(1));
     assert_eq!(
         h.audio.as_ref().unwrap().control.output_identity(),
         identity
@@ -166,7 +173,9 @@ fn sampler_gain_fence_observes_earlier_play_and_refuses_later_play_without_repla
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    h.run(Request::SetSamplerParameter(edit(&before, track, device)));
+    h.run(Request::SamplerEdit(
+        hex_session::service::SamplerEdit::Parameter(edit(&before, track, device)),
+    ));
     assert_eq!(h.render()[0], [0.125, -0.25]);
     let refused = h.next();
     assert!(refused.error.as_ref().unwrap().contains("stop playback"));
@@ -175,7 +184,9 @@ fn sampler_gain_fence_observes_earlier_play_and_refuses_later_play_without_repla
     h.render();
     let gain = edit(&before, track, device);
     let cancel = Arc::clone(&gain.cancel);
-    h.run(Request::SetSamplerParameter(gain));
+    h.run(Request::SamplerEdit(
+        hex_session::service::SamplerEdit::Parameter(gain),
+    ));
     assert!(
         h.audio
             .as_mut()
@@ -198,13 +209,37 @@ fn sampler_gain_fence_observes_earlier_play_and_refuses_later_play_without_repla
 
 #[test]
 fn sampler_gain_postcommit_open_failure_keeps_authored_gain_save_export_and_explicit_retry() {
+    postcommit_open_failure(false);
+}
+#[test]
+fn sampler_history_postcommit_open_failure_keeps_authored_history_save_export_and_explicit_retry() {
+    postcommit_open_failure(true);
+}
+fn postcommit_open_failure(undo: bool) {
     let _serial = NATIVE_FIXTURE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (files, mut h, track, device, before) = current(12);
+    let (before, request, expected_gain) = if undo {
+        let changed = super::history::complete(
+            &mut h,
+            Request::SamplerEdit(hex_session::service::SamplerEdit::Parameter(edit(
+                &before, track, device,
+            ))),
+        );
+        let request = Request::SamplerEdit(hex_session::service::SamplerEdit::History(
+            super::history::history(&changed, false),
+        ));
+        (changed, request, 1.0)
+    } else {
+        let request = Request::SamplerEdit(hex_session::service::SamplerEdit::Parameter(edit(
+            &before, track, device,
+        )));
+        (before, request, 0.5)
+    };
     let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
     h.observation.lock().unwrap().fail_gain_open = true;
-    h.run(Request::SetSamplerParameter(edit(&before, track, device)));
+    h.run(request);
     h.render();
     let accepted = h.next();
     assert!(accepted.error.is_none());
@@ -215,7 +250,7 @@ fn sampler_gain_postcommit_open_failure_keeps_authored_gain_save_export_and_expl
             accepted.state.project.device(device).unwrap().state()
         )
         .unwrap(),
-        0.5
+        expected_gain
     );
     let context = h.context.unwrap();
     let end = Instant::now() + h.wait;
@@ -254,7 +289,7 @@ fn sampler_gain_postcommit_open_failure_keeps_authored_gain_save_export_and_expl
                 .state()
         )
         .unwrap(),
-        0.5
+        expected_gain
     );
     let path = files.0.join("gain-after-open-failure.wav");
     h.run(Request::ExportRange {
@@ -274,8 +309,14 @@ fn sampler_gain_postcommit_open_failure_keeps_authored_gain_save_export_and_expl
         std::thread::sleep(Duration::from_millis(1));
     }
     let bytes = fs::read(path).unwrap();
-    assert_eq!(i16::from_le_bytes([bytes[44], bytes[45]]), 2048);
-    assert_eq!(i16::from_le_bytes([bytes[46], bytes[47]]), -4096);
+    assert_eq!(
+        i16::from_le_bytes([bytes[44], bytes[45]]),
+        (4096.0 * expected_gain) as i16
+    );
+    assert_eq!(
+        i16::from_le_bytes([bytes[46], bytes[47]]),
+        (-8192.0 * expected_gain) as i16
+    );
     h.service
         .as_ref()
         .unwrap()
@@ -335,7 +376,10 @@ fn sampler_gain_postcommit_open_failure_keeps_authored_gain_save_export_and_expl
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    assert_eq!(h.render()[0], [0.0625, -0.125]);
+    assert_eq!(
+        h.render()[0],
+        [0.125 * expected_gain as f32, -0.25 * expected_gain as f32]
+    );
 }
 
 #[test]
@@ -351,7 +395,9 @@ fn sampler_gain_lost_callback_timeout_preserves_earlier_play_and_allows_new_tear
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    h.run(Request::SetSamplerParameter(edit(&before, track, device)));
+    h.run(Request::SamplerEdit(
+        hex_session::service::SamplerEdit::Parameter(edit(&before, track, device)),
+    ));
     h.observation.lock().unwrap().expire_gain_fence = true;
     let timeout = h.next();
     assert!(timeout.error.as_ref().unwrap().contains("timed out"));
@@ -375,7 +421,9 @@ fn sampler_gain_lost_callback_timeout_preserves_earlier_play_and_allows_new_tear
     h.service
         .as_ref()
         .unwrap()
-        .submit(Request::SetSamplerParameter(edit(&before, track, device)))
+        .submit(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::Parameter(edit(&before, track, device)),
+        ))
         .unwrap();
     let busy = h.next();
     assert!(busy.error.as_ref().unwrap().contains("busy"));
@@ -403,7 +451,9 @@ fn sampler_gain_lost_callback_timeout_preserves_earlier_play_and_allows_new_tear
     }
     // A second callback loss may be abandoned through actual New/output
     // teardown; the old scalar fence is never treated as a source receipt.
-    h.run(Request::SetSamplerParameter(edit(&before, track, device)));
+    h.run(Request::SamplerEdit(
+        hex_session::service::SamplerEdit::Parameter(edit(&before, track, device)),
+    ));
     h.observation.lock().unwrap().expire_gain_fence = true;
     let timeout = h.next();
     assert!(timeout.error.as_ref().unwrap().contains("timed out"));
@@ -434,7 +484,9 @@ fn sampler_gain_cancel_after_real_sealing_and_fenced_late_keyboard_preserve_old_
     let output = h.audio.as_ref().unwrap().control.output_identity();
     let gain = edit(&before, track, device);
     h.observation.lock().unwrap().cancel_edit_after_seal = Some(Arc::clone(&gain.cancel));
-    h.run(Request::SetSamplerParameter(gain));
+    h.run(Request::SamplerEdit(
+        hex_session::service::SamplerEdit::Parameter(gain),
+    ));
     h.render();
     let cancelled = h.next();
     assert!(cancelled.error.as_ref().unwrap().contains("cancelled"));
@@ -467,7 +519,9 @@ fn sampler_gain_cancel_after_real_sealing_and_fenced_late_keyboard_preserve_old_
     input.set_key(0, Some((60, 127, 1))).unwrap();
     let gain = edit(&before, track, device);
     let cancel = Arc::clone(&gain.cancel);
-    h.run(Request::SetSamplerParameter(gain));
+    h.run(Request::SamplerEdit(
+        hex_session::service::SamplerEdit::Parameter(gain),
+    ));
     h.service
         .as_ref()
         .unwrap()
@@ -572,7 +626,9 @@ fn sampler_gain_fence_cancels_actual_old_epoch_before_deferring_a_new_bound_epoc
     // No callback has observed B, or A's terminal cancellation, yet.
     let gain = edit(&before, track, device);
     let cancel = Arc::clone(&gain.cancel);
-    h.run(Request::SetSamplerParameter(gain));
+    h.run(Request::SamplerEdit(
+        hex_session::service::SamplerEdit::Parameter(gain),
+    ));
     let (entered, arrival) = mpsc::sync_channel(1);
     let (release, resume) = mpsc::sync_channel(0);
     h.observation.lock().unwrap().pause_poll = Some((entered, resume));
@@ -616,14 +672,16 @@ fn sampler_region_actual_source_extent_refuses_before_canonical_commit_or_output
             )
             .is_ok()
         );
-        let pending = h.run(Request::SetSamplerParameter(request));
+        let pending = h.run(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::Parameter(request),
+        ));
         assert!(pending.error.is_none());
-        assert_eq!(pending.sampler_parameter_complete, None);
+        assert_eq!(pending.sampler_edit_complete, None);
         unchanged(&before, &pending);
         h.render();
         let refused = h.next();
         assert!(refused.error.is_some());
-        assert_eq!(refused.sampler_parameter_complete, Some(1));
+        assert_eq!(refused.sampler_edit_complete, Some(1));
         unchanged(&before, &refused);
         assert_eq!(
             h.audio.as_ref().unwrap().control.output_identity(),
@@ -647,7 +705,9 @@ fn sampler_dormant_trim_enable_conflict_and_active_loop_bounds_preserve_history_
         let mut request = edit(before, track, device);
         request.parameter = parameter;
         request.value = value;
-        let pending = h.run(Request::SetSamplerParameter(request));
+        let pending = h.run(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::Parameter(request),
+        ));
         assert!(pending.error.is_none(), "{:?}", pending.error);
         h.render();
         let committed = h.next();
@@ -676,7 +736,9 @@ fn sampler_dormant_trim_enable_conflict_and_active_loop_bounds_preserve_history_
     h.service
         .as_ref()
         .unwrap()
-        .submit(Request::SetSamplerParameter(enable))
+        .submit(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::Parameter(enable),
+        ))
         .unwrap();
     let refused = h.next();
     assert!(refused.error.is_some());
@@ -701,7 +763,9 @@ fn sampler_dormant_trim_enable_conflict_and_active_loop_bounds_preserve_history_
     h.service
         .as_ref()
         .unwrap()
-        .submit(Request::SetSamplerParameter(outside))
+        .submit(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::Parameter(outside),
+        ))
         .unwrap();
     let refused = h.next();
     assert!(refused.error.is_some());
@@ -736,11 +800,13 @@ fn sampler_envelope_roundtrip_no_change_never_fences_drains_or_changes_history()
         let mut request = edit(&before, track, device);
         request.parameter = parameter;
         request.value = value;
-        h.run(Request::SetSamplerParameter(
-            hex_session::service::SamplerParameterEdit {
-                cancel: Arc::clone(&request.cancel),
-                ..request
-            },
+        h.run(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::Parameter(
+                hex_session::service::SamplerParameterEdit {
+                    cancel: Arc::clone(&request.cancel),
+                    ..request
+                },
+            ),
         ));
         h.render();
         let committed = h.next();
@@ -760,8 +826,10 @@ fn sampler_envelope_roundtrip_no_change_never_fences_drains_or_changes_history()
         let identity = h.audio.as_ref().unwrap().control.output_identity();
         let cells = h.observation.lock().unwrap().gain_cells.len();
         // No callback is run: a real fence would remain pending here.
-        let same = h.run(Request::SetSamplerParameter(request));
-        assert_eq!(same.sampler_parameter_complete, Some(1));
+        let same = h.run(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::Parameter(request),
+        ));
+        assert_eq!(same.sampler_edit_complete, Some(1));
         assert_eq!(same.status.as_deref(), Some("no change"));
         unchanged(&before, &same);
         assert_eq!(

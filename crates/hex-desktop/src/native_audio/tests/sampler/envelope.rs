@@ -329,7 +329,10 @@ pub(super) fn exercise(
     );
 }
 
-fn render(backend: &mut hex_audio::worker_fixture::HeadlessBackend, output: &mut [[f32; 2]]) {
+pub(super) fn render(
+    backend: &mut hex_audio::worker_fixture::HeadlessBackend,
+    output: &mut [[f32; 2]],
+) {
     let measured = allocation_counter::measure(|| backend.render(output).unwrap());
     assert_eq!(
         (

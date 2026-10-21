@@ -59,7 +59,7 @@ fn completed_event(state: &ViewState) -> Event {
         error: None,
         request_complete: true,
         sampler_load_complete: None,
-        sampler_parameter_complete: None,
+        sampler_edit_complete: None,
         computer_keyboard_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,

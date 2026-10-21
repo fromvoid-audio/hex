@@ -1,6 +1,8 @@
 mod controls;
 mod envelope;
 mod gain;
+mod history;
+mod history_ui;
 mod overview;
 use super::*;
 mod keyboard;
@@ -678,6 +680,12 @@ fn rendered_sampler_fresh_source_overview_and_controls_work_before_save_and_reco
 ) {
     rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Overview));
 }
+#[gpui::test]
+fn rendered_sampler_history_uses_global_order_cancels_drafts_and_persists(
+    cx: &mut gpui::TestAppContext,
+) {
+    rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::History));
+}
 #[derive(Clone, Copy)]
 enum ControlsFixture {
     Scalar,
@@ -685,6 +693,7 @@ enum ControlsFixture {
     TriggerOneShot,
     TriggerSlice,
     Overview,
+    History,
 }
 fn rendered_sampler_save_open(
     cx: &mut gpui::TestAppContext,
@@ -742,6 +751,16 @@ fn rendered_sampler_save_open(
     else {
         panic!("track")
     };
+    if matches!(controls, Some(ControlsFixture::History)) {
+        h.run(Request::AddNativeDevice {
+            track: other,
+            class: hex_engine::NativeDeviceClass::Effect,
+            type_id: Box::new(hex_session::device_gesture::DeviceTypeId::from_static(
+                "hex.utility",
+            )),
+            before: None,
+        });
+    }
     let mut loaded_revision = if stereo && !gain {
         if empty { 3 } else { 5 }
     } else {
@@ -1046,6 +1065,9 @@ fn rendered_sampler_save_open(
     }
     if gain {
         match controls.unwrap() {
+            ControlsFixture::History => {
+                history_ui::exercise(cx, &mut visual, &mut h, window, track, &saved)
+            }
             ControlsFixture::Overview => {
                 overview::reopened(
                     cx,

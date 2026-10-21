@@ -316,3 +316,70 @@ fn sampler_envelope_units_bounds_and_inactive_release_preserve_every_other_field
         }
     }
 }
+
+#[test]
+fn sampler_history_allows_only_panel_configuration_and_exact_source_host_metadata() {
+    use hex_devices::sampler::state::{AuthoredMode, SamplerState};
+    use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot};
+    let authored = SamplerState::for_source_frames(8).unwrap();
+    let current = authored
+        .to_native()
+        .unwrap()
+        .with_asset_references(vec![DeviceAssetReference {
+            slot: DeviceAssetSlot::new(1).unwrap(),
+            asset: DeviceAssetKey::new(3).unwrap(),
+        }])
+        .unwrap();
+    let mut configured = authored.clone();
+    configured.region.start = 1;
+    configured.gain = 0.5;
+    configured.transpose_semitones = -12.0;
+    configured.envelope.attack_seconds = 0.01;
+    configured.mode = AuthoredMode::Classic {
+        loop_enabled: true,
+        loop_region: hex_devices::sampler::Region { start: 1, end: 7 },
+    };
+    let target = configured.replace_in(&current).unwrap();
+    assert!(is_sampler_configuration_history_on_control(&current, &target).unwrap());
+    assert!(is_sampler_configuration_history_on_control(&target, &current).unwrap());
+    for case in 0..8 {
+        let mut unsupported = configured.clone();
+        match case {
+            0 => unsupported.reverse = true,
+            1 => unsupported.root_note = 61,
+            2 => unsupported.detune_cents = 1.0,
+            3 => unsupported.pan = 0.5,
+            4 => unsupported.velocity_amount = 0.5,
+            5 => unsupported.voices = 8,
+            6 => {
+                unsupported.mode = AuthoredMode::OneShot {
+                    gate: hex_devices::sampler::GateMode::Gate,
+                }
+            }
+            _ => {
+                unsupported.mode = AuthoredMode::Slice {
+                    starts: vec![1, 4],
+                    base_note: 60,
+                    gate: hex_devices::sampler::GateMode::Gate,
+                }
+            }
+        }
+        let target = unsupported.replace_in(&current).unwrap();
+        assert!(
+            !is_sampler_configuration_history_on_control(&current, &target).unwrap(),
+            "case{case}"
+        );
+    }
+    for target in [
+        target.clone().with_input_gain_millidb(1000).unwrap(),
+        target.clone().with_output_gain_millidb(1000).unwrap(),
+        target
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(4).unwrap(),
+            }])
+            .unwrap(),
+    ] {
+        assert!(!is_sampler_configuration_history_on_control(&current, &target).unwrap());
+    }
+}

@@ -30,6 +30,22 @@ impl Editor {
     pub fn can_redo(&self) -> bool {
         !self.redo.is_empty()
     }
+    /// Inspect the actual next global history edge without cloning or consuming it.
+    /// The target is borrowed before ID and recording-epoch normalization; callers
+    /// must classify again inside the prepared transition before committing.
+    pub fn inspect_history<T>(
+        &self,
+        redo: bool,
+        inspect: impl FnOnce(&Project, &Project) -> T,
+    ) -> Option<T> {
+        let target = if redo {
+            self.redo.last()
+        } else {
+            self.undo.back()
+        }?;
+        Some(inspect(&self.project, target))
+    }
+
     pub fn execute(&mut self, command: Command) -> Result<Created, Invalid> {
         self.execute_validated(command, |_| Ok(()))
     }

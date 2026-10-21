@@ -840,14 +840,19 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Undo, _, cx| {
-                if !view.cancel_gain_draft(cx) && super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_sampler_drafts(cx)
+                    && !view.cancel_gain_draft(cx)
+                    && super::device_panel::finalize_controls(view, cx)
+                {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Undo);
                 }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Redo, _, cx| {
-                if super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_sampler_drafts(cx)
+                    && super::device_panel::finalize_controls(view, cx)
+                {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Redo);
                 }

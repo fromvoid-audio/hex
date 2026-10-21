@@ -31,6 +31,7 @@ pub use audio_sink::{
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
+pub use sampler_parameter::SamplerEdit;
 mod device_comparison;
 mod effect_bus;
 #[cfg(test)]
@@ -128,6 +129,15 @@ pub struct SamplerParameterEdit {
     pub value: f64,
     pub cancel: Arc<AtomicBool>,
 }
+/// Global history intent bound to one project revision, never to UI selection.
+#[derive(Clone, Debug)]
+pub struct SamplerHistoryEdit {
+    pub request_id: u64,
+    pub project_generation: u64,
+    pub revision: u64,
+    pub redo: bool,
+    pub cancel: Arc<AtomicBool>,
+}
 /// A worker response. `playback` is present only when a new graph was compiled.
 pub struct Event {
     pub state: Arc<ViewState>,
@@ -139,7 +149,7 @@ pub struct Event {
     pub request_complete: bool,
     /// Metadata-only completion of one first-load action, on success or refusal.
     pub sampler_load_complete: Option<SamplerLoadCompletion>,
-    pub sampler_parameter_complete: Option<u64>,
+    pub sampler_edit_complete: Option<u64>,
     pub computer_keyboard_complete: Option<u64>,
     pub tuning_audition_complete: Option<Arc<hex_engine::tuning_audition::TuningAuditionInput>>,
     pub live_expression_complete: Option<Arc<hex_engine::live_expression::LiveExpressionInput>>,
@@ -410,9 +420,9 @@ pub enum Request {
         expected: hex_project::DeviceVariant,
         action: hex_project::DeviceComparisonAction,
     },
-    SetSamplerParameter(SamplerParameterEdit),
+    SamplerEdit(SamplerEdit),
     /// Worker-local continuation after a bounded native callback fence.
-    ContinueSamplerParameter,
+    ContinueSamplerEdit,
     SetDeviceParameter {
         device: hex_project::DeviceId,
         parameter: hex_lattice_contract::ParameterId,
@@ -529,6 +539,7 @@ impl Request {
         matches!(
             self,
             Request::Undo
+                | Request::SamplerEdit(SamplerEdit::History(_))
                 | Request::AssignSampler { .. }
                 | Request::LoadFirstSampler { .. }
                 | Request::Redo
@@ -1492,7 +1503,7 @@ fn run_worker(
                 audio_batch_failure: None,
                 request_complete: false,
                 sampler_load_complete: None,
-                sampler_parameter_complete: None,
+                sampler_edit_complete: None,
                 computer_keyboard_complete: None,
                 tuning_audition_complete: None,
                 live_expression_complete: None,
@@ -1524,7 +1535,7 @@ fn run_worker(
             audio_batch_failure: None,
             request_complete: false,
             sampler_load_complete: None,
-            sampler_parameter_complete: None,
+            sampler_edit_complete: None,
             computer_keyboard_complete: None,
             tuning_audition_complete: None,
             live_expression_complete: None,
@@ -1572,7 +1583,7 @@ fn run_worker(
         return;
     }
 
-    let mut pending_sampler_parameter: Option<SamplerParameterEdit> = None;
+    let mut pending_sampler_parameter: Option<SamplerEdit> = None;
     while let Some(request) = events.next_request_with_control_poll(
         &requests,
         session.native_reservation.is_some(),
@@ -1594,8 +1605,8 @@ fn run_worker(
             )
         },
     ) {
-        let request_complete = !matches!(&request, Request::ContinueSamplerParameter);
-        let mut sampler_parameter_complete = None;
+        let request_complete = !matches!(&request, Request::ContinueSamplerEdit);
+        let mut sampler_edit_complete = None;
         if matches!(
             &request,
             Request::NewWithAudioMode { .. }
@@ -1604,8 +1615,8 @@ fn run_worker(
                 | Request::OpenWithAudioMode { .. }
         ) {
             if let Some(gain) = pending_sampler_parameter.take() {
-                gain.cancel.store(true, Ordering::Release);
-                sampler_parameter_complete = Some(gain.request_id);
+                gain.cancel().store(true, Ordering::Release);
+                sampler_edit_complete = Some(gain.request_id());
                 if let Some(audio) = events.sampler_edit_audio() {
                     audio.cancel_sampler_edit();
                 }
@@ -1710,6 +1721,18 @@ fn run_worker(
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
         let mut barrier_failure = browser_failure.or_else(|| match &request {
+            Request::SamplerEdit(SamplerEdit::History(edit)) => {
+                if pending_sampler_parameter.is_some() {
+                    Some("sampler edit is already preparing".into())
+                } else if device_gesture.snapshot().is_some() || tuning_gesture.snapshot().is_some()
+                {
+                    Some("finish or cancel the active gesture before sampler history".into())
+                } else {
+                    SamplerEdit::History(edit.clone())
+                        .validate(&session, project_generation, revision)
+                        .err()
+                }
+            }
             Request::CompareDevice {
                 owner, expected, ..
             } => device_comparison::preflight(
@@ -1839,8 +1862,8 @@ fn run_worker(
             && !matches!(
                 &request,
                 Request::RestartAudio { .. }
-                    | Request::SetSamplerParameter(_)
-                    | Request::ContinueSamplerParameter
+                    | Request::SamplerEdit(_)
+                    | Request::ContinueSamplerEdit
                     | Request::PrepareComputerKeyboard { .. }
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
@@ -1858,7 +1881,7 @@ fn run_worker(
         if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
         } else if sampler_refusal {
-            error=Some(if events.native_audio_requested() {"sampler supports computer keyboard, frame-zero arrangement play and stop; history and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, history and runtime tools are unavailable"}.into());
+            error=Some(if events.native_audio_requested() {"sampler supports computer keyboard, frame-zero arrangement play and stop; other history steps and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, other history steps and runtime tools are unavailable"}.into());
             if let Request::PrepareComputerKeyboard { request_id, .. } = &request {
                 computer_keyboard_complete = Some(*request_id);
             }
@@ -1872,6 +1895,10 @@ fn run_worker(
                 save_complete = true;
             }
         } else if let Some(reason) = barrier_failure {
+            sampler_edit_complete = match &request {
+                Request::SamplerEdit(edit) => Some(edit.request_id()),
+                _ => None,
+            };
             open_complete = request.is_project_open();
             if let Request::TuningLibrary { operation_id, .. } = &request {
                 tuning_library = Some(TuningLibraryResult {
@@ -2959,30 +2986,12 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
-                Request::SetSamplerParameter(edit) => {
+                Request::SamplerEdit(edit) => {
                     let result = (|| -> Result<bool, String> {
                         if pending_sampler_parameter.is_some() {
                             return Err("sampler edit is already preparing".into());
                         }
-                        sampler_parameter::validate(&session, project_generation, revision, &edit)?;
-                        let state = session
-                            .project()
-                            .device(edit.device)
-                            .ok_or("sampler target is unavailable")?
-                            .state();
-                        // Display units may round-trip by one ULP. Compare the
-                        // validated canonical patch exactly before touching audio.
-                        if hex_engine::sampler_parameter_value_on_control(edit.parameter, state)
-                            .map_err(|e| e.to_string())?
-                            == edit.value
-                            || hex_engine::patch_sampler_parameter_on_control(
-                                edit.parameter,
-                                state,
-                                edit.value,
-                            )
-                            .map_err(|e| e.to_string())?
-                                == *state
-                        {
+                        if !edit.validate(&session, project_generation, revision)? {
                             return Ok(false);
                         }
                         events
@@ -3001,29 +3010,29 @@ fn run_worker(
                                 Some("preparing sampler edit · waiting for stopped audio".into());
                         }
                         Ok(false) => {
-                            sampler_parameter_complete = Some(edit.request_id);
+                            sampler_edit_complete = Some(edit.request_id());
                             status = Some("no change".into());
                         }
                         Err(reason) => {
-                            sampler_parameter_complete = Some(edit.request_id);
+                            sampler_edit_complete = Some(edit.request_id());
                             error = Some(reason);
                         }
                     }
                 }
-                Request::ContinueSamplerParameter => {
+                Request::ContinueSamplerEdit => {
                     if let Some(edit) = pending_sampler_parameter.take() {
-                        sampler_parameter_complete = Some(edit.request_id);
+                        sampler_edit_complete = Some(edit.request_id());
                         let result = (|| -> Result<(Created, sampler_export::ServiceExportSnapshot), String> {
-                            sampler_parameter::validate(&session, project_generation, revision, &edit)?;
+                            if !edit.validate(&session, project_generation, revision)? {
+                                return Err("sampler edit no longer changes this revision".into());
+                            }
                             let next = revision.checked_add(1).ok_or("sampler edit revision exhausted")?;
                             let context = hex_engine::AudioSourceContext { project_generation, editor_revision: next };
                             let audio = events.sampler_edit_audio().ok_or("sampler edit output is unavailable")?;
                             audio.sampler_edit_ready().ok_or("sampler edit fence is not ready")??;
-                            let original = session.project().device(edit.device).ok_or("sampler target is unavailable")?.state();
-                            let patched = hex_engine::patch_sampler_parameter_on_control(edit.parameter, original, edit.value).map_err(|e| e.to_string())?;
                             let current = compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) });
-                            let prepared = session.command_service_snapshot_with_native(Command::ReplaceDeviceState { device: edit.device, state: patched },
-                                export_lane.admission(current), Some((context, audio, &edit.cancel))).map_err(|e| e.to_string())?;
+                            let prepared = edit.prepare(&mut session, export_lane.admission(current), context, audio)
+                                .map_err(|e| e.to_string())?;
                             // Authored commit is complete. Audio failure from here is truthful
                             // unavailability, never an invented rollback of the exclusive output.
                             if let Err(reason) = audio.commit_sampler_edit(context) { error = Some(reason); }
@@ -3980,7 +3989,7 @@ fn run_worker(
                 error,
                 request_complete,
                 sampler_load_complete,
-                sampler_parameter_complete,
+                sampler_edit_complete,
                 computer_keyboard_complete,
                 tuning_audition_complete,
                 live_expression_complete,

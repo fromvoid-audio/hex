@@ -40,6 +40,7 @@ pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };
 mod history;
+mod instrument_history;
 mod provenance;
 pub use provenance::{ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES};
 mod time_range;

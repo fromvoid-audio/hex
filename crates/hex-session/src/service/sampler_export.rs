@@ -6,6 +6,11 @@ use hex_engine::native_device_resources::{
     ControlSamplerSources, StagedNativeAssetView,
 };
 
+enum SnapshotAction {
+    Command(Box<Command>),
+    History { redo: bool },
+}
+
 pub(crate) struct ServiceExportSnapshot {
     pub(crate) prepared: Arc<PreparedRevision>,
     pub(crate) sources: Option<ControlSamplerSources>,
@@ -347,6 +352,38 @@ impl Session {
         )>,
     ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
         crate::validate_command_media(&command)?;
+        self.prepare_service_snapshot_action(
+            SnapshotAction::Command(Box::new(command)),
+            admission,
+            native,
+        )
+    }
+    pub(in crate::service) fn history_service_snapshot_with_native(
+        &mut self,
+        redo: bool,
+        admission: Admission<'_>,
+        native: (
+            hex_engine::AudioSourceContext,
+            &mut dyn WorkerAudioSink,
+            &AtomicBool,
+        ),
+    ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
+        self.prepare_service_snapshot_action(
+            SnapshotAction::History { redo },
+            admission,
+            Some(native),
+        )
+    }
+    fn prepare_service_snapshot_action(
+        &mut self,
+        action: SnapshotAction,
+        admission: Admission<'_>,
+        native: Option<(
+            hex_engine::AudioSourceContext,
+            &mut dyn WorkerAudioSink,
+            &AtomicBool,
+        )>,
+    ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
         // Prepare against a separate immutable view of Session-owned media while
         // Editor controls the sole canonical candidate/history transaction.
         let media = self.media_bank();
@@ -366,7 +403,12 @@ impl Session {
         let audio_mode = self.audio_mode;
         let max_frames = self.max_resident_frames;
         let current = admission.current;
-        self.editor.execute_prepared(command, |candidate| {
+        let history = matches!(action, SnapshotAction::History { .. });
+        let prepare = |source: &Project, candidate: &Project| {
+            if history {
+                super::sampler_parameter::validate_history_pair(source, candidate)
+                    .map_err(SessionError::NativeAudio)?;
+            }
             media.validate_clip_sources(candidate)?;
             let sources = if resources::requires_private_sampler_sources(candidate) {
                 if audio_mode != DocumentAudioMode::Resident {
@@ -495,7 +537,24 @@ impl Session {
                 }
             }
             Ok(ServiceExportSnapshot { prepared, sources })
-        })
+        };
+        match action {
+            SnapshotAction::Command(command) => {
+                self.editor.execute_prepared_transition(*command, prepare)
+            }
+            SnapshotAction::History { redo } => {
+                let snapshot = if redo {
+                    self.editor.redo_prepared_transition(prepare)
+                } else {
+                    self.editor.undo_prepared_transition(prepare)
+                }?;
+                snapshot
+                    .map(|snapshot| (Created::None, snapshot))
+                    .ok_or(SessionError::Invalid(
+                        "sampler history changed during preparation",
+                    ))
+            }
+        }
     }
 }
 
