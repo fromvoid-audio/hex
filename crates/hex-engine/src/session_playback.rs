@@ -376,6 +376,7 @@ pub struct SessionPlayback {
     arrangement_loop_pass: u64,
     playing: bool,
     linear_arrangement_export: bool,
+    current_sampler_console: bool,
     route_state_generation: u64,
     candidate_admission_open: bool,
 }
@@ -476,7 +477,11 @@ impl SessionPlayback {
         {
             return Err(Error::ReservationExceeded);
         }
+        playback.current_sampler_console = true;
         Ok(playback)
+    }
+    pub(crate) fn current_sampler_console_available(&self) -> bool {
+        self.current_sampler_console
     }
     pub(crate) fn current_sampler_runtime_preflight(
         revision: &PreparedRevision,
@@ -634,6 +639,7 @@ impl SessionPlayback {
             arrangement_loop_pass: _,
             playing: _,
             linear_arrangement_export: _,
+            current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open: _,
         } = self;
@@ -1305,6 +1311,7 @@ impl SessionPlayback {
             arrangement_loop_pass: 0,
             playing: false,
             linear_arrangement_export,
+            current_sampler_console: false,
             route_state_generation: 0,
             candidate_admission_open: true,
         })
@@ -1480,7 +1487,11 @@ impl SessionPlayback {
         // Linear export is a deliberately fresh Arrangement-only owner. It
         // cannot inherit route state, Session launches, or a live transport
         // clock from the interactive playback graph.
-        if self.linear_arrangement_export || previous.linear_arrangement_export {
+        if self.linear_arrangement_export
+            || previous.linear_arrangement_export
+            || self.current_sampler_console
+            || previous.current_sampler_console
+        {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;
@@ -1492,7 +1503,11 @@ impl SessionPlayback {
         previous: &mut Self,
         groups: crate::audio_candidate::groups::Transfer<'_>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
-        if self.linear_arrangement_export || previous.linear_arrangement_export {
+        if self.linear_arrangement_export
+            || previous.linear_arrangement_export
+            || self.current_sampler_console
+            || previous.current_sampler_console
+        {
             return Err(SessionPlaybackError::InvalidCommand);
         }
         self.require_fresh_candidate()?;

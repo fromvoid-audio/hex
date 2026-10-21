@@ -512,6 +512,11 @@ impl Playback {
             SessionPlayback::new_current_sampler_candidate(Arc::clone(&revision), sources)?;
         Ok(Self::from_parts(revision, Some(Box::new(runtime)), None))
     }
+    pub(crate) fn current_sampler_console_available(&self) -> bool {
+        self.session_runtime
+            .as_ref()
+            .is_some_and(|r| r.current_sampler_console_available())
+    }
     pub(crate) fn current_sampler_keyboard_epoch(&self) -> Option<u64> {
         let epoch = self
             .session_runtime

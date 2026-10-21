@@ -683,3 +683,6 @@ fn current_sampler_keyboard_pool_preflight_and_host_route_gains_are_bounded_once
     }
     cell.cleanup_on_control().unwrap();
 }
+
+#[path = "console_tests.rs"]
+mod console;

@@ -11,14 +11,22 @@ impl SessionAssembly {
     pub(crate) fn reserve_current_sampler_factories(
         &mut self,
         metadata: &CurrentSamplerMetadata,
+        contexts: &crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
     ) -> Result<(), AudioStorageError> {
         if self.phase != AssemblyPhase::Reserved
             || !self.unused_mutable.is_empty()
             || self.unused_mutable.capacity() != 0
             || self.sampler_factories.capacity() != 0
+            || self.sampler_midi_scope.is_some()
+            || self.sampler_context_address.is_some()
+            || contexts.tuning().frequencies() != metadata.tuning.frequencies()
         {
             return Err(AudioStorageError::SourceMismatch);
         }
+        self.sampler_midi_scope = Some(metadata.id);
+        self.sampler_context_address = Some(Arc::as_ptr(contexts.arc()) as usize);
         let count = metadata.configurations().len();
         self.unused_mutable
             .try_reserve_exact(count)
@@ -43,7 +51,7 @@ impl SessionAssembly {
         self.current_sampler_bytes(None)?;
         Ok(())
     }
-    fn current_sampler_values<'a>(
+    pub(super) fn current_sampler_values<'a>(
         &'a self,
         external: Option<&'a PreparedSessionInventory>,
     ) -> Result<&'a Vec<PreparedMutableTrackInstrument>, AudioStorageError> {

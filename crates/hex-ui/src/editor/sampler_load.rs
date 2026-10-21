@@ -52,6 +52,18 @@ impl EditorView {
             && state.audio_authoring_revision(applied.context) == Some(state.revision)
             && audio.control.output_identity() == Some(applied.output_identity)
     }
+    pub(super) fn sampler_console_current(&self) -> bool {
+        self.first_sampler_current()
+            && self
+                .audio
+                .as_ref()
+                .and_then(|a| a.control.status())
+                .is_some_and(|s| {
+                    s.sampler_console_available()
+                        && s.session_capability()
+                            == Some(hex_engine::SessionCapabilityStatus::Available)
+                })
+    }
     pub(super) fn first_sampler_target(&self, path: PathBuf) -> Result<Target, &'static str> {
         if self.edit_pending() {
             return Err("wait for the pending edit before loading a sampler");

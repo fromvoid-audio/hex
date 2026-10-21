@@ -3,7 +3,16 @@ use crate::MidiTiming;
 
 impl SessionPlayback {
     pub fn apply(&mut self, command: SessionPlaybackCommand) -> Result<(), SessionPlaybackError> {
+        if self.current_sampler_console
+            && matches!(
+                command,
+                SessionPlaybackCommand::Pause | SessionPlaybackCommand::Seek(1..)
+            )
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
         if self.revision.requires_control_sampler_sources()
+            && !self.current_sampler_console
             && !matches!(
                 &command,
                 SessionPlaybackCommand::Play

@@ -9,6 +9,8 @@ pub struct AudioCandidateRuntimeStatus {
     pub playing: bool,
     pub metronome_enabled: bool,
     pub session_capability: crate::SessionCapabilityStatus,
+    /// True only for a successfully admitted, installed private CURRENT runtime.
+    pub sampler_console: bool,
     pub route_state_generation: u64,
     pub route_count: usize,
 }
@@ -37,6 +39,11 @@ impl ClaimedAudioCandidateRuntime {
             playing: playback.playing(),
             metronome_enabled: playback.metronome_enabled(),
             session_capability: playback.session_capability_status(),
+            sampler_console: self
+                .inner
+                .runtime
+                .as_ref()
+                .is_some_and(|r| r.sampler_console_available()),
             route_state_generation: playback.session_route_state_generation(),
             route_count: playback.session_route_count(),
         })

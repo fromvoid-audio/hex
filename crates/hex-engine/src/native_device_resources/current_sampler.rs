@@ -228,10 +228,6 @@ pub(crate) fn validate_project(project: &Project) -> Result<bool, AudioStorageEr
             .return_tracks()
             .iter()
             .any(|r| !r.devices().is_empty())
-        || project
-            .session_cells()
-            .iter()
-            .any(|c| matches!(c.content(), hex_project::SessionCellContent::Midi(_)))
     {
         return Err(AudioStorageError::UnsupportedGraph);
     }
@@ -247,7 +243,12 @@ pub(crate) fn validate_project(project: &Project) -> Result<bool, AudioStorageEr
             return Err(AudioStorageError::UnsupportedGraph);
         }
         let Some(device) = track.instrument() else {
-            if !track.midi_clips().is_empty() {
+            if !track.midi_clips().is_empty()
+                || project.session_cells().iter().any(|c| {
+                    c.track() == track.id()
+                        && matches!(c.content(), hex_project::SessionCellContent::Midi(_))
+                })
+            {
                 return Err(AudioStorageError::UnsupportedGraph);
             }
             continue;
