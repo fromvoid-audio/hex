@@ -360,12 +360,60 @@ impl Session {
         sine_table: Arc<hex_engine::SineTable>,
         native: Option<ResidentNativeReservation>,
     ) -> Result<Self, SessionError> {
-        if hex_engine::native_device_resources::requires_private_sampler_sources(&project) {
+        if hex_engine::native_device_resources::requires_private_sampler_sources(&project)
+            || project.assets().any(|a| a.original_source().is_some())
+        {
             return Err(SessionError::Invalid(
                 "sampler reopening requires qualified original source reconstruction",
             ));
         }
-        let native_assets = hex_engine::native_device_resources::ResidentDeviceAssets::default();
+        Self::from_prepared_with_original_sources(
+            project,
+            history_capacity,
+            max_resident_frames,
+            prepared_assets,
+            sine_table,
+            native,
+            hex_engine::native_device_resources::ResidentDeviceAssets::default(),
+        )
+    }
+    /// Recovery-only reconstruction: actual original native banks have already
+    /// passed ingress, content comparison and the replacement staging union.
+    pub(crate) fn from_prepared_with_original_sources(
+        project: Project,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        prepared_assets: Vec<(AssetId, PreparedImport)>,
+        sine_table: Arc<hex_engine::SineTable>,
+        native: Option<ResidentNativeReservation>,
+        native_assets: hex_engine::native_device_resources::ResidentDeviceAssets,
+    ) -> Result<Self, SessionError> {
+        let native_count = native_assets.ids().count();
+        if native_count != 0 && native.is_none() {
+            return Err(SessionError::Invalid(
+                "device-original reopening requires resident native limits",
+            ));
+        }
+        for id in native_assets.ids() {
+            let metadata = project
+                .asset(id)
+                .ok_or(SessionError::Invalid("native source is not in project"))?;
+            let source = native_assets
+                .source(id)
+                .ok_or(SessionError::Invalid("native source is unavailable"))?;
+            let facts = native_assets.original_source_facts_on_control(id)?;
+            if metadata.original_source() != Some(facts)
+                || source.sample_rate() != metadata.source_sample_rate()
+                || source
+                    .resident_frames()
+                    .and_then(|pcm| u64::try_from(pcm.len()).ok())
+                    != Some(metadata.source_frames())
+            {
+                return Err(SessionError::Invalid(
+                    "reconstructed original source differs from saved content facts",
+                ));
+            }
+        }
         if let Some(limits) = native {
             native_assets
                 .storage_on_control(0, limits.storage)
@@ -375,14 +423,14 @@ impl Session {
         device_comparison::validate_project(&project)?;
         let asset_count = project.assets().count();
         let editor = Editor::new(project, history_capacity)?;
-        if asset_count != prepared_assets.len() {
+        if prepared_assets.len().checked_add(native_count) != Some(asset_count) {
             return Err(SessionError::Invalid(
                 "prepared media does not match project assets",
             ));
         }
         let mut media: HashMap<AssetId, ResidentAsset> = HashMap::new();
         media
-            .try_reserve(asset_count)
+            .try_reserve(prepared_assets.len())
             .map_err(|_| SessionError::Allocation)?;
         let mut resident_frames = 0_u64;
         let mut resident_waveform_bins = 0_usize;
@@ -392,6 +440,11 @@ impl Session {
                 .project()
                 .asset(asset_id)
                 .ok_or(SessionError::Invalid("decoded asset is not in project"))?;
+            if metadata.original_source().is_some() || native_assets.contains(asset_id) {
+                return Err(SessionError::Invalid(
+                    "device-original media cannot become a prepared clip derivative",
+                ));
+            }
             let frames = u64::try_from(prepared.audio.frames().len())
                 .map_err(|_| SessionError::Invalid("decoded frame count exceeds project range"))?;
             if prepared.audio.sample_rate() != editor.project().sample_rate()
@@ -439,6 +492,25 @@ impl Session {
             {
                 return Err(SessionError::Invalid("duplicate decoded project asset"));
             }
+        }
+        if resident_frames
+            .checked_add(
+                native_assets
+                    .capacity_frames()
+                    .map_err(hex_engine::native_device_resources::ResourcePreparationError::from)?,
+            )
+            .is_none_or(|total| total > max_resident_frames)
+        {
+            return Err(SessionError::Invalid("resident audio frame limit reached"));
+        }
+        if let Some(limits) = native {
+            let bytes = usize::try_from(resident_frames)
+                .ok()
+                .and_then(|n| n.checked_mul(mem::size_of::<hex_engine::Frame>()))
+                .ok_or(SessionError::Invalid("resident pcm byte count overflow"))?;
+            native_assets
+                .storage_on_control(bytes, limits.storage)
+                .map_err(hex_engine::native_device_resources::ResourcePreparationError::from)?;
         }
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         Ok(Self {

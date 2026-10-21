@@ -620,6 +620,15 @@ fn actual_old_resident_current_pcm_remains_charged_across_new_and_sampler_prefli
 fn rendered_browser_first_load_reaches_real_service_and_native_current_without_retargeting(
     cx: &mut gpui::TestAppContext,
 ) {
+    rendered_sampler_save_open(cx, true);
+}
+#[gpui::test]
+fn rendered_browser_mono_sampler_save_open_preserves_absolute_tuning(
+    cx: &mut gpui::TestAppContext,
+) {
+    rendered_sampler_save_open(cx, false);
+}
+fn rendered_sampler_save_open(cx: &mut gpui::TestAppContext, stereo: bool) {
     use gpui::{Modifiers, MouseButton, VisualTestContext};
     let _serial = NATIVE_FIXTURE
         .lock()
@@ -627,7 +636,7 @@ fn rendered_browser_first_load_reaches_real_service_and_native_current_without_r
     let files = Files::new();
     let samples = files.0.join("samples");
     fs::create_dir(&samples).unwrap();
-    let source = wav(&files, true);
+    let source = wav(&files, stereo);
     let path = samples.join("original.wav");
     fs::rename(source, &path).unwrap();
     let mut h = Harness::resident_sampler(8);
@@ -666,6 +675,13 @@ fn rendered_browser_first_load_reaches_real_service_and_native_current_without_r
     else {
         panic!("track")
     };
+    let loaded_revision = if stereo {
+        5
+    } else {
+        let event = h.run(Request::Edit(Command::SetTuning(tuning(880.0))));
+        assert!(event.error.is_none());
+        event.state.revision + 1
+    };
     // Give the actual view a current worker event after fixture authoring. No
     // browser action/request or source assignment is synthesized by the fixture.
     h.service
@@ -691,15 +707,13 @@ fn rendered_browser_first_load_reaches_real_service_and_native_current_without_r
         visual.run_until_parked();
         let mut slot = h.backend.lock().unwrap();
         if let Some(backend) = slot.as_mut() {
-            backend.render(&mut [[0.0; 2]; 64]).unwrap();
-            if backend.status().is_some_and(|s| {
-                s.shutdown_complete
-                    .load(std::sync::atomic::Ordering::Acquire)
-            }) {
-                // Emulate only the headless backend's actual stop/drop after
-                // callback shutdown. This releases the real exclusive lease;
-                // no UI acknowledgement is treated as native retirement.
+            if backend.shutdown_requested() {
+                // Substitute the test backend's actual stop/drop, then let
+                // normal lifecycle control establish terminal quiescence and
+                // release the actual output lease. This is not a UI ACK.
                 slot.take();
+            } else {
+                backend.render(&mut [[0.0; 2]; 64]).unwrap();
             }
         }
         drop(slot);
@@ -735,7 +749,8 @@ fn rendered_browser_first_load_reaches_real_service_and_native_current_without_r
             b.status()
                 .and_then(|s| s.applied_audio_source())
                 .is_some_and(|applied| {
-                    applied.context.project_generation == 0 && applied.context.editor_revision == 5
+                    applied.context.project_generation == 0
+                        && applied.context.editor_revision == loaded_revision
                 })
         }) {
             break;
@@ -769,6 +784,127 @@ fn rendered_browser_first_load_reaches_real_service_and_native_current_without_r
         focus,
         "completion stole actual focus"
     );
+    let before_output = h
+        .backend
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .applied_audio_source()
+        .unwrap()
+        .output_identity;
+    // The real Open picker cancellation must leave the actual current output
+    // and installed source intact before any Save/New/reopen sequence.
+    visual.simulate_keystrokes("cmd-o");
+    while !cx.did_prompt_for_paths() {
+        pulse(&mut visual);
+        assert!(
+            Instant::now() < end,
+            "actual cancelled Open picker did not open"
+        );
+    }
+    cx.simulate_paths_selection(None);
+    for _ in 0..12 {
+        pulse(&mut visual);
+    }
+    let after_cancel = h
+        .backend
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .status()
+        .unwrap()
+        .applied_audio_source()
+        .unwrap();
+    assert_eq!(after_cancel.output_identity, before_output);
+    assert_eq!(after_cancel.context.project_generation, 0);
+    assert_eq!(after_cancel.context.editor_revision, loaded_revision);
+    let saved = files.0.join("saved.hex");
+    visual.simulate_keystrokes("cmd-s");
+    while !cx.did_prompt_for_new_path() {
+        pulse(&mut visual);
+        assert!(Instant::now() < end, "actual SaveNew picker did not open");
+    }
+    cx.simulate_new_path_selection(|_| Some(saved.clone()));
+    while !saved.exists() {
+        pulse(&mut visual);
+        assert!(Instant::now() < end, "actual SaveNew did not publish");
+    }
+    for _ in 0..12 {
+        pulse(&mut visual);
+    }
+    let stored = hex_storage::load(&saved).unwrap();
+    assert!(stored.assets().all(|a| a.original_source().is_some()));
+    if !stereo {
+        assert_eq!(stored.tuning(), tuning(880.0));
+    }
+    let previous_save = hex_storage::recovery_path(&saved).unwrap();
+    assert!(
+        !previous_save.exists(),
+        "SaveNew creates no previous-save recovery"
+    );
+    visual.simulate_keystrokes("cmd-s");
+    while !previous_save.exists() {
+        pulse(&mut visual);
+        assert!(
+            Instant::now() < end,
+            "actual SaveCurrent did not use the ordinary recoverable publication"
+        );
+    }
+    assert_eq!(hex_storage::load_recovery(&saved).unwrap().project, stored);
+    for _ in 0..12 {
+        pulse(&mut visual);
+    }
+    visual.simulate_keystrokes("cmd-n");
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds(target_selector).is_some(),
+        "first New must retain the existing explicit confirmation law"
+    );
+    visual.simulate_keystrokes("cmd-n");
+    while visual.debug_bounds(target_selector).is_some() {
+        pulse(&mut visual);
+        assert!(
+            Instant::now() < end,
+            "actual New did not replace the saved document"
+        );
+    }
+    for _ in 0..12 {
+        pulse(&mut visual);
+    }
+    visual.simulate_keystrokes("cmd-o");
+    while !cx.did_prompt_for_paths() {
+        pulse(&mut visual);
+        assert!(Instant::now() < end, "actual Open picker did not open");
+    }
+    cx.simulate_paths_selection(Some(vec![saved.clone()]));
+    loop {
+        pulse(&mut visual);
+        if h.backend
+            .lock()
+            .unwrap()
+            .as_ref()
+            .and_then(|b| b.status())
+            .and_then(|s| s.applied_audio_source())
+            .is_some_and(|applied| {
+                applied.context.project_generation == 2
+                    && applied.context.editor_revision == loaded_revision + 2
+                    && applied.output_identity != before_output
+            })
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "actual Open did not reach a fresh matching native CURRENT"
+        );
+    }
+    for _ in 0..12 {
+        pulse(&mut visual);
+    }
     fs::remove_file(path).unwrap();
     visual.simulate_keystrokes("space");
     let output = loop {
@@ -797,8 +933,16 @@ fn rendered_browser_first_load_reaches_real_service_and_native_current_without_r
         );
         std::thread::sleep(Duration::from_millis(1));
     };
-    let left = [0.125, 0.3125, 0.5, 0.1875, -0.125, -0.0625, 0.0];
-    let right = [-0.25, -0.125, 0.0, 0.125, 0.25, 0.125, 0.0];
+    let left = if stereo {
+        [0.125, 0.3125, 0.5, 0.1875, -0.125, -0.0625, 0.0]
+    } else {
+        [0.125, 0.5, -0.125, 0.0, 0.0, 0.0, 0.0]
+    };
+    let right = if stereo {
+        [-0.25, -0.125, 0.0, 0.125, 0.25, 0.125, 0.0]
+    } else {
+        left
+    };
     for i in 0..64 {
         let expected = if i < left.len() {
             [left[i], right[i]]
@@ -865,4 +1009,112 @@ fn rendered_browser_first_load_reaches_real_service_and_native_current_without_r
     }
     visual.update(|w, _| w.remove_window());
     visual.run_until_parked();
+}
+
+#[test]
+fn rejected_sampler_open_keeps_actual_native_current_document_and_original_sound() {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for case in ["changed", "longer", "capacity"] {
+        let capacity_refusal = case == "capacity";
+        let files = Files::new();
+        let mut h = Harness::resident_sampler(if capacity_refusal { 8 } else { 12 });
+        let (track, asset) = authored(&mut h, &files, true, false, false);
+        let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+        h.run(Request::AssignSampler { track, asset });
+        h.open_sampler(old_output);
+        let context = h.context.unwrap();
+        let applied = h.applied(context);
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        let original = h.render();
+        let left = [0.125, 0.3125, 0.5, 0.1875, -0.125, -0.0625, 0.0];
+        let right = [-0.25, -0.125, 0.0, 0.125, 0.25, 0.125, 0.0];
+        for i in 0..64 {
+            let expected = if i < left.len() {
+                [left[i], right[i]]
+            } else {
+                [0.0; 2]
+            };
+            for c in 0..2 {
+                assert!((original[i][c] - expected[c]).abs() < 1e-6);
+            }
+        }
+        h.audio.as_ref().unwrap().control.stop();
+        assert_eq!(h.render(), [[0.0; 2]; 64]);
+        let path = wav(&files, true); // Restore the fixture file removed after initial ingress.
+        let saved = files.0.join("native.hex");
+        let before = h.run(Request::SaveNew(saved.clone()));
+        let mut bytes = fs::read(&path).unwrap();
+        if capacity_refusal {
+            bytes = b"invalid wav".to_vec();
+        } else if case == "longer" {
+            bytes.extend_from_slice(&[0, 32, 0, 224]);
+            let riff = u32::try_from(bytes.len() - 8).unwrap();
+            let data = u32::try_from(bytes.len() - 44).unwrap();
+            bytes[4..8].copy_from_slice(&riff.to_le_bytes());
+            bytes[40..44].copy_from_slice(&data.to_le_bytes());
+        } else {
+            bytes[44..46].copy_from_slice(&8192_i16.to_le_bytes());
+        }
+        fs::write(&path, bytes).unwrap();
+        h.service
+            .as_ref()
+            .unwrap()
+            .submit(Request::Open(saved))
+            .unwrap();
+        let refused = h.next();
+        assert!(refused.open_complete && !refused.project_replaced && refused.error.is_some());
+        assert!(
+            refused
+                .error
+                .as_ref()
+                .unwrap()
+                .contains(if capacity_refusal {
+                    "frame limit"
+                } else if case == "longer" {
+                    "media limit exceeded: decoded frames"
+                } else {
+                    "content differs"
+                }),
+            "{:?}",
+            refused.error
+        );
+        assert_eq!(
+            refused.state.project.snapshot(),
+            before.state.project.snapshot()
+        );
+        assert_eq!(refused.state.revision, before.state.revision);
+        assert_eq!(refused.state.document_path, before.state.document_path);
+        assert_eq!(h.context, Some(context));
+        assert_eq!(
+            h.audio.as_ref().unwrap().control.output_identity(),
+            Some(applied.output_identity)
+        );
+        assert_eq!(
+            h.audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_audio_source(),
+            Some(applied)
+        );
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        assert_eq!(
+            h.render(),
+            original,
+            "refused Open must preserve actual native PCM and phase reset"
+        );
+    }
 }

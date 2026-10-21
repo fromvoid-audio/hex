@@ -963,6 +963,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
         next_id: 7,
         assets: vec![
             AssetSnapshot {
+                original_source: None,
                 id: 4,
                 path: "shared.wav".into(),
                 source_sample_rate: 48_000,
@@ -971,6 +972,7 @@ fn audio_project(source_start: u64, source_end: u64, asset_id: u64) -> Project {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             },
             AssetSnapshot {
+                original_source: None,
                 id: 5,
                 path: "replacement.wav".into(),
                 source_sample_rate: 48_000,
@@ -3864,6 +3866,7 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
     let effect = 22;
     snapshot.next_id = 23;
     snapshot.assets.push(AssetSnapshot {
+        original_source: None,
         id: asset,
         path: "mutable-hybrid.wav".into(),
         source_sample_rate: 48_000,
@@ -5042,6 +5045,7 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     let audio_clip = asset + 1;
     source.next_id += 2;
     source.assets.push(AssetSnapshot {
+        original_source: None,
         id: asset,
         path: "mutable-tail-input.wav".into(),
         source_sample_rate: 48_000,

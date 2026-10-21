@@ -33,7 +33,77 @@ fn legacy(session: &Session) -> Vec<&hex_engine::Audio> {
         .flat_map(|m| [&m.source_audio, &m.audio])
         .collect()
 }
+/// Borrowed actual replacement sources, plus a checked upcoming PCM allowance.
+/// Recovery retains the old Session until the complete candidate is admitted.
+pub(crate) struct RecoverySourceStage<'a> {
+    pub(crate) originals: Option<&'a resources::ResidentDeviceAssets>,
+    pub(crate) staged: Option<&'a StagedNativeAssetView<'a>>,
+    pub(crate) prepared: &'a [(hex_project::AssetId, PreparedImport)],
+    pub(crate) decoded: Option<&'a hex_engine::Audio>,
+    pub(crate) additional_frames: u64,
+}
 impl Admission<'_> {
+    pub(crate) fn check_recovery_sources(
+        &self,
+        current: &Session,
+        source: RecoverySourceStage<'_>,
+    ) -> Result<(), SessionError> {
+        let limits = current.native_reservation.ok_or(SessionError::Invalid(
+            "device-original reopening requires resident native limits",
+        ))?;
+        let stores = std::iter::once(&current.native_assets)
+            .chain(source.originals)
+            .collect::<Vec<_>>();
+        let selections = self
+            .current
+            .into_iter()
+            .chain(self.export)
+            .collect::<Vec<_>>();
+        let outbound = self.outbound.into_iter().collect::<Vec<_>>();
+        let legacy = current
+            .media
+            .values()
+            .flat_map(|m| [&m.source_audio, &m.audio])
+            .chain(
+                source
+                    .prepared
+                    .iter()
+                    .flat_map(|(_, m)| [&m.source_audio, &m.audio]),
+            )
+            .chain(source.decoded)
+            .collect::<Vec<_>>();
+        let extra_bytes = usize::try_from(source.additional_frames)
+            .ok()
+            .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>()))
+            .ok_or(SessionError::Invalid("recovery source allowance overflow"))?;
+        let phase = ControlSamplerPhase {
+            stores: &stores,
+            selections: &selections,
+            outbound: &outbound,
+            legacy: &legacy,
+            checked_runtime_bytes: self
+                .runtime_bytes
+                .checked_add(self.native.construction_bytes)
+                .ok_or(SessionError::Invalid("native reservation overflow"))?,
+            construction_bytes: extra_bytes,
+        };
+        let inventory = match source.staged {
+            Some(stage) => stage.inspect(&phase, &phase, limits.storage),
+            None => resources::inspect_control_sampler_union(&phase, &phase, limits.storage),
+        }?;
+        for frames in [inventory.retained_frames, inventory.construction_frames] {
+            if frames
+                .checked_add(self.native.frames)
+                .and_then(|n| n.checked_add(source.additional_frames))
+                .is_none_or(|n| n > current.max_resident_frames)
+            {
+                return Err(SessionError::Invalid(
+                    "resident recovery source frame limit reached",
+                ));
+            }
+        }
+        Ok(())
+    }
     /// The real decoded original and derivative exist, but no canonical/media
     /// transaction has begun. Ordinary import adds only legacy PCM to this
     /// source domain; native store/sidecar/factory ownership stays unchanged.
@@ -159,9 +229,21 @@ impl Admission<'_> {
         Ok(inventory)
     }
 }
+#[cfg(test)]
+thread_local! {
+    static SNAPSHOT_COMPILER_ENTRIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 impl Session {
     pub(crate) fn prepare_service_snapshot(
         &self,
+        project: &Project,
+        admission: Admission<'_>,
+    ) -> Result<ServiceExportSnapshot, SessionError> {
+        self.prepare_service_snapshot_against(self, project, admission)
+    }
+    pub(crate) fn prepare_service_snapshot_against(
+        &self,
+        old: &Session,
         project: &Project,
         admission: Admission<'_>,
     ) -> Result<ServiceExportSnapshot, SessionError> {
@@ -179,7 +261,7 @@ impl Session {
                 sources: None,
             };
             if self.native_reservation.is_some() {
-                admission.check(self, self, result.selection(), 0, None)?;
+                admission.check(old, self, result.selection(), 0, None)?;
             }
             return Ok(result);
         }
@@ -199,8 +281,11 @@ impl Session {
             &self.shutdown,
         )?;
         let allowance = sources.compiler_factory_allowance()?;
+        // The old Session remains alive until canonical replacement commits.
+        // Its unassigned originals and unreferenced legacy PCM must be included
+        // before any candidate factory/compiler allocation.
         admission.check(
-            self,
+            old,
             self,
             ControlSamplerSelection {
                 sources: Some(&sources),
@@ -211,6 +296,8 @@ impl Session {
                 .ok_or(SessionError::Invalid("sampler compiler allowance overflow"))?,
             None,
         )?;
+        #[cfg(test)]
+        SNAPSHOT_COMPILER_ENTRIES.with(|n| n.set(n.get() + 1));
         let prepared = Arc::new(PreparedRevision::prepare_control_sampler_export(
             project,
             &self.media_bank().resident,
@@ -222,7 +309,7 @@ impl Session {
             prepared,
             sources: Some(sources),
         };
-        admission.check(self, self, result.selection(), allowance, None)?;
+        admission.check(old, self, result.selection(), allowance, None)?;
         Ok(result)
     }
     pub(crate) fn command_service_snapshot(

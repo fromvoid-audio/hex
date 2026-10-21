@@ -1,5 +1,5 @@
 use super::*;
-fn authored(s: &Service) -> (hex_project::TrackId, Event) {
+pub(super) fn authored(s: &Service) -> (hex_project::TrackId, Event) {
     event(s);
     let Some(Created::Track(track)) = edit(
         s,
@@ -36,7 +36,7 @@ fn authored(s: &Service) -> (hex_project::TrackId, Event) {
     );
     (track, before)
 }
-fn request(before: &Event, track: hex_project::TrackId, path: PathBuf) -> Request {
+pub(super) fn request(before: &Event, track: hex_project::TrackId, path: PathBuf) -> Request {
     Request::LoadFirstSampler {
         request_id: 9,
         project_generation: before
@@ -230,5 +230,120 @@ fn first_load_refusals_preserve_canonical_history_sources_and_original_target() 
             (before.state.can_undo, before.state.can_redo),
             "{case}"
         );
+    }
+}
+
+#[test]
+fn first_load_save_projects_actual_original_catalog_without_history_or_owner_escape() {
+    let mono = [
+        126, 31, 236, 78, 247, 231, 248, 213, 2, 55, 14, 76, 198, 151, 192, 55, 230, 94, 138, 21,
+        200, 118, 132, 213, 113, 69, 163, 43, 23, 252, 230, 61,
+    ];
+    let stereo_digest = [
+        37, 182, 86, 33, 141, 194, 149, 144, 249, 172, 95, 152, 63, 100, 83, 174, 58, 120, 112,
+        231, 74, 206, 50, 3, 45, 58, 172, 97, 20, 192, 131, 8,
+    ];
+    for stereo in [false, true] {
+        let files = Files::new(stereo);
+        let unassigned = Files::new(false);
+        let saved = files.source.with_file_name("sampler.hex");
+        let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
+        let (track, before) = authored(&service);
+        service
+            .submit(request(&before, track, files.source.clone()))
+            .unwrap();
+        let loaded = event(&service);
+        assert!(loaded.error.is_none());
+        let Some(Created::Asset(first)) = loaded.created else {
+            panic!("first asset")
+        };
+        service
+            .submit(Request::ImportDeviceAsset {
+                path: unassigned.source.clone(),
+                cancel: Arc::new(AtomicBool::new(false)),
+            })
+            .unwrap();
+        let before = event(&service);
+        assert!(before.error.is_none(), "{:?}", before.error);
+        assert_eq!(before.state.project.assets().count(), 2);
+        assert!(
+            before
+                .state
+                .project
+                .assets()
+                .all(|a| a.original_source().is_none())
+        );
+        for save in [Request::SaveNew(saved.clone()), Request::SaveCurrent] {
+            service.submit(save).unwrap();
+            let result = event(&service);
+            assert!(
+                result.save_complete && result.error.is_none(),
+                "{:?}",
+                result.error
+            );
+            assert_eq!(
+                result.state.project.snapshot(),
+                before.state.project.snapshot()
+            );
+            assert_eq!(result.state.revision, before.state.revision);
+            assert_eq!(
+                (result.state.can_undo, result.state.can_redo),
+                (before.state.can_undo, before.state.can_redo)
+            );
+            assert!(!result.state.unsaved);
+            assert_eq!(result.state.document_path.as_ref(), Some(&saved));
+            assert!(result.playback.is_none());
+            assert!(
+                result
+                    .state
+                    .canonical_audio_source
+                    .as_ref()
+                    .unwrap()
+                    .sources()
+                    .is_empty()
+            );
+            let project = hex_storage::load(&saved).unwrap();
+            assert_eq!(project.tuning(), before.state.project.tuning());
+            assert_eq!(
+                project.track(track).unwrap().instrument().unwrap().state(),
+                before
+                    .state
+                    .project
+                    .track(track)
+                    .unwrap()
+                    .instrument()
+                    .unwrap()
+                    .state()
+            );
+            for asset in project.assets() {
+                let facts = asset
+                    .original_source()
+                    .expect("all actual native assets, including unassigned");
+                assert_eq!(facts.law_version(), 1);
+                assert_eq!(
+                    facts.content_digest(),
+                    if asset.id() == first && stereo {
+                        stereo_digest
+                    } else {
+                        mono
+                    }
+                );
+                assert_eq!(
+                    (asset.source_sample_rate(), asset.source_frames()),
+                    (8000, 4)
+                );
+            }
+        }
+        // Retain the ordinary conflict-checked save law with a private sampler.
+        fs::write(&saved, b"external writer").unwrap();
+        service.submit(Request::SaveCurrent).unwrap();
+        let conflict = event(&service);
+        assert!(conflict.save_complete && conflict.error.is_some());
+        assert_eq!(
+            conflict.state.project.snapshot(),
+            before.state.project.snapshot()
+        );
+        assert_eq!(conflict.state.document_path.as_ref(), Some(&saved));
+        assert_eq!(fs::read(&saved).unwrap(), b"external writer");
     }
 }

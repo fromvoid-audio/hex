@@ -301,14 +301,20 @@ Opt-in original native device-source admission uses
 PCM and construction overlap alongside legacy PCM; encoded/decode peaks and
 ordinary editor/view storage are separate. It atomically returns an unassigned
 canonical asset ID, without a clip derivative or owning source escape. Existing
-constructors remain opt-out. See `docs/sampler.md` for limits, tests and the still
-pending prepared/export/native custody integration.
+constructors remain opt-out. The worker composes this source admission with the
+private prepared/export/native paths below; see `docs/sampler.md` for exact
+limits, tests and the remaining musical-use acceptance.
 
 
 Explicit resident-native reservation supports canonical sampler assignment and
 private frame-zero Main export. The service retains source-bearing sidecars and
 captured-job custody on control; public playback/canonical-source events stay
-resource-free. New/Open preserve the capability, while sampler reopen, history,
-native playback and runtime tools explicitly refuse. See
+resource-free. SaveNew/SaveCurrent project every canonically present native
+asset's immutable actual catalog content facts, including unassigned sources,
+without a history edit. Open reconstructs original PCM through native ingress
+before any derivative alias, compares the actual catalog with saved facts, and
+prepares a private snapshot before canonical adoption. New/Open preserve the
+explicit capability. History and runtime tools still refuse; native frame-zero
+Arrangement Play/Stop uses a fresh CURRENT through desktop. See
 [the sampler boundary](../../docs/sampler.md) for admission scope and remaining
 user-facing dependencies.

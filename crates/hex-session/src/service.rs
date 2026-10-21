@@ -1762,6 +1762,8 @@ fn run_worker(
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::ImportDeviceAsset { .. }
+                    | Request::SaveNew(_)
+                    | Request::SaveCurrent
                     | Request::Export(_)
                     | Request::ExportRange { .. }
                     | Request::NewWithAudioMode { .. }
@@ -1772,7 +1774,7 @@ fn run_worker(
         if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
         } else if sampler_refusal {
-            error=Some(if events.native_audio_requested() {"sampler supports frame-zero arrangement play and stop; history, save and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, history, save and runtime tools are unavailable"}.into());
+            error=Some(if events.native_audio_requested() {"sampler supports frame-zero arrangement play and stop; history and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, history and runtime tools are unavailable"}.into());
             if let Request::PrepareComputerKeyboard { request_id, .. } = &request {
                 computer_keyboard_complete = Some(*request_id);
             }
@@ -2582,25 +2584,40 @@ fn run_worker(
                                 reservation,
                                 session.native_reservation,
                                 allowance,
+                                admission,
                             )
                         });
                     match candidate {
                         Ok((candidate, candidate_base, candidate_document, dirty)) => {
-                            let compiled_candidate=compile(&candidate,None).and_then(|prepared| {
-                                if session.native_reservation.is_some() {admission.check(&session,&candidate,
-                                    hex_engine::native_device_resources::ControlSamplerSelection {sources:None,prepared:Some(&prepared)},0,None)
-                                    .map_err(|e|e.to_string())?;}
-                                Ok(prepared)
+                            let compiled_candidate = if hex_engine::native_device_resources::requires_private_sampler_sources(
+                                candidate.project(),
+                            ) {
+                                candidate
+                                    .prepare_service_snapshot_against(&session, candidate.project(), admission)
+                                    .map_err(|e| e.to_string())
+                            } else {
+                                compile(&candidate, None).map(|prepared| sampler_export::ServiceExportSnapshot {
+                                    prepared,
+                                    sources: None,
+                                })
+                            }.and_then(|snapshot| {
+                                if session.native_reservation.is_some() {
+                                    admission
+                                        .check(&session, &candidate, snapshot.selection(), 0, None)
+                                        .map_err(|e| e.to_string())?;
+                                }
+                                Ok(snapshot)
                             });
                             match compiled_candidate {
-                                Ok(prepared) => {
+                                Ok(snapshot) => {
                                     journal = None;
                                     session = candidate;
                                     media_base = Some(candidate_base);
                                     document = candidate_document;
                                     unsaved = dirty;
                                     project_replaced = true;
-                                    replacement_revision = Some(prepared);
+                                    replacement_revision = Some(snapshot.prepared);
+                                    replacement_sources = Some(snapshot.sources);
                                     status = Some(
                                         if dirty {
                                             "project recovered or relinked · save to keep changes"

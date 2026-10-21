@@ -14,7 +14,11 @@ and bounded undo/redo. Commands
 are transactional; failed edits leave state and history unchanged. No PCM is
 stored in history. Each asset records its original source rate/frame count and
 its prepared project-rate playback frame count plus conversion version. Clip
-source intervals use playback frames.
+source intervals use playback frames. Optional `OriginalSourceFacts` marks an
+asset as device-original and stores the expected normalized-PCM lawversion and
+fixed content digest. It carries no PCM, token, root or lease and adds no DSP
+implementation dependency. Such assets cannot enter an unaccounted clip
+derivative path. Ordinary assets explicitly retain `None`.
 Optional musical audio edits use shared immutable ownership with copy-on-write
 for crop, placement and processing changes. Neutral clips retain only an optional
 pointer; public read-only edit access and owned snapshots keep the same contract.

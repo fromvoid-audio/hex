@@ -801,6 +801,24 @@ canonical PR/ticket; physical UI/fonts/audio, optimized delivery, controls,
 replacement, keyboard, history and save/reopen remain outstanding. See
 [the first-load contract and finite checklist](docs/sampler.md#first-browser-load--pulse2965--pr549).
 
+## sampler save and reopen — #2906 / PR499
+
+Normal SaveNew/SaveCurrent now save actual catalog-derived expected original
+content facts without a history edit. Strict current schema34 retains every
+asset's explicit ordinary/device-original classification; legacy identity guesses
+refuse. Open moves bounded original decoded PCM into native banks before any
+clip derivative alias, compares actual content, prepares a private snapshot and
+admits old/native/export/staged union before canonical adoption. Relative/Save As
+base, file tokens, previous-save recovery and conflict handling are preserved.
+Real worker custom state/tuning/PCM roundtrips, failed-open preservation,
+held-export frame caps and actual rendered browser/Save/New/Open/native
+Play/Stop/replay have owning checks. Native rejection keeps the old actual output
+and PCM. Saved-frame decoder limits and actual old-session pre-compiler byte
+unions have regression coverage, including exact/one-under refusal before entry.
+Required exact merge evidence is external; physical/native acceptance,
+optimized delivery, controls/replacement/keyboard/history remain open. See
+[the source contract](docs/sampler.md#save-and-reopen-original-sources--pulse2906--pr499).
+
 ## Global browser search — #2659 / PR275, 17 october 2026
 
 Command-F opens the browser in `all`, focuses search and selects the previous

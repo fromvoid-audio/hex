@@ -37,6 +37,7 @@ pub fn fixture(distinct_assets: bool) -> Result<Fixture, Box<dyn Error>> {
         let id = next_id;
         next_id += 1;
         assets.push(AssetSnapshot {
+            original_source: None,
             id,
             path: PathBuf::from(format!("memory/session-audio-{index:03}.wav")),
             source_sample_rate: RATE,

@@ -314,3 +314,10 @@ silent exact-end start. Snapshots expose absolute frame/total length using one
 additional constructor-allocated atomic cursor; generation acknowledgements keep
 old requests isolated. Constructor channel accounting includes its paired payload.
 UI hit normalization/decoding stays outside this crate and project transport.
+
+
+The opt-in headless worker fixture exposes a read-only backend shutdown request.
+It grants no stop/dispose or retirement proof. The test driver must actually
+drop both callback carriers; the existing lifecycle owner then proves quiescence
+and the real exclusive output lease must be available before reopening. Sampler
+UI save/open fixtures use this path, not a UI acknowledgement or physical device.
