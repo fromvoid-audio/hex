@@ -223,8 +223,8 @@ pub(super) fn open_source_with_limits(
                 .map_err(|e| e.to_string())?;
         }
         let source_limit = if has_originals {
-            usize::try_from(remaining_frames)
-                .unwrap_or(usize::MAX)
+            usize::try_from(asset.source_frames().min(remaining_frames))
+                .map_err(|_| "saved source frame count exceeds platform limit")?
                 .min(IMPORT_FRAME_LIMIT)
         } else {
             IMPORT_FRAME_LIMIT

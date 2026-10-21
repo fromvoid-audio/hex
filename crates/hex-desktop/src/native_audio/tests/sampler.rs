@@ -1016,7 +1016,8 @@ fn rejected_sampler_open_keeps_actual_native_current_document_and_original_sound
     let _serial = NATIVE_FIXTURE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    for capacity_refusal in [false, true] {
+    for case in ["changed", "longer", "capacity"] {
+        let capacity_refusal = case == "capacity";
         let files = Files::new();
         let mut h = Harness::resident_sampler(if capacity_refusal { 8 } else { 12 });
         let (track, asset) = authored(&mut h, &files, true, false, false);
@@ -1052,6 +1053,12 @@ fn rejected_sampler_open_keeps_actual_native_current_document_and_original_sound
         let mut bytes = fs::read(&path).unwrap();
         if capacity_refusal {
             bytes = b"invalid wav".to_vec();
+        } else if case == "longer" {
+            bytes.extend_from_slice(&[0, 32, 0, 224]);
+            let riff = u32::try_from(bytes.len() - 8).unwrap();
+            let data = u32::try_from(bytes.len() - 44).unwrap();
+            bytes[4..8].copy_from_slice(&riff.to_le_bytes());
+            bytes[40..44].copy_from_slice(&data.to_le_bytes());
         } else {
             bytes[44..46].copy_from_slice(&8192_i16.to_le_bytes());
         }
@@ -1070,6 +1077,8 @@ fn rejected_sampler_open_keeps_actual_native_current_document_and_original_sound
                 .unwrap()
                 .contains(if capacity_refusal {
                     "frame limit"
+                } else if case == "longer" {
+                    "media limit exceeded: decoded frames"
                 } else {
                     "content differs"
                 }),

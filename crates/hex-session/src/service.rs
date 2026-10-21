@@ -2593,7 +2593,7 @@ fn run_worker(
                                 candidate.project(),
                             ) {
                                 candidate
-                                    .prepare_service_snapshot(candidate.project(), admission)
+                                    .prepare_service_snapshot_against(&session, candidate.project(), admission)
                                     .map_err(|e| e.to_string())
                             } else {
                                 compile(&candidate, None).map(|prepared| sampler_export::ServiceExportSnapshot {

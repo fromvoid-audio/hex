@@ -595,7 +595,11 @@ same-frame changed PCM, missing facts and cap refusal retain the old state and
 sound. Relative/Save As paths and a held-export exact/one-under frame union are
 covered. Actual native rejection preserves the installed output identity,
 constructor ACK and literal old PCM, including predecode admission against the
-real held native frames.
+real held native frames. Valid longer WAVs are refused by the decoder's saved-frame
+limit before normalized PCM construction, for both original and ordinary assets
+in mixed projects. Replacement preparation quotes the actual old Session before
+compiler entry; exact/one-under byte tests cover unassigned native originals and
+legacy source/derivative PCM, with zero compiler entries on refusal.
 
 Headless rendered browser/keyboard/picker tests drive the real Service and
 NativeAudioSink for stereo and mono+A880: SaveNew, repository recovery-verified

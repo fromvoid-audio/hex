@@ -813,7 +813,9 @@ base, file tokens, previous-save recovery and conflict handling are preserved.
 Real worker custom state/tuning/PCM roundtrips, failed-open preservation,
 held-export frame caps and actual rendered browser/Save/New/Open/native
 Play/Stop/replay have owning checks. Native rejection keeps the old actual output
-and PCM. Required exact merge evidence is external; physical/native acceptance,
+and PCM. Saved-frame decoder limits and actual old-session pre-compiler byte
+unions have regression coverage, including exact/one-under refusal before entry.
+Required exact merge evidence is external; physical/native acceptance,
 optimized delivery, controls/replacement/keyboard/history remain open. See
 [the source contract](docs/sampler.md#save-and-reopen-original-sources--pulse2906--pr499).
 

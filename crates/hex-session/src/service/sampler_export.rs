@@ -229,9 +229,21 @@ impl Admission<'_> {
         Ok(inventory)
     }
 }
+#[cfg(test)]
+thread_local! {
+    static SNAPSHOT_COMPILER_ENTRIES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
 impl Session {
     pub(crate) fn prepare_service_snapshot(
         &self,
+        project: &Project,
+        admission: Admission<'_>,
+    ) -> Result<ServiceExportSnapshot, SessionError> {
+        self.prepare_service_snapshot_against(self, project, admission)
+    }
+    pub(crate) fn prepare_service_snapshot_against(
+        &self,
+        old: &Session,
         project: &Project,
         admission: Admission<'_>,
     ) -> Result<ServiceExportSnapshot, SessionError> {
@@ -249,7 +261,7 @@ impl Session {
                 sources: None,
             };
             if self.native_reservation.is_some() {
-                admission.check(self, self, result.selection(), 0, None)?;
+                admission.check(old, self, result.selection(), 0, None)?;
             }
             return Ok(result);
         }
@@ -269,8 +281,11 @@ impl Session {
             &self.shutdown,
         )?;
         let allowance = sources.compiler_factory_allowance()?;
+        // The old Session remains alive until canonical replacement commits.
+        // Its unassigned originals and unreferenced legacy PCM must be included
+        // before any candidate factory/compiler allocation.
         admission.check(
-            self,
+            old,
             self,
             ControlSamplerSelection {
                 sources: Some(&sources),
@@ -281,6 +296,8 @@ impl Session {
                 .ok_or(SessionError::Invalid("sampler compiler allowance overflow"))?,
             None,
         )?;
+        #[cfg(test)]
+        SNAPSHOT_COMPILER_ENTRIES.with(|n| n.set(n.get() + 1));
         let prepared = Arc::new(PreparedRevision::prepare_control_sampler_export(
             project,
             &self.media_bank().resident,
@@ -292,7 +309,7 @@ impl Session {
             prepared,
             sources: Some(sources),
         };
-        admission.check(self, self, result.selection(), allowance, None)?;
+        admission.check(old, self, result.selection(), allowance, None)?;
         Ok(result)
     }
     pub(crate) fn command_service_snapshot(

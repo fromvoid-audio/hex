@@ -194,6 +194,7 @@ fn save_new_current_new_open_reconstructs_original_content_state_tuning_and_actu
 fn failed_original_open_preserves_document_history_media_and_existing_sound() {
     for case in [
         "changed",
+        "longer",
         "missing",
         "corrupt",
         "oversize",
@@ -234,6 +235,15 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
                 changed[44..46].copy_from_slice(&8192_i16.to_le_bytes());
                 fs::write(&files.source, changed).unwrap();
             }
+            "longer" => {
+                let mut changed = original.clone();
+                changed.extend_from_slice(&[0, 32, 0, 32]);
+                let riff = u32::try_from(changed.len() - 8).unwrap();
+                let data = u32::try_from(changed.len() - 44).unwrap();
+                changed[4..8].copy_from_slice(&riff.to_le_bytes());
+                changed[40..44].copy_from_slice(&data.to_le_bytes());
+                fs::write(&files.source, changed).unwrap();
+            }
             "missing" => fs::remove_file(&files.source).unwrap(),
             "unassigned-missing" => fs::remove_file(&unassigned.source).unwrap(),
             "corrupt" | "cap-before-decode" => fs::write(&files.source, b"invalid wav").unwrap(),
@@ -266,6 +276,18 @@ fn failed_original_open_preserves_document_history_media_and_existing_sound() {
         if case == "changed" {
             assert!(refused.error.as_ref().unwrap().contains("content differs"));
         }
+        if case == "longer" {
+            assert!(
+                refused
+                    .error
+                    .as_ref()
+                    .unwrap()
+                    .contains("media limit exceeded: decoded frames"),
+                "{:?}",
+                refused.error
+            );
+        }
+
         if case == "cap-before-decode" {
             assert!(
                 refused.error.as_ref().unwrap().contains("frame limit"),
@@ -431,5 +453,177 @@ fn held_export_and_new_original_reconstruction_share_one_finite_union() {
                 std::thread::sleep(Duration::from_millis(1));
             }
         }
+    }
+}
+
+#[test]
+fn original_open_caps_ordinary_decode_at_saved_frames_before_alias_construction() {
+    let native = Files::new(false);
+    let ordinary = Files::new(false);
+    let mut current = Session::new(16000, 16, 1024)
+        .unwrap()
+        .with_native_reservation(reservation())
+        .unwrap();
+    let (_, snapshot) = current
+        .import_service_snapshot(
+            decode_wav_file(
+                &native.source,
+                Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+            )
+            .unwrap(),
+            &AtomicBool::new(false),
+            Admission::default(),
+        )
+        .unwrap();
+    import(
+        &mut current,
+        ordinary.source.clone(),
+        None,
+        Admission {
+            current: Some(snapshot.selection()),
+            ..Admission::default()
+        },
+    )
+    .unwrap();
+    let saved = native.source.with_file_name("mixed.hex");
+    hex_storage::save_new(&saved, &recovery::project_for_save(&current, None).unwrap()).unwrap();
+    let before = current.project().clone();
+    let history = (current.can_undo(), current.can_redo());
+    let mut bytes = fs::read(&ordinary.source).unwrap();
+    bytes.extend_from_slice(&[0, 32, 0, 32]);
+    let riff = u32::try_from(bytes.len() - 8).unwrap();
+    let data = u32::try_from(bytes.len() - 44).unwrap();
+    bytes[4..8].copy_from_slice(&riff.to_le_bytes());
+    bytes[40..44].copy_from_slice(&data.to_le_bytes());
+    fs::write(&ordinary.source, bytes).unwrap();
+    let old = compile(&current, None).unwrap();
+    let admission = Admission {
+        current: Some(ControlSamplerSelection {
+            sources: None,
+            prepared: Some(&old),
+        }),
+        ..Admission::default()
+    };
+    let refused = recovery::open_source_with_limits(
+        &current,
+        16,
+        &ProjectSource::Saved(saved),
+        &BTreeMap::new(),
+        DocumentAudioMode::Resident,
+        None,
+        Some(reservation()),
+        admission.replacement_frame_allowance(&current).unwrap(),
+        admission,
+    )
+    .err()
+    .unwrap();
+    assert!(
+        refused.contains("media limit exceeded: decoded frames"),
+        "{refused}"
+    );
+    assert_eq!(current.project(), &before);
+    assert_eq!((current.can_undo(), current.can_redo()), history);
+}
+
+#[test]
+fn replacement_snapshot_counts_old_original_and_legacy_pcm_before_compiler_entry() {
+    for original in [false, true] {
+        let old_files = Files::new(false);
+        let mut bytes = fs::read(&old_files.source).unwrap();
+        let pcm = bytes[44..].repeat(1024);
+        bytes.truncate(44);
+        bytes.extend_from_slice(&pcm);
+        bytes[4..8].copy_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
+        bytes[40..44].copy_from_slice(&(pcm.len() as u32).to_le_bytes());
+        fs::write(&old_files.source, bytes).unwrap();
+        let mut limits = reservation();
+        limits.max_scan_frames = 8192;
+        let mut old = Session::new(16000, 16, 16384)
+            .unwrap()
+            .with_native_reservation(limits)
+            .unwrap();
+        let decoded = decode_wav_file(
+            old_files.source.clone(),
+            Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+        )
+        .unwrap();
+        let old_snapshot = if original {
+            old.import_service_snapshot(decoded, &AtomicBool::new(false), Admission::default())
+                .unwrap()
+                .1
+        } else {
+            drop(decoded);
+            import(
+                &mut old,
+                old_files.source.clone(),
+                None,
+                Admission::default(),
+            )
+            .unwrap();
+            ServiceExportSnapshot {
+                prepared: compile(&old, None).unwrap(),
+                sources: None,
+            }
+        };
+        let before = old.project().snapshot();
+        let history = (old.can_undo(), old.can_redo());
+        let files = Files::new(false);
+        let (mut candidate, _) = direct_sampler(&files);
+        let sources = ControlSamplerSources::prepare_on_control(
+            &candidate.native_assets,
+            candidate.project(),
+            limits.storage.max_retained_bytes,
+            limits.max_scan_frames,
+            &candidate.shutdown,
+        )
+        .unwrap();
+        let allowance = sources.compiler_factory_allowance().unwrap();
+        let admission = Admission {
+            current: Some(old_snapshot.selection()),
+            ..Admission::default()
+        };
+        let quote = admission
+            .check(
+                &old,
+                &candidate,
+                ControlSamplerSelection {
+                    sources: Some(&sources),
+                    prepared: None,
+                },
+                allowance * 2,
+                None,
+            )
+            .unwrap();
+        let exact = quote.construction.construction_peak_bytes;
+        candidate
+            .native_reservation
+            .as_mut()
+            .unwrap()
+            .storage
+            .max_construction_peak_bytes = exact - 1;
+        SNAPSHOT_COMPILER_ENTRIES.with(|n| n.set(0));
+        let result =
+            candidate.prepare_service_snapshot_against(&old, candidate.project(), admission);
+        assert!(
+            result.is_err(),
+            "old unassigned PCM must participate in the pre-compiler peak"
+        );
+        assert_eq!(SNAPSHOT_COMPILER_ENTRIES.with(|n| n.get()), 0);
+        candidate
+            .native_reservation
+            .as_mut()
+            .unwrap()
+            .storage
+            .max_construction_peak_bytes = exact;
+        let result =
+            candidate.prepare_service_snapshot_against(&old, candidate.project(), admission);
+        assert!(
+            result.is_ok(),
+            "exact pre-compiler union: {:?}",
+            result.err()
+        );
+        assert_eq!(SNAPSHOT_COMPILER_ENTRIES.with(|n| n.get()), 1);
+        assert_eq!(old.project().snapshot(), before);
+        assert_eq!((old.can_undo(), old.can_redo()), history);
     }
 }
