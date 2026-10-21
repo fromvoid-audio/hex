@@ -3,4 +3,5 @@
 pub mod build_identity;
 pub mod identity;
 pub mod macho;
+pub mod package;
 pub mod protocol;
