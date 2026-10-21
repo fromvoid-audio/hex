@@ -6611,7 +6611,9 @@ cell custody and old/new overlap remain explicit. Gains persist through
 Save/New/Open and affect keyboard/Arrangement PCM once. Invalid/stale/playing,
 cancel and tight-capacity failures preserve old project/history/output. Callback
 loss retains one abort retirement rather than discarding earlier accepted Play;
-Stop and actual New/output teardown remain available. Postcommit hardware-open
+Stop and actual New/output teardown remain available. An ordered actual callback
+A-cancel/B-bind/fence regression prevents a newer deferred binding from masking
+terminal cancellation of the sounding voice. Postcommit hardware-open
 failure retains authored gain/save/export and supports explicit refused-output
 retry. Unpublished cleanup failures remain quarantined without retry.
 

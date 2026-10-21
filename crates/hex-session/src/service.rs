@@ -2980,8 +2980,7 @@ fn run_worker(
                                 unsaved = true;
                                 replacement_revision = Some(snapshot.prepared);
                                 replacement_sources = Some(snapshot.sources);
-                                status =
-                                    Some("sampler gain changed · preparing audio".into());
+                                status = Some("sampler gain changed · preparing audio".into());
                             }
                             Err(reason) => {
                                 if let Some(audio) = events.sampler_gain_audio() {

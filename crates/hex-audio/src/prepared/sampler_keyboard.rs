@@ -307,13 +307,30 @@ impl Callback {
         let Some(applied) = active.applied_audio_source() else {
             return;
         };
-        let Read::Frame(frame) = self.status.sampler_keyboard.read(applied) else {
-            return;
-        };
         let actual_epoch = active
             .runtime()
             .and_then(|r| r.current_sampler_keyboard_epoch())
             .unwrap_or(0);
+        // Terminal cancellation belongs to the actual sounding epoch, not the
+        // latest mailbox binding. A newer bound epoch may be fenced or torn;
+        // neither may defer cancellation of the older runtime voice.
+        let terminal_cancelled =
+            actual_epoch != 0 && !self.status.sampler_keyboard.valid_epoch(actual_epoch);
+        if terminal_cancelled
+            && let Some(runtime) = active.runtime_mut()
+            && runtime.apply_current_sampler_keyboard(None).is_err()
+        {
+            self.status
+                .sampler_keyboard
+                .reject_on_callback(actual_epoch);
+            return;
+        }
+        let Read::Frame(frame) = self.status.sampler_keyboard.read(applied) else {
+            return;
+        };
+        if terminal_cancelled && frame.is_none() {
+            return; // the same terminal reset already completed above
+        }
         if frame.is_some_and(|f| {
             !self
                 .status

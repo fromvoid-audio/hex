@@ -797,3 +797,103 @@ fn sampler_gain_cancel_after_real_sealing_and_fenced_late_keyboard_preserve_old_
     assert_eq!(h.render(), [[0.0; 2]; 64]);
     original_pcm(&mut h);
 }
+
+#[test]
+fn sampler_gain_fence_cancels_actual_old_epoch_before_deferring_a_new_bound_epoch() {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_files, mut h, track, device, before) = current(12);
+    let activate = |h: &mut Harness, request_id: u64| {
+        let (output, epoch) = h
+            .audio
+            .as_ref()
+            .unwrap()
+            .control
+            .reserve_sampler_keyboard_epoch()
+            .unwrap();
+        let input = Arc::new(
+            hex_engine::computer_keyboard::ComputerKeyboardInput::with_native_sampler_activation(
+                output, epoch,
+            )
+            .unwrap(),
+        );
+        input.set_key(0, Some((60, 127, 1))).unwrap();
+        let event = h.run(Request::PrepareComputerKeyboard {
+            project_generation: before
+                .canonical_audio_source
+                .as_ref()
+                .unwrap()
+                .context()
+                .project_generation,
+            revision: before.revision,
+            request_id,
+            track,
+            input: Arc::clone(&input),
+        });
+        assert_eq!(event.computer_keyboard_complete, Some(request_id));
+        h.audio
+            .as_ref()
+            .unwrap()
+            .control
+            .sampler_keyboard_key(output, epoch, 0, input.key_word(0).unwrap())
+            .unwrap();
+        (output, epoch, input)
+    };
+    let render_one = |h: &Harness| {
+        let mut output = [[0.0; 2]; 1];
+        let mut slot = h.backend.lock().unwrap();
+        let backend = slot.as_mut().unwrap();
+        let measured = allocation_counter::measure(|| backend.render(&mut output).unwrap());
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        output
+    };
+    let (output, a, input_a) = activate(&mut h, 101);
+    assert_eq!(
+        render_one(&h),
+        [[0.125, -0.25]],
+        "A must actually sound and remain alive after one frame"
+    );
+    input_a.cancel();
+    h.audio
+        .as_ref()
+        .unwrap()
+        .control
+        .cancel_sampler_keyboard_epoch(output, a);
+    let (_, b, _input_b) = activate(&mut h, 102);
+    assert!(b > a);
+    // No callback has observed B, or A's terminal cancellation, yet.
+    let gain = edit(&before, track, device);
+    let cancel = Arc::clone(&gain.cancel);
+    h.run(Request::SetSamplerGain(gain));
+    let (entered, arrival) = mpsc::sync_channel(1);
+    let (release, resume) = mpsc::sync_channel(0);
+    h.observation.lock().unwrap().pause_poll = Some((entered, resume));
+    arrival.recv_timeout(h.wait).unwrap();
+    for _ in 0..3 {
+        assert_eq!(
+            render_one(&h),
+            [[0.0; 2]],
+            "cancelled actual A must stop even though newer bound B is deferred behind the gain fence"
+        );
+    }
+    cancel.store(true, std::sync::atomic::Ordering::Release);
+    h.audio
+        .as_ref()
+        .unwrap()
+        .control
+        .cancel_sampler_keyboard_epoch(output, b);
+    release.send(()).unwrap();
+    let cancelled = h.next();
+    assert!(cancelled.error.is_some());
+    unchanged(&before, &cancelled);
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+}

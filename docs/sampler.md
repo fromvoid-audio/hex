@@ -718,7 +718,10 @@ ACK/abort-retirement observations. Commands admitted before the cut retain their
 semantics: an earlier Play runs and refuses the edit. New/raced non-Stop commands
 are refused explicitly; their producer serial prevents replay after release or
 later edits. Stop retains priority. Existing keyboard key-up/cancel continues,
-while new epochs/bindings are excluded. Callback readers never wait or allocate.
+while new epochs/bindings are excluded. Terminal revocation is checked against
+the actual sounding epoch before reading or deferring a newer mailbox binding;
+a fenced new binding cannot mask cancellation of the previous voice. Callback
+readers never wait or allocate.
 
 Session polls the fence without blocking request processing. Invalid/stale,
 playing, cancelled or over-budget preparation preserves canonical state,
@@ -749,8 +752,8 @@ work is complete.
 Owning checks exercise the real numeric field through fresh native CURRENT,
 literal keyboard and Arrangement PCM at gain1/0.5/0, SaveCurrent/New/Open,
 unchanged source/other settings, stale/invalid/cancelled/tight-budget refusal,
-earlier/later Play and Stop, lost-callback abort followed by actual callback and
-New/output teardown, postcommit hardware-open failure plus Save/export/retry,
+earlier/later Play and Stop, actual A-cancel/B-bind-before-fence cancellation,
+lost-callback abort followed by actual callback and New/output teardown, postcommit hardware-open failure plus Save/export/retry,
 and exact prepared-to-draining cell identity. Covered callbacks, including
 publication, measure zero total allocations and zero signed-net counts/bytes.
 These are headless native-path tests; physical display/input/device/listening
