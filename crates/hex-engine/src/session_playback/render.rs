@@ -476,6 +476,11 @@ impl SessionPlayback {
             }
             let mut chunk_frames = (output.len() - output_offset)
                 .min(if self.compensation.is_some() { 1 } else { 256 });
+            let current_first_frame = self.current_sampler_console
+                && self.route_scratch.iter().any(|r| r.current_first_frame);
+            if current_first_frame {
+                chunk_frames = chunk_frames.min(1);
+            }
             if let Some(next) = next_pending_frame(&self.route_scratch) {
                 if next > performance_frame {
                     let until = usize::try_from(next - performance_frame).unwrap_or(usize::MAX);
@@ -525,6 +530,11 @@ impl SessionPlayback {
                     capture,
                     sources,
                 )?;
+            }
+            if current_first_frame {
+                for route in &mut self.route_scratch {
+                    route.current_first_frame = false;
+                }
             }
             if let Some(compensation) = self.compensation.as_ref() {
                 compensation
@@ -623,6 +633,7 @@ impl SessionPlayback {
     ) -> Result<(bool, bool), SessionPlaybackError> {
         let mut captured_release = false;
         let mut applied_route = false;
+        self.preflight_current_due_routes(performance_frame, arrangement_frame)?;
         for index in 0..self.route_scratch.len() {
             let Some(pending) = self.route_scratch[index]
                 .pending
@@ -631,6 +642,25 @@ impl SessionPlayback {
                 continue;
             };
             let owner = self.route_scratch[index].owner;
+            let current_plan = self.current_route_cut_scratch.get(index).copied().flatten();
+            if self.current_sampler_route_track(index) {
+                let plan = current_plan.ok_or(SessionPlaybackError::InvalidCommand)?;
+                if plan.current_sampler_cut {
+                    self.mutable_instruments
+                        .get_mut(index)
+                        .and_then(Option::as_mut)
+                        .ok_or(SessionPlaybackError::MutableInstrumentRuntime)?
+                        .cut_speculative_gate_deadlines_at(plan.frame);
+                    self.route_scratch[index].current_incarnation = plan.incarnation;
+                    self.route_scratch[index].current_first_frame = true;
+                }
+                self.route_scratch[index].owner = plan.owner;
+                self.route_scratch[index].pending = None;
+                let track = self.route_scratch[index].id;
+                self.suppression_scratch.retain(|e| e.track != track);
+                applied_route = true;
+                continue;
+            }
             for destination in 0..self.route_scratch.len() {
                 if self.revision.arrangement().tracks()[destination]
                     .midi_source_index
@@ -665,8 +695,11 @@ impl SessionPlayback {
             } else {
                 pending.beat
             };
-            self.route_scratch[index].owner =
-                self.owner_for_target(pending.target, target_beat, performance_frame)?;
+            self.route_scratch[index].owner = if let Some(plan) = current_plan {
+                plan.owner
+            } else {
+                self.owner_for_target(pending.target, target_beat, performance_frame)?
+            };
             self.route_scratch[index].pending = None;
             applied_route = true;
             if transition_captures(owner, pending.target) {
@@ -1813,7 +1846,7 @@ fn render_mutable_instrument_chunk<T: MidiTiming + ?Sized>(
                                 span.clip,
                                 span.note,
                                 span.iteration,
-                                0,
+                                routes[index].current_incarnation,
                             ),
                             onset_beat: span.onset_beat,
                             gate_end_beat: span.gate_end_beat,

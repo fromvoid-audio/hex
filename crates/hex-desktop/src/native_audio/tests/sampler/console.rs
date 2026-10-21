@@ -3,6 +3,96 @@ use super::*;
 use hex_engine::{
     LaunchQuantization as Quantization, PlaybackAction, SessionPlaybackCommand as Session,
 };
+
+pub(super) fn exercise(
+    cx: &gpui::TestAppContext,
+    visual: &mut gpui::VisualTestContext,
+    h: &mut Harness,
+    _window: gpui::AnyWindowHandle,
+    track: hex_project::TrackId,
+    saved: &std::path::Path,
+) {
+    let project = hex_storage::load(saved).unwrap();
+    let scene = project.scenes()[0].id();
+    let hex_project::SessionCellContent::Midi(clip) = project.session_cell(track, scene).unwrap()
+    else {
+        panic!("midi cell")
+    };
+    let click = |visual: &mut gpui::VisualTestContext, selector: &'static str| {
+        let point = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("{selector}"))
+            .center();
+        visual.simulate_click(point, gpui::Modifiers::default());
+        visual.run_until_parked();
+        cx.background_executor
+            .advance_clock(Duration::from_millis(16));
+        visual.run_until_parked();
+    };
+    click(visual, "show console view · tab");
+    let cell =
+        Box::leak(format!("console-cell-{}-{}", track.value(), scene.value()).into_boxed_str());
+    click(visual, cell);
+    let launch =
+        Box::leak(format!("launch-midi-{}-{}", track.value(), scene.value()).into_boxed_str());
+    click(visual, launch);
+    let mut output = [[0.0; 2]; 64];
+    let identity;
+    {
+        let mut slot = h.backend.lock().unwrap();
+        let backend = slot.as_mut().unwrap();
+        identity = backend.status().unwrap().applied_audio_source();
+        assert!(backend.status().unwrap().sampler_console_available());
+        super::envelope::render(backend, &mut output);
+        let mut routes = [hex_audio::prepared::SessionRouteEntry::default(); 4];
+        let count = backend
+            .status()
+            .unwrap()
+            .session_routes(&mut routes)
+            .unwrap()
+            .count;
+        assert!(
+            routes[..count].iter().any(|r| r.owner
+                == hex_audio::prepared::SessionRouteOwner::Session {
+                    clip_id: clip.id().value()
+                }),
+            "routes={:?}; pcm={:?}",
+            &routes[..count],
+            &output[..4]
+        );
+    }
+    assert_eq!(
+        &output[..4],
+        &[[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]]
+    );
+    click(visual, "stop · escape");
+    {
+        let mut slot = h.backend.lock().unwrap();
+        super::envelope::render(slot.as_mut().unwrap(), &mut output);
+    }
+    assert_eq!(output, [[0.0; 2]; 64]);
+    let scene = Box::leak(
+        format!("console-scene-menu-{}", project.scenes()[1].id().value()).into_boxed_str(),
+    );
+    click(visual, scene);
+    click(visual, "launch selected scene");
+    {
+        let mut slot = h.backend.lock().unwrap();
+        let backend = slot.as_mut().unwrap();
+        super::envelope::render(backend, &mut output);
+        assert_eq!(backend.status().unwrap().applied_audio_source(), identity);
+    }
+    assert_eq!(
+        &output[..4],
+        &[[0.125, -0.25], [0.5, 0.0], [-0.125, 0.25], [0.0; 2]]
+    );
+    click(visual, "stop all session clips");
+    {
+        let mut slot = h.backend.lock().unwrap();
+        super::envelope::render(slot.as_mut().unwrap(), &mut output);
+    }
+    assert_eq!(output, [[0.0; 2]; 64]);
+}
 #[test]
 fn sampler_console_actual_current_launch_stop_cancel_and_tuning_are_callback_allocation_free() {
     let _serial = NATIVE_FIXTURE

@@ -841,6 +841,7 @@ impl AudioPreparationCustody {
                                 .and_then(|n| n.checked_add(capacity.revision_roots.bytes()))
                         })
                         .ok_or(AudioStorageError::Overflow)?;
+                    let mut compiler_reservation = None;
                     if let Some(metadata) = self.current_sampler.metadata() {
                         let (arrangement_midi, arrangement_scratch) =
                             arrangement_clips::sampler_compiler_quote(project)?;
@@ -881,16 +882,19 @@ impl AudioPreparationCustody {
                             .and_then(|n| n.checked_add(current))
                             .and_then(|n| n.checked_add(growth))
                             .ok_or(AudioStorageError::Overflow)?;
-                        if retained_base
+                        let retained_reservation = retained_base
                             .checked_add(final_midi)
-                            .is_none_or(|n| n > inputs.reservation.max_prepared_data_bytes)
-                            || peak_base
-                                .checked_add(final_midi)
-                                .and_then(|n| n.checked_add(scratch))
-                                .is_none_or(|n| n > inputs.reservation.max_construction_data_bytes)
+                            .ok_or(AudioStorageError::Overflow)?;
+                        let peak_reservation = peak_base
+                            .checked_add(final_midi)
+                            .and_then(|n| n.checked_add(scratch))
+                            .ok_or(AudioStorageError::Overflow)?;
+                        if retained_reservation > inputs.reservation.max_prepared_data_bytes
+                            || peak_reservation > inputs.reservation.max_construction_data_bytes
                         {
                             return Err(AudioStorageError::ReservationExceeded);
                         }
+                        compiler_reservation = Some((retained_reservation, peak_reservation));
                         // Every other fixed backing and all tracks' final MIDI
                         // overlap this conservative maximum scratch reservation.
                         // Check precedes the compiler, even for empty MIDI clips.
@@ -946,6 +950,14 @@ impl AudioPreparationCustody {
                             n.checked_add(capacity.arrangement_clips.previous_growth_backing_bytes)
                         })
                         .ok_or(AudioStorageError::Overflow)?;
+                    // Keep the admitted conservative compiler reservation in
+                    // the aggregate report even when actual vectors are smaller.
+                    // Reusing the reported exact caps must still admit preflight.
+                    if let Some((retained, peak)) = compiler_reservation {
+                        capacity.retained_stage_bytes = capacity.retained_stage_bytes.max(retained);
+                        capacity.construction_peak_bytes =
+                            capacity.construction_peak_bytes.max(peak);
+                    }
                     if capacity.retained_stage_bytes > inputs.reservation.max_prepared_data_bytes
                         || capacity.construction_peak_bytes
                             > inputs.reservation.max_construction_data_bytes

@@ -129,7 +129,9 @@ impl SessionAssembly {
             let device = project
                 .track(cell.track())
                 .and_then(|t| t.instrument())
-                .filter(|d| d.id() == config.device && !d.bypassed())
+                .filter(|d| {
+                    d.id() == config.device && !d.bypassed() && config.matches_state(d.state())
+                })
                 .ok_or(AudioStorageError::SourceMismatch)?;
             let prepared =
                 crate::native_device_resources::PreparedControlSampler(config.prepared.clone());
@@ -258,19 +260,22 @@ impl SessionAssembly {
         let mut work = SessionWorkEnvelope::default();
         let mut refs = 0usize;
         let mut bank_bytes = 0usize;
-        for track in self.tracks.iter().map(|t| t.id).chain(
+        for track in self.tracks.iter().chain(
             self.inventory
                 .as_ref()
                 .or(external)
                 .into_iter()
-                .flat_map(|i| i.tracks.iter().map(|t| t.id)),
+                .flat_map(|i| i.tracks.iter()),
         ) {
             let per_track = values
                 .iter()
-                .filter(|c| c.track == track)
+                .filter(|c| c.track == track.id)
                 .fold(SessionWorkEnvelope::default(), |n, c| {
                     n.component_max(c.work)
                 });
+            if self.phase == AssemblyPhase::Installed && track.work != per_track {
+                return Err(AudioStorageError::SourceMismatch);
+            }
             work = work
                 .checked_sum(per_track)
                 .map_err(|_| AudioStorageError::Overflow)?;

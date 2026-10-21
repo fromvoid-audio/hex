@@ -3982,6 +3982,7 @@ fn mutable_prefix_refusal_rolls_back_audio_transport_and_occurrence_ledger() {
         frame: 8,
         beat: BeatTime::ZERO,
         target: RouteTarget::Silence,
+        current_reservation: None,
     });
     playback.apply(SessionPlaybackCommand::Play).unwrap();
 
@@ -8212,6 +8213,7 @@ fn later_chunk_capacity_refusal_rolls_back_carried_voice_and_retries_against_twi
         frame: 257,
         beat: BeatTime::from_raw(1 << 32),
         target: RouteTarget::Silence,
+        current_reservation: None,
     });
 
     let mut prefix_probe = SessionPlayback::new(Arc::clone(&candidate_revision)).unwrap();
@@ -8426,6 +8428,7 @@ fn streamed_later_chunk_refusal_zeros_block_and_rolls_back_after_page_requests()
         frame: 256,
         beat: BeatTime::from_raw(1 << 32),
         target: RouteTarget::Silence,
+        current_reservation: None,
     });
 
     #[derive(Default)]

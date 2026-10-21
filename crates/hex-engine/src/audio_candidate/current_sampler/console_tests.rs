@@ -67,15 +67,52 @@ fn current_sampler_console_templates_construct_with_paired_storage() {
         )
     });
     let owner = cell.owner_on_control().unwrap();
-    owner
-        .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
-            data_rows: quote.data_rows,
-            handle_rows: quote.handle_rows,
-            root_rows: 32,
-            max_retained_bytes: limits.max_prepared_data_bytes,
-            max_construction_peak_bytes: limits.max_construction_data_bytes,
-        })
-        .unwrap();
+    let storage = crate::AudioStorageLedgerReservation {
+        data_rows: quote.data_rows,
+        handle_rows: quote.handle_rows,
+        root_rows: 32,
+        max_retained_bytes: limits.max_prepared_data_bytes,
+        max_construction_peak_bytes: limits.max_construction_data_bytes,
+    };
+    let summary = owner.seal_constructor_on_control(storage).unwrap();
+    let exact = crate::AudioStorageLedgerReservation {
+        max_retained_bytes: summary.data.retained_bytes + summary.reserved_split_bytes,
+        max_construction_peak_bytes: summary.data.construction_peak_bytes
+            + summary.reserved_split_bytes,
+        ..storage
+    };
+    assert!(
+        owner
+            .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                max_retained_bytes: exact.max_retained_bytes - 1,
+                ..exact
+            })
+            .is_err()
+    );
+    assert!(
+        owner
+            .seal_constructor_on_control(crate::AudioStorageLedgerReservation {
+                max_construction_peak_bytes: exact.max_construction_peak_bytes - 1,
+                ..exact
+            })
+            .is_err()
+    );
+    owner.seal_constructor_on_control(exact).unwrap();
+    let config = &owner
+        .inner
+        .runtime
+        .as_ref()
+        .unwrap()
+        .sampler_sources
+        .as_ref()
+        .unwrap()
+        .0
+        .metadata
+        .configurations()[0];
+    let native = project.track(track).unwrap().instrument().unwrap().state();
+    assert!(config.matches_state(native));
+    assert!(!config.matches_state(&native.clone().with_input_gain_db(-6.0).unwrap()));
+    assert!(!config.matches_state(&native.clone().with_output_gain_db(-6.0).unwrap()));
     assert!(
         owner
             .inner
@@ -379,6 +416,180 @@ fn current_sampler_console_mixed_scene_loops_have_literal_pcm_and_partition_inva
                 [0.0; 2]
             ]
         );
+        results.push(pcm);
+        cell.cleanup_on_control().unwrap();
+    }
+    assert_eq!(results[0], results[1]);
+}
+
+#[test]
+fn current_sampler_console_retrigger_keeps_old_release_and_uses_a_new_occurrence() {
+    let (project, sources, _, _, clip) = mixed_fixture();
+    let mut cell = prepare(&project, sources);
+    let owner = cell.owner_on_control().unwrap();
+    let launch = crate::PlaybackAction::LaunchAndPlay(crate::SessionPlaybackCommand::LaunchClip {
+        clip,
+        quantization: crate::LaunchQuantization::Immediate,
+    });
+    owner.test_apply_action(launch).unwrap();
+    let mut first = [[0.0; 2]; 1];
+    owner.test_render(&mut first).unwrap();
+    assert_eq!(first, [[0.125, -0.25]]);
+    owner.test_apply_action(launch).unwrap();
+    // Cancel must not erase the already committed immediate cut's first-frame
+    // event bound. It only removes pending requests.
+    owner
+        .test_apply_action(crate::PlaybackAction::Session(
+            crate::SessionPlaybackCommand::CancelPending { track: None },
+        ))
+        .unwrap();
+    let mut pcm = [[0.0; 2]; 3];
+    owner.test_render(&mut pcm).unwrap();
+    assert_eq!(pcm, [[0.4375, -0.375], [0.5625, -0.125], [0.5, 0.0]]);
+    cell.cleanup_on_control().unwrap();
+}
+
+#[test]
+fn current_sampler_console_quantized_scene_cut_matches_immediate_cut_at_boundary() {
+    let mut results = Vec::new();
+    for quantized in [false, true] {
+        let (project, sources, a, b, _) = mixed_fixture();
+        let mut cell = prepare(&project, sources);
+        let owner = cell.owner_on_control().unwrap();
+        let scene = |scene, quantization| {
+            crate::PlaybackAction::Session(crate::SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization,
+            })
+        };
+        owner
+            .test_apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        owner
+            .test_apply_action(scene(a, crate::LaunchQuantization::Immediate))
+            .unwrap();
+        owner.test_render(&mut [[0.0; 2]; 1]).unwrap();
+        if quantized {
+            owner
+                .test_apply_action(scene(b, crate::LaunchQuantization::FourQuarter))
+                .unwrap();
+        }
+        // 120 bpm at 16 kHz: the next four-quarter boundary is frame 32000.
+        let mut remaining = 31998;
+        while remaining != 0 {
+            let count = remaining.min(64);
+            owner.test_render(&mut [[0.0; 2]; 64][..count]).unwrap();
+            remaining -= count;
+        }
+        let mut pcm = Vec::new();
+        if quantized {
+            let mut block = [[0.0; 2]; 9];
+            owner.test_render(&mut block).unwrap();
+            pcm.extend(block);
+        } else {
+            let mut before = [[0.0; 2]; 1];
+            owner.test_render(&mut before).unwrap();
+            pcm.extend(before);
+            owner
+                .test_apply_action(scene(b, crate::LaunchQuantization::Immediate))
+                .unwrap();
+            let mut after = [[0.0; 2]; 8];
+            owner.test_render(&mut after).unwrap();
+            pcm.extend(after);
+        }
+        assert_eq!(pcm[1], [0.125, -0.25]);
+        results.push(pcm);
+        cell.cleanup_on_control().unwrap();
+    }
+    assert_eq!(results[0], results[1]);
+}
+
+#[test]
+fn current_sampler_console_scene_capacity_refusal_preserves_pending_routes_and_pcm() {
+    let mut results = Vec::new();
+    for refuse in [false, true] {
+        let (project, sources, a, b, _) = mixed_fixture();
+        let second = project.tracks()[1].instrument().unwrap();
+        let mut state =
+            hex_devices::sampler::state::SamplerState::from_native(second.state()).unwrap();
+        state.voices = 1;
+        let native = state
+            .to_native()
+            .unwrap()
+            .with_asset_references(second.state().asset_references().to_vec())
+            .unwrap();
+        let mut editor = Editor::new(project.clone(), 4).unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: second.id(),
+                state: native,
+            })
+            .unwrap();
+        let mut cell = prepare(editor.project(), sources);
+        let owner = cell.owner_on_control().unwrap();
+        let scene = |scene, quantization| {
+            crate::PlaybackAction::Session(crate::SessionPlaybackCommand::LaunchScene {
+                scene,
+                quantization,
+            })
+        };
+        owner
+            .test_apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Play,
+            ))
+            .unwrap();
+        owner
+            .test_apply_action(scene(a, crate::LaunchQuantization::Immediate))
+            .unwrap();
+        owner.test_render(&mut [[0.0; 2]; 1]).unwrap();
+        owner
+            .test_apply_action(scene(b, crate::LaunchQuantization::FourQuarter))
+            .unwrap();
+        let before: Vec<_> = (0..3)
+            .map(|i| {
+                owner
+                    .inner
+                    .runtime
+                    .as_ref()
+                    .unwrap()
+                    .playback
+                    .session_route_status(i)
+                    .unwrap()
+            })
+            .collect();
+        if refuse {
+            // First track can retrigger, but the second's factory has one voice:
+            // its old release plus incoming voice cannot fit. Entire scene refuses.
+            assert!(
+                owner
+                    .test_apply_action(scene(a, crate::LaunchQuantization::Immediate))
+                    .is_err()
+            );
+            let after: Vec<_> = (0..3)
+                .map(|i| {
+                    owner
+                        .inner
+                        .runtime
+                        .as_ref()
+                        .unwrap()
+                        .playback
+                        .session_route_status(i)
+                        .unwrap()
+                })
+                .collect();
+            assert_eq!(before, after);
+            assert!(
+                owner
+                    .test_apply_action(crate::PlaybackAction::Session(
+                        crate::SessionPlaybackCommand::Seek(1)
+                    ))
+                    .is_err()
+            );
+        }
+        let mut pcm = [[0.0; 2]; 16];
+        owner.test_render(&mut pcm).unwrap();
         results.push(pcm);
         cell.cleanup_on_control().unwrap();
     }

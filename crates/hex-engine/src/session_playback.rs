@@ -223,10 +223,26 @@ enum RouteOwner {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CurrentRouteReservation {
+    incarnation: u64,
+    survivors: usize,
+    note_offs: usize,
+    incoming_voices: usize,
+    incoming_onsets: usize,
+}
+#[derive(Clone, Copy, Debug)]
+struct CurrentPendingCut {
+    current_sampler_cut: bool,
+    owner: RouteOwner,
+    incarnation: u64,
+    frame: u64,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PendingRoute {
     frame: u64,
     beat: BeatTime,
     target: RouteTarget,
+    current_reservation: Option<CurrentRouteReservation>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -234,6 +250,8 @@ struct TrackRoute {
     id: TrackId,
     owner: RouteOwner,
     pending: Option<PendingRoute>,
+    current_incarnation: u64,
+    current_first_frame: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -346,6 +364,7 @@ pub struct SessionPlayback {
     mutable_instruments: Vec<Option<MutableInstrumentTrackRuntime>>,
     mutable_onsets: MutableOnsetBuffer,
     mutable_events: Vec<hex_lattice::NativeInstrumentEvent>,
+    current_route_cut_scratch: Vec<Option<CurrentPendingCut>>,
     tail_groups: Vec<Option<hex_lattice::NativeRuntimeChain>>,
     // Immutable original ownership, including effect-only suffixes. Inline
     // slots are charged by size_of::<Self>() in actual and paired preflight.
@@ -477,6 +496,19 @@ impl SessionPlayback {
         {
             return Err(Error::ReservationExceeded);
         }
+        playback
+            .current_route_cut_scratch
+            .try_reserve_exact(playback.routes.len())
+            .map_err(|_| Error::Allocation)?;
+        playback
+            .current_route_cut_scratch
+            .resize(playback.routes.len(), None);
+        if playback
+            .accounted_runtime_storage_bytes()
+            .is_none_or(|n| n > allowance)
+        {
+            return Err(Error::ReservationExceeded);
+        }
         playback.current_sampler_console = true;
         Ok(playback)
     }
@@ -506,6 +538,15 @@ impl SessionPlayback {
         let allowance = Self::linear_export_runtime_allowance(revision)
             .map_err(|_| Error::ReservationExceeded)?
             .checked_add(keyboard_bytes)
+            .and_then(|n| {
+                n.checked_add(
+                    revision
+                        .arrangement()
+                        .tracks()
+                        .len()
+                        .checked_mul(std::mem::size_of::<Option<CurrentPendingCut>>())?,
+                )
+            })
             .ok_or(Error::Overflow)?;
         if allowance > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
             return Err(Error::ReservationExceeded);
@@ -613,6 +654,7 @@ impl SessionPlayback {
             mutable_instruments,
             mutable_onsets: _,
             mutable_events: _,
+            current_route_cut_scratch: _,
             tail_groups,
             tail_track_ids: _,
             tail_mutable_instruments,
@@ -1085,6 +1127,8 @@ impl SessionPlayback {
                     .ok_or(SessionPlaybackError::RevisionTrackMismatch)?,
                 owner: RouteOwner::Arrangement,
                 pending: None,
+                current_incarnation: 0,
+                current_first_frame: false,
             });
         }
         let mut mutable_count = 0_usize;
@@ -1285,6 +1329,7 @@ impl SessionPlayback {
             mutable_instruments,
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,
+            current_route_cut_scratch: Vec::new(),
             tail_groups,
             tail_track_ids: [None; SESSION_TAIL_GROUP_CAPACITY],
             tail_mutable_instruments,
@@ -1603,6 +1648,7 @@ fn reserve_analytic_continuations()
 
 mod analytic_import;
 mod commands;
+mod current_sampler_routes;
 mod handoff;
 mod harmonic_import;
 mod preroll;
