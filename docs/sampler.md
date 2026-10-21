@@ -18,6 +18,12 @@ flow. Nonzero seek, Pause, routed MIDI and active Arrangement chase remain
 unsupported. No Live parity, physical native interaction, device-deadline or
 listening acceptance is claimed.
 
+Default Play/Space for a loaded sampler starts from project frame zero, keeping
+the edit cursor and time selection intact. A second press uses priority Stop;
+Pause and timeline seeking remain unsupported. Playback still waits for exact
+applied-source/output acknowledgement; an unapplied sampler reports that audio
+is not ready rather than treating the editor cursor as an unavailable seek.
+
 ## catalog insertion and first load
 
 The ordinary device browser, add-device menu and insertion commands use the same
