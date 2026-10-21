@@ -141,6 +141,15 @@ pub struct SamplerReplacementEdit {
     pub path: PathBuf,
     pub cancel: Arc<AtomicBool>,
 }
+/// One captured canonical MIDI composition command, never retargeted by UI selection.
+#[derive(Debug)]
+pub struct SamplerMidiEdit {
+    pub request_id: u64,
+    pub project_generation: u64,
+    pub revision: u64,
+    pub command: Box<Command>,
+    pub cancel: Arc<AtomicBool>,
+}
 /// Global history intent bound to one project revision, never to UI selection.
 #[derive(Clone, Debug)]
 pub struct SamplerHistoryEdit {
@@ -552,6 +561,7 @@ impl Request {
             self,
             Request::Undo
                 | Request::SamplerEdit(SamplerEdit::History(_))
+                | Request::SamplerEdit(SamplerEdit::Midi(_))
                 | Request::AssignSampler { .. }
                 | Request::LoadFirstSampler { .. }
                 | Request::Redo
@@ -1733,6 +1743,22 @@ fn run_worker(
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
         let mut barrier_failure = browser_failure.or_else(|| match &request {
+            Request::SamplerEdit(SamplerEdit::Midi(edit)) => {
+                if pending_sampler_parameter.is_some() {
+                    Some("sampler edit is already preparing".into())
+                } else if device_gesture.snapshot().is_some() || tuning_gesture.snapshot().is_some()
+                {
+                    Some("finish or cancel the active gesture before sampler midi editing".into())
+                } else if edit.request_id == 0
+                    || edit.project_generation != project_generation
+                    || edit.revision != revision
+                    || edit.cancel.load(Ordering::Acquire)
+                {
+                    Some("sampler midi target changed or edit was cancelled".into())
+                } else {
+                    None
+                }
+            }
             Request::SamplerEdit(SamplerEdit::History(edit)) => {
                 if pending_sampler_parameter.is_some() {
                     Some("sampler edit is already preparing".into())
@@ -2998,7 +3024,7 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
-                Request::SamplerEdit(edit) => {
+                Request::SamplerEdit(mut edit) => {
                     let result = (|| -> Result<bool, String> {
                         if pending_sampler_parameter.is_some() {
                             return Err("sampler edit is already preparing".into());
@@ -3032,7 +3058,7 @@ fn run_worker(
                     }
                 }
                 Request::ContinueSamplerEdit => {
-                    if let Some(edit) = pending_sampler_parameter.take() {
+                    if let Some(mut edit) = pending_sampler_parameter.take() {
                         sampler_edit_complete = Some(edit.request_id());
                         let result = (|| -> Result<(Created, sampler_export::ServiceExportSnapshot), String> {
                             if !edit.validate(&session, project_generation, revision)? {

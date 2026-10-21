@@ -224,8 +224,13 @@ fn sampler_replacement_history_postcommit_open_failure_keeps_restored_source_sav
 {
     postcommit_open_failure(FailedEdit::ReplacementHistory);
 }
+#[test]
+fn sampler_midi_postcommit_open_failure_keeps_composition_save_export_and_explicit_retry() {
+    postcommit_open_failure(FailedEdit::Midi);
+}
 #[derive(Clone, Copy)]
 enum FailedEdit {
+    Midi,
     Gain,
     History,
     Replacement,
@@ -245,7 +250,27 @@ fn postcommit_open_failure(kind: FailedEdit) {
             12
         },
     );
-    let (before, request, expected_gain) = if matches!(kind, FailedEdit::Replacement) {
+    let (before, request, expected_gain) = if matches!(kind, FailedEdit::Midi) {
+        let request = Request::SamplerEdit(hex_session::service::SamplerEdit::Midi(
+            hex_session::service::SamplerMidiEdit {
+                request_id: 44,
+                project_generation: before
+                    .canonical_audio_source
+                    .as_ref()
+                    .unwrap()
+                    .context()
+                    .project_generation,
+                revision: before.revision,
+                command: Box::new(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::from_raw(4 * BeatTime::ONE.raw()),
+                    length: BeatTime::ONE,
+                }),
+                cancel: Arc::new(AtomicBool::new(false)),
+            },
+        ));
+        (before, request, 1.0)
+    } else if matches!(kind, FailedEdit::Replacement) {
         let request = Request::SamplerEdit(hex_session::service::SamplerEdit::Replacement(
             super::replacement::intent(&before, track, super::replacement::incoming(&files)),
         ));
@@ -296,6 +321,18 @@ fn postcommit_open_failure(kind: FailedEdit) {
         .unwrap(),
         expected_gain
     );
+    if matches!(kind, FailedEdit::Midi) {
+        assert_eq!(
+            accepted
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            2
+        );
+    }
     let context = h.context.unwrap();
     let end = Instant::now() + h.wait;
     loop {

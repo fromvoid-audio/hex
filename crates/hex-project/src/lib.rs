@@ -41,6 +41,8 @@ pub use conversion::{
 };
 mod history;
 mod instrument_history;
+mod midi_history;
+pub use midi_history::MidiHistoryEffect;
 mod provenance;
 pub use provenance::{ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES};
 mod time_range;

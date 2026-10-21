@@ -9,6 +9,7 @@ use hex_engine::native_device_resources::{
 
 enum SnapshotAction {
     Command(Box<Command>),
+    MidiCommand(Box<Command>),
     History { redo: bool },
 }
 
@@ -375,6 +376,22 @@ impl Session {
             native,
         )
     }
+    pub(in crate::service) fn midi_service_snapshot_with_native(
+        &mut self,
+        command: Box<Command>,
+        admission: Admission<'_>,
+        native: (
+            hex_engine::AudioSourceContext,
+            &mut dyn WorkerAudioSink,
+            &AtomicBool,
+        ),
+    ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
+        self.prepare_service_snapshot_action(
+            SnapshotAction::MidiCommand(command),
+            admission,
+            Some(native),
+        )
+    }
     pub(in crate::service) fn history_service_snapshot_with_native(
         &mut self,
         redo: bool,
@@ -420,10 +437,14 @@ impl Session {
         let audio_mode = self.audio_mode;
         let max_frames = self.max_resident_frames;
         let current = admission.current;
-        let history = matches!(action, SnapshotAction::History { .. });
+        let history = if let SnapshotAction::History { redo } = &action {
+            Some((*redo, self.editor.next_midi_history_effect(*redo)))
+        } else {
+            None
+        };
         let prepare = |source: &Project, candidate: &Project| {
-            if history {
-                super::sampler_parameter::validate_history_pair(source, candidate)
+            if let Some((redo, effect)) = history {
+                super::sampler_parameter::validate_history_edge(effect, redo, source, candidate)
                     .map_err(SessionError::NativeAudio)?;
             }
             media.validate_clip_sources(candidate)?;
@@ -559,6 +580,9 @@ impl Session {
             SnapshotAction::Command(command) => {
                 self.editor.execute_prepared_transition(*command, prepare)
             }
+            SnapshotAction::MidiCommand(command) => self
+                .editor
+                .execute_midi_prepared_transition(*command, prepare),
             SnapshotAction::History { redo } => {
                 let snapshot = if redo {
                     self.editor.redo_prepared_transition(prepare)

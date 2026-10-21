@@ -107,3 +107,12 @@ pub fn sampler_keyboard_test_status(
 ) -> Result<String, String> {
     editor::sampler_keyboard_fixture_status(window, cx)
 }
+
+/// Read-only readiness for the next actual headless composition gesture.
+#[cfg(feature = "ui-test-support")]
+pub fn sampler_midi_test_ready(
+    window: gpui::AnyWindowHandle,
+    cx: &gpui::App,
+) -> Result<bool, String> {
+    editor::sampler_midi_fixture_ready(window, cx)
+}

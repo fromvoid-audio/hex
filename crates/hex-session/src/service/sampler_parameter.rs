@@ -29,6 +29,7 @@ pub(super) fn validate(
 #[derive(Debug)]
 pub enum SamplerEdit {
     Parameter(SamplerParameterEdit),
+    Midi(SamplerMidiEdit),
     History(SamplerHistoryEdit),
     Replacement(SamplerReplacementEdit),
 }
@@ -36,6 +37,7 @@ impl SamplerEdit {
     pub(super) fn request_id(&self) -> u64 {
         match self {
             Self::Parameter(e) => e.request_id,
+            Self::Midi(e) => e.request_id,
             Self::History(e) => e.request_id,
             Self::Replacement(e) => e.request_id,
         }
@@ -43,17 +45,30 @@ impl SamplerEdit {
     pub(super) fn cancel(&self) -> &AtomicBool {
         match self {
             Self::Parameter(e) => &e.cancel,
+            Self::Midi(e) => &e.cancel,
             Self::History(e) => &e.cancel,
             Self::Replacement(e) => &e.cancel,
         }
     }
     pub(super) fn validate(
-        &self,
+        &mut self,
         session: &Session,
         generation: u64,
         revision: u64,
     ) -> Result<bool, String> {
         match self {
+            Self::Midi(edit) => {
+                if edit.request_id == 0
+                    || edit.project_generation != generation
+                    || edit.revision != revision
+                    || edit.cancel.load(Ordering::Acquire)
+                {
+                    return Err("sampler midi target changed or edit was cancelled".into());
+                }
+                edit.command
+                    .prepare_sampler_midi_edit(session.project())
+                    .map_err(|e| e.to_string())
+            }
             Self::Parameter(edit) => {
                 validate(session, generation, revision, edit)?;
                 let state = session
@@ -106,20 +121,32 @@ impl SamplerEdit {
                 }
                 session
                     .editor
-                    .inspect_history(edit.redo, validate_history_pair)
+                    .inspect_history(edit.redo, |source, target| {
+                        validate_history_edge(
+                            session.editor.next_midi_history_effect(edit.redo),
+                            edit.redo,
+                            source,
+                            target,
+                        )
+                    })
                     .transpose()
                     .map(|edge| edge.is_some())
             }
         }
     }
     pub(super) fn prepare(
-        &self,
+        self,
         session: &mut Session,
         admission: sampler_export::Admission<'_>,
         context: hex_engine::AudioSourceContext,
         audio: &mut dyn WorkerAudioSink,
     ) -> Result<(Created, sampler_export::ServiceExportSnapshot), SessionError> {
         match self {
+            Self::Midi(edit) => session.midi_service_snapshot_with_native(
+                edit.command,
+                admission,
+                (context, audio, &edit.cancel),
+            ),
             Self::Parameter(edit) => {
                 let original = session
                     .project()
@@ -168,7 +195,7 @@ impl SamplerEdit {
                         "sampler source replacement cancelled",
                     ));
                 }
-                session.replace_sampler_service_snapshot(decoded, edit, admission, context, audio)
+                session.replace_sampler_service_snapshot(decoded, &edit, admission, context, audio)
             }
             Self::History(edit) => session.history_service_snapshot_with_native(
                 edit.redo,
@@ -177,6 +204,24 @@ impl SamplerEdit {
             ),
         }
     }
+}
+pub(super) fn validate_history_edge(
+    effect: Option<hex_project::MidiHistoryEffect>,
+    redo: bool,
+    source: &Project,
+    target: &Project,
+) -> Result<(), String> {
+    if let Some(effect) = effect {
+        let valid = if redo {
+            effect.validates_forward(source, target)
+        } else {
+            effect.validates_forward(target, source)
+        };
+        return valid
+            .then_some(())
+            .ok_or_else(|| "next history step is not an exact midi composition edit".into());
+    }
+    validate_history_pair(source, target)
 }
 pub(super) fn validate_history_pair(source: &Project, target: &Project) -> Result<(), String> {
     let delta = source
