@@ -199,7 +199,10 @@ direct child, with no production descendant or hung-plugin cleanup claim.
 
 The helper accepts only `--identity` and `--self-test`. Self-test loads exactly
 the two bundled original modules after checking their compiled-in binary hashes.
-It calls Mac `bundleEntry`, factory/component interfaces and `bundleExit`, with
+Before loading, CFBundle's actual executable URL must match the fixed, nonlinked
+fixture path and expected executable/identifier metadata; hashing a different
+fixed file is insufficient. It calls Mac `bundleEntry`, factory/component
+interfaces and `bundleExit`, with
 interfaces released before unload. Main-thread setup/teardown and a joined
 processing thread exercise one fixed Float32 stereo, 48 kHz, 64-frame block.
 The original effect multiplies each sample by 0.5; the original instrument is
@@ -212,7 +215,11 @@ The explicit native suite executes the actual helper and compares both exact
 PCM outputs. Refusal cases remove the helper, change helper/fixture bytes,
 compile a real x86_64 executable and update the caller manifest (so architecture
 refusal cannot be confused with a stale hash), link a member, change source
-identity and pass an installed-directory argument. Without the explicit receipt,
+identity and pass an installed-directory argument. Another regression changes
+CFBundleExecutable to a real marker-writing alternate module, reseals both
+bundles and updates the caller manifest; both native and Python boundaries must
+refuse before the alternate initializer runs. A signing-timeout injection must
+fail without publishing a receipt. Without the explicit receipt,
 these native cases are visibly skipped; synthetic Mach-O header tests are parser
 evidence only. Two builds from the same inputs must have identical bundle-file
 hashes; retained commands/receipts remain independent provenance, not a claim

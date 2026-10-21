@@ -92,7 +92,11 @@ def verify(receipt, run=False):
     executable = root / EXECUTABLE
     macho(executable, 2)
     for name in ("effect", "instrument"):
-        macho(root / APP / "Contents/Resources/fixtures" / (name + ".vst3") / "Contents/MacOS/fixture", 8)
+        fixture = root / APP / "Contents/Resources/fixtures" / (name + ".vst3")
+        info = plistlib.loads((fixture / "Contents/Info.plist").read_bytes())
+        if info.get("CFBundleExecutable") != "fixture" or info.get("CFBundleIdentifier") != "org.portalsurfer.hex.fixture." + name:
+            raise ValueError("unexpected fixture executable selection or identity")
+        macho(fixture / "Contents/MacOS/fixture", 8)
     info = plistlib.loads((root / APP / "Contents/Info.plist").read_bytes())
     if info.get("CFBundleExecutable") != "hex-vst3-host" or info.get("CFBundleIdentifier") != "org.portalsurfer.hex.vst3.bootstrap":
         raise ValueError("unexpected helper package identity")
@@ -163,7 +167,7 @@ def build(sdk, output):
             closure[label + "/" + str(path.relative_to(base))] = sha(path)
         macho(destination, 8 if "-bundle" in extra else 2)
         # Ad hoc signatures qualify local original fixtures only, not distribution.
-        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(destination.parent.parent.parent)], check=True)
+        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(destination.parent.parent.parent)], check=True, timeout=120)
         runtime[str(destination.relative_to(output))] = command(["/usr/bin/otool", "-L", str(destination)]).splitlines()[1:]
 
     resources = output / APP / "Contents/Resources"
@@ -187,7 +191,7 @@ def build(sdk, output):
     # CommonCrypto's legacy one-shot function remains available for local identity.
     compile_one("macos_helper.mm", output / EXECUTABLE, ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations"])
     (resources / "sdk-notices.json").write_text(json.dumps(licenses, indent=2) + "\n")
-    subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(output / APP)], check=True)
+    subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(output / APP)], check=True, timeout=120)
     receipt = {"version": 1, "scope": "original-macos-bootstrap", "platform": "darwin-arm64",
                "sdk_pins": PINS, "source_sha256": source_digest(),
                "source_commit": command(["git", "rev-parse", "HEAD"], cwd=ROOT),

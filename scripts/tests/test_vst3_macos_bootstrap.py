@@ -2,6 +2,7 @@
 import importlib.util
 import json
 import os
+import plistlib
 from pathlib import Path
 import shutil
 import struct
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 NATIVE = Path(__file__).resolve().parents[2] / "crates/hex-plugin-scan/native"
 sys.path.insert(0, str(NATIVE))
@@ -89,6 +91,67 @@ class NativeBootstrapTests(unittest.TestCase):
                                 capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 1)
         self.assertIn("original fixture smoke failed", result.stderr)
+
+    def test_redirected_bundle_executable_never_runs_even_after_resealing(self):
+        sdk = BOOT.ROOT / "artifacts/vst3-sdk"
+        if not sdk.is_dir():
+            self.skipTest("pinned native build SDK required for executable-selection regression")
+        bundle = self.root / BOOT.APP / "Contents/Resources/fixtures/effect.vst3"
+        redirected = bundle / "Contents/MacOS/redirected"
+        compiler = BOOT.command(["xcrun", "--find", "clang++"])
+        # Real original effect plus a load-time marker: refusal must occur
+        # before foreign initialization, not only after comparing its output.
+        marker_source = '''#include <cstdio>
+#include <cstdlib>
+__attribute__((constructor)) static void marker() {
+    const char* path=std::getenv("HEX_VST3_REDIRECT_MARKER");
+    if(path) { auto* f=std::fopen(path,"w"); if(f) { std::fputs("executed",f); std::fclose(f); } }
+}
+'''
+        subprocess.run([compiler, "-std=c++17", "-arch", "arm64", "-bundle", "-I" + str(sdk),
+                        str(NATIVE / "macos_fixture.cpp"), "-x", "c++", "-", "-framework", "CoreFoundation",
+                        "-o", str(redirected)], input=marker_source, text=True, check=True, timeout=120)
+        info_path = bundle / "Contents/Info.plist"
+        info = plistlib.loads(info_path.read_bytes())
+        info["CFBundleExecutable"] = "redirected"
+        info_path.write_bytes(plistlib.dumps(info))
+        for target in [bundle, self.root / BOOT.APP]:
+            subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(target)],
+                           check=True, capture_output=True, timeout=120)
+        data = json.loads(self.receipt.read_text())
+        data["bundle_files"] = BOOT.inventory(self.root / BOOT.APP)
+        self.receipt.write_text(json.dumps(data))
+        marker = self.root / "redirected-ran"
+        env = {**os.environ, "HEX_VST3_REDIRECT_MARKER": str(marker)}
+        # Invoke directly as well as through the manifest verifier, so each
+        # boundary must refuse the actual selection despite matching hashes.
+        result = subprocess.run([str(self.root / BOOT.EXECUTABLE), "--self-test"],
+                                env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(marker.exists())
+        with self.assertRaisesRegex(ValueError, "fixture executable selection"):
+            BOOT.verify(self.receipt, run=True)
+
+    def test_hung_signing_is_bounded_and_publishes_no_receipt(self):
+        sdk = BOOT.ROOT / "artifacts/vst3-sdk"
+        if not sdk.is_dir():
+            self.skipTest("pinned native build SDK required for signing-failure injection")
+        run = subprocess.run
+
+        def signing_fault(args, **kwargs):
+            if args[0] == "/usr/bin/codesign":
+                # Preserve whether the caller supplied a deadline, scale it for
+                # a fast fault injection, and use a real owned sleeping child.
+                return run([sys.executable, "-c", "import time; time.sleep(0.1)"],
+                           check=True, timeout=0.01 if kwargs.get("timeout") else None)
+            return run(args, **kwargs)
+
+        with tempfile.TemporaryDirectory(dir=BOOT.ROOT / "artifacts") as directory:
+            output = Path(directory) / "failed-build"
+            with mock.patch.object(BOOT.subprocess, "run", side_effect=signing_fault):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    BOOT.build(sdk, output)
+            self.assertFalse((output / "controlled-macos.json").exists())
 
     def test_helper_does_not_accept_an_installed_module_path(self):
         result = subprocess.run([str(self.root / BOOT.EXECUTABLE), "/Library/Audio/Plug-Ins/VST3"],

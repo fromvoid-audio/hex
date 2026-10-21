@@ -14,21 +14,41 @@ using namespace Steinberg::Vst;
 static bool fixture(const char* kind,const char* expected) {
     NSString* name=[NSString stringWithUTF8String:kind];
     NSString* relative=[NSString stringWithFormat:@"fixtures/%@.vst3",name];
-    NSString* path=[[[NSBundle mainBundle] resourcePath] stringByAppendingPathComponent:relative];
+    NSString* resources=[[[NSBundle mainBundle] resourcePath] stringByResolvingSymlinksInPath];
+    NSString* path=[resources stringByAppendingPathComponent:relative];
     NSString* binary=[path stringByAppendingPathComponent:@"Contents/MacOS/fixture"];
-    NSDictionary* attrs=[[NSFileManager defaultManager] attributesOfItemAtPath:binary error:nullptr];
-    if(!attrs || [attrs fileSize]>16*1024*1024) return false;
-    NSData* bytes=[NSData dataWithContentsOfFile:binary];
-    if(!bytes || [bytes length]>16*1024*1024) return false;
-    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
-    CC_SHA256([bytes bytes],static_cast<CC_LONG>([bytes length]),digest);
-    char hex[65]={};
-    for(size_t i=0;i<sizeof(digest);++i) std::snprintf(hex+2*i,3,"%02x",digest[i]);
-    if(std::strcmp(hex,expected)) return false;
     CFURLRef url=CFURLCreateWithFileSystemPath(nullptr,(__bridge CFStringRef)path,kCFURLPOSIXPathStyle,true);
     if(!url) return false;
     CFBundleRef bundle=CFBundleCreate(nullptr,url); CFRelease(url);
     if(!bundle) return false;
+    // CFBundle selects its executable from Info.plist. Bind the actual selected
+    // URL before hashing or loading, rather than trusting a parallel fixed path.
+    CFURLRef executable=CFBundleCopyExecutableURL(bundle);
+    CFStringRef selected=executable?CFURLCopyFileSystemPath(executable,kCFURLPOSIXPathStyle):nullptr;
+    NSString* identifier=[@"org.portalsurfer.hex.fixture." stringByAppendingString:name];
+    bool exact=selected && [(__bridge NSString*)selected isEqualToString:binary] &&
+        [(__bridge id)CFBundleGetValueForInfoDictionaryKey(bundle,CFSTR("CFBundleExecutable")) isEqual:@"fixture"] &&
+        [(__bridge id)CFBundleGetValueForInfoDictionaryKey(bundle,CFSTR("CFBundleIdentifier")) isEqual:identifier];
+    NSString* member=resources;
+    for(NSString* component in [relative stringByAppendingPathComponent:@"Contents/MacOS/fixture"].pathComponents) {
+        member=[member stringByAppendingPathComponent:component];
+        NSDictionary* info=[[NSFileManager defaultManager] attributesOfItemAtPath:member error:nullptr];
+        exact=exact && info && ![[info fileType] isEqualToString:NSFileTypeSymbolicLink];
+    }
+    if(selected) CFRelease(selected);
+    if(executable) CFRelease(executable);
+    if(!exact) { CFRelease(bundle); return false; }
+    NSDictionary* attrs=[[NSFileManager defaultManager] attributesOfItemAtPath:binary error:nullptr];
+    if(!attrs || ![[attrs fileType] isEqualToString:NSFileTypeRegular] || [attrs fileSize]>16*1024*1024) {
+        CFRelease(bundle); return false;
+    }
+    NSData* bytes=[NSData dataWithContentsOfFile:binary];
+    if(!bytes || [bytes length]>16*1024*1024) { CFRelease(bundle); return false; }
+    unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+    CC_SHA256([bytes bytes],static_cast<CC_LONG>([bytes length]),digest);
+    char hex[65]={};
+    for(size_t i=0;i<sizeof(digest);++i) std::snprintf(hex+2*i,3,"%02x",digest[i]);
+    if(std::strcmp(hex,expected)) { CFRelease(bundle); return false; }
     bool loaded=CFBundleLoadExecutable(bundle);
     auto entry=reinterpret_cast<bool(*)(CFBundleRef)>(CFBundleGetFunctionPointerForName(bundle,CFSTR("bundleEntry")));
     auto exit=reinterpret_cast<bool(*)()>(CFBundleGetFunctionPointerForName(bundle,CFSTR("bundleExit")));
