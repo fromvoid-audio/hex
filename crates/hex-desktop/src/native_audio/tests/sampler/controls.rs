@@ -171,6 +171,7 @@ pub(super) fn exercise(
             LoopEnabled => loop_enabled = value == 1.0,
             LoopStartFrame => loop_start = value,
             LoopEndFrame => loop_end = value,
+            _ => panic!("not a scalar fixture control"),
         }
         let selector = match parameter {
             Gain => gain_selector as &str,
@@ -180,6 +181,7 @@ pub(super) fn exercise(
             LoopEnabled => loop_selector,
             LoopStartFrame => loop_start_selector,
             LoopEndFrame => loop_end_selector,
+            _ => panic!("not a scalar fixture control"),
         };
         let old = h
             .backend

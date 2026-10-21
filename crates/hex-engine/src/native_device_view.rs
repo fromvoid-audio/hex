@@ -15,8 +15,18 @@ pub enum SamplerParameter {
     LoopEnabled,
     LoopStartFrame,
     LoopEndFrame,
+    AttackMs,
+    DecayMs,
+    SustainPercent,
+    ReleaseMs,
 }
 impl SamplerParameter {
+    pub const fn is_envelope(self) -> bool {
+        matches!(
+            self,
+            Self::AttackMs | Self::DecayMs | Self::SustainPercent | Self::ReleaseMs
+        )
+    }
     pub const fn is_source_frame(self) -> bool {
         matches!(
             self,
@@ -48,10 +58,16 @@ impl SamplerParameter {
             Self::LoopEnabled => "loop",
             Self::LoopStartFrame => "loop start",
             Self::LoopEndFrame => "loop end",
+            Self::AttackMs => "attack",
+            Self::DecayMs => "decay",
+            Self::SustainPercent => "sustain",
+            Self::ReleaseMs => "release",
         }
     }
     pub const fn bounds(self) -> (f64, f64) {
         match self {
+            Self::AttackMs | Self::DecayMs | Self::ReleaseMs => (0.0, 60_000.0),
+            Self::SustainPercent => (0.0, 100.0),
             Self::Gain => (0.0, 4.0),
             Self::Transpose => (-48.0, 48.0),
             Self::LoopEnabled => (0.0, 1.0),
@@ -65,6 +81,8 @@ impl SamplerParameter {
     }
     pub const fn default_value(self) -> f64 {
         match self {
+            Self::AttackMs | Self::DecayMs | Self::ReleaseMs => 0.0,
+            Self::SustainPercent => 100.0,
             Self::Gain => 1.0,
             Self::Transpose => 0.0,
             Self::StartFrame | Self::LoopStartFrame | Self::LoopEnabled => 0.0,
@@ -73,6 +91,8 @@ impl SamplerParameter {
     }
     pub const fn unit(self) -> Option<&'static str> {
         match self {
+            Self::AttackMs | Self::DecayMs | Self::ReleaseMs => Some("ms"),
+            Self::SustainPercent => Some("%"),
             Self::Gain | Self::LoopEnabled => None,
             Self::Transpose => Some("st"),
             Self::StartFrame | Self::EndFrame | Self::LoopStartFrame | Self::LoopEndFrame => {
@@ -90,6 +110,10 @@ pub fn sampler_parameter_value_on_control(
     use SamplerParameter::*;
     use hex_devices::sampler::state::AuthoredMode::Classic;
     Ok(match (parameter, &authored.mode) {
+        (AttackMs, _) => authored.envelope.attack_seconds * 1000.0,
+        (DecayMs, _) => authored.envelope.decay_seconds * 1000.0,
+        (SustainPercent, _) => authored.envelope.sustain * 100.0,
+        (ReleaseMs, _) => authored.envelope.release_seconds * 1000.0,
         (Gain, _) => authored.gain,
         (Transpose, _) => authored.transpose_semitones,
         (StartFrame, _) => authored.region.start as f64,
@@ -108,6 +132,32 @@ pub fn sampler_parameter_value_on_control(
         }
     })
 }
+/// Whether a displayed control affects the current authored gate mode.
+/// Values remain readable when inactive; this never converts a mode.
+pub fn sampler_parameter_active_on_control(
+    parameter: SamplerParameter,
+    state: &NativeDeviceState,
+) -> Result<bool, Invalid> {
+    let authored = hex_devices::sampler::state::SamplerState::from_native(state)
+        .map_err(sampler_state_error)?;
+    use hex_devices::sampler::{GateMode, state::AuthoredMode};
+    Ok(match parameter {
+        SamplerParameter::LoopEnabled
+        | SamplerParameter::LoopStartFrame
+        | SamplerParameter::LoopEndFrame => matches!(authored.mode, AuthoredMode::Classic { .. }),
+        SamplerParameter::ReleaseMs => !matches!(
+            authored.mode,
+            AuthoredMode::OneShot {
+                gate: GateMode::Trigger
+            } | AuthoredMode::Slice {
+                gate: GateMode::Trigger,
+                ..
+            }
+        ),
+        _ => true,
+    })
+}
+
 pub fn patch_sampler_parameter_on_control(
     parameter: SamplerParameter,
     state: &NativeDeviceState,
@@ -119,6 +169,14 @@ pub fn patch_sampler_parameter_on_control(
         || (parameter.is_integer() && value.fract() != 0.0)
     {
         return Err(Invalid(match parameter {
+            SamplerParameter::AttackMs
+            | SamplerParameter::DecayMs
+            | SamplerParameter::ReleaseMs => {
+                "sampler envelope time must be between zero and 60000 ms"
+            }
+            SamplerParameter::SustainPercent => {
+                "sampler sustain must be between zero and 100 percent"
+            }
             SamplerParameter::Gain => "sampler gain must be between zero and four",
             SamplerParameter::Transpose => "sampler pitch must be between -48 and 48 semitones",
             SamplerParameter::LoopEnabled => "sampler loop must be off or on",
@@ -135,6 +193,10 @@ pub fn patch_sampler_parameter_on_control(
     use SamplerParameter::*;
     use hex_devices::sampler::state::AuthoredMode::Classic;
     match (parameter, &mut authored.mode) {
+        (AttackMs, _) => authored.envelope.attack_seconds = value / 1000.0,
+        (DecayMs, _) => authored.envelope.decay_seconds = value / 1000.0,
+        (SustainPercent, _) => authored.envelope.sustain = value / 100.0,
+        (ReleaseMs, _) => authored.envelope.release_seconds = value / 1000.0,
         (Gain, _) => authored.gain = value,
         (Transpose, _) => authored.transpose_semitones = value,
         (StartFrame, _) => authored.region.start = value as usize,

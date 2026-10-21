@@ -763,7 +763,7 @@ and merge-plan evidence belong to PR551/Pulse2967.
 Finite user checks after a separately qualified optimized build: stop transport,
 confirm gain0.5/unity/0 changes keyboard and Arrangement level once, Save/New/Open
 and verify it persists, then try editing while playing and confirm refusal.
-Record the tested build/source and physical results. Waveform/region/envelope
+Record the tested build/source and physical results. Waveform
 and remaining controls, replacement, history and broader playback stay open.
 
 
@@ -800,12 +800,12 @@ Finite user checks after a separately qualified optimized build: with transport
 stopped and a loaded sampler, confirm pitch0/+12/−12 changes keyboard and
 Arrangement pitch by one octave while retaining gain; enter0.5, Save/New/Open
 and verify persistence; attempt an edit while playing and confirm refusal.
-Waveform, envelope, replacement and history controls remain separate work.
+Waveform, replacement and history controls remain separate work.
 
 
 ## stopped original-frame region — pulse2969 / PR553
 
-The compact panel adds **start** and **end** beside gain and pitch in a two-column
+The compact panel adds **start** and **end** beside gain and pitch in the three-column
 control grid. They read the actual nonempty half-open source interval `[start,end)`:
 start is included, end is excluded, in original-file frames, independently of
 project/output rate. Whole-frame numeric text and one-frame arrow steps are
@@ -837,7 +837,7 @@ These are headless path checks. Physical interaction/display/device/listening an
 optimized delivery remain unexecuted. Finite later user checks: load a sample,
 stop transport, trim start/end to a nonempty region and audition keyboard and
 Arrangement; verify the exclusive end, Save/New/Open, and confirm an invalid or
-playing edit refuses. Envelope editing, waveform selection, replacement and history remain separate work.
+playing edit refuses. Waveform selection, replacement and history remain separate work.
 
 
 ## Classic loop controls
@@ -861,9 +861,9 @@ state/history or applied audio. Off-range fields remain editable for explicit
 repair. No automatic clamp, source/clip edit or loop-point reset is performed.
 
 The panel exposes an on/off readout and whole-frame loop start/end fields, using
-the existing one-pending stopped transaction. All seven fields retain independent
-gesture captures. The sampler frame is448px wide with the existing168px body and
-a fixed two-column control grid; bounded source/status detail cannot displace the
+the existing one-pending stopped transaction. All eleven fields retain independent
+gesture captures. The sampler frame is520px wide with the existing168px body and
+a fixed three-column control grid; bounded source/status detail cannot displace the
 controls. Source units and UI bounds are original frames, not project-rate frames.
 Runtime preparation still maps the enabled flag to the existing optional Classic
 loop; preloop, wrap interpolation, gate release and Stop behavior are unchanged.
@@ -881,6 +881,41 @@ physical input/display/device/listening or optimized installation acceptance.
 Finite later user checks: stop transport, set a custom Classic loop and audition
 its wrap; toggle off/on and Save/New/Open to verify both states retain the range;
 trim while off, confirm an outside-range enable refuses, repair endpoints and
-retry; verify key release and Stop end the sound. Envelope/waveform editing,
+retry; verify key release and Stop end the sound. Waveform editing,
 replacement/history, Session playback and full musical-use acceptance remain
 separate contracts.
+
+## Amplitude envelope controls
+
+Attack, decay and release display milliseconds (0..60000); sustain displays
+percent (0..100). These closed control-side values map to the existing authored
+seconds and linear sustain fields in state v2. Fractional milliseconds retain
+six display decimals, including a one-frame 0.0625ms duration at16kHz. Keyboard
+steps and explicitly enabled value-readout dragging use1 unit coarse and0.1 unit
+with Shift, per pixel for dragging. Small pointer movements accumulate with the
+current modifier; bounds discard overshoot debt. Other numeric controls preserve
+their existing drag scales and gesture/focus/cancel behavior.
+
+The existing envelope kernel, note/gate modes, callback ownership and lifecycle
+are unchanged. Trigger One-Shot/Slice still ignore note-off; their stored release
+value remains displayed but disabled, with the panel explaining its inactive
+status. Gate and Classic release remain editable. No control changes the mode.
+All edits share the existing one-pending stopped operation. A validated patch
+identical to the current full device state completes as no change before the
+audio fence, preserving history, revision and actual output even when displayed
+unit conversion differs by one floating-point rounding step. This is exact state
+equality, not an epsilon that could discard a small authored edit.
+
+Owning headless checks cover unit/range/mode preservation, real coarse/fine
+readout dragging, clamping and cancellation, conversion-roundtrip no-change,
+invalid/stale/cancelled native requests, and all eleven rendered field bounds.
+Actual retained ADSR controls save and reopen through fresh native CURRENT.
+Literal original-source keyboard and Arrangement PCM combines A880,8kHz source,
+16kHz output, pitch−12, gain0.5 and a whole-source Classic loop with two-frame
+attack/decay/release and50% sustain. Direct keyup verifies a nonzero two-frame
+release tail before cancellation; Stop silences immediately. Covered render
+scopes require zero total and signed-net allocation/deallocation counts/bytes.
+These fixtures do not establish physical device, display, input or listening
+acceptance. Later user checks should audition short/long ADSR, direct note release,
+Save/New/Open, stopped-only refusal and unchanged source/loop/pitch/gain settings
+on the exact optimized candidate. Waveform, replacement and history remain open.

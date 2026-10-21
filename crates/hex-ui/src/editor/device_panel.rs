@@ -2038,15 +2038,23 @@ fn render_instrument(
                     .into_any_element(),
             ),
         }
+        for parameter in [
+            hex_engine::SamplerParameter::AttackMs,
+            hex_engine::SamplerParameter::DecayMs,
+            hex_engine::SamplerParameter::SustainPercent,
+            hex_engine::SamplerParameter::ReleaseMs,
+        ] {
+            fields.push(view.sampler_parameter_control(track, device, parameter, cx));
+        }
         let controls = div()
             .grid()
-            .grid_cols(2)
+            .grid_cols(3)
             .gap(px(4.0))
             .flex_shrink_0()
             .debug_selector(|| "sampler-controls".into())
             .children(fields);
         let details = div().flex_1().min_h_0().overflow_hidden().child(theme::text(format!(
-            "{name} · {readiness} · edits require stopped audio · other controls and replacement unavailable"
+            "{name} · {readiness} · edits require stopped audio · * release inactive in trigger mode · replacement unavailable"
         )));
         let body = crate::device_composition::body()
             .flex_col()

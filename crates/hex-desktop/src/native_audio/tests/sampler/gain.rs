@@ -95,6 +95,10 @@ fn sampler_gain_stale_invalid_cancelled_and_tight_budget_refusals_preserve_actua
         LoopEnabled,
         LoopStartFrame,
         LoopEndFrame,
+        hex_engine::SamplerParameter::AttackMs,
+        hex_engine::SamplerParameter::DecayMs,
+        hex_engine::SamplerParameter::SustainPercent,
+        hex_engine::SamplerParameter::ReleaseMs,
     ] {
         for case in 0..6 {
             let mut gain = edit(&before, track, device);
@@ -710,4 +714,64 @@ fn sampler_dormant_trim_enable_conflict_and_active_loop_bounds_preserve_history_
     }
     h.audio.as_ref().unwrap().control.stop();
     assert_eq!(h.render(), [[0.0; 2]; 64]);
+}
+
+#[test]
+fn sampler_envelope_roundtrip_no_change_never_fences_drains_or_changes_history() {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_files, mut h, track, device, mut before) = current(12);
+    for (parameter, value) in [
+        (hex_engine::SamplerParameter::AttackMs, 63.7),
+        (hex_engine::SamplerParameter::SustainPercent, 0.9),
+    ] {
+        let old = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+        let mut request = edit(&before, track, device);
+        request.parameter = parameter;
+        request.value = value;
+        h.run(Request::SetSamplerParameter(
+            hex_session::service::SamplerParameterEdit {
+                cancel: Arc::clone(&request.cancel),
+                ..request
+            },
+        ));
+        h.render();
+        let committed = h.next();
+        assert!(committed.error.is_none(), "{:?}", committed.error);
+        h.open_sampler(old);
+        h.applied(h.context.unwrap());
+        before = committed.state;
+        assert_ne!(
+            hex_engine::sampler_parameter_value_on_control(
+                parameter,
+                before.project.device(device).unwrap().state()
+            )
+            .unwrap(),
+            value
+        );
+        request.revision = before.revision;
+        let identity = h.audio.as_ref().unwrap().control.output_identity();
+        let cells = h.observation.lock().unwrap().gain_cells.len();
+        // No callback is run: a real fence would remain pending here.
+        let same = h.run(Request::SetSamplerParameter(request));
+        assert_eq!(same.sampler_parameter_complete, Some(1));
+        assert_eq!(same.status.as_deref(), Some("no change"));
+        unchanged(&before, &same);
+        assert_eq!(
+            h.audio.as_ref().unwrap().control.output_identity(),
+            identity
+        );
+        assert_eq!(h.observation.lock().unwrap().gain_cells.len(), cells);
+        // Non-Stop producer work must remain accepted immediately: no fence.
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(PlaybackCommand::Play)
+            .unwrap();
+        h.render();
+        h.audio.as_ref().unwrap().control.stop();
+        assert_eq!(h.render(), [[0.0; 2]; 64]);
+    }
 }

@@ -238,9 +238,81 @@ fn classic_loop_controls_preserve_dormant_range_refuse_conflicts_and_never_conve
         authored.mode = mode;
         let native = authored.to_native().unwrap();
         for parameter in [LoopEnabled, LoopStartFrame, LoopEndFrame] {
+            assert!(!sampler_parameter_active_on_control(parameter, &native).unwrap());
             assert!(sampler_parameter_value_on_control(parameter, &native).is_err());
             assert!(patch_sampler_parameter_on_control(parameter, &native, 1.0).is_err());
         }
         assert_eq!(SamplerState::from_native(&native).unwrap(), authored);
+    }
+}
+
+#[test]
+fn sampler_envelope_units_bounds_and_inactive_release_preserve_every_other_field() {
+    use SamplerParameter::{AttackMs, DecayMs, ReleaseMs, SustainPercent};
+    use hex_devices::sampler::{
+        GateMode,
+        state::{AuthoredMode, SamplerState},
+    };
+    for mode in [
+        SamplerState::for_source_frames(8).unwrap().mode,
+        AuthoredMode::OneShot {
+            gate: GateMode::Gate,
+        },
+        AuthoredMode::OneShot {
+            gate: GateMode::Trigger,
+        },
+        AuthoredMode::Slice {
+            starts: vec![0, 3],
+            base_note: 60,
+            gate: GateMode::Trigger,
+        },
+    ] {
+        let mut authored = SamplerState::for_source_frames(8).unwrap();
+        authored.mode = mode.clone();
+        authored.gain = 0.5;
+        authored.transpose_semitones = -12.0;
+        authored.detune_cents = 23.0;
+        let original = authored
+            .to_native()
+            .unwrap()
+            .with_input_gain_millidb(-3000)
+            .unwrap();
+        for parameter in [AttackMs, DecayMs, SustainPercent, ReleaseMs] {
+            for value in [0.0, 0.0625, 0.125, parameter.bounds().1] {
+                let patched =
+                    patch_sampler_parameter_on_control(parameter, &original, value).unwrap();
+                let decoded = SamplerState::from_native(&patched).unwrap();
+                assert_eq!(
+                    sampler_parameter_value_on_control(parameter, &patched).unwrap(),
+                    value
+                );
+                assert_eq!(decoded.mode, mode);
+                assert_eq!(
+                    patch_sampler_parameter_on_control(
+                        parameter,
+                        &patched,
+                        parameter.default_value()
+                    )
+                    .unwrap(),
+                    original
+                );
+                assert_eq!(
+                    sampler_parameter_active_on_control(parameter, &patched).unwrap(),
+                    parameter != ReleaseMs
+                        || !matches!(
+                            mode,
+                            AuthoredMode::OneShot {
+                                gate: GateMode::Trigger
+                            } | AuthoredMode::Slice {
+                                gate: GateMode::Trigger,
+                                ..
+                            }
+                        )
+                );
+            }
+            for value in [-0.01, parameter.bounds().1 + 0.01, f64::NAN, f64::INFINITY] {
+                assert!(patch_sampler_parameter_on_control(parameter, &original, value).is_err());
+            }
+        }
     }
 }
