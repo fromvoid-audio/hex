@@ -4,9 +4,13 @@ use hex_lattice_contract::{DeviceAssetKey, DeviceAssetReference, DeviceAssetSlot
 #[test]
 fn current_modes_roundtrip_and_patch_preserves_actual_host_metadata() {
     for mode in [
-        AuthoredMode::Classic { loop_region: None },
         AuthoredMode::Classic {
-            loop_region: Some(Region { start: 3, end: 11 }),
+            loop_enabled: false,
+            loop_region: Region { start: 3, end: 11 },
+        },
+        AuthoredMode::Classic {
+            loop_enabled: true,
+            loop_region: Region { start: 3, end: 11 },
         },
         AuthoredMode::OneShot {
             gate: GateMode::Trigger,
@@ -37,6 +41,16 @@ fn current_modes_roundtrip_and_patch_preserves_actual_host_metadata() {
             .unwrap()
             .with_output_gain_millidb(2250)
             .unwrap();
+        if native.payload()[0] > 1 {
+            let mut reserved = native.payload().to_vec();
+            reserved[16] = 1;
+            assert_eq!(
+                SamplerState::from_native(
+                    &NativeDeviceState::new(TYPE_ID, STATE_VERSION, reserved).unwrap()
+                ),
+                Err(Error::MalformedState)
+            );
+        }
         assert_eq!(SamplerState::from_native(&native).unwrap(), state);
         state.gain = 0.5;
         let patched = state.replace_in(&native).unwrap();
@@ -83,7 +97,7 @@ fn malformed_truncated_reserved_nonfinite_and_unsupported_formats_refuse() {
         (4, 33),
         (5, 1),
         (6, 255),
-        (20, 1),
+        (20, 0),
     ] {
         let mut bytes = valid.payload().to_vec();
         bytes[offset] = value;
@@ -104,6 +118,12 @@ fn malformed_truncated_reserved_nonfinite_and_unsupported_formats_refuse() {
             .is_err()
         );
     }
+    assert_eq!(
+        SamplerState::from_native(
+            &NativeDeviceState::new(TYPE_ID, 1, valid.payload().to_vec()).unwrap()
+        ),
+        Err(Error::InvalidStateVersion)
+    );
     assert_eq!(
         SamplerState::from_native(
             &NativeDeviceState::new(TYPE_ID, STATE_VERSION + 1, valid.payload().to_vec()).unwrap()
@@ -240,6 +260,19 @@ fn authored_preparation_requires_exact_asset_and_complete_host_inventory() {
         tuning: &tuning,
         resources: &resources,
     };
+    let mut dormant = SamplerState::from_native(&state).unwrap();
+    dormant.mode = AuthoredMode::Classic {
+        loop_enabled: false,
+        loop_region: Region { start: 0, end: 5 },
+    };
+    let dormant = dormant.replace_in(&state).unwrap(); // Global codec bound allows5.
+    assert!(
+        matches!(
+            prepare_runtime_on_control(&dormant, &context, 259),
+            Err(Error::InvalidParameterValue)
+        ),
+        "disabled loop must still fit the actual retained four-frame source"
+    );
     let prepared = prepare_runtime_on_control(&state, &context, 259).unwrap();
     let mut runtime = prepared.create_runtime();
     let events = [NativeInstrumentEvent::NoteOn {
@@ -391,4 +424,55 @@ fn authored_pitch_gain_region_and_absolute_tuning_reach_actual_pair() {
         assert_eq!(output, expected);
         assert!(pair.committed_is_quiescent());
     }
+}
+
+#[test]
+fn disabled_classic_loop_remembers_range_across_codec_and_trim_without_implicit_repair() {
+    let mut state = SamplerState::for_source_frames(8).unwrap();
+    state.mode = AuthoredMode::Classic {
+        loop_enabled: false,
+        loop_region: Region { start: 2, end: 6 },
+    };
+    let original = state.to_native().unwrap();
+    assert_eq!(original.state_version(), 2);
+    assert_eq!(original.payload().len(), 96);
+    let mut enabled = SamplerState::from_native(&original).unwrap();
+    if let AuthoredMode::Classic { loop_enabled, .. } = &mut enabled.mode {
+        *loop_enabled = true;
+    }
+    let enabled = enabled.to_native().unwrap();
+    assert_ne!(enabled, original);
+    let mut disabled = SamplerState::from_native(&enabled).unwrap();
+    if let AuthoredMode::Classic { loop_enabled, .. } = &mut disabled.mode {
+        *loop_enabled = false;
+    }
+    assert_eq!(disabled.to_native().unwrap(), original);
+    disabled.region.start = 4;
+    assert!(
+        disabled.to_native().is_ok(),
+        "off loop may lie outside trimmed playback region"
+    );
+    if let AuthoredMode::Classic { loop_enabled, .. } = &mut disabled.mode {
+        *loop_enabled = true;
+    }
+    assert!(
+        disabled.to_native().is_err(),
+        "enable must refuse conflicting stored range"
+    );
+    if let AuthoredMode::Classic { loop_region, .. } = &mut disabled.mode {
+        loop_region.start = 4;
+    }
+    assert!(disabled.to_native().is_ok());
+    if let AuthoredMode::Classic {
+        loop_enabled,
+        loop_region,
+    } = &mut disabled.mode
+    {
+        *loop_enabled = false;
+        loop_region.end = loop_region.start;
+    }
+    assert!(
+        disabled.to_native().is_err(),
+        "off is not permission for empty loop ranges"
+    );
 }

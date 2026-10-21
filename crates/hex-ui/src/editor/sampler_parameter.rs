@@ -35,7 +35,7 @@ struct Pending {
 #[derive(Default)]
 pub(super) struct State {
     serial: u64,
-    // The closed parameter enum bounds this map to four entries.
+    // The closed parameter enum bounds this map to seven entries.
     controls: BTreeMap<SamplerParameter, Control>,
     pending: Option<Pending>,
     // Retired controls from this panel cycle only; drained at every render.
@@ -175,7 +175,9 @@ impl EditorView {
                     .into_any_element();
             };
             max = match parameter {
-                SamplerParameter::StartFrame => (frames - 1) as f64,
+                SamplerParameter::StartFrame | SamplerParameter::LoopStartFrame => {
+                    (frames - 1) as f64
+                }
                 _ => frames as f64,
             };
             if min == max {
@@ -214,7 +216,10 @@ impl EditorView {
             let config = NumericSpec::new(
                 min,
                 max,
-                if parameter == SamplerParameter::EndFrame {
+                if matches!(
+                    parameter,
+                    SamplerParameter::EndFrame | SamplerParameter::LoopEndFrame
+                ) {
                     max
                 } else {
                     parameter.default_value()
@@ -224,11 +229,11 @@ impl EditorView {
                 } else {
                     NumericScale::Linear
                 },
-                if parameter.is_source_frame() { 0 } else { 2 },
+                if parameter.is_integer() { 0 } else { 2 },
                 parameter.unit().map(Arc::<str>::from),
             )
             .and_then(|spec| {
-                if parameter.is_source_frame() {
+                if parameter.is_integer() {
                     spec.with_integer_values()
                 } else if parameter == SamplerParameter::Transpose {
                     spec.with_keyboard_steps(1.0, 0.1)
@@ -236,9 +241,28 @@ impl EditorView {
                     Ok(spec)
                 }
             })
+            .map(|spec| {
+                if parameter == SamplerParameter::LoopEnabled {
+                    spec.with_codec(
+                        |value| theme::text(if value == 1.0 { "on" } else { "off" }).to_string(),
+                        |text| {
+                            let text = text.trim();
+                            if text.eq_ignore_ascii_case("on") || text == "1" {
+                                Some(1.0)
+                            } else if text.eq_ignore_ascii_case("off") || text == "0" {
+                                Some(0.0)
+                            } else {
+                                None
+                            }
+                        },
+                    )
+                } else {
+                    spec
+                }
+            })
             .and_then(|spec| {
                 NumericControlConfig::new(
-                    format!("sampler-{}-{}", parameter.label(), device.id().value()),
+                    format!("sampler-{}-{}", parameter.key(), device.id().value()),
                     theme::text(parameter.label()),
                     NumericControlKind::HorizontalSlider,
                     spec,
@@ -324,10 +348,13 @@ impl EditorView {
                     SamplerParameter::Transpose => "sampler-pitch-control",
                     SamplerParameter::StartFrame => "sampler-start-control",
                     SamplerParameter::EndFrame => "sampler-end-control",
+                    SamplerParameter::LoopEnabled => "sampler-loop-control",
+                    SamplerParameter::LoopStartFrame => "sampler-loop-start-control",
+                    SamplerParameter::LoopEndFrame => "sampler-loop-end-control",
                 },
                 device.id().value(),
             ))
-            .debug_selector(move || format!("sampler-{}-control", parameter.label()))
+            .debug_selector(move || format!("sampler-{}-control", parameter.key()))
             .w_full()
             .min_w_0()
             .h(gpui::px(26.0))

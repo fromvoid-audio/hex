@@ -4,7 +4,7 @@ use super::*;
 use hex_lattice_contract::{DeviceContractError as Error, DeviceTypeId, NativeDeviceState};
 
 pub const TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.instrument.sampler");
-pub const STATE_VERSION: u32 = 1;
+pub const STATE_VERSION: u32 = 2;
 pub const SOURCE_SLOT: u32 = 1;
 const PREFIX: usize = 96;
 
@@ -34,6 +34,7 @@ pub fn prepare_runtime_on_control(
         hex_lattice::DeviceResourcePcm::Mono(_) => SampleChannels::Mono,
         hex_lattice::DeviceResourcePcm::Stereo(_) => SampleChannels::Stereo,
     };
+    authored.validate_loop_source_extent(view.pcm.frames())?;
     let shape = SampleShape::new(view.pcm.frames(), view.sample_rate, channels)
         .map_err(|_| Error::AssetResourcesUnavailable)?;
     let plan = PreparedSamplerPlan::new(shape, context.sample_rate, authored.settings())
@@ -49,7 +50,8 @@ pub fn prepare_runtime_on_control(
 #[derive(Clone, Debug, PartialEq)]
 pub enum AuthoredMode {
     Classic {
-        loop_region: Option<Region>,
+        loop_enabled: bool,
+        loop_region: Region,
     },
     OneShot {
         gate: GateMode,
@@ -86,7 +88,13 @@ impl SamplerState {
                 start: 0,
                 end: frames,
             },
-            mode: AuthoredMode::Classic { loop_region: None },
+            mode: AuthoredMode::Classic {
+                loop_enabled: false,
+                loop_region: Region {
+                    start: 0,
+                    end: frames,
+                },
+            },
             reverse: false,
             root_note: 60,
             transpose_semitones: 0.0,
@@ -104,8 +112,11 @@ impl SamplerState {
         Settings {
             region: self.region,
             mode: match &self.mode {
-                AuthoredMode::Classic { loop_region } => Mode::Classic {
-                    loop_region: *loop_region,
+                AuthoredMode::Classic {
+                    loop_enabled,
+                    loop_region,
+                } => Mode::Classic {
+                    loop_region: loop_enabled.then_some(*loop_region),
                 },
                 AuthoredMode::OneShot { gate } => Mode::OneShot { gate: *gate },
                 AuthoredMode::Slice {
@@ -132,6 +143,7 @@ impl SamplerState {
         if !(1..=MAX_SAMPLER_RUNTIME_VOICES as u8).contains(&self.voices) {
             return Err(Error::InvalidParameterValue);
         }
+        self.validate_loop_source_extent(MAX_SAMPLE_FRAMES)?;
         PreparedSamplerPlan::new(
             SampleShape::new(MAX_SAMPLE_FRAMES, 48_000, SampleChannels::Stereo)
                 .map_err(|_| Error::MalformedState)?,
@@ -141,13 +153,26 @@ impl SamplerState {
         .map_err(|_| Error::InvalidParameterValue)?;
         Ok(())
     }
+    // Dormant loop coordinates still belong to the original PCM, even when
+    // outside the currently trimmed playback region. They never grant custody.
+    fn validate_loop_source_extent(&self, frames: usize) -> Result<(), Error> {
+        if let AuthoredMode::Classic { loop_region, .. } = self.mode
+            && !loop_region.valid(frames)
+        {
+            return Err(Error::InvalidParameterValue);
+        }
+        Ok(())
+    }
     pub fn to_native(&self) -> Result<NativeDeviceState, Error> {
         self.validate()?;
         let (mode, gate, loop_region, starts, base) = match &self.mode {
-            AuthoredMode::Classic { loop_region } => (
-                u8::from(loop_region.is_some()),
+            AuthoredMode::Classic {
+                loop_enabled,
+                loop_region,
+            } => (
+                u8::from(*loop_enabled),
                 GateMode::Gate,
-                *loop_region,
+                Some(*loop_region),
                 &[][..],
                 0,
             ),
@@ -249,15 +274,15 @@ impl SamplerState {
             GateMode::Trigger
         };
         if (bytes[0] != 3 && (count != 0 || bytes[5] != 0))
-            || (bytes[0] != 1 && loop_region != (Region { start: 0, end: 0 }))
+            || (bytes[0] > 1 && loop_region != (Region { start: 0, end: 0 }))
             || (bytes[0] <= 1 && gate != GateMode::Gate)
         {
             return Err(Error::MalformedState);
         }
         let mode = match bytes[0] {
-            0 => AuthoredMode::Classic { loop_region: None },
-            1 => AuthoredMode::Classic {
-                loop_region: Some(loop_region),
+            0 | 1 => AuthoredMode::Classic {
+                loop_enabled: bytes[0] == 1,
+                loop_region,
             },
             2 => AuthoredMode::OneShot { gate },
             _ => {

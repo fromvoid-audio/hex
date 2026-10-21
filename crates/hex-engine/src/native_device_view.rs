@@ -12,10 +12,32 @@ pub enum SamplerParameter {
     Transpose,
     StartFrame,
     EndFrame,
+    LoopEnabled,
+    LoopStartFrame,
+    LoopEndFrame,
 }
 impl SamplerParameter {
     pub const fn is_source_frame(self) -> bool {
-        matches!(self, Self::StartFrame | Self::EndFrame)
+        matches!(
+            self,
+            Self::StartFrame | Self::EndFrame | Self::LoopStartFrame | Self::LoopEndFrame
+        )
+    }
+    pub const fn is_integer(self) -> bool {
+        self.is_source_frame() || matches!(self, Self::LoopEnabled)
+    }
+    pub const fn is_loop(self) -> bool {
+        matches!(
+            self,
+            Self::LoopEnabled | Self::LoopStartFrame | Self::LoopEndFrame
+        )
+    }
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::LoopStartFrame => "loop-start",
+            Self::LoopEndFrame => "loop-end",
+            _ => self.label(),
+        }
     }
     pub const fn label(self) -> &'static str {
         match self {
@@ -23,29 +45,39 @@ impl SamplerParameter {
             Self::Transpose => "pitch",
             Self::StartFrame => "start",
             Self::EndFrame => "end",
+            Self::LoopEnabled => "loop",
+            Self::LoopStartFrame => "loop start",
+            Self::LoopEndFrame => "loop end",
         }
     }
     pub const fn bounds(self) -> (f64, f64) {
         match self {
             Self::Gain => (0.0, 4.0),
             Self::Transpose => (-48.0, 48.0),
-            Self::StartFrame => (0.0, (hex_devices::sampler::MAX_SAMPLE_FRAMES - 1) as f64),
-            Self::EndFrame => (1.0, hex_devices::sampler::MAX_SAMPLE_FRAMES as f64),
+            Self::LoopEnabled => (0.0, 1.0),
+            Self::StartFrame | Self::LoopStartFrame => {
+                (0.0, (hex_devices::sampler::MAX_SAMPLE_FRAMES - 1) as f64)
+            }
+            Self::EndFrame | Self::LoopEndFrame => {
+                (1.0, hex_devices::sampler::MAX_SAMPLE_FRAMES as f64)
+            }
         }
     }
     pub const fn default_value(self) -> f64 {
         match self {
             Self::Gain => 1.0,
             Self::Transpose => 0.0,
-            Self::StartFrame => 0.0,
-            Self::EndFrame => 1.0,
+            Self::StartFrame | Self::LoopStartFrame | Self::LoopEnabled => 0.0,
+            Self::EndFrame | Self::LoopEndFrame => 1.0,
         }
     }
     pub const fn unit(self) -> Option<&'static str> {
         match self {
-            Self::Gain => None,
+            Self::Gain | Self::LoopEnabled => None,
             Self::Transpose => Some("st"),
-            Self::StartFrame | Self::EndFrame => Some("frames"),
+            Self::StartFrame | Self::EndFrame | Self::LoopStartFrame | Self::LoopEndFrame => {
+                Some("frames")
+            }
         }
     }
 }
@@ -54,12 +86,26 @@ pub fn sampler_parameter_value_on_control(
     state: &NativeDeviceState,
 ) -> Result<f64, Invalid> {
     let authored = hex_devices::sampler::state::SamplerState::from_native(state)
-        .map_err(|_| Invalid("sampler state is invalid"))?;
-    Ok(match parameter {
-        SamplerParameter::Gain => authored.gain,
-        SamplerParameter::Transpose => authored.transpose_semitones,
-        SamplerParameter::StartFrame => authored.region.start as f64,
-        SamplerParameter::EndFrame => authored.region.end as f64,
+        .map_err(sampler_state_error)?;
+    use SamplerParameter::*;
+    use hex_devices::sampler::state::AuthoredMode::Classic;
+    Ok(match (parameter, &authored.mode) {
+        (Gain, _) => authored.gain,
+        (Transpose, _) => authored.transpose_semitones,
+        (StartFrame, _) => authored.region.start as f64,
+        (EndFrame, _) => authored.region.end as f64,
+        (LoopEnabled, Classic { loop_enabled, .. }) => {
+            if *loop_enabled {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        (LoopStartFrame, Classic { loop_region, .. }) => loop_region.start as f64,
+        (LoopEndFrame, Classic { loop_region, .. }) => loop_region.end as f64,
+        (LoopEnabled | LoopStartFrame | LoopEndFrame, _) => {
+            return Err(Invalid("loop controls require classic mode"));
+        }
     })
 }
 pub fn patch_sampler_parameter_on_control(
@@ -70,30 +116,51 @@ pub fn patch_sampler_parameter_on_control(
     let (min, max) = parameter.bounds();
     if !value.is_finite()
         || !(min..=max).contains(&value)
-        || (parameter.is_source_frame() && value.fract() != 0.0)
+        || (parameter.is_integer() && value.fract() != 0.0)
     {
         return Err(Invalid(match parameter {
             SamplerParameter::Gain => "sampler gain must be between zero and four",
             SamplerParameter::Transpose => "sampler pitch must be between -48 and 48 semitones",
-            SamplerParameter::StartFrame | SamplerParameter::EndFrame => {
+            SamplerParameter::LoopEnabled => "sampler loop must be off or on",
+            SamplerParameter::StartFrame
+            | SamplerParameter::EndFrame
+            | SamplerParameter::LoopStartFrame
+            | SamplerParameter::LoopEndFrame => {
                 "sampler region endpoints must be bounded whole source frames"
             }
         }));
     }
     let mut authored = hex_devices::sampler::state::SamplerState::from_native(state)
-        .map_err(|_| Invalid("sampler state is invalid"))?;
-    match parameter {
-        SamplerParameter::Gain => authored.gain = value,
-        SamplerParameter::Transpose => authored.transpose_semitones = value,
-        SamplerParameter::StartFrame => authored.region.start = value as usize,
-        SamplerParameter::EndFrame => authored.region.end = value as usize,
+        .map_err(sampler_state_error)?;
+    use SamplerParameter::*;
+    use hex_devices::sampler::state::AuthoredMode::Classic;
+    match (parameter, &mut authored.mode) {
+        (Gain, _) => authored.gain = value,
+        (Transpose, _) => authored.transpose_semitones = value,
+        (StartFrame, _) => authored.region.start = value as usize,
+        (EndFrame, _) => authored.region.end = value as usize,
+        (LoopEnabled, Classic { loop_enabled, .. }) => *loop_enabled = value == 1.0,
+        (LoopStartFrame, Classic { loop_region, .. }) => loop_region.start = value as usize,
+        (LoopEndFrame, Classic { loop_region, .. }) => loop_region.end = value as usize,
+        (LoopEnabled | LoopStartFrame | LoopEndFrame, _) => {
+            return Err(Invalid("loop controls require classic mode"));
+        }
     }
     authored.replace_in(state).map_err(|_| {
-        Invalid(if parameter.is_source_frame() {
+        Invalid(if parameter.is_source_frame() || parameter.is_loop() {
             "sampler region must be nonempty and preserve loop and slice bounds"
         } else {
             "sampler setting is invalid"
         })
+    })
+}
+
+fn sampler_state_error(error: hex_lattice_contract::DeviceContractError) -> Invalid {
+    Invalid(match error {
+        hex_lattice_contract::DeviceContractError::InvalidStateVersion => {
+            "sampler state version is unsupported"
+        }
+        _ => "sampler state is invalid",
     })
 }
 

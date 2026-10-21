@@ -28,8 +28,9 @@ fn export_pcm(service: &Service, path: PathBuf) -> Vec<[i16; 2]> {
 fn loop_envelope_state(
     original: &hex_lattice_contract::NativeDeviceState,
 ) -> hex_lattice_contract::NativeDeviceState {
-    // Literal current v1 authored state: Classic loop, region1..4, loop1..3,
-    // gain0.5, two-frame attack/release at16k. This is not a second codec or UI.
+    // Version follows the actual loaded template. Payload/PCM remain independent
+    // literals: Classic loop, region1..4, loop1..3, gain0.5 and two-frame
+    // attack/release at16k. This is not a second codec or UI.
     let mut bytes = vec![1, 0, 0, 60, 16, 0, 0, 0];
     for n in [1_u32, 4, 1, 3] {
         bytes.extend_from_slice(&n.to_le_bytes());
@@ -48,14 +49,18 @@ fn loop_envelope_state(
         bytes.extend_from_slice(&n.to_le_bytes());
     }
     assert_eq!(bytes.len(), 96);
-    hex_lattice_contract::NativeDeviceState::new(original.type_id(), 1, bytes)
-        .unwrap()
-        .with_host_metadata_from(original)
-        .unwrap()
-        .with_input_gain_millidb(6000)
-        .unwrap()
-        .with_output_gain_millidb(-6000)
-        .unwrap()
+    hex_lattice_contract::NativeDeviceState::new(
+        original.type_id(),
+        original.state_version(),
+        bytes,
+    )
+    .unwrap()
+    .with_host_metadata_from(original)
+    .unwrap()
+    .with_input_gain_millidb(6000)
+    .unwrap()
+    .with_output_gain_millidb(-6000)
+    .unwrap()
 }
 #[test]
 fn save_new_current_new_open_reconstructs_original_content_state_tuning_and_actual_file_pcm() {

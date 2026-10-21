@@ -1974,9 +1974,10 @@ fn render_instrument(
             .map_err(|error| error.to_string().to_lowercase())
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
+    let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
     let leading = bypass_action(device, NativeDeviceClass::Instrument, selected, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
-    let rendered = if device.state().type_id().as_str() == Ok("hex.instrument.sampler") {
+    let rendered = if is_sampler {
         let name = view
             .state
             .as_ref()
@@ -2017,20 +2018,42 @@ fn render_instrument(
             hex_engine::SamplerParameter::EndFrame,
             cx,
         );
+        let mut fields = vec![gain, pitch, start, end];
+        match hex_engine::sampler_parameter_value_on_control(
+            hex_engine::SamplerParameter::LoopEnabled,
+            device.state(),
+        ) {
+            Ok(_) => {
+                for parameter in [
+                    hex_engine::SamplerParameter::LoopEnabled,
+                    hex_engine::SamplerParameter::LoopStartFrame,
+                    hex_engine::SamplerParameter::LoopEndFrame,
+                ] {
+                    fields.push(view.sampler_parameter_control(track, device, parameter, cx));
+                }
+            }
+            Err(error) => fields.push(
+                div()
+                    .child(theme::text(error.to_string()))
+                    .into_any_element(),
+            ),
+        }
         let controls = div()
             .grid()
             .grid_cols(2)
             .gap(px(4.0))
+            .flex_shrink_0()
             .debug_selector(|| "sampler-controls".into())
-            .children([gain, pitch, start, end]);
+            .children(fields);
+        let details = div().flex_1().min_h_0().overflow_hidden().child(theme::text(format!(
+            "{name} · {readiness} · edits require stopped audio · other controls and replacement unavailable"
+        )));
         let body = crate::device_composition::body()
             .flex_col()
             .child(controls)
             .p(px(5.0))
             .text_xs()
-            .child(theme::text(format!(
-                "{name} · {readiness} · edits require stopped audio · other controls and replacement unavailable"
-            )));
+            .child(details);
         device_frame(
             theme::text("sampler"),
             theme::device_frame_style(selected),
@@ -2125,6 +2148,8 @@ fn render_instrument(
     let selector = format!("instrument-device-{}", device_id.value());
     let frame_width = if is_operator {
         operator_panel::OPERATOR_FRAME_WIDTH
+    } else if is_sampler {
+        crate::device_composition::SAMPLER_FRAME_WIDTH
     } else {
         DEVICE_FRAME_WIDTH
     };

@@ -39,10 +39,11 @@ pub fn classic_loop_state(
     let mut state = hex_devices::sampler::state::SamplerState::for_source_frames(frames)
         .map_err(|_| crate::Invalid("fixture source frames invalid"))?;
     state.mode = hex_devices::sampler::state::AuthoredMode::Classic {
-        loop_region: Some(hex_devices::sampler::Region {
+        loop_enabled: true,
+        loop_region: hex_devices::sampler::Region {
             start: 0,
             end: frames,
-        }),
+        },
     };
     state.envelope = hex_devices::sampler::Envelope {
         attack_seconds: 0.0,
