@@ -72,7 +72,9 @@ struct ActiveVoice {
     gate: Option<u64>,
 }
 type Active = [Option<ActiveVoice>; MAX_SAMPLER_RUNTIME_VOICES];
-struct SamplerRuntime {
+/// Opaque fixed-storage sampler processor created only by its prepared factory.
+/// Hosts may identify this concrete audited type; no source owner is stored here.
+pub struct SamplerRuntime {
     prepared: PreparedSamplerRuntime,
     active: Active,
 }

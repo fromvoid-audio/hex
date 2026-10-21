@@ -1,7 +1,10 @@
-# Project plan
+# Historical design and acceptance context
 
-Active issue planning uses Pulse project **Hex** (project 2, version 0.1).
-Repository documents retain contracts, acceptance evidence and request order.
+This retained document is historical technical reference. Its dated priorities,
+active-work headings, queues and unchecked gates are not current instructions.
+Do not append plans, progress or task lists here. All current Hex planning, goals,
+dependencies, acceptance and next actions live in [Pulse](https://pulse.iocore.dev/).
+Historical source and removed work logs remain available in Git history.
 
 Pulse #22 retains [native interaction acceptance](native-interaction.md): finite
 prior approvals, remaining staged user checks and exact artifact limits.
@@ -202,9 +205,8 @@ GPUI/CPAL demo slice of M2 is implemented; its full acceptance gate is still ope
 Current source also includes canonical editable Arrangement, Session MIDI and
 unwarped Session audio one-shots, schema-12 persistence/history, prepared mixed
 playback and route-aware Session UI.
-The dated work-unit sections below retain historical scope and results; the latest
-finite unit and acceptance are at the end of this document and in todo.md's
-current implementation focus. Recording, automation, routing/device chains,
+The dated work-unit sections below retain historical scope and results. Current
+work units and acceptance criteria are recorded in [Pulse](https://pulse.iocore.dev/). Recording, automation, routing/device chains,
 plugin hosting, broad Suite features and measured Live parity remain incomplete.
 
 Ableton's [Live concepts](https://www.ableton.com/en/live-manual/12/live-concepts/),
@@ -250,7 +252,7 @@ arbitrary lookahead/live-input devices remains constrained by processing latency
 2. Establish a Rust workspace with an independently testable engine.
 3. Implement a useful offline vertical slice: clip timing, looping, mixing,
    transport, and export.
-4. Write architecture, evidence protocol, phased plan, and ordered todo.md.
+4. Write architecture, evidence protocol, phased plan, and focused Pulse tickets.
 5. Pass format, engine tests, strict Clippy, and inspect a generated WAV.
 
 Deferred dependencies: a decompiler, controlled Live reference renders, real-time
@@ -279,7 +281,7 @@ Acceptance: at least five reproducible experiments, one traced/decompiled functi
 with a documented behavioral hypothesis, and golden comparisons that distinguish
 confirmed behavior from assumptions. A selected fade-controller callback has
 been decompiled with unresolved research warnings; the complete five-experiment
-and golden-comparison gate remains open (see todo.md and docs/research/reference.md).
+and golden-comparison gate remains open (see [historical work-log evidence](https://github.com/PORTALSURFER/hex/blob/0c7bb72d1ad8dd136b11adf05759c200797fc962/todo.md) and docs/research/reference.md).
 
 ## M2 — Minimal real-time audio DAW
 
@@ -1470,7 +1472,7 @@ the grid-check instance now has user-authored unsaved revision 11 and is preserv
 Native grid acceptance now passes in a fresh snap-check bundle: all divisions/off,
 both Cmd insertion inversion directions, compact snapped/free movement and free
 both-edge resizing. Saved full-project comparisons and headless export pass; see
-todo.md for fixture names and values. Held-modifier drag and mid-drag toggles remain
+[historical work-log evidence](https://github.com/PORTALSURFER/hex/blob/0c7bb72d1ad8dd136b11adf05759c200797fc962/todo.md) for fixture names and values. Held-modifier drag and mid-drag toggles remain
 native-open because the current atomic drag API cannot hold modifiers.
 
 ## Atomic multi-note edits — active prerequisite
@@ -3235,8 +3237,8 @@ build, then native visual and folder/search/import/collapse acceptance.
 
 Browser implementation checkpoint — 9 October: source and targeted checks pass;
 native startup/layout and final placeholder contrast inspected. The user will
-perform native interaction acceptance while present. Track results in todo.md
-and docs/issues.md; do not resume the broader roadmap without user direction.
+perform native interaction acceptance while present. Track current results in
+[Pulse](https://pulse.iocore.dev/); this dated record is not a current work order.
 
 ## User-selected hybrid tracks — source accepted, 9 October 2026
 
@@ -3297,7 +3299,7 @@ Source acceptance: shared typed audio/MIDI drag and row-local landing preview
 implemented. UI suite 192 passed/one ignored; final snap-off exact-frame repair
 passes focused musical-time 8/8 and drag 11/11. Strict UI lints, desktop build,
 fmt and both guards pass. Review bundle and user-native checks are recorded in
-docs/clip-drag.md and todo.md. No native gesture acceptance claimed.
+docs/clip-drag.md and [historical work-log evidence](https://github.com/PORTALSURFER/hex/blob/0c7bb72d1ad8dd136b11adf05759c200797fc962/todo.md). No native gesture acceptance claimed.
 
 ## Drag-start repair and persistent browser places — 9 October 2026
 
@@ -3753,9 +3755,9 @@ release review bundle and user native animation/handle checks.
 
 ## current request queue — 9 October 2026
 
-The active work order is consolidated in [todo.md](../todo.md). Earlier status
-entries below/above are historical milestones, not competing current priorities.
-Completed chronology is preserved in [the archived todo](history/todo-2026-10-09.md).
+The work order in this dated section is historical. Current priorities and
+completed task status live in [Pulse](https://pulse.iocore.dev/). Earlier local
+work-log snapshots remain available in Git history.
 Every new request has its own focused PR; larger DSP/hosting requests need staged
 PRs with finite acceptance gates. Review and merge remain separate from source
 checks and user native acceptance.
@@ -3786,7 +3788,7 @@ and supported temporal lanes. It depends on main-row layout and canonical time
 commands; it must not create a second editable model. Define topology changes and
 atomic failure explicitly. Benchmark prompt UI feedback separately from bounded
 background completion for 1 and 100 dense tracks; reuse immutable assets, never
-copy PCM or expand/compile on pointer movement. Queue details are in `todo.md`.
+copy PCM or expand/compile on pointer movement. Current queue details are in [Pulse](https://pulse.iocore.dev/).
 
 ## native File menu — 9 October 2026
 

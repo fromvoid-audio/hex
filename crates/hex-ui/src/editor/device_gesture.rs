@@ -73,6 +73,9 @@ pub(super) fn retire_failed_finalize_barriers(
                 control.cancel();
                 effects.export_refused = true;
             }
+            Request::SamplerEdit(hex_session::service::SamplerEdit::History(edit)) => edit
+                .cancel
+                .store(true, std::sync::atomic::Ordering::Release),
             Request::Undo
             | Request::Redo
             | Request::SaveDevicePreset { .. }

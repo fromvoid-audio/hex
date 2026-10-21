@@ -403,6 +403,7 @@ fn capture_retired_only_and_same_id_replacement_preserve_original_tail_routing()
         snapshot.session = hex_project::SessionSnapshot::default();
         // One-frame source creates actual history, then only residuals remain.
         snapshot.assets = vec![hex_project::AssetSnapshot {
+            original_source: None,
             id: 30,
             path: "tail.wav".into(),
             source_sample_rate: 48_000,

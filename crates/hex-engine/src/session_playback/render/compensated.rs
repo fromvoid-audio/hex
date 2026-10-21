@@ -14,6 +14,7 @@ impl SessionPlayback {
         frame_offset: usize,
         observer: &mut Option<&mut crate::NodeSignalObserver<'_>>,
         capture: &mut Option<&mut dyn CaptureSink>,
+        sources: Option<crate::native_device_resources::SamplerSourcesRef<'_>>,
     ) -> Result<(), SessionPlaybackError> {
         if output.len() != 1 {
             return Err(SessionPlaybackError::DeviceRuntime);
@@ -128,6 +129,7 @@ impl SessionPlayback {
                         render_mutable_instrument_chunk(
                             MutableInstrumentChunkContext {
                                 revision: &self.revision,
+                                sources,
                                 routes: &self.route_scratch,
                                 runtimes: &mut self.mutable_instruments,
                                 onsets: &mut self.mutable_onsets,

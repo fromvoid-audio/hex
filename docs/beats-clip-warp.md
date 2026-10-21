@@ -77,7 +77,7 @@ The corrected candidate requires a new full run.
 
 Full20/20 checks passed on clean20c8493722ec5ab53d8fb91483c36011eda89976.
 The final merge then incorporates already-verified original-rate retentionPR370;
-only todo.md conflicted. Both work-log sections were preserved, with this task's
+only [historical work-log evidence](https://github.com/PORTALSURFER/hex/blob/0c7bb72d1ad8dd136b11adf05759c200797fc962/todo.md) conflicted. Both work-log sections were preserved, with this task's
 entry appended to avoid competing insertions. Final integrated-source checks
 remain required by the repository's exact-candidate/conflict-resolution rule.
 

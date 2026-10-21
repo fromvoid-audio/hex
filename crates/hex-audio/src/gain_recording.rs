@@ -18,6 +18,13 @@ pub struct Target {
     pub sample_rate: u32,
 }
 
+/// Fresh fixed channel payload quote; opaque allocator/OS costs are excluded.
+pub(crate) fn constructor_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    ChannelStorage::ring_bytes::<Command>(CAPACITY)?
+        .checked_add(ChannelStorage::ring_bytes::<Receipt>(CAPACITY)?)
+}
+
 #[cfg(test)]
 mod tests;
 

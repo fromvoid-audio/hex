@@ -79,7 +79,7 @@ project history, focus ownership or tab order.
 Focused source/scene tests contrast dark and light palettes, retain active
 canonical and preview numeric drafts and focus, and keep an open selector popup
 and its navigation state while refreshing its palette. Automated verification
-results are recorded in `todo.md`; optional native visual/input acceptance still
+results are recorded in [historical work-log evidence](https://github.com/PORTALSURFER/hex/blob/0c7bb72d1ad8dd136b11adf05759c200797fc962/todo.md); optional native visual/input acceptance still
 requires the user's optimized build. No automated native computer interaction is
 claimed.
 

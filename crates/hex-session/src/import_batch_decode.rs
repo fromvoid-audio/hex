@@ -307,12 +307,21 @@ impl AudioBatchImport {
     /// arbitrated immediately before backend commit. A running decode/resample
     /// finishes before cancellation can be observed; no latency bound is claimed.
     pub fn run(
+        self,
+        session: &mut Session,
+        previous: Option<&hex_engine::PreparedRevision>,
+        current: impl FnMut() -> AudioBatchContext,
+    ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
+        self.run_with_storage_admission(session, previous, current, |_, _| Ok(()))
+    }
+    pub(crate) fn run_with_storage_admission(
         mut self,
         session: &mut Session,
         previous: Option<&hex_engine::PreparedRevision>,
         mut current: impl FnMut() -> AudioBatchContext,
+        storage: impl FnOnce(&Session, &[PreparedImport]) -> Result<(), SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
-        let result = self.run_inner(session, previous, &mut current);
+        let result = self.run_inner(session, previous, &mut current, storage);
         match &result {
             Ok(_) => {
                 self.control.publish(0, self.paths.len(), self.paths.len());
@@ -339,6 +348,7 @@ impl AudioBatchImport {
         session: &mut Session,
         previous: Option<&hex_engine::PreparedRevision>,
         current: &mut impl FnMut() -> AudioBatchContext,
+        storage: impl FnOnce(&Session, &[PreparedImport]) -> Result<(), SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
         self.check(current)?;
         if session.project() != &self.project
@@ -413,6 +423,7 @@ impl AudioBatchImport {
             self.control.publish(3, index + 1, index + 1);
         }
         self.check(current)?;
+        storage(session, &prepared)?;
         self.control.publish(4, self.paths.len(), self.paths.len());
         // The canonical backend admits twice: before candidate construction and
         // after its single compile, immediately before history/media commit.

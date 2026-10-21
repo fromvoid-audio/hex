@@ -77,9 +77,12 @@ mod pcm_arc;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
-    native_device_catalog, native_device_catalog_for_class, native_device_descriptors_for_class,
+    SamplerParameter, is_sampler_configuration_history_on_control, native_device_catalog,
+    native_device_catalog_for_class, native_device_descriptors_for_class,
     native_device_parameter_for_class, native_device_view, native_device_view_for_class,
-    native_effect_frequency_response,
+    native_effect_frequency_response, patch_sampler_parameter_on_control,
+    sampler_parameter_active_on_control, sampler_parameter_value_on_control,
+    sampler_replacement_template_on_control, validate_sampler_replacement_on_control,
 };
 
 mod gain_envelope;

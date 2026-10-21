@@ -53,8 +53,8 @@ paint so a quick press and move does not depend on a second paint.
 Three shared-graph checks and three rendered Operator checks pass, including
 real pointer capture, cancellation, page retirement, invalid drafts and saved
 Undoable keyboard edits. Full exact-source local CI and the focused PR are
-recorded in Pulse2247. Source checks and native visual acceptance are tracked separately in
-`todo.md` and Pulse2247. Automated GPUI input tests do not establish native
+recorded in [Pulse #2247](https://pulse.iocore.dev/#/issues/2247).
+Source checks and native visual acceptance are tracked separately in that ticket. Automated GPUI input tests do not establish native
 window feel or audible behavior. The user should review all four handles,
 Shift-fine movement, keyboard editing, numeric synchronization, Escape/outside
 release, one-step Undo and saved-project reopen in a development build.

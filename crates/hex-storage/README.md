@@ -1,10 +1,12 @@
 # hex-storage
 
-All new saves use one strict schema33 envelope requiring project tuning,
-the complete device-asset manifest (including empty lists), an explicit
+All new saves use one strict schema34 envelope requiring project tuning,
+a complete `asset_sources` inventory (one row per asset, required `original: null`
+for ordinary clip media or lawversion1 plus a fixed32byte original content digest
+for device originals), the complete device-asset manifest (including empty lists), an explicit
 `main_devices` list (including an empty Main), and an explicit `placement` field on each audio edit (`null` for ordinary placement). Every device
 has one bounded manifest entry with a required nullable A/B comparison and
-active/inactive asset bindings. Superseded alpha schemas30/31/32 refuse explicitly; there is
+active/inactive asset bindings. Superseded alpha schemas30/31/32/33 refuse explicitly; there is
 no tuning-only/asset-only compatibility dispatch. Legacy writers and asset-unaware presets explicitly refuse these
 references. Storage preserves neutral identities and resolves them through the
 project model, without decoding device payloads or loading PCM. See
@@ -163,7 +165,7 @@ Unsaved projects use that same latest-untitled checkpoint path. Recovery
 retains original-document provenance and prepares the complete media and playback
 candidate before adoption, without acquiring an overwrite association.
 
-New saves use schema33: required Main devices, audio-edit placement and complete device assets with
+New saves use schema34: required Main devices, audio-edit placement and complete device assets with
 active/inactive A/B bindings, project tuning and audition settings, schema28 audio
 events, schema27 inherited track colors/per-clip flavors,
 schema26 names, required fade-shape metadata and device host gains,
@@ -245,3 +247,13 @@ schema20/22 writers refuse any nondefault tuning or audition settings rather
 than discard them. Local library preset names and MTS-ESP process ownership are
 not saved in this envelope. Runtime tuning and audible audition remain separate
 engine/audio/session responsibilities.
+
+
+Device-original facts are neutral expected-content metadata, not ownership or
+publication authority. Current schema34 requires the source inventory even when
+empty; missing/duplicate/unknown rows, missing classification, unknown law and
+malformed digest refuse. Explicit older writers refuse facts, including
+unassigned originals, rather than discard their classification. Session saves
+project these facts from actual immutable native catalogs without editing the
+live project/history. Reopen reconstructs original native banks and compares
+content before canonical adoption. See [sampler save/reopen](../../docs/sampler.md#save-and-reopen-original-sources--pulse2906--pr499).

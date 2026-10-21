@@ -8,11 +8,12 @@ mod binding;
 mod envelope;
 mod plan;
 mod runtime;
+pub mod state;
 mod voice;
 pub use binding::{BorrowedSamplerVoice, BoundSamplerPlan};
 pub use envelope::Envelope;
 pub use plan::{PreparedSamplerPlan, SampleChannels, SampleShape};
-pub use runtime::{MAX_SAMPLER_RUNTIME_VOICES, PreparedSamplerRuntime};
+pub use runtime::{MAX_SAMPLER_RUNTIME_VOICES, PreparedSamplerRuntime, SamplerRuntime};
 pub use voice::{Voice, VoiceCoefficients};
 
 use crate::Invalid;

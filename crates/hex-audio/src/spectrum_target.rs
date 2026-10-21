@@ -279,6 +279,13 @@ impl SpectrumTargetCallback {
     }
 }
 
+/// Fresh fixed channel payload quote; opaque allocator/OS costs are excluded.
+pub(crate) fn constructor_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    ChannelStorage::ring_bytes::<TargetCommand>(TARGET_COMMAND_CAPACITY)?
+        .checked_add(std::mem::size_of::<AtomicU64>())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

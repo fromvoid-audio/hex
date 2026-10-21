@@ -27,6 +27,15 @@ File access and WAV parsing otherwise use the Rust standard library.
 
 Project editing or asset IDs, persistence, warp, codecs beyond the listed WAV
 encodings, plugin hosting, UI, background worker scheduling, or audio callbacks.
+The consuming `DecodedAudio::into_native_source_on_control` adapter moves its
+original-rate normalized stereo buffer into the existing native source constructor
+without copying PCM. Refusals return the complete decoded owner. Source construction
+is not host admission; see [resource ingress](../../docs/native-device-resource-host.md).
+
+Test-only `hex-devices`, `hex-lattice` and `hex-lattice-contract` dependencies
+prove real file decode through the sealed bank and actual sampler runtime. They
+do not change the production dependency boundary.
+
 Import and resampling are control-side operations and must not run on the
 callback.
 

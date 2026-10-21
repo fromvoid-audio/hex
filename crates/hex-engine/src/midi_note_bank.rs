@@ -278,12 +278,30 @@ fn silent_sample(
 }
 
 impl PreparedMidiNoteBank {
+    pub(crate) fn require_empty_current_sampler(&self) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            entries,
+            context_id,
+            context_index,
+        } = self;
+        if !entries.is_empty()
+            || entries.capacity() != 0
+            || context_id.is_some()
+            || context_index.is_some()
+        {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
+        Ok(())
+    }
     pub(crate) fn empty() -> Arc<Self> {
-        Arc::new(Self {
+        Arc::new(Self::empty_value())
+    }
+    pub(crate) fn empty_value() -> Self {
+        Self {
             entries: Vec::new(),
             context_id: None,
             context_index: None,
-        })
+        }
     }
 
     pub(crate) fn empty_keys() -> NoteKeys {
