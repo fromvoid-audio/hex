@@ -257,6 +257,8 @@ pub struct Class {
     pub category: String,
     pub name: String,
     pub class_flags: Option<u32>,
+    pub subcategories: Option<String>,
+    pub class_vendor: Option<String>,
     pub class_version: Option<String>,
     pub class_sdk_version: Option<String>,
 }
@@ -299,7 +301,12 @@ impl<'a> Decoder<'a> {
         if n > limit {
             return Err("metadata string bound".into());
         }
-        String::from_utf8(self.take(n)?.to_vec()).map_err(|_| "invalid metadata encoding".into())
+        let value =
+            String::from_utf8(self.take(n)?.to_vec()).map_err(|_| "invalid metadata encoding")?;
+        if value.contains('\0') {
+            return Err("embedded metadata null".into());
+        }
+        Ok(value)
     }
 }
 pub fn decode_packet(bytes: &[u8], request: u64) -> Result<Discovery, String> {
@@ -318,8 +325,9 @@ fn decode_packet_for_platform(
     if n != bytes.len() - 12 {
         return Err("packet length mismatch".into());
     }
-    if d.take(2)? != [1, 0] {
-        return Err("unknown protocol version".into());
+    let extended = expected_platform == "darwin-arm64";
+    if d.take(2)? != [if extended { 2 } else { 1 }, 0] {
+        return Err("unknown protocol version for platform".into());
     }
     let id = u64::from_le_bytes(d.take(8)?.try_into().map_err(|_| "request width")?);
     if id != request || id == 0 {
@@ -350,14 +358,39 @@ fn decode_packet_for_platform(
         if cardinality < 0 {
             return Err("invalid cardinality".into());
         }
+        let category = d.text(32)?;
+        let name = d.text(64)?;
+        let has_extension = if extended {
+            match d.take(1)? {
+                [0] => false,
+                [1] => true,
+                _ => return Err("invalid optional factory marker".into()),
+            }
+        } else {
+            false
+        };
+        let (class_flags, subcategories, class_vendor, class_version, class_sdk_version) =
+            if has_extension {
+                (
+                    Some(d.u32()?),
+                    Some(d.text(128)?),
+                    Some(d.text(64)?),
+                    Some(d.text(64)?),
+                    Some(d.text(64)?),
+                )
+            } else {
+                (None, None, None, None, None)
+            };
         classes.push(Class {
             cid,
             cardinality,
-            category: d.text(32)?,
-            name: d.text(64)?,
-            class_flags: None,
-            class_version: None,
-            class_sdk_version: None,
+            category,
+            name,
+            class_flags,
+            subcategories,
+            class_vendor,
+            class_version,
+            class_sdk_version,
         });
     }
     if d.offset != bytes.len() {
@@ -402,3 +435,7 @@ impl Catalog {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "macos/metadata_tests.rs"]
+mod metadata_tests;

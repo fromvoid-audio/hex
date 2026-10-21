@@ -33,10 +33,15 @@ report finishing instead of falsely claiming cancellation. Native objects have
 already retired before that boundary. A stuck native cleanup retains its outer
 scanner/control owner rather than authorizing a process-group kill.
 
-Generic processor rows are discovery metadata, not playable instruments/effects.
-Classifying optional Factory2 metadata and managing standard/custom root scans
-remain outside this first workflow. Cache data never authorizes future plugin
-instance admission; the processing host must verify current source and resources.
+Rows classify copied optional Factory2 subcategory tokens exactly: `Instrument`,
+`Fx`, or both (the SDK explicitly permits `Fx|Instrument`). Missing or unrecognized
+type tokens remain unknown; names, substring matches and flags never infer a type.
+Nonempty class vendor metadata overrides the factory vendor. Type/vendor search
+and restart retain original metadata bytes. These are reported discovery labels;
+no row is a playable or insertable device. Standard/custom roots remain separate.
+Cache data never authorizes future plugin instance admission; the processing host
+must verify current source and resources. Catalog version2 is the current format;
+unsupported older alpha files remain intact with a visible error, without migration.
 The native integration tests require an explicit signed original package through
 `HEX_VST3_CATALOG_TEST_APP` and original fixture directory through
 `HEX_VST3_CATALOG_FIXTURES`; ordinary runs keep these tests ignored. They do not

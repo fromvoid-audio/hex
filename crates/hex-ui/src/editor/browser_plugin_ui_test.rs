@@ -133,7 +133,7 @@ fn browser_vst3_selected_native_worker_persists_real_row_and_reload_without_fore
     let module = std::path::PathBuf::from(
         std::env::var_os("HEX_VST3_CATALOG_FIXTURES").expect("explicit original native fixtures"),
     )
-    .join("hex-vst3-host.app/Contents/Resources/factory-fixtures/normal.vst3");
+    .join("hex-vst3-host.app/Contents/Resources/factory-fixtures/factory2-instrument.vst3");
     let (handle, editor, _track, directory, _wave) = browser_drag_fixture(cx);
     let physical = directory.0.canonicalize().unwrap();
     let mut visual = VisualTestContext::from_window(handle, cx);
@@ -165,6 +165,8 @@ fn browser_vst3_selected_native_worker_persists_real_row_and_reload_without_fore
         assert_eq!(rows.len(), 1, "{}", view.browser.plugins.status);
         assert_eq!(rows[0].name, "hex original factory processor");
         assert_eq!(rows[0].module, module);
+        assert_eq!(rows[0].status, "vst3 instrument · hosting unavailable");
+        assert_eq!(rows[0].vendor, "original extended vendor");
         assert!(
             rows[0]
                 .cid
@@ -173,6 +175,15 @@ fn browser_vst3_selected_native_worker_persists_real_row_and_reload_without_fore
         assert!(view.browser.plugins.status.contains("discovered"));
     });
     assert!(visual.debug_bounds("browser-vst3-row-0").is_some());
+    editor.update(&mut visual, |view, cx| {
+        view.browser
+            .search
+            .update(cx, |input, cx| input.restore_query("instrument", cx))
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.browser_visible_plugins(cx).len(), 1)
+    });
     let stored = std::fs::read(physical.join("plugin-catalog.json")).unwrap();
     editor.update(&mut visual, |view, cx| view.start_plugin_catalog(cx));
     wait(&mut visual, &editor);
