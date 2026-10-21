@@ -7,6 +7,7 @@ Own GPUI views, display state, interactions, lowercase text, and bundled Ioskele
 ## Dependencies
 
 hex-project read-only metadata and commands; hex-session worker endpoints;
+hex-plugin-catalog copied browser metadata and background selected-scan endpoints;
 hex-mts safe publisher handle; hex-engine contracts; hex-audio and optional hex-midi service handles; GPUI; the already-locked unicode-segmentation package supplies complete grapheme
 boundaries in the existing native text-input primitive. The backend is created
 and injected by hex-desktop.
@@ -302,3 +303,13 @@ owning generic Waveform. Publication context and original ID/rate/frame/content
 facts gate both rendering and source-bound input targets, including fresh imports
 before Save/Open. The fixed-height overview has no input gestures; source/loop
 markers use original frames. See [the overview contract](../../docs/sampler.md#original-source-waveform-overview).
+
+
+The vst3 browser source explicitly selects one trusted bundle, dispatches its
+packaged standalone scanner on a control worker and restores a bounded persistent
+last-good catalog. Source/class bytes stay unchanged; display passes through
+`theme::text`. Plugin rows use foreign UID/module identities, support search and
+history in vst3/all, and expose no native-device drag/insertion. Enter reports
+hosting unavailable. Startup/reload does not load plugin code; missing packaged
+tools disable scans with a visible reason. Native file-picker interaction and
+real running-app acceptance remain separate from GPUI test-platform evidence.

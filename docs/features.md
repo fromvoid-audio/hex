@@ -6,6 +6,7 @@ is a separate versioned reference gate, not implied by implementing the feature.
 
 | Area | Current state | Next acceptance workflow |
 | --- | --- | --- |
+| VST3 discovery | Explicit trusted selected-bundle factory scan through packaged native tools; persistent last-good metadata, searchable distinct VST3 processor rows and restart reload; copied-report, storage, GPUI test-platform and original native-worker fixtures | Native dialog/interaction acceptance, standard/custom roots and quarantine, optional instrument/effect classification, persistent instances, audio/MIDI/state/editor/latency/export and real-plugin compatibility; discovery does not establish playable hosting |
 | Clip conversion | Clip View converts MIDI to a float WAV in place and audio to empty editable MIDI, with one-step history and Arrangement/Session identity; [limits and acceptance](clip-conversion.md) | Native conversion/listening/save-reopen checklist |
 | Hybrid tracks | Unified audio/MIDI collections under one track/mix; Arrangement source-sum, schema-13 roundtrip/history, Session switching, worker/UI and allocation checks pass | User native mixed-source import/edit/save/launch and listening acceptance |
 | Native desktop | GPUI shell, scrollable workspace | Resize, focus, accessible keyboard and controls |

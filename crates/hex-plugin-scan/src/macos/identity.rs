@@ -2,7 +2,7 @@
 //! Hashes identify bytes, not authenticity or protection from malicious races.
 use super::macho::{self, Image, Role};
 use crate::{MAX_BINARY, hash};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::{
     fs,
     io::Read,
@@ -54,7 +54,8 @@ pub fn relative_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
     Ok(path)
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Bundle {
     pub supplied_path: PathBuf,
     pub canonical_path: PathBuf,
@@ -122,7 +123,8 @@ impl Bundle {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Executable {
     pub relative_path: String,
     pub sha256: String,
