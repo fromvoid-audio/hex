@@ -83,8 +83,7 @@ goals, not established facts. Read this file first, then the relevant docs.
 | `docs/reference-project.md` | PhotoCraft patterns and audio-specific adaptations |
 | `docs/ui-design.md` | Required lowercase text, bundled font, visual checks |
 | `docs/runtime.md` | GPUI/audio seam, command delivery, transport and scene contracts |
-| `docs/plan.md` | Milestones, acceptance gates, deferred dependencies, next work unit |
-| `todo.md` | Implemented work, open checks, ordered backlog |
+| [Pulse](https://pulse.iocore.dev/) | Goals, priorities, dependencies, acceptance checks and current work |
 | `docs/features.md` | Honest assessment of all fundamental DAW areas |
 | `docs/performance.md` | Measured baseline, methodology, performance gates |
 | `docs/research/reference.md` | Exact Live reference identity and bounded binary inventory |
@@ -318,8 +317,8 @@ partially usable.
 
 1. Read `docs/features.md` for the honest fundamentals assessment. A visible menu
    item or button is not evidence that a feature works.
-2. Read `docs/plan.md` and `todo.md` for the current focus: canonical editable audio
-   project, WAV import, compiled playback, clip editing, save/load, and undo/redo.
+2. Read the current Hex goals and tickets in [Pulse](https://pulse.iocore.dev/)
+   for priorities, dependencies, acceptance criteria and the next work unit.
 3. Check `docs/performance.md` for measured regressions and unverified budgets.
 4. Read related source and research observations before changing a contract.
 
@@ -394,9 +393,11 @@ round trips, missing assets, interrupted writes, and recoverable failures. Never
 substitute automated checks for manual acceptance they cannot establish.
 
 Inspect the final diff when Git exists; otherwise review the changed files against
-known starting content. Preserve unrelated work. Update the owning docs and
-`todo.md` with actual results and remaining uncertainty. A concise final report
-states what changed, why, what passed, and what remains open. Keep the workspace
+known starting content. Preserve unrelated work. Update technical contracts in the
+owning docs when they change; record task progress, actual results and remaining
+work in Pulse. Keep raw check logs in existing artifact storage and link them from
+the canonical PR. A concise final report states what changed, why, what passed,
+and what remains open. Keep the workspace
 building at coherent milestones.
 
 ## Pull request workflow
@@ -532,12 +533,17 @@ are unavailable, report the limitation and keep a clearly labeled temporary
 plan in chat; do not silently switch trackers or claim that unsaved tickets were
 created.
 
-Repository documents retain technical contracts, request order and evidence:
+Pulse is the sole planning and issue authority. Do not create or maintain local
+TODO files, task/status lists, request queues or parallel milestone backlogs. Put
+new requirements, dependencies, priorities, acceptance criteria, next actions and
+progress in the corresponding live Pulse tickets and goals. Do not append task
+chronologies to repository documents as a substitute. If Pulse is unavailable,
+report that limitation and keep a clearly labelled temporary plan in chat.
 
-- `docs/plan.md`: milestone contracts and acceptance gates, with Pulse pointers.
-- `docs/issues.md`: technical constraints, decisions and supporting evidence.
-- `todo.md`: dated implementation evidence and request-order reference; Pulse
-  owns the active queue and ticket states.
+Repository documents retain technical contracts and supporting evidence:
+
+- `docs/plan.md` and `docs/issues.md`: historical technical/reference material,
+  not current queues or status authorities; do not append planning there.
 - `docs/features.md`: fundamental workflows and honest capability assessment.
 - `docs/ui-design.md`: mandatory lowercase text and Ioskeley Mono.
 - `docs/reference-project.md`: PhotoCraft adaptation and pinned sources.

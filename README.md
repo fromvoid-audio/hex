@@ -128,11 +128,15 @@ WAV export clamps to the 16-bit range. Listening acceptance remains pending.
 - `crates/hex-export`: shared fixed-block linear PCM16 WAV export and create-new publication.
 - `crates/hex-cli`: generated audio and headless WAV export through hex-export.
 - [Pulse](https://pulse.iocore.dev/): active project and issue planning for Hex.
-- [Plan](docs/plan.md): milestone contracts and acceptance gates.
+- [Historical technical context](docs/plan.md): past design and acceptance records;
+  current goals, dependencies and next actions live in Pulse.
 - [Architecture](docs/architecture.md): implemented contracts and future boundaries.
 - [Research workflow](docs/research/workflow.md): evidence and decompilation process.
-- [todo.md](todo.md): request order and repository implementation evidence;
-  Pulse owns the active queue and ticket states.
+
+Use Pulse exclusively for planning, priorities, task status and follow-ups. Do not
+create local TODO lists or maintain a parallel repository backlog. Technical
+contracts remain in feature documents; raw check evidence remains in artifacts
+and canonical PRs.
 
 “Pure Rust” means Hex's application logic, scheduling, and DSP are Rust.
 GPUI 0.2.2 uses the native macOS UI/GPU boundary and CPAL 0.17.3 uses CoreAudio;
@@ -211,7 +215,8 @@ text and embedded Ioskeley Mono; attribution is in ATTRIBUTION.md.
 The scripted `edit-demo` trims the source region, moves the start to beat three,
 reduces gain and exercises undo/redo before export. It demonstrates the control-side
 model and compiler; the native editor now dispatches the same validated project commands.
-See [implementation issues](docs/issues.md) for constraints and next acceptance steps.
+See [historical implementation constraints](docs/issues.md) for prior decisions;
+current issues and next acceptance steps live in [Pulse](https://pulse.iocore.dev/).
 
 Imported WAV support: mono/stereo PCM8/16/24/32, float32/64, extensible PCM/float,
 G.711 A-law/mu-law and Microsoft/IMA ADPCM, 8–192 kHz, finite
@@ -318,7 +323,7 @@ editing retains frame-anchored audio and beat-anchored MIDI.
 Workspace tests/lints/build, independent exact-sum rendering and schema/history
 acceptance, GPUI support tests and callback allocation probes pass. User native
 acceptance and the review build are tracked in
-[hybrid tracks](docs/hybrid-tracks.md) and todo.md. Original sine playback remains
+[hybrid tracks](docs/hybrid-tracks.md) and the current Pulse tickets. Original sine playback remains
 the MIDI instrument; plugin hosting and instrument replacement remain future work.
 
 ## Lattice device foundation — 9 October 2026
