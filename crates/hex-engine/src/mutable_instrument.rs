@@ -514,8 +514,7 @@ impl MutableInstrumentTrackRuntime {
         Ok(())
     }
 
-    /// Read-only preflight for a prepared instrument-state retarget. The
-    /// candidate inventory owns `proof` until control retires this graph.
+    /// Runtime history may carry only the same physical original-source bindings.
     fn resource_history_matches(&self, previous: &Self) -> bool {
         match (&self.resources, &previous.resources) {
             (None, None) => true,
@@ -523,6 +522,8 @@ impl MutableInstrumentTrackRuntime {
             _ => false,
         }
     }
+    /// Read-only preflight for a prepared instrument-state retarget. The
+    /// candidate inventory owns `proof` until control retires this graph.
     pub(crate) fn can_retarget_from(
         &self,
         previous: &Self,

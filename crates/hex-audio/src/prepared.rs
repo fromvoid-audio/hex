@@ -1141,6 +1141,11 @@ impl PublicationControl {
     /// clip PCM remains a separate conservative capacity allowance; its old graph is destroyed on
     /// control before that allowance is released. Exact runtime leases may migrate into tails and
     /// retain their source obligations across returns of the publication which introduced them.
+    /// Graph publication for this entire output is permanently worker-owned. Client transport,
+    /// Stop and observation remain available; its legacy raw graph-forwarding bridge refuses.
+    /// Consumers must route every canonical graph edit, including the resource-free initial graph,
+    /// through the worker sink before enabling this capability. Configuring it alone in the current
+    /// app would strand legacy graph delivery; this API is not enabled by existing UI composition.
     pub fn configure_device_resource_publication_on_control(
         &mut self,
         reservation: hex_engine::AudioStorageLedgerReservation,
@@ -1174,6 +1179,13 @@ impl PublicationControl {
                 max_obligations,
             )
             .map_err(|_| "device resource publication reservation refused")?;
+        let bridge = self
+            .resident_forwarding
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
+        bridge.claim_worker_publication_on_control(&self.status)?;
+        self.resident_forwarding = Some(bridge);
         self.device_resources = Some(resources);
         Ok(())
     }
@@ -1228,18 +1240,16 @@ impl PublicationControl {
                 forwarded_pcm,
             );
         };
-        let existing_pcm = if self.resident_forwarding.is_some() {
-            self.resident_forwarding_pcm_frames()
-        } else {
-            Some(self.legacy_pcm_frames)
-        };
-        let legacy_pcm = existing_pcm.and_then(|frames| {
-            if forwarded_pcm {
-                Some(frames)
-            } else {
-                frames.checked_add(playback.resident_pcm_capacity_frames()?)
-            }
-        });
+        if forwarded_pcm {
+            self.device_resources = Some(resources);
+            return Err(PublishError {
+                reason: "graph publication belongs to the audio worker for this output",
+                playback,
+            });
+        }
+        let legacy_pcm = playback
+            .resident_pcm_capacity_frames()
+            .and_then(|frames| self.legacy_pcm_frames.checked_add(frames));
         let result = if let Some(legacy_pcm) = legacy_pcm {
             resources.publish_on_control(playback, legacy_pcm, |playback| {
                 self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, forwarded_pcm)

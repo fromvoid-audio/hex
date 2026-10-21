@@ -9,6 +9,17 @@ use std::{collections::BTreeMap, sync::Arc};
 
 #[test]
 fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate_audio() {
+    // Match the existing bounded production seek-worker stack, including debug-build temporaries.
+    let run = registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate_audio_on_control;
+    std::thread::Builder::new()
+        .stack_size(8 * 1024 * 1024)
+        .spawn(run)
+        .unwrap()
+        .join()
+        .unwrap();
+}
+fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate_audio_on_control()
+{
     let cancel = AtomicBool::new(false);
     let mut editor = Editor::new(Project::new(16000).unwrap(), 16).unwrap();
     let Created::Asset(asset) = editor
@@ -170,6 +181,54 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
         .is_err()
     );
     drop(foreign);
+    {
+        let runtime =
+            SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
+                Arc::clone(&revision),
+                &resources,
+                3,
+                3,
+                true,
+                &cancel,
+            )
+            .unwrap();
+        let mut sought =
+            crate::playback::Playback::from_interactive_arrangement_preroll(runtime).unwrap();
+        assert_eq!(sought.position(), 3);
+        let mut sought_pcm = [[0.0; 2]; 3];
+        sought.render(&mut sought_pcm).unwrap();
+        let vector = registry
+            .prepare_instrument(
+                &vector_state,
+                &DevicePreparationContext {
+                    sample_rate: 16000,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
+            .unwrap()
+            .prepare_note(60, 127)
+            .unwrap();
+        for (offset, actual) in sought_pcm.into_iter().enumerate() {
+            let age = offset + 3;
+            let sample = derivative[age];
+            let vector = vector.sample(age as u64, 8000, &hex_lattice::EMPTY_DEVICE_RESOURCES);
+            for lane in 0..2 {
+                assert!((actual[lane] - (sample[lane] + vector[lane] + sample[lane])).abs() < 1e-6);
+            }
+        }
+        assert!(
+            SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
+                Arc::clone(&revision),
+                &resources,
+                3,
+                2,
+                true,
+                &cancel
+            )
+            .is_err()
+        );
+    }
     let mut playback =
         SessionPlayback::new_with_device_resources(Arc::clone(&revision), &resources).unwrap();
     {

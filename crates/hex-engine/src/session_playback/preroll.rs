@@ -112,6 +112,7 @@ impl SessionPlayback {
             start_playing,
             MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
             PrerollRuntimePolicy::Interactive,
+            None,
             || cancelled.load(Ordering::Acquire),
         )
     }
@@ -150,10 +151,38 @@ impl SessionPlayback {
             start_playing,
             storage_budget_bytes,
             PrerollRuntimePolicy::LinearExport,
+            None,
             is_cancelled,
         )
     }
 
+    /// Reconstruct ordinary source-bearing Arrangement history with its exact compiler resource
+    /// set. Existing replay, source-loop, storage and cancellation limits apply unchanged. This
+    /// returns an interactive candidate for the ordinary fresh-runtime publication policy; a
+    /// missing/foreign set refuses instead of substituting the private play-from-zero path.
+    /// Invoke on the existing control seek worker's explicit 8 MiB stack; stateful construction
+    /// and debug-build temporaries may exceed a platform-default test/control thread stack.
+    pub fn prepare_interactive_arrangement_preroll_with_device_resources(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        destination_frame: u64,
+        work_budget_frames: u64,
+        start_playing: bool,
+        cancelled: &AtomicBool,
+    ) -> Result<Self, ArrangementPrerollError> {
+        Self::prepare_arrangement_preroll_from_revision_with_policy(
+            revision,
+            destination_frame,
+            work_budget_frames,
+            start_playing,
+            MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES,
+            PrerollRuntimePolicy::Interactive,
+            Some(resources),
+            || cancelled.load(Ordering::Acquire),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
     fn prepare_arrangement_preroll_from_revision_with_policy(
         revision: Arc<PreparedRevision>,
         destination_frame: u64,
@@ -161,6 +190,7 @@ impl SessionPlayback {
         start_playing: bool,
         storage_budget_bytes: usize,
         policy: PrerollRuntimePolicy,
+        resources: Option<&crate::native_device_resources::PreparedDeviceResources>,
         mut is_cancelled: impl FnMut() -> bool,
     ) -> Result<Self, ArrangementPrerollError> {
         if is_cancelled() {
@@ -208,12 +238,19 @@ impl SessionPlayback {
             return Err(ArrangementPrerollError::Cancelled);
         }
 
-        let constructor: fn(Arc<PreparedRevision>) -> Result<Self, SessionPlaybackError> =
-            match policy {
-                PrerollRuntimePolicy::LinearExport => Self::new_linear_arrangement_export,
-                PrerollRuntimePolicy::Interactive => Self::new,
-            };
-        let mut candidate = constructor(Arc::clone(&revision))?;
+        let mut candidate = match resources {
+            Some(resources) => Self::new_with_policy_scoped(
+                Arc::clone(&revision),
+                matches!(policy, PrerollRuntimePolicy::LinearExport),
+                Some(resources),
+            )?,
+            None => match policy {
+                PrerollRuntimePolicy::LinearExport => {
+                    Self::new_linear_arrangement_export(Arc::clone(&revision))?
+                }
+                PrerollRuntimePolicy::Interactive => Self::new(Arc::clone(&revision))?,
+            },
+        };
         let actual_storage = candidate
             .accounted_runtime_storage_bytes()
             .ok_or(ArrangementPrerollError::StorageBudgetExceeded)?;

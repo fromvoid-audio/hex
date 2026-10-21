@@ -441,6 +441,10 @@ impl PreparedRevision {
     /// configurations. The returned revision owns no PCM; playback construction must supply the
     /// same set. The caller reserves every factory's two full PCM scans, including repeated
     /// Arrangement/Session/shared-context preparation, with no hidden precomputed sampler cache.
+    /// This is aggregate compiler frame work, not maximum source extent: an enabled instrument
+    /// currently has three factory invocations, each with two PCM scans (two invocations when
+    /// bypassed). Consumers must reserve this separate bounded work without reducing or increasing
+    /// their original resident import/storage extent limit.
     #[allow(clippy::too_many_arguments)]
     pub fn prepare_with_device_resources(
         project: &Project,

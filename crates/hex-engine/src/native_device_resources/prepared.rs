@@ -535,6 +535,7 @@ impl DeviceResourcePublication {
         max_obligations: usize,
     ) -> Result<Self, ResourcePreparationError> {
         let max_obligations = max_obligations.min(reservation.handle_rows / 2);
+        Self::preflight_metadata(reservation, max_obligations, 0, 0)?;
         let mut result = Self {
             reservation,
             obligations: Vec::new(),
@@ -570,6 +571,12 @@ impl DeviceResourcePublication {
         {
             return Err(ResourcePreparationError::MetadataCapacity);
         }
+        Self::preflight_metadata(
+            self.reservation,
+            self.obligations.capacity(),
+            count,
+            legacy_pcm_frames,
+        )?;
         let mut batch = DeviceResourcePublicationBatch {
             obligations: Vec::new(),
         };
@@ -589,6 +596,41 @@ impl DeviceResourcePublication {
         }
         self.inspect(&batch, legacy_pcm_frames)?;
         Ok(batch)
+    }
+    fn preflight_metadata(
+        reservation: crate::AudioStorageLedgerReservation,
+        retained_capacity: usize,
+        batch_count: usize,
+        legacy_pcm_frames: u64,
+    ) -> Result<(), ResourcePreparationError> {
+        let minimum = std::mem::size_of::<Self>()
+            .checked_add(std::mem::size_of::<DeviceResourcePublicationBatch>())
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    retained_capacity
+                        .checked_add(batch_count)?
+                        .checked_mul(std::mem::size_of::<DeviceResourceLeaseObligation>())?,
+                )
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(AudioRootStorageLedger::reserved_metadata_minimum(
+                    reservation,
+                )?)
+            })
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    usize::try_from(legacy_pcm_frames)
+                        .ok()?
+                        .checked_mul(std::mem::size_of::<crate::Frame>())?,
+                )
+            })
+            .ok_or(AudioStorageError::Overflow)?;
+        if minimum > reservation.max_retained_bytes
+            || minimum > reservation.max_construction_peak_bytes
+        {
+            return Err(ResourcePreparationError::MetadataCapacity);
+        }
+        Ok(())
     }
     fn inspect(
         &self,

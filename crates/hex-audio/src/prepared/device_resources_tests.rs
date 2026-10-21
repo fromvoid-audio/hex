@@ -163,6 +163,17 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
     let a_revision = control
         .publish_with_policy_and_context_generation(a_graph, PublicationPolicy::InheritRuntime, 7)
         .unwrap();
+    // Queue pressure returns the exact candidate without issuing an untracked lease.
+    let pending = compile(&editor, &sources);
+    let pending_identity = Arc::clone(pending.prepared_revision().unwrap());
+    let refused = control.publish(pending).unwrap_err();
+    assert!(Arc::ptr_eq(
+        refused.playback.prepared_revision().unwrap(),
+        &pending_identity
+    ));
+    assert_eq!(control.outstanding_device_resource_leases(), 1);
+    drop(refused);
+    drop(pending_identity);
     control.command(PlaybackCommand::Play).unwrap();
     assert!(
         block(&mut callback)
@@ -177,6 +188,61 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
             .configure_device_resource_publication_on_control(limits())
             .is_err()
     );
+    // Compatible edits use the ordinary same-output handoff. Repeated publication
+    // must close the returned candidate's unused lease rather than accumulating it.
+    for (muted, gain) in [(true, 1.0), (false, 1.0), (false, 0.5), (false, 1.0)] {
+        editor.execute(Command::Mute { track, muted }).unwrap();
+        editor.execute(Command::Gain { track, gain }).unwrap();
+        let revision = control
+            .publish_with_policy_and_context_generation(
+                compile(&editor, &sources),
+                PublicationPolicy::InheritRuntime,
+                7,
+            )
+            .unwrap();
+        let output = block(&mut callback);
+        let expected = if muted { 0.0 } else { 0.25 * gain };
+        assert!(
+            output
+                .iter()
+                .flatten()
+                .all(|sample| (*sample - expected).abs() < 1e-6)
+        );
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        assert_eq!(control.reclaim(), 1);
+        assert_eq!(control.outstanding_device_resource_leases(), 1);
+    }
+    // Cancellation and a stale command fence return source-owning candidates
+    // without installing them. Their obligations close only at control reclamation.
+    let active_revision = control.status.applied_revision.load(Acquire);
+    for cancel in [true, false] {
+        let fence = control.capture_fresh_runtime_fence().unwrap();
+        if !cancel {
+            control.command(PlaybackCommand::Play).unwrap();
+        }
+        let revision = control
+            .publish_with_policy_and_context_generation(
+                compile(&editor, &sources),
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(fence),
+                7,
+            )
+            .unwrap();
+        assert_eq!(control.outstanding_device_resource_leases(), 2);
+        if cancel {
+            assert_eq!(
+                control.cancel_fresh_runtime_publication(revision),
+                FreshRuntimeCancellationResult::Cancelled
+            );
+        }
+        block(&mut callback);
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            active_revision
+        );
+        assert_eq!(control.status.rejected_revision().unwrap().0, revision);
+        assert_eq!(control.reclaim(), 1);
+        assert_eq!(control.outstanding_device_resource_leases(), 1);
+    }
     editor
         .execute(Command::ReplaceDeviceState {
             device,
@@ -260,4 +326,30 @@ fn ordinary_sampler_publication_keeps_migrated_a_and_b_obligations_through_resou
     control.request_shutdown();
     block(&mut callback);
     control.reclaim();
+}
+
+#[test]
+fn impossible_resource_row_budget_refuses_before_allocating() {
+    let mut reservation = limits();
+    reservation.handle_rows = usize::MAX;
+    reservation.max_retained_bytes = 1;
+    reservation.max_construction_peak_bytes = 1;
+    let counted = allocation_counter::measure(|| {
+        assert!(
+            hex_engine::native_device_resources::DeviceResourcePublication::reserve_on_control(
+                reservation,
+                usize::MAX
+            )
+            .is_err()
+        );
+    });
+    assert_eq!(
+        (
+            counted.count_total,
+            counted.bytes_total,
+            counted.count_current,
+            counted.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
 }
