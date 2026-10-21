@@ -2,9 +2,9 @@
 //!
 //! The empty catalog sentinel is silent and owns no asset or substitute PCM; malformed or
 //! source-bearing state without its actual source must refuse preparation. Loaded playback
-//! currently uses the host's private resident-source path, not ordinary registered
-//! mixed-instrument publication. The control owner validates original-rate PCM and retains its
-//! exact configuration for current and outgoing voices. Source regions are nonempty half-open
+//! uses a registered mutable factory over the host's exact original-rate inventory. Ordinary
+//! playback retains that configuration in each runtime lease, including outgoing voices; the
+//! obsolete private constructor keeps its separately closed source path. Source regions are nonempty half-open
 //! frame intervals. Pitch/rate conversion, reverse, Classic loops, One-Shot/Slice gate laws and
 //! envelope ages share the same bounded scalar preparation. Voices borrow immutable PCM without
 //! per-note scan, copy or owning handle; sample queries remain deterministic across block sizes.

@@ -9,8 +9,9 @@
 //! metadata reservations, checking cancellation between sources and bounded chunks. The normalized
 //! stereo content hash includes its domain prefix, rate, extent and f32 bit patterns, not the
 //! asset ID or encoded WAV bytes. Hashing never runs in sample/process callbacks. These facts
-//! alone authorize neither native publication nor retirement; the current loaded sampler uses the
-//! separate private [`ControlSamplerSources`] root.
+//! alone authorize neither native publication nor retirement. Ordinary registered instruments use
+//! [`PreparedDeviceResources`] and runtime-owned leases; the obsolete private constructor retains
+//! its separately closed [`ControlSamplerSources`] root.
 use crate::{AudioInputStorageAndObligations, AudioSourceToken, AudioStorageError};
 use hex_lattice::{DeviceResourceIdentity, DeviceResourcePcm, DeviceResourceView, DeviceResources};
 use hex_lattice_contract::{

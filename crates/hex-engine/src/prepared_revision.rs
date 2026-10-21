@@ -5,8 +5,9 @@
 //! and accepted audio source intact. Musical compatibility uses authored source/device identity,
 //! not equal filenames or display metadata. A private resource_scope binds source-bearing sampler
 //! coefficients to their sealed ControlSamplerSources sidecar; an ordinary runtime constructor
-//! must refuse that graph without its matching private source path. This is not general registered
-//! resource-bearing instrument publication.
+//! refuses that private graph. The separate device_resource_scope stores only the exact registered
+//! resource-set identity: ordinary runtime construction must receive that matching set and retain
+//! actual source leases before playback.
 use crate::{
     Invalid, MidiArrangementPreview, PreparedSessionInventory, Project as PlaybackProject,
     compile::PreparedAudioSource,

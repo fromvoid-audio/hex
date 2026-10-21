@@ -318,7 +318,7 @@ pub trait NativeInstrumentDefinition: NativeDeviceMetadata {
     }
 }
 
-/// Bounded immutable registry for native analytic instruments.
+/// Bounded immutable registry for native instruments.
 pub struct NativeInstrumentRegistry<'a> {
     definitions: &'a [&'a dyn NativeInstrumentDefinition],
 }
@@ -450,8 +450,9 @@ impl<'a> NativeInstrumentRegistry<'a> {
         )
     }
 
-    /// Prepare the exact effective table; resource bindings refuse before
-    /// provider migration until the host supplies actual resource leases.
+    /// Prepare the exact effective configuration. Ordinary definitions refuse resource bindings
+    /// before migration; opted-in definitions receive a validated inventory whose lifetime remains
+    /// the host's responsibility.
     pub fn prepare_instrument(
         &self,
         state: &NativeDeviceState,
