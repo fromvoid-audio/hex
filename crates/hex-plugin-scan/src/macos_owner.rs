@@ -112,6 +112,10 @@ pub struct Pending {
 }
 
 impl Pending {
+    pub fn cleanup_snapshot(&self) -> Cleanup {
+        self.cleanup.clone()
+    }
+
     pub fn poll(&mut self) -> Result<bool, String> {
         poll_child(&mut self.process, &mut self.cleanup)
     }
