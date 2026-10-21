@@ -197,6 +197,7 @@ fn browser_vst3_selected_native_worker_persists_real_row_and_reload_without_fore
     );
 }
 
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn wait_plugin_browser(visual: &mut VisualTestContext, editor: &gpui::Entity<EditorView>) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
@@ -212,6 +213,7 @@ fn wait_plugin_browser(visual: &mut VisualTestContext, editor: &gpui::Entity<Edi
         std::thread::yield_now();
     }
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 fn copy_original_plugin(source: &std::path::Path, target: &std::path::Path) {
     std::fs::create_dir(target).unwrap();
     for entry in std::fs::read_dir(source).unwrap() {
@@ -225,6 +227,7 @@ fn copy_original_plugin(source: &std::path::Path, target: &std::path::Path) {
         }
     }
 }
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[gpui::test]
 #[ignore = "explicit original signed package and owned native fixture roots required"]
 fn browser_vst3_standard_folder_button_scans_owned_roots_and_restores_type_search(
