@@ -1,5 +1,15 @@
-//! Deterministic, sample-rate-locked stereo arrangement rendering.
-//! This is an original prototype, not a verified Live-compatible engine.
+//! # Purpose
+//! Compile canonical projects into immutable playback revisions and render deterministic stereo
+//! audio with bounded runtime state.
+//!
+//! # Dependencies
+//! Uses hex-project, hex-devices, hex-lattice/hex-lattice-contract, hex-warp and control-side sha2
+//! resource verification; no UI or device-I/O dependency.
+//!
+//! # Does not own
+//! Does not edit canonical projects, open media files/devices, own page-worker queues or infer
+//! physical deadline/Live parity from headless checks. Callback paths borrow prepared data;
+//! control owns preparation and final destruction.
 pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,

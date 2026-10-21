@@ -1,6 +1,15 @@
-//! Bounded ownership handoff for compiled arrangement playback.
-//! Control constructs/drops graphs; callback swaps at most one per block and returns
-//! old ownership through a reserved retirement queue. Used by the native prepared output.
+//! Bounded prepared-playback ownership handoff for native output.
+//!
+//! Control constructs and destroys graphs. Each callback accepts at most one graph and the bounded
+//! command prefix; retirement capacity is checked before ownership moves. A full queue retains
+//! owners in the existing held slots, preserving current audio and priority Stop. Stop's
+//! independent ticket cutoff discards older commands while retaining later admitted FIFO commands.
+//! InheritRuntime preserves compatible transport/route/history. Fresh policies use caller-prepared
+//! runtime state; a conditional fresh fence additionally matches the actual predecessor, route
+//! generation and admitted-command prefix at the final swap. Canonical editor revision and applied
+//! audio revision remain distinct until that acceptance. Queue acceptance, source readiness and
+//! physical disposal are separate facts; callback code must never finally destroy graphs, PCM or
+//! endpoints.
 use crate::{
     processor_audition, spectrum_target,
     spectrum_worker::{SpectrumCapture, SpectrumStamp},

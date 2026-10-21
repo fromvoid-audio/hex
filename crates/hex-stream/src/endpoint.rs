@@ -1,3 +1,11 @@
+//! Bounded callback page cache over worker-owned fixed buffers.
+//!
+//! Requests carry copyable catalog-generation/source/page keys. Ready and return queues move
+//! existing PageBuffer owners; stale completions return to the same pool without entering another
+//! catalog generation. Full queues keep pages in reserved held slots. Pump/request work is
+//! bounded, lookup borrows cached PCM, and callback paths neither allocate nor perform file I/O,
+//! wait, log, join or finally drop a source/page owner. Control retires the endpoint only after
+//! callback quiescence.
 use crate::types::{PageKey, StreamFailure};
 use hex_engine::{BorrowedMediaPage, Frame, MediaPages, STREAM_PAGE_FRAMES, StreamSourceKey};
 use rtrb::{Consumer, Producer, PushError};

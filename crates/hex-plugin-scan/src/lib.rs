@@ -1,4 +1,13 @@
-//! Controlled discovery records only; no plugin loading or audio-host API.
+//! # Purpose
+//! Own controlled native plugin-discovery records, protocols and helper supervision.
+//!
+//! # Dependencies
+//! Uses serde/serde_json and sha2; native factory inspection stays inside the separate supported
+//! helper process.
+//!
+//! # Does not own
+//! Does not expose an app-side plugin loader, persistent instance or realtime audio bridge. Exact
+//! helper/artifact identity and bounded protocol validation remain required.
 pub mod macos;
 pub mod offline_protocol;
 use serde::{Deserialize, Serialize};

@@ -1,4 +1,14 @@
-//! Original native DSP: registered instruments and native Lattice effects.
+//! # Purpose
+//! Own original native instrument/effect algorithms, state codecs and registered definitions.
+//!
+//! # Dependencies
+//! Uses hex-dsp for mathematical kernels and hex-lattice/hex-lattice-contract for processing,
+//! metadata and versioned state.
+//!
+//! # Does not own
+//! Does not schedule projects, access devices/files, retain host resource ownership or host
+//! foreign plugins. Preparation is control work; processing borrows validated inputs and must
+//! remain bounded and allocation-free.
 pub mod auto_pan;
 pub mod compressor;
 pub mod eq8;

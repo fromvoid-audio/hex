@@ -1,4 +1,12 @@
 //! Exact control-side products for one accepted canonical project revision.
+//!
+//! Arrangement, Session inventory and display summaries are prepared together before the canonical
+//! edit/history transaction commits. Preparation failure leaves the previous project, IDs, redo
+//! and accepted audio source intact. Musical compatibility uses authored source/device identity,
+//! not equal filenames or display metadata. A private resource_scope binds source-bearing sampler
+//! coefficients to their sealed ControlSamplerSources sidecar; an ordinary runtime constructor
+//! must refuse that graph without its matching private source path. This is not general registered
+//! resource-bearing instrument publication.
 use crate::{
     Invalid, MidiArrangementPreview, PreparedSessionInventory, Project as PlaybackProject,
     compile::PreparedAudioSource,

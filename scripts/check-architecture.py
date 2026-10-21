@@ -75,11 +75,18 @@ for name, package in packages.items():
     if name not in ALLOWED:
         errors.append(f'{name}: register a purpose and dependency policy before adding this crate')
         continue
-    readme = Path(package['manifest_path']).parent / 'README.md'
-    content = readme.read_text() if readme.exists() else ''
-    for heading in ('## Purpose', '## Dependencies', '## Does not own'):
-        if heading not in content:
-            errors.append(f'{name}: README must define {heading}')
+    # Ownership belongs beside the implementation, not in a parallel README.
+    entry = Path(package['manifest_path']).parent / 'src' / 'lib.rs'
+    if not entry.exists():
+        entry = entry.with_name('main.rs')
+    content = entry.read_text() if entry.exists() else ''
+    documentation = '\n'.join(line[3:].lstrip() for line in content.splitlines()
+                              if line.startswith('//!'))
+    for heading in ('# Purpose', '# Dependencies', '# Does not own'):
+        sections = documentation.split(heading, 1)
+        body = sections[1].split('\n# ', 1)[0].strip() if len(sections) == 2 else ''
+        if not body:
+            errors.append(f'{name}: crate doc comments must define {heading}')
     for dep in package['dependencies']:
         target = dep['name']
         if target == 'rustix' and 'process' in dep.get('features', []) and name not in {'hex-plugin-scan', 'hex-clap-scan'}:

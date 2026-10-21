@@ -1,5 +1,12 @@
-//! Constructor-owned runtime custody, independent of cost/admission authority.
-//! Teardown follows original177 claims_teardown's Pending-before-take protocol.
+//! Constructor-owned runtime custody, separate from cost and publication authority.
+//!
+//! The actual root, preparation incarnation and runtime identity travel together; caller scalars,
+//! equal graph values and raw Playback owners cannot manufacture that association. The constructor
+//! admits only its explicitly implemented closed classes, not every device accepted by the
+//! ordinary registry. Origin books follow real owner moves; copying compatible DSP history does
+//! not transfer source custody. Every destructive frontier records Pending before taking an owner.
+//! Only a normal return from the actual destructor closes that frontier; failure retains the first
+//! payload and remaining owners without retry or invented completion.
 mod claimed;
 mod draft;
 mod preparation;
