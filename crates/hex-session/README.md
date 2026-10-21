@@ -324,7 +324,8 @@ Private sampler PrepareComputerKeyboard uses the actual native sink's installed
 CURRENT activation and returns metadata acknowledgement, without legacy Playback
 replacement. The UI input object stays on control. Empty-track first load is
 supported; stopped panel configuration edits and their global Undo/Redo use the
-existing native fence. Source changes, other history steps and runtime tools refuse. See
+existing native fence. Classic source replacement stages the incoming original
+through that fence; other source modes, replacement history and runtime tools refuse. See
 [the keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
 
 Sampler gain is one captured stopped-only final edit. The worker polls native
@@ -362,3 +363,13 @@ It accepts only one existing instrument's same-source panel configuration delta;
 selection is irrelevant. Refusal preserves history/audio/cache, and postcommit
 open failure retains authored state/save/export with explicit retry. See the
 [configuration history contract](../../docs/sampler.md#stopped-configuration-history).
+
+
+Classic source replacement uses a captured existing-device state, the shared
+pending edit, same-Session decode allowance and actual decoded-buffer admission.
+A private committed/staged source borrow routes native lookup and inventory
+through the same transaction. The import closure prepares snapshot/overview and
+seals native custody, then checks cancellation before bank/cache/history adoption.
+Old originals remain bounded for history/export/save; later configuration history
+works, while the replacement history edge still refuses in place. See the
+[replacement contract](../../docs/sampler.md#stopped-classic-source-replacement).

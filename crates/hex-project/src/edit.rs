@@ -383,6 +383,18 @@ pub enum Command {
         state: hex_lattice_contract::NativeDeviceState,
         source_slot: hex_lattice_contract::DeviceAssetSlot,
     },
+    /// Atomically import an original source and rebind an existing instrument.
+    /// Captured identity/state/provider must still match; no IDs are predicted.
+    ImportDeviceAssetReplacingInstrument {
+        track: TrackId,
+        device: DeviceId,
+        expected_state: hex_lattice_contract::NativeDeviceState,
+        path: PathBuf,
+        sample_rate: u32,
+        frames: u64,
+        state: hex_lattice_contract::NativeDeviceState,
+        source_slot: hex_lattice_contract::DeviceAssetSlot,
+    },
     RemoveAsset(AssetId),
     PlaceClip {
         track: TrackId,
@@ -2149,6 +2161,64 @@ impl Project {
                 // Editor applies this composite command to one private candidate;
                 // preparation/refusal commits neither the asset nor instrument.
                 self.apply(Command::InsertInstrument { track, state })?;
+                Ok(Created::Asset(asset))
+            }
+            Command::ImportDeviceAssetReplacingInstrument {
+                track,
+                device,
+                expected_state,
+                path,
+                sample_rate,
+                frames,
+                state,
+                source_slot,
+            } => {
+                let target = self
+                    .track(track)
+                    .and_then(|track| track.instrument())
+                    .filter(|target| target.id() == device && target.state() == &expected_state)
+                    .ok_or(Invalid("instrument source replacement target changed"))?;
+                if state.type_id() != target.state().type_id()
+                    || state.input_gain_millidb() != expected_state.input_gain_millidb()
+                    || state.output_gain_millidb() != expected_state.output_gain_millidb()
+                    || state.asset_references() != expected_state.asset_references()
+                    || state
+                        .asset_references()
+                        .iter()
+                        .filter(|r| r.slot == source_slot)
+                        .count()
+                        != 1
+                {
+                    return Err(Invalid(
+                        "instrument replacement must preserve provider and host metadata",
+                    ));
+                }
+                let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
+                let conversion = if sample_rate == self.sample_rate {
+                    IDENTITY_CONVERSION
+                } else {
+                    crate::SINC_CONVERSION_V1
+                };
+                let asset =
+                    self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
+                let key = hex_lattice_contract::DeviceAssetKey::new(asset.value())
+                    .map_err(|_| Invalid("invalid device source id"))?;
+                let references = state
+                    .asset_references()
+                    .iter()
+                    .map(|reference| hex_lattice_contract::DeviceAssetReference {
+                        slot: reference.slot,
+                        asset: if reference.slot == source_slot {
+                            key
+                        } else {
+                            reference.asset
+                        },
+                    })
+                    .collect();
+                let state = state
+                    .with_asset_references(references)
+                    .map_err(|_| Invalid("invalid device source binding"))?;
+                self.apply(Command::ReplaceDeviceState { device, state })?;
                 Ok(Created::Asset(asset))
             }
             Command::RemoveAsset(id) => {

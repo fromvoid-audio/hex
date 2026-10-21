@@ -30,18 +30,21 @@ pub(super) fn validate(
 pub enum SamplerEdit {
     Parameter(SamplerParameterEdit),
     History(SamplerHistoryEdit),
+    Replacement(SamplerReplacementEdit),
 }
 impl SamplerEdit {
     pub(super) fn request_id(&self) -> u64 {
         match self {
             Self::Parameter(e) => e.request_id,
             Self::History(e) => e.request_id,
+            Self::Replacement(e) => e.request_id,
         }
     }
     pub(super) fn cancel(&self) -> &AtomicBool {
         match self {
             Self::Parameter(e) => &e.cancel,
             Self::History(e) => &e.cancel,
+            Self::Replacement(e) => &e.cancel,
         }
     }
     pub(super) fn validate(
@@ -70,6 +73,28 @@ impl SamplerEdit {
                         .map_err(|e| e.to_string())?
                             != *state,
                 )
+            }
+            Self::Replacement(edit) => {
+                if edit.request_id == 0
+                    || edit.project_generation != generation
+                    || edit.revision != revision
+                    || edit.cancel.load(Ordering::Acquire)
+                {
+                    return Err("sampler replacement target changed or was cancelled".into());
+                }
+                let target = session
+                    .project()
+                    .track(edit.track)
+                    .and_then(|track| track.instrument())
+                    .filter(|device| {
+                        device.id() == edit.device
+                            && !device.bypassed()
+                            && device.state() == &edit.expected_state
+                    })
+                    .ok_or("sampler replacement target changed")?;
+                hex_engine::validate_sampler_replacement_on_control(target.state())
+                    .map_err(|e| e.to_string())?;
+                Ok(true)
             }
             Self::History(edit) => {
                 if edit.request_id == 0
@@ -114,6 +139,36 @@ impl SamplerEdit {
                     admission,
                     Some((context, audio, &edit.cancel)),
                 )
+            }
+            Self::Replacement(edit) => {
+                let allowance = admission.append_original_frame_allowance(session)?;
+                let scan = session
+                    .native_reservation
+                    .ok_or(SessionError::Invalid(
+                        "sampler replacement requires resident admission",
+                    ))?
+                    .max_scan_frames;
+                let maximum = usize::try_from(allowance.min(scan))
+                    .map_err(|_| SessionError::Invalid("source allowance exceeds frame range"))?
+                    .min(IMPORT_FRAME_LIMIT);
+                if maximum == 0 {
+                    return Err(SessionError::Invalid(
+                        "resident original append reservation is full",
+                    ));
+                }
+                if edit.cancel.load(Ordering::Acquire) {
+                    return Err(SessionError::Invalid(
+                        "sampler source replacement cancelled",
+                    ));
+                }
+                let decoded = decode_wav_file(&edit.path, Limits::new(IMPORT_FILE_LIMIT, maximum))?;
+                admission.inspect_appended_original(session, Some(decoded.audio()))?;
+                if edit.cancel.load(Ordering::Acquire) || session.shutdown.load(Ordering::Acquire) {
+                    return Err(SessionError::Invalid(
+                        "sampler source replacement cancelled",
+                    ));
+                }
+                session.replace_sampler_service_snapshot(decoded, edit, admission, context, audio)
             }
             Self::History(edit) => session.history_service_snapshot_with_native(
                 edit.redo,

@@ -1,5 +1,6 @@
 //! Private Service-owned offline sampler snapshots and their admission union.
 //! Neither this wrapper nor a resource-bearing graph is emitted to public APIs.
+use super::audio_sink::native_sampler::NativeSamplerSources;
 use super::*;
 use hex_engine::native_device_resources::{
     self as resources, ControlSamplerInventory, ControlSamplerPhase, ControlSamplerSelection,
@@ -146,10 +147,25 @@ impl Admission<'_> {
         max_frames: u64,
         candidate: Option<ControlSamplerSelection<'_>>,
     ) -> Result<Option<ControlSamplerInventory>, SessionError> {
+        self.check_native_originals(
+            NativeSamplerSources::Committed(native),
+            legacy,
+            limits,
+            max_frames,
+            candidate,
+        )
+    }
+    pub(in crate::service) fn check_native_originals(
+        &self,
+        originals: NativeSamplerSources<'_>,
+        legacy: &[&hex_engine::Audio],
+        limits: Option<crate::ResidentNativeReservation>,
+        max_frames: u64,
+        candidate: Option<ControlSamplerSelection<'_>>,
+    ) -> Result<Option<ControlSamplerInventory>, SessionError> {
         let Some(limits) = limits else {
             return Ok(None);
         };
-        let stores = [native];
         let selections = self
             .current
             .into_iter()
@@ -158,7 +174,7 @@ impl Admission<'_> {
             .collect::<Vec<_>>();
         let outbound = self.outbound.into_iter().collect::<Vec<_>>();
         let phase = ControlSamplerPhase {
-            stores: &stores,
+            stores: &[],
             selections: &selections,
             outbound: &outbound,
             legacy,
@@ -168,13 +184,14 @@ impl Admission<'_> {
                 .ok_or(SessionError::Invalid("native reservation overflow"))?,
             construction_bytes: 0,
         };
-        let inventory = resources::inspect_control_sampler_union(&phase, &phase, limits.storage)?;
-        if inventory
-            .retained_frames
-            .checked_add(self.native.frames)
-            .is_none_or(|n| n > max_frames)
-        {
-            return Err(SessionError::Invalid("resident audio frame limit reached"));
+        let inventory = originals.inspect(&phase, limits.storage)?;
+        for frames in [inventory.retained_frames, inventory.construction_frames] {
+            if frames
+                .checked_add(self.native.frames)
+                .is_none_or(|n| n > max_frames)
+            {
+                return Err(SessionError::Invalid("resident audio frame limit reached"));
+            }
         }
         Ok(Some(inventory))
     }
@@ -519,7 +536,7 @@ impl Session {
                 sink.prepare_sampler_edit(NativeSamplerInput {
                     project: candidate,
                     media: media_assets,
-                    native,
+                    originals: NativeSamplerSources::Committed(native),
                     reservation,
                     audio_mode,
                     max_frames,
@@ -577,9 +594,6 @@ impl Session {
         admission: Admission<'_>,
         track: Option<hex_project::TrackId>,
     ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
-        let limits = self.native_reservation.ok_or(SessionError::Invalid(
-            "native source import requires an explicit resident reservation",
-        ))?;
         let destination = match track {
             Some(track) => {
                 let (state, source_slot) =
@@ -592,6 +606,48 @@ impl Session {
             }
             None => crate::native_assets::NativeAssetDestination::Unassigned,
         };
+        self.import_service_snapshot_destination(decoded, cancel, admission, destination, None)
+    }
+    pub(in crate::service) fn replace_sampler_service_snapshot(
+        &mut self,
+        decoded: hex_media::DecodedAudio,
+        edit: &SamplerReplacementEdit,
+        admission: Admission<'_>,
+        context: hex_engine::AudioSourceContext,
+        audio: &mut dyn WorkerAudioSink,
+    ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
+        let (state, source_slot) = hex_engine::sampler_replacement_template_on_control(
+            &edit.expected_state,
+            decoded.audio().frames().len(),
+        )?;
+        let destination = crate::native_assets::NativeAssetDestination::ExistingInstrument {
+            track: edit.track,
+            device: edit.device,
+            expected_state: edit.expected_state.clone(),
+            state,
+            source_slot,
+        };
+        self.import_service_snapshot_destination(
+            decoded,
+            &edit.cancel,
+            admission,
+            destination,
+            Some((context, audio)),
+        )
+    }
+    fn import_service_snapshot_destination(
+        &mut self,
+        decoded: hex_media::DecodedAudio,
+        cancel: &AtomicBool,
+        admission: Admission<'_>,
+        destination: crate::native_assets::NativeAssetDestination,
+        native_hook: Option<(hex_engine::AudioSourceContext, &mut dyn WorkerAudioSink)>,
+    ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
+        let limits = self.native_reservation.ok_or(SessionError::Invalid(
+            "native source import requires a resident reservation",
+        ))?;
+        let audio_mode = self.audio_mode;
+        let shutdown = Arc::clone(&self.shutdown);
         let legacy = self
             .media
             .values()
@@ -606,7 +662,7 @@ impl Session {
             decoded,
             cancel,
             destination,
-            |candidate, media, table, transforms, waveforms, stage| {
+            |candidate, media, table, transforms, waveforms, stage, media_assets| {
                 let sources = if resources::requires_private_sampler_sources(candidate) {
                     Some(ControlSamplerSources::prepare_staged_on_control(
                         stage,
@@ -696,6 +752,29 @@ impl Session {
                     },
                     factory,
                 )?;
+                if let Some((context, sink)) = native_hook {
+                    sink.prepare_sampler_edit(NativeSamplerInput {
+                        project: candidate,
+                        media: media_assets,
+                        originals: NativeSamplerSources::Staged(stage),
+                        reservation: Some(limits),
+                        audio_mode,
+                        max_frames: maximum,
+                        shutdown: &shutdown,
+                        context,
+                        admission,
+                        candidate: Some(ControlSamplerSelection {
+                            sources: sources.as_ref(),
+                            prepared: Some(&prepared),
+                        }),
+                    })
+                    .map_err(SessionError::NativeAudio)?;
+                    if cancel.load(Ordering::Acquire) || shutdown.load(Ordering::Acquire) {
+                        return Err(SessionError::Invalid(
+                            "sampler source replacement cancelled",
+                        ));
+                    }
+                }
                 Ok(ServiceExportSnapshot { prepared, sources })
             },
         )
@@ -703,6 +782,70 @@ impl Session {
 }
 
 impl Admission<'_> {
+    /// Same-Session append: every existing original, current/export capture,
+    /// outbound job, legacy owner and native hold remains alive while decoding.
+    pub(crate) fn append_original_frame_allowance(
+        &self,
+        session: &Session,
+    ) -> Result<u64, SessionError> {
+        let limits = session.native_reservation.ok_or(SessionError::Invalid(
+            "native source import requires a resident reservation",
+        ))?;
+        let inventory = self.inspect_appended_original(session, None)?;
+        let retained = limits
+            .storage
+            .max_retained_bytes
+            .checked_sub(inventory.retained.retained_bytes)
+            .ok_or(SessionError::Invalid(
+                "resident retained reservation is full",
+            ))?;
+        let peak = limits
+            .storage
+            .max_construction_peak_bytes
+            .checked_sub(inventory.construction.construction_peak_bytes)
+            .ok_or(SessionError::Invalid(
+                "resident construction reservation is full",
+            ))?;
+        let bytes = u64::try_from(retained.min(peak) / std::mem::size_of::<hex_engine::Frame>())
+            .map_err(|_| SessionError::Invalid("resident byte allowance exceeds frame range"))?;
+        session
+            .max_resident_frames
+            .checked_sub(
+                inventory
+                    .retained_frames
+                    .max(inventory.construction_frames)
+                    .checked_add(self.native.frames)
+                    .ok_or(SessionError::Invalid("native frame reservation overflow"))?,
+            )
+            .map(|frames| frames.min(bytes))
+            .ok_or(SessionError::Invalid(
+                "resident original append reservation is full",
+            ))
+    }
+    /// Borrow the actual decoded allocation before original ingress can consume
+    /// it; no derivative or owning native projection has been created yet.
+    pub(crate) fn inspect_appended_original(
+        &self,
+        session: &Session,
+        decoded: Option<&hex_engine::Audio>,
+    ) -> Result<ControlSamplerInventory, SessionError> {
+        let legacy = session
+            .media
+            .values()
+            .flat_map(|media| [&media.source_audio, &media.audio])
+            .chain(decoded)
+            .collect::<Vec<_>>();
+        self.check_native_parts(
+            &session.native_assets,
+            &legacy,
+            session.native_reservation,
+            session.max_resident_frames,
+            None,
+        )?
+        .ok_or(SessionError::Invalid(
+            "native source import requires a resident reservation",
+        ))
+    }
     /// Before ordinary New/Open allocates admitted resident media, reserve room
     /// for the exact captured export plus the still-live predecessor document.
     pub(crate) fn replacement_frame_allowance(

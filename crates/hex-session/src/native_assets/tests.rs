@@ -520,7 +520,7 @@ fn first_sampler_staged_prepare_failure_or_late_cancel_keeps_source_model_and_hi
                 state,
                 source_slot,
             },
-            |candidate, _, _, _, _, _| {
+            |candidate, _, _, _, _, _, _| {
                 assert_eq!(candidate.assets().count(), before.assets().count() + 1);
                 assert!(candidate.track(track).unwrap().instrument().is_some());
                 if late_cancel {

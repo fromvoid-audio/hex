@@ -383,3 +383,69 @@ fn sampler_history_allows_only_panel_configuration_and_exact_source_host_metadat
         assert!(!is_sampler_configuration_history_on_control(&current, &target).unwrap());
     }
 }
+
+#[test]
+fn sampler_replacement_preserves_non_source_state_and_host_envelope_and_refuses_other_modes() {
+    use hex_devices::sampler::{
+        GateMode, Region,
+        state::{AuthoredMode, SamplerState},
+    };
+    let mut authored = SamplerState::for_source_frames(8).unwrap();
+    authored.region = Region { start: 1, end: 7 };
+    authored.mode = AuthoredMode::Classic {
+        loop_enabled: true,
+        loop_region: Region { start: 2, end: 6 },
+    };
+    authored.root_note = 47;
+    authored.reverse = true;
+    authored.transpose_semitones = -3.0;
+    authored.detune_cents = 7.0;
+    authored.gain = 0.4;
+    authored.pan = -0.25;
+    authored.velocity_amount = 0.5;
+    authored.voices = 8;
+    authored.envelope.attack_seconds = 0.01;
+    authored.envelope.decay_seconds = 0.02;
+    authored.envelope.sustain = 0.3;
+    authored.envelope.release_seconds = 0.04;
+    let old = authored
+        .to_native()
+        .unwrap()
+        .with_input_gain_millidb(3000)
+        .unwrap()
+        .with_output_gain_millidb(-1000)
+        .unwrap();
+    let (new, slot) = sampler_replacement_template_on_control(&old, 3).unwrap();
+    let mut expected = authored.clone();
+    expected.region = Region { start: 0, end: 3 };
+    expected.mode = AuthoredMode::Classic {
+        loop_enabled: false,
+        loop_region: expected.region,
+    };
+    assert_eq!(SamplerState::from_native(&new).unwrap(), expected);
+    assert_eq!(
+        (
+            new.input_gain_millidb(),
+            new.output_gain_millidb(),
+            slot.value()
+        ),
+        (3000, -1000, 1)
+    );
+    assert!(sampler_replacement_template_on_control(&old, 0).is_err());
+    for mode in [
+        AuthoredMode::OneShot {
+            gate: GateMode::Gate,
+        },
+        AuthoredMode::Slice {
+            starts: vec![1, 4],
+            base_note: 60,
+            gate: GateMode::Gate,
+        },
+    ] {
+        let mut state = authored.clone();
+        state.mode = mode;
+        let state = state.to_native().unwrap();
+        assert!(validate_sampler_replacement_on_control(&state).is_err());
+        assert!(sampler_replacement_template_on_control(&state, 3).is_err());
+    }
+}

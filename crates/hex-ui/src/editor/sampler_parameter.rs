@@ -22,6 +22,7 @@ struct Target {
 }
 struct Control {
     target: Target,
+    bounds: (f64, f64),
     gesture: Option<Target>,
     focus: gpui::FocusHandle,
     entity: Entity<NumericControl>,
@@ -34,12 +35,37 @@ struct Pending {
 }
 enum PendingTarget {
     Parameter(Target),
-    History { generation: u64, revision: u64 },
+    History {
+        generation: u64,
+        revision: u64,
+    },
+    Replacement {
+        generation: u64,
+        revision: u64,
+        track: TrackId,
+        device: hex_project::DeviceId,
+    },
 }
 impl PendingTarget {
     fn current(&self, view: &EditorView) -> bool {
         match self {
             Self::Parameter(target) => target.current(view),
+            Self::Replacement {
+                generation,
+                revision,
+                track,
+                device,
+            } => {
+                view.project_generation == *generation
+                    && view.state.as_ref().is_some_and(|state| {
+                        state.revision == *revision
+                            && state
+                                .project
+                                .track(*track)
+                                .and_then(|track| track.instrument())
+                                .is_some_and(|entry| entry.id() == *device && !entry.bypassed())
+                    })
+            }
             Self::History {
                 generation,
                 revision,
@@ -268,6 +294,70 @@ impl EditorView {
             false
         }
     }
+    pub(super) fn sampler_replacement_pending_id(&self) -> Option<u64> {
+        self.sampler_parameter
+            .pending
+            .as_ref()
+            .filter(|p| matches!(p.target, PendingTarget::Replacement { .. }))
+            .map(|p| p.id)
+    }
+    pub(super) fn cancel_sampler_replacement(&mut self, id: Option<u64>) {
+        if let Some(pending) = self.sampler_parameter.pending.as_ref().filter(|p| {
+            matches!(p.target, PendingTarget::Replacement { .. }) && id.is_none_or(|id| id == p.id)
+        }) {
+            pending.cancel.store(true, Ordering::Release);
+            self.status = "cancelling sample replacement".into();
+        }
+    }
+    pub(super) fn submit_sampler_replacement(&mut self, target: super::sampler_load::Target) {
+        let super::sampler_load::Target {
+            generation,
+            revision,
+            track,
+            path,
+            replacement,
+        } = target;
+        let Some((device, expected_state)) = replacement else {
+            self.error = Some("sampler replacement target is unavailable".into());
+            return;
+        };
+        if self.edit_pending() || !self.first_sampler_current() {
+            self.error = Some(
+                "wait for the pending edit and sampler audio before replacing its sample".into(),
+            );
+            return;
+        }
+        let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
+            self.error = Some("sampler edit request identity exhausted".into());
+            return;
+        };
+        let cancel = Arc::new(AtomicBool::new(false));
+        let request = hex_session::service::SamplerReplacementEdit {
+            request_id: id,
+            project_generation: generation,
+            revision,
+            track,
+            device,
+            expected_state,
+            path,
+            cancel: Arc::clone(&cancel),
+        };
+        self.sampler_parameter.serial = id;
+        if self.enqueue(Request::SamplerEdit(
+            hex_session::service::SamplerEdit::Replacement(request),
+        )) {
+            self.sampler_parameter.pending = Some(Pending {
+                target: PendingTarget::Replacement {
+                    generation,
+                    revision,
+                    track,
+                    device,
+                },
+                id,
+                cancel,
+            });
+        }
+    }
     pub(super) fn sampler_parameter_control(
         &mut self,
         track: TrackId,
@@ -345,6 +435,7 @@ impl EditorView {
                 c.target.generation != target.generation
                     || c.target.track != target.track
                     || c.target.device != target.device
+                    || c.bounds != (min, max)
             })
         {
             if let Some(control) = self.sampler_parameter.controls.remove(&parameter) {
@@ -466,6 +557,7 @@ impl EditorView {
                 parameter,
                 Control {
                     target,
+                    bounds: (min, max),
                     gesture: None,
                     focus,
                     entity,

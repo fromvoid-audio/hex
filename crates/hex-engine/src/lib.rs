@@ -82,6 +82,7 @@ pub use native_device_view::{
     native_device_parameter_for_class, native_device_view, native_device_view_for_class,
     native_effect_frequency_response, patch_sampler_parameter_on_control,
     sampler_parameter_active_on_control, sampler_parameter_value_on_control,
+    sampler_replacement_template_on_control, validate_sampler_replacement_on_control,
 };
 
 mod gain_envelope;

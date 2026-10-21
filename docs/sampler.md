@@ -1039,3 +1039,67 @@ and signed-net counts/bytes for their fixtures. These checks do not establish
 physical device deadlines, UI/input/listening acceptance or Live parity. Sample
 replacement/removal history, Session/Console playback and nonzero seek remain
 outside this increment; optimized native delivery and user acceptance remain open.
+
+
+## stopped Classic source replacement
+
+The browser's `load into sampler` action becomes `replace sampler sample` for an
+existing Classic sampler. It captures generation/revision, track/device identity
+and exact state. Selecting another track while it completes does not retarget the
+replacement or change selection/focus. The same context action offers cancellation
+while the stopped fence is pending. OneShot/Slice refuse before media decoding.
+The existing device ID, chain position, bypass/comparison and host envelope remain;
+all non-source authored settings are retained, including root, transpose/detune,
+gain, ADSR, reverse, pan, velocity and voices. Only region and Classic loop change:
+whole incoming original, looping off and remembered loop points covering it.
+
+One neutral import-and-replace command allocates the new asset identity inside the
+candidate and rebinds the same active instrument. It validates captured state and
+provider/host metadata; project does not decode sampler payloads or own PCM. The
+existing staged import transaction prepares an original-source overview, private
+resource-aware snapshot and exact sealed native cell before adopting the staged
+bank, cache table and canonical history. Cancellation/shutdown is checked after
+native sealing and before those commits. It uses the same single pending edit,
+stopped callback fence, final completion and actual output-retirement paths as
+configuration edits. A refused preparation preserves project/history, store/cache
+and old sound. A hardware-open failure after commit retains the new authored
+source for Save/export, reports unavailable audio and supports explicit retry.
+
+`NativeSamplerInput` privately borrows either the committed store or the actual
+staged view. Source quoting, additional native admission and constructor copy all
+use that same variant. Staged admission includes the committed store, incoming
+bank, actual container overlap, current/candidate/export/outbound ownership,
+legacy PCM and refreshed old/new native holds. No temporary committed store,
+source-owner projection, additional source Arc clone or cap increase is used.
+The existing constructor copies the borrowed original into its sealed bank;
+there is no second copy after canonical acceptance.
+
+Replacement appends within the same Session. Before decoding, its allowance
+includes every retained original (including unused old samples), current and
+captured export/outbound ownership, legacy audio and native holds. The file is
+decoded once within that allowance, then the actual decoded allocation is
+inspected before original ingress or any derivative alias. Encoded bytes and
+decoder scratch keep their separate existing limits; later metadata/compiler and
+native-copy overlap checks still apply. Old assets, banks and peak rows remain in
+the bounded catalog/stores for history, export and Save. They are not reclaimed
+through history eviction or a new collector. Repeated replacement may refuse the
+existing caps. Both old and new original files remain relevant to later Open;
+missing media is reported through normal relinking rather than silently removed.
+
+Replacement creates one canonical history edge. That edge currently refuses
+native Undo/Redo in place without consumption or skipping; configuration history
+after replacement continues to work. Endpoint widgets refresh their numeric
+bounds when the source length changes even though device identity stays stable.
+The owning rendered regression fails with the old cached four-frame bounds and
+passes when editing frame5 immediately after a six-frame replacement.
+
+Owning headless checks cover different original rates/lengths and literal current
+PCM, nonzero host trims, preserved settings/reset bounds, actual browser cancel
+and captured-target completion while another Utility device is selected, source
+cache readback, immediate endpoint edits, Save/New/Open of both retained sources,
+unsupported modes before decode, stale/corrupt/cancel/post-seal/tight-frame refusal,
+unused-original plus captured-export admission, exact sealed/drained identity,
+postcommit open failure/Save/export/retry, old held-key epoch revocation with a
+fresh-key new-PCM check, and zero total/signed-net callback allocations for the fixtures. These are not physical UI/input/device/listening
+acceptance or Live parity. Replacement history, other playback entry paths and
+qualified optimized native delivery remain separate work.
