@@ -88,6 +88,20 @@ impl WorkerControl {
     pub fn control(&mut self) -> Option<&mut PublicationControl> {
         self.endpoint.owner_mut()
     }
+    /// Borrow active ordinary resource obligations without projecting the output, source owners
+    /// or publication endpoint into a consumer. Used synchronously on its owning worker only.
+    pub fn device_resource_admission_on_control(
+        &self,
+    ) -> Option<hex_engine::native_device_resources::DeviceResourceAdmission<'_>> {
+        self.endpoint
+            .owner_ref()?
+            .device_resource_admission_on_control()
+    }
+    pub fn unreturned_resident_graphs_on_control(&self) -> Option<usize> {
+        self.endpoint
+            .owner_ref()?
+            .unreturned_resident_graphs_on_control()
+    }
     pub fn close(&mut self) {
         if let Some(control) = self.endpoint.owner_mut() {
             control.request_shutdown();

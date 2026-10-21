@@ -38,17 +38,18 @@ impl NativeSamplerSources<'_> {
     }
     pub(in crate::service) fn inspect(
         self,
-        phase: &hex_engine::native_device_resources::ControlSamplerPhase<'_>,
+        phase: &hex_engine::native_device_resources::DeviceResourcePhase<'_>,
         limits: hex_engine::AudioStorageLedgerReservation,
     ) -> Result<
-        hex_engine::native_device_resources::ControlSamplerInventory,
+        hex_engine::native_device_resources::DeviceResourceInventory,
         hex_engine::native_device_resources::ResourcePreparationError,
     > {
-        use hex_engine::native_device_resources::{self as resources, ControlSamplerPhase};
+        use hex_engine::native_device_resources::{self as resources, DeviceResourcePhase};
         match self {
             Self::Committed(store) => {
                 let stores = [store];
-                let actual = ControlSamplerPhase {
+                let actual = DeviceResourcePhase {
+                    registered: phase.registered,
                     stores: &stores,
                     selections: phase.selections,
                     outbound: phase.outbound,
@@ -56,7 +57,7 @@ impl NativeSamplerSources<'_> {
                     checked_runtime_bytes: phase.checked_runtime_bytes,
                     construction_bytes: phase.construction_bytes,
                 };
-                resources::inspect_control_sampler_union(&actual, &actual, limits)
+                resources::inspect_device_resource_union(&actual, &actual, limits)
             }
             Self::Staged(stage) => stage.inspect(phase, phase, limits),
         }
@@ -257,6 +258,9 @@ pub(in crate::service) fn drive(
     lane.poll();
     if let Some(audio) = audio {
         lane.native_hold = audio.native_sampler_hold();
+        if audio.resident_publication_enabled() {
+            return;
+        }
         audio.native_sampler_input(NativeSamplerInput {
             project: session.project(),
             media: &session.media,

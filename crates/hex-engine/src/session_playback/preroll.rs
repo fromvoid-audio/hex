@@ -298,7 +298,7 @@ impl SessionPlayback {
         Ok(candidate)
     }
 
-    pub(super) fn accounted_runtime_storage_bytes(&self) -> Option<usize> {
+    pub(crate) fn accounted_runtime_storage_bytes(&self) -> Option<usize> {
         let mut total = std::mem::size_of::<Self>();
         checked_add(
             &mut total,

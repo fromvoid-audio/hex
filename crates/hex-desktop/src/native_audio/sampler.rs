@@ -78,6 +78,9 @@ impl NativeAudioSink {
         Ok(())
     }
     pub(super) fn sampler_hold(&self) -> Hold {
+        if let Some(ordinary) = self.resident_runtime_hold() {
+            return add(ordinary, self.retired_sampler_hold);
+        }
         let held = add(
             add(
                 add(self.retired_sampler_hold, self.output_hold),
@@ -92,6 +95,7 @@ impl NativeAudioSink {
         // exclusive Lease. Successful fresh construction proves old retirement;
         // neither a cleared Option nor UI endpoint acknowledgement does so.
         self.retired_sampler_hold = Hold::default();
+        self.resident.retired = None;
         self.ordinary_pcm_frames = 0;
         self.verified_pcm_frames = 0;
         self.suspended_output = None;
@@ -111,6 +115,9 @@ impl NativeAudioSink {
         self.output = Some(output);
     }
     pub(super) fn retain_relinquished_output(&mut self) {
+        if self.retain_resident_output() {
+            return;
+        }
         if let Some(control) = self.output.as_mut().and_then(|o| o.publication.control()) {
             self.ordinary_pcm_frames = control
                 .suspend_resident_forwarding_pcm()

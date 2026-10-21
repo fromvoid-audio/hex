@@ -24,6 +24,7 @@ struct Configuration {
     output: i32,
     payload: Vec<u8>,
     bindings: Vec<Binding>,
+    factory_inline_bound: usize,
 }
 impl Configuration {
     fn matches(&self, state: &NativeDeviceState) -> bool {
@@ -44,6 +45,21 @@ impl Configuration {
                             .asset
                             == reference.asset
                 })
+    }
+    fn visit_backing<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<u64, AudioStorageError> {
+        if !ledger.native_payload_once(self)? {
+            return Ok(0);
+        }
+        ledger.vec(&self.payload)?;
+        ledger.vec(&self.bindings)?;
+        self.bindings.iter().try_fold(0u64, |frames, binding| {
+            frames
+                .checked_add(binding.source.visit(ledger)?)
+                .ok_or(AudioStorageError::Overflow)
+        })
     }
     fn scan_frames(&self) -> Result<u64, ResourcePreparationError> {
         self.bindings.iter().try_fold(0u64, |frames, binding| {
@@ -97,6 +113,7 @@ pub struct PreparedDeviceResources {
     sample_rate: u32,
     tuning: hex_lattice::TuningTable,
     configurations: Vec<OwnedShared<Configuration>>,
+    configuration_handles: Vec<u64>,
 }
 impl PreparedDeviceResources {
     pub fn prepare_on_control(
@@ -154,10 +171,22 @@ impl PreparedDeviceResources {
             .ok_or(AudioStorageError::UnsupportedConstructor)?;
         let mut minimum =
             quoted_bytes::<OwnedShared<Configuration>>(count, std::mem::size_of::<Self>())?;
+        minimum = minimum
+            .checked_add(
+                count
+                    .checked_mul(std::mem::size_of::<u64>())
+                    .ok_or(AudioStorageError::Overflow)?,
+            )
+            .ok_or(AudioStorageError::Overflow)?;
         for (_, device) in devices() {
             if !registry
                 .definition(device.state().type_id())
-                .is_some_and(|definition| definition.supports_asset_resources())
+                .is_some_and(|definition| {
+                    definition.supports_asset_resources()
+                        && definition
+                            .resource_factory_inline_bound()
+                            .is_some_and(|bytes| bytes != 0)
+                })
             {
                 return Err(ResourcePreparationError::InvalidScope);
             }
@@ -187,9 +216,14 @@ impl PreparedDeviceResources {
                 .table()
                 .map_err(|_| ResourcePreparationError::InvalidScope)?,
             configurations: Vec::new(),
+            configuration_handles: Vec::new(),
         };
         result
             .configurations
+            .try_reserve_exact(count)
+            .map_err(|_| AudioStorageError::Allocation)?;
+        result
+            .configuration_handles
             .try_reserve_exact(count)
             .map_err(|_| AudioStorageError::Allocation)?;
         for (track, device) in devices() {
@@ -225,6 +259,12 @@ impl PreparedDeviceResources {
                     source_index,
                 });
             }
+            let factory_inline_bound = registry
+                .definition(state.type_id())
+                .and_then(|definition| definition.resource_factory_inline_bound())
+                .filter(|bytes| *bytes != 0)
+                .ok_or(AudioStorageError::UnknownStorage)?;
+            let handle = crate::audio_only_inputs::handle()?;
             result
                 .configurations
                 .push(OwnedShared::new_owned(Configuration {
@@ -236,7 +276,9 @@ impl PreparedDeviceResources {
                     output: state.output_gain_millidb(),
                     payload,
                     bindings,
+                    factory_inline_bound,
                 }));
+            result.configuration_handles.push(handle);
             if result.metadata_bytes()? > metadata_bytes {
                 return Err(ResourcePreparationError::MetadataCapacity);
             }
@@ -249,13 +291,130 @@ impl PreparedDeviceResources {
             quoted_bytes::<OwnedShared<Configuration>>(
                 self.configurations.capacity(),
                 std::mem::size_of::<Self>(),
-            )?,
+            )?
+            .checked_add(
+                self.configuration_handles
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<u64>())
+                    .ok_or(AudioStorageError::Overflow)?,
+            )
+            .ok_or(AudioStorageError::Overflow)?,
             |bytes, configuration| {
                 bytes
                     .checked_add(configuration.metadata_bytes()?)
                     .ok_or(AudioStorageError::Overflow.into())
             },
         )
+    }
+    pub(super) fn visit<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<u64, AudioStorageError> {
+        ledger.root(self, crate::AudioStorageRole::Current)?;
+        ledger.vec(&self.configurations)?;
+        ledger.vec(&self.configuration_handles)?;
+        let mut frames = 0u64;
+        for (configuration, handle) in self.configurations.iter().zip(&self.configuration_handles) {
+            ledger.shared(
+                configuration.arc(),
+                configuration.parts(),
+                crate::audio_storage::Owner::exclusive(self),
+                *handle,
+                None,
+            )?;
+            frames = frames
+                .checked_add(configuration.visit_backing(ledger)?)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        Ok(frames)
+    }
+    /// Capture the same immutable configuration set for an existing worker job. The scope identity
+    /// stays exact; every new physical configuration handle is minted and inventoried separately.
+    /// No PCM copy or raw owning Arc projection is exposed. All live captures must be selected in
+    /// the caller's control admission union until their actual worker-side destruction completes.
+    pub fn capture_on_control(
+        &self,
+        metadata_bytes: usize,
+    ) -> Result<Self, ResourcePreparationError> {
+        if self.metadata_bytes()? > metadata_bytes {
+            return Err(ResourcePreparationError::MetadataCapacity);
+        }
+        let mut captured = Self {
+            id: self.id,
+            sample_rate: self.sample_rate,
+            tuning: self.tuning,
+            configurations: Vec::new(),
+            configuration_handles: Vec::new(),
+        };
+        captured
+            .configurations
+            .try_reserve_exact(self.configurations.len())
+            .map_err(|_| AudioStorageError::Allocation)?;
+        captured
+            .configuration_handles
+            .try_reserve_exact(self.configurations.len())
+            .map_err(|_| AudioStorageError::Allocation)?;
+        for configuration in &self.configurations {
+            let handle = crate::audio_only_inputs::handle()?;
+            captured
+                .configurations
+                .push(configuration.clone_on_control());
+            captured.configuration_handles.push(handle);
+        }
+        if captured.metadata_bytes()? > metadata_bytes {
+            return Err(ResourcePreparationError::MetadataCapacity);
+        }
+        Ok(captured)
+    }
+    pub(crate) fn factory_inline_bound(&self, track: TrackId) -> Option<usize> {
+        self.configurations
+            .iter()
+            .find(|configuration| configuration.track == track)
+            .map(|configuration| configuration.factory_inline_bound)
+    }
+    /// Finite compiler scratch overlap from each resource definition's inline-only factory bound.
+    /// Registry preparation and its mutable-factory copy may coexist; retained factories are
+    /// separately selected from the actual compiled revision in the same control union.
+    pub fn compiler_construction_allowance_bytes(&self) -> Result<usize, ResourcePreparationError> {
+        self.configurations
+            .iter()
+            .try_fold(0usize, |bytes, configuration| {
+                bytes
+                    .checked_add(
+                        configuration
+                            .factory_inline_bound
+                            .checked_mul(2)
+                            .ok_or(AudioStorageError::Overflow)?,
+                    )
+                    .ok_or(AudioStorageError::Overflow.into())
+            })
+    }
+    /// Quote aggregate PCM-frame visits for the actual bounded compiler factory sites. This is
+    /// work, not source extent/storage: enabled instruments currently prepare three times and
+    /// bypassed instruments twice, with two source scans per call. No PCM scan occurs here.
+    pub fn compiler_scan_work_on_control(
+        &self,
+        project: &Project,
+    ) -> Result<u64, ResourcePreparationError> {
+        self.validate_project(project)
+            .map_err(|_| ResourcePreparationError::InvalidScope)?;
+        self.configurations
+            .iter()
+            .try_fold(0u64, |frames, configuration| {
+                let device = project
+                    .track(configuration.track)
+                    .and_then(|track| track.instrument())
+                    .ok_or(ResourcePreparationError::InvalidScope)?;
+                let calls = if device.bypassed() { 2 } else { 3 };
+                frames
+                    .checked_add(
+                        configuration
+                            .scan_frames()?
+                            .checked_mul(2 * calls)
+                            .ok_or(AudioStorageError::Overflow)?,
+                    )
+                    .ok_or(AudioStorageError::Overflow.into())
+            })
     }
     pub(crate) fn id(&self) -> u64 {
         self.id
@@ -316,6 +475,19 @@ pub struct PreparedDeviceResourceLease {
     id: u64,
 }
 impl PreparedDeviceResourceLease {
+    fn visit<'a>(
+        &'a self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<u64, AudioStorageError> {
+        ledger.shared(
+            self.configuration.arc(),
+            self.configuration.parts(),
+            crate::audio_storage::Owner::exclusive(self),
+            self.id,
+            None,
+        )?;
+        self.configuration.visit_backing(ledger)
+    }
     pub(crate) fn resources(&self) -> &dyn DeviceResources {
         self.configuration.as_ref()
     }
@@ -487,7 +659,7 @@ impl DeviceResourceLeaseObligation {
     fn visit<'a>(
         &'a self,
         ledger: &mut AudioRootStorageLedger<'a>,
-    ) -> Result<(), AudioStorageError> {
+    ) -> Result<u64, AudioStorageError> {
         ledger.shared(
             self.configuration.arc(),
             self.configuration.parts(),
@@ -503,31 +675,194 @@ impl DeviceResourceLeaseObligation {
             crate::audio_storage::Location("outstanding-runtime-resource-lease", 0),
             self.lease,
         )?;
-        if ledger.native_payload_once(self.configuration.as_ref())? {
-            ledger.vec(&self.configuration.payload)?;
-            ledger.vec(&self.configuration.bindings)?;
-            for binding in &self.configuration.bindings {
-                binding.source.visit(ledger)?;
+        self.configuration.visit_backing(ledger)
+    }
+}
+
+pub(crate) fn inline_resource_factory_bytes(
+    factory: &dyn hex_lattice::PreparedMutableInstrumentRuntime,
+    bound: usize,
+) -> Result<usize, AudioStorageError> {
+    factory
+        .resource_factory_inline_bytes()
+        .filter(|bytes| *bytes != 0 && *bytes == std::mem::size_of_val(factory) && *bytes <= bound)
+        .ok_or(AudioStorageError::UnknownStorage)
+}
+
+/// Borrowed actual registered-resource owners in one control admission phase.
+/// Source banks deduplicate against Session stores and other selected owners in the same ledger.
+/// This view grants neither publication authority nor a complete graph/retirement proof.
+#[derive(Clone, Copy, Default)]
+pub struct DeviceResourceAdmission<'a> {
+    sets: &'a [&'a PreparedDeviceResources],
+    revisions: &'a [&'a crate::PreparedRevision],
+    books: &'a [&'a DeviceResourcePublication],
+    book: Option<&'a DeviceResourcePublication>,
+    playback: Option<&'a crate::playback::Playback>,
+    playback_resources: Option<&'a PreparedDeviceResources>,
+    batch: Option<&'a DeviceResourcePublicationBatch>,
+    legacy_pcm_frames: u64,
+}
+impl<'a> DeviceResourceAdmission<'a> {
+    pub fn new(
+        sets: &'a [&'a PreparedDeviceResources],
+        books: &'a [&'a DeviceResourcePublication],
+    ) -> Self {
+        Self {
+            sets,
+            revisions: &[],
+            books,
+            book: None,
+            playback: None,
+            playback_resources: None,
+            batch: None,
+            legacy_pcm_frames: 0,
+        }
+    }
+    /// Borrow actual unpublished worker-owned runtime leases while an output is unavailable or
+    /// a seek/preview result awaits publication/retirement. Cancellation does not release custody.
+    pub fn unpublished_on_control(
+        playback: &'a crate::playback::Playback,
+        resources: Option<&'a PreparedDeviceResources>,
+    ) -> Self {
+        Self {
+            playback: Some(playback),
+            playback_resources: resources,
+            ..Self::default()
+        }
+    }
+    /// Select compiled resource-factory backing against one of this view's exact resource sets.
+    /// Each actual resource set/revision must be selected once per phase, not repeated through
+    /// both current/export aliases. Ordinary non-resource factory contracts remain unchanged.
+    pub fn with_prepared_revisions(mut self, revisions: &'a [&'a crate::PreparedRevision]) -> Self {
+        self.revisions = revisions;
+        self
+    }
+    pub(super) fn visit(
+        &self,
+        ledger: &mut AudioRootStorageLedger<'a>,
+    ) -> Result<u64, AudioStorageError> {
+        let mut frames = 0u64;
+        for set in self.sets {
+            frames = frames
+                .checked_add(set.visit(ledger)?)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        for revision in self.revisions {
+            let set = self
+                .sets
+                .iter()
+                .find(|set| Some(set.id()) == revision.device_resource_scope)
+                .ok_or(AudioStorageError::SourceMismatch)?;
+            revision
+                .session()
+                .visit_device_resource_factories(ledger, set)?;
+        }
+        for book in self.books.iter().copied().chain(self.book) {
+            ledger.root(book, crate::AudioStorageRole::Current)?;
+            ledger.vec(&book.obligations)?;
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(book),
+                crate::audio_storage::Location("resource-factory-inline-allowance", 0),
+                book.factory_inline_bytes,
+            )?;
+            for obligation in &book.obligations {
+                frames = frames
+                    .checked_add(obligation.visit(ledger)?)
+                    .ok_or(AudioStorageError::Overflow)?;
             }
         }
-        Ok(())
+        if let Some(playback) = self.playback {
+            ledger.root(playback, crate::AudioStorageRole::Caller)?;
+            if let Some(resources) = self.playback_resources {
+                let revision = playback
+                    .prepared_revision()
+                    .ok_or(AudioStorageError::SourceMismatch)?;
+                if revision.device_resource_scope != Some(resources.id()) {
+                    return Err(AudioStorageError::SourceMismatch);
+                }
+                frames = frames
+                    .checked_add(resources.visit(ledger)?)
+                    .ok_or(AudioStorageError::Overflow)?;
+                revision
+                    .session()
+                    .visit_device_resource_factories(ledger, resources)?;
+            } else if playback
+                .prepared_revision()
+                .is_some_and(|revision| revision.device_resource_scope.is_some())
+            {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+            let legacy = playback
+                .resident_pcm_capacity_frames()
+                .ok_or(AudioStorageError::Overflow)?;
+            let legacy_bytes = usize::try_from(legacy)
+                .ok()
+                .and_then(|frames| frames.checked_mul(std::mem::size_of::<crate::Frame>()))
+                .ok_or(AudioStorageError::Overflow)?;
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(playback),
+                crate::audio_storage::Location("unpublished-clip-pcm-capacity-allowance", 0),
+                legacy_bytes,
+            )?;
+            frames = frames
+                .checked_add(legacy)
+                .ok_or(AudioStorageError::Overflow)?;
+            for lease in playback.device_resource_leases() {
+                frames = frames
+                    .checked_add(lease.visit(ledger)?)
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
+        if let Some(batch) = self.batch {
+            ledger.root(batch, crate::AudioStorageRole::FailedConstruction)?;
+            ledger.vec(&batch.obligations)?;
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(batch),
+                crate::audio_storage::Location("resource-factory-inline-allowance", 0),
+                batch.factory_inline_bytes,
+            )?;
+            for obligation in &batch.obligations {
+                frames = frames
+                    .checked_add(obligation.visit(ledger)?)
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
+        let legacy_bytes = usize::try_from(self.legacy_pcm_frames)
+            .ok()
+            .and_then(|frames| frames.checked_mul(std::mem::size_of::<crate::Frame>()))
+            .ok_or(AudioStorageError::Overflow)?;
+        if let Some(book) = self.book {
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(book),
+                crate::audio_storage::Location("ordinary-clip-pcm-capacity-allowance", 0),
+                legacy_bytes,
+            )?;
+        }
+        frames
+            .checked_add(self.legacy_pcm_frames)
+            .ok_or(AudioStorageError::Overflow)
     }
 }
 
 /// Output-owned immutable limits and exact outstanding resource obligations.
 /// This inventories only the resource subtree. Ordinary clip PCM remains a separately charged
-/// conservative capacity allowance, without native constructor provenance; runtime/context/DSP
-/// buffers retain their existing budgets. No whole-graph DATA or retirement proof is claimed.
+/// conservative capacity allowance, without native constructor provenance. Validated fixed inline
+/// resource factories have a separate conservative allowance per accepted/unreturned graph;
+/// source-tail anchors never retain a whole revision. Runtime/context/DSP buffers retain their existing budgets. No whole-graph DATA or retirement proof is claimed.
 /// Allocation, capture, source destruction and ledger traversal are control operations only.
 pub struct DeviceResourcePublication {
     reservation: crate::AudioStorageLedgerReservation,
     obligations: Vec<DeviceResourceLeaseObligation>,
     max_obligations: usize,
+    factory_inline_bytes: usize,
+    unreturned_graphs: usize,
 }
 /// Unpublished resource obligations, captured from the actual candidate on control. A refusal
 /// destroys these anchors on control while returning the unchanged candidate owner to its caller.
 struct DeviceResourcePublicationBatch {
     obligations: Vec<DeviceResourceLeaseObligation>,
+    factory_inline_bytes: usize,
 }
 impl DeviceResourcePublication {
     pub fn reserve_on_control(
@@ -535,11 +870,13 @@ impl DeviceResourcePublication {
         max_obligations: usize,
     ) -> Result<Self, ResourcePreparationError> {
         let max_obligations = max_obligations.min(reservation.handle_rows / 2);
-        Self::preflight_metadata(reservation, max_obligations, 0, 0)?;
+        Self::preflight_metadata(reservation, max_obligations, 0, 0, 0)?;
         let mut result = Self {
             reservation,
             obligations: Vec::new(),
             max_obligations,
+            factory_inline_bytes: 0,
+            unreturned_graphs: 0,
         };
         result
             .obligations
@@ -548,10 +885,26 @@ impl DeviceResourcePublication {
         result.inspect(
             &DeviceResourcePublicationBatch {
                 obligations: Vec::new(),
+                factory_inline_bytes: 0,
             },
             0,
         )?;
         Ok(result)
+    }
+    /// Borrow actual outstanding obligations, plus the output's separate conservative clip-PCM
+    /// allowance. This is control admission inventory, never a quiescence or retirement signal.
+    pub fn admission_on_control(&self, legacy_pcm_frames: u64) -> DeviceResourceAdmission<'_> {
+        DeviceResourceAdmission {
+            book: Some(self),
+            legacy_pcm_frames,
+            ..DeviceResourceAdmission::default()
+        }
+    }
+    /// Accepted ordinary graph owners not yet physically destroyed on control, including graphs
+    /// with no device resources. Callers retain their existing bounded per-runtime buffer allowance
+    /// for each owner; this counter does not attest whole-graph allocation identity.
+    pub fn unreturned_graphs_on_control(&self) -> usize {
+        self.unreturned_graphs
     }
     pub fn outstanding_leases(&self) -> usize {
         self.obligations.len()
@@ -561,6 +914,9 @@ impl DeviceResourcePublication {
         playback: &crate::playback::Playback,
         legacy_pcm_frames: u64,
     ) -> Result<DeviceResourcePublicationBatch, ResourcePreparationError> {
+        if self.unreturned_graphs == usize::MAX {
+            return Err(AudioStorageError::Overflow.into());
+        }
         let count = playback.device_resource_leases().count();
         if count > MAX_PLAYBACK_DEVICE_RESOURCE_LEASES
             || self
@@ -571,14 +927,21 @@ impl DeviceResourcePublication {
         {
             return Err(ResourcePreparationError::MetadataCapacity);
         }
+        let factory_inline_bytes = playback.resource_factory_inline_bytes_on_control()?;
+        let total_factory_bytes = self
+            .factory_inline_bytes
+            .checked_add(factory_inline_bytes)
+            .ok_or(AudioStorageError::Overflow)?;
         Self::preflight_metadata(
             self.reservation,
             self.obligations.capacity(),
             count,
             legacy_pcm_frames,
+            total_factory_bytes,
         )?;
         let mut batch = DeviceResourcePublicationBatch {
             obligations: Vec::new(),
+            factory_inline_bytes,
         };
         batch
             .obligations
@@ -602,6 +965,7 @@ impl DeviceResourcePublication {
         retained_capacity: usize,
         batch_count: usize,
         legacy_pcm_frames: u64,
+        factory_inline_bytes: usize,
     ) -> Result<(), ResourcePreparationError> {
         let minimum = std::mem::size_of::<Self>()
             .checked_add(std::mem::size_of::<DeviceResourcePublicationBatch>())
@@ -624,6 +988,7 @@ impl DeviceResourcePublication {
                         .checked_mul(std::mem::size_of::<crate::Frame>())?,
                 )
             })
+            .and_then(|bytes| bytes.checked_add(factory_inline_bytes))
             .ok_or(AudioStorageError::Overflow)?;
         if minimum > reservation.max_retained_bytes
             || minimum > reservation.max_construction_peak_bytes
@@ -643,6 +1008,16 @@ impl DeviceResourcePublication {
             ledger.vec(&self.obligations)?;
             ledger.root(batch, crate::AudioStorageRole::FailedConstruction)?;
             ledger.vec(&batch.obligations)?;
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(self),
+                crate::audio_storage::Location("resource-factory-inline-allowance", 0),
+                self.factory_inline_bytes,
+            )?;
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(batch),
+                crate::audio_storage::Location("resource-factory-inline-allowance", 0),
+                batch.factory_inline_bytes,
+            )?;
             for obligation in self.obligations.iter().chain(&batch.obligations) {
                 obligation.visit(ledger)?;
             }
@@ -667,11 +1042,33 @@ impl DeviceResourcePublication {
         legacy_pcm_frames: u64,
         publish: impl FnOnce(crate::playback::Playback) -> Result<T, E>,
     ) -> Result<T, DeviceResourcePublishError<E>> {
+        self.publish_admitted_on_control(playback, legacy_pcm_frames, |playback, _| {
+            publish(playback)
+        })
+    }
+
+    /// Prepare actual prospective anchors, then synchronously lend the current book and candidate
+    /// batch to the caller's full control union before its final enqueue. No owner/proof escapes
+    /// through the borrowed view. Refusal drops only unpublished anchors on control and returns
+    /// the unchanged candidate through the caller's error; queue success commits the exact batch.
+    pub fn publish_admitted_on_control<T, E>(
+        &mut self,
+        playback: crate::playback::Playback,
+        legacy_pcm_frames: u64,
+        publish: impl FnOnce(crate::playback::Playback, DeviceResourceAdmission<'_>) -> Result<T, E>,
+    ) -> Result<T, DeviceResourcePublishError<E>> {
         let mut batch = match self.prepare_on_control(&playback, legacy_pcm_frames) {
             Ok(batch) => batch,
             Err(reason) => return Err(DeviceResourcePublishError::Resources { reason, playback }),
         };
-        let result = publish(playback).map_err(DeviceResourcePublishError::Publication)?;
+        let view = DeviceResourceAdmission {
+            batch: Some(&batch),
+            ..self.admission_on_control(legacy_pcm_frames)
+        };
+        let result = publish(playback, view).map_err(DeviceResourcePublishError::Publication)?;
+        // The identical sum was checked before the queue move; no fallible commit remains.
+        self.unreturned_graphs += 1;
+        self.factory_inline_bytes += batch.factory_inline_bytes;
         self.obligations.append(&mut batch.obligations);
         Ok(result)
     }
@@ -680,7 +1077,13 @@ impl DeviceResourcePublication {
     /// Migrated leases absent from that graph retain their original source obligations.
     pub fn retire_on_control(&mut self, playback: Box<crate::playback::Playback>) {
         self.mark_returned_on_control(&playback);
+        let factory_bytes = playback.resource_factory_inline_bytes_on_control();
         drop(playback);
+        self.unreturned_graphs = self.unreturned_graphs.checked_sub(1).unwrap_or(usize::MAX);
+        self.factory_inline_bytes = factory_bytes
+            .ok()
+            .and_then(|bytes| self.factory_inline_bytes.checked_sub(bytes))
+            .unwrap_or(usize::MAX);
         self.release_marked_after_drop_on_control();
     }
 

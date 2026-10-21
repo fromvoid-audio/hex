@@ -14,6 +14,9 @@ pub(crate) struct Files {
     output: PathBuf,
 }
 impl Files {
+    pub(crate) fn source(&self) -> &Path {
+        &self.source
+    }
     pub(crate) fn new(stereo: bool) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
@@ -480,7 +483,8 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
         },
     ];
     let stores = [&session.native_assets];
-    let phase = ControlSamplerPhase {
+    let phase = DeviceResourcePhase {
+        registered: &[],
         stores: &stores,
         selections: &selections,
         outbound: &[],
@@ -489,7 +493,7 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
         construction_bytes: 0,
     };
     let totals =
-        resources::inspect_control_sampler_union(&phase, &phase, reservation().storage).unwrap();
+        resources::inspect_device_resource_union(&phase, &phase, reservation().storage).unwrap();
     drop(first);
     lane.active = None;
     let exact = hex_engine::AudioStorageLedgerReservation {

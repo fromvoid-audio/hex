@@ -1797,23 +1797,35 @@ fn prepare_with_waveforms(
     transforms: &hex_engine::audio_transform::AudioTransformPreparation,
     retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
 ) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
-    media.validate_clip_sources(project)?;
-    device_comparison::validate_project(project)?;
-    let mut old = retained
-        .try_borrow_mut()
-        .map_err(|_| hex_engine::Invalid("audio waveform state is already borrowed"))?;
-    let (prepared, next) = transforms.transaction(|| {
-        let prepared = if media.verified.is_empty() {
+    prepare_with_waveforms_using(project, media, transforms, retained, || {
+        if media.verified.is_empty() {
             hex_engine::PreparedRevision::prepare_with_audio_transforms(
                 project,
                 &media.resident,
                 table,
                 previous,
                 transforms,
-            )?
+            )
         } else {
-            media.prepare(project, table, previous)?
-        };
+            media.prepare(project, table, previous)
+        }
+    })
+}
+
+fn prepare_with_waveforms_using(
+    project: &Project,
+    media: &MediaBank,
+    transforms: &hex_engine::audio_transform::AudioTransformPreparation,
+    retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
+    prepare: impl FnOnce() -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
+    media.validate_clip_sources(project)?;
+    device_comparison::validate_project(project)?;
+    let mut old = retained
+        .try_borrow_mut()
+        .map_err(|_| hex_engine::Invalid("audio waveform state is already borrowed"))?;
+    let (prepared, next) = transforms.transaction(|| {
+        let prepared = prepare()?;
         // At most 262144 leaf bins per accepted revision (plus bounded pyramid
         // and per-root metadata). Dense projects receive coarser truthful peaks.
         let requested_bins =

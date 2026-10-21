@@ -115,8 +115,13 @@ impl Session {
                 admit()?;
                 Ok(Arc::new(prepared))
             },
+            |_, _| Ok(()),
         )
     }
+    /// Complete staged preparation and the final cancel check before invoking `finalize`.
+    /// A worker publication may enqueue there as its last fallible operation: after success only
+    /// already-reserved source/history/overview moves remain, so late cancellation cannot claim
+    /// that an accepted publication rolled the canonical edit back.
     pub(crate) fn import_device_asset_prepared<T>(
         &mut self,
         decoded: DecodedAudio,
@@ -131,6 +136,10 @@ impl Session {
             &hex_engine::native_device_resources::StagedNativeAssetView<'_>,
             &std::collections::HashMap<hex_project::AssetId, crate::ResidentAsset>,
         ) -> Result<T, SessionError>,
+        finalize: impl FnOnce(
+            &mut T,
+            &hex_engine::native_device_resources::StagedNativeAssetView<'_>,
+        ) -> Result<(), SessionError>,
     ) -> Result<(Created, T), SessionError> {
         let reservation = self.native_reservation.ok_or(SessionError::Invalid(
             "native source import requires an explicit resident reservation",
@@ -256,7 +265,7 @@ impl Session {
                             )?;
                         let source_overviews =
                             old_overviews.inserted(overview_budget, id, overview)?;
-                        let prepared = prepare(
+                        let mut prepared = prepare(
                             candidate,
                             &media,
                             table,
@@ -268,6 +277,7 @@ impl Session {
                         if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
                             return Err(ResourcePreparationError::Cancelled.into());
                         }
+                        finalize(&mut prepared, stage)?;
                         Ok::<_, SessionError>((prepared, source_overviews))
                     },
                 )

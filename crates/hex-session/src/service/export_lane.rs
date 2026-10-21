@@ -1,7 +1,7 @@
 //! One bounded export's real control custody. UI result polling never retires it.
 use super::sampler_export::ServiceExportSnapshot;
 use super::*;
-use hex_engine::native_device_resources::{ControlSamplerPhase, ControlSamplerSelection};
+use hex_engine::native_device_resources::{ControlSamplerSelection, DeviceResourcePhase};
 
 enum DispatchState {
     Pending(Option<hex_engine::native_device_resources::DispatchedSourceObligation>),
@@ -149,7 +149,8 @@ impl ExportLane {
             .values()
             .flat_map(|m| [&m.source_audio, &m.audio])
             .collect::<Vec<_>>();
-        let phase = ControlSamplerPhase {
+        let phase = DeviceResourcePhase {
+            registered: &[],
             stores: &stores,
             selections: &selections,
             outbound: &[],
@@ -162,7 +163,7 @@ impl ExportLane {
         let reservation = session
             .native_reservation
             .ok_or("native reservation unavailable")?;
-        let inventory = hex_engine::native_device_resources::inspect_control_sampler_union(
+        let inventory = hex_engine::native_device_resources::inspect_device_resource_union(
             &phase,
             &phase,
             reservation.storage,

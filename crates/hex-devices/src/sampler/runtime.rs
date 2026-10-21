@@ -79,6 +79,9 @@ pub struct SamplerRuntime {
     active: Active,
 }
 impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
+    fn resource_factory_inline_bytes(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
+    }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
     }

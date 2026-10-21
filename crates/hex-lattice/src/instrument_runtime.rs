@@ -150,6 +150,12 @@ pub struct NativeInstrumentRuntimeLimits {
 /// envelope release and internal feedback/output state; the runtime must
 /// become quiescent by that bound.
 pub trait PreparedMutableInstrumentRuntime: Send + Sync {
+    /// Opt-in declaration that the immutable factory owns only its inline Box payload, with no
+    /// owned heap backing. The host cross-checks this against dynamic `size_of_val` for resource
+    /// admission. Default unknown; twin-runtime storage never proves factory storage ownership.
+    fn resource_factory_inline_bytes(&self) -> Option<usize> {
+        None
+    }
     /// Fixed algorithmic buffering latency at this prepared sample rate.
     /// Unknown is explicit; envelope attack, filter phase and musical release
     /// are not buffering latency. A mutable factory must agree with its source.

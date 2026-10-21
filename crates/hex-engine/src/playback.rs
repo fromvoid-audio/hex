@@ -316,6 +316,27 @@ impl Playback {
             .iter()
             .flat_map(|runtime| runtime.device_resource_leases())
     }
+    /// Existing Session runtime-buffer accounting on control, excluding immutable prepared graph,
+    /// source PCM and factory backing. This is the same bounded host/DSP inventory used by preroll;
+    /// it is not whole-graph DATA identity or native constructor provenance.
+    pub fn accounted_session_runtime_bytes_on_control(&self) -> Option<usize> {
+        self.session_runtime
+            .as_ref()?
+            .accounted_runtime_storage_bytes()
+    }
+    /// Validated immutable inline resource-factory bytes retained by this graph. Publication may
+    /// conservatively charge this per owner until its actual control-side destruction, separately
+    /// from migrated source obligations. No revision owner is added to a source-tail anchor.
+    pub fn resource_factory_inline_bytes_on_control(
+        &self,
+    ) -> Result<usize, crate::AudioStorageError> {
+        match self.prepared_revision.as_deref() {
+            Some(revision) if revision.device_resource_scope.is_some() => {
+                revision.session().resource_factory_inline_bytes()
+            }
+            _ => Ok(0),
+        }
+    }
     pub fn contains_device_resource_leases(&self) -> bool {
         self.device_resource_leases().next().is_some()
     }

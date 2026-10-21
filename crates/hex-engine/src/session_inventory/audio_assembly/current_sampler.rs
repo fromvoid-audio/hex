@@ -36,6 +36,7 @@ impl SessionAssembly {
             .map_err(|_| AudioStorageError::Allocation)?;
         for config in metadata.configurations() {
             self.unused_mutable.push(PreparedMutableTrackInstrument {
+                resource_factory_inline_bound: None,
                 track: config.track,
                 factory: Box::new(config.prepared.clone()),
                 history_retarget_target: None,

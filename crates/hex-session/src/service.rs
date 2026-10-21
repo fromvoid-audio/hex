@@ -23,11 +23,14 @@ mod audio_sink;
 mod canonical_audio_source;
 mod comparison_audio;
 mod export_lane;
+mod resident_audio;
 pub(crate) mod sampler_export;
 mod sampler_parameter;
 use audio_sink::WorkerEvents;
 pub use audio_sink::{
-    NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts, WorkerAudioSink,
+    NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
+    ResidentFreshRuntimeFence, ResidentPublicationAcceptance, ResidentPublicationMetadata,
+    ResidentPublicationPolicy, ResidentPublicationRefusal, WorkerAudioSink,
 };
 pub use comparison_audio::ComparisonAudioBinding;
 use export_lane::ExportLane;
@@ -1499,9 +1502,39 @@ fn run_worker(
     let mut compiled: Option<(u64, Arc<PreparedRevision>)> = None;
     let mut current_sources: Option<hex_engine::native_device_resources::ControlSamplerSources> =
         None;
+    let mut resident_snapshot: Option<resident_audio::Snapshot> = None;
     let mut device_gesture = GestureMachine::default();
     let mut tuning_gesture = TuningGestureMachine::default();
-    let initial_compile = if session.native_reservation.is_some() {
+    if events.resident_publication_enabled()
+        && let Some(source) = state.canonical_audio_source.as_ref()
+    {
+        events.canonical_source_changed(source);
+    }
+    let initial_compile = if events.resident_publication_enabled()
+        && session.audio_mode() == DocumentAudioMode::Resident
+    {
+        events
+            .resident_audio()
+            .ok_or_else(|| "native worker unavailable".to_owned())
+            .and_then(|sink| {
+                session
+                    .publish_resident_snapshot(
+                        hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision,
+                        },
+                        sink,
+                        sampler_export::Admission::default(),
+                        None,
+                    )
+                    .map_err(|error| error.to_string())
+            })
+            .map(|snapshot| {
+                let prepared = Arc::clone(&snapshot.prepared);
+                resident_snapshot = Some(snapshot);
+                prepared
+            })
+    } else if session.native_reservation.is_some() {
         session
             .prepare_service_snapshot(session.project(), sampler_export::Admission::default())
             .map(|s| s.prepared)
@@ -1523,7 +1556,8 @@ fn run_worker(
             compiled = Some((revision, Arc::clone(&prepared)));
             Event {
                 state: Arc::clone(&state),
-                playback: Some(native_playback(prepared)),
+                playback: (!events.resident_publication_enabled())
+                    .then(|| native_playback(prepared)),
                 status: Some("project ready".into()),
                 error: None,
                 audio_batch_failure: None,
@@ -1889,10 +1923,11 @@ fn run_worker(
             }),
             _ => None,
         };
-        let native_edit_refusal = export_lane
-            .native_hold
-            .current_context
-            .is_some_and(|c| c.project_generation == project_generation)
+        let native_edit_refusal = !events.resident_publication_enabled()
+            && export_lane
+                .native_hold
+                .current_context
+                .is_some_and(|c| c.project_generation == project_generation)
             && matches!(
                 &request,
                 Request::AssignSampler { .. }
@@ -1901,6 +1936,7 @@ fn run_worker(
                     | Request::ImportDeviceAsset { .. }
             );
         let sampler_refusal = private_sampler
+            && !events.resident_publication_enabled()
             && !matches!(
                 &request,
                 Request::RestartAudio { .. }
@@ -2353,6 +2389,7 @@ fn run_worker(
                     path,
                     cancel,
                 } => {
+                    let mut loaded_resident = None;
                     let result = (|| -> Result<_, SessionError> {
                         if target_generation != project_generation || target_revision != revision {
                             return Err(SessionError::Invalid("sampler load target changed"));
@@ -2376,7 +2413,7 @@ fn run_worker(
                                 "sampler load target changed or slot is occupied",
                             ));
                         }
-                        if private_sampler {
+                        if private_sampler && !events.resident_publication_enabled() {
                             return Err(SessionError::Invalid(
                                 "first sampler load only; active sampler replacement is unavailable",
                             ));
@@ -2404,6 +2441,37 @@ fn run_worker(
                                 prepared: Some(p),
                             }
                         });
+                        if let Some(sink) = events.resident_audio() {
+                            let (state, source_slot) = match empty_sampler.as_ref() {
+                                Some((_, expected)) => hex_engine::sampler_replacement_template_on_control(expected, decoded.audio().frames().len())?,
+                                None => hex_engine::native_device_resources::sampler_import_template_on_control(decoded.audio().frames().len())?,
+                            };
+                            let destination = match empty_sampler {
+                                Some((device, expected_state)) => crate::native_assets::NativeAssetDestination::ExistingInstrument { track, device, expected_state, state, source_slot },
+                                None => crate::native_assets::NativeAssetDestination::EmptyInstrument { track, state, source_slot },
+                            };
+                            let (created, snapshot) = session.import_resident_sampler(
+                                decoded,
+                                &cancel,
+                                destination,
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision.saturating_add(1),
+                                },
+                                sink,
+                                export_lane.admission(current),
+                                resident_snapshot.as_ref(),
+                            )?;
+                            let prepared = Arc::clone(&snapshot.prepared);
+                            loaded_resident = Some(snapshot);
+                            return Ok((
+                                created,
+                                sampler_export::ServiceExportSnapshot {
+                                    prepared,
+                                    sources: None,
+                                },
+                            ));
+                        }
                         session.import_service_snapshot_to_sampler(
                             decoded,
                             &cancel,
@@ -2414,6 +2482,9 @@ fn run_worker(
                     })();
                     match result {
                         Ok((asset, snapshot)) => {
+                            if let Some(snapshot) = loaded_resident {
+                                resident_snapshot = Some(snapshot);
+                            }
                             created = Some(asset);
                             unsaved = true;
                             replacement_revision = Some(snapshot.prepared);
@@ -2474,6 +2545,44 @@ fn run_worker(
                                 }
                                 .into(),
                             );
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
+                Request::Edit(command)
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident =>
+                {
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision.saturating_add(1),
+                    };
+                    let admission =
+                        export_lane.admission(compiled.as_ref().map(|(_, prepared)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(prepared),
+                            }
+                        }));
+                    let result = events
+                        .resident_audio()
+                        .ok_or(SessionError::Invalid("native worker unavailable"))
+                        .and_then(|sink| {
+                            session.command_resident_snapshot(
+                                command,
+                                context,
+                                sink,
+                                admission,
+                                resident_snapshot.as_ref(),
+                            )
+                        });
+                    match result {
+                        Ok((new, snapshot)) => {
+                            created = Some(new);
+                            unsaved = true;
+                            replacement_revision = Some(Arc::clone(&snapshot.prepared));
+                            resident_snapshot = Some(snapshot);
+                            status = Some("resident edit accepted · waiting for audio".into());
                         }
                         Err(reason) => error = Some(reason.to_string()),
                     }
@@ -3964,9 +4073,11 @@ fn run_worker(
         // Ordinary gesture publications already carry the prepared live-keyboard
         // input and tuning hint, so keep that specialized preview intact.
         let prefer_rebased_preview = canonical_changed && playback_uses_preview;
-        let mut playback = if hex_engine::native_device_resources::requires_private_sampler_sources(
-            session.project(),
-        ) || session.audio_mode() == DocumentAudioMode::VerifiedStreaming
+        let mut playback = if events.resident_publication_enabled()
+            || hex_engine::native_device_resources::requires_private_sampler_sources(
+                session.project(),
+            )
+            || session.audio_mode() == DocumentAudioMode::VerifiedStreaming
         {
             None
         } else if computer_keyboard_playback.is_some() && !prefer_rebased_preview {

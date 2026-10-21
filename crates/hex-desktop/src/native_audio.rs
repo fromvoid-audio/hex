@@ -20,6 +20,7 @@ use std::sync::{
     mpsc::{self, SyncSender, TrySendError},
 };
 
+mod resident;
 mod sampler;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests;
@@ -61,6 +62,7 @@ struct Preparation {
 }
 pub(super) struct NativeAudioSink {
     policy: Result<AudioPolicy, String>,
+    resident: resident::Resident,
     events: SyncSender<EditorAudioEvent>,
     pending_open_event: Option<EditorAudioEvent>,
     pending_observation: Option<EditorAudioEvent>,
@@ -95,6 +97,7 @@ impl NativeAudioSink {
     fn new(events: SyncSender<EditorAudioEvent>) -> Self {
         Self {
             policy: AudioPolicy::new(),
+            resident: resident::Resident::default(),
             events,
             pending_open_event: None,
             pending_observation: None,
@@ -741,6 +744,36 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn resident_admission(
+        &self,
+    ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {
+        self.resident_inventory()
+    }
+    #[allow(clippy::result_large_err)] // Preserve the exact graph owner on refusal.
+    fn publish_resident(
+        &mut self,
+        playback: hex_engine::playback::Playback,
+        resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+        metadata: hex_session::service::ResidentPublicationMetadata,
+        policy: hex_session::service::ResidentPublicationPolicy,
+        metadata_limit: usize,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> Result<
+        hex_session::service::ResidentPublicationAcceptance,
+        hex_session::service::ResidentPublicationRefusal,
+    > {
+        self.publish_resident_graph(playback, resources, metadata, policy, metadata_limit, admit)
+    }
+    fn poll_resident_pending(
+        &mut self,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) {
+        self.retry_resident_pending(admit);
+    }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
         self.request_open(None, None);
         loop {

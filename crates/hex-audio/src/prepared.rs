@@ -814,6 +814,21 @@ pub struct PublishError {
     pub playback: Playback,
 }
 
+/// A failed full control-union admission retains the same unpublished graph, independently of
+/// a queue/resource refusal. Neither outcome changes canonical history or acknowledges playback.
+pub enum AdmittedPublishError<E> {
+    Admission { reason: E, playback: Playback },
+    Publication(PublishError),
+}
+impl<E: std::fmt::Debug> std::fmt::Debug for AdmittedPublishError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Admission { reason, .. } => f.debug_tuple("Admission").field(reason).finish(),
+            Self::Publication(error) => std::fmt::Debug::fmt(error, f),
+        }
+    }
+}
+
 impl std::fmt::Debug for PublishError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -1190,6 +1205,78 @@ impl PublicationControl {
         Ok(())
     }
 
+    /// Synchronous worker-side inventory of the active resource book. Select this actual root
+    /// once in a control union; a prospective publication view already includes the same book.
+    pub fn device_resource_admission_on_control(
+        &self,
+    ) -> Option<hex_engine::native_device_resources::DeviceResourceAdmission<'_>> {
+        self.device_resources
+            .as_ref()
+            .map(|book| book.admission_on_control(self.legacy_pcm_frames))
+    }
+
+    /// Freeze all graph publication and move the actual resource book into the caller's one
+    /// retirement hold before dropping its output. Actual runtimes still own their leases.
+    /// Retain this book and the separate legacy allowance until a fresh output acquires the
+    /// existing exclusive native lease; endpoint destruction alone does not prove that frontier.
+    pub fn take_device_resource_publication_on_shutdown(
+        &mut self,
+    ) -> Option<hex_engine::native_device_resources::DeviceResourcePublication> {
+        self.request_shutdown();
+        self.reclaim();
+        self.device_resources.take()
+    }
+
+    /// Admit the actual current/prospective resource union, then enqueue as the final fallible
+    /// prepared-transition step. The caller must reserve canonical commit storage beforehand and
+    /// must not report cancellation/rollback after success. Submitted is not callback-applied.
+    pub fn publish_with_admission_on_control<E>(
+        &mut self,
+        playback: Playback,
+        policy: PublicationPolicy,
+        control_context_generation: u64,
+        admit: impl FnOnce(
+            hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
+        ) -> Result<(), E>,
+    ) -> Result<u64, AdmittedPublishError<E>> {
+        let Some(mut resources) = self.device_resources.take() else {
+            return Err(AdmittedPublishError::Publication(PublishError {
+                reason: "ordinary worker publication is not configured",
+                playback,
+            }));
+        };
+        let legacy_pcm = playback
+            .resident_pcm_capacity_frames()
+            .and_then(|frames| self.legacy_pcm_frames.checked_add(frames));
+        let result = if let Some(legacy_pcm) = legacy_pcm {
+            resources.publish_admitted_on_control(playback, legacy_pcm, |playback, view| {
+                if let Err(reason) = admit(view) {
+                    return Err(AdmittedPublishError::Admission { reason, playback });
+                }
+                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, false)
+                    .map_err(AdmittedPublishError::Publication)
+            }).map_err(|error| match error {
+                hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } =>
+                    AdmittedPublishError::Publication(PublishError { reason: "device resource publication storage reservation exceeded", playback }),
+                hex_engine::native_device_resources::DeviceResourcePublishError::Publication(error) => error,
+            })
+        } else {
+            Err(AdmittedPublishError::Publication(PublishError {
+                reason: "resident pcm obligation unavailable or overflowing",
+                playback,
+            }))
+        };
+        self.device_resources = Some(resources);
+        result
+    }
+
+    /// Actual accepted ordinary graph owners still requiring control destruction. Resource-free
+    /// graphs count too; a migrated original-source lease can outlive its introducing graph.
+    pub fn unreturned_resident_graphs_on_control(&self) -> Option<usize> {
+        self.device_resources
+            .as_ref()
+            .map(|book| book.unreturned_graphs_on_control())
+    }
     pub fn outstanding_device_resource_leases(&self) -> usize {
         self.device_resources
             .as_ref()
