@@ -2981,7 +2981,7 @@ fn run_worker(
                                 replacement_revision = Some(snapshot.prepared);
                                 replacement_sources = Some(snapshot.sources);
                                 status =
-                                    Some("sampler gain saved in project · preparing audio".into());
+                                    Some("sampler gain changed · preparing audio".into());
                             }
                             Err(reason) => {
                                 if let Some(audio) = events.sampler_gain_audio() {
