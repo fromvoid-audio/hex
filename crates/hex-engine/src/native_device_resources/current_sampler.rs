@@ -182,6 +182,16 @@ pub(crate) struct CurrentSamplerConfiguration {
     references: Vec<hex_lattice_contract::DeviceAssetReference>,
     scope: DeviceResourceScope,
 }
+impl CurrentSamplerConfiguration {
+    pub(crate) fn matches_state(&self, state: &NativeDeviceState) -> bool {
+        state.type_id() == hex_devices::sampler::state::TYPE_ID
+            && state.state_version() == hex_devices::sampler::state::STATE_VERSION
+            && state.payload() == self.payload
+            && state.asset_references() == self.references
+            && state.input_gain_linear().to_bits() == self.input_gain.to_bits()
+            && state.output_gain_linear().to_bits() == self.output_gain.to_bits()
+    }
+}
 pub(crate) struct CurrentSamplerMetadata {
     pub(crate) id: u64,
     catalog: DeviceResourceCatalog,
@@ -228,10 +238,6 @@ pub(crate) fn validate_project(project: &Project) -> Result<bool, AudioStorageEr
             .return_tracks()
             .iter()
             .any(|r| !r.devices().is_empty())
-        || project
-            .session_cells()
-            .iter()
-            .any(|c| matches!(c.content(), hex_project::SessionCellContent::Midi(_)))
     {
         return Err(AudioStorageError::UnsupportedGraph);
     }
@@ -247,7 +253,12 @@ pub(crate) fn validate_project(project: &Project) -> Result<bool, AudioStorageEr
             return Err(AudioStorageError::UnsupportedGraph);
         }
         let Some(device) = track.instrument() else {
-            if !track.midi_clips().is_empty() {
+            if !track.midi_clips().is_empty()
+                || project.session_cells().iter().any(|c| {
+                    c.track() == track.id()
+                        && matches!(c.content(), hex_project::SessionCellContent::Midi(_))
+                })
+            {
                 return Err(AudioStorageError::UnsupportedGraph);
             }
             continue;

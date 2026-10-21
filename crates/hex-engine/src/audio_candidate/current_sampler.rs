@@ -1,6 +1,12 @@
 //! Synchronous borrowing facade for the actual native CURRENT source root.
 use super::*;
 impl RuntimeOwner {
+    pub(super) fn sampler_console_available(&self) -> bool {
+        self.sampler_sources.is_some()
+            && self.playback.current_sampler_console_available()
+            && self.playback.session_capability_status()
+                == crate::SessionCapabilityStatus::Available
+    }
     pub(super) fn apply_action(
         &mut self,
         action: crate::PlaybackAction,
@@ -13,6 +19,18 @@ impl RuntimeOwner {
                 ) => {}
                 Transport(PlaybackCommand::Play) if self.playback.position() == 0 => {}
                 crate::PlaybackAction::SetMetronome(_) => {}
+                crate::PlaybackAction::Session(
+                    crate::SessionPlaybackCommand::LaunchClip { .. }
+                    | crate::SessionPlaybackCommand::LaunchScene { .. }
+                    | crate::SessionPlaybackCommand::StopTrack { .. }
+                    | crate::SessionPlaybackCommand::StopAllClips { .. }
+                    | crate::SessionPlaybackCommand::BackToArrangement { .. }
+                    | crate::SessionPlaybackCommand::CancelPending { .. },
+                )
+                | crate::PlaybackAction::LaunchAndPlay(
+                    crate::SessionPlaybackCommand::LaunchClip { .. }
+                    | crate::SessionPlaybackCommand::LaunchScene { .. },
+                ) if self.sampler_console_available() => {}
                 _ => {
                     return Err(crate::PlaybackActionError::Session(
                         crate::SessionPlaybackError::InvalidCommand,

@@ -259,22 +259,51 @@ fn current_sampler_actual_constructor_has_literal_pcm_stop_replay_and_closed_cus
 
 #[test]
 fn sampler_compiler_reserves_empty_clip_and_note_workspace_before_entering() {
-    for note_count in [0, 3, 21, 256] {
+    for (session, note_count) in [
+        (false, 0),
+        (false, 3),
+        (false, 21),
+        (false, 256),
+        (true, 0),
+        (true, 21),
+    ] {
         let (project, asset) = fixture();
         let mut editor = Editor::new(project, 8).unwrap();
         let track = editor.project().tracks()[0].id();
         let clip = editor.project().tracks()[0].midi_clips()[0].id();
         editor.execute(Command::RemoveMidiClip(clip)).unwrap();
-        if note_count != 0 {
-            let Created::Clip(clip) = editor
-                .execute(Command::PlaceMidiClip {
-                    track,
-                    start: BeatTime::ZERO,
-                    length: BeatTime::from_raw(BeatTime::ONE.raw() * note_count),
-                })
-                .unwrap()
-            else {
-                panic!("clip")
+        if note_count != 0 || session {
+            let created = if session {
+                let Created::Scene(scene) = editor
+                    .execute(Command::AddScene {
+                        name: "console".into(),
+                    })
+                    .unwrap()
+                else {
+                    panic!("scene")
+                };
+                editor
+                    .execute(Command::CreateSessionMidiClip {
+                        track,
+                        scene,
+                        name: "pattern".into(),
+                        source_length: BeatTime::from_raw(BeatTime::ONE.raw() * note_count.max(1)),
+                    })
+                    .unwrap()
+            } else {
+                editor
+                    .execute(Command::PlaceMidiClip {
+                        track,
+                        start: BeatTime::ZERO,
+                        length: BeatTime::from_raw(BeatTime::ONE.raw() * note_count),
+                    })
+                    .unwrap()
+            };
+            let clip = match created {
+                Created::Clip(clip) | Created::SessionClip(clip) => clip,
+                _ => {
+                    panic!("clip")
+                }
             };
             for i in 0..note_count {
                 editor
@@ -683,3 +712,6 @@ fn current_sampler_keyboard_pool_preflight_and_host_route_gains_are_bounded_once
     }
     cell.cleanup_on_control().unwrap();
 }
+
+#[path = "console_tests.rs"]
+mod console;

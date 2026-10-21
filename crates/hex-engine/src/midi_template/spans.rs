@@ -3,8 +3,10 @@ use super::{
     MIDI_TEMPLATE_QUERY_FRAMES, MidiTemplateError, PreparedMidiSourceTemplate, SourceSpan,
     require_positive_frame_advance,
 };
+mod current_sampler;
 mod density;
 use crate::{MidiTiming, PreparedTempoMap, PreparedTrackMix, midi_note_bank::PreparedMidiNote};
+pub(crate) use current_sampler::CurrentSamplerEventCustody;
 use density::admit_voice_density;
 use hex_devices::SineTable;
 use hex_lattice::{PreparedAnalyticNote, PreparedNativeInstrument};

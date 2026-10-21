@@ -293,6 +293,10 @@ impl SessionPlayback {
         checked_add(&mut total, self.analytic_import.backing_bytes()?)?;
         add_capacity::<TrackRoute>(&mut total, self.routes.capacity())?;
         add_capacity::<TrackRoute>(&mut total, self.route_scratch.capacity())?;
+        add_capacity::<Option<CurrentPendingCut>>(
+            &mut total,
+            self.current_route_cut_scratch.capacity(),
+        )?;
         add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.device_chains.capacity())?;
         for chain in &self.device_chains {
             checked_add(&mut total, chain.accounted_storage_bytes()?)?;

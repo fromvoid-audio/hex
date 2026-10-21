@@ -571,6 +571,28 @@ impl MutableInstrumentTrackRuntime {
             .checked_add(self.pair.fixed_storage_pair_bytes()?)
     }
 
+    pub(crate) fn transition_proofs(&self, speculative: bool) -> &[MutableOccurrence] {
+        if speculative {
+            &self.scratch
+        } else {
+            &self.primary
+        }
+    }
+    pub(crate) fn transition_proof_capacity(&self) -> usize {
+        self.primary.capacity().min(self.scratch.capacity())
+    }
+    pub(crate) fn max_events_per_block(&self) -> usize {
+        self.pair.max_events_per_block()
+    }
+    pub(crate) fn cut_speculative_gate_deadlines_at(&mut self, performance_frame: u64) {
+        let tail = self.max_release_tail_frames();
+        for occurrence in &mut self.scratch {
+            if !occurrence.note_off_sent && occurrence.gate_end_frame > performance_frame {
+                occurrence.gate_end_frame = performance_frame;
+                occurrence.quiet_deadline_frame = performance_frame.saturating_add(tail);
+            }
+        }
+    }
     pub(crate) fn max_active_occurrences(&self) -> usize {
         self.pair.max_active_occurrences()
     }

@@ -412,6 +412,7 @@ pub struct Status {
     /// Last callback-admitted interactive click state.
     pub metronome_enabled: AtomicBool,
     pub session_capability: AtomicU32,
+    sampler_console: AtomicBool,
     pub shutdown_complete: AtomicBool,
     route_sequence: AtomicU64,
     route_revision: AtomicU64,
@@ -532,6 +533,7 @@ impl Status {
             playing: AtomicBool::new(false),
             metronome_enabled: AtomicBool::new(false),
             session_capability: AtomicU32::new(SessionCapabilityStatus::Legacy as u32),
+            sampler_console: AtomicBool::new(false),
             shutdown_complete: AtomicBool::new(false),
             route_sequence: AtomicU64::new(0),
             route_revision: AtomicU64::new(0),
@@ -680,6 +682,7 @@ impl Status {
             slot.clear();
         }
         self.publish_route_header(0, 0, SessionCapabilityStatus::Legacy, 0, 0);
+        self.sampler_console.store(false, Release);
         self.session_capability
             .store(SessionCapabilityStatus::Legacy as u32, Relaxed);
         self.end_route_snapshot();
@@ -771,6 +774,9 @@ impl Status {
         None
     }
 
+    pub fn sampler_console_available(&self) -> bool {
+        self.sampler_console.load(Acquire)
+    }
     pub fn session_capability(&self) -> Option<SessionCapabilityStatus> {
         SessionCapabilityStatus::from_code(self.session_capability.load(Acquire))
     }
@@ -2039,6 +2045,7 @@ impl Callback {
                     // command target, so remove transient auditions before
                     // the candidate's first callback render.
                     next.playback.cancel_retired_processor_auditions();
+                    self.status.sampler_console.store(false, Release);
                     self.status
                         .session_capability
                         .store(next.playback.session_capability_status() as u32, Relaxed);
@@ -2739,6 +2746,9 @@ impl Callback {
             return;
         }
 
+        self.status
+            .sampler_console
+            .store(playback.sampler_console_available(), Release);
         let capability = playback.session_capability_status();
         self.status
             .session_capability

@@ -1,3 +1,4 @@
+mod console;
 mod controls;
 mod envelope;
 mod gain;
@@ -694,6 +695,10 @@ fn rendered_sampler_replacement_preserves_captured_target_cancel_sound_and_saved
 ) {
     rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Replacement));
 }
+#[gpui::test]
+fn rendered_sampler_console_cell_scene_and_stop_use_actual_current(cx: &mut gpui::TestAppContext) {
+    rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Console));
+}
 #[derive(Clone, Copy)]
 enum ControlsFixture {
     Scalar,
@@ -703,6 +708,7 @@ enum ControlsFixture {
     Overview,
     History,
     Replacement,
+    Console,
 }
 fn rendered_sampler_save_open(
     cx: &mut gpui::TestAppContext,
@@ -783,6 +789,35 @@ fn rendered_sampler_save_open(
             )),
             before: None,
         });
+    }
+    if matches!(controls, Some(ControlsFixture::Console)) {
+        for name in ["first", "second"] {
+            let Some(Created::Scene(scene)) = h
+                .run(Request::Edit(Command::AddScene { name: name.into() }))
+                .created
+            else {
+                panic!("scene")
+            };
+            let Some(Created::SessionClip(clip)) = h
+                .run(Request::Edit(Command::CreateSessionMidiClip {
+                    track,
+                    scene,
+                    name: "pattern".into(),
+                    source_length: BeatTime::ONE,
+                }))
+                .created
+            else {
+                panic!("clip")
+            };
+            h.run(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::ONE,
+                pitch: 60,
+                channel: 0,
+                velocity: 127,
+            }));
+        }
     }
     let mut loaded_revision = if stereo && !gain {
         if empty { 3 } else { 5 }
@@ -1088,6 +1123,9 @@ fn rendered_sampler_save_open(
     }
     if gain {
         match controls.unwrap() {
+            ControlsFixture::Console => {
+                console::exercise(cx, &mut visual, &mut h, window, track, &saved)
+            }
             ControlsFixture::Replacement => {
                 replacement_ui::exercise(cx, &mut visual, &mut h, window, track, &saved)
             }

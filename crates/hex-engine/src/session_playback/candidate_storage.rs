@@ -36,6 +36,7 @@ impl SessionPlayback {
             mutable_instruments,
             mutable_onsets,
             mutable_events,
+            current_route_cut_scratch,
             tail_groups,
             tail_track_ids: _,
             tail_mutable_instruments,
@@ -62,6 +63,7 @@ impl SessionPlayback {
             arrangement_loop_pass: _,
             playing: _,
             linear_arrangement_export,
+            current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open,
         } = self;
@@ -123,6 +125,10 @@ impl SessionPlayback {
             keyboard.visit_current_sampler_storage(l)?;
         }
         l.vec(mutable_events)?;
+        l.vec(current_route_cut_scratch)?;
+        if current_route_cut_scratch.iter().any(Option::is_some) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         l.vec(tail_groups)?;
         l.vec(tail_mutable_instruments)?;
         l.vec(tail_mixes)?;
