@@ -308,6 +308,11 @@ impl SessionHandoffReport {
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    pub(crate) static CURRENT_SAMPLER_RUNTIME_TEST_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES) };
+}
+
 /// Independent, headless mixed Arrangement/Session render kernel.
 ///
 /// Routes and release storage are allocated at construction. Rendering uses
@@ -316,6 +321,11 @@ impl SessionHandoffReport {
 pub struct SessionPlayback {
     pub(crate) live_expression: Option<Arc<crate::live_expression::LiveExpressionInput>>,
     pub(crate) computer_keyboard: Option<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
+    pub(crate) current_sampler_keyboard_epoch: u64,
+    pub(crate) current_sampler_keyboard_revoked: u64,
+    // Nontransferable constructor-owned pairs; no UI input/source owners.
+    pub(crate) current_sampler_keyboards:
+        Vec<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>,
     capture_runtime: u64,
     capture_epoch: u64,
     gain_recording_override: Option<f32>,
@@ -429,20 +439,73 @@ impl SessionPlayback {
         revision: Arc<PreparedRevision>,
         sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
     ) -> Result<Self, crate::AudioStorageError> {
-        if revision.resource_scope != Some(sources.metadata.id) {
-            return Err(crate::AudioStorageError::SourceMismatch);
+        use crate::{
+            AudioStorageError as Error, computer_keyboard::ComputerKeyboardRuntime as Keyboard,
+        };
+        let allowance = Self::current_sampler_runtime_preflight(&revision, sources)?;
+        let runtime_limit = MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES;
+        #[cfg(test)]
+        let runtime_limit =
+            CURRENT_SAMPLER_RUNTIME_TEST_LIMIT.with(|limit| limit.get().min(runtime_limit));
+        if allowance > runtime_limit {
+            return Err(Error::ReservationExceeded);
         }
-        let allowance = Self::linear_export_runtime_allowance(&revision)
-            .map_err(|_| crate::AudioStorageError::ReservationExceeded)?;
-        let playback = Self::new_with_policy_scoped(revision, false)
-            .map_err(|_| crate::AudioStorageError::UnsupportedGraph)?;
+        let mut playback =
+            Self::new_with_policy_scoped(revision, false).map_err(|_| Error::UnsupportedGraph)?;
+        playback
+            .current_sampler_keyboards
+            .try_reserve_exact(sources.metadata.configurations().len())
+            .map_err(|_| Error::Allocation)?;
+        for config in sources.metadata.configurations() {
+            let resources = sources
+                .resources(config.track)
+                .map_err(|_| Error::SourceMismatch)?;
+            let keyboard = Keyboard::prepare_current_sampler(
+                config.track,
+                config.device,
+                &config.prepared,
+                playback.revision.arrangement().sample_rate(),
+                &resources,
+            )
+            .map_err(|_| Error::UnsupportedGraph)?;
+            playback.current_sampler_keyboards.push(keyboard);
+        }
         if playback
             .accounted_runtime_storage_bytes()
             .is_none_or(|n| n > allowance)
         {
-            return Err(crate::AudioStorageError::ReservationExceeded);
+            return Err(Error::ReservationExceeded);
         }
         Ok(playback)
+    }
+    pub(crate) fn current_sampler_runtime_preflight(
+        revision: &PreparedRevision,
+        sources: &crate::native_device_resources::current_sampler::CurrentSamplerSources,
+    ) -> Result<usize, crate::AudioStorageError> {
+        use crate::{
+            AudioStorageError as Error, computer_keyboard::ComputerKeyboardRuntime as Keyboard,
+        };
+        if revision.resource_scope != Some(sources.metadata.id) {
+            return Err(Error::SourceMismatch);
+        }
+        let keyboard_bytes = sources
+            .metadata
+            .configurations()
+            .len()
+            .checked_mul(
+                Keyboard::current_sampler_preflight_bytes()
+                    .and_then(|n| n.checked_add(std::mem::size_of::<Box<Keyboard>>()))
+                    .ok_or(Error::Overflow)?,
+            )
+            .ok_or(Error::Overflow)?;
+        let allowance = Self::linear_export_runtime_allowance(revision)
+            .map_err(|_| Error::ReservationExceeded)?
+            .checked_add(keyboard_bytes)
+            .ok_or(Error::Overflow)?;
+        if allowance > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES {
+            return Err(Error::ReservationExceeded);
+        }
+        Ok(allowance)
     }
     pub(crate) fn validate_candidate_runtime_storage(
         &self,
@@ -522,6 +585,9 @@ impl SessionPlayback {
         let Self {
             live_expression,
             computer_keyboard,
+            current_sampler_keyboards: _,
+            current_sampler_keyboard_epoch: _,
+            current_sampler_keyboard_revoked: _,
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
@@ -1190,6 +1256,9 @@ impl SessionPlayback {
         Ok(Self {
             live_expression: None,
             computer_keyboard: None,
+            current_sampler_keyboards: Vec::new(),
+            current_sampler_keyboard_epoch: 0,
+            current_sampler_keyboard_revoked: 0,
             capture_runtime: capture::next_runtime()?,
             capture_epoch: 0,
             gain_recording_override: None,

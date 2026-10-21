@@ -813,6 +813,35 @@ impl WorkerAudioSink for NativeAudioSink {
     fn native_sampler_input(&mut self, input: hex_session::service::NativeSamplerInput<'_>) {
         self.advance_sampler(input);
     }
+    fn prepare_sampler_keyboard(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        output: u64,
+        epoch: u64,
+        track: u64,
+        device: u64,
+    ) -> Result<(), String> {
+        if !self
+            .sampler
+            .as_ref()
+            .is_some_and(|s| s.context() == context)
+        {
+            return Err("sampler keyboard source is not current".into());
+        }
+        let control = self
+            .output
+            .as_mut()
+            .and_then(|o| o.publication.control())
+            .ok_or("sampler keyboard output is unavailable")?;
+        let applied = control
+            .status
+            .applied_audio_source()
+            .filter(|a| a.context == context && a.output_identity == output)
+            .ok_or("sampler keyboard output is not current")?;
+        control
+            .activate_sampler_keyboard(applied, epoch, track, device)
+            .map_err(str::to_owned)
+    }
     fn native_sampler_hold(&self) -> hex_session::service::NativeSamplerReservationHold {
         self.sampler_hold()
     }

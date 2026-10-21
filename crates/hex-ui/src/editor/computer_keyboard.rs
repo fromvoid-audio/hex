@@ -23,6 +23,7 @@ pub(super) struct ComputerKeyboard {
     pub target: Option<(u64, u64, hex_project::TrackId)>,
     pub request_id: u64,
     pub suspended: bool,
+    pub native_ready: bool,
 }
 
 impl Default for ComputerKeyboard {
@@ -38,6 +39,7 @@ impl Default for ComputerKeyboard {
             target: None,
             request_id: 0,
             suspended: false,
+            native_ready: false,
         }
     }
 }
@@ -139,7 +141,13 @@ impl super::EditorView {
     pub(super) fn cancel_computer_keyboard(&mut self) {
         if let Some(input) = self.computer_keyboard.input.take() {
             input.cancel();
+            if let Some((output, epoch)) = input.native_sampler_activation()
+                && let Some(audio) = self.audio.as_ref()
+            {
+                audio.control.cancel_sampler_keyboard_epoch(output, epoch);
+            }
         }
+        self.computer_keyboard.native_ready = false;
         self.computer_keyboard.release_all();
         self.computer_keyboard.target = None;
     }
@@ -179,6 +187,24 @@ impl super::EditorView {
             self.selected_track
                 .map(|track| (self.project_generation, state.revision, track))
         });
+        if let Some(input) = self.computer_keyboard.input.as_ref()
+            && let Some((output, epoch)) = input.native_sampler_activation()
+            && self
+                .audio
+                .as_ref()
+                .is_some_and(|a| a.control.sampler_keyboard_epoch_rejected(output, epoch))
+        {
+            self.error = Some("computer keyboard note refused · unsupported pitch or voice capacity · release keys and toggle keyboard to retry".into());
+        }
+        if let Some(input) = self.computer_keyboard.input.as_ref()
+            && let Some((output, epoch)) = input.native_sampler_activation()
+            && self
+                .audio
+                .as_ref()
+                .is_none_or(|a| a.control.sampler_keyboard_epoch_revoked(output, epoch))
+        {
+            input.cancel();
+        }
         let cancelled = self
             .computer_keyboard
             .input
@@ -225,8 +251,37 @@ impl super::EditorView {
             return true;
         };
         self.computer_keyboard.request_id = request_id;
-        let input =
-            std::sync::Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+        let private_sampler = self.state.as_ref().is_some_and(|s| {
+            hex_engine::native_device_resources::requires_private_sampler_sources(&s.project)
+        });
+        let input = if private_sampler {
+            let activation = self
+                .audio
+                .as_ref()
+                .filter(|_| self.first_sampler_current())
+                .ok_or("wait for sampler audio before playing the computer keyboard")
+                .and_then(|a| a.control.reserve_sampler_keyboard_epoch());
+            let (output, epoch) = match activation {
+                Ok(value) => value,
+                Err(error) => {
+                    self.error = Some(error.into());
+                    self.cancel_computer_keyboard();
+                    self.computer_keyboard.suspended = true;
+                    return true;
+                }
+            };
+            match hex_engine::computer_keyboard::ComputerKeyboardInput::with_native_sampler_activation(output, epoch) {
+                Ok(input) => std::sync::Arc::new(input),
+                Err(error) => {
+                    self.error = Some(error.to_string().into());
+                    self.cancel_computer_keyboard();
+                    self.computer_keyboard.suspended = true;
+                    return true;
+                }
+            }
+        } else {
+            std::sync::Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default())
+        };
         self.computer_keyboard.input = Some(std::sync::Arc::clone(&input));
         if !self.enqueue(hex_session::service::Request::PrepareComputerKeyboard {
             project_generation: generation,
@@ -303,7 +358,7 @@ impl super::EditorView {
         released
     }
 
-    fn publish_computer_keyboard(&mut self) {
+    pub(super) fn publish_computer_keyboard(&mut self) {
         let Some(input) = &self.computer_keyboard.input else {
             return;
         };
@@ -321,6 +376,30 @@ impl super::EditorView {
                 self.error = Some(error.to_string().into());
                 input.cancel();
                 break;
+            }
+            if self.computer_keyboard.native_ready
+                && let Some((output, epoch)) = input.native_sampler_activation()
+            {
+                let result = self
+                    .audio
+                    .as_ref()
+                    .ok_or("sampler keyboard output is unavailable")
+                    .and_then(|a| {
+                        a.control.sampler_keyboard_key(
+                            output,
+                            epoch,
+                            key,
+                            input.key_word(key).unwrap_or(0),
+                        )
+                    });
+                if let Err(error) = result {
+                    self.error = Some(error.into());
+                    input.cancel();
+                    if let Some(audio) = self.audio.as_ref() {
+                        audio.control.cancel_sampler_keyboard_epoch(output, epoch);
+                    }
+                    break;
+                }
             }
         }
     }

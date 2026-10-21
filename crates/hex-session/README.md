@@ -318,3 +318,10 @@ explicit capability. History and runtime tools still refuse; native frame-zero
 Arrangement Play/Stop uses a fresh CURRENT through desktop. See
 [the sampler boundary](../../docs/sampler.md) for admission scope and remaining
 user-facing dependencies.
+
+Private sampler PrepareComputerKeyboard uses the actual native sink's installed
+CURRENT activation and returns metadata acknowledgement, without legacy Playback
+replacement. The UI input object stays on control. Empty-track first load is
+supported; native source/configuration edits, history and other runtime tools
+retain their existing refusals. See
+[the keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).

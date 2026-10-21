@@ -154,7 +154,6 @@ fn first_load_refusals_preserve_canonical_history_sources_and_original_target() 
         "generation",
         "revision",
         "occupied",
-        "no-notes",
         "missing",
         "corrupt",
         "oversize",
@@ -177,10 +176,6 @@ fn first_load_refusals_preserve_canonical_history_sources_and_original_target() 
                     state: hex_project::default_instrument_state().unwrap(),
                 },
             );
-        }
-        if case == "no-notes" {
-            let clip = before.state.project.track(track).unwrap().midi_clips()[0].id();
-            before = edit(&service, Command::RemoveMidiClip(clip));
         }
         let mut path = files.source.clone();
         if case == "missing" {

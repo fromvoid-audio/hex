@@ -1742,6 +1742,23 @@ impl EditorView {
             if current {
                 if let Some(error) = event.error {
                     self.error = Some(error.into());
+                    if self
+                        .computer_keyboard
+                        .input
+                        .as_ref()
+                        .is_some_and(|i| i.native_sampler_activation().is_some())
+                    {
+                        self.cancel_computer_keyboard();
+                        self.computer_keyboard.suspended = true;
+                    }
+                } else if self
+                    .computer_keyboard
+                    .input
+                    .as_ref()
+                    .is_some_and(|i| i.native_sampler_activation().is_some())
+                {
+                    self.computer_keyboard.native_ready = true;
+                    self.publish_computer_keyboard();
                 }
                 if let Some(playback) = event.playback {
                     let previous_reset = self

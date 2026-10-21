@@ -1991,7 +1991,7 @@ fn render_instrument(
             })
             .unwrap_or_else(|| "missing sample identity".into());
         let readiness = if view.first_sampler_current() {
-            "play from start · stop"
+            "computer keyboard · play from start · stop"
         } else {
             "audio not ready · offline export supported"
         };

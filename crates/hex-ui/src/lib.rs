@@ -77,3 +77,12 @@ pub fn open_sampler_load_test_backend(
 ) -> Result<gpui::AnyWindowHandle, String> {
     editor::sampler_load_fixture(cx, backend, root, directory)
 }
+
+/// Read-only headless fixture diagnostics; no runtime/source/input owner escape.
+#[cfg(feature = "ui-test-support")]
+pub fn sampler_keyboard_test_status(
+    window: gpui::AnyWindowHandle,
+    cx: &gpui::App,
+) -> Result<String, String> {
+    editor::sampler_keyboard_fixture_status(window, cx)
+}

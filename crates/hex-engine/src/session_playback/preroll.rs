@@ -278,6 +278,13 @@ impl SessionPlayback {
         if let Some(keyboard) = &self.computer_keyboard {
             checked_add(&mut total, keyboard.storage_bytes()?)?;
         }
+        add_capacity::<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>(
+            &mut total,
+            self.current_sampler_keyboards.capacity(),
+        )?;
+        for keyboard in &self.current_sampler_keyboards {
+            checked_add(&mut total, keyboard.storage_bytes()?)?;
+        }
         if let Some(compensation) = &self.compensation {
             checked_add(&mut total, compensation.storage_bytes()?)?;
         } else if let Some(graph) = &self.revision.arrangement().signal_graph {

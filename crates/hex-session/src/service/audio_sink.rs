@@ -22,6 +22,18 @@ pub trait WorkerAudioSink: Send {
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
+    /// Scalar activation only; implementations must verify the actual installed
+    /// native CURRENT before accepting this exact output/context/track/device.
+    fn prepare_sampler_keyboard(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _output: u64,
+        _epoch: u64,
+        _track: u64,
+        _device: u64,
+    ) -> Result<(), String> {
+        Err("sampler keyboard is unavailable".into())
+    }
     /// Hold remains charged through actual native teardown, never a UI ACK.
     fn native_sampler_hold(&self) -> NativeSamplerReservationHold {
         NativeSamplerReservationHold::default()
@@ -73,6 +85,19 @@ impl WorkerEvents {
             return Err("unsupported negotiated audio rate".into());
         }
         Ok(rate)
+    }
+    pub(super) fn prepare_sampler_keyboard(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        output: u64,
+        epoch: u64,
+        track: hex_project::TrackId,
+        device: hex_project::DeviceId,
+    ) -> Result<(), String> {
+        self.audio
+            .as_mut()
+            .ok_or("sampler keyboard requires native audio")?
+            .prepare_sampler_keyboard(context, output, epoch, track.value(), device.value())
     }
     pub(super) fn native_audio_requested(&self) -> bool {
         self.audio.is_some()

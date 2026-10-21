@@ -1758,7 +1758,8 @@ fn run_worker(
         let sampler_refusal = private_sampler
             && !matches!(
                 &request,
-                Request::AssignSampler { .. }
+                Request::PrepareComputerKeyboard { .. }
+                    | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
                     | Request::ImportDeviceAsset { .. }
@@ -1774,7 +1775,7 @@ fn run_worker(
         if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
         } else if sampler_refusal {
-            error=Some(if events.native_audio_requested() {"sampler supports frame-zero arrangement play and stop; history and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, history and runtime tools are unavailable"}.into());
+            error=Some(if events.native_audio_requested() {"sampler supports computer keyboard, frame-zero arrangement play and stop; history and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, history and runtime tools are unavailable"}.into());
             if let Request::PrepareComputerKeyboard { request_id, .. } = &request {
                 computer_keyboard_complete = Some(*request_id);
             }
@@ -2212,15 +2213,6 @@ fn run_worker(
                                 "first sampler load requires an empty instrument slot; replacement is unavailable",
                             ));
                         }
-                        if !target
-                            .midi_clips()
-                            .iter()
-                            .any(|clip| !clip.notes().is_empty())
-                        {
-                            return Err(SessionError::Invalid(
-                                "add arrangement midi notes before loading this sampler",
-                            ));
-                        }
                         if private_sampler {
                             return Err(SessionError::Invalid(
                                 "first sampler load only; active sampler replacement is unavailable",
@@ -2263,7 +2255,7 @@ fn run_worker(
                             replacement_revision = Some(snapshot.prepared);
                             replacement_sources = Some(snapshot.sources);
                             status = Some(if events.native_audio_requested() {
-                                "sample loaded into sampler · preparing frame-zero arrangement audio"
+                                "sample loaded into sampler · preparing audio"
                             } else { "sample loaded into sampler · offline export supported · native playback unavailable" }.into());
                         }
                         Err(reason) => error = Some(reason.to_string()),
@@ -3465,6 +3457,37 @@ fn run_worker(
                         || input.is_cancelled()
                     {
                         error = Some("computer keyboard preparation is stale".into());
+                    } else if private_sampler {
+                        let activation = (|| -> Result<(), String> {
+                            let (output, epoch) = input
+                                .native_sampler_activation()
+                                .ok_or("sampler keyboard requires an output-bound activation")?;
+                            let device = session
+                                .project()
+                                .track(track)
+                                .and_then(|t| t.instrument())
+                                .filter(|d| {
+                                    !d.bypassed()
+                                        && d.state().type_id().as_str()
+                                            == Ok("hex.instrument.sampler")
+                                })
+                                .ok_or("sampler keyboard track is unavailable")?
+                                .id();
+                            events.prepare_sampler_keyboard(
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                },
+                                output,
+                                epoch,
+                                track,
+                                device,
+                            )
+                        })();
+                        if let Err(reason) = activation {
+                            input.cancel();
+                            error = Some(reason);
+                        }
                     } else if let Some((_, prepared)) = compiled
                         .as_ref()
                         .filter(|(compiled_revision, _)| *compiled_revision == revision)

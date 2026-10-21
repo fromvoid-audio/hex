@@ -11,7 +11,7 @@ pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
 }
 pub(crate) struct ClientEndpoints {
-    output_identity: u64,
+    pub(super) output_identity: u64,
     pub(super) sample_preview: crate::sample_preview::Control,
     pub(super) resident_forwarding: Arc<resident_forwarding::ResidentForwarding>,
     spectrum_reader: Option<crate::spectrum_worker::SpectrumReader>,
@@ -432,6 +432,7 @@ impl Drop for Client {
 }
 impl ClientEndpoints {
     fn stop(&self) {
+        self.status.sampler_keyboard.revoke_all();
         self.status
             .pending_stop_marker
             .store(self.command_ticket.saturating_add(1), Release);
@@ -470,6 +471,10 @@ fn enqueue_action(
         .map_err(|PushError::Full(q)| q.action)?;
     *ticket = next;
     status.admitted_ticket.store(next, Release);
+    if matches!(action, PlaybackAction::Transport(PlaybackCommand::Stop)) {
+        status.sampler_keyboard.revoke_all();
+    }
+
     if action_invalidates_processor_audition(action) {
         let _ = audition.cancel_immediately();
     }

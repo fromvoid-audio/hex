@@ -18,6 +18,8 @@ static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 struct Observation {
     native_hold: hex_session::service::NativeSamplerReservationHold,
+    pause_poll: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
+    pause_keyboard_activation: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     blocked: Option<AudioSourceContext>,
     fresh_before_input: Option<(EditorAudio, Arc<Mutex<Option<HeadlessBackend>>>)>,
     fresh_before_input_checked: bool,
@@ -93,6 +95,33 @@ impl WorkerAudioSink for ObservedSink {
         observation.native_hold = self.inner.native_sampler_hold();
         observation.blocked = self.inner.blocked;
     }
+    fn prepare_sampler_keyboard(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        output: u64,
+        epoch: u64,
+        track: u64,
+        device: u64,
+    ) -> Result<(), String> {
+        let hook = self
+            .observation
+            .lock()
+            .unwrap()
+            .pause_keyboard_activation
+            .take();
+        if let Some((entered, release)) = hook {
+            entered.send(()).unwrap();
+            assert!(
+                !matches!(
+                    release.recv_timeout(Duration::from_secs(10)),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                ),
+                "worker gate timed out"
+            );
+        }
+        self.inner
+            .prepare_sampler_keyboard(context, output, epoch, track, device)
+    }
     fn native_sampler_hold(&self) -> hex_session::service::NativeSamplerReservationHold {
         self.inner.native_sampler_hold()
     }
@@ -100,6 +129,17 @@ impl WorkerAudioSink for ObservedSink {
         self.inner.restart_audio(generation, request)
     }
     fn poll(&mut self) {
+        let hook = self.observation.lock().unwrap().pause_poll.take();
+        if let Some((entered, release)) = hook {
+            entered.send(()).unwrap();
+            assert!(
+                !matches!(
+                    release.recv_timeout(Duration::from_secs(10)),
+                    Err(mpsc::RecvTimeoutError::Timeout)
+                ),
+                "worker gate timed out"
+            );
+        }
         self.inner.poll();
         if let Some(context) = self.inner.last_context
             && let Some(domain) = self

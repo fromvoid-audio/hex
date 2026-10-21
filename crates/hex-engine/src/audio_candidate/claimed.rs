@@ -286,6 +286,36 @@ impl ClaimedAudioCandidateRuntime {
             .as_ref()
             .map(|r| r.playback.sample_rate())
     }
+    /// Actual runtime activation scalar, independent of a newer mailbox binding.
+    pub fn current_sampler_keyboard_epoch(&self) -> Option<u64> {
+        let runtime = self.inner.runtime.as_ref()?;
+        runtime.sampler_sources.as_ref()?;
+        runtime.playback.current_sampler_keyboard_epoch()
+    }
+    pub fn current_sampler_keyboard_rejected_epoch(&self) -> Option<u64> {
+        let runtime = self.inner.runtime.as_ref()?;
+        runtime.sampler_sources.as_ref()?;
+        runtime.playback.current_sampler_keyboard_rejected_epoch()
+    }
+    /// Scalar input only; the current runtime retains its exact constructor bank.
+    pub fn apply_current_sampler_keyboard(
+        &mut self,
+        frame: Option<crate::computer_keyboard::CurrentSamplerKeyboardFrame>,
+    ) -> Result<bool, crate::Invalid> {
+        if self.inner.phase != ClaimedPhase::Current {
+            return Err(crate::Invalid("sampler runtime is not current"));
+        }
+        let runtime = self
+            .inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::Invalid("sampler runtime unavailable"))?;
+        if runtime.sampler_sources.is_none() {
+            return Ok(false);
+        }
+        runtime.playback.apply_current_sampler_keyboard(frame)?;
+        Ok(true)
+    }
     pub fn apply_action(
         &mut self,
         action: crate::PlaybackAction,

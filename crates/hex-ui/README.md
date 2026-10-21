@@ -282,3 +282,10 @@ embedding boundary.
 
 The test-only `hex-media` dependency constructs bounded verified-source limits for
 real worker/key-handler audition-refusal fixtures; production UI does not decode media.
+
+Sampler computer-keyboard audition reuses existing focus/physical-key/toggle
+state. An output-bound epoch is reserved before worker activation; correlated
+acknowledgement enables direct Client desired-key publication. Key up and terminal
+cancellation bypass worker I/O, with old-held/autorepeat suppression. Empty MIDI
+tracks can first-load samples; controls/replacement/history remain unavailable.
+See [the native keyboard boundary](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
