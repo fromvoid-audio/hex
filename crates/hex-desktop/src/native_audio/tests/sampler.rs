@@ -996,7 +996,13 @@ fn rendered_sampler_save_open(
         assert!(Instant::now() < end, "actual SaveNew picker did not open");
     }
     cx.simulate_new_path_selection(|_| Some(saved.clone()));
-    while !saved.exists() {
+    // Publication on disk precedes the worker's completion event. Both are
+    // required before another rendered action can safely use the saved project.
+    while !saved.exists()
+        || !cx
+            .update(|cx| hex_ui::sampler_midi_test_ready(window, cx))
+            .unwrap()
+    {
         pulse(&mut visual);
         assert!(Instant::now() < end, "actual SaveNew did not publish");
     }
@@ -1014,7 +1020,11 @@ fn rendered_sampler_save_open(
         "SaveNew creates no previous-save recovery"
     );
     visual.simulate_keystrokes("cmd-s");
-    while !previous_save.exists() {
+    while !previous_save.exists()
+        || !cx
+            .update(|cx| hex_ui::sampler_midi_test_ready(window, cx))
+            .unwrap()
+    {
         pulse(&mut visual);
         assert!(
             Instant::now() < end,
