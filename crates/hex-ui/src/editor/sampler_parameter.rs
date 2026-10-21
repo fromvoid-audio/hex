@@ -35,7 +35,7 @@ struct Pending {
 #[derive(Default)]
 pub(super) struct State {
     serial: u64,
-    // The closed parameter enum bounds this map to seven entries.
+    // The closed parameter enum bounds this map to eleven entries.
     controls: BTreeMap<SamplerParameter, Control>,
     pending: Option<Pending>,
     // Retired controls from this panel cycle only; drained at every render.
@@ -229,7 +229,13 @@ impl EditorView {
                 } else {
                     NumericScale::Linear
                 },
-                if parameter.is_integer() { 0 } else { 2 },
+                if parameter.is_integer() {
+                    0
+                } else if parameter.is_envelope() {
+                    6
+                } else {
+                    2
+                },
                 parameter.unit().map(Arc::<str>::from),
             )
             .and_then(|spec| {
@@ -269,7 +275,14 @@ impl EditorView {
                     value,
                     device_panel::control_style(),
                 )
-                .map(|config| config.with_appearance(NumericControlAppearance::InlineValue))
+                .and_then(|config| {
+                    let config = config.with_appearance(NumericControlAppearance::InlineValue);
+                    if parameter.is_envelope() {
+                        config.with_value_drag_steps(1.0, 0.1)
+                    } else {
+                        Ok(config)
+                    }
+                })
             });
             let config = match config {
                 Ok(config) => config,
@@ -326,7 +339,10 @@ impl EditorView {
         if let Some(control) = self.sampler_parameter.controls.get_mut(&parameter) {
             control.target = target;
         }
-        let enabled = !self.edit_pending()
+        let active = hex_engine::sampler_parameter_active_on_control(parameter, device.state())
+            .unwrap_or(false);
+        let enabled = active
+            && !self.edit_pending()
             && self.first_sampler_current()
             && self
                 .audio
@@ -344,6 +360,10 @@ impl EditorView {
         div()
             .id((
                 match parameter {
+                    SamplerParameter::AttackMs => "sampler-attack-control",
+                    SamplerParameter::DecayMs => "sampler-decay-control",
+                    SamplerParameter::SustainPercent => "sampler-sustain-control",
+                    SamplerParameter::ReleaseMs => "sampler-release-control",
                     SamplerParameter::Gain => "sampler-gain-control",
                     SamplerParameter::Transpose => "sampler-pitch-control",
                     SamplerParameter::StartFrame => "sampler-start-control",
@@ -362,7 +382,11 @@ impl EditorView {
             .flex()
             .items_center()
             .gap(gpui::px(4.0))
-            .child(theme::text(parameter.label()))
+            .child(theme::text(if active {
+                parameter.label()
+            } else {
+                "release*"
+            }))
             .child(
                 div()
                     .w(gpui::px(92.0))

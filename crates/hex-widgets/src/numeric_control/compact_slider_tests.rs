@@ -566,3 +566,122 @@ fn integer_readout_accumulates_small_pointer_moves_and_refuses_fractional_text(
     visual.simulate_keystrokes("escape right");
     assert_eq!(control.read_with(cx, |control, _| control.value()), 2.0);
 }
+
+#[gpui::test]
+fn explicit_unit_readout_drag_accumulates_fine_motion_clamps_and_cancels(cx: &mut TestAppContext) {
+    cx.update(bind_numeric_control_keys);
+    let handle = *cx.add_window(|_, _| Empty);
+    let control = cx
+        .update_window(handle, |_, window, cx| {
+            let spec = NumericSpec::new(
+                0.0,
+                60_000.0,
+                0.0,
+                crate::NumericScale::Linear,
+                6,
+                Some("ms"),
+            )
+            .unwrap();
+            let control = cx.new(|cx| {
+                NumericControl::from_config(
+                    cx,
+                    NumericControlConfig::new(
+                        "envelope-time",
+                        "attack",
+                        NumericControlKind::HorizontalSlider,
+                        spec,
+                        0.0,
+                        STYLE,
+                    )
+                    .unwrap()
+                    .with_appearance(NumericControlAppearance::InlineValue)
+                    .with_value_drag_steps(1.0, 0.1)
+                    .unwrap(),
+                )
+            });
+            window.replace_root(cx, |_, _| Root {
+                control: control.clone(),
+                width: 120.0,
+            });
+            control
+        })
+        .unwrap();
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let captured = events.clone();
+    let _subscription = cx.update(|app| {
+        app.subscribe(&control, move |_, event, _| {
+            captured.borrow_mut().push(*event)
+        })
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.simulate_resize(size(px(400.0), px(140.0)));
+    visual.run_until_parked();
+    let start = visual.debug_bounds("envelope-time-value").unwrap().center();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    // Threshold crossing includes the first full movement; subsequent tiny
+    // motions retain their exact displayed-unit contribution.
+    let coarse = point(start.x, start.y - px(10.0));
+    visual.simulate_mouse_move(coarse, Some(MouseButton::Left), Modifiers::default());
+    assert_eq!(control.read_with(cx, |c, _| c.value()), 10.0);
+    for i in 1..=20 {
+        visual.simulate_mouse_move(
+            point(start.x, coarse.y - px(i as f32 * 0.25)),
+            Some(MouseButton::Left),
+            Modifiers {
+                shift: true,
+                ..Modifiers::default()
+            },
+        );
+    }
+    let end = point(start.x, coarse.y - px(5.0));
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    assert!((control.read_with(cx, |c, _| c.value()) - 10.5).abs() < 1e-12);
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|e| e.phase == NumericEventPhase::Begin)
+            .count(),
+        1
+    );
+    assert_eq!(
+        events
+            .borrow()
+            .iter()
+            .filter(|e| e.phase == NumericEventPhase::Commit)
+            .count(),
+        1
+    );
+    events.borrow_mut().clear();
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(coarse, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_keystrokes("escape");
+    visual.simulate_mouse_up(coarse, MouseButton::Left, Modifiers::default());
+    assert!((control.read_with(cx, |c, _| c.value()) - 10.5).abs() < 1e-12);
+    assert!(
+        events
+            .borrow()
+            .iter()
+            .any(|e| e.phase == NumericEventPhase::Cancel)
+    );
+    assert!(
+        !events
+            .borrow()
+            .iter()
+            .any(|e| e.phase == NumericEventPhase::Commit)
+    );
+    control.update(cx, |c, cx| c.set_external_value(59_999.0, cx).unwrap());
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(coarse, Some(MouseButton::Left), Modifiers::default());
+    assert_eq!(control.read_with(cx, |c, _| c.value()), 60_000.0);
+    let back = point(start.x, coarse.y + px(1.0));
+    visual.simulate_mouse_move(back, Some(MouseButton::Left), Modifiers::default());
+    assert_eq!(control.read_with(cx, |c, _| c.value()), 59_999.0);
+    visual.simulate_mouse_up(back, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("0.0625 ms");
+    visual.simulate_keystrokes("enter");
+    assert_eq!(control.read_with(cx, |c, _| c.value()), 0.0625);
+}

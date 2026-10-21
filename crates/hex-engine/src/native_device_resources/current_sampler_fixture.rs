@@ -61,3 +61,21 @@ pub fn classic_loop_state(
         }])
         .map_err(|_| crate::Invalid("fixture binding invalid"))
 }
+
+/// Trigger Slice fixture for actual inactive-release panel probes.
+pub fn slice_trigger_state(
+    frames: usize,
+    asset: hex_project::AssetId,
+) -> Result<NativeDeviceState, crate::Invalid> {
+    let original = one_shot_state(frames, asset)?;
+    let mut state = hex_devices::sampler::state::SamplerState::from_native(&original)
+        .map_err(|_| crate::Invalid("fixture sampler state invalid"))?;
+    state.mode = hex_devices::sampler::state::AuthoredMode::Slice {
+        starts: vec![0],
+        base_note: 60,
+        gate: hex_devices::sampler::GateMode::Trigger,
+    };
+    state
+        .replace_in(&original)
+        .map_err(|_| crate::Invalid("fixture sampler state invalid"))
+}

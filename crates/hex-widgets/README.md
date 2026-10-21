@@ -258,3 +258,9 @@ or typed values refuse; normalized pointer selection alone rounds to the nearest
 visible integer. Pointer distance accumulates between grid crossings without
 emitting fractional drafts or commits. Arrow steps default to1/1; fractional
 step overrides refuse. Other numeric specs retain their continuous behavior.
+
+`NumericControlConfig::with_value_drag_steps` opts continuous value readouts into
+explicit displayed-unit coarse/fine pointer steps, shared with keyboard stepping.
+It preserves fractional movement, clamps without overshoot debt, and leaves rail,
+default normalized dragging, capture, focus and cancel contracts unchanged.
+Integer specs retain their existing distinct integral-grid scrubbing path.

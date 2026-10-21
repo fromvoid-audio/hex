@@ -600,7 +600,11 @@ stopped/playing route transaction. Input is scalar, with no UI input/source owne
 in the callback; ordinary registry keyboard admission is unchanged. See
 [the bounded keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
 
-Sampler gain metadata reads/patches use the strict current sampler codec without
+Sampler gain, pitch, region, loop and explicit-ms/percent ADSR metadata reads/patches use the strict current sampler codec without
 adding registry admission. A narrow opaque CURRENT observation supplies actual
 transport and the live keyboard epoch (including idle zero) to the stopped edit
 fence; it exposes no source owner, mutable runtime or alternate rendering path.
+
+Sampler release activity is a narrow control-side query of the authored gate
+mode: Trigger One-Shot/Slice keep their stored release but report it inactive.
+The query never converts a mode or exposes PCM/runtime ownership.

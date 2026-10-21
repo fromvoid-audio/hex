@@ -2926,9 +2926,18 @@ fn run_worker(
                             .device(edit.device)
                             .ok_or("sampler target is unavailable")?
                             .state();
+                        // Display units may round-trip by one ULP. Compare the
+                        // validated canonical patch exactly before touching audio.
                         if hex_engine::sampler_parameter_value_on_control(edit.parameter, state)
                             .map_err(|e| e.to_string())?
                             == edit.value
+                            || hex_engine::patch_sampler_parameter_on_control(
+                                edit.parameter,
+                                state,
+                                edit.value,
+                            )
+                            .map_err(|e| e.to_string())?
+                                == *state
                         {
                             return Ok(false);
                         }

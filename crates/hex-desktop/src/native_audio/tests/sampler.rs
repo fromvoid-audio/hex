@@ -1,4 +1,5 @@
 mod controls;
+mod envelope;
 mod gain;
 use super::*;
 mod keyboard;
@@ -623,47 +624,72 @@ fn actual_old_resident_current_pcm_remains_charged_across_new_and_sampler_prefli
 fn rendered_browser_first_load_reaches_real_service_and_native_current_without_retargeting(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, true, false, false, false);
+    rendered_sampler_save_open(cx, true, false, false, None);
 }
 #[gpui::test]
 fn rendered_browser_mono_sampler_save_open_preserves_absolute_tuning(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, false, false, false, false);
+    rendered_sampler_save_open(cx, false, false, false, None);
 }
 #[gpui::test]
 fn rendered_empty_midi_track_load_and_reopen_is_playable_from_computer_keyboard(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, true, true, false, false);
+    rendered_sampler_save_open(cx, true, true, false, None);
 }
 #[gpui::test]
 fn rendered_sampler_key_release_and_focus_cancel_do_not_wait_for_blocked_service(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, true, false, true, false);
+    rendered_sampler_save_open(cx, true, false, true, None);
 }
 #[gpui::test]
 fn rendered_mono_a880_sampler_keyboard_playing_and_blocked_release_are_literal(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, false, false, true, false);
+    rendered_sampler_save_open(cx, false, false, true, None);
 }
 #[gpui::test]
 fn rendered_sampler_stopped_controls_rebuild_current_and_persist(cx: &mut gpui::TestAppContext) {
-    rendered_sampler_save_open(cx, true, false, false, true);
+    rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Scalar));
+}
+#[gpui::test]
+fn rendered_sampler_envelope_controls_shape_current_keyboard_arrangement_and_persist(
+    cx: &mut gpui::TestAppContext,
+) {
+    rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Envelope));
+}
+#[gpui::test]
+fn rendered_sampler_trigger_release_is_visible_but_inactive_without_mode_conversion(
+    cx: &mut gpui::TestAppContext,
+) {
+    for fixture in [
+        ControlsFixture::TriggerOneShot,
+        ControlsFixture::TriggerSlice,
+    ] {
+        rendered_sampler_save_open(cx, true, false, false, Some(fixture));
+    }
+}
+#[derive(Clone, Copy)]
+enum ControlsFixture {
+    Scalar,
+    Envelope,
+    TriggerOneShot,
+    TriggerSlice,
 }
 fn rendered_sampler_save_open(
     cx: &mut gpui::TestAppContext,
     stereo: bool,
     empty: bool,
     looped: bool,
-    gain: bool,
+    controls: Option<ControlsFixture>,
 ) {
     use gpui::{Modifiers, MouseButton, VisualTestContext};
     let _serial = NATIVE_FIXTURE
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let gain = controls.is_some();
     let files = Files::new();
     let samples = files.0.join("samples");
     fs::create_dir(&samples).unwrap();
@@ -898,7 +924,40 @@ fn rendered_sampler_save_open(
     for _ in 0..12 {
         pulse(&mut visual);
     }
-    let open_path = if looped {
+    let open_path = if matches!(
+        controls,
+        Some(ControlsFixture::TriggerOneShot | ControlsFixture::TriggerSlice)
+    ) {
+        let mut editor = hex_project::Editor::new(stored.clone(), 8).unwrap();
+        let device = stored.track(track).unwrap().instrument().unwrap();
+        let asset = stored.assets().next().unwrap().id();
+        let state = if matches!(controls, Some(ControlsFixture::TriggerSlice)) {
+            hex_engine::native_device_resources::current_sampler_fixture::slice_trigger_state(
+                4, asset,
+            )
+            .unwrap()
+        } else {
+            hex_engine::native_device_resources::current_sampler_fixture::one_shot_state(4, asset)
+                .unwrap()
+        }
+        .with_host_metadata_from(device.state())
+        .unwrap();
+        let state = hex_engine::patch_sampler_parameter_on_control(
+            hex_engine::SamplerParameter::ReleaseMs,
+            &state,
+            0.125,
+        )
+        .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: device.id(),
+                state,
+            })
+            .unwrap();
+        let path = files.0.join("trigger.hex");
+        hex_storage::save_new(&path, editor.project()).unwrap();
+        path
+    } else if looped {
         let mut editor = hex_project::Editor::new(stored.clone(), 8).unwrap();
         let device = stored.track(track).unwrap().instrument().unwrap();
         let asset = stored.assets().next().unwrap().id();
@@ -945,7 +1004,7 @@ fn rendered_sampler_save_open(
         pulse(&mut visual);
         assert!(Instant::now() < end, "actual Open picker did not open");
     }
-    cx.simulate_paths_selection(Some(vec![open_path]));
+    cx.simulate_paths_selection(Some(vec![open_path.clone()]));
     loop {
         pulse(&mut visual);
         if h.backend
@@ -971,7 +1030,17 @@ fn rendered_sampler_save_open(
         pulse(&mut visual);
     }
     if gain {
-        controls::exercise(cx, &mut visual, &mut h, window, end, track, &saved);
+        match controls.unwrap() {
+            ControlsFixture::Scalar => {
+                controls::exercise(cx, &mut visual, &mut h, window, end, track, &saved)
+            }
+            ControlsFixture::TriggerOneShot | ControlsFixture::TriggerSlice => {
+                envelope::trigger_release(cx, &mut visual, &mut h, track, &open_path);
+            }
+            ControlsFixture::Envelope => {
+                envelope::exercise(cx, &mut visual, &mut h, window, end, track, &saved)
+            }
+        }
         visual.update(|w, _| w.remove_window());
         visual.run_until_parked();
         return;
