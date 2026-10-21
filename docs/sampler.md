@@ -7,7 +7,7 @@ contains the first original playback-kernel prerequisite. A bounded first-load
 browser action now fills an empty instrument slot with a canonical sampler and
 supports computer-keyboard audition, frame-zero Arrangement playback/Stop and
 offline Main export. Sampler
-is not registered in the general device catalog. Stopped gain, pitch and source-region editing are supported; other controls, replacement and user history remain unavailable. Current-format SaveNew/SaveCurrent and
+is not registered in the general device catalog. Stopped gain, pitch, source-region and Classic-loop editing are supported; other controls, replacement and user history remain unavailable. Current-format SaveNew/SaveCurrent and
 original-content-checked reopen are supported through the normal project flow. No reference parity or
 physical native interaction/listening acceptance is claimed.
 
@@ -220,7 +220,7 @@ tolerances and per-feature results using the repository research template.
 ## loaded authored state and control preparation — pulse2961 / PR545
 
 `sampler::state::SamplerState` encodes current finite musical settings in
-`NativeDeviceState` under `hex.instrument.sampler`, current state version1.
+`NativeDeviceState` under `hex.instrument.sampler`, current state version2.
 It contains no PCM or file path. The existing Classic/One-Shot/Slice, region,
 loop/reverse, pitch/gain/balance/velocity and amplitude-envelope laws are retained;
 no new DSP is added. Strict decode refuses unsupported versions, malformed or
@@ -403,7 +403,7 @@ assets, loaded sampler instruments and the existing Utility-only effect chain.
 Project and MIDI-source loops, Session MIDI/launches, routing/return devices,
 mutable handoff, tails, checkpoints, live expression, preview and nonzero seeks
 remain closed. Source/configuration/topology edits refuse before canonical
-commit while this limited native owner is active, except stopped gain/pitch/region
+commit while this limited native owner is active, except stopped gain/pitch/region/Classic-loop
 transaction described below. New/Open explicitly retires it. Current-format
 reconstruction is supported; user history remains separate work.
 
@@ -800,7 +800,7 @@ Finite user checks after a separately qualified optimized build: with transport
 stopped and a loaded sampler, confirm pitch0/+12/−12 changes keyboard and
 Arrangement pitch by one octave while retaining gain; enter0.5, Save/New/Open
 and verify persistence; attempt an edit while playing and confirm refusal.
-Region, loop, envelope, replacement and history controls remain separate work.
+Waveform, envelope, replacement and history controls remain separate work.
 
 
 ## stopped original-frame region — pulse2969 / PR553
@@ -837,5 +837,50 @@ These are headless path checks. Physical interaction/display/device/listening an
 optimized delivery remain unexecuted. Finite later user checks: load a sample,
 stop transport, trim start/end to a nonempty region and audition keyboard and
 Arrangement; verify the exclusive end, Save/New/Open, and confirm an invalid or
-playing edit refuses. Loop/envelope editing, waveform selection, replacement and
-history remain separate work.
+playing edit refuses. Envelope editing, waveform selection, replacement and history remain separate work.
+
+
+## Classic loop controls
+
+Current state v2 represents Classic as an enabled flag plus a remembered nonempty
+original-source-frame loop interval. Both off and on persist the same endpoints;
+off never erases a custom range. New sample-load templates already select Classic
+with a disabled whole-source loop. One-Shot and Slice keep their existing gate,
+marker and rendering contracts; loop fields disclose that they require Classic
+and never convert those modes. Version1 sampler states explicitly refuse; there
+is no old-alpha reader, conversion or rewrite of saved user files.
+
+The v2 payload remains96 bytes before slice markers. Classic mode0/off and1/on
+both carry loop endpoints; non-Classic loop-coordinate bytes remain reserved zero.
+Strict decoding validates mode/gate flags, bounds, finite values, marker rules and
+state version. A dormant loop must be nonempty and fit the original source; the
+actual retained PCM extent is checked during preparation even when disabled.
+It may lie outside the currently trimmed playback region. Enabling requires
+containment in that region and refuses conflicts without changing canonical
+state/history or applied audio. Off-range fields remain editable for explicit
+repair. No automatic clamp, source/clip edit or loop-point reset is performed.
+
+The panel exposes an on/off readout and whole-frame loop start/end fields, using
+the existing one-pending stopped transaction. All seven fields retain independent
+gesture captures. The sampler frame is448px wide with the existing168px body and
+a fixed two-column control grid; bounded source/status detail cannot displace the
+controls. Source units and UI bounds are original frames, not project-rate frames.
+Runtime preparation still maps the enabled flag to the existing optional Classic
+loop; preloop, wrap interpolation, gate release and Stop behavior are unchanged.
+
+Owning checks exercise actual off/on/range edits and Save/New/Open in both states,
+exact remembered points, off-trim enable refusal then explicit repair, active-bound
+refusal with unchanged project/history/output, and original-source extent refusal
+for dormant loops. Independent literal keyboard/Arrangement seam PCM combines
+A880,8kHz source/16kHz output, gain0.5 and pitch−12; key release and Stop silence are
+checked. Covered callbacks measure zero total allocation/deallocation counts and
+bytes. Current-format, wrong-version, malformed/reserved and unchanged One-Shot/
+Slice checks cover the codec boundary. These headless checks do not establish
+physical input/display/device/listening or optimized installation acceptance.
+
+Finite later user checks: stop transport, set a custom Classic loop and audition
+its wrap; toggle off/on and Save/New/Open to verify both states retain the range;
+trim while off, confirm an outside-range enable refuses, repair endpoints and
+retry; verify key release and Stop end the sound. Envelope/waveform editing,
+replacement/history, Session playback and full musical-use acceptance remain
+separate contracts.

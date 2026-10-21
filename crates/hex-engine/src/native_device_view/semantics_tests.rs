@@ -116,7 +116,8 @@ fn sampler_region_patch_is_integral_half_open_and_preserves_loop_slice_and_other
     settings.root_note = 57;
     settings.detune_cents = -23.0;
     settings.mode = AuthoredMode::Classic {
-        loop_region: Some(Region { start: 2, end: 6 }),
+        loop_enabled: true,
+        loop_region: Region { start: 2, end: 6 },
     };
     let original = settings
         .to_native()
@@ -172,4 +173,74 @@ fn sampler_region_patch_is_integral_half_open_and_preserves_loop_slice_and_other
         patch_sampler_parameter_on_control(SamplerParameter::EndFrame, &shortened, 8.0).unwrap(),
         sliced
     );
+}
+
+#[test]
+fn classic_loop_controls_preserve_dormant_range_refuse_conflicts_and_never_convert_other_modes() {
+    use SamplerParameter::{LoopEnabled, LoopEndFrame, LoopStartFrame, StartFrame};
+    use hex_devices::sampler::{
+        GateMode,
+        state::{AuthoredMode, SamplerState},
+    };
+    let mut authored = SamplerState::for_source_frames(8).unwrap();
+    authored.gain = 0.5;
+    authored.transpose_semitones = 12.0;
+    authored.detune_cents = 23.0;
+    let original = authored
+        .to_native()
+        .unwrap()
+        .with_input_gain_millidb(-3000)
+        .unwrap();
+    let start = patch_sampler_parameter_on_control(LoopStartFrame, &original, 2.0).unwrap();
+    let dormant = patch_sampler_parameter_on_control(LoopEndFrame, &start, 6.0).unwrap();
+    let on = patch_sampler_parameter_on_control(LoopEnabled, &dormant, 1.0).unwrap();
+    assert_eq!(
+        sampler_parameter_value_on_control(LoopEnabled, &on).unwrap(),
+        1.0
+    );
+    assert_eq!(
+        patch_sampler_parameter_on_control(LoopEnabled, &on, 0.0).unwrap(),
+        dormant
+    );
+    assert_eq!(
+        sampler_parameter_value_on_control(LoopStartFrame, &on).unwrap(),
+        2.0
+    );
+    assert_eq!(
+        sampler_parameter_value_on_control(LoopEndFrame, &on).unwrap(),
+        6.0
+    );
+    let trimmed = patch_sampler_parameter_on_control(StartFrame, &dormant, 4.0).unwrap();
+    assert!(patch_sampler_parameter_on_control(LoopEnabled, &trimmed, 1.0).is_err());
+    let repaired = patch_sampler_parameter_on_control(LoopStartFrame, &trimmed, 4.0).unwrap();
+    let repaired = patch_sampler_parameter_on_control(LoopEnabled, &repaired, 1.0).unwrap();
+    assert!(patch_sampler_parameter_on_control(LoopEndFrame, &repaired, 9.0).is_err());
+    assert!(patch_sampler_parameter_on_control(LoopStartFrame, &repaired, 3.0).is_err());
+    for value in [0.5, -1.0, 2.0, f64::NAN, f64::INFINITY] {
+        assert!(patch_sampler_parameter_on_control(LoopEnabled, &dormant, value).is_err());
+    }
+    let reset = patch_sampler_parameter_on_control(LoopEnabled, &on, 0.0).unwrap();
+    let reset = patch_sampler_parameter_on_control(LoopEndFrame, &reset, 8.0).unwrap();
+    assert_eq!(
+        patch_sampler_parameter_on_control(LoopStartFrame, &reset, 0.0).unwrap(),
+        original
+    );
+    for mode in [
+        AuthoredMode::OneShot {
+            gate: GateMode::Gate,
+        },
+        AuthoredMode::Slice {
+            starts: vec![0, 3],
+            base_note: 60,
+            gate: GateMode::Trigger,
+        },
+    ] {
+        authored.mode = mode;
+        let native = authored.to_native().unwrap();
+        for parameter in [LoopEnabled, LoopStartFrame, LoopEndFrame] {
+            assert!(sampler_parameter_value_on_control(parameter, &native).is_err());
+            assert!(patch_sampler_parameter_on_control(parameter, &native, 1.0).is_err());
+        }
+        assert_eq!(SamplerState::from_native(&native).unwrap(), authored);
+    }
 }

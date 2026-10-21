@@ -1,3 +1,4 @@
+mod controls;
 mod gain;
 use super::*;
 mod keyboard;
@@ -736,7 +737,7 @@ fn rendered_sampler_save_open(
     let other_selected = Box::leak(format!("selected-track-{}", other.value()).into_boxed_str());
     let end = Instant::now()
         + if gain {
-            Duration::from_secs(30)
+            Duration::from_secs(60)
         } else {
             h.wait
         };
@@ -970,7 +971,7 @@ fn rendered_sampler_save_open(
         pulse(&mut visual);
     }
     if gain {
-        gain::exercise(cx, &mut visual, &mut h, window, end, track, &saved);
+        controls::exercise(cx, &mut visual, &mut h, window, end, track, &saved);
         visual.update(|w, _| w.remove_window());
         visual.run_until_parked();
         return;

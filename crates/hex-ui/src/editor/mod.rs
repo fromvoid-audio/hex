@@ -1662,13 +1662,13 @@ pub(crate) fn sampler_keyboard_fixture_status(
 ) -> Result<String, String> {
     window.read(cx, |view: gpui::Entity<EditorView>, cx| {
         let view = view.read(cx);
-        format!("enabled={} suspended={} ready={} target={:?} request={} input={:?} cancelled={} desired={:?} current={} error={:?}",
+        format!("enabled={} suspended={} ready={} target={:?} request={} input={:?} cancelled={} desired={:?} current={} edit_pending={} error={:?}",
             view.computer_keyboard.enabled, view.computer_keyboard.suspended,
             view.computer_keyboard.native_ready, view.computer_keyboard.target,
             view.computer_keyboard.request_id,
             view.computer_keyboard.input.as_ref().and_then(|i| i.native_sampler_activation()),
             view.computer_keyboard.input.as_ref().is_some_and(|i| i.is_cancelled()),
-            view.computer_keyboard.desired_notes(), view.first_sampler_current(), view.error)
+            view.computer_keyboard.desired_notes(), view.first_sampler_current(), view.sampler_parameter_pending(), view.error)
     }).map_err(|e| e.to_string())
 }
 
