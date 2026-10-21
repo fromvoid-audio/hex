@@ -486,6 +486,7 @@ impl EditorView {
 
     pub(super) fn edit_pending(&self) -> bool {
         self.gain_recorder.blocks_edits()
+            || self.sampler_gain_pending()
             || self.opening_project
             || self.close_prompt_open
             || self.worker_requests_pending != 0

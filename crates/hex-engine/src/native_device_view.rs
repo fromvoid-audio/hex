@@ -4,6 +4,28 @@ use hex_lattice_contract::{
     DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor, ParameterValue,
 };
 
+/// Authored sampler level only. This metadata read does not register the device
+/// or grant native resource/runtime admission.
+pub fn sampler_gain_on_control(state: &NativeDeviceState) -> Result<f64, Invalid> {
+    hex_devices::sampler::state::SamplerState::from_native(state)
+        .map(|s| s.gain)
+        .map_err(|_| Invalid("sampler state is invalid"))
+}
+pub fn patch_sampler_gain_on_control(
+    state: &NativeDeviceState,
+    gain: f64,
+) -> Result<NativeDeviceState, Invalid> {
+    if !gain.is_finite() || !(0.0..=4.0).contains(&gain) {
+        return Err(Invalid("sampler gain must be between zero and four"));
+    }
+    let mut authored = hex_devices::sampler::state::SamplerState::from_native(state)
+        .map_err(|_| Invalid("sampler state is invalid"))?;
+    authored.gain = gain;
+    authored
+        .replace_in(state)
+        .map_err(|_| Invalid("sampler gain is invalid"))
+}
+
 /// Reserved host parameter. Device codecs never own this identifier.
 pub const DEVICE_OUTPUT_GAIN: hex_lattice_contract::ParameterDescriptor =
     hex_lattice_contract::ParameterDescriptor {

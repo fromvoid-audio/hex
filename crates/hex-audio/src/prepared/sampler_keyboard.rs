@@ -193,7 +193,8 @@ impl Client {
             .owner_ref()
             .ok_or("sampler keyboard output is unavailable")?;
         let status = &endpoints.status;
-        if status.closing.load(Acquire)
+        if status.sampler_edit.active()
+            || status.closing.load(Acquire)
             || status.device_fault.load(Acquire)
             || status.render_fault.load(Acquire)
             || status
@@ -263,13 +264,19 @@ impl PublicationControl {
         track: u64,
         device: u64,
     ) -> Result<(), &'static str> {
-        if self.status.closing.load(Acquire) || self.status.applied_audio_source() != Some(expected)
+        if self.status.sampler_edit.active()
+            || self.status.closing.load(Acquire)
+            || self.status.applied_audio_source() != Some(expected)
         {
             return Err("sampler keyboard output is not current");
         }
         self.status
             .sampler_keyboard
-            .bind(expected, epoch, track, device)
+            .bind(expected, epoch, track, device)?;
+        if self.status.sampler_edit.active() {
+            return Err("sampler edit is preparing");
+        }
+        Ok(())
     }
 }
 impl Callback {
@@ -300,9 +307,38 @@ impl Callback {
         let Some(applied) = active.applied_audio_source() else {
             return;
         };
+        let actual_epoch = active
+            .runtime()
+            .and_then(|r| r.current_sampler_keyboard_epoch())
+            .unwrap_or(0);
+        // Terminal cancellation belongs to the actual sounding epoch, not the
+        // latest mailbox binding. A newer bound epoch may be fenced or torn;
+        // neither may defer cancellation of the older runtime voice.
+        let terminal_cancelled =
+            actual_epoch != 0 && !self.status.sampler_keyboard.valid_epoch(actual_epoch);
+        if terminal_cancelled
+            && let Some(runtime) = active.runtime_mut()
+            && runtime.apply_current_sampler_keyboard(None).is_err()
+        {
+            self.status
+                .sampler_keyboard
+                .reject_on_callback(actual_epoch);
+            return;
+        }
         let Read::Frame(frame) = self.status.sampler_keyboard.read(applied) else {
             return;
         };
+        if terminal_cancelled && frame.is_none() {
+            return; // the same terminal reset already completed above
+        }
+        if frame.is_some_and(|f| {
+            !self
+                .status
+                .sampler_edit
+                .permits_keyboard(f.epoch, actual_epoch)
+        }) {
+            return;
+        }
         if let Some(runtime) = active.runtime_mut() {
             if runtime.apply_current_sampler_keyboard(frame).is_err() {
                 self.status

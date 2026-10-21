@@ -35,8 +35,10 @@ mod applied_source;
 #[cfg(test)]
 mod project_spectrum_tests;
 mod runtime_view;
+mod sampler_edit;
 mod sampler_keyboard;
 pub use applied_source::AppliedAudioSource;
+pub use sampler_edit::{SamplerEditFence, SamplerEditFenceState};
 mod streaming;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
@@ -146,6 +148,7 @@ impl AtomicRouteSlot {
 struct QueuedCommand {
     ticket: u64,
     action: PlaybackAction,
+    sampler_edit_gate: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,6 +354,7 @@ impl FreshRuntimeFence {
 }
 
 pub struct Status {
+    sampler_edit: sampler_edit::Fence,
     sampler_keyboard: sampler_keyboard::Mailbox,
     project_spectrum: crate::spectrum_worker::ProjectSelectionMailbox,
     pending_stop_marker: AtomicU64,
@@ -484,6 +488,7 @@ impl Status {
     }
     fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
         Self {
+            sampler_edit: Default::default(),
             sampler_keyboard: Default::default(),
             project_spectrum: Default::default(),
             pending_stop_marker: AtomicU64::new(0),
@@ -1233,6 +1238,7 @@ impl PublicationControl {
     }
     /// Bounded reclamation on the control thread, including final PCM drops.
     pub fn reclaim(&mut self) -> usize {
+        self.status.sampler_edit.retire_abort_on_control();
         let mut count = 0;
         for _ in 0..RETIRED {
             let publication = self
@@ -2177,6 +2183,7 @@ impl Callback {
         let entry_ticket = self.status.admitted_ticket.load(Acquire);
         let stop_marker = self.status.pending_stop_marker.swap(0, AcqRel);
         self.consume_commands_through(command_cut(entry_ticket, stop_marker));
+        self.acknowledge_sampler_edit();
     }
 
     fn consume_commands_through(&mut self, cut: CommandCut) {
@@ -2207,6 +2214,13 @@ impl Callback {
                 break;
             };
             consumed = Some(queued.ticket);
+            if !self.status.sampler_edit.permits(queued) {
+                self.status.publish_rejected_action(
+                    queued.ticket,
+                    PlaybackActionRejection::SamplerEditBusy,
+                );
+                continue;
+            }
             if cut
                 .stop_through
                 .is_none_or(|stop_through| queued.ticket > stop_through)

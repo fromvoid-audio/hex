@@ -782,6 +782,7 @@ impl EditorView {
         let mut visible_change = self.poll_audio_recovery() || logging_changed;
         visible_change |= self.poll_browser_sample_playback();
         visible_change |= self.tick_gain_recording();
+        visible_change |= self.tick_sampler_gain();
         visible_change |= self.tick_computer_keyboard();
         visible_change |= self.tick_tuning_audition();
         visible_change |= self.tuning.broadcast.tick(cx);
@@ -1590,12 +1591,14 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
+        let sampler_gain_complete = event.sampler_gain_complete;
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
         let group_copy_intent = self.group_copy_request_complete(&event);
         if event.project_replaced {
+            self.retire_sampler_gain();
             self.retire_first_sampler_load();
             self.cancel_open_after_save();
             self.invalidate_prepared_seek();
@@ -2398,6 +2401,7 @@ impl EditorView {
         if let Some(reason) = self.take_effect_bus_barrier_error() {
             self.error = Some(reason.into());
         }
+        self.finish_sampler_gain(sampler_gain_complete);
         self.first_sampler_load_complete(sampler_load_complete, sampler_load_succeeded);
         self.reconcile_publication_observation();
         if event.request_complete
@@ -2560,6 +2564,7 @@ impl EditorView {
             self.cancel_midi_stroke();
         }
         if request.is_project_open() {
+            self.retire_sampler_gain();
             self.cancel_first_sampler_load(None);
             if let Some(control) = &self.audio_batch {
                 control.request_cancel();

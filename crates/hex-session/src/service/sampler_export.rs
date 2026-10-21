@@ -119,27 +119,44 @@ impl Admission<'_> {
         session: &Session,
         staged: &[PreparedImport],
     ) -> Result<Option<ControlSamplerInventory>, SessionError> {
-        let Some(limits) = session.native_reservation else {
-            return Ok(None);
-        };
-        let stores = [&session.native_assets];
-        let selections = self
-            .current
-            .into_iter()
-            .chain(self.export)
-            .collect::<Vec<_>>();
-        let outbound = self.outbound.into_iter().collect::<Vec<_>>();
         let legacy = session
             .media
             .values()
             .flat_map(|m| [&m.source_audio, &m.audio])
             .chain(staged.iter().flat_map(|m| [&m.source_audio, &m.audio]))
             .collect::<Vec<_>>();
+        self.check_native_parts(
+            &session.native_assets,
+            &legacy,
+            session.native_reservation,
+            session.max_resident_frames,
+            None,
+        )
+    }
+    pub(in crate::service) fn check_native_parts(
+        &self,
+        native: &resources::ResidentDeviceAssets,
+        legacy: &[&hex_engine::Audio],
+        limits: Option<crate::ResidentNativeReservation>,
+        max_frames: u64,
+        candidate: Option<ControlSamplerSelection<'_>>,
+    ) -> Result<Option<ControlSamplerInventory>, SessionError> {
+        let Some(limits) = limits else {
+            return Ok(None);
+        };
+        let stores = [native];
+        let selections = self
+            .current
+            .into_iter()
+            .chain(self.export)
+            .chain(candidate)
+            .collect::<Vec<_>>();
+        let outbound = self.outbound.into_iter().collect::<Vec<_>>();
         let phase = ControlSamplerPhase {
             stores: &stores,
             selections: &selections,
             outbound: &outbound,
-            legacy: &legacy,
+            legacy,
             checked_runtime_bytes: self
                 .runtime_bytes
                 .checked_add(self.native.construction_bytes)
@@ -150,7 +167,7 @@ impl Admission<'_> {
         if inventory
             .retained_frames
             .checked_add(self.native.frames)
-            .is_none_or(|n| n > session.max_resident_frames)
+            .is_none_or(|n| n > max_frames)
         {
             return Err(SessionError::Invalid("resident audio frame limit reached"));
         }
@@ -317,10 +334,24 @@ impl Session {
         command: Command,
         admission: Admission<'_>,
     ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
+        self.command_service_snapshot_with_native(command, admission, None)
+    }
+    pub(in crate::service) fn command_service_snapshot_with_native(
+        &mut self,
+        command: Command,
+        admission: Admission<'_>,
+        native: Option<(
+            hex_engine::AudioSourceContext,
+            &mut dyn WorkerAudioSink,
+            &AtomicBool,
+        )>,
+    ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
         crate::validate_command_media(&command)?;
         // Prepare against a separate immutable view of Session-owned media while
         // Editor controls the sole canonical candidate/history transaction.
         let media = self.media_bank();
+        let media_assets = &self.media;
+        let native_hook = native;
         let native = &self.native_assets;
         let reservation = self.native_reservation;
         let sine = self.sine_table();
@@ -441,6 +472,27 @@ impl Session {
             )?;
             if shutdown.load(Ordering::Acquire) {
                 return Err(SessionError::Invalid("sampler preparation canceled"));
+            }
+            if let Some((context, sink, cancel)) = native_hook {
+                sink.prepare_sampler_gain(NativeSamplerInput {
+                    project: candidate,
+                    media: media_assets,
+                    native,
+                    reservation,
+                    audio_mode,
+                    max_frames,
+                    shutdown,
+                    context,
+                    admission,
+                    candidate: Some(ControlSamplerSelection {
+                        sources: sources.as_ref(),
+                        prepared: Some(&prepared),
+                    }),
+                })
+                .map_err(SessionError::NativeAudio)?;
+                if cancel.load(Ordering::Acquire) || shutdown.load(Ordering::Acquire) {
+                    return Err(SessionError::Invalid("sampler gain cancelled"));
+                }
             }
             Ok(ServiceExportSnapshot { prepared, sources })
         })

@@ -17,6 +17,14 @@ static NEXT: AtomicU64 = AtomicU64::new(0);
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
 #[derive(Default)]
 struct Observation {
+    gain_prepared: Option<hex_engine::AudioCandidateIdentity>,
+    gain_cells: Vec<(
+        hex_engine::AudioCandidateIdentity,
+        hex_engine::AudioCandidateIdentity,
+    )>,
+    fail_gain_open: bool,
+    expire_gain_fence: bool,
+    cancel_gain_after_seal: Option<Arc<AtomicBool>>,
     native_hold: hex_session::service::NativeSamplerReservationHold,
     pause_poll: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     pause_keyboard_activation: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
@@ -121,6 +129,61 @@ impl WorkerAudioSink for ObservedSink {
         }
         self.inner
             .prepare_sampler_keyboard(context, output, epoch, track, device)
+    }
+    fn begin_sampler_gain(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        self.inner.begin_sampler_gain(context)
+    }
+    fn sampler_gain_ready(&mut self) -> Option<Result<(), String>> {
+        if std::mem::take(&mut self.observation.lock().unwrap().expire_gain_fence) {
+            self.inner.expire_gain_fence_for_test();
+        }
+        self.inner.sampler_gain_ready()
+    }
+    fn prepare_sampler_gain(
+        &mut self,
+        input: hex_session::service::NativeSamplerInput<'_>,
+    ) -> Result<(), String> {
+        self.inner.prepare_sampler_gain(input)?;
+        self.observation.lock().unwrap().gain_prepared = self.inner.pending_gain_cell_identity();
+        if let Some(cancel) = self
+            .observation
+            .lock()
+            .unwrap()
+            .cancel_gain_after_seal
+            .take()
+        {
+            cancel.store(true, std::sync::atomic::Ordering::Release);
+        }
+        Ok(())
+    }
+    fn commit_sampler_gain(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        if std::mem::take(&mut self.observation.lock().unwrap().fail_gain_open) {
+            let mut original = self.inner.output_factory.take().unwrap();
+            let mut first = true;
+            self.inner.output_factory = Some(Box::new(move |rate| {
+                if std::mem::take(&mut first) {
+                    Err("fixture hardware open failed".into())
+                } else {
+                    original(rate)
+                }
+            }));
+        }
+        let before = self.inner.pending_gain_cell_identity();
+        self.inner.commit_sampler_gain(context)?;
+        let after = self.inner.draining_gain_cell_identity();
+        let mut observed = self.observation.lock().unwrap();
+        assert_eq!(before, observed.gain_prepared);
+        observed.gain_cells.push((before.unwrap(), after.unwrap()));
+        Ok(())
+    }
+    fn cancel_sampler_gain(&mut self) {
+        self.inner.cancel_sampler_gain();
     }
     fn native_sampler_hold(&self) -> hex_session::service::NativeSamplerReservationHold {
         self.inner.native_sampler_hold()

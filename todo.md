@@ -6600,3 +6600,25 @@ authored settings/absolute-tuning PCM and real WAV -> state -> sampler tests cov
 the boundary. Generic registry/native publication and browser admission stay
 closed. Prepared-project/export ownership and worker final destruction remain
 the next functional integration; this is not a playable-app completion claim.
+
+
+## stopped sampler gain — pulse2967 / PR551
+
+One shared numeric gain field submits a captured final gesture through the
+canonical prepared edit and actual stopped native callback fence. Candidate
+cell preparation/sealing precedes canonical commit and old output drain; exact
+cell custody and old/new overlap remain explicit. Gains persist through
+Save/New/Open and affect keyboard/Arrangement PCM once. Invalid/stale/playing,
+cancel and tight-capacity failures preserve old project/history/output. Callback
+loss retains one abort retirement rather than discarding earlier accepted Play;
+Stop and actual New/output teardown remain available. An ordered actual callback
+A-cancel/B-bind/fence regression prevents a newer deferred binding from masking
+terminal cancellation of the sounding voice. Postcommit hardware-open
+failure retains authored gain/save/export and supports explicit refused-output
+retry. Unpublished cleanup failures remain quarantined without retry.
+
+Targeted rendered/source/PCM/refusal/timeout/retry/allocation checks are recorded
+with the candidate. Exact final local merge qualification/review is recorded with
+canonical PR551; targeted passes alone never qualify a merge.
+Physical native input/display/device/listening and optimized delivery remain open;
+other sampler controls, replacement/history and full playback stay separate.

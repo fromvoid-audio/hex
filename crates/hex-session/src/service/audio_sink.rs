@@ -22,6 +22,26 @@ pub trait WorkerAudioSink: Send {
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
     /// Synchronous private canonical/original PCM input; no borrow may survive.
     fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
+    fn begin_sampler_gain(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        Err("sampler gain requires native audio".into())
+    }
+    /// None while awaiting the bounded callback fence; never wait here.
+    fn sampler_gain_ready(&mut self) -> Option<Result<(), String>> {
+        None
+    }
+    fn prepare_sampler_gain(&mut self, _input: NativeSamplerInput<'_>) -> Result<(), String> {
+        Err("sampler gain preparation is unavailable".into())
+    }
+    fn commit_sampler_gain(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        Err("sampler gain publication is unavailable".into())
+    }
+    fn cancel_sampler_gain(&mut self) {}
     /// Scalar activation only; implementations must verify the actual installed
     /// native CURRENT before accepting this exact output/context/track/device.
     fn prepare_sampler_keyboard(
@@ -101,6 +121,9 @@ impl WorkerEvents {
     }
     pub(super) fn native_audio_requested(&self) -> bool {
         self.audio.is_some()
+    }
+    pub(super) fn sampler_gain_audio(&mut self) -> Option<&mut (dyn WorkerAudioSink + 'static)> {
+        self.audio.as_deref_mut()
     }
     pub(super) fn startup_failed(&mut self, error: String) {
         self.startup_error = Some(format!("audio unavailable: {error}"));
@@ -186,6 +209,20 @@ impl WorkerEvents {
                     .as_mut()
                     .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
             );
+            // Preserve queued New/Open/edit ordering before a callback-ready
+            // continuation. No worker wait can strand project replacement.
+            match requests.try_recv() {
+                Ok(request) => return Some(request),
+                Err(mpsc::TryRecvError::Disconnected) => return None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if self
+                .audio
+                .as_mut()
+                .is_some_and(|a| a.sampler_gain_ready().is_some())
+            {
+                return Some(Request::ContinueSamplerGain);
+            }
             match requests.recv_timeout(Duration::from_millis(5)) {
                 Ok(request) => {
                     control_poll(

@@ -329,3 +329,9 @@ single-writer binding and per-key sequences have bounded callback reads. Callbac
 revocation/refusal has its own sole-writer atomic words; no input/source owner is
 attached, no callback CAS retry or new retirement path is introduced. See
 [the keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
+
+Stopped sampler gain uses one inline scalar edit fence. The callback consumes
+the captured admitted command prefix before acknowledging actual stopped CURRENT.
+Producer serials refuse raced/new commands without replay, while Stop and existing
+keyboard release/cancel remain effective. A timed-out abort retains one bounded
+retirement until callback handles the earlier prefix or endpoints are torn down.

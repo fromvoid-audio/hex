@@ -286,6 +286,20 @@ impl ClaimedAudioCandidateRuntime {
             .as_ref()
             .map(|r| r.playback.sample_rate())
     }
+    /// Actual CURRENT sampler transport and activation, including epoch zero
+    /// before its first keyboard input. No source or runtime owner is exposed.
+    pub fn current_sampler_edit_status(&self) -> Option<(AudioCandidateRuntimeStatus, u64)> {
+        let status = self.status()?;
+        let runtime = self.inner.runtime.as_ref()?;
+        runtime.sampler_sources.as_ref()?;
+        Some((
+            status,
+            runtime
+                .playback
+                .current_sampler_keyboard_epoch()
+                .unwrap_or(0),
+        ))
+    }
     /// Actual runtime activation scalar, independent of a newer mailbox binding.
     pub fn current_sampler_keyboard_epoch(&self) -> Option<u64> {
         let runtime = self.inner.runtime.as_ref()?;
