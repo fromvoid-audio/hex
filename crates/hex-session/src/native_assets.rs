@@ -24,6 +24,14 @@ fn pcm_bytes(frames: u64) -> Result<usize, SessionError> {
         .and_then(|n| n.checked_mul(mem::size_of::<hex_engine::Frame>()))
         .ok_or(SessionError::Invalid("resident pcm byte count overflow"))
 }
+pub(crate) enum NativeAssetDestination {
+    Unassigned,
+    EmptyInstrument {
+        track: hex_project::TrackId,
+        state: hex_lattice_contract::NativeDeviceState,
+        source_slot: hex_lattice_contract::DeviceAssetSlot,
+    },
+}
 impl Session {
     pub fn with_native_reservation(
         mut self,
@@ -82,6 +90,7 @@ impl Session {
         self.import_device_asset_prepared(
             decoded,
             cancel,
+            NativeAssetDestination::Unassigned,
             |candidate, media, table, transforms, waveforms, _stage| {
                 let prepared = prepare_with_waveforms(
                     candidate,
@@ -100,6 +109,7 @@ impl Session {
         &mut self,
         decoded: DecodedAudio,
         cancel: &AtomicBool,
+        destination: NativeAssetDestination,
         prepare: impl FnOnce(
             &Project,
             &MediaBank,
@@ -158,37 +168,51 @@ impl Session {
         let shutdown = &self.shutdown;
         let transforms = &self.audio_transforms;
         let waveforms = &self.audio_clip_waveforms;
-        let (created, (prepared, _summary)) = self.editor.execute_prepared_transition(
-            Command::ImportDeviceAsset {
+        let command = match destination {
+            NativeAssetDestination::Unassigned => Command::ImportDeviceAsset {
                 path,
                 sample_rate: source_rate,
                 frames,
             },
-            |old, candidate| {
-                let id = candidate
-                    .assets()
-                    .find(|a| old.asset(a.id()).is_none())
-                    .map(|a| a.id())
-                    .ok_or(SessionError::Invalid(
-                        "native import candidate has no asset",
-                    ))?;
-                native_assets.insert_checked_on_control(
-                    (id, source),
-                    legacy,
-                    reservation.storage,
-                    reservation.max_scan_frames,
-                    cancel,
-                    |stage| {
-                        let prepared =
-                            prepare(candidate, &media, table, transforms, waveforms, stage)?;
-                        if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
-                            return Err(ResourcePreparationError::Cancelled.into());
-                        }
-                        Ok::<_, SessionError>(prepared)
-                    },
-                )
+            NativeAssetDestination::EmptyInstrument {
+                track,
+                state,
+                source_slot,
+            } => Command::ImportDeviceAssetIntoEmptyInstrument {
+                track,
+                path,
+                sample_rate: source_rate,
+                frames,
+                state,
+                source_slot,
             },
-        )?;
+        };
+        let (created, (prepared, _summary)) =
+            self.editor
+                .execute_prepared_transition(command, |old, candidate| {
+                    let id = candidate
+                        .assets()
+                        .find(|a| old.asset(a.id()).is_none())
+                        .map(|a| a.id())
+                        .ok_or(SessionError::Invalid(
+                            "native import candidate has no asset",
+                        ))?;
+                    native_assets.insert_checked_on_control(
+                        (id, source),
+                        legacy,
+                        reservation.storage,
+                        reservation.max_scan_frames,
+                        cancel,
+                        |stage| {
+                            let prepared =
+                                prepare(candidate, &media, table, transforms, waveforms, stage)?;
+                            if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
+                                return Err(ResourcePreparationError::Cancelled.into());
+                            }
+                            Ok::<_, SessionError>(prepared)
+                        },
+                    )
+                })?;
         Ok((created, prepared))
     }
 }

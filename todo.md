@@ -786,6 +786,21 @@ prerequisite. Linux cannot run the installed macOS Live reference or provide
 native macOS listening/visual evidence. Full local CI and final PR evidence
 are recorded on the ticket; targeted checks do not authorize merge.
 
+## sampler first browser load — #2965 / PR549
+
+A WAV row context action captures an authored-MIDI track's empty instrument
+slot and submits one atomic source/assignment request. Original PCM and its
+candidate sidecar pass the existing resident union before one canonical commit.
+Stale/duplicate/cancelled/invalid requests preserve state; completion preserves
+newer selection/focus. The read-only panel names the canonical sample. Frame-zero
+UI Play checks callback-confirmed source/context/output; actual rendered
+browser-to-native Play/Stop/replay has literal mismatched-rate stereo and zero
+callback allocation evidence. Worker mono/stereo export and staged failure
+custody have focused checks. Required exact merge evidence is recorded on the
+canonical PR/ticket; physical UI/fonts/audio, optimized delivery, controls,
+replacement, keyboard, history and save/reopen remain outstanding. See
+[the first-load contract and finite checklist](docs/sampler.md#first-browser-load--pulse2965--pr549).
+
 ## Global browser search — #2659 / PR275, 17 october 2026
 
 Command-F opens the browser in `all`, focuses search and selects the previous

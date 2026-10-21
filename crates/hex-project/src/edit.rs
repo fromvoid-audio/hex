@@ -372,6 +372,17 @@ pub enum Command {
         sample_rate: u32,
         frames: u64,
     },
+    /// One prepared import creates source metadata and fills an empty instrument
+    /// slot. The neutral state template has no asset references; the new source
+    /// ID is bound inside this candidate, never predicted by a UI caller.
+    ImportDeviceAssetIntoEmptyInstrument {
+        track: TrackId,
+        path: PathBuf,
+        sample_rate: u32,
+        frames: u64,
+        state: hex_lattice_contract::NativeDeviceState,
+        source_slot: hex_lattice_contract::DeviceAssetSlot,
+    },
     RemoveAsset(AssetId),
     PlaceClip {
         track: TrackId,
@@ -2103,6 +2114,42 @@ impl Project {
                 };
                 self.add_prepared_asset(path, sample_rate, frames, playback, conversion)
                     .map(Created::Asset)
+            }
+            Command::ImportDeviceAssetIntoEmptyInstrument {
+                track,
+                path,
+                sample_rate,
+                frames,
+                state,
+                source_slot,
+            } => {
+                let target = self
+                    .track(track)
+                    .ok_or(Invalid("instrument track no longer exists"))?;
+                if target.instrument().is_some() || !state.asset_references().is_empty() {
+                    return Err(Invalid(
+                        "device source import requires an empty instrument slot and unbound state",
+                    ));
+                }
+                let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
+                let conversion = if sample_rate == self.sample_rate {
+                    IDENTITY_CONVERSION
+                } else {
+                    crate::SINC_CONVERSION_V1
+                };
+                let asset =
+                    self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
+                let state = state
+                    .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+                        slot: source_slot,
+                        asset: hex_lattice_contract::DeviceAssetKey::new(asset.value())
+                            .map_err(|_| Invalid("invalid device source id"))?,
+                    }])
+                    .map_err(|_| Invalid("invalid device source binding"))?;
+                // Editor applies this composite command to one private candidate;
+                // preparation/refusal commits neither the asset nor instrument.
+                self.apply(Command::InsertInstrument { track, state })?;
+                Ok(Created::Asset(asset))
             }
             Command::RemoveAsset(id) => {
                 if self.device_uses_asset(id) {

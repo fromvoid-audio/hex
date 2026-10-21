@@ -14,6 +14,7 @@ mod admission;
 pub(crate) mod current_sampler;
 mod ingress;
 mod resident;
+pub use resident::sampler_import_template_on_control;
 mod snapshot;
 pub use admission::{
     ControlSamplerInventory, ControlSamplerOutbound, ControlSamplerPhase, ControlSamplerSelection,

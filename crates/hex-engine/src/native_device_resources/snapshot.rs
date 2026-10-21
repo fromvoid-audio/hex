@@ -38,6 +38,53 @@ impl ControlSamplerSources {
         max_scan_frames: u64,
         cancel: &AtomicBool,
     ) -> Result<Self, ResourcePreparationError> {
+        Self::prepare_with_source_on_control(
+            project,
+            metadata_bytes,
+            max_scan_frames,
+            cancel,
+            |asset| {
+                store
+                    .assets
+                    .iter()
+                    .find(|(id, _)| *id == asset)
+                    .map(|(_, source)| source)
+            },
+        )
+    }
+    pub fn prepare_staged_on_control(
+        stage: &super::StagedNativeAssetView<'_>,
+        project: &hex_project::Project,
+        metadata_bytes: usize,
+        max_scan_frames: u64,
+        cancel: &AtomicBool,
+    ) -> Result<Self, ResourcePreparationError> {
+        Self::prepare_with_source_on_control(
+            project,
+            metadata_bytes,
+            max_scan_frames,
+            cancel,
+            |asset| {
+                if stage.staged.asset.0 == asset {
+                    Some(&stage.staged.asset.1)
+                } else {
+                    stage
+                        .store
+                        .assets
+                        .iter()
+                        .find(|(id, _)| *id == asset)
+                        .map(|(_, source)| source)
+                }
+            },
+        )
+    }
+    fn prepare_with_source_on_control<'a>(
+        project: &hex_project::Project,
+        metadata_bytes: usize,
+        max_scan_frames: u64,
+        cancel: &AtomicBool,
+        source_for: impl Fn(AssetId) -> Option<&'a NativeBankLoan>,
+    ) -> Result<Self, ResourcePreparationError> {
         cancellation(cancel)?;
         let tuning = project
             .tuning()
@@ -112,24 +159,15 @@ impl ControlSamplerSources {
             if references.len() != 1 {
                 return Err(ResourcePreparationError::InvalidScope);
             }
-            let asset = references[0].asset.value();
-            let (_, source) = store
-                .assets
-                .iter()
-                .find(|(id, _)| id.value() == asset)
+            let asset = project
+                .assets()
+                .find(|a| a.id().value() == references[0].asset.value())
+                .map(|a| a.id())
                 .ok_or(ResourcePreparationError::InvalidSource)?;
+            let source = source_for(asset).ok_or(ResourcePreparationError::InvalidSource)?;
             let frames = source
                 .bank
-                .source_view(
-                    &source.bank.source_token(
-                        store
-                            .assets
-                            .iter()
-                            .find(|(id, _)| id.value() == asset)
-                            .ok_or(ResourcePreparationError::InvalidSource)?
-                            .0,
-                    )?,
-                )?
+                .source_view(&source.bank.source_token(asset)?)?
                 .resident_frames()
                 .ok_or(ResourcePreparationError::InvalidSource)?
                 .len();

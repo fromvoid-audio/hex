@@ -370,19 +370,29 @@ impl Session {
         cancel: &AtomicBool,
         admission: Admission<'_>,
     ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
+        self.import_service_snapshot_to(decoded, cancel, admission, None)
+    }
+    pub(crate) fn import_service_snapshot_to(
+        &mut self,
+        decoded: hex_media::DecodedAudio,
+        cancel: &AtomicBool,
+        admission: Admission<'_>,
+        track: Option<hex_project::TrackId>,
+    ) -> Result<(Created, ServiceExportSnapshot), SessionError> {
         let limits = self.native_reservation.ok_or(SessionError::Invalid(
             "native source import requires an explicit resident reservation",
         ))?;
-        let sources = if resources::requires_private_sampler_sources(self.project()) {
-            Some(ControlSamplerSources::prepare_on_control(
-                &self.native_assets,
-                self.project(),
-                limits.storage.max_retained_bytes,
-                limits.max_scan_frames,
-                cancel,
-            )?)
-        } else {
-            None
+        let destination = match track {
+            Some(track) => {
+                let (state, source_slot) =
+                    resources::sampler_import_template_on_control(decoded.audio().frames().len())?;
+                crate::native_assets::NativeAssetDestination::EmptyInstrument {
+                    track,
+                    state,
+                    source_slot,
+                }
+            }
+            None => crate::native_assets::NativeAssetDestination::Unassigned,
         };
         let legacy = self
             .media
@@ -397,7 +407,20 @@ impl Session {
         self.import_device_asset_prepared(
             decoded,
             cancel,
+            destination,
             |candidate, media, table, transforms, waveforms, stage| {
+                let sources = if resources::requires_private_sampler_sources(candidate) {
+                    Some(ControlSamplerSources::prepare_staged_on_control(
+                        stage,
+                        candidate,
+                        limits.storage.max_retained_bytes,
+                        limits.max_scan_frames,
+                        cancel,
+                    )?)
+                } else {
+                    None
+                };
+
                 let inspect = |selection: ControlSamplerSelection<'_>,
                                extra: usize|
                  -> Result<(), SessionError> {

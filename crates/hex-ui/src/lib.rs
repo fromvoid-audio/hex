@@ -65,3 +65,15 @@ pub fn open_time_selection_profile(
 ) -> Result<(), String> {
     editor::time_selection_profile::open(cx, directory, settings, result)
 }
+
+/// Headless-only owning fixture entry. All settings/discovery stay beneath the
+/// caller-owned temporary root; it opens the actual view with the supplied backend.
+#[cfg(feature = "ui-test-support")]
+pub fn open_sampler_load_test_backend(
+    cx: &mut gpui::TestAppContext,
+    backend: EditorBackend,
+    root: std::path::PathBuf,
+    directory: std::path::PathBuf,
+) -> Result<gpui::AnyWindowHandle, String> {
+    editor::sampler_load_fixture(cx, backend, root, directory)
+}
