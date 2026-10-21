@@ -109,7 +109,7 @@ boundary. Controlled nonzero-range export reconstructs stateful Main history by
 the existing bounded preroll; the simple linear export helpers retain their
 existing seek semantics. No new DSP law, lookahead or latency cap is introduced.
 
-Current format33 includes the required bounded Main inventory, both A/B banks,
+Current format34 includes the required bounded Main inventory, both A/B banks,
 host trims, bypass, stable IDs and complete device-asset inventory. Earlier
 formats are explicitly refused; no alpha migration or user-data rewrite is
 performed. Main uses existing per-chain/global processor and byte caps. Its
@@ -172,7 +172,7 @@ active provider bytes, host trims, bypass and other audible fields remain intact
 A saved project with valid active Main state and malformed inactive state now
 refuses at Session open, preserving original file bytes. Valid comparison states,
 both directional copies without switching, current-format round trips and atomic
-Undo/Redo retain the existing format33 and global trim semantics. Absent B still
+Undo/Redo retain the current format34 and global trim semantics. Absent B still
 means an identical bank: Copy is a genuine no-op, not invented bank creation.
 
 Red-first checks observed four actual Main latency failures (final15 reported7,

@@ -477,6 +477,14 @@ impl EditorView {
                 .map(|seek| seek.start_playing),
             start_frame,
             self.current_seek_requires_preroll()
+                .or_else(|| {
+                    // The private sampler CURRENT owns its prepared runtime in
+                    // native audio, so it deliberately has no public seek
+                    // candidate. Frame-zero Play is checked by that actual
+                    // client's current-context admission; nonzero seek remains
+                    // unsupported and must not enter the preroll path.
+                    (start_frame == 0 && self.first_sampler_current()).then_some(false)
+                })
                 .or_else(|| self.audio.is_none().then_some(false)),
         )
     }

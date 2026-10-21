@@ -183,8 +183,47 @@ pub fn render_prepared_with_policy(
         };
         Ok(ControlledRenderer {
             playback,
+            sources: None,
             plan,
             buffers,
+            control: control.clone(),
+        })
+    })
+}
+
+/// Explicit private-control source capability. Same publication, cancellation,
+/// block renderer and SessionPlayback implementation as ordinary export.
+#[allow(clippy::too_many_arguments)]
+pub fn render_control_sampler_with_policy(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    sources: hex_engine::native_device_resources::ControlSamplerSources,
+    start: u64,
+    frames: u64,
+    signal: ExportSignal,
+    control: &ExportControl,
+    publication: &Publication,
+) -> Result<ExportReport, ExportError> {
+    if start != 0 || !matches!(signal, ExportSignal::Main) {
+        return Err(ExportError::Invalid(
+            "sampler supports frame-zero main export only",
+        ));
+    }
+    control.claim()?;
+    control.total.store(frames, Ordering::Release);
+    let sample_rate = revision.arrangement().sample_rate();
+    publish(path, sample_rate, 0, frames, publication, || {
+        control.check()?;
+        let mut playback = SessionPlayback::new_control_sampler_export(revision, &sources)
+            .map_err(ExportError::SessionRender)?;
+        playback
+            .apply(SessionPlaybackCommand::Play)
+            .map_err(ExportError::SessionRender)?;
+        Ok(ControlledRenderer {
+            playback,
+            sources: Some(sources),
+            plan: None,
+            buffers: Vec::new(),
             control: control.clone(),
         })
     })
@@ -247,6 +286,7 @@ fn prepare_runtime_observed(
 
 struct ControlledRenderer {
     playback: SessionPlayback,
+    sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
     plan: Option<OutputCapturePlan>,
     buffers: Vec<[Frame; FRAMES_PER_BLOCK]>,
     control: ExportControl,
@@ -275,6 +315,10 @@ impl BlockRenderer for ControlledRenderer {
                     destination[1] += source[1];
                 }
             }
+        } else if let Some(sources) = self.sources.as_ref() {
+            self.playback
+                .render_control_sampler_export(frames, sources)
+                .map_err(ExportError::SessionRender)?;
         } else {
             self.playback
                 .render(frames)

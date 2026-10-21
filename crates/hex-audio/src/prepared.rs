@@ -35,7 +35,10 @@ mod applied_source;
 #[cfg(test)]
 mod project_spectrum_tests;
 mod runtime_view;
+mod sampler_edit;
+mod sampler_keyboard;
 pub use applied_source::AppliedAudioSource;
+pub use sampler_edit::{SamplerEditFence, SamplerEditFenceState};
 mod streaming;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
@@ -145,6 +148,7 @@ impl AtomicRouteSlot {
 struct QueuedCommand {
     ticket: u64,
     action: PlaybackAction,
+    sampler_edit_gate: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -177,6 +181,8 @@ fn action_invalidates_processor_audition(action: PlaybackAction) -> bool {
 }
 
 pub(crate) struct Publication {
+    pcm_frames: u64,
+    forwarded_pcm: bool,
     revision: u64,
     /// UI/control project context this compiled playback belongs to. This is
     /// audio publication metadata, not project schema or engine state.
@@ -348,6 +354,8 @@ impl FreshRuntimeFence {
 }
 
 pub struct Status {
+    sampler_edit: sampler_edit::Fence,
+    sampler_keyboard: sampler_keyboard::Mailbox,
     project_spectrum: crate::spectrum_worker::ProjectSelectionMailbox,
     pending_stop_marker: AtomicU64,
     admitted_ticket: AtomicU64,
@@ -404,6 +412,7 @@ pub struct Status {
     /// Last callback-admitted interactive click state.
     pub metronome_enabled: AtomicBool,
     pub session_capability: AtomicU32,
+    sampler_console: AtomicBool,
     pub shutdown_complete: AtomicBool,
     route_sequence: AtomicU64,
     route_revision: AtomicU64,
@@ -425,6 +434,10 @@ impl Default for Status {
 }
 
 impl Status {
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn headless_shutdown_requested(&self) -> bool {
+        self.closing.load(Acquire)
+    }
     #[cfg(test)]
     pub(crate) fn set_split_for_test(&self) {
         self.split_endpoints.store(true, Release);
@@ -476,6 +489,8 @@ impl Status {
     }
     fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
         Self {
+            sampler_edit: Default::default(),
+            sampler_keyboard: Default::default(),
             project_spectrum: Default::default(),
             pending_stop_marker: AtomicU64::new(0),
             admitted_ticket: AtomicU64::new(0),
@@ -518,6 +533,7 @@ impl Status {
             playing: AtomicBool::new(false),
             metronome_enabled: AtomicBool::new(false),
             session_capability: AtomicU32::new(SessionCapabilityStatus::Legacy as u32),
+            sampler_console: AtomicBool::new(false),
             shutdown_complete: AtomicBool::new(false),
             route_sequence: AtomicU64::new(0),
             route_revision: AtomicU64::new(0),
@@ -666,6 +682,7 @@ impl Status {
             slot.clear();
         }
         self.publish_route_header(0, 0, SessionCapabilityStatus::Legacy, 0, 0);
+        self.sampler_console.store(false, Release);
         self.session_capability
             .store(SessionCapabilityStatus::Legacy as u32, Relaxed);
         self.end_route_snapshot();
@@ -757,6 +774,9 @@ impl Status {
         None
     }
 
+    pub fn sampler_console_available(&self) -> bool {
+        self.sampler_console.load(Acquire)
+    }
     pub fn session_capability(&self) -> Option<SessionCapabilityStatus> {
         SessionCapabilityStatus::from_code(self.session_capability.load(Acquire))
     }
@@ -814,6 +834,7 @@ pub struct PublicationControl {
     rate: u32,
     revision: u64,
     command_storage_bytes: usize,
+    legacy_pcm_frames: u64,
     resident_forwarding: Option<Arc<resident_forwarding::ResidentForwarding>>,
     #[cfg(all(test, feature = "allocation-probe"))]
     endpoint_probe: Option<crate::native_callback_owner::DropProbe>,
@@ -924,6 +945,7 @@ pub fn channel_with_spectrum(
                 rate,
                 revision: 0,
                 command_storage_bytes,
+                legacy_pcm_frames: 0,
                 resident_forwarding: None,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 endpoint_probe: None,
@@ -1121,6 +1143,15 @@ impl PublicationControl {
         policy: PublicationPolicy,
         control_context_generation: u64,
     ) -> Result<u64, PublishError> {
+        self.publish_with_pcm_obligation(playback, policy, control_context_generation, false)
+    }
+    fn publish_with_pcm_obligation(
+        &mut self,
+        playback: Playback,
+        policy: PublicationPolicy,
+        control_context_generation: u64,
+        forwarded_pcm: bool,
+    ) -> Result<u64, PublishError> {
         let reason = if self.candidate_root.domains_configured() {
             Some("constructor publication does not adopt legacy playback")
         } else if self.status.publication_pending.gain_active() {
@@ -1139,6 +1170,21 @@ impl PublicationControl {
         if let Some(reason) = reason {
             return Err(PublishError { reason, playback });
         }
+        let Some(pcm_frames) = playback.resident_pcm_capacity_frames() else {
+            return Err(PublishError {
+                reason: "resident pcm capacity overflow",
+                playback,
+            });
+        };
+        let Some(next_pcm) =
+            self.legacy_pcm_frames
+                .checked_add(if forwarded_pcm { 0 } else { pcm_frames })
+        else {
+            return Err(PublishError {
+                reason: "resident pcm obligation overflow",
+                playback,
+            });
+        };
         if !self.status.publication_pending.reserve_publication() {
             return Err(PublishError {
                 reason: "playback publication already pending",
@@ -1156,6 +1202,8 @@ impl PublicationControl {
         let mut playback = playback;
         playback.set_device_metering(true);
         let publication = Publication {
+            pcm_frames,
+            forwarded_pcm,
             revision,
             control_context_generation,
             policy,
@@ -1169,6 +1217,7 @@ impl PublicationControl {
                 playback: *publication.playback,
             });
         }
+        self.legacy_pcm_frames = next_pcm;
         self.revision = revision;
         self.status.submitted_revision.store(revision, Release);
         self.latest_fresh_runtime_cancellation = cancellation;
@@ -1195,6 +1244,7 @@ impl PublicationControl {
     }
     /// Bounded reclamation on the control thread, including final PCM drops.
     pub fn reclaim(&mut self) -> usize {
+        self.status.sampler_edit.retire_abort_on_control();
         let mut count = 0;
         for _ in 0..RETIRED {
             let publication = self
@@ -1217,7 +1267,20 @@ impl PublicationControl {
                         break;
                     }
                 }
-                ReturnedPublication::Legacy(publication) => drop(publication),
+                ReturnedPublication::Legacy(publication) => {
+                    let (frames, forwarded) = (publication.pcm_frames, publication.forwarded_pcm);
+                    drop(publication); // actual owner destruction precedes obligation release
+                    if forwarded {
+                        if let Some(bridge) = &self.resident_forwarding {
+                            bridge.release_pcm_after_drop(frames);
+                        }
+                    } else {
+                        self.legacy_pcm_frames = self
+                            .legacy_pcm_frames
+                            .checked_sub(frames)
+                            .unwrap_or(u64::MAX);
+                    }
+                }
                 ReturnedPublication::Candidate(returned) => {
                     if let Err(returned) = self.candidate_root.ingest(returned) {
                         self.held_control_return = Some(ReturnedPublication::Candidate(returned));
@@ -1323,6 +1386,7 @@ impl PublicationControl {
         self.candidate_root.report()
     }
     pub fn request_shutdown(&mut self) {
+        self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
         self.status.pending_stop_marker.store(
             self.status.admitted_ticket.load(Acquire).saturating_add(1),
@@ -1385,6 +1449,7 @@ impl Control {
         endpoints::legacy_enqueue(self, action)
     }
     pub fn stop(&self) {
+        self.status.sampler_keyboard.revoke_all();
         // Ticket MAX is refused for ordinary commands, so the supported marker
         // encoding (ticket + 1) is always nonzero and cannot wrap.
         self.status
@@ -1395,6 +1460,7 @@ impl Control {
     /// Freeze publication, return active/queued graphs over subsequent callbacks.
     /// Control must continue reclaiming until shutdown_complete before stream teardown.
     pub fn request_shutdown(&mut self) {
+        self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
         self.sample_preview.shutdown();
         self.stop();
@@ -1979,6 +2045,7 @@ impl Callback {
                     // command target, so remove transient auditions before
                     // the candidate's first callback render.
                     next.playback.cancel_retired_processor_auditions();
+                    self.status.sampler_console.store(false, Release);
                     self.status
                         .session_capability
                         .store(next.playback.session_capability_status() as u32, Relaxed);
@@ -2123,10 +2190,12 @@ impl Callback {
         let entry_ticket = self.status.admitted_ticket.load(Acquire);
         let stop_marker = self.status.pending_stop_marker.swap(0, AcqRel);
         self.consume_commands_through(command_cut(entry_ticket, stop_marker));
+        self.acknowledge_sampler_edit();
     }
 
     fn consume_commands_through(&mut self, cut: CommandCut) {
         if cut.stop_through.is_some() {
+            self.revoke_current_sampler_keyboard();
             #[cfg(all(test, feature = "allocation-probe"))]
             self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
             self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
@@ -2152,12 +2221,25 @@ impl Callback {
                 break;
             };
             consumed = Some(queued.ticket);
+            if !self.status.sampler_edit.permits(queued) {
+                self.status.publish_rejected_action(
+                    queued.ticket,
+                    PlaybackActionRejection::SamplerEditBusy,
+                );
+                continue;
+            }
             if cut
                 .stop_through
                 .is_none_or(|stop_through| queued.ticket > stop_through)
             {
                 #[cfg(all(test, feature = "allocation-probe"))]
                 self.apply_candidate_action(queued.action);
+                if matches!(
+                    queued.action,
+                    PlaybackAction::Transport(PlaybackCommand::Stop)
+                ) {
+                    self.revoke_current_sampler_keyboard();
+                }
                 let mut invalidate_audition = false;
                 if let Some(mut active) = self
                     .active
@@ -2212,6 +2294,7 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        self.status.sampler_keyboard.revoke_on_callback();
         #[cfg(all(test, feature = "allocation-probe"))]
         self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
         self.invalidate_gain_recording(crate::gain_recording::AbortReason::OutputFailed);
@@ -2254,6 +2337,7 @@ impl Callback {
             self.advance_eligible_publication(Some(output.len()));
         }
         self.render_project(output)?;
+        self.report_sampler_keyboard_rejection();
         if !self.status.closing.load(Acquire) {
             self.sample_preview.mix(output);
         }
@@ -2261,6 +2345,7 @@ impl Callback {
     }
 
     fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        self.read_sampler_keyboard();
         if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
             if self.status.closing.load(Acquire) {
                 output.fill([0.0; 2]);
@@ -2661,6 +2746,9 @@ impl Callback {
             return;
         }
 
+        self.status
+            .sampler_console
+            .store(playback.sampler_console_available(), Release);
         let capability = playback.session_capability_status();
         self.status
             .session_capability
@@ -2732,6 +2820,24 @@ impl Callback {
                 .store(active.playback.metronome_enabled(), Relaxed);
         }
     }
+}
+
+/// Known channel payload/capacity quote for the pinned worker factory.
+pub(crate) fn worker_boundary_storage_quote() -> Option<usize> {
+    std::mem::size_of::<Status>()
+        .checked_add(SESSION_ROUTE_CAPACITY.checked_mul(std::mem::size_of::<AtomicRouteSlot>())?)?
+        .checked_add(crate::sample_preview::constructor_storage_quote()?)?
+        .checked_add(crate::gain_recording::constructor_storage_quote()?)?
+        .checked_add(spectrum_target::constructor_storage_quote()?)?
+        .checked_add(processor_audition::constructor_storage_quote()?)?
+        .checked_add(endpoints::constructor_endpoint_storage_quote()?)
+}
+pub(crate) fn worker_publication_queue_storage_quote() -> Option<usize> {
+    use crate::native_callback_owner::ChannelStorage;
+    ChannelStorage::ring_bytes::<QueuedPublication>(1)?
+        .checked_add(ChannelStorage::ring_bytes::<ReturnedPublication>(RETIRED)?)?
+        .checked_add(ChannelStorage::ring_bytes::<QueuedCommand>(COMMANDS)?)?
+        .checked_add(crate::native_callback_owner::worker_boundary_storage_quote()?)
 }
 
 #[cfg(test)]
@@ -2896,6 +3002,7 @@ mod tests {
             sample_rate: 48_000,
             next_id: DEVICE_ID + 2,
             assets: vec![AssetSnapshot {
+                original_source: None,
                 id: ASSET_ID,
                 path: "analyzer-test.wav".into(),
                 source_sample_rate: 48_000,
@@ -3032,6 +3139,7 @@ mod tests {
             sample_rate: 48_000,
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
+                original_source: None,
                 id: ASSET_ID,
                 path: "saturator-callback-test.wav".into(),
                 source_sample_rate: 48_000,
@@ -3156,6 +3264,7 @@ mod tests {
             sample_rate: 48_000,
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
+                original_source: None,
                 id: ASSET_ID,
                 path: "compressor-callback-test.wav".into(),
                 source_sample_rate: 48_000,
@@ -3292,6 +3401,7 @@ mod tests {
             sample_rate: 48_000,
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
+                original_source: None,
                 id: ASSET_ID,
                 path: "gate-callback-test.wav".into(),
                 source_sample_rate: 48_000,
@@ -5347,6 +5457,8 @@ mod tests {
         control
             .publications
             .push(QueuedPublication::Legacy(Publication {
+                pcm_frames: 0,
+                forwarded_pcm: false,
                 revision: 99,
                 control_context_generation: 0,
                 policy: PublicationPolicy::InstallFreshRuntime,
@@ -5685,6 +5797,8 @@ mod tests {
             callback
                 .retired
                 .push(ReturnedPublication::Legacy(Publication {
+                    pcm_frames: 0,
+                    forwarded_pcm: false,
                     revision,
                     control_context_generation: 0,
                     policy: PublicationPolicy::InstallFreshRuntime,
@@ -6114,6 +6228,7 @@ mod tests {
             sample_rate: 48_000,
             next_id: 5,
             assets: vec![AssetSnapshot {
+                original_source: None,
                 id: 4,
                 path: "session.wav".into(),
                 source_sample_rate: 48_000,
@@ -6196,6 +6311,8 @@ mod tests {
         let (mut control, mut callback) = channel(48_000).unwrap();
         let (playback, weak_revision, _, _) = session_audio_graph();
         callback.held_retirement = Some(ReturnedPublication::Legacy(Publication {
+            pcm_frames: 0,
+            forwarded_pcm: false,
             revision: 1,
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
@@ -6309,6 +6426,8 @@ mod tests {
                 callback
                     .retired
                     .push(ReturnedPublication::Legacy(Publication {
+                        pcm_frames: 0,
+                        forwarded_pcm: false,
                         revision,
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
@@ -6382,6 +6501,8 @@ mod tests {
                 callback
                     .retired
                     .push(ReturnedPublication::Legacy(Publication {
+                        pcm_frames: 0,
+                        forwarded_pcm: false,
                         revision,
                         control_context_generation: 0,
                         policy: PublicationPolicy::InheritRuntime,
@@ -6394,6 +6515,8 @@ mod tests {
         }
         let (held, held_weak) = graph();
         callback.held_retirement = Some(ReturnedPublication::Legacy(Publication {
+            pcm_frames: 0,
+            forwarded_pcm: false,
             revision: 4,
             control_context_generation: 0,
             policy: PublicationPolicy::InheritRuntime,
@@ -6540,6 +6663,8 @@ mod tests {
             control
                 .publications
                 .push(QueuedPublication::Legacy(Publication {
+                    pcm_frames: 0,
+                    forwarded_pcm: false,
                     revision: 3,
                     control_context_generation: 0,
                     policy: PublicationPolicy::InheritRuntime,

@@ -293,6 +293,8 @@ fn full_return_queue_holds_actual_candidate_and_shutdown_ack_is_not_disposal() {
             callback
                 .retired
                 .push(ReturnedPublication::Legacy(Publication {
+                    pcm_frames: 0,
+                    forwarded_pcm: false,
                     revision,
                     control_context_generation: 0,
                     policy: PublicationPolicy::InheritRuntime,
@@ -424,6 +426,8 @@ fn candidate_rejection_held_return_and_guard_release_have_zero_total_and_net_cal
             callback
                 .retired
                 .push(ReturnedPublication::Legacy(Publication {
+                    pcm_frames: 0,
+                    forwarded_pcm: false,
                     revision,
                     control_context_generation: 0,
                     policy: PublicationPolicy::InheritRuntime,

@@ -10,6 +10,22 @@ use hex_project::AssetId;
 use sha2::{Digest, Sha256};
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod admission;
+pub(crate) mod current_sampler;
+mod ingress;
+mod resident;
+pub use resident::sampler_import_template_on_control;
+mod snapshot;
+pub use admission::{
+    ControlSamplerInventory, ControlSamplerOutbound, ControlSamplerPhase, ControlSamplerSelection,
+    inspect_control_sampler_union,
+};
+pub use ingress::ResidentAudioIngressRefusal;
+pub use resident::{ResidentDeviceAssets, StagedNativeAssetView};
+pub(crate) use snapshot::PreparedControlSampler;
+pub(crate) use snapshot::prepare_instrument;
+pub use snapshot::{ControlSamplerSources, DispatchedSourceObligation};
+
 /// Expected original decoded source facts, captured by the media owner on control.
 #[derive(Clone, Copy, Debug)]
 pub struct OriginalResourceSource {
@@ -58,9 +74,33 @@ pub struct DeviceResourceScope {
 }
 /// Callback queries borrow the actual bank, its verified facts and this scope.
 pub struct ScopedDeviceResources<'a> {
-    bank: &'a AudioInputStorageAndObligations,
+    bank: BorrowedResourceBank<'a>,
     catalog: &'a DeviceResourceCatalog,
     scope: &'a DeviceResourceScope,
+}
+/// Both variants borrow actual constructor custody. This adapter neither owns
+/// sources nor changes token validity, declarations or native admission.
+#[derive(Clone, Copy)]
+enum BorrowedResourceBank<'a> {
+    Retained(&'a AudioInputStorageAndObligations),
+    Inputs(&'a crate::OwnedAudioInputs),
+}
+impl<'a> BorrowedResourceBank<'a> {
+    fn source_token(self, asset: AssetId) -> Result<AudioSourceToken, AudioStorageError> {
+        match self {
+            Self::Retained(bank) => bank.source_token(asset),
+            Self::Inputs(bank) => bank.source_token(asset),
+        }
+    }
+    fn source_view(
+        self,
+        token: &AudioSourceToken,
+    ) -> Result<crate::OwnedAudioSourceView<'a>, AudioStorageError> {
+        match self {
+            Self::Retained(bank) => bank.source_view(token),
+            Self::Inputs(bank) => bank.source_view(token),
+        }
+    }
 }
 fn quoted_bytes<T>(capacity: usize, header: usize) -> Result<usize, ResourcePreparationError> {
     capacity
@@ -84,7 +124,33 @@ impl DeviceResourceCatalog {
         reservation: ResourceCatalogReservation,
         cancel: &AtomicBool,
     ) -> Result<Self, ResourcePreparationError> {
-        cancellation(cancel)?;
+        Self::prepare_bank_on_control(
+            BorrowedResourceBank::Retained(bank),
+            expected,
+            reservation,
+            cancel,
+        )
+    }
+    #[cfg(test)]
+    pub(crate) fn prepare_inputs_on_control(
+        bank: &crate::OwnedAudioInputs,
+        expected: &[OriginalResourceSource],
+        reservation: ResourceCatalogReservation,
+        cancel: &AtomicBool,
+    ) -> Result<Self, ResourcePreparationError> {
+        Self::prepare_bank_on_control(
+            BorrowedResourceBank::Inputs(bank),
+            expected,
+            reservation,
+            cancel,
+        )
+    }
+    fn prepare_bank_on_control(
+        bank: BorrowedResourceBank<'_>,
+        expected: &[OriginalResourceSource],
+        reservation: ResourceCatalogReservation,
+        cancel: &AtomicBool,
+    ) -> Result<Self, ResourcePreparationError> {
         if expected.len() > hex_project::MAX_ASSETS
             || expected
                 .windows(2)
@@ -92,13 +158,41 @@ impl DeviceResourceCatalog {
         {
             return Err(ResourcePreparationError::InvalidSource);
         }
-        let quote = quoted_bytes::<SourceFact>(expected.len(), std::mem::size_of::<Self>())?;
+        Self::prepare_iterator_on_control(bank, || expected.iter().copied(), reservation, cancel)
+    }
+    /// Canonical project assets are unique but need not be ordered. Build the
+    /// actual catalog directly; no temporary source-fact allocation overlaps it.
+    pub(crate) fn prepare_inputs_iter_on_control<I: Iterator<Item = OriginalResourceSource>>(
+        bank: &crate::OwnedAudioInputs,
+        expected: impl Fn() -> I,
+        reservation: ResourceCatalogReservation,
+        cancel: &AtomicBool,
+    ) -> Result<Self, ResourcePreparationError> {
+        Self::prepare_iterator_on_control(
+            BorrowedResourceBank::Inputs(bank),
+            expected,
+            reservation,
+            cancel,
+        )
+    }
+    fn prepare_iterator_on_control<I: Iterator<Item = OriginalResourceSource>>(
+        bank: BorrowedResourceBank<'_>,
+        expected: impl Fn() -> I,
+        reservation: ResourceCatalogReservation,
+        cancel: &AtomicBool,
+    ) -> Result<Self, ResourcePreparationError> {
+        cancellation(cancel)?;
+        let count = expected().take(hex_project::MAX_ASSETS + 1).count();
+        if count > hex_project::MAX_ASSETS {
+            return Err(ResourcePreparationError::InvalidSource);
+        }
+        let quote = quoted_bytes::<SourceFact>(count, std::mem::size_of::<Self>())?;
         if quote > reservation.metadata_bytes {
             return Err(ResourcePreparationError::MetadataCapacity);
         }
         let mut sources = Vec::new();
         sources
-            .try_reserve_exact(expected.len())
+            .try_reserve_exact(count)
             .map_err(|_| AudioStorageError::Allocation)?;
         if quoted_bytes::<SourceFact>(sources.capacity(), std::mem::size_of::<Self>())?
             > reservation.metadata_bytes
@@ -106,7 +200,7 @@ impl DeviceResourceCatalog {
             return Err(ResourcePreparationError::MetadataCapacity);
         }
         let mut work = reservation.hash_frames;
-        for expected in expected {
+        for expected in expected() {
             cancellation(cancel)?;
             let token = bank.source_token(expected.asset)?;
             let source = bank.source_view(&token)?;
@@ -142,13 +236,26 @@ impl DeviceResourceCatalog {
                 derivation_version: 1,
                 derivation: Sha256::digest(b"hex.device-resource.original-stereo.v1\0").into(),
             };
+            if sources.len() >= count || sources.len() >= sources.capacity() {
+                return Err(ResourcePreparationError::InvalidSource);
+            }
             sources.push(SourceFact {
-                expected: *expected,
+                expected,
                 identity,
                 token,
             });
         }
         cancellation(cancel)?;
+        if sources.len() != count {
+            return Err(ResourcePreparationError::InvalidSource);
+        }
+        sources.sort_unstable_by_key(|s| s.expected.asset);
+        if sources
+            .windows(2)
+            .any(|w| w[0].expected.asset == w[1].expected.asset)
+        {
+            return Err(ResourcePreparationError::InvalidSource);
+        }
         Ok(Self {
             id: crate::audio_only_inputs::handle()?,
             sources,
@@ -212,6 +319,20 @@ impl DeviceResourceCatalog {
         bank: &'a AudioInputStorageAndObligations,
         scope: &'a DeviceResourceScope,
     ) -> Result<ScopedDeviceResources<'a>, ResourcePreparationError> {
+        self.resources_from_bank(BorrowedResourceBank::Retained(bank), scope)
+    }
+    pub(crate) fn resources_from_inputs<'a>(
+        &'a self,
+        bank: &'a crate::OwnedAudioInputs,
+        scope: &'a DeviceResourceScope,
+    ) -> Result<ScopedDeviceResources<'a>, ResourcePreparationError> {
+        self.resources_from_bank(BorrowedResourceBank::Inputs(bank), scope)
+    }
+    fn resources_from_bank<'a>(
+        &'a self,
+        bank: BorrowedResourceBank<'a>,
+        scope: &'a DeviceResourceScope,
+    ) -> Result<ScopedDeviceResources<'a>, ResourcePreparationError> {
         if scope.catalog != self.id {
             return Err(ResourcePreparationError::InvalidScope);
         }
@@ -255,3 +376,48 @@ impl DeviceResources for ScopedDeviceResources<'_> {
 
 #[cfg(test)]
 mod tests;
+
+/// Metadata classification for containment/refusal only; type identity alone
+/// never grants source preparation, native admission or a musical runtime.
+pub fn requires_private_sampler_sources(project: &hex_project::Project) -> bool {
+    project.tracks().iter().any(|track| {
+        track
+            .instrument()
+            .is_some_and(|device| device.state().type_id() == hex_devices::sampler::state::TYPE_ID)
+    })
+}
+#[cfg(feature = "instrument-test-support")]
+pub mod control_drop_probe;
+#[cfg(feature = "instrument-test-support")]
+pub mod current_sampler_fixture;
+
+/// A synchronous resource borrow into one sealed owner. Both rendering modes
+/// use the same scope lookup and mutable sampler kernel; neither retains it.
+#[derive(Clone, Copy)]
+pub(crate) enum SamplerSourcesRef<'a> {
+    Control(&'a ControlSamplerSources),
+    Current(&'a current_sampler::CurrentSamplerSources),
+}
+impl<'a> SamplerSourcesRef<'a> {
+    pub(crate) fn id(self) -> u64 {
+        match self {
+            Self::Control(s) => s.id(),
+            Self::Current(s) => s.metadata.id,
+        }
+    }
+    pub(crate) fn has_track(self, track: hex_project::TrackId) -> bool {
+        match self {
+            Self::Control(s) => s.has_track(track),
+            Self::Current(s) => s.metadata.configuration(track).is_some(),
+        }
+    }
+    pub(crate) fn resources(
+        self,
+        track: hex_project::TrackId,
+    ) -> Result<ScopedDeviceResources<'a>, ResourcePreparationError> {
+        match self {
+            Self::Control(s) => s.resources(track),
+            Self::Current(s) => s.resources(track),
+        }
+    }
+}

@@ -1,0 +1,248 @@
+//! Borrow the real closed Service selections for two finite admission phases.
+//! This is not a global allocator, native publication or a retirement receipt.
+use super::*;
+use crate::audio_storage::{Location, Owner};
+use crate::{
+    Audio, AudioRootStorageLedger, AudioRootStorageSummary, AudioStorageLedgerReservation,
+    PreparedRevision,
+};
+
+#[derive(Clone, Copy)]
+pub struct ControlSamplerSelection<'a> {
+    pub sources: Option<&'a ControlSamplerSources>,
+    pub prepared: Option<&'a PreparedRevision>,
+}
+#[derive(Clone, Copy)]
+pub struct ControlSamplerOutbound<'a> {
+    pub anchor: &'a ControlSamplerSources,
+    pub obligation: &'a super::DispatchedSourceObligation,
+    pub job: u64,
+}
+pub struct ControlSamplerPhase<'a> {
+    pub stores: &'a [&'a ResidentDeviceAssets],
+    pub selections: &'a [ControlSamplerSelection<'a>],
+    pub outbound: &'a [ControlSamplerOutbound<'a>],
+    /// Actual current/loaded original and derivative owners, not path/size quotes.
+    pub legacy: &'a [&'a Audio],
+    pub checked_runtime_bytes: usize,
+    /// Checked constructor/preparation allowance, never an unlimited fallback.
+    pub construction_bytes: usize,
+}
+pub struct ControlSamplerInventory {
+    pub retained: AudioRootStorageSummary,
+    pub construction: AudioRootStorageSummary,
+    pub retained_frames: u64,
+    pub construction_frames: u64,
+}
+fn legacy<'a>(phase: &'a ControlSamplerPhase<'a>) -> impl Iterator<Item = &'a Audio> + Clone {
+    phase
+        .legacy
+        .iter()
+        .copied()
+        .chain(
+            phase
+                .selections
+                .iter()
+                .filter_map(|s| s.prepared)
+                .flat_map(|p| {
+                    p.arrangement()
+                        .tracks()
+                        .iter()
+                        .flat_map(|t| t.clips.iter())
+                        .filter_map(|c| c.audio.as_ref())
+                        .chain(
+                            p.session()
+                                .audio_clips()
+                                .iter()
+                                .filter_map(|c| c.resident_audio()),
+                        )
+                }),
+        )
+}
+fn inspect(
+    phase: &ControlSamplerPhase<'_>,
+    reservation: AudioStorageLedgerReservation,
+    staged: Option<&super::resident::StagedNativeAssetView<'_>>,
+    construction: bool,
+) -> Result<(AudioRootStorageSummary, u64), AudioStorageError> {
+    // This local scalar identifies explicit allowances, never PCM provenance.
+    let allowance_anchor = 0usize;
+    let mut ledger = AudioRootStorageLedger::try_new_on_control(reservation)?;
+    let mut frames = 0_u64;
+    ledger.mutate(|ledger| {
+        for store in phase.stores {
+            ledger.root(*store, crate::AudioStorageRole::Current)?;
+            if let Some(stage) = staged.filter(|s| std::ptr::eq(*store, s.store)) {
+                ledger.vec(&stage.staged.destination)?;
+                frames = frames
+                    .checked_add(stage.staged.asset.1.visit(ledger)?)
+                    .ok_or(AudioStorageError::Overflow)?;
+                if construction {
+                    ledger.growth(
+                        store
+                            .assets
+                            .capacity()
+                            .checked_mul(std::mem::size_of::<(
+                                hex_project::AssetId,
+                                super::resident::NativeBankLoan,
+                            )>())
+                            .and_then(|n| {
+                                n.checked_add(std::mem::size_of_val(&stage.staged.destination))
+                            })
+                            .ok_or(AudioStorageError::Overflow)?,
+                    )?;
+                }
+            } else {
+                ledger.vec(&store.assets)?;
+            }
+            for (_, source) in &store.assets {
+                frames = frames
+                    .checked_add(source.visit(ledger)?)
+                    .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
+        for selection in phase.selections {
+            if let Some(sources) = selection.sources {
+                frames = frames
+                    .checked_add(sources.visit(ledger)?)
+                    .ok_or(AudioStorageError::Overflow)?;
+                if let Some(prepared) = selection.prepared {
+                    if prepared.resource_scope != Some(sources.id()) {
+                        return Err(AudioStorageError::SourceMismatch);
+                    }
+                    prepared
+                        .session()
+                        .visit_control_sampler_factories(ledger, sources)?;
+                } else {
+                    // The actual inline scalar table fixes the future factory
+                    // allocation before the normal compiler allocates it.
+                    ledger.bytes(
+                        Owner::exclusive(sources),
+                        Location("staged-control-factories", 0),
+                        sources
+                            .compiler_factory_allowance()
+                            .map_err(|_| AudioStorageError::Overflow)?,
+                    )?;
+                }
+            } else if selection
+                .prepared
+                .is_some_and(PreparedRevision::requires_control_sampler_sources)
+            {
+                return Err(AudioStorageError::SourceMismatch);
+            }
+        }
+        for outbound in phase.outbound {
+            frames = frames
+                .checked_add(outbound.anchor.visit_dispatched(
+                    ledger,
+                    outbound.obligation,
+                    outbound.job,
+                )?)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        let mut legacy_bytes = 0usize;
+        for (index, audio) in legacy(phase).enumerate() {
+            if legacy(phase)
+                .take(index)
+                .any(|prior| audio.shares_pcm_with(prior))
+            {
+                continue;
+            }
+            let capacity = audio.pcm_capacity_frames();
+            legacy_bytes = legacy_bytes
+                .checked_add(
+                    capacity
+                        .checked_mul(std::mem::size_of::<crate::Frame>())
+                        .ok_or(AudioStorageError::Overflow)?,
+                )
+                .ok_or(AudioStorageError::Overflow)?;
+            frames = frames
+                .checked_add(u64::try_from(capacity).map_err(|_| AudioStorageError::Overflow)?)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        // Legacy DATA allowance remains separate from native constructor proof.
+        ledger.bytes(
+            Owner::exclusive(&allowance_anchor),
+            Location("selected-legacy-pcm", 0),
+            legacy_bytes,
+        )?;
+        ledger.bytes(
+            Owner::exclusive(&allowance_anchor),
+            Location("checked-control-runtime", 0),
+            phase.checked_runtime_bytes,
+        )?;
+        ledger.growth(phase.construction_bytes)?;
+        Ok(())
+    })?;
+    Ok((ledger.summary()?, frames))
+}
+pub fn inspect_control_sampler_union(
+    retained: &ControlSamplerPhase<'_>,
+    construction: &ControlSamplerPhase<'_>,
+    reservation: AudioStorageLedgerReservation,
+) -> Result<ControlSamplerInventory, ResourcePreparationError> {
+    let (kept, retained_frames) = inspect(retained, reservation, None, false)?;
+    // Construction selection is a separate borrow after the retained ledger
+    // has dropped. Its complete live union is checked against the caller peak.
+    let peak_reservation = AudioStorageLedgerReservation {
+        max_retained_bytes: reservation.max_construction_peak_bytes,
+        ..reservation
+    };
+    let (peak, construction_frames) = inspect(construction, peak_reservation, None, true)?;
+    Ok(ControlSamplerInventory {
+        retained: kept,
+        construction: peak,
+        retained_frames,
+        construction_frames,
+    })
+}
+
+pub(super) fn inspect_staged_union(
+    retained: &ControlSamplerPhase<'_>,
+    construction: &ControlSamplerPhase<'_>,
+    reservation: AudioStorageLedgerReservation,
+    staged: &super::resident::StagedNativeAssetView<'_>,
+) -> Result<ControlSamplerInventory, ResourcePreparationError> {
+    let mut retained_stores = retained.stores.to_vec();
+    if !retained_stores
+        .iter()
+        .any(|store| std::ptr::eq(*store, staged.store))
+    {
+        retained_stores.push(staged.store);
+    }
+    let mut construction_stores = construction.stores.to_vec();
+    if !construction_stores
+        .iter()
+        .any(|store| std::ptr::eq(*store, staged.store))
+    {
+        construction_stores.push(staged.store);
+    }
+    let retained = ControlSamplerPhase {
+        stores: &retained_stores,
+        selections: retained.selections,
+        outbound: retained.outbound,
+        legacy: retained.legacy,
+        checked_runtime_bytes: retained.checked_runtime_bytes,
+        construction_bytes: retained.construction_bytes,
+    };
+    let construction = ControlSamplerPhase {
+        stores: &construction_stores,
+        selections: construction.selections,
+        outbound: construction.outbound,
+        legacy: construction.legacy,
+        checked_runtime_bytes: construction.checked_runtime_bytes,
+        construction_bytes: construction.construction_bytes,
+    };
+    let (kept, retained_frames) = inspect(&retained, reservation, Some(staged), false)?;
+    let peak_reservation = AudioStorageLedgerReservation {
+        max_retained_bytes: reservation.max_construction_peak_bytes,
+        ..reservation
+    };
+    let (peak, construction_frames) = inspect(&construction, peak_reservation, Some(staged), true)?;
+    Ok(ControlSamplerInventory {
+        retained: kept,
+        construction: peak,
+        retained_frames,
+        construction_frames,
+    })
+}

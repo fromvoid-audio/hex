@@ -54,6 +54,7 @@ mod operator_panel;
 mod parameter_rows;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
+mod sampler_overview;
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
@@ -1974,45 +1975,179 @@ fn render_instrument(
             .map_err(|error| error.to_string().to_lowercase())
     });
     let is_operator = device.state().type_id().as_str() == Ok("hex.instrument.operator");
+    let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
     let leading = bypass_action(device, NativeDeviceClass::Instrument, selected, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
-    let rendered = match &device_view {
-        Ok(device_view) => {
-            if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
-                let body = operator_panel::render_body(view, cx, device_id, device_view);
-                device_frame(
-                    device_drag_title(
+    let rendered = if is_sampler {
+        let name = view
+            .state
+            .as_ref()
+            .and_then(|s| {
+                let reference = device.state().asset_references().first()?;
+                s.project
+                    .assets()
+                    .find(|a| a.id().value() == reference.asset.value())?
+                    .path()
+                    .file_name()
+                    .map(|n| n.to_string_lossy().into_owned())
+            })
+            .unwrap_or_else(|| "missing sample identity".into());
+        let readiness = if view.sampler_parameter_pending() {
+            "preparing sampler edit · waiting for audio"
+        } else if view.first_sampler_current() {
+            "computer keyboard · play from start · stop"
+        } else {
+            "audio not ready · offline export supported"
+        };
+        let gain =
+            view.sampler_parameter_control(track, device, hex_engine::SamplerParameter::Gain, cx);
+        let pitch = view.sampler_parameter_control(
+            track,
+            device,
+            hex_engine::SamplerParameter::Transpose,
+            cx,
+        );
+        let start = view.sampler_parameter_control(
+            track,
+            device,
+            hex_engine::SamplerParameter::StartFrame,
+            cx,
+        );
+        let end = view.sampler_parameter_control(
+            track,
+            device,
+            hex_engine::SamplerParameter::EndFrame,
+            cx,
+        );
+        let mut fields = vec![gain, pitch, start, end];
+        match hex_engine::sampler_parameter_value_on_control(
+            hex_engine::SamplerParameter::LoopEnabled,
+            device.state(),
+        ) {
+            Ok(_) => {
+                for parameter in [
+                    hex_engine::SamplerParameter::LoopEnabled,
+                    hex_engine::SamplerParameter::LoopStartFrame,
+                    hex_engine::SamplerParameter::LoopEndFrame,
+                ] {
+                    fields.push(view.sampler_parameter_control(track, device, parameter, cx));
+                }
+            }
+            Err(error) => fields.push(
+                div()
+                    .child(theme::text(error.to_string()))
+                    .into_any_element(),
+            ),
+        }
+        for parameter in [
+            hex_engine::SamplerParameter::AttackMs,
+            hex_engine::SamplerParameter::DecayMs,
+            hex_engine::SamplerParameter::SustainPercent,
+            hex_engine::SamplerParameter::ReleaseMs,
+        ] {
+            fields.push(view.sampler_parameter_control(track, device, parameter, cx));
+        }
+        let controls = div()
+            .grid()
+            .grid_cols(3)
+            .gap(px(4.0))
+            .flex_shrink_0()
+            .debug_selector(|| "sampler-controls".into())
+            .children(fields);
+        let details = div().flex_1().min_h_0().overflow_hidden().child(theme::text(format!(
+            "{name} · {readiness} · edits require stopped audio · * release inactive in trigger mode · replacement unavailable"
+        )));
+        let overview = sampler_overview::render(view, device, &name);
+        let body = crate::device_composition::body()
+            .flex()
+            .gap(px(8.0))
+            .p(px(5.0))
+            .text_xs()
+            .child(overview)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .child(controls)
+                    .child(details),
+            );
+        device_frame(
+            theme::text("sampler"),
+            theme::device_frame_style(selected),
+            div(),
+            div(),
+            body,
+        )
+    } else {
+        match &device_view {
+            Ok(device_view) => {
+                if is_operator && device_view.type_id.as_str() == Ok("hex.instrument.operator") {
+                    let body = operator_panel::render_body(view, cx, device_id, device_view);
+                    device_frame(
+                        device_drag_title(
+                            view,
+                            cx,
+                            device,
+                            NativeDeviceClass::Instrument,
+                            theme::text(device_view.name.clone()),
+                        ),
+                        theme::device_frame_style(selected),
+                        leading,
+                        header_actions,
+                        body,
+                    )
+                } else {
+                    let body = parameter_rows::body(
                         view,
+                        window,
                         cx,
-                        device,
-                        NativeDeviceClass::Instrument,
-                        theme::text(device_view.name.clone()),
-                    ),
-                    theme::device_frame_style(selected),
-                    leading,
-                    header_actions,
-                    body,
-                )
-            } else {
-                let body = parameter_rows::body(
-                    view,
-                    window,
-                    cx,
-                    device_id,
-                    DeviceControlIdentity {
-                        class: NativeDeviceClass::Instrument,
-                        type_id: device_view.type_id,
-                    },
-                    device_view,
-                );
+                        device_id,
+                        DeviceControlIdentity {
+                            class: NativeDeviceClass::Instrument,
+                            type_id: device_view.type_id,
+                        },
+                        device_view,
+                    );
 
+                    device_frame(
+                        device_drag_title(
+                            view,
+                            cx,
+                            device,
+                            NativeDeviceClass::Instrument,
+                            theme::text(device_view.name.clone()),
+                        ),
+                        theme::device_frame_style(selected),
+                        leading,
+                        header_actions,
+                        body,
+                    )
+                }
+            }
+            Err(error) => {
+                let body = crate::device_composition::unsupported_body(theme::text(format!(
+                    "unsupported instrument state · {error}"
+                )))
+                .id(ElementId::Name(
+                    format!("device-body-{}", device_id.value()).into(),
+                ))
+                .debug_selector(move || format!("device-body-{}", device_id.value()));
                 device_frame(
                     device_drag_title(
                         view,
                         cx,
                         device,
                         NativeDeviceClass::Instrument,
-                        theme::text(device_view.name.clone()),
+                        theme::text(
+                            device
+                                .state()
+                                .type_id()
+                                .as_str()
+                                .unwrap_or("unknown instrument"),
+                        ),
                     ),
                     theme::device_frame_style(selected),
                     leading,
@@ -2020,34 +2155,6 @@ fn render_instrument(
                     body,
                 )
             }
-        }
-        Err(error) => {
-            let body = crate::device_composition::unsupported_body(theme::text(format!(
-                "unsupported instrument state · {error}"
-            )))
-            .id(ElementId::Name(
-                format!("device-body-{}", device_id.value()).into(),
-            ))
-            .debug_selector(move || format!("device-body-{}", device_id.value()));
-            device_frame(
-                device_drag_title(
-                    view,
-                    cx,
-                    device,
-                    NativeDeviceClass::Instrument,
-                    theme::text(
-                        device
-                            .state()
-                            .type_id()
-                            .as_str()
-                            .unwrap_or("unknown instrument"),
-                    ),
-                ),
-                theme::device_frame_style(selected),
-                leading,
-                header_actions,
-                body,
-            )
         }
     };
     view.device_panel.views.insert(
@@ -2061,6 +2168,8 @@ fn render_instrument(
     let selector = format!("instrument-device-{}", device_id.value());
     let frame_width = if is_operator {
         operator_panel::OPERATOR_FRAME_WIDTH
+    } else if is_sampler {
+        crate::device_composition::SAMPLER_FRAME_WIDTH
     } else {
         DEVICE_FRAME_WIDTH
     };

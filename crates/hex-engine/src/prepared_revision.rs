@@ -88,6 +88,7 @@ impl TuningContinuationFamily {
 /// Arrangement playback and Session inventory share a stable instrument table;
 /// runtime route ownership is maintained by the playback kernel.
 pub struct PreparedRevision {
+    pub(crate) resource_scope: Option<u64>,
     tuning_family: TuningContinuationFamily,
     arrangement: crate::owned_shared::OwnedShared<PlaybackProject>,
     session: crate::owned_shared::OwnedShared<PreparedSessionInventory>,
@@ -335,14 +336,39 @@ impl PreparedRevision {
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         transforms: &crate::audio_transform::AudioTransformPreparation,
     ) -> Result<Self, Invalid> {
+        Self::prepare_with_registries_and_sampler_sources(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            effects,
+            instruments,
+            transforms,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_with_registries_and_sampler_sources(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+        instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+    ) -> Result<Self, Invalid> {
         transforms.compile_transaction(|| {
             crate::gain_envelope::validate_project(project)?;
             crate::return_feed_plan::ReturnFeedPlan::validate_admission(project)?;
-            let shared_contexts = crate::shared_analytic::SharedAnalyticContextTable::prepare(
-                project,
-                instruments,
-                previous_session.map(|previous| previous.shared_contexts().as_ref()),
-            )?;
+            let shared_contexts =
+                crate::shared_analytic::SharedAnalyticContextTable::prepare_scoped(
+                    project,
+                    instruments,
+                    previous_session.map(|previous| previous.shared_contexts().as_ref()),
+                    samplers,
+                )?;
             if shared_contexts.payload_bytes()
                 > crate::shared_analytic::MAX_SHARED_CONTEXT_BYTES_PER_REVISION
             {
@@ -350,23 +376,24 @@ impl PreparedRevision {
                     "shared instrument context revision budget exceeded",
                 ));
             }
-            let (arrangement, midi_preview) =
-                crate::compile::project_with_midi_preview_and_table_and_instrument_contexts(
-                    project,
-                    media,
-                    Some(Arc::clone(&sine_table)),
-                    effects,
-                    instruments,
-                    Some(Arc::clone(&shared_contexts)),
-                    Some(transforms),
-                )?;
-            let session = PreparedSessionInventory::prepare_with_media_and_shared_contexts(
+            let (arrangement, midi_preview) = crate::compile::project_with_sampler_sources(
+                project,
+                media,
+                Some(Arc::clone(&sine_table)),
+                effects,
+                instruments,
+                Some(Arc::clone(&shared_contexts)),
+                Some(transforms),
+                samplers,
+            )?;
+            let session = PreparedSessionInventory::prepare_with_sampler_sources(
                 project,
                 media,
                 sine_table,
                 previous_session,
                 instruments,
                 shared_contexts,
+                samplers,
             )?;
             crate::mutable_instrument::validate_prepared_graph_budget(&arrangement, &session)
                 .map_err(|_| {
@@ -388,6 +415,8 @@ impl PreparedRevision {
                 midi_bank_references,
             )?;
             Ok(Self {
+                resource_scope: samplers
+                    .map(crate::native_device_resources::ControlSamplerSources::id),
                 tuning_family: TuningContinuationFamily::fresh()?,
                 arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
                 session: crate::owned_shared::OwnedShared::new_owned(session),
@@ -396,6 +425,36 @@ impl PreparedRevision {
                 gain_recording_track: None,
             })
         })
+    }
+
+    /// Control-only scalar compilation against an exact sealed source sidecar.
+    /// The returned graph owns no source bank; generic runtime constructors
+    /// refuse it without the matching sidecar. Applications must keep it private.
+    pub fn prepare_control_sampler_export(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        sources: &crate::native_device_resources::ControlSamplerSources,
+    ) -> Result<Self, Invalid> {
+        sources.validate_project(project)?;
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_registries_and_sampler_sources(
+            project,
+            media,
+            sine_table,
+            None,
+            &effects,
+            &instruments,
+            transforms,
+            Some(sources),
+        )
+    }
+    pub fn requires_control_sampler_sources(&self) -> bool {
+        self.resource_scope.is_some()
     }
 
     /// Hidden fixture seam for integration tests that need the real prepared
@@ -496,6 +555,7 @@ impl PreparedRevision {
             midi_bank_references,
         )?;
         Ok(Self {
+            resource_scope: None,
             tuning_family: TuningContinuationFamily::fresh()?,
             arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
             session: crate::owned_shared::OwnedShared::new_owned(session),

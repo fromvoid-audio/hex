@@ -81,7 +81,7 @@ fn musical_root_crop_warp_envelope_and_frozen_fade_roundtrip_and_malformed_bound
         .unwrap();
     let json = hex_storage::encode(editor.project()).unwrap();
     let mut value: serde_json::Value = serde_json::from_slice(&json).unwrap();
-    assert_eq!(value["version"], 33);
+    assert_eq!(value["version"], 34);
     assert_eq!(hex_storage::decode(&json).unwrap(), *editor.project());
     let text = String::from_utf8(json).unwrap();
     assert!(text.contains("complex_pro"));
@@ -217,7 +217,7 @@ fn schema29_shapes_preserve_events_appearance_names_and_strict_migrations() {
                 "mutation {mutation}"
             );
         }
-        assert_eq!(value["version"], 33);
+        assert_eq!(value["version"], 34);
         let raw = String::from_utf8(bytes.clone()).unwrap();
         for key in ["fade_shapes", "audio_event_state"] {
             let duplicate = format!("{{\"{key}\":[],{}", &raw[1..]);
@@ -235,6 +235,7 @@ fn schema29_shapes_preserve_events_appearance_names_and_strict_migrations() {
         );
         events28.as_object_mut().unwrap().remove("tuning");
         events28.as_object_mut().unwrap().remove("device_assets");
+        events28.as_object_mut().unwrap().remove("asset_sources");
         events28.as_object_mut().unwrap().remove("fade_shapes");
         let migrated28 = hex_storage::decode(&serde_json::to_vec(&events28).unwrap()).unwrap();
         assert_eq!(
@@ -253,6 +254,7 @@ fn schema29_shapes_preserve_events_appearance_names_and_strict_migrations() {
         );
         appearance.as_object_mut().unwrap().remove("tuning");
         appearance.as_object_mut().unwrap().remove("device_assets");
+        appearance.as_object_mut().unwrap().remove("asset_sources");
         appearance.as_object_mut().unwrap().remove("fade_shapes");
         appearance
             .as_object_mut()
@@ -282,6 +284,7 @@ fn schema29_shapes_preserve_events_appearance_names_and_strict_migrations() {
         );
         legacy.as_object_mut().unwrap().remove("tuning");
         legacy.as_object_mut().unwrap().remove("device_assets");
+        legacy.as_object_mut().unwrap().remove("asset_sources");
         legacy.as_object_mut().unwrap().remove("fade_shapes");
         legacy.as_object_mut().unwrap().remove("audio_event_state");
         legacy.as_object_mut().unwrap().remove("track_colors");

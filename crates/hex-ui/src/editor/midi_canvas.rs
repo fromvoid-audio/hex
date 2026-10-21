@@ -1544,7 +1544,7 @@ impl EditorView {
         tooltip: &'static str,
         click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<Div> {
-        div()
+        let button = div()
             .id(id)
             .w(px(25.0))
             .h(px(22.0))
@@ -1563,7 +1563,10 @@ impl EditorView {
                 .into()
             })
             .on_click(click)
-            .child(theme::text(label))
+            .child(theme::text(label));
+        #[cfg(feature = "ui-test-support")]
+        let button = button.debug_selector(move || tooltip.into());
+        button
     }
 }
 

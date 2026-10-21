@@ -4,7 +4,8 @@
 
 Own a Linux x86_64 standalone safe-Rust supervisor for explicit original SDK
 fixture modules, a separately built native factory probe and bounded offline
-component attempts. Installed-directory and production third-party scanning remain
+component attempts, plus a distinct original Darwin arm64 native bootstrap build
+and identity verifier. Installed-directory and production third-party scanning remain
 refused pending a reviewed OS containment policy. Processes isolate ordinary
 crashes; they are not a security sandbox against arbitrary same-user code.
 
@@ -27,7 +28,7 @@ remain inside the separate controlled offline child; editors are unimplemented.
 
 Production plugin hosting, realtime queues, general buses/automation, latency compensation,
 canonical project state, state recovery, editors, provider/audio/root UI,
-third-party security containment, Mac builds/signing or full Pulse21 acceptance.
+third-party security containment, production Mac packaging/signing or full Pulse21 acceptance.
 
 ## Controlled build and invocation
 
@@ -148,3 +149,84 @@ explicit receipts, alongside default protocol tests and strict crate Clippy. The
 final exact-source native rerun and full workspace CI are recorded with PR193.
 These results cover the original controlled fixtures, not arbitrary third-party
 modules or production application hosting.
+
+## original macOS bootstrap
+
+The separate `native/macos_bootstrap.py` tooling builds a native arm64
+`hex-vst3-host.app` and two original SDK fixtures inside its resources. It does
+not port or invoke the Linux supervisor, subreaper, scanner receipt or offline
+success-after-exit protocol. The [adopted production boundary](../../docs/vst3-hosting-boundary.md)
+remains a design: this bootstrap is not a persistent host or an installed-plugin
+admission path. Its local identifier is `org.portalsurfer.hex.vst3.bootstrap`;
+it does not replace or launch the installed Hex app.
+
+From this checkout, with an already fetched SDK at the five exact pins in
+`native/build.py`:
+
+```sh
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py build \
+  --sdk artifacts/vst3-sdk --output artifacts/vst3-native-2933/owned-build
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py verify \
+  --receipt artifacts/vst3-native-2933/owned-build/controlled-macos.json --run
+HEX_VST3_MACOS_RECEIPT=artifacts/vst3-native-2933/owned-build/controlled-macos.json \
+  python3 -m unittest discover -s scripts/tests -p test_vst3_macos_bootstrap.py -v
+```
+
+Build refuses an existing output or any destination outside this checkout's
+`artifacts`, modified/untracked SDK inputs, a pin/license mismatch or a different
+host architecture. It performs no fetch or installation. Compiler commands,
+compiler/linker/signing/inspection tool binaries, compiler version, Apple SDK
+settings, every emitted source/header input,
+all five SDK notices, source digest/commit and dirty state are retained. The
+receipt binds every bundle file, including nested fixtures and code signatures.
+The local bundles use ad hoc signatures without entitlements or notarization;
+Developer ID packaging and production signing remain unimplemented. Runtime
+provenance records linked install names and the exact OS build; individual dyld
+shared-cache images are **not** hashed or compatibility-qualified. No SDK
+implementation library is linked; the original fixtures use its interfaces.
+
+The verifier uses one fixed package lookup, validates actual bundle contents,
+package identifier, native arm64 Mach-O role and code signature immediately
+before execution, then rechecks contents after each attempt. Execution also refuses a changed
+OS build. Its caller-owned
+receipt is an explicit local trust root, not third-party authenticity. Linked,
+missing, changed or stale source/bundle inputs refuse; no path-only trust or
+architecture translation fallback is used. Current controlled bounds are 256
+bundle members, 16 MiB per file/receipt and 32 MiB total bundle files; these are
+not production-host limits or bounds on arbitrary foreign memory/CPU. Each owned
+bootstrap command has a 120-second control-side timeout; Python owns only its
+direct child, with no production descendant or hung-plugin cleanup claim.
+
+The helper accepts only `--identity` and `--self-test`. Self-test loads exactly
+the two bundled original modules after checking their compiled-in binary hashes.
+Before loading, CFBundle's actual executable URL must match the fixed, nonlinked
+fixture path and expected executable/identifier metadata; hashing a different
+fixed file is insufficient. It calls Mac `bundleEntry`, factory/component
+interfaces and `bundleExit`, with
+interfaces released before unload. Main-thread setup/teardown and a joined
+processing thread exercise one fixed Float32 stereo, 48 kHz, 64-frame block.
+The original effect multiplies each sample by 0.5; the original instrument is
+an explicitly constant 0.125 generator with no audio input. It is a bootstrap
+instrument fixture, not a playable MIDI instrument. No parameter/state/editor,
+event, latency/tail, arbitrary bus or production processing claim follows.
+Changing or supplying an installed module path cannot select another module.
+
+The explicit native suite executes the actual helper and compares both exact
+PCM outputs. Refusal cases remove the helper, change helper/fixture bytes,
+compile a real x86_64 executable and update the caller manifest (so architecture
+refusal cannot be confused with a stale hash), link a member, change source
+identity and pass an installed-directory argument. Another regression changes
+CFBundleExecutable to a real marker-writing alternate module, reseals both
+bundles and updates the caller manifest; both native and Python boundaries must
+refuse before the alternate initializer runs. A signing-timeout injection must
+fail without publishing a receipt. Without the explicit receipt,
+these native cases are visibly skipped; synthetic Mach-O header tests are parser
+evidence only. Two builds from the same inputs must have identical bundle-file
+hashes; retained commands/receipts remain independent provenance, not a claim
+that different compilers or OS versions produce the same binaries.
+
+Installed discovery, cancellable Mac process supervision, persistent
+processor/controller ownership, realtime queues/deadlines, primed playback,
+per-bus presentation latency, state/editor integration and native compatibility
+remain future leaves. No Rust unsafe exception, workspace dependency, CPAL or UI
+replacement is introduced. Existing Linux controlled behavior is unchanged.

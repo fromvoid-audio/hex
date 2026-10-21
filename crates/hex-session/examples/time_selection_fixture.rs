@@ -95,6 +95,7 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
         sample_rate: 48_000,
         next_id,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: wav.to_path_buf(),
             source_sample_rate: 48_000,

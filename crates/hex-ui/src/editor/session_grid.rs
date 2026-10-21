@@ -1033,7 +1033,10 @@ impl EditorView {
                                     }
                                     cx.notify();
                                 }),
-                            ),
+                            )
+                            .debug_selector(move || {
+                                format!("launch-midi-{}-{}", track_id.value(), scene_id.value())
+                            }),
                         )
                         .children(route_markers.into_iter().flatten().map(|marker| {
                             self.route_marker(
@@ -1382,7 +1385,7 @@ impl EditorView {
         id: impl Into<ElementId>,
         listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<Div> {
-        div()
+        let icon = div()
             .id(id)
             .size(px(23.0))
             .flex_shrink_0()
@@ -1400,7 +1403,10 @@ impl EditorView {
                 .into()
             })
             .child(theme::text(glyph))
-            .on_click(listener)
+            .on_click(listener);
+        #[cfg(feature = "ui-test-support")]
+        let icon = icon.debug_selector(move || label.into());
+        icon
     }
 
     fn route_entry_for_track(

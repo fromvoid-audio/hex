@@ -13,6 +13,9 @@ impl SessionPlayback {
         let Self {
             live_expression,
             computer_keyboard,
+            current_sampler_keyboards,
+            current_sampler_keyboard_epoch: _,
+            current_sampler_keyboard_revoked: _,
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
@@ -33,6 +36,7 @@ impl SessionPlayback {
             mutable_instruments,
             mutable_onsets,
             mutable_events,
+            current_route_cut_scratch,
             tail_groups,
             tail_track_ids: _,
             tail_mutable_instruments,
@@ -59,6 +63,7 @@ impl SessionPlayback {
             arrangement_loop_pass: _,
             playing: _,
             linear_arrangement_export,
+            current_sampler_console: _,
             route_state_generation: _,
             candidate_admission_open,
         } = self;
@@ -67,7 +72,10 @@ impl SessionPlayback {
             || compensation.is_some()
             || *linear_arrangement_export
             || !candidate_admission_open
-            || mutable_instruments.iter().any(Option::is_some)
+            || mutable_instruments
+                .iter()
+                .flatten()
+                .any(|r| revision.resource_scope.is_none() || !r.is_concrete_current_sampler())
             || tail_groups.iter().any(Option::is_some)
             || tail_mutable_instruments.iter().any(Option::is_some)
             || retained_contexts.iter().any(Option::is_some)
@@ -96,7 +104,31 @@ impl SessionPlayback {
         l.vec(return_scratch)?;
         return_effect_tails.visit_empty_candidate_storage(l)?;
         l.vec(mutable_instruments)?;
+        for (index, runtime) in mutable_instruments.iter().enumerate() {
+            if let Some(runtime) = runtime {
+                if revision
+                    .arrangement()
+                    .tracks()
+                    .get(index)
+                    .is_none_or(|t| t.instrument_id != runtime.expression_identity)
+                {
+                    return Err(AudioStorageError::SourceMismatch);
+                }
+                runtime.visit_current_sampler_storage(l)?;
+            }
+        }
+        l.vec(current_sampler_keyboards)?;
+        if !current_sampler_keyboards.is_empty() && revision.resource_scope.is_none() {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        for keyboard in current_sampler_keyboards {
+            keyboard.visit_current_sampler_storage(l)?;
+        }
         l.vec(mutable_events)?;
+        l.vec(current_route_cut_scratch)?;
+        if current_route_cut_scratch.iter().any(Option::is_some) {
+            return Err(AudioStorageError::SourceMismatch);
+        }
         l.vec(tail_groups)?;
         l.vec(tail_mutable_instruments)?;
         l.vec(tail_mixes)?;

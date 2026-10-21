@@ -293,3 +293,83 @@ The control-only `native_streaming_fixture` example writes create-new original
 It uses existing verified-reader fingerprints and storage APIs, without changing
 Session/media limits. See `docs/streaming-100-track-workload.md` for its explicit
 large headless smoke and separate required native/listening acceptance.
+
+
+Opt-in original native device-source admission uses
+`Service::with_native_reservation` / `Session::with_native_reservation` and
+`ImportDeviceAsset`. Its explicit resident ledger bounds actual native roots,
+PCM and construction overlap alongside legacy PCM; encoded/decode peaks and
+ordinary editor/view storage are separate. It atomically returns an unassigned
+canonical asset ID, without a clip derivative or owning source escape. Existing
+constructors remain opt-out. The worker composes this source admission with the
+private prepared/export/native paths below; see `docs/sampler.md` for exact
+limits, tests and the remaining musical-use acceptance.
+
+
+Explicit resident-native reservation supports canonical sampler assignment and
+private frame-zero Main export. The service retains source-bearing sidecars and
+captured-job custody on control; public playback/canonical-source events stay
+resource-free. SaveNew/SaveCurrent project every canonically present native
+asset's immutable actual catalog content facts, including unassigned sources,
+without a history edit. Open reconstructs original PCM through native ingress
+before any derivative alias, compares the actual catalog with saved facts, and
+prepares a private snapshot before canonical adoption. New/Open preserve the
+explicit capability. Same-source stopped configuration history is supported;
+other history steps and runtime tools refuse. Native frame-zero
+Arrangement Play/Stop uses a fresh CURRENT through desktop. See
+[the sampler boundary](../../docs/sampler.md) for admission scope and remaining
+user-facing dependencies.
+
+Private sampler PrepareComputerKeyboard uses the actual native sink's installed
+CURRENT activation and returns metadata acknowledgement, without legacy Playback
+replacement. The UI input object stays on control. Empty-track first load is
+supported; stopped panel configuration edits and their global Undo/Redo use the
+existing native fence. Classic source replacement stages the incoming original
+through that fence; other source modes, replacement history and runtime tools refuse. See
+[the keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
+
+Sampler gain is one captured stopped-only final edit. The worker polls native
+fence readiness without blocking New/Open, then prepares/admitsoverlap and seals
+the pending native cell before the existing canonical/history commit. Public
+completion Events contain request metadata only. Precommit refusal preserves the
+old document; postcommit open failure retains authored gain/save/export.
+
+## original-source overview cache
+
+Session owns derived peak-only original-source overviews, built on control from
+borrowed staged/reconstructed native PCM. The immutable sorted table is shared
+with ViewState through one context-bound handle; previews/edits reuse it. No PCM,
+Audio owner, resource scope or path is retained, and native/export snapshots do
+not contain the cache. Imports install the prepared table only with successful
+editor/source commit; reopen uses verified content/rate/length in the same budget
+domain across New/Open and retained old views.
+
+A dedicated8MiB limit bounds admitted live fixed128-bin Box backing. A separate
+logical metadata quote covers overview/table/charge/control-block storage and
+two maximum row capacities. Box/Vec backing frees before charges return. This
+excludes allocator bookkeeping, Arc shells pending deallocation (including Weak
+shells), parent ViewStates and handle copies; it is not a physical heap/RSS cap.
+Native PCM/frame/storage reservations remain unchanged. See
+[the complete bounded contract](../../docs/sampler.md#original-source-waveform-overview).
+The nondefault `source-overview-test-support` feature exposes only peak fixture
+construction for UI and existing desktop allocator probes, with no native source
+admission capability or production allocation-counter dependency.
+
+
+Stopped sampler parameter/history edits share one pending operation and final
+correlation. History inspects the actual next global edge without consuming it,
+then reclassifies the normalized candidate inside the shared prepared transaction.
+It accepts only one existing instrument's same-source panel configuration delta;
+selection is irrelevant. Refusal preserves history/audio/cache, and postcommit
+open failure retains authored state/save/export with explicit retry. See the
+[configuration history contract](../../docs/sampler.md#stopped-configuration-history).
+
+
+Classic source replacement uses a captured existing-device state, the shared
+pending edit, same-Session decode allowance and actual decoded-buffer admission.
+A private committed/staged source borrow routes native lookup and inventory
+through the same transaction. The import closure prepares snapshot/overview and
+seals native custody, then checks cancellation before bank/cache/history adoption.
+Old originals remain bounded for history/export/save; later configuration history
+works, while the replacement history edge still refuses in place. See the
+[replacement contract](../../docs/sampler.md#stopped-classic-source-replacement).

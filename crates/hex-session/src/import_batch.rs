@@ -117,8 +117,15 @@ impl Session {
                             .flat_map(|m| [&m.source_audio, &m.audio]),
                     )?,
                 )
-                .filter(|n| *n <= self.max_resident_frames)
+                .filter(|total| {
+                    self.native_assets
+                        .capacity_frames()
+                        .ok()
+                        .and_then(|n| n.checked_add(*total))
+                        .is_some_and(|n| n <= self.max_resident_frames)
+                })
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
+            self.validate_native_legacy_budget(total_frames)?;
             let bins = member.waveform.cached_bin_count();
             total_bins = total_bins
                 .checked_add(bins)

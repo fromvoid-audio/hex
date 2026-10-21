@@ -338,6 +338,26 @@ impl<'a> AudioRootStorageLedger<'a> {
             )?
             .checked_add(std::mem::size_of::<Self>())
     }
+    /// Native shared-root payload selection only. The enclosing sealed shared
+    /// constructor is inventoried first. Each actual inner field is visited once
+    /// even when several outer owner fields select that same immutable payload.
+    pub(crate) fn native_payload_once<T: 'static>(
+        &mut self,
+        value: &'a T,
+    ) -> Result<bool, AudioStorageError> {
+        let owner = Owner::exclusive(value);
+        if self.roots.iter().any(|row| row.owner.same(owner)) {
+            return Ok(false);
+        }
+        if self.roots.len() == self.reservation.root_rows {
+            return Err(AudioStorageError::Capacity);
+        }
+        self.roots.push(Root {
+            owner,
+            _role: AudioStorageRole::Current,
+        });
+        Ok(true)
+    }
     pub(crate) fn root<T: 'static>(
         &mut self,
         value: &'a T,

@@ -130,10 +130,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the single current schema33 envelope with required tuning and complete
+/// Encode the single current schema34 envelope with required tuning and complete
 /// device asset manifests, preserving all other active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::tuning::DocumentV33::from_project(project)?)
+    encode_document(&schema::tuning::DocumentV34::from_project(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -149,6 +149,14 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if project
+        .assets()
+        .any(|asset| asset.original_source().is_some())
+    {
+        return Err(StorageError::Invalid(
+            "older schema cannot save device-original source identities",
+        ));
+    }
     if !project.main_devices().is_empty() {
         return Err(StorageError::Invalid(
             "older schema cannot save main devices",

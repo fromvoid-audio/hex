@@ -506,6 +506,7 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
     snapshot.tracks[0].gain = 0.5;
     snapshot.tracks[0].balance = -0.5;
     snapshot.assets = vec![AssetSnapshot {
+        original_source: None,
         id: 80,
         path: "hybrid.wav".into(),
         source_sample_rate: 48_000,
