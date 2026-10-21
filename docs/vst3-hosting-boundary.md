@@ -86,13 +86,17 @@ bounded local duplex IPC between worker and helper. No new Rust shared-memory
 FFI or unsafe exception is needed for this first design. The transport leaf2938
 must qualify concrete queue/pool/packet/event/state/diagnostic bounds, deadlines,
 maximum work per callback and full-queue refusal before enabling the profile;
-this ADR does not raise existing engine or resident-memory caps.
+this ADR does not raise existing engine or resident-memory caps. These bounds
+cover host-owned storage and handoffs, not arbitrary foreign heap allocation, CPU
+use, file/network effects or a guaranteed plugin deadline.
 
 Each prepared stream epoch has one fixed positive, validated quantum `Q` frames.
 The selected pipeline adds **2Q frames**: input quantum `n` is gathered before
 its worker/helper processing window and its result has the fixed output slot
-`n+2`. The first two output quanta are silence. Variable CPAL callback partitions
-are accumulated/split against this same sample timeline; latency cannot depend
+`n+2`. An unprimed epoch has two initially unavailable output quanta; that is
+steady-state bridge latency, not permission for avoidable silent startup on Play.
+The stopped-playback preparation contract below must fill those slots before a
+qualified Arrange start. Variable CPAL callback partitions are accumulated/split against this same sample timeline; latency cannot depend
 on callback count or segment size. Preserve ordered sample offsets for notes,
 parameter changes and transport context in the input frame domain. The helper
 does not invent a second tempo, seek or scene clock.
@@ -136,6 +140,90 @@ FAQ](https://steinbergmedia.github.io/vst3_dev_portal/pages/FAQ/Processing.html)
 describes latency notifications and inactive setup changes; these do not make
 Hex's future transport or deadlines qualified.
 
+## Presentation latency and audible startup
+
+Internal PDC and plugin-facing presentation latency are separate requirements.
+Where a processor supports the optional `IAudioPresentationLatency`, call
+`setAudioPresentationLatencySamples(direction, bus_index, samples)` for every
+admitted audio input/output bus on the helper UI thread while activated. Input
+presentation latency describes the path from generation/acquisition to that
+input; output presentation latency describes the remaining path from that
+output to presentation. Thus the first file-source input starts at zero, while
+monitored hardware starts with capture latency; a file sink ends at zero, while
+a hardware sink includes playback latency. Accumulate native-device and plugin
+processing latency, helper bridges, routing and compensation delays in the
+appropriate direction, once per traversed path. A plugin's own processing delay
+contributes to downstream inputs and upstream outputs, not to a fabricated
+single global value sent to every bus. See the
+[official interface contract](https://steinbergmedia.github.io/vst3_doc/vstinterfaces/classSteinberg_1_1Vst_1_1IAudioPresentationLatency.html).
+
+The control-prepared graph must carry checked per-bus cumulative values as well
+as its internal compensation plan. Merges and sidechains use the actual routed,
+compensated arrival/presentation paths; no guessed scalar may conceal an unknown
+or unsupported path. Keep unknown distinct internally from known zero, although
+the SDK's zero also represents unknown. Recompute and deliver values after rate,
+route, device-I/O, quantum or reported plugin-latency changes before admitting the
+new epoch. Missing optional support is recorded, not advertised as an implemented
+plugin capability; it does not remove Hex's PDC obligation. Leaf2953 must verify
+asymmetric chains, native/foreign mixtures, input/output directions and file vs
+hardware origins with a reporting fixture.
+
+Space/Play acknowledges intent immediately. For qualified predictable Arrange
+material, prepare while stopped at the requested cursor: reconstruct the required
+history, render ahead through the complete compensated graph, retain its initial
+output, and keep the **same already-advanced helper epoch** with the queued audio.
+Readiness requires the full serial/parallel bridge and plugin/PDC horizon plus a
+bounded continuation reserve, not just two quanta per graph. Cache capacity and
+preparation work remain bounded; unsupported horizons refuse explicitly. Preserve
+the first audible transient and all subsequent frames at their intended timeline
+positions. Do not truncate the beginning to fill the pipeline, bypass a device,
+reduce compensation, or jump the cursor to make startup appear immediate.
+
+Promote that prepared audio and its matching running state together at the local
+transaction boundary. Play from Ready supplies the requested cursor's first
+sample on the next output callback, subject to hardware presentation latency.
+Consume each cached frame once, then continue that exact advanced epoch with no
+reprocessing of already dispatched foreign blocks, state restoration or audible
+join. Priming advances an isolated candidate, never the canonical transport or a
+currently audible runtime. Its process context must describe the intended future
+playback timeline accurately: its advanced processing cursor is separate from
+the audible/UI cursor, with correct sample positions, tempo, meter, cycle and
+sample-offset events. Plugins may still produce arbitrary external side effects.
+This is not a rollbackable foreign-runtime clone.
+
+Readiness is bound to project/media identity and revisions, cursor/history,
+instance/state/parameter generations, routing, tempo/meter and automation, rate/quantum,
+PDC and device-I/O configuration, helper epoch and relevant live-input policy.
+Any affecting edit, seek, discontinuity, restart, failure or changed latency
+invalidates it and triggers bounded preparation; stale output cannot start. Stop
+cancels a pending start and invalidates the epoch so late priming cannot resurrect
+playback. The current [Arrangement preparation worker](../crates/hex-session/src/arrangement_seek.rs)
+and [native preroll](../crates/hex-engine/src/session_playback/preroll.rs) establish
+off-callback preparation seams, not an implemented foreign-graph priming cache.
+
+Cold/stale or otherwise unready playback exposes `starting` at the requested
+cursor, prepares off callback and starts automatically once the exact candidate
+is Ready. It must not report audible playback or advance the playhead through
+avoidable startup silence. This fallback is visible preparation latency, not a
+claim to meet the warm audible-start target. Unpredictable live input, immediate
+new notes and plugins that cannot qualify for ahead-of-time preparation retain
+causal bridge/plugin/hardware latency. Do not claim zero latency for them. Do not
+use offline rendering or indiscriminate prefetch mode to fabricate production
+readiness. The pinned [processing-mode contract](https://raw.githubusercontent.com/steinbergmedia/vst3_pluginterfaces/4f547e8e102b47de4a8b8aaf343c73b700786372/vst/ivstaudioprocessor.h)
+distinguishes `kRealtime`, realtime-quality `kPrefetch` and potentially different
+`kOffline` behavior, and warns against prefetching disk-streaming samplers.
+`OnlyRT` plugins cannot be assumed to run faster than realtime. Each admitted
+plugin/mode must qualify equivalent state, event and transport behavior under
+the intended processing mode, including any mode transition.
+
+Leaves2938/2940/2953 must demonstrate a cursor-first impulse and note transient
+through serial helpers and parallel PDC, varying callback partitions, a seamless
+cache-to-live continuation, edit/seek/Stop invalidation, cold-start visibility and
+live-input latency. A moving playhead or a fast Play acknowledgement alone does
+not pass audible responsiveness. Native timing/listening evidence remains
+separate from deterministic fixture evidence. None of these runtime paths is
+implemented by this ADR.
+
 ## Native packaging and ABI policy
 
 Retain SDK3.8.1 superproject `3cdf9ca5d1f5b1b21e0a86832aa4abe55607bd96`,
@@ -178,9 +266,9 @@ wait for a GPUI round trip.
 | --- | --- | --- |
 | Discovery/module loading | Original Linux x86_64 factory fixtures; installed directories refused | Native arm64 inspected modules, Mac entry/exit and explicit user trust;2933/2934 |
 | Processor/controller | Bounded original offline separate-controller fixture | Persistent helper-local combined/separate objects and exact lifecycle;2936/2937 |
-| Audio/transport | Bounded non-realtime Float32 stereo fixture, not a Mac live host | First finite Main-bus Float32 profile, fixed-Q 2Q bridge and full resource/deadline qualification;2938/2939/2940 |
+| Audio/transport | Bounded non-realtime Float32 stereo fixture, not a Mac live host | First finite Main-bus Float32 profile, fixed-Q 2Q bridge, prepared audible starts and full resource/deadline qualification;2938/2939/2940 |
 | State/history | Controlled opaque component/controller state only | Canonical current-format envelopes, confirmed snapshots and explicit unavailable recovery;2941/2942/2957 |
-| Parameters/MIDI/PDC | Controlled offline queues; existing native DAG compensation | Sample offsets/stopped flush, proper events and bridge+plugin compensation;2943/2947/2948/2953 |
+| Parameters/MIDI/PDC | Controlled offline queues; existing native DAG compensation | Sample offsets/stopped flush, proper events, bridge+plugin compensation and per-bus presentation latency;2943/2947/2948/2953 |
 | Editor | Unimplemented | Helper-local NSView, main-thread lifecycle/resize/focus/close;2949/2950 |
 | Product qualification | No installed-module/native compatibility claim | Actual signed helper, real effects/instruments and finite compatibility/listening workload;2958/2959 |
 
