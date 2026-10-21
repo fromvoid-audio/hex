@@ -162,9 +162,37 @@ impl fmt::Display for Invalid {
 }
 impl std::error::Error for Invalid {}
 
+/// Expected normalized original PCM content. Presence marks a device-original
+/// asset, never an ordinary clip derivative. Values grant no native custody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalSourceFacts {
+    law_version: u32,
+    content_digest: [u8; 32],
+}
+impl OriginalSourceFacts {
+    /// Domain/rate/frame/f32-bit law owned by the native resource catalog.
+    pub const LAW_VERSION: u32 = 1;
+    pub fn new(law_version: u32, content_digest: [u8; 32]) -> Result<Self, Invalid> {
+        if law_version != Self::LAW_VERSION {
+            return Err(Invalid("unsupported original source content law"));
+        }
+        Ok(Self {
+            law_version,
+            content_digest,
+        })
+    }
+    pub fn law_version(self) -> u32 {
+        self.law_version
+    }
+    pub fn content_digest(self) -> [u8; 32] {
+        self.content_digest
+    }
+}
+
 /// Location and validated metadata. Paths/names retain the user's casing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
+    pub(crate) original_source: Option<OriginalSourceFacts>,
     pub(crate) id: AssetId,
     pub(crate) path: PathBuf,
     pub(crate) source_sample_rate: u32,
@@ -173,6 +201,9 @@ pub struct Asset {
     pub(crate) conversion_version: u32,
 }
 impl Asset {
+    pub fn original_source(&self) -> Option<OriginalSourceFacts> {
+        self.original_source
+    }
     pub fn id(&self) -> AssetId {
         self.id
     }

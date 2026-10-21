@@ -16,6 +16,29 @@ impl Project {
 
     /// Resolve identities only; this performs no file access or PCM admission.
     pub fn validate_device_asset_references(&self) -> Result<(), Invalid> {
+        for asset in self
+            .tracks()
+            .iter()
+            .flat_map(|t| t.clips())
+            .map(|c| c.asset())
+            .chain(
+                self.session_cells()
+                    .iter()
+                    .filter_map(|cell| match cell.content() {
+                        crate::SessionCellContent::Audio(clip) => Some(clip.asset()),
+                        _ => None,
+                    }),
+            )
+        {
+            if self
+                .asset(asset)
+                .is_some_and(|a| a.original_source().is_some())
+            {
+                return Err(Invalid(
+                    "device-original media cannot be used as a clip derivative",
+                ));
+            }
+        }
         for device in self.asset_devices() {
             for reference in device
                 .authored_states()

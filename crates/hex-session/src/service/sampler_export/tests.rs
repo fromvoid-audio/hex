@@ -1,4 +1,5 @@
 mod first_load;
+mod save_open;
 use super::*;
 use std::{
     fs,
@@ -523,17 +524,17 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
 }
 
 #[test]
-fn sampler_unsupported_operations_refuse_without_source_or_document_escape() {
+fn sampler_unsupported_history_and_ranges_refuse_without_public_source_escape() {
     let files = Files::new(false);
     let service = Service::with_native_reservation(16000, 16, 1024, reservation()).unwrap();
     event(&service);
     let assigned = assign(&service, files.source.clone());
-    let saved = files.source.parent().unwrap().join("sampler.hex");
-    for request in [
-        Request::Undo,
-        Request::Redo,
-        Request::SaveNew(saved.clone()),
-    ] {
+    let saved = files
+        .source
+        .parent()
+        .unwrap()
+        .join("unqualified-sampler.hex");
+    for request in [Request::Undo, Request::Redo] {
         service.submit(request).unwrap();
         let refused = event(&service);
         assert!(refused.error.is_some());
@@ -549,7 +550,6 @@ fn sampler_unsupported_operations_refuse_without_source_or_document_escape() {
                 .is_empty()
         );
     }
-    assert!(!saved.exists());
     for (start, signal) in [
         (1, hex_export::ExportSignal::Main),
         (0, hex_export::ExportSignal::CapturedMix(vec![])),
@@ -570,7 +570,7 @@ fn sampler_unsupported_operations_refuse_without_source_or_document_escape() {
         assert!(!files.output.exists());
     }
     // Construct a current-format metadata fixture through storage directly.
-    // Missing media proves Open refuses unsupported reconstruction before decode.
+    // Missing content identity must refuse before attempting the missing media.
     hex_storage::save_new(&saved, &assigned.state.project).unwrap();
     fs::remove_file(&files.source).unwrap();
     service.submit(Request::Open(saved)).unwrap();
@@ -643,6 +643,7 @@ fn captured_export_new_and_media_open_check_complete_union_before_adoption() {
         None,
         Some(reservation()),
         admission.replacement_frame_allowance(&session).unwrap(),
+        admission,
     )
     .unwrap();
     let opened_prepared = compile(&opened, None).unwrap();

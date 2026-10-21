@@ -427,6 +427,10 @@ impl Default for Status {
 }
 
 impl Status {
+    #[cfg(feature = "allocation-probe")]
+    pub(crate) fn headless_shutdown_requested(&self) -> bool {
+        self.closing.load(Acquire)
+    }
     #[cfg(test)]
     pub(crate) fn set_split_for_test(&self) {
         self.split_endpoints.store(true, Release);
@@ -2958,6 +2962,7 @@ mod tests {
             sample_rate: 48_000,
             next_id: DEVICE_ID + 2,
             assets: vec![AssetSnapshot {
+                original_source: None,
                 id: ASSET_ID,
                 path: "analyzer-test.wav".into(),
                 source_sample_rate: 48_000,
@@ -3094,6 +3099,7 @@ mod tests {
             sample_rate: 48_000,
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
+                original_source: None,
                 id: ASSET_ID,
                 path: "saturator-callback-test.wav".into(),
                 source_sample_rate: 48_000,
@@ -3218,6 +3224,7 @@ mod tests {
             sample_rate: 48_000,
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
+                original_source: None,
                 id: ASSET_ID,
                 path: "compressor-callback-test.wav".into(),
                 source_sample_rate: 48_000,
@@ -3354,6 +3361,7 @@ mod tests {
             sample_rate: 48_000,
             next_id: RETURN_DEVICE_ID + 1,
             assets: vec![AssetSnapshot {
+                original_source: None,
                 id: ASSET_ID,
                 path: "gate-callback-test.wav".into(),
                 source_sample_rate: 48_000,
@@ -6180,6 +6188,7 @@ mod tests {
             sample_rate: 48_000,
             next_id: 5,
             assets: vec![AssetSnapshot {
+                original_source: None,
                 id: 4,
                 path: "session.wav".into(),
                 source_sample_rate: 48_000,

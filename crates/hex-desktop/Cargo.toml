@@ -22,6 +22,7 @@ hex-media = { path = "../hex-media" }
 gpui = { version = "=0.2.2", default-features = false, features = ["font-kit", "macos-blade"] }
 
 [dev-dependencies]
+hex-storage = { path = "../hex-storage" }
 hex-tuning = { path = "../hex-tuning" }
 hex-project = { path = "../hex-project" }
 allocation-counter = "=0.8.1"

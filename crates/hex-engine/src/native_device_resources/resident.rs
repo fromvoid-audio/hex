@@ -69,6 +69,24 @@ pub struct StagedNativeAssetView<'a> {
     pub(super) staged: &'a StagedDeviceAsset,
 }
 impl StagedNativeAssetView<'_> {
+    /// Expected content from this actual staged bank's immutable catalog.
+    pub fn original_source_facts_on_control(
+        &self,
+        asset: AssetId,
+    ) -> Result<hex_project::OriginalSourceFacts, ResourcePreparationError> {
+        if self.staged.asset.0 != asset {
+            return self.store.original_source_facts_on_control(asset);
+        }
+        let identity = self
+            .staged
+            .asset
+            .1
+            .catalog
+            .identity(asset)
+            .ok_or(ResourcePreparationError::InvalidSource)?;
+        hex_project::OriginalSourceFacts::new(identity.derivation_version, identity.content)
+            .map_err(|_| ResourcePreparationError::InvalidSource)
+    }
     pub fn inspect(
         &self,
         retained: &super::ControlSamplerPhase<'_>,
@@ -97,6 +115,25 @@ impl ResidentDeviceAssets {
     }
     pub fn ids(&self) -> impl Iterator<Item = AssetId> + '_ {
         self.assets.iter().map(|(id, _)| *id)
+    }
+    /// Copy expected original content from the actual immutable source catalog.
+    /// No bank token, PCM owner or native admission authority escapes.
+    pub fn original_source_facts_on_control(
+        &self,
+        asset: AssetId,
+    ) -> Result<hex_project::OriginalSourceFacts, ResourcePreparationError> {
+        let source = self
+            .assets
+            .iter()
+            .find(|(id, _)| *id == asset)
+            .map(|(_, source)| source)
+            .ok_or(ResourcePreparationError::InvalidSource)?;
+        let identity = source
+            .catalog
+            .identity(asset)
+            .ok_or(ResourcePreparationError::InvalidSource)?;
+        hex_project::OriginalSourceFacts::new(identity.derivation_version, identity.content)
+            .map_err(|_| ResourcePreparationError::InvalidSource)
     }
     pub fn capacity_frames(&self) -> Result<u64, AudioStorageError> {
         self.assets.iter().try_fold(0_u64, |n, (_, a)| {

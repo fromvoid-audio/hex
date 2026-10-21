@@ -96,6 +96,7 @@ fn fixture(
         sample_rate: RATE,
         next_id,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: PathBuf::from("memory/grid.wav"),
             source_sample_rate: RATE,

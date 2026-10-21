@@ -15,7 +15,7 @@ completion through the actual native endpoint constructor. It also enables the
 existing GPUI UI test support for a rendered browser-action -> real Service ->
 CURRENT fixture with caller-owned temporary settings/discovery roots. No
 physical app window or device is opened by that fixture. Its dev-only
-hex-project, hex-tuning and allocation-counter dependencies exercise real canonical edits,
+hex-storage, hex-project, hex-tuning and allocation-counter dependencies exercise real saved-document/previous-save readback, canonical edits,
 absolute tuning references
 and zero-total/net callback allocations; none is a production desktop edge.
 Desktop binds those existing responsibilities; Session gains no audio/stream

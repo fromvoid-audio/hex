@@ -7,7 +7,8 @@ contains the first original playback-kernel prerequisite. A bounded first-load
 browser action now fills an empty instrument slot with a canonical sampler and
 supports frame-zero Arrangement playback/Stop and offline Main export. Sampler
 is not registered in the general device catalog; controls, replacement, live
-keyboard, save/reopen and history remain unavailable. No reference parity or
+keyboard and history remain unavailable. Current-format SaveNew/SaveCurrent and
+original-content-checked reopen are supported through the normal project flow. No reference parity or
 physical native interaction/listening acceptance is claimed.
 
 ## current source boundary
@@ -516,7 +517,8 @@ The panel displays canonical sample identity and read-only readiness/limitations
 Frame-zero UI Play requires callback-confirmed source context, canonical revision,
 project generation and output identity. There is no public seek candidate for
 private sampler CURRENT. Nonzero seek, Pause, Session launch, live keyboard,
-active edits, history and save/reopen remain explicit unsupported operations.
+active edits and history remain explicit unsupported operations. Save/reopen is
+added by the next increment below.
 Stop resets the existing native runtime; Play then starts from frame zero again.
 Existing browser Enter and drag import behavior is unchanged.
 
@@ -542,5 +544,67 @@ Finite future user checklist, after a separately qualified optimized build:
 4. Repeat with a mono WAV and a WAV whose rate differs from the output; export
    Main and compare playback. Record the exact source/build and device settings.
 5. Check missing/corrupt media, pending cancellation and an occupied slot refuse
-   clearly. Do not use save/reopen, replacement, live keyboard or nonzero seeking
-   as supported workflows yet.
+   clearly. Save, choose New again to confirm, then reopen and compare sound.
+   Replacement, live keyboard and nonzero seeking remain unsupported.
+
+
+## save and reopen original sources — pulse2906 / PR499
+
+The normal SaveNew/SaveCurrent file-dialog, document, dirty-state and FileToken
+pipeline now supports private sampler projects. A save snapshot copies expected
+content facts from the actual immutable native catalog for every canonically
+present device-original asset, including unassigned sources. This projection
+adds no user edit/history step and transfers no PCM, bank, token or runtime.
+Relative paths use the existing original `media_base`; Save As normalizes saved
+references without retargeting the live model to the new directory. Existing
+create-new refusal, external-write conflict and previous-save recovery remain.
+
+Strict current schema34 adds a required complete `asset_sources` inventory.
+Every asset has an explicit ordinary/null classification or device-original
+facts containing lawversion1 and exactly32 digest bytes. The existing catalog
+law hashes the domain `hex.device-resource.original-stereo.v1` plus NUL, original
+u32 sample rate and u64 frame count in little endian, then every normalized
+original stereo f32 bit pattern in little endian. Mono expansion follows the
+existing decoder. This identifies decoded original sound, not WAV encoding or
+header bytes; it grants no native custody. Unknown laws, ambiguous/malformed
+inventories and unsupported preceding alpha33 refuse. No migration, guessed
+identity, reset or destructive conversion is performed; unrelated explicit
+historical importers remain. Older writers refuse these facts instead of dropping
+the classification.
+
+Open rebuilds all fact-marked originals, including unassigned assets, at their
+saved AssetIds through the existing exclusive decoded-buffer/native bank path
+before any `PreparedImport::at_rate` alias. It compares the actual reconstructed
+catalog with saved facts. Ordinary assets keep their existing derivative path;
+device-original/clip reuse without an accounted derivative refuses. The existing
+reservation first bounds upcoming PCM construction; actual staged original/legacy
+owners join the old Session, current/native output, captured export and outbound
+obligations in the shared retained/peak/frame union. The complete private sampler
+snapshot and final replacement admission precede canonical adoption. Staged
+failure disposes on control and preserves old project/history/media/document and
+sound. Hardware output-open failure after a valid canonical commit remains a
+separate truthful native failure; it is not a content-open success guarantee.
+These are bounded audio-storage checks, not total decoder-buffer or process-RSS
+measurements.
+
+Owning evidence covers actual first load -> SaveNew/Current -> New/Open ->
+mono/stereo original-rate reconstruction, literal custom bounds/loop/envelope,
+host trims and A880 tuning -> matching independent exported PCM after both
+referenced/unassigned WAVs are removed. Missing, corrupt, oversized, same-rate /
+same-frame changed PCM, missing facts and cap refusal retain the old state and
+sound. Relative/Save As paths and a held-export exact/one-under frame union are
+covered. Actual native rejection preserves the installed output identity,
+constructor ACK and literal old PCM, including predecode admission against the
+real held native frames.
+
+Headless rendered browser/keyboard/picker tests drive the real Service and
+NativeAudioSink for stereo and mono+A880: SaveNew, repository recovery-verified
+SaveCurrent, ordinary New confirmation, Open, fresh matching native CURRENT,
+then zero-total/net-allocation literal PCM Play/Stop/replay after the WAV is
+removed. Open-picker cancellation retains the actual current output/context;
+existing stale picker/confirmation guards remain shared. Only the existing
+headless backend replaces physical output; the driver closes actual callback
+carriers and waits real lease/install proof. Physical UI/fonts/audio/listening,
+optimized build delivery and installation are unexecuted. Controls, replacement,
+live keyboard, user history, Session launch and nonzero seeking remain open.
+Exact required merge/review qualification belongs to canonical PR499/Pulse2906.

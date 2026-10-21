@@ -2488,6 +2488,7 @@ impl Project {
         self.assets.insert(
             id,
             Asset {
+                original_source: None,
                 id,
                 path,
                 source_sample_rate,
