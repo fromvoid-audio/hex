@@ -6,6 +6,8 @@ use super::*;
 #[derive(Clone, Copy, Debug)]
 pub struct AudioCandidateReservationQuote {
     pub source_capacity: usize,
+    /// Ephemeral finite MIDI compiler overlap; excluded from retained DATA.
+    pub compiler_workspace_bytes: usize,
     pub data_rows: usize,
     pub handle_rows: usize,
     pub member_rows: usize,
@@ -96,6 +98,10 @@ impl AudioCandidateReservationQuote {
         let groups = crate::session_playback::candidate_group_reservation(tracks, returns)?;
         Ok(Self {
             source_capacity: sources,
+            compiler_workspace_bytes: crate::audio_preparation::sampler_workspace_bound(
+                counts.notes,
+                counts.clips,
+            )?,
             data_rows: counts.rows,
             handle_rows: counts.handles,
             member_rows: groups.checked_mul(2).ok_or(AudioStorageError::Overflow)?,
@@ -117,6 +123,7 @@ impl AudioCandidateReservationQuote {
         // A second input collection may coexist during fresh consuming copies.
         let peak = retained
             .checked_add(input_data_bytes)
+            .and_then(|n| n.checked_add(self.compiler_workspace_bytes))
             .ok_or(AudioStorageError::Overflow)?;
         Ok(crate::AudioStorageReservation {
             allocation_items: self.data_rows,
@@ -150,12 +157,26 @@ enum Kind {
 }
 #[derive(Default)]
 struct Counts {
+    notes: usize,
+    clips: usize,
     rows: usize,
     handles: usize,
     bytes: usize,
 }
 impl Counts {
     fn add(&mut self, kind: Kind, count: usize) -> Result<(), AudioStorageError> {
+        if matches!(kind, Kind::MidiNote) {
+            self.notes = self
+                .notes
+                .checked_add(count)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        if matches!(kind, Kind::Clip) {
+            self.clips = self
+                .clips
+                .checked_add(count)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
         let (rows, handles) = match kind {
             Kind::Fixed => (256usize, 128usize),
             Kind::Source => (8, 8),

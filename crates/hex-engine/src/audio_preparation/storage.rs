@@ -38,6 +38,7 @@ impl AudioPreparationCustody {
         let bank = bank.as_ref().or_else(|| current_sampler.bank());
         l.vec(slots)?;
         l.growth(capacity.previous_slot_backing_bytes)?;
+        l.growth(capacity.native_compiler_workspace_bytes)?;
         for SourceSlot {
             track: _,
             clip: _,

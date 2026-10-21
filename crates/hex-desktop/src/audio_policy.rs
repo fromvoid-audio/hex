@@ -199,7 +199,8 @@ impl AudioPolicy {
             .and_then(|n| n.checked_add(control_backing_quote.checked_mul(RUNTIME_CELLS)?))
             .ok_or("native retained reservation overflow")?;
         let native_peak = native_retained
-            .checked_add(native_quote.metadata_data_bytes)
+            .checked_add(native_quote.compiler_workspace_bytes)
+            .and_then(|n| n.checked_add(native_quote.metadata_data_bytes))
             .ok_or("native construction reservation overflow")?;
         let resident_native = hex_session::ResidentNativeReservation {
             max_scan_frames: MAX_RESIDENT_FRAMES,

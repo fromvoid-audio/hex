@@ -10,6 +10,9 @@ use crate::{
     },
     owned_shared::OwnedShared,
 };
+pub(crate) use sampler::{
+    compiler_quote as sampler_compiler_quote, compiler_workspace_quote as sampler_workspace_bound,
+};
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ArrangementTrackCapacity {
     pub row_bytes: usize,
@@ -448,8 +451,7 @@ impl TrackAssembly {
         for (r, t) in self.rows.iter_mut().zip(project.tracks()) {
             if let Some((metadata, contexts)) = samplers {
                 if let Some(config) = metadata.configuration(t.id()) {
-                    r.sampler
-                        .reserve(project, t, config, metadata.id, contexts)?;
+                    let _ = (config, contexts); // compile only after workspace admission
                     r.source_mix = Some(PreparedTrackMix::identity());
                 }
             }
@@ -487,6 +489,20 @@ impl TrackAssembly {
                     .handle
                     .checked_add(1)
                     .ok_or(AudioStorageError::Overflow)?;
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn compile_current_sampler_tracks(
+        &mut self,
+        project: &hex_project::Project,
+        metadata: &crate::native_device_resources::current_sampler::CurrentSamplerMetadata,
+        contexts: &OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+    ) -> Result<(), AudioStorageError> {
+        for (row, track) in self.rows.iter_mut().zip(project.tracks()) {
+            if let Some(config) = metadata.configuration(track.id()) {
+                row.sampler
+                    .reserve(project, track, config, metadata.id, contexts)?;
             }
         }
         Ok(())

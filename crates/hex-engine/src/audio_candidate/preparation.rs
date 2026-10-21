@@ -304,6 +304,14 @@ impl AudioCandidatePreparation {
             .custody
             .native_sampler_pcm_capacity_frames()
     }
+    pub fn resident_pcm_capacity_frames(&self) -> Result<u64, AudioStorageError> {
+        self.owner
+            .as_ref()
+            .ok_or(AudioStorageError::SourceMismatch)?
+            .inner
+            .custody
+            .resident_pcm_capacity_frames()
+    }
     /// Validate an intact, never-published resident CURRENT constructor before
     /// a destination native Root takes the opaque cell. Refusal retains it.
     pub fn preflight_current_sampler_adoption_on_control(

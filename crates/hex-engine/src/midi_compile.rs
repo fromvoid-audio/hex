@@ -253,6 +253,8 @@ pub(crate) fn compile_instrument_track(
     )
 }
 
+#[cfg(test)]
+thread_local! { pub(crate) static CURRENT_SAMPLER_COMPILER_ENTRIES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 /// The actual native constructor owns the bank declaration at allocation birth.
 /// Reuse the same validated occurrence compiler; no alternate MIDI scheduler.
 pub(crate) fn compile_current_sampler_track(
@@ -262,6 +264,8 @@ pub(crate) fn compile_current_sampler_track(
     contexts: Arc<crate::shared_analytic::SharedAnalyticContextTable>,
     declaration: &mut Option<crate::owned_shared::SharedDeclaration>,
 ) -> Result<Option<crate::InstrumentTrack>, Invalid> {
+    #[cfg(test)]
+    CURRENT_SAMPLER_COMPILER_ENTRIES.with(|n| n.set(n.get() + 1));
     if declaration.is_some() {
         return Err(Invalid("native midi bank destination is occupied"));
     }

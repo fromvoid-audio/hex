@@ -44,11 +44,13 @@ impl Domain {
     }
 }
 struct Submitted {
+    resident_copy_frames: u64,
     context: AudioSourceContext,
     ticket: AudioCandidateTicket,
     domain: Option<AudioCandidateDomainToken>,
 }
 struct Preparation {
+    resident_copy_frames: u64,
     token: AudioCandidatePreparationToken,
     snapshot: Arc<CanonicalAudioSourceSnapshot>,
     catalog: u64,
@@ -79,6 +81,9 @@ pub(super) struct NativeAudioSink {
     last_state: Option<(AudioSourceContext, &'static str)>,
     blocked: Option<AudioSourceContext>,
     sampler: Option<sampler::Sampler>,
+    ordinary_pcm_frames: u64,
+    verified_pcm_frames: u64,
+    suspended_output: Option<u64>,
     sampler_budget_wait: Option<hex_session::service::NativeSamplerRetryFacts>,
     output_hold: hex_session::service::NativeSamplerReservationHold,
     retired_sampler_hold: hex_session::service::NativeSamplerReservationHold,
@@ -109,6 +114,9 @@ impl NativeAudioSink {
             last_state: None,
             blocked: None,
             sampler: None,
+            ordinary_pcm_frames: 0,
+            verified_pcm_frames: 0,
+            suspended_output: None,
             sampler_budget_wait: None,
             output_hold: Default::default(),
             retired_sampler_hold: Default::default(),
@@ -309,6 +317,12 @@ impl NativeAudioSink {
                 .as_ref()
                 .is_some_and(|s| control.recover_audio_candidate(&s.ticket).is_some())
             {
+                if let Some(done) = submitted.as_ref() {
+                    self.verified_pcm_frames = self
+                        .verified_pcm_frames
+                        .checked_sub(done.resident_copy_frames)
+                        .unwrap_or(u64::MAX);
+                }
                 *submitted = None; // only nonowning ticket; actual bank dropped here on worker
             }
         }
@@ -478,7 +492,15 @@ impl NativeAudioSink {
                 domains,
             ) {
                 Ok(token) => {
+                    let copied_frames = u64::try_from(
+                        input_bytes.unwrap_or(usize::MAX)
+                            / std::mem::size_of::<hex_engine::Frame>(),
+                    )
+                    .unwrap_or(u64::MAX);
+                    self.verified_pcm_frames =
+                        self.verified_pcm_frames.saturating_add(copied_frames);
                     self.preparation = Some(Preparation {
+                        resident_copy_frames: copied_frames,
                         token,
                         snapshot: Arc::clone(&snapshot),
                         catalog,
@@ -635,7 +657,11 @@ impl NativeAudioSink {
                 }
                 pending
                     .snapshot
-                    .prepare_candidate_on_control(pending.catalog, cell)
+                    .prepare_candidate_on_control(pending.catalog, cell)?;
+                if cell.resident_pcm_capacity_frames()? > pending.resident_copy_frames {
+                    return Err(hex_engine::AudioStorageError::ReservationExceeded);
+                }
+                Ok(())
             });
             match prepared {
                 Ok(hex_audio::AudioCandidatePreparationProgress::Ready) => pending.built = true,
@@ -663,6 +689,7 @@ impl NativeAudioSink {
             Ok(ticket) => {
                 let revision = control.submitted_revision();
                 self.submitted[index] = Some(Submitted {
+                    resident_copy_frames: pending.resident_copy_frames,
                     context,
                     ticket,
                     domain: pending.domain,
@@ -730,6 +757,20 @@ impl WorkerAudioSink for NativeAudioSink {
         }
     }
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+        // Cancel stale preparation before any poll can classify a newly opened
+        // ordinary output using the old sampler's phase.
+        if self
+            .sampler
+            .as_ref()
+            .is_some_and(|s| s.context() != source.context())
+            && !self.cancel_sampler()
+        {
+            self.opening = None;
+            self.open_pending = false;
+            self.report_sampler_cleanup_failure(source.context());
+            self.desired = Some(source);
+            return;
+        }
         let previous = self
             .desired
             .as_ref()
@@ -793,6 +834,12 @@ impl WorkerAudioSink for NativeAudioSink {
                     control.poll_resident_publication();
                 }
             }
+            self.ordinary_pcm_frames = output
+                .publication
+                .control()
+                .and_then(|c| c.resident_forwarding_pcm_frames())
+                .and_then(|n| n.checked_add(self.verified_pcm_frames))
+                .unwrap_or(u64::MAX);
             self.output = Some(output);
         }
         self.flush_events();

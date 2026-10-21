@@ -196,3 +196,110 @@ fn current_sampler_actual_constructor_has_literal_pcm_stop_replay_and_closed_cus
     assert!(cell.owner_on_control().is_none());
     assert!(original.source_view(&token).is_ok());
 }
+
+#[test]
+fn sampler_compiler_reserves_empty_clip_and_note_workspace_before_entering() {
+    for note_count in [0, 21, 256] {
+        let (project, asset) = fixture();
+        let mut editor = Editor::new(project, 8).unwrap();
+        let track = editor.project().tracks()[0].id();
+        let clip = editor.project().tracks()[0].midi_clips()[0].id();
+        editor.execute(Command::RemoveMidiClip(clip)).unwrap();
+        if note_count != 0 {
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: BeatTime::from_raw(BeatTime::ONE.raw() * note_count),
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            for i in 0..note_count {
+                editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::from_raw(BeatTime::ONE.raw() * i),
+                        duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
+                        pitch: 60,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+        } else {
+            for i in 0..128 {
+                editor
+                    .execute(Command::PlaceMidiClip {
+                        track,
+                        start: BeatTime::from_raw(BeatTime::ONE.raw() * i),
+                        length: BeatTime::ONE,
+                    })
+                    .unwrap();
+            }
+        }
+        let project = editor.project();
+        let quote = AudioCandidateReservationQuote::for_project(project, 1).unwrap();
+        let original_limits = quote.storage_reservation(65536).unwrap();
+        let mut peak = 0;
+        let mut retained = 0;
+        for pass in 0..4 {
+            let mut limits = original_limits;
+            if pass > 0 {
+                limits.max_construction_data_bytes = peak - usize::from(pass == 1);
+                limits.max_prepared_data_bytes = retained - usize::from(pass == 3);
+            }
+            let source = crate::OwnedAudioSource::try_resident(8000, vec![[0.0; 2]; 4])
+                .ok()
+                .unwrap();
+            let mut bank = Some(
+                crate::OwnedAudioInputs::try_new(vec![(asset, source)], limits)
+                    .ok()
+                    .unwrap(),
+            );
+            let mut custody = AudioPreparationCustody::try_new_on_control().unwrap();
+            crate::midi_compile::CURRENT_SAMPLER_COMPILER_ENTRIES.with(|n| n.set(0));
+            let result = custody.begin_current_sampler_in_place_on_control(
+                project,
+                11,
+                crate::AudioSourceContext {
+                    project_generation: 4,
+                    editor_revision: 7,
+                },
+                &mut bank,
+                4,
+                &AtomicBool::new(false),
+            );
+            let entered = crate::midi_compile::CURRENT_SAMPLER_COMPILER_ENTRIES.with(|n| n.get());
+            if pass == 1 || pass == 3 {
+                assert!(
+                    matches!(result, Err(ref e) if e.reason == AudioStorageError::ReservationExceeded)
+                );
+                assert_eq!(
+                    entered, 0,
+                    "under-budget constructor must refuse BEFORE compiler"
+                );
+                assert!(bank.is_some(), "refusal preserves actual original bank");
+            } else {
+                assert!(
+                    result.is_ok(),
+                    "exact compiler peak failed: {:?}",
+                    result.err().map(|e| e.reason)
+                );
+                assert_eq!(entered, 1);
+                let report = custody.capacity_report();
+                assert!(report.native_compiler_workspace_bytes > 0);
+                assert!(
+                    report.construction_peak_bytes
+                        >= report.retained_stage_bytes + report.native_compiler_workspace_bytes
+                );
+                if pass == 0 {
+                    peak = report.construction_peak_bytes;
+                    retained = report.retained_stage_bytes;
+                }
+            }
+            custody.cleanup_on_control();
+        }
+    }
+}

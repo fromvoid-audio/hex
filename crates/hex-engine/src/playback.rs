@@ -306,6 +306,28 @@ pub struct Playback {
     playing: bool,
 }
 impl Playback {
+    /// Conservative control-side PCM capacity of this actual immutable graph.
+    /// Shared clip leaves are counted once within the graph; no owner escapes.
+    pub fn resident_pcm_capacity_frames(&self) -> Option<u64> {
+        let sources = || {
+            self.project
+                .tracks()
+                .iter()
+                .flat_map(|t| t.clips.iter().filter_map(|c| c.audio.as_ref()))
+                .chain(self.prepared_revision.iter().flat_map(|r| {
+                    r.session()
+                        .audio_clips()
+                        .iter()
+                        .filter_map(|c| c.resident_audio())
+                }))
+        };
+        sources().enumerate().try_fold(0u64, |n, (i, source)| {
+            if sources().take(i).any(|old| old.shares_pcm_with(source)) {
+                return Some(n);
+            }
+            n.checked_add(u64::try_from(source.pcm_capacity_frames()).ok()?)
+        })
+    }
     /// Control-side attachment validated against the exact compiled instrument instance.
     pub fn prepare_live_expression(
         &mut self,

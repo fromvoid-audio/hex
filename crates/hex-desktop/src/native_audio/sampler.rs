@@ -31,6 +31,23 @@ pub(super) struct Sampler {
     phase: Phase,
     preflight_slot: bool,
 }
+impl Sampler {
+    pub(super) fn context(&self) -> AudioSourceContext {
+        self.context
+    }
+}
+fn pcm_hold(frames: u64) -> Hold {
+    let bytes = usize::try_from(frames)
+        .ok()
+        .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>()))
+        .unwrap_or(usize::MAX);
+    Hold {
+        retained_bytes: bytes,
+        construction_bytes: bytes,
+        frames,
+        ..Hold::default()
+    }
+}
 fn add(a: Hold, b: Hold) -> Hold {
     Hold {
         // Saturation is a refusing reservation sentinel, never freed capacity.
@@ -43,7 +60,10 @@ fn add(a: Hold, b: Hold) -> Hold {
 impl NativeAudioSink {
     pub(super) fn sampler_hold(&self) -> Hold {
         add(
-            add(self.retired_sampler_hold, self.output_hold),
+            add(
+                add(self.retired_sampler_hold, self.output_hold),
+                pcm_hold(self.ordinary_pcm_frames),
+            ),
             self.sampler.as_ref().map_or(Hold::default(), |s| s.hold),
         )
     }
@@ -52,6 +72,9 @@ impl NativeAudioSink {
         // exclusive Lease. Successful fresh construction proves old retirement;
         // neither a cleared Option nor UI endpoint acknowledgement does so.
         self.retired_sampler_hold = Hold::default();
+        self.ordinary_pcm_frames = 0;
+        self.verified_pcm_frames = 0;
+        self.suspended_output = None;
         let preflighted = self
             .sampler
             .as_ref()
@@ -68,7 +91,19 @@ impl NativeAudioSink {
         self.output = Some(output);
     }
     pub(super) fn retain_relinquished_output(&mut self) {
-        self.retired_sampler_hold = add(self.retired_sampler_hold, self.output_hold);
+        if let Some(control) = self.output.as_mut().and_then(|o| o.publication.control()) {
+            self.ordinary_pcm_frames = control
+                .suspend_resident_forwarding_pcm()
+                .and_then(|n| n.checked_add(self.verified_pcm_frames))
+                .unwrap_or(u64::MAX);
+        }
+        self.retired_sampler_hold = add(
+            self.retired_sampler_hold,
+            add(self.output_hold, pcm_hold(self.ordinary_pcm_frames)),
+        );
+        self.ordinary_pcm_frames = 0;
+        self.verified_pcm_frames = 0;
+        self.suspended_output = None;
         self.output_hold = Hold::default();
     }
     pub(super) fn sampler_blocks_client(&self) -> bool {
@@ -76,10 +111,21 @@ impl NativeAudioSink {
             .as_ref()
             .is_some_and(|s| s.phase != Phase::Submitted && s.phase != Phase::Refused)
     }
+    fn resume_sampler_forwarding(&mut self) {
+        if let Some(control) = self.output.as_mut().and_then(|o| o.publication.control())
+            && control.output_identity() == self.suspended_output
+        {
+            control.resume_resident_forwarding();
+        }
+        self.suspended_output = None;
+    }
     fn clean_preflight(&mut self) -> bool {
         let Some(state) = self.sampler.as_mut() else {
             return true;
         };
+        if state.phase == Phase::Failed {
+            return false;
+        } // retain the first incomplete owner; never retry implicitly
         let was_draining = state.phase == Phase::Draining;
         if let Some(cell) = state.cell.as_mut() {
             if cell.cleanup_on_control().is_err() {
@@ -113,11 +159,39 @@ impl NativeAudioSink {
         if !self.clean_preflight() {
             return false;
         }
+        self.resume_sampler_forwarding();
         if self.output.is_some() && self.sampler.as_ref().is_some_and(|s| s.token.is_some()) {
             self.relinquish_output();
         }
         self.sampler = None;
         true
+    }
+    fn sampler_refusal_observation(&mut self, context: AudioSourceContext, error: String) {
+        if self.output_identity.is_none() {
+            self.pending_open_event = Some(EditorAudioEvent::Unavailable {
+                project_generation: context.project_generation,
+                restart_request: self.restart_request,
+                error,
+            });
+        } else {
+            self.observe(
+                context,
+                "sampler-refused",
+                EditorPublicationState::Refused(error),
+            );
+        }
+    }
+    pub(super) fn report_sampler_cleanup_failure(&mut self, context: AudioSourceContext) {
+        let error = "native sampler ownership cleanup is incomplete; restart hex".to_owned();
+        if self.output_identity.is_some() {
+            self.observe(
+                context,
+                "sampler-incomplete",
+                EditorPublicationState::Fault(error),
+            );
+        } else {
+            self.sampler_refusal_observation(context, error);
+        }
     }
     fn sampler_refused(&mut self, error: String) {
         let context = self.sampler.as_ref().map(|s| s.context);
@@ -126,6 +200,15 @@ impl NativeAudioSink {
             .as_ref()
             .is_some_and(|s| s.phase != Phase::Preparing);
         let clean = self.clean_preflight();
+        if !clean {
+            if let Some(context) = context {
+                self.report_sampler_cleanup_failure(context);
+            }
+            return;
+        }
+        if clean && !disturbed {
+            self.resume_sampler_forwarding();
+        }
         if clean {
             if let Some(state) = self.sampler.as_mut() {
                 state.phase = Phase::Refused;
@@ -141,11 +224,7 @@ impl NativeAudioSink {
                 });
             }
         } else if let Some(context) = context {
-            self.observe(
-                context,
-                "sampler-refused",
-                EditorPublicationState::Refused(error),
-            );
+            self.sampler_refusal_observation(context, error);
         }
     }
     pub(super) fn advance_sampler(&mut self, input: NativeSamplerInput<'_>) {
@@ -176,16 +255,20 @@ impl NativeAudioSink {
                 Ok(p) => *p,
                 Err(_) => return,
             };
+            if let Some(control) = self.output.as_mut().and_then(|o| o.publication.control()) {
+                let Some(frames) = control.suspend_resident_forwarding_pcm() else {
+                    return;
+                };
+                self.ordinary_pcm_frames = frames.saturating_add(self.verified_pcm_frames);
+                self.suspended_output = control.output_identity();
+            }
             let (quote, storage, sources, frames) = match input.quote() {
                 Ok(v) => v,
                 Err(error) => {
+                    self.resume_sampler_forwarding();
                     self.blocked = Some(context);
                     self.sampler_budget_wait = None;
-                    self.observe(
-                        context,
-                        "sampler-refused",
-                        EditorPublicationState::Refused(error),
-                    );
+                    self.sampler_refusal_observation(context, error);
                     return;
                 }
             };
@@ -193,12 +276,14 @@ impl NativeAudioSink {
                 .max_prepared_data_bytes
                 .checked_add(policy.control_backing_quote)
             else {
+                self.resume_sampler_forwarding();
                 return;
             };
             let Some(peak) = storage
                 .max_construction_data_bytes
                 .checked_add(policy.control_backing_quote)
             else {
+                self.resume_sampler_forwarding();
                 return;
             };
             let hold = Hold {
@@ -207,14 +292,11 @@ impl NativeAudioSink {
                 frames,
                 current_context: Some(context),
             };
-            if let Err(error) = input.admit_additional(hold) {
+            if let Err(error) = input.admit_additional(hold, self.sampler_hold()) {
+                self.resume_sampler_forwarding();
                 self.blocked = Some(context);
                 self.sampler_budget_wait = Some(retry_facts);
-                self.observe(
-                    context,
-                    "sampler-refused",
-                    EditorPublicationState::Refused(error),
-                );
+                self.sampler_refusal_observation(context, error);
                 return;
             }
             self.sampler_budget_wait = None;
@@ -222,6 +304,7 @@ impl NativeAudioSink {
                 .compare_exchange(false, true, AcqRel, Acquire)
                 .is_err()
             {
+                self.resume_sampler_forwarding();
                 self.observe(
                     context,
                     "sampler-incomplete",

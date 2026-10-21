@@ -117,6 +117,15 @@ fn authored(
     let initial = h.next();
     assert!(initial.error.is_none());
     h.open();
+    authored_current(h, files, stereo, tuned, short_gate)
+}
+fn authored_current(
+    h: &mut Harness,
+    files: &Files,
+    stereo: bool,
+    tuned: bool,
+    short_gate: bool,
+) -> (hex_project::TrackId, hex_project::AssetId) {
     if tuned {
         h.run(Request::Edit(Command::SetTuning(tuning(880.0))));
     }
@@ -504,4 +513,105 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
         .command(PlaybackCommand::Play)
         .unwrap();
     assert_eq!(h.render()[0], [0.125; 2]);
+}
+
+#[test]
+fn new_cancels_actual_draining_sampler_before_immediate_fresh_open_poll() {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let files = Files::new();
+    let mut h = Harness::resident_sampler(8);
+    let (track, asset) = authored(&mut h, &files, false, false, false);
+    h.run(Request::AssignSampler { track, asset });
+    let end = Instant::now() + h.wait;
+    while h.observation.lock().unwrap().native_hold.frames != 4 {
+        assert!(Instant::now() < end);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    h.observation.lock().unwrap().fresh_before_input =
+        Some((h.audio.take().unwrap(), Arc::clone(&h.backend)));
+    h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::Resident,
+        reservation: None,
+    });
+    assert!(h.observation.lock().unwrap().fresh_before_input_checked);
+    h.open();
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+}
+
+#[test]
+fn actual_old_resident_current_pcm_remains_charged_across_new_and_sampler_preflight() {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (cap, admitted) in [(15, false), (16, true)] {
+        let files = Files::new();
+        let mut h = Harness::resident_sampler(cap);
+        h.next();
+        h.open();
+        let path = wav(&files, false);
+        let mut imported = h.run(Request::Import(path));
+        let playback = imported.playback.take().unwrap();
+        assert_eq!(playback.resident_pcm_capacity_frames(), Some(8));
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .forward_resident_publication(
+                playback,
+                hex_audio::prepared::PublicationPolicy::InheritRuntime,
+                h.context.unwrap().project_generation,
+            )
+            .unwrap();
+        let end = Instant::now() + h.wait;
+        loop {
+            if h.audio
+                .as_mut()
+                .unwrap()
+                .control
+                .try_resident_publication_response()
+                .is_some()
+            {
+                break;
+            }
+            assert!(Instant::now() < end);
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        h.render(); // actual old ordinary CURRENT now retains the graph/PCM
+        let old_client = h.audio.take().unwrap();
+        let old_backend = h.backend.lock().unwrap().take().unwrap();
+        h.run(Request::NewWithAudioMode {
+            mode: DocumentAudioMode::Resident,
+            reservation: None,
+        });
+        let (track, asset) = authored_current(&mut h, &files, false, false, false);
+        h.run(Request::AssignSampler { track, asset });
+        loop {
+            let state = h.observation.lock().unwrap();
+            if admitted && state.native_hold.frames == 12 {
+                break;
+            }
+            if !admitted && state.blocked == h.context {
+                assert_eq!(
+                    state.native_hold.frames, 8,
+                    "old native PCM must survive Session replacement"
+                );
+                break;
+            }
+            drop(state);
+            assert!(
+                Instant::now() < end,
+                "old PCM overlap admission did not settle"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        // The original4 + newcopy4 + actual oldCurrent8 require16, not8.
+        assert!(
+            h.backend.lock().unwrap().is_none(),
+            "old lease must still bar new output"
+        );
+        drop(old_client);
+        drop(old_backend);
+    }
 }

@@ -449,3 +449,40 @@ device deadlines, optimized application delivery, sampler controls, general
 editing/history and save/reopen remain unverified or unsupported. The exact
 required merge-plan receipt belongs to the canonical PR, independently of this
 description.
+
+Final-review boundary checks also cover the ordinary graph already playing
+before sampler preparation. Resident forwarding records actual graph PCM
+capacities under its existing finite request-slot mutex. Suspending that same
+slot and reading its obligations is atomic with respect to another forwarding
+request; transport and priority Stop remain independent. Admission refreshes the
+native hold after suspension rather than trusting an earlier worker sample.
+Accepted current, queued and returned graphs stay charged until actual control
+owner destruction. Refused owning responses conservatively keep their charge
+through Root teardown, including after response collection. Verified constructor
+resident copies carry their preparation/submission capacity hold through actual
+return recovery; cancelled or failed preparation residuals conservatively stay charged until teardown.
+Shared PCM across separate publications may be conservatively charged more than
+once. These are selected PCM/construction roles, not total process RSS or an
+inventory of arbitrary external legacy graphs.
+
+New/Open cancels an old sampler context before requesting or polling another
+output. A new ordinary output therefore receives its ordinary control/runtime
+hold even if opening completes before the next private sampler input. Failed
+cleanup retains custody and prevents another open. An already admitted canonical
+offline assignment survives native budget/preparation/device-open refusal, with
+truthful unavailable/refused audio status. This does not roll back the user's
+edit. Canonical import/source admission remains atomic, and active limited native
+replacement still refuses before canonical commit.
+
+Native MIDI compilation now starts after the other fixed constructor backings
+exist. Before compiler entry, admission checks their actual simultaneous bytes,
+all tracks' finite final MIDI bound and conservative temporary clip-count,
+stable-sort, onset and density-edge workspace. Retained and construction limits
+are checked separately; the historical workspace overlap remains in the storage
+seal after temporaries are freed. The pinned Rust1.94 driftsort quote includes its 48-element scratch minimum
+above the 20-element insertion path, using max(N,48) element slots; this scratch
+does not overlap density sorting, and the quote safely sums phase bounds. Empty MIDI clips still reserve clip-count workspace. Owning exact
+and one-under tests cover empty-clip and 21/256 nonoverlapping-note fixtures and observe
+that a refused compiler was never entered. Removing each of the three review
+repairs reproduces its focused failure; raw RED/GREEN evidence is retained with
+PR548's local artifacts. The interrupted earlier audit is not merge evidence.

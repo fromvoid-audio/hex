@@ -5,6 +5,68 @@ use crate::{
     InstrumentTrack, owned_shared::SharedDeclaration, shared_analytic::SharedAnalyticContextTable,
 };
 
+/// Explicit upper bounds for the existing compiler's finite, nonlooping class.
+/// Rust 1.94 stable driftsort uses max(N,48) scratch element slots beyond
+/// its <=20-element insertion path (48 = SMALL_SORT_GENERAL_SCRATCH_LEN).
+/// Pinned sources:
+/// https://github.com/rust-lang/rust/blob/1.94.0/library/core/src/slice/sort/stable/mod.rs
+/// https://github.com/rust-lang/rust/blob/1.94.0/library/core/src/slice/sort/shared/smallsort.rs
+/// This includes the small-slice heap minimum, even
+/// where the implementation can use its stack buffer. Sort does not overlap
+/// density validation; summing those phase bounds is conservative.
+pub(crate) fn compiler_quote(
+    track: &hex_project::Track,
+) -> Result<(usize, usize), AudioStorageError> {
+    let notes = track.midi_clips().iter().try_fold(0usize, |n, c| {
+        if c.source().looping() {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        n.checked_add(c.notes().len())
+            .ok_or(AudioStorageError::Overflow)
+    })?;
+    let workspace = compiler_workspace_quote(notes, track.midi_clips().len())?;
+    let (payload, overhead) = crate::owned_shared::OwnedShared::<
+        crate::midi_note_bank::PreparedMidiNoteBank,
+    >::declared_parts()
+    .ok_or(AudioStorageError::UnknownStorage)?;
+    let retained = notes
+        .checked_mul(
+            mem::size_of::<crate::midi_compile::CompiledNoteSpan>()
+                .checked_add(mem::size_of::<crate::midi_compile::SpanNode>())
+                .ok_or(AudioStorageError::Overflow)?,
+        )
+        .and_then(|n| {
+            n.checked_add(if track.midi_clips().is_empty() {
+                0
+            } else {
+                payload.checked_add(overhead)?
+            })
+        })
+        .ok_or(AudioStorageError::Overflow)?;
+    Ok((retained, workspace))
+}
+pub(crate) fn compiler_workspace_quote(
+    notes: usize,
+    clips: usize,
+) -> Result<usize, AudioStorageError> {
+    let sort_slots = if notes > 20 { notes.max(48) } else { 0 };
+    let sort_bytes = sort_slots
+        .checked_mul(mem::size_of::<crate::midi_compile::CompiledNoteSpan>())
+        .ok_or(AudioStorageError::Overflow)?;
+    let density_stride = mem::size_of::<u64>()
+        .checked_add(
+            mem::size_of::<(u64, bool)>()
+                .checked_mul(2)
+                .ok_or(AudioStorageError::Overflow)?,
+        )
+        .ok_or(AudioStorageError::Overflow)?;
+    notes
+        .checked_mul(density_stride)
+        .and_then(|n| n.checked_add(sort_bytes))
+        .and_then(|n| n.checked_add(clips.checked_mul(mem::size_of::<usize>())?))
+        .ok_or(AudioStorageError::Overflow)
+}
+
 #[derive(Default)]
 pub(super) struct SamplerTrackConstruction {
     device: Option<hex_project::DeviceId>,

@@ -3,6 +3,7 @@
 //! The audio host must retain this custody through cancellation and abandonment.
 use crate::audio_only_inputs::*;
 mod arrangement_clips;
+pub(crate) use arrangement_clips::sampler_workspace_bound;
 mod storage;
 pub(crate) use arrangement_clips::ArrangementClips;
 #[cfg(test)]
@@ -105,6 +106,7 @@ pub struct AudioArrangementCapacity {
     pub arrangement_clips: ArrangementClipCapacity,
     pub revision_roots: crate::AudioRevisionRootCapacity,
     pub native_source_metadata_bytes: usize,
+    pub native_compiler_workspace_bytes: usize,
 }
 pub struct AudioArrangementRefusal {
     pub reason: AudioStorageError,
@@ -312,20 +314,33 @@ pub struct AudioPreparationCustody {
 }
 impl AudioPreparationCustody {
     pub(crate) fn native_sampler_pcm_capacity_frames(&self) -> Result<u64, AudioStorageError> {
+        self.resident_pcm_capacity_frames()
+    }
+    pub(crate) fn resident_pcm_capacity_frames(&self) -> Result<u64, AudioStorageError> {
         let bank = self
             .current_sampler
             .bank()
+            .or(self.bank.as_ref())
             .ok_or(AudioStorageError::SourceMismatch)?;
-        bank.sources.iter().try_fold(0u64, |n, (_, source)| {
-            let SourceKind::Resident(audio) = &source.kind else {
-                return Err(AudioStorageError::UnsupportedGraph);
-            };
-            n.checked_add(
-                u64::try_from(audio.pcm_capacity_frames())
-                    .map_err(|_| AudioStorageError::Overflow)?,
-            )
-            .ok_or(AudioStorageError::Overflow)
-        })
+        bank.sources
+            .iter()
+            .enumerate()
+            .try_fold(0u64, |n, (i, (_, source))| {
+                let SourceKind::Resident(audio) = &source.kind else {
+                    return Ok(n);
+                };
+                if bank.sources[..i]
+                    .iter()
+                    .any(|(_, old)| crate::audio_input_storage::same(old, source))
+                {
+                    return Ok(n);
+                }
+                n.checked_add(
+                    u64::try_from(audio.pcm_capacity_frames())
+                        .map_err(|_| AudioStorageError::Overflow)?,
+                )
+                .ok_or(AudioStorageError::Overflow)
+            })
     }
     pub(crate) fn native_sampler_source_capacity(&self) -> Option<usize> {
         self.current_sampler
@@ -781,7 +796,7 @@ impl AudioPreparationCustody {
                             ArrangementClips::main_carrier_bytes()?;
                     }
                     capacity.native_source_metadata_bytes = self.current_sampler.bytes()?;
-                    let current = capacity
+                    let mut current = capacity
                         .session
                         .bytes()?
                         .checked_add(capacity.structure.bytes()?)
@@ -794,6 +809,66 @@ impl AudioPreparationCustody {
                                 .and_then(|n| n.checked_add(capacity.revision_roots.bytes()))
                         })
                         .ok_or(AudioStorageError::Overflow)?;
+                    if let Some(metadata) = self.current_sampler.metadata() {
+                        let (final_midi, scratch) =
+                            arrangement_clips::sampler_compiler_quote(project)?;
+                        let retained_base = capacity
+                            .retained_stage_bytes
+                            .checked_sub(previous_session_bytes?)
+                            .and_then(|n| n.checked_add(current))
+                            .ok_or(AudioStorageError::Overflow)?;
+                        let growth = capacity
+                            .session
+                            .previous_backing_bytes
+                            .checked_add(capacity.structure.previous_growth_backing_bytes)
+                            .and_then(|n| {
+                                n.checked_add(capacity.tempo.previous_growth_backing_bytes)
+                            })
+                            .and_then(|n| {
+                                n.checked_add(capacity.assembly.previous_growth_backing_bytes)
+                            })
+                            .and_then(|n| {
+                                n.checked_add(
+                                    capacity.arrangement_clips.previous_growth_backing_bytes,
+                                )
+                            })
+                            .ok_or(AudioStorageError::Overflow)?;
+                        let peak_base = capacity
+                            .construction_peak_bytes
+                            .checked_sub(previous_session_bytes?)
+                            .and_then(|n| n.checked_add(current))
+                            .and_then(|n| n.checked_add(growth))
+                            .ok_or(AudioStorageError::Overflow)?;
+                        if retained_base
+                            .checked_add(final_midi)
+                            .is_none_or(|n| n > inputs.reservation.max_prepared_data_bytes)
+                            || peak_base
+                                .checked_add(final_midi)
+                                .and_then(|n| n.checked_add(scratch))
+                                .is_none_or(|n| n > inputs.reservation.max_construction_data_bytes)
+                        {
+                            return Err(AudioStorageError::ReservationExceeded);
+                        }
+                        // Every other fixed backing and all tracks' final MIDI
+                        // overlap this conservative maximum scratch reservation.
+                        // Check precedes the compiler, even for empty MIDI clips.
+                        capacity.native_compiler_workspace_bytes = scratch;
+                        let old = capacity.arrangement_clips.bytes()?;
+                        self.arrangement_clips.compile_current_sampler_tracks(
+                            project,
+                            metadata,
+                            self.shared.current_sampler_contexts()?,
+                        )?;
+                        capacity.arrangement_clips = self.arrangement_clips.capacity(true)?;
+                        if assemble_project {
+                            capacity.arrangement_clips.root.main_prepared_bytes =
+                                ArrangementClips::main_carrier_bytes()?;
+                        }
+                        current = current
+                            .checked_sub(old)
+                            .and_then(|n| n.checked_add(capacity.arrangement_clips.bytes().ok()?))
+                            .ok_or(AudioStorageError::Overflow)?;
+                    }
                     capacity.retained_stage_bytes = capacity
                         .retained_stage_bytes
                         .checked_sub(previous_session_bytes?)
@@ -805,6 +880,7 @@ impl AudioPreparationCustody {
                         .checked_sub(previous_session_bytes?)
                         .ok_or(AudioStorageError::Overflow)?
                         .checked_add(current)
+                        .and_then(|n| n.checked_add(capacity.native_compiler_workspace_bytes))
                         .and_then(|n| n.checked_add(capacity.session.previous_backing_bytes))
                         .and_then(|n| {
                             n.checked_add(capacity.structure.previous_growth_backing_bytes)

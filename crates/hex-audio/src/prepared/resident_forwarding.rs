@@ -19,6 +19,8 @@ struct Request {
 struct Slot {
     next: u64,
     busy: bool,
+    suspended: bool,
+    pcm_frames: u64,
     ever_used: bool,
     request: Option<Request>,
     response: Option<ResidentPublicationResponse>,
@@ -36,9 +38,18 @@ impl ResidentForwarding {
         drop(shared.slot.lock());
         shared
     }
+    pub(super) fn release_pcm_after_drop(&self, frames: u64) {
+        let mut slot = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        slot.pcm_frames = slot.pcm_frames.checked_sub(frames).unwrap_or(u64::MAX);
+    }
     fn virgin(&self) -> bool {
         self.slot.try_lock().is_ok_and(|slot| {
             !slot.ever_used
+                && !slot.suspended
+                && slot.pcm_frames == 0
                 && !slot.busy
                 && slot.request.is_none()
                 && slot.response.is_none()
@@ -100,12 +111,27 @@ impl Client {
                 playback,
             });
         };
+        if slot.suspended {
+            return Err(PublishError {
+                reason: "resident publication suspended for fresh output",
+                playback,
+            });
+        }
         if slot.busy {
             return Err(PublishError {
                 reason: "resident publication busy",
                 playback,
             });
         }
+        let Some(pcm) = playback
+            .resident_pcm_capacity_frames()
+            .and_then(|n| slot.pcm_frames.checked_add(n))
+        else {
+            return Err(PublishError {
+                reason: "resident pcm obligation overflow",
+                playback,
+            });
+        };
         let Some(next) = slot.next.checked_add(1) else {
             return Err(PublishError {
                 reason: "resident publication token exhausted",
@@ -114,6 +140,7 @@ impl Client {
         };
         let token = ResidentPublicationToken(next);
         slot.next = next;
+        slot.pcm_frames = pcm;
         slot.busy = true;
         slot.ever_used = true;
         slot.request = Some(Request {
@@ -155,6 +182,27 @@ impl Client {
     }
 }
 impl PublicationControl {
+    /// Atomic forwarding suspension and actual accepted-PCM snapshot. No
+    /// allocation, constructor or owner destruction occurs under this mutex.
+    pub fn suspend_resident_forwarding_pcm(&self) -> Option<u64> {
+        let bridge = self.resident_forwarding.as_ref()?;
+        let mut slot = bridge.slot.try_lock().ok()?;
+        slot.suspended = true;
+        Some(self.legacy_pcm_frames.saturating_add(slot.pcm_frames))
+    }
+    pub fn resume_resident_forwarding(&self) {
+        if let Some(bridge) = &self.resident_forwarding {
+            let mut slot = bridge
+                .slot
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slot.suspended = false;
+        }
+    }
+    pub fn resident_forwarding_pcm_frames(&self) -> Option<u64> {
+        let slot = self.resident_forwarding.as_ref()?.slot.try_lock().ok()?;
+        Some(self.legacy_pcm_frames.saturating_add(slot.pcm_frames))
+    }
     pub(super) fn update_resident_cancellation(&self) {
         let Some(bridge) = &self.resident_forwarding else {
             return;
@@ -188,11 +236,14 @@ impl PublicationControl {
             .as_ref()
             .and_then(|bridge| bridge.slot.try_lock().ok()?.request.take());
         let Some(request) = request else { return };
-        let result = self.publish_with_policy_and_context_generation(
+        let result = self.publish_with_pcm_obligation(
             request.playback,
             request.policy,
             request.context_generation,
+            true,
         );
+        // Refused responses keep their accepted PCM obligation until this Root
+        // drains, even if the Client takes the returned owner. No UI ACK releases it.
         // Only this worker fills the result, and busy remains set until the
         // unique Client takes it. No competing request can replace this slot.
         if let Some(bridge) = &self.resident_forwarding {
@@ -226,6 +277,148 @@ mod tests {
         )
         .unwrap();
         Playback::from_prepared(Arc::new(prepared))
+    }
+    fn pcm_playback() -> (Playback, std::sync::Weak<hex_engine::Project>) {
+        let audio = hex_engine::Audio::new(48000, vec![[0.25; 2]; 4]).unwrap();
+        let clip = hex_engine::Clip::new(audio, 0, 4, false).unwrap();
+        let track = hex_engine::Track::new(vec![clip], 1.0, false).unwrap();
+        let project = Arc::new(hex_engine::Project::new(48000, vec![track]).unwrap());
+        let weak = Arc::downgrade(&project);
+        (Playback::from_shared(project), weak)
+    }
+    #[test]
+    fn pcm_obligation_overflow_is_a_refusing_sentinel_and_preserves_request_owner() {
+        let _serial = candidate_tests::serial();
+        let (control, callback) = channel(48000).unwrap();
+        let root = control.native_candidate_root();
+        let (data, errors, terminals, mut client, mut worker) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        let control = worker.control().unwrap();
+        control.legacy_pcm_frames = 1;
+        control
+            .resident_forwarding
+            .as_ref()
+            .unwrap()
+            .slot
+            .lock()
+            .unwrap()
+            .pcm_frames = u64::MAX;
+        assert_eq!(control.suspend_resident_forwarding_pcm(), Some(u64::MAX));
+        assert_eq!(control.resident_forwarding_pcm_frames(), Some(u64::MAX));
+        control.resume_resident_forwarding();
+        let (request, weak) = pcm_playback();
+        let refused = client
+            .forward_resident_publication(request, PublicationPolicy::InheritRuntime, 7)
+            .unwrap_err();
+        assert!(refused.reason.contains("overflow"));
+        assert!(weak.upgrade().is_some());
+        drop(refused);
+        assert!(weak.upgrade().is_none());
+        client.close();
+        worker.close();
+        drop(data);
+        drop(errors);
+        candidate_tests::finish(&mut retirement);
+    }
+    #[test]
+    fn suspended_forwarding_snapshots_real_pcm_until_actual_return_drop() {
+        let _serial = candidate_tests::serial();
+        let (control, callback) = channel(48000).unwrap();
+        let root = control.native_candidate_root();
+        let (mut data, errors, terminals, mut client, mut worker) =
+            reserve_native_worker(control, callback, None);
+        let mut retirement = NativeRetirement::new(terminals, root);
+        client.activate();
+        let (first, weak) = pcm_playback();
+        client
+            .forward_resident_publication(first, PublicationPolicy::InheritRuntime, 7)
+            .unwrap();
+        assert_eq!(
+            worker.control().unwrap().suspend_resident_forwarding_pcm(),
+            Some(4)
+        );
+        // A caller racing AFTER the same-slot suspension keeps its exact owner.
+        let (racing, race_weak) = pcm_playback();
+        let thread = std::thread::spawn(move || {
+            let refusal = client
+                .forward_resident_publication(racing, PublicationPolicy::InheritRuntime, 7)
+                .unwrap_err();
+            assert!(refusal.reason.contains("suspended"));
+            assert!(race_weak.upgrade().is_some());
+            drop(refusal);
+            assert!(race_weak.upgrade().is_none());
+            client
+        });
+        let mut client = thread.join().unwrap();
+        worker.control().unwrap().poll_resident_publication();
+        client
+            .try_resident_publication_response()
+            .unwrap()
+            .result
+            .unwrap();
+        data.owner_mut().unwrap().run(|c, _| c.begin_block());
+        assert!(weak.upgrade().is_some());
+        assert_eq!(
+            worker.control().unwrap().resident_forwarding_pcm_frames(),
+            Some(4)
+        );
+        worker.control().unwrap().resume_resident_forwarding();
+        client
+            .forward_resident_publication(playback(), PublicationPolicy::InheritRuntime, 7)
+            .unwrap();
+        worker.control().unwrap().poll_resident_publication();
+        client
+            .try_resident_publication_response()
+            .unwrap()
+            .result
+            .unwrap();
+        data.owner_mut().unwrap().run(|c, _| c.begin_block());
+        assert_eq!(
+            worker.control().unwrap().resident_forwarding_pcm_frames(),
+            Some(4)
+        );
+        assert!(weak.upgrade().is_some()); // callback return is not destruction
+        worker.control().unwrap().reclaim();
+        assert!(weak.upgrade().is_none());
+        assert_eq!(
+            worker.control().unwrap().resident_forwarding_pcm_frames(),
+            Some(0)
+        );
+        // A refused owning response remains conservatively charged until Root
+        // teardown, including after the UI takes/drops it; no ACK subtraction.
+        let (queued, _) = pcm_playback();
+        client
+            .forward_resident_publication(queued, PublicationPolicy::InheritRuntime, 7)
+            .unwrap();
+        worker.control().unwrap().poll_resident_publication();
+        client
+            .try_resident_publication_response()
+            .unwrap()
+            .result
+            .unwrap();
+        let (refused, _) = pcm_playback();
+        client
+            .forward_resident_publication(refused, PublicationPolicy::InheritRuntime, 7)
+            .unwrap();
+        worker.control().unwrap().poll_resident_publication();
+        assert!(
+            client
+                .try_resident_publication_response()
+                .unwrap()
+                .result
+                .is_err()
+        );
+        assert_eq!(
+            worker.control().unwrap().suspend_resident_forwarding_pcm(),
+            Some(8)
+        );
+        client.close();
+        worker.close();
+        drop(data);
+        drop(errors);
+        candidate_tests::finish(&mut retirement);
     }
     #[test]
     fn one_request_preserves_refusal_owner_and_separates_request_submission_and_apply() {

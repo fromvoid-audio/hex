@@ -83,6 +83,27 @@ pub(crate) struct ArrangementClips {
     #[cfg(test)]
     pub(super) probe: Option<DropProbe>,
 }
+pub(crate) fn sampler_compiler_quote(
+    project: &hex_project::Project,
+) -> Result<(usize, usize), AudioStorageError> {
+    project
+        .tracks()
+        .iter()
+        .filter(|t| t.instrument().is_some())
+        .try_fold((0usize, 0usize), |(retained, scratch), track| {
+            let (r, s) = tracks::sampler_compiler_quote(track)?;
+            Ok((
+                retained.checked_add(r).ok_or(AudioStorageError::Overflow)?,
+                scratch.max(s),
+            ))
+        })
+}
+pub(crate) fn sampler_workspace_bound(
+    notes: usize,
+    clips: usize,
+) -> Result<usize, AudioStorageError> {
+    tracks::sampler_workspace_bound(notes, clips)
+}
 impl ArrangementClips {
     pub(super) fn capacity(
         &self,
@@ -300,6 +321,17 @@ impl ArrangementClips {
             }
         }
         Ok(())
+    }
+    pub(super) fn compile_current_sampler_tracks(
+        &mut self,
+        project: &hex_project::Project,
+        metadata: &crate::native_device_resources::current_sampler::CurrentSamplerMetadata,
+        contexts: &crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
+    ) -> Result<(), AudioStorageError> {
+        self.tracks
+            .compile_current_sampler_tracks(project, metadata, contexts)
     }
     pub(super) fn main_carrier_bytes() -> Result<usize, AudioStorageError> {
         root::ArrangementRootAssembly::main_carrier_bytes()

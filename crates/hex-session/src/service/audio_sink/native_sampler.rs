@@ -128,8 +128,16 @@ impl NativeSamplerInput<'_> {
     }
     /// Reserve additional native copy/control together with actual Session and
     /// export owners before copying. The existing physical frame cap is shared.
-    pub fn admit_additional(&self, hold: NativeSamplerReservationHold) -> Result<(), String> {
+    pub fn admit_additional(
+        &self,
+        hold: NativeSamplerReservationHold,
+        actual_native: NativeSamplerReservationHold,
+    ) -> Result<(), String> {
         let mut admission = self.admission;
+        // Sink has atomically suspended old forwarding and refreshed its actual
+        // obligations after the worker's earlier observation. Never reuse that
+        // potentially stale native sample for admission.
+        admission.native = actual_native;
         admission.native.retained_bytes = admission
             .native
             .retained_bytes
