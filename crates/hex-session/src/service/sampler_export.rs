@@ -474,7 +474,7 @@ impl Session {
                 return Err(SessionError::Invalid("sampler preparation canceled"));
             }
             if let Some((context, sink, cancel)) = native_hook {
-                sink.prepare_sampler_gain(NativeSamplerInput {
+                sink.prepare_sampler_edit(NativeSamplerInput {
                     project: candidate,
                     media: media_assets,
                     native,

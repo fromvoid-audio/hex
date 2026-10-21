@@ -95,8 +95,8 @@ mod refresh;
 mod render;
 mod return_tracks;
 mod routing_controls;
-mod sampler_gain;
 mod sampler_load;
+mod sampler_parameter;
 mod save;
 mod scrub;
 mod seek;
@@ -652,7 +652,7 @@ pub(super) struct EditorView {
     project_spectrum: project_spectrum::ProjectSpectrumState,
     worker_requests_pending: usize,
     sampler_load: sampler_load::State,
-    sampler_gain: sampler_gain::State,
+    sampler_parameter: sampler_parameter::State,
     audio_batch: Option<Arc<hex_session::import_batch_decode::AudioBatchControl>>,
     audio_batch_progress: Option<hex_session::import_batch_decode::AudioBatchProgress>,
     pending_playback: Option<PendingPlayback>,
@@ -1230,7 +1230,7 @@ impl EditorView {
             project_spectrum: Default::default(),
             worker_requests_pending: 0,
             sampler_load: Default::default(),
-            sampler_gain: Default::default(),
+            sampler_parameter: Default::default(),
             audio_batch: None,
             audio_batch_progress: None,
             pending_playback: None,

@@ -6622,3 +6622,19 @@ with the candidate. Exact final local merge qualification/review is recorded wit
 canonical PR551; targeted passes alone never qualify a merge.
 Physical native input/display/device/listening and optimized delivery remain open;
 other sampler controls, replacement/history and full playback stay separate.
+
+
+## stopped sampler pitch beside gain — pulse2968 / PR552
+
+A closed Gain/Transpose intent reuses the existing single pending stopped edit,
+exact callback fence and sealed-cell fresh-output transaction. The two numeric
+controls retain individual captured gestures and focus. Pitch accepts finite
+−48..48 semitones, including fractions, preserving all other authored/source/host
+state. No new runtime ownership, registry admission or DSP law is introduced.
+
+Owning coverage combines actual fields, A880/8k→16k, gain0.5 and literal
+keyboard/Arrangement octave and fractional output with Save/New/Open; codec
+bounds and unchanged metadata, existing fence/timeout/failure/custody regressions
+remain required. Final local qualification and review belong to canonical PR552.
+Physical interaction/listening and optimized delivery are still unexecuted;
+remaining controls, replacement/history and full playback are separate work.

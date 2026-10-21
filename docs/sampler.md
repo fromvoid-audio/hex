@@ -7,7 +7,7 @@ contains the first original playback-kernel prerequisite. A bounded first-load
 browser action now fills an empty instrument slot with a canonical sampler and
 supports computer-keyboard audition, frame-zero Arrangement playback/Stop and
 offline Main export. Sampler
-is not registered in the general device catalog. Stopped gain editing is supported; other controls, replacement and user history remain unavailable. Current-format SaveNew/SaveCurrent and
+is not registered in the general device catalog. Stopped gain and pitch editing are supported; other controls, replacement and user history remain unavailable. Current-format SaveNew/SaveCurrent and
 original-content-checked reopen are supported through the normal project flow. No reference parity or
 physical native interaction/listening acceptance is claimed.
 
@@ -403,7 +403,7 @@ assets, loaded sampler instruments and the existing Utility-only effect chain.
 Project and MIDI-source loops, Session MIDI/launches, routing/return devices,
 mutable handoff, tails, checkpoints, live expression, preview and nonzero seeks
 remain closed. Source/configuration/topology edits refuse before canonical
-commit while this limited native owner is active, except the stopped gain
+commit while this limited native owner is active, except the stopped gain/pitch
 transaction described below. New/Open explicitly retires it. Current-format
 reconstruction is supported; user history remains separate work.
 
@@ -765,3 +765,39 @@ confirm gain0.5/unity/0 changes keyboard and Arrangement level once, Save/New/Op
 and verify it persists, then try editing while playing and confirm refusal.
 Record the tested build/source and physical results. Waveform/region/envelope
 and remaining controls, replacement, history and broader playback stay open.
+
+
+## stopped native pitch — pulse2968 / PR552
+
+The panel adds a persistent shared numeric **pitch** field beside gain, in
+semitones from−48 to48, default0. Fractional authored values remain supported;
+coarse/fine keyboard steps are1/0.1 semitones and the display uses two decimals.
+One final confirmation or drag release submits a closed `Gain`/`Transpose`
+intent. Both controls share the same one-pending stopped transaction described
+above, including exact callback fence, precommit admission/sealing, cancellation,
+old-output retirement, fresh output and refused-only retry. No additional native
+publication path or DSP law is introduced. Each retained widget captures its
+own gesture target; a revision change cannot silently retarget an old gesture.
+
+Only the selected authored field changes. Root note, detune, gain when changing
+pitch, source references, host trims and all other settings retain exact state.
+The immutable authored A440 root denominator and absolute effective project Hz
+numerator still compose once with source/output rate and authored transpose.
+Slice keys still select regions; the authored transpose remains applicable.
+
+The owning rendered regression exercises gain0.5, pitch+12/−12/0/0.5 and gain0,
+with project A880 and original8kHz stereo at16kHz output. Independent literal
+keyboard and Arrangement PCM covers each value; SaveCurrent persists exact
+state and actual New/Open at gain0.5 and pitch+12/0.5 reaches fresh native CURRENT.
+Typed patch checks cover both±48 limits, fractional values, strict other-field
+preservation and malformed/nonfinite/out-of-range refusal. Existing stale,
+cancel, command-order, timeout, late-key, custody, open-failure/retry and zero
+allocation regressions remain in the required native suite. These headless tests
+are not physical input/display/audio or listening acceptance. No optimized app
+installation is part of this change.
+
+Finite user checks after a separately qualified optimized build: with transport
+stopped and a loaded sampler, confirm pitch0/+12/−12 changes keyboard and
+Arrangement pitch by one octave while retaining gain; enter0.5, Save/New/Open
+and verify persistence; attempt an edit while playing and confirm refusal.
+Region, loop, envelope, replacement and history controls remain separate work.

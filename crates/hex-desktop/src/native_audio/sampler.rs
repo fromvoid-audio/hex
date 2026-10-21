@@ -6,8 +6,8 @@ use std::sync::{
     Mutex,
     atomic::Ordering::{AcqRel, Release},
 };
-mod gain;
-pub(super) use gain::GainPending;
+mod edit;
+pub(super) use edit::EditPending;
 
 // One native output already has exclusive lifecycle custody. Its single
 // unpublished preflight has one persistent cleanup owner, including on failure.
@@ -85,7 +85,7 @@ impl NativeAudioSink {
             ),
             self.sampler.as_ref().map_or(Hold::default(), |s| s.hold),
         );
-        add(held, self.gain_hold())
+        add(held, self.edit_hold())
     }
     pub(super) fn opened_output(&mut self, output: WorkerPreparedOutput) {
         // Both production and headless factories must acquire the existing
@@ -176,7 +176,7 @@ impl NativeAudioSink {
         true
     }
     pub(super) fn cancel_sampler(&mut self) -> bool {
-        self.cancel_gain();
+        self.cancel_edit();
         if !self.clean_preflight() {
             return false;
         }
@@ -538,7 +538,7 @@ impl NativeAudioSink {
         }
     }
     pub(super) fn shutdown_sampler(&mut self) {
-        self.shutdown_gain();
+        self.shutdown_edit();
         if !self.clean_preflight() {
             if let Some(state) = self.sampler.as_mut() {
                 // The exclusive preflight slot remains closed until process exit.
