@@ -592,3 +592,25 @@ all checks. Refusal and first-panic states remain host-owned until explicit
 control-side cleanup; these APIs do not publish, grant readiness or certify
 complete storage. The host must keep draft/custody wrappers and all their
 charges until their normal destruction, including after successful transfer.
+
+Native sampler CURRENT preallocates independent live keyboard pairs from its exact
+constructor factories/bank. They reuse the existing key scheduler and sampler DSP,
+remain nontransferable Session storage under the32MiB limit, and render in the same
+stopped/playing route transaction. Input is scalar, with no UI input/source owner
+in the callback; ordinary registry keyboard admission is unchanged. See
+[the bounded keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
+
+Sampler gain, pitch, region, loop and explicit-ms/percent ADSR metadata reads/patches use the strict current sampler codec without
+adding registry admission. A narrow opaque CURRENT observation supplies actual
+transport and the live keyboard epoch (including idle zero) to the stopped edit
+fence; it exposes no source owner, mutable runtime or alternate rendering path.
+
+Sampler release activity is a narrow control-side query of the authored gate
+mode: Trigger One-Shot/Slice keep their stored release but report it inactive.
+The query never converts a mode or exposes PCM/runtime ownership.
+
+The staged native asset view can borrow its exact original source for synchronous
+control-side peak summaries. This lifetime-bound borrow exposes no bank/source
+owner, clone, scope or publication authority. Session owns the derived overview
+and its separate control-memory budget; the engine/native/export snapshots do
+not acquire that cache.

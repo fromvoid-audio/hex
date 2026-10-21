@@ -224,6 +224,45 @@ pub(crate) struct MutableInstrumentTail {
 }
 
 impl MutableInstrumentTrackRuntime {
+    pub(crate) fn is_concrete_current_sampler(&self) -> bool {
+        self.expression.is_none()
+            && self
+                .pair
+                .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
+                .is_some()
+    }
+    pub(crate) fn visit_current_sampler_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            pair,
+            expression_identity: _,
+            expression,
+            primary,
+            scratch,
+            next_id: _,
+            next_id_scratch: _,
+        } = self;
+        if expression.is_some() {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
+        let (first, second) = pair
+            .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
+            .ok_or(crate::AudioStorageError::UnsupportedGraph)?;
+        ledger.vec(primary)?;
+        ledger.vec(scratch)?;
+        ledger.bytes(
+            crate::audio_storage::Owner::exclusive(pair),
+            crate::audio_storage::Location("current-sampler-primary", 0),
+            first,
+        )?;
+        ledger.bytes(
+            crate::audio_storage::Owner::exclusive(pair),
+            crate::audio_storage::Location("current-sampler-scratch", 0),
+            second,
+        )
+    }
     /// Conservative checkpoint charge derived from the prepared declaration
     /// and both fixed occurrence-ledger buffers. Call before `new` so a store
     /// can reject count/aggregate overages before invoking the runtime factory.
@@ -532,6 +571,28 @@ impl MutableInstrumentTrackRuntime {
             .checked_add(self.pair.fixed_storage_pair_bytes()?)
     }
 
+    pub(crate) fn transition_proofs(&self, speculative: bool) -> &[MutableOccurrence] {
+        if speculative {
+            &self.scratch
+        } else {
+            &self.primary
+        }
+    }
+    pub(crate) fn transition_proof_capacity(&self) -> usize {
+        self.primary.capacity().min(self.scratch.capacity())
+    }
+    pub(crate) fn max_events_per_block(&self) -> usize {
+        self.pair.max_events_per_block()
+    }
+    pub(crate) fn cut_speculative_gate_deadlines_at(&mut self, performance_frame: u64) {
+        let tail = self.max_release_tail_frames();
+        for occurrence in &mut self.scratch {
+            if !occurrence.note_off_sent && occurrence.gate_end_frame > performance_frame {
+                occurrence.gate_end_frame = performance_frame;
+                occurrence.quiet_deadline_frame = performance_frame.saturating_add(tail);
+            }
+        }
+    }
     pub(crate) fn max_active_occurrences(&self) -> usize {
         self.pair.max_active_occurrences()
     }
@@ -595,6 +656,31 @@ impl MutableInstrumentTrackRuntime {
         suppressions: &[MidiOccurrenceSuppression],
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.process_segment_with_resources(
+            track,
+            performance_start,
+            source_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_segment_with_resources(
+        &mut self,
+        track: TrackId,
+        performance_start: u64,
+        source_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
@@ -736,7 +822,7 @@ impl MutableInstrumentTrackRuntime {
             (offset, is_on, occurrence_id)
         });
         self.pair
-            .process_block_with_clock(events, frames, clock, &hex_lattice::EMPTY_DEVICE_RESOURCES)
+            .process_block_with_clock(events, frames, clock, resources)
             .map_err(map_runtime_error)
     }
 

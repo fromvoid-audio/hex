@@ -4,6 +4,7 @@
 //! Queries borrow a prepared tempo map and write into fixed caller-owned
 //! storage. The template ignores finite Arrangement duration by design.
 use crate::{MidiTiming, midi_compile::MidiEventKind};
+mod current_sampler;
 mod density;
 mod spans;
 use density::{DensityEnvelope, DensityEvent, admit_density};
@@ -226,6 +227,23 @@ impl PreparedMidiSourceTemplate {
     ) -> Result<Self, MidiTemplateError> {
         let sample_rate = timing.sample_rate();
         let max_micro_bpm = timing.max_micro_bpm();
+        Self::prepare_source_admitted(track, clip, source_data, sample_rate, max_micro_bpm)
+    }
+
+    /// Constructor preparation needs only these validated admission bounds;
+    /// runtime queries still borrow the actual prepared musical clock.
+    pub(crate) fn prepare_source_admitted(
+        track: TrackId,
+        clip: ClipId,
+        source_data: &MidiSource,
+        sample_rate: u32,
+        max_micro_bpm: u64,
+    ) -> Result<Self, MidiTemplateError> {
+        if sample_rate == 0 || max_micro_bpm == 0 {
+            return Err(MidiTemplateError::InvalidSource(
+                "invalid midi admission timing",
+            ));
+        }
         let source = MidiSourcePlayback::new(
             source_data.source_length(),
             source_data.source_start(),
@@ -655,11 +673,14 @@ impl SourceSpan {
     }
 }
 
+pub(crate) use spans::{
+    CurrentSamplerEventCustody, MidiReleaseVoice, TransportDensitySpan,
+    admit_transport_loop_density,
+};
 pub use spans::{
     MIDI_SPAN_BUFFER_CAPACITY, MidiInstrumentRenderContext, MidiRenderSpan, MidiSpanBuffer,
     PreparedMidiInstrumentTemplate,
 };
-pub(crate) use spans::{MidiReleaseVoice, TransportDensitySpan, admit_transport_loop_density};
 
 /// Fixed-capacity output storage reusable across stateless edge queries.
 #[derive(Clone, Debug)]

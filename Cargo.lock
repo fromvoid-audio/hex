@@ -2614,7 +2614,9 @@ dependencies = [
  "hex-mts",
  "hex-project",
  "hex-session",
+ "hex-storage",
  "hex-stream",
+ "hex-tuning",
  "hex-ui",
 ]
 
@@ -2681,7 +2683,10 @@ version = "0.1.0"
 name = "hex-media"
 version = "0.1.0"
 dependencies = [
+ "hex-devices",
  "hex-engine",
+ "hex-lattice",
+ "hex-lattice-contract",
  "hex-project",
  "sha2 0.10.9",
 ]

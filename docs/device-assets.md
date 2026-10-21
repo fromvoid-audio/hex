@@ -18,7 +18,10 @@ Return effects. Referenced assets cannot be removed. Generic state replacement
 and its existing expected-state/identity-reservation command provide atomic
 binding edits; a zero-ID reservation needs no new edit model. Failed or stale
 edits preserve the previous project/history. Asset IDs alone do not fingerprint
-file contents: changed-file verification and PCM admission remain later work.
+file contents. Current schema34 additionally persists optional expected original
+content facts; the narrow sampler save/open path reconstructs actual native
+banks and compares the existing catalog law before adoption. These facts grant
+no PCM/native authority. See [sampler save/reopen](sampler.md#save-and-reopen-original-sources--pulse2906--pr499).
 
 Provider codecs frequently reconstruct their opaque state. Both registries
 restore host gains and asset references before current-state validation and
@@ -30,7 +33,7 @@ excluding host gains; `without_host_gains` retains bindings.
 
 ## persistence and refusal
 
-The combined current schema31 always requires tuning and device assets, over
+The original combined schema31 first required tuning and device assets, over
 the complete strict prior body, with a required manifest entry for every device,
 including empty lists. Missing/duplicate/unknown devices, duplicate slots, invalid
 IDs, unresolved catalog assets and oversized lists refuse. Original JSON keys
@@ -204,3 +207,16 @@ frames and checks original-rate retention through Undo/Redo. The entire Session
 package passes182 tests, zero failures or ignored tests. Both failed full runs
 remain recorded; the second is
 `artifacts/local-ci/20261017T142427Z-f1c8bc8d/summary.json`.
+
+
+## current device-original source classification
+
+Schema34 requires a complete source inventory in addition to tuning/Main/device
+manifests. Every catalog asset has a required ordinary/null or original-content
+classification, including unassigned originals. Missing inventory entries cannot
+default to ordinary clip media. Superseded alpha33 refuses; explicit historical
+ordinary importers remain. Source facts are projected from actual native catalogs
+on save and are compared with actual reconstructed catalogs on open, separately
+from constructor/lifetime admission. A device-original asset cannot be reused as
+an unaccounted clip derivative. General asset-aware presets and broader device
+resource/publication classes still have their own outstanding acceptance.

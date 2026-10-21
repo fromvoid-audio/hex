@@ -2,6 +2,10 @@
 //! Session owns no device or page endpoints and never interprets their tokens.
 use super::*;
 use std::time::Duration;
+pub(super) mod native_sampler;
+pub use native_sampler::{
+    NativeSamplerInput, NativeSamplerReservationHold, NativeSamplerRetryFacts,
+};
 
 /// A single worker-owned desktop adapter. Initialization and every method run
 /// on the existing Session worker, including while the UI event queue is full.
@@ -16,6 +20,44 @@ pub trait WorkerAudioSink: Send {
     /// On generation replacement relinquish the previous publication/output
     /// first. Replacement opening must be polled, not awaited in this method.
     fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>);
+    /// Synchronous private canonical/original PCM input; no borrow may survive.
+    fn native_sampler_input(&mut self, _input: NativeSamplerInput<'_>) {}
+    fn begin_sampler_edit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        Err("sampler edit requires native audio".into())
+    }
+    /// None while awaiting the bounded callback fence; never wait here.
+    fn sampler_edit_ready(&mut self) -> Option<Result<(), String>> {
+        None
+    }
+    fn prepare_sampler_edit(&mut self, _input: NativeSamplerInput<'_>) -> Result<(), String> {
+        Err("sampler edit preparation is unavailable".into())
+    }
+    fn commit_sampler_edit(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+    ) -> Result<(), String> {
+        Err("sampler edit publication is unavailable".into())
+    }
+    fn cancel_sampler_edit(&mut self) {}
+    /// Scalar activation only; implementations must verify the actual installed
+    /// native CURRENT before accepting this exact output/context/track/device.
+    fn prepare_sampler_keyboard(
+        &mut self,
+        _context: hex_engine::AudioSourceContext,
+        _output: u64,
+        _epoch: u64,
+        _track: u64,
+        _device: u64,
+    ) -> Result<(), String> {
+        Err("sampler keyboard is unavailable".into())
+    }
+    /// Hold remains charged through actual native teardown, never a UI ACK.
+    fn native_sampler_hold(&self) -> NativeSamplerReservationHold {
+        NativeSamplerReservationHold::default()
+    }
     /// Advance bounded preparation/return work; no UI polling is required.
     fn poll(&mut self);
     /// Start a correlated reopen on the existing lifecycle lane. Implementations
@@ -64,6 +106,25 @@ impl WorkerEvents {
         }
         Ok(rate)
     }
+    pub(super) fn prepare_sampler_keyboard(
+        &mut self,
+        context: hex_engine::AudioSourceContext,
+        output: u64,
+        epoch: u64,
+        track: hex_project::TrackId,
+        device: hex_project::DeviceId,
+    ) -> Result<(), String> {
+        self.audio
+            .as_mut()
+            .ok_or("sampler keyboard requires native audio")?
+            .prepare_sampler_keyboard(context, output, epoch, track.value(), device.value())
+    }
+    pub(super) fn native_audio_requested(&self) -> bool {
+        self.audio.is_some()
+    }
+    pub(super) fn sampler_edit_audio(&mut self) -> Option<&mut (dyn WorkerAudioSink + 'static)> {
+        self.audio.as_deref_mut()
+    }
     pub(super) fn startup_failed(&mut self, error: String) {
         self.startup_error = Some(format!("audio unavailable: {error}"));
     }
@@ -85,7 +146,11 @@ impl WorkerEvents {
             audio.poll();
         }
     }
-    pub(super) fn send(&mut self, mut event: Event) -> bool {
+    pub(super) fn send_with_control_poll(
+        &mut self,
+        mut event: Event,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
+    ) -> bool {
         if let Some(source) = &event.state.canonical_audio_source {
             if self.last_context != Some(source.context()) {
                 if let Some(audio) = self.audio.as_mut() {
@@ -99,6 +164,11 @@ impl WorkerEvents {
                 return false;
             }
             self.poll();
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
             match self.sender.try_send(event) {
                 Ok(()) => return true,
                 Err(TrySendError::Disconnected(_)) => return false,
@@ -109,17 +179,59 @@ impl WorkerEvents {
             thread::sleep(Duration::from_millis(5));
         }
     }
-    pub(super) fn next_request(&mut self, requests: &Receiver<Request>) -> Option<Request> {
-        if self.audio.is_none() {
-            return requests.recv().ok();
+    pub(super) fn next_request_with_control_poll(
+        &mut self,
+        requests: &Receiver<Request>,
+        bounded: bool,
+        mut control_poll: impl FnMut(Option<&mut dyn WorkerAudioSink>),
+    ) -> Option<Request> {
+        control_poll(
+            self.audio
+                .as_mut()
+                .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+        );
+        if self.audio.is_none() && !bounded {
+            let result = requests.recv().ok();
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
+            return result;
         }
         loop {
             if self.shutdown.load(Ordering::Acquire) {
                 return None;
             }
             self.poll();
-            match requests.recv_timeout(Duration::from_millis(5)) {
+            control_poll(
+                self.audio
+                    .as_mut()
+                    .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+            );
+            // Preserve queued New/Open/edit ordering before a callback-ready
+            // continuation. No worker wait can strand project replacement.
+            match requests.try_recv() {
                 Ok(request) => return Some(request),
+                Err(mpsc::TryRecvError::Disconnected) => return None,
+                Err(mpsc::TryRecvError::Empty) => {}
+            }
+            if self
+                .audio
+                .as_mut()
+                .is_some_and(|a| a.sampler_edit_ready().is_some())
+            {
+                return Some(Request::ContinueSamplerEdit);
+            }
+            match requests.recv_timeout(Duration::from_millis(5)) {
+                Ok(request) => {
+                    control_poll(
+                        self.audio
+                            .as_mut()
+                            .map(|a| a.as_mut() as &mut dyn WorkerAudioSink),
+                    );
+                    return Some(request);
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return None,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }

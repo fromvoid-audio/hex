@@ -91,3 +91,11 @@ neutral contract. Existing DSP, codecs and envelope evaluation are unchanged;
 EQ declarations retain node identity and legacy shelf restrictions. The authoring
 report includes a populated dynamic fixture. See
 [parameter semantics](../../docs/native-parameter-semantics.md).
+
+
+Sampler's current authored codec is version2. Classic retains an enabled flag and
+nonempty original-frame loop range across off/on; runtime still receives the
+existing optional-loop settings. Dormant ranges require actual source extent at
+preparation; enabled ranges additionally require playback-region containment.
+Old sampler versions refuse without conversion. One-Shot/Slice semantics remain
+independent, and the codec owns no source custody or user-file I/O.

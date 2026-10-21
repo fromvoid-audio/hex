@@ -296,6 +296,15 @@ impl BrowserState {
         &self.preferences_path
     }
 
+    #[cfg(feature = "ui-test-support")]
+    pub(super) fn set_native_sampler_fixture_paths(&mut self, home: PathBuf, directory: PathBuf) {
+        self.home = home.clone();
+        self.music = home.join("Music");
+        self.places = vec![directory.clone()];
+        self.directory = directory.clone();
+        self.section = BrowserSection::Place(directory);
+        self.auto_audition = false;
+    }
     fn reset_results(&mut self) {
         self.selected_index = 0;
         self.results_focused = false;
@@ -1497,6 +1506,7 @@ impl EditorView {
     }
 
     pub(super) fn browser_escape(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.cancel_first_sampler_load(None);
         self.checkpoint_browser_history(cx);
         if self
             .browser
@@ -2250,6 +2260,22 @@ impl EditorView {
                     }
                 }),
             );
+        if entry.kind == EntryKind::WaveAudio {
+            let sampler_path = path.clone();
+            row = row.on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    if view.browser_place_unavailable() {
+                        return;
+                    }
+                    view.browser.selected_index = index;
+                    view.browser.results_focused = true;
+                    view.open_first_sampler_menu(sampler_path.clone(), event.position, window, cx);
+                }),
+            );
+        }
         if let Some(payload) = drag_payload {
             let hover_path = path.clone();
             let sample_rate = self

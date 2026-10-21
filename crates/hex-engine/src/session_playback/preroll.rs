@@ -278,6 +278,13 @@ impl SessionPlayback {
         if let Some(keyboard) = &self.computer_keyboard {
             checked_add(&mut total, keyboard.storage_bytes()?)?;
         }
+        add_capacity::<Box<crate::computer_keyboard::ComputerKeyboardRuntime>>(
+            &mut total,
+            self.current_sampler_keyboards.capacity(),
+        )?;
+        for keyboard in &self.current_sampler_keyboards {
+            checked_add(&mut total, keyboard.storage_bytes()?)?;
+        }
         if let Some(compensation) = &self.compensation {
             checked_add(&mut total, compensation.storage_bytes()?)?;
         } else if let Some(graph) = &self.revision.arrangement().signal_graph {
@@ -286,6 +293,10 @@ impl SessionPlayback {
         checked_add(&mut total, self.analytic_import.backing_bytes()?)?;
         add_capacity::<TrackRoute>(&mut total, self.routes.capacity())?;
         add_capacity::<TrackRoute>(&mut total, self.route_scratch.capacity())?;
+        add_capacity::<Option<CurrentPendingCut>>(
+            &mut total,
+            self.current_route_cut_scratch.capacity(),
+        )?;
         add_capacity::<hex_lattice::NativeRuntimeChain>(&mut total, self.device_chains.capacity())?;
         for chain in &self.device_chains {
             checked_add(&mut total, chain.accounted_storage_bytes()?)?;

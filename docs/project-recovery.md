@@ -171,3 +171,16 @@ On a disposable original macOS fixture, with no user project open:
 Native compilation, these interactions/listening checks, physical power-loss,
 ACL/xattr fidelity, noncooperating writer races and forced termination before
 checkpoint completion remain unverified. No native or user acceptance is claimed.
+
+
+## sampler original-source save/open extension
+
+The bounded sampler path uses current schema34 and the same save tokens,
+previous-save recovery and relative-media base. Save projection records actual
+native catalog original content facts, including unassigned assets, without a
+history edit. Open reconstructs/compares original native sources before private
+snapshot preparation and old/new admission; changed/missing/cancelled or refused
+candidates preserve the current document and sound. Original-content metadata is
+not constructor or lifetime authority. See [the finite sampler contract](sampler.md#save-and-reopen-original-sources--pulse2906--pr499).
+The normal New confirmation and Open picker/unsaved-dialog generation fences are
+unchanged. This does not introduce alpha migrations or automatic media recovery.
