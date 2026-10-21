@@ -290,6 +290,16 @@ CFBundle unload call does not prove dyld unmapped all code. Complete valid
 terminal data, normal direct-child exit/reap and unchanged helper, metadata and
 selected executable are all required before a discovery record is offered.
 
+Optional `IPluginFactory2` discovery copies class flags, subcategories, class vendor,
+version and SDK version. Its owned reference is released before the original
+factory and module exit; no instance is constructed. UID/category/cardinality must
+match the basic class. Unknown flag bits and original UTF-8 bytes are retained;
+unterminated, oversized, invalid UTF-8 or inconsistent optional records refuse the
+whole scan. Native Mac class packets use version2 with an explicit per-class
+optional marker; the active Linux basic packet remains version1. The current Mac
+path refuses obsolete versions. `Instrument` and `Fx` tokens inform downstream
+reported labels only; `Fx|Instrument` is a valid dual type in the pinned SDK.
+
 Host I/O and supervision run on the standalone control owner; foreign factory
 calls stay on the child main thread. The owner uses distinct nonblocking
 UnixStream endpoints for protocol/stdout/stderr; plugin stdout/stderr cannot

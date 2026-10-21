@@ -210,7 +210,10 @@ def build(sdk, output, *, discovery_only=False):
             digests[name] = sha(binary)
         modes = ["normal", "entry-hang", "entry-crash", "enumerate-hang", "malformed-count", "malformed-string",
                  "duplicate-uid", "exit-fail", "exit-hang", "exit-crash", "flood", "open-channel-child",
-                 "leave-group-hang", "enumerate-crash", "load-hang", "load-crash"]
+                 "leave-group-hang", "enumerate-crash", "load-hang", "load-crash",
+                 "factory2-instrument", "factory2-effect", "factory2-dual", "factory2-unknown",
+                 "factory2-mismatch", "factory2-malformed", "factory2-query-fail", "factory2-invalid-utf8",
+                 "factory2-class-query-fail", "factory2-null-interface"]
 
         def factory_bundle(name):
             bundle = resources / "factory-fixtures" / (name + ".vst3")

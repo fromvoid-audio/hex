@@ -32,7 +32,7 @@ pub struct Catalog {
 impl Default for Catalog {
     fn default() -> Self {
         Self {
-            version: 1,
+            version: 2,
             entries: Vec::new(),
         }
     }
@@ -68,7 +68,17 @@ pub fn validate_discovery(value: &Discovery) -> Result<(), String> {
         return Err("invalid catalog discovery identity or bounds".into());
     }
     for class in &value.classes {
-        if class.cid == [0; 16]
+        let extension = class.class_flags.is_some();
+        if class.subcategories.is_some() != extension
+            || class.class_vendor.is_some() != extension
+            || class.class_version.is_some() != extension
+            || class.class_sdk_version.is_some() != extension
+            || class
+                .subcategories
+                .as_ref()
+                .is_some_and(|s| !bounded(s, 128))
+            || class.class_vendor.as_ref().is_some_and(|s| !bounded(s, 64))
+            || class.cid == [0; 16]
             || !ids.insert(class.cid)
             || class.cardinality < 0
             || !bounded(&class.category, 32)
@@ -127,7 +137,7 @@ pub fn validate_report(report: &Report) -> Result<(), String> {
 
 impl Catalog {
     pub fn validate(&self) -> Result<(), String> {
-        if self.version != 1 || self.entries.len() > MAX_MODULES {
+        if self.version != 2 || self.entries.len() > MAX_MODULES {
             return Err("unsupported or oversized plugin catalog".into());
         }
         let mut paths = BTreeSet::new();
@@ -218,6 +228,23 @@ pub struct Row {
     pub vendor: String,
     pub status: String,
 }
+fn reported_kind(class: &hex_plugin_scan::Class) -> &'static str {
+    let mut instrument = false;
+    let mut effect = false;
+    if let Some(categories) = &class.subcategories {
+        for token in categories.split('|') {
+            instrument |= token == "Instrument";
+            effect |= token == "Fx";
+        }
+    }
+    match (instrument, effect) {
+        (true, false) => "instrument",
+        (false, true) => "effect",
+        (true, true) => "instrument and effect",
+        (false, false) => "processor · type unknown",
+    }
+}
+
 impl Catalog {
     /// Pure metadata projection; deliberately no filesystem work or code loading.
     pub fn rows(&self, query: &str) -> Vec<Row> {
@@ -248,9 +275,16 @@ impl Catalog {
                         if class.category != "Audio Module Class" {
                             continue;
                         }
+                        let kind = reported_kind(class);
+                        let vendor = class
+                            .class_vendor
+                            .as_deref()
+                            .filter(|s| !s.is_empty())
+                            .unwrap_or(&discovery.vendor);
                         if !query.is_empty()
                             && !class.name.to_lowercase().contains(&query)
-                            && !discovery.vendor.to_lowercase().contains(&query)
+                            && !vendor.to_lowercase().contains(&query)
+                            && !kind.contains(&query)
                         {
                             continue;
                         }
@@ -258,13 +292,16 @@ impl Catalog {
                             module: entry.path.clone(),
                             cid: Some(class.cid),
                             name: class.name.clone(),
-                            vendor: discovery.vendor.clone(),
-                            status: if let Some(error) = &entry.failure {
-                                format!("last good · {error}")
-                            } else if !discovery.cacheable() {
-                                "prior discovery · rescan required · hosting unavailable".into()
-                            } else {
-                                "vst3 processor · hosting unavailable".into()
+                            vendor: vendor.into(),
+                            status: {
+                                let state = if let Some(error) = &entry.failure {
+                                    format!("last good · {error} · ")
+                                } else if !discovery.cacheable() {
+                                    "prior discovery · rescan required · ".into()
+                                } else {
+                                    String::new()
+                                };
+                                format!("{state}vst3 {kind} · hosting unavailable")
                             },
                         });
                     }
@@ -348,6 +385,8 @@ mod tests {
                     category: "Audio Module Class".into(),
                     name: "Original Processor".into(),
                     class_flags: None,
+                    subcategories: None,
+                    class_vendor: None,
                     class_version: None,
                     class_sdk_version: None,
                 }],
@@ -367,6 +406,61 @@ mod tests {
             },
         }
     }
+    #[test]
+    fn reported_types_use_exact_sdk_tokens_and_survive_restart_without_guesses() {
+        let fixture = Fixture::new();
+        let path = fixture.module();
+        for (categories, expected) in [
+            ("Instrument|Synth", "instrument"),
+            ("Fx|Delay", "effect"),
+            ("Fx|Instrument", "instrument and effect"),
+            ("MyInstrument|CustomFx", "processor · type unknown"),
+            ("instrument|fx", "processor · type unknown"),
+        ] {
+            let mut value = report(path.clone());
+            let class = &mut value.discovery.as_mut().unwrap().classes[0];
+            class.class_flags = Some(0x8000_0000);
+            class.subcategories = Some(categories.into());
+            class.class_vendor = Some("Class Vendor".into());
+            class.class_version = Some("1.2.3".into());
+            class.class_sdk_version = Some("VST 3.8".into());
+            storage::update(&fixture.catalog(), |catalog| {
+                catalog.record(path.clone(), Ok((value, "e".repeat(40))))
+            })
+            .unwrap();
+            let loaded = Catalog::load(&fixture.catalog()).unwrap();
+            assert_eq!(
+                loaded.rows("")[0].status,
+                format!("vst3 {expected} · hosting unavailable")
+            );
+            assert_eq!(loaded.rows("CLASS VENDOR")[0].vendor, "Class Vendor");
+            assert_eq!(loaded.rows(expected).len(), 1);
+            assert_eq!(
+                loaded.rows("instrument").len(),
+                usize::from(expected.contains("instrument"))
+            );
+        }
+        let mut value = report(path.clone());
+        value.discovery.as_mut().unwrap().classes[0].subcategories = Some("Instrument".into());
+        assert!(
+            validate_report(&value).is_err(),
+            "partial optional metadata cannot classify"
+        );
+        let old = Catalog {
+            version: 1,
+            ..Catalog::default()
+        };
+        let file = fixture.catalog();
+        let bytes = serde_json::to_vec(&old).unwrap();
+        fs::write(&file, &bytes).unwrap();
+        assert!(Catalog::load(&file).is_err());
+        assert_eq!(
+            fs::read(file).unwrap(),
+            bytes,
+            "unsupported alpha catalog remains intact"
+        );
+    }
+
     #[test]
     fn restart_restores_actual_identity_search_and_failure_without_execution() {
         let fixture = Fixture::new();

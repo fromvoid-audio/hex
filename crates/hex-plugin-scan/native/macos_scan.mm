@@ -74,9 +74,11 @@ static std::string digest(NSString* path,uint64_t maximum) {
 struct Module {
     CFBundleRef bundle=nullptr;
     IPluginFactory* factory=nullptr;
+    IPluginFactory2* extended=nullptr;
     bool loaded=false,entered=false;
     bool (*exit)()=nullptr;
     bool close() {
+        if(extended) { auto* owned=extended; extended=nullptr; owned->release(); }
         if(factory) { auto* owned=factory; factory=nullptr; owned->release(); }
         bool ok=entered;
         if(entered) { entered=false; ok=exit && exit(); }
@@ -112,7 +114,11 @@ static Bytes discover(Module& module,const Attempt& attempt) {
     if(module.factory->getFactoryInfo(&info)!=kResultOk) throw std::runtime_error("factory information failed");
     int32 count=module.factory->countClasses();
     if(count<0 || count>1024) throw std::runtime_error("factory class count refused");
-    Bytes body; number(body,1,2); number(body,attempt.request,8);
+    void* extended=nullptr;
+    auto extension=module.factory->queryInterface(INLINE_UID_OF(IPluginFactory2),&extended);
+    if(extension==kResultOk && extended) module.extended=static_cast<IPluginFactory2*>(extended);
+    else if(extension!=kNoInterface || extended) throw std::runtime_error("optional factory interface refused");
+    Bytes body; number(body,2,2); number(body,attempt.request,8);
     text(body,HEX_SDK_PIN,40); text(body,HEX_PUBLIC_SDK_PIN,40); text(body,"darwin-arm64",32);
     number(body,static_cast<uint32>(info.flags),4);
     text(body,field(info.vendor,sizeof info.vendor),64);
@@ -125,6 +131,22 @@ static Bytes discover(Module& module,const Attempt& attempt) {
         number(body,static_cast<uint32>(item.cardinality),4);
         text(body,field(item.category,sizeof item.category),32);
         text(body,field(item.name,sizeof item.name),64);
+        number(body,module.extended?1:0,1);
+        if(module.extended) {
+            PClassInfo2 detail{};
+            if(module.extended->getClassInfo2(index,&detail)!=kResultOk) throw std::runtime_error("extended factory class query failed");
+            if(std::memcmp(item.cid,detail.cid,sizeof item.cid) || item.cardinality!=detail.cardinality ||
+               field(item.category,sizeof item.category)!=field(detail.category,sizeof detail.category))
+                throw std::runtime_error("extended factory class identity differs");
+            // Basic class name remains the display identity; still validate all
+            // bounded extended strings before accepting the copied class record.
+            field(detail.name,sizeof detail.name);
+            number(body,detail.classFlags,4);
+            text(body,field(detail.subCategories,sizeof detail.subCategories),128);
+            text(body,field(detail.vendor,sizeof detail.vendor),64);
+            text(body,field(detail.version,sizeof detail.version),64);
+            text(body,field(detail.sdkVersion,sizeof detail.sdkVersion),64);
+        }
     }
     Bytes result{'H','V','S','C','A','N','0','1'};
     number(result,body.size(),4); result.insert(result.end(),body.begin(),body.end());

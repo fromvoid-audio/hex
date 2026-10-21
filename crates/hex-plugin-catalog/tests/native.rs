@@ -115,7 +115,13 @@ fn failed_rescans_and_cancelled_owned_worker_preserve_last_good_without_late_pro
         .unwrap()
         .executable
         .clone();
-    for name in ["entry-crash", "malformed-count"] {
+    for name in [
+        "entry-crash",
+        "malformed-count",
+        "factory2-mismatch",
+        "factory2-malformed",
+        "factory2-invalid-utf8",
+    ] {
         copy(&module(name), &selected);
         let owner = Cancellation::default();
         let failed = worker::scan(&fixture.catalog(), &app(), selected.clone(), owner.token());
@@ -176,4 +182,31 @@ fn failed_rescans_and_cancelled_owned_worker_preserve_last_good_without_late_pro
             .unwrap()
             .contains("cancelled")
     );
+}
+
+#[test]
+#[ignore = "explicit original signed package and native fixtures required"]
+fn actual_optional_factory_types_persist_and_search_without_foreign_restart_work() {
+    let fixture = Fixture::new();
+    for (name, kind) in [
+        ("factory2-instrument", "instrument"),
+        ("factory2-effect", "effect"),
+        ("factory2-dual", "instrument and effect"),
+        ("factory2-unknown", "processor · type unknown"),
+    ] {
+        let owner = Cancellation::default();
+        let update = worker::scan(&fixture.catalog(), &app(), module(name), owner.token());
+        assert!(update.status.contains("discovered"), "{}", update.status);
+        let restored = Catalog::load(&fixture.catalog()).unwrap();
+        let rows = restored.rows("");
+        let row = rows.iter().find(|r| r.module == module(name)).unwrap();
+        assert_eq!(row.status, format!("vst3 {kind} · hosting unavailable"));
+        assert_eq!(row.vendor, "original extended vendor");
+    }
+    let bytes = fs::read(fixture.catalog()).unwrap();
+    let restored = Catalog::load(&fixture.catalog()).unwrap();
+    assert_eq!(restored.rows("instrument").len(), 2);
+    assert_eq!(restored.rows("effect").len(), 2);
+    assert_eq!(restored.rows("type unknown").len(), 1);
+    assert_eq!(fs::read(fixture.catalog()).unwrap(), bytes);
 }

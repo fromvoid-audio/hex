@@ -663,9 +663,16 @@ After-rename directory-sync failure reports the published-but-unconfirmed state.
 Startup/reload only reads metadata: it never rescans or loads foreign code.
 UI projections are cached and virtualized; foreign UID/module keys never become
 native-device insertion payloads. Rows explicitly report hosting unavailable.
-Optional Factory2 classification, folder/root management and ordinary persistent
-hosting remain separate increments; generic processor labels do not imply an
-instrument/effect classification or successful playback.
+The scanner copies optional Factory2 flags, subcategories, class vendor and version
+strings; basic/extended UID, category and cardinality must agree. The optional
+interface is released before the base factory and module retirement. Mac copied
+class packets use version2; the active controlled Linux basic path retains its
+version1 format. No historical Mac packet reader or catalog migration is retained.
+Catalog version2 validates complete bounded optional field groups and displays
+instrument/effect/both only for exact SDK `Instrument`/`Fx` tokens; unknowns stay
+explicit. Class vendor and type labels participate in search. These reported
+labels do not establish processing capability or playback. Folder/root management
+and ordinary persistent hosting remain separate increments.
 
 `hex-clap-scan` owns the corresponding separate CLAP format boundary, with no
 workspace dependency edges. Its descriptor and controlled offline children cover
