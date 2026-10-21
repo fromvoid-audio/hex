@@ -10,30 +10,42 @@ use hex_lattice_contract::{
 pub enum SamplerParameter {
     Gain,
     Transpose,
+    StartFrame,
+    EndFrame,
 }
 impl SamplerParameter {
+    pub const fn is_source_frame(self) -> bool {
+        matches!(self, Self::StartFrame | Self::EndFrame)
+    }
     pub const fn label(self) -> &'static str {
         match self {
             Self::Gain => "gain",
             Self::Transpose => "pitch",
+            Self::StartFrame => "start",
+            Self::EndFrame => "end",
         }
     }
     pub const fn bounds(self) -> (f64, f64) {
         match self {
             Self::Gain => (0.0, 4.0),
             Self::Transpose => (-48.0, 48.0),
+            Self::StartFrame => (0.0, (hex_devices::sampler::MAX_SAMPLE_FRAMES - 1) as f64),
+            Self::EndFrame => (1.0, hex_devices::sampler::MAX_SAMPLE_FRAMES as f64),
         }
     }
     pub const fn default_value(self) -> f64 {
         match self {
             Self::Gain => 1.0,
             Self::Transpose => 0.0,
+            Self::StartFrame => 0.0,
+            Self::EndFrame => 1.0,
         }
     }
     pub const fn unit(self) -> Option<&'static str> {
         match self {
             Self::Gain => None,
             Self::Transpose => Some("st"),
+            Self::StartFrame | Self::EndFrame => Some("frames"),
         }
     }
 }
@@ -46,6 +58,8 @@ pub fn sampler_parameter_value_on_control(
     Ok(match parameter {
         SamplerParameter::Gain => authored.gain,
         SamplerParameter::Transpose => authored.transpose_semitones,
+        SamplerParameter::StartFrame => authored.region.start as f64,
+        SamplerParameter::EndFrame => authored.region.end as f64,
     })
 }
 pub fn patch_sampler_parameter_on_control(
@@ -54,10 +68,16 @@ pub fn patch_sampler_parameter_on_control(
     value: f64,
 ) -> Result<NativeDeviceState, Invalid> {
     let (min, max) = parameter.bounds();
-    if !value.is_finite() || !(min..=max).contains(&value) {
+    if !value.is_finite()
+        || !(min..=max).contains(&value)
+        || (parameter.is_source_frame() && value.fract() != 0.0)
+    {
         return Err(Invalid(match parameter {
             SamplerParameter::Gain => "sampler gain must be between zero and four",
             SamplerParameter::Transpose => "sampler pitch must be between -48 and 48 semitones",
+            SamplerParameter::StartFrame | SamplerParameter::EndFrame => {
+                "sampler region endpoints must be bounded whole source frames"
+            }
         }));
     }
     let mut authored = hex_devices::sampler::state::SamplerState::from_native(state)
@@ -65,10 +85,16 @@ pub fn patch_sampler_parameter_on_control(
     match parameter {
         SamplerParameter::Gain => authored.gain = value,
         SamplerParameter::Transpose => authored.transpose_semitones = value,
+        SamplerParameter::StartFrame => authored.region.start = value as usize,
+        SamplerParameter::EndFrame => authored.region.end = value as usize,
     }
-    authored
-        .replace_in(state)
-        .map_err(|_| Invalid("sampler setting is invalid"))
+    authored.replace_in(state).map_err(|_| {
+        Invalid(if parameter.is_source_frame() {
+            "sampler region must be nonempty and preserve loop and slice bounds"
+        } else {
+            "sampler setting is invalid"
+        })
+    })
 }
 
 /// Reserved host parameter. Device codecs never own this identifier.

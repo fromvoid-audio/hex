@@ -1,4 +1,4 @@
-//! Two captured final sampler controls. Widgets own local previews; Session owns
+//! Captured final sampler controls. Widgets own local previews; Session owns
 //! authored state and the existing native stopped-edit transaction owns audio.
 use super::*;
 use gpui::{Entity, Focusable, div, prelude::*};
@@ -35,7 +35,7 @@ struct Pending {
 #[derive(Default)]
 pub(super) struct State {
     serial: u64,
-    // The closed parameter enum bounds this map to two entries.
+    // The closed parameter enum bounds this map to four entries.
     controls: BTreeMap<SamplerParameter, Control>,
     pending: Option<Pending>,
     // Retired controls from this panel cycle only; drained at every render.
@@ -150,6 +150,47 @@ impl EditorView {
         let Some(state) = self.state.as_ref() else {
             return div().into_any_element();
         };
+        // Original-file frames only: project-rate playback frames are a
+        // different coordinate system. This hint never grants admission; the
+        // actual retained PCM preparer validates the candidate before commit.
+        let (min, mut max) = parameter.bounds();
+        if parameter.is_source_frame() {
+            let frames = device
+                .state()
+                .asset_references()
+                .first()
+                .and_then(|reference| {
+                    state
+                        .project
+                        .assets()
+                        .find(|asset| asset.id().value() == reference.asset.value())
+                })
+                .filter(|asset| asset.original_source().is_some())
+                .map(|asset| asset.source_frames());
+            let Some(frames) =
+                frames.filter(|n| *n > 0 && *n <= SamplerParameter::EndFrame.bounds().1 as u64)
+            else {
+                return div()
+                    .child(theme::text("source frame bounds unavailable"))
+                    .into_any_element();
+            };
+            max = match parameter {
+                SamplerParameter::StartFrame => (frames - 1) as f64,
+                _ => frames as f64,
+            };
+            if min == max {
+                // A one-frame source has no editable endpoints.
+                return div()
+                    .w_full()
+                    .min_w_0()
+                    .h(gpui::px(26.0))
+                    .child(theme::text(format!(
+                        "{} {value:.0} frames",
+                        parameter.label()
+                    )))
+                    .into_any_element();
+            }
+        }
         let target = Target {
             generation: self.project_generation,
             revision: state.revision,
@@ -170,21 +211,26 @@ impl EditorView {
             if let Some(control) = self.sampler_parameter.controls.remove(&parameter) {
                 self.sampler_parameter.retired_focus.push(control.focus);
             }
-            let (min, max) = parameter.bounds();
             let config = NumericSpec::new(
                 min,
                 max,
-                parameter.default_value(),
+                if parameter == SamplerParameter::EndFrame {
+                    max
+                } else {
+                    parameter.default_value()
+                },
                 if min < 0.0 {
                     NumericScale::Bipolar
                 } else {
                     NumericScale::Linear
                 },
-                2,
+                if parameter.is_source_frame() { 0 } else { 2 },
                 parameter.unit().map(Arc::<str>::from),
             )
             .and_then(|spec| {
-                if parameter == SamplerParameter::Transpose {
+                if parameter.is_source_frame() {
+                    spec.with_integer_values()
+                } else if parameter == SamplerParameter::Transpose {
                     spec.with_keyboard_steps(1.0, 0.1)
                 } else {
                     Ok(spec)
@@ -276,12 +322,16 @@ impl EditorView {
                 match parameter {
                     SamplerParameter::Gain => "sampler-gain-control",
                     SamplerParameter::Transpose => "sampler-pitch-control",
+                    SamplerParameter::StartFrame => "sampler-start-control",
+                    SamplerParameter::EndFrame => "sampler-end-control",
                 },
                 device.id().value(),
             ))
             .debug_selector(move || format!("sampler-{}-control", parameter.label()))
-            .w(gpui::px(136.0))
+            .w_full()
+            .min_w_0()
             .h(gpui::px(26.0))
+            .flex_shrink_0()
             .flex()
             .items_center()
             .gap(gpui::px(4.0))

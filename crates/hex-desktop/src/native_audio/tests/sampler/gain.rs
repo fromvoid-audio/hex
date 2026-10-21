@@ -1,7 +1,7 @@
 //! Actual shared numeric widget -> Session -> sealed fresh native CURRENT.
 use super::*;
 use gpui::{Modifiers, MouseButton, VisualTestContext};
-use hex_engine::SamplerParameter::{Gain, Transpose};
+use hex_engine::SamplerParameter::{EndFrame, Gain, StartFrame, Transpose};
 pub(super) fn exercise(
     cx: &gpui::TestAppContext,
     visual: &mut VisualTestContext,
@@ -18,6 +18,9 @@ pub(super) fn exercise(
         Box::leak(format!("sampler-gain-{}-value", device.value()).into_boxed_str());
     let pitch_selector =
         Box::leak(format!("sampler-pitch-{}-value", device.value()).into_boxed_str());
+    let start_selector =
+        Box::leak(format!("sampler-start-{}-value", device.value()).into_boxed_str());
+    let end_selector = Box::leak(format!("sampler-end-{}-value", device.value()).into_boxed_str());
     let target_selector = Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
     // The fixture reopens through the actual menu; select its sampler track.
     let bounds = visual
@@ -25,6 +28,26 @@ pub(super) fn exercise(
         .expect("actual sampler track header");
     visual.simulate_click(bounds.center(), Modifiers::default());
     visual.run_until_parked();
+    let frame_selector =
+        Box::leak(format!("instrument-device-{}", device.value()).into_boxed_str());
+    let frame = visual.debug_bounds(frame_selector).unwrap();
+    let grid = visual.debug_bounds("sampler-controls").unwrap();
+    for selector in [
+        gain_selector as &str,
+        pitch_selector,
+        start_selector,
+        end_selector,
+    ] {
+        let field = visual.debug_bounds(selector).unwrap();
+        assert!(
+            field.left() >= grid.left()
+                && field.right() <= grid.right()
+                && field.top() >= grid.top()
+                && field.bottom() <= grid.bottom(),
+            "field must fit compact sampler grid: {selector}"
+        );
+        assert!(field.bottom() <= frame.bottom());
+    }
     let pulse = |visual: &mut VisualTestContext| {
         cx.background_executor
             .advance_clock(Duration::from_millis(16));
@@ -63,13 +86,15 @@ pub(super) fn exercise(
         (gain_selector as &str, "2.5"),
         (gain_selector, "nan"),
         (pitch_selector, "nan"),
+        (start_selector, "0.5"),
+        (end_selector, "5"),
     ] {
         let bounds = visual.debug_bounds(selector).unwrap();
         visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
         visual.simulate_keystrokes("cmd-a");
         visual.simulate_input(draft);
-        if draft == "nan" {
+        if draft != "2.5" {
             visual.simulate_keystrokes("enter");
         }
         for _ in 0..4 {
@@ -93,12 +118,19 @@ pub(super) fn exercise(
     }
     let mut gain = 1.0;
     let mut pitch = 0.0;
+    let mut region_start = 0.0;
+    let mut region_end = 4.0;
     for (index, (parameter, value)) in [
         (Gain, 0.5),
         (Transpose, 12.0),
         (Transpose, -12.0),
         (Transpose, 0.0),
         (Transpose, 0.5),
+        (Transpose, -12.0),
+        (StartFrame, 1.0),
+        (EndFrame, 2.0),
+        (StartFrame, 0.0),
+        (EndFrame, 4.0),
         (Gain, 0.0),
     ]
     .into_iter()
@@ -107,10 +139,14 @@ pub(super) fn exercise(
         match parameter {
             Gain => gain = value,
             Transpose => pitch = value,
+            StartFrame => region_start = value,
+            EndFrame => region_end = value,
         }
         let selector = match parameter {
             Gain => gain_selector as &str,
             Transpose => pitch_selector,
+            StartFrame => start_selector,
+            EndFrame => end_selector,
         };
         let old = h
             .backend
@@ -126,10 +162,29 @@ pub(super) fn exercise(
             .debug_bounds(selector)
             .expect("actual sampler numeric gain field");
         visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
-        visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
-        visual.simulate_keystrokes("cmd-a");
-        visual.simulate_input(&value.to_string());
-        visual.simulate_keystrokes("enter");
+        if parameter == StartFrame && value == 1.0 {
+            // Whole-frame scrub must accumulate small moves on the actual field.
+            for offset in 1..=24 {
+                visual.simulate_mouse_move(
+                    gpui::point(
+                        bounds.center().x,
+                        bounds.center().y - gpui::px(offset as f32),
+                    ),
+                    Some(MouseButton::Left),
+                    Modifiers::default(),
+                );
+            }
+            visual.simulate_mouse_up(
+                gpui::point(bounds.center().x, bounds.center().y - gpui::px(24.0)),
+                MouseButton::Left,
+                Modifiers::default(),
+            );
+        } else {
+            visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
+            visual.simulate_keystrokes("cmd-a");
+            visual.simulate_input(&value.to_string());
+            visual.simulate_keystrokes("enter");
+        }
         loop {
             pulse(visual);
             if h.backend
@@ -148,7 +203,7 @@ pub(super) fn exercise(
             }
             assert!(
                 Instant::now() < end,
-                "gain did not reach fresh CURRENT: {:?}",
+                "{parameter:?} {value} did not reach fresh CURRENT: {:?}",
                 cx.update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
             );
         }
@@ -172,6 +227,12 @@ pub(super) fn exercise(
                 let restored =
                     hex_engine::patch_sampler_parameter_on_control(Transpose, &restored_gain, 0.0)
                         .unwrap();
+                let restored =
+                    hex_engine::patch_sampler_parameter_on_control(EndFrame, &restored, 4.0)
+                        .unwrap();
+                let restored =
+                    hex_engine::patch_sampler_parameter_on_control(StartFrame, &restored, 0.0)
+                        .unwrap();
                 assert_eq!(
                     restored,
                     *original.state(),
@@ -186,7 +247,7 @@ pub(super) fn exercise(
                 cx.update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
             );
         }
-        if index <= 1 || (parameter == Transpose && value == 0.5) {
+        if index <= 1 || (parameter == Transpose && value == 0.5) || parameter == EndFrame {
             let before = h
                 .backend
                 .lock()
@@ -279,7 +340,19 @@ pub(super) fn exercise(
         );
         // Independent literal source/interpolation oracles. A880 contributes
         // exactly x2 and 8k->16k contributes x0.5; authored pitch remains once.
-        let expected: &[[f32; 2]] = if pitch == 12.0 {
+        let expected: &[[f32; 2]] = if region_start == 1.0 && region_end == 2.0 {
+            &[[0.5, 0.0], [0.5, 0.0]]
+        } else if region_start == 0.0 && region_end == 2.0 {
+            &[[0.125, -0.25], [0.3125, -0.125], [0.5, 0.0], [0.5, 0.0]]
+        } else if region_start == 1.0 {
+            &[
+                [0.5, 0.0],
+                [0.1875, 0.125],
+                [-0.125, 0.25],
+                [-0.0625, 0.125],
+                [0.0, 0.0],
+            ]
+        } else if pitch == 12.0 {
             &[[0.125, -0.25], [-0.125, 0.25]]
         } else if pitch == -12.0 {
             &[
@@ -461,14 +534,14 @@ fn sampler_gain_stale_invalid_cancelled_and_tight_budget_refusals_preserve_actua
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let (_files, mut h, track, device, before) = current(8);
     let identity = h.audio.as_ref().unwrap().control.output_identity();
-    for parameter in [Gain, Transpose] {
+    for parameter in [Gain, Transpose, StartFrame, EndFrame] {
         for case in 0..6 {
             let mut gain = edit(&before, track, device);
             gain.parameter = parameter;
             match case {
                 0 => gain.value = f64::NAN,
-                1 => gain.value = if parameter == Gain { 4.01 } else { 48.01 },
-                2 => gain.value = if parameter == Gain { -0.1 } else { -48.01 },
+                1 => gain.value = parameter.bounds().1 + 0.01,
+                2 => gain.value = parameter.bounds().0 - 0.1,
                 3 => gain.revision += 1,
                 4 => gain.project_generation += 1,
                 _ => gain
@@ -951,4 +1024,38 @@ fn sampler_gain_fence_cancels_actual_old_epoch_before_deferring_a_new_bound_epoc
     assert!(cancelled.error.is_some());
     unchanged(&before, &cancelled);
     assert_eq!(h.render(), [[0.0; 2]; 64]);
+}
+
+#[test]
+fn sampler_region_actual_source_extent_refuses_before_canonical_commit_or_output_drain() {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let (_files, mut h, track, device, before) = current(12);
+    let identity = h.audio.as_ref().unwrap().control.output_identity();
+    let mut request = edit(&before, track, device);
+    request.parameter = EndFrame;
+    request.value = 5.0; // Codec/global limit allows it; actual retained WAV has4 frames.
+    assert!(
+        hex_engine::patch_sampler_parameter_on_control(
+            EndFrame,
+            before.project.device(device).unwrap().state(),
+            5.0
+        )
+        .is_ok()
+    );
+    let pending = h.run(Request::SetSamplerParameter(request));
+    assert!(pending.error.is_none());
+    assert_eq!(pending.sampler_parameter_complete, None);
+    unchanged(&before, &pending);
+    h.render();
+    let refused = h.next();
+    assert!(refused.error.is_some());
+    assert_eq!(refused.sampler_parameter_complete, Some(1));
+    unchanged(&before, &refused);
+    assert_eq!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        identity
+    );
+    original_pcm(&mut h);
 }
