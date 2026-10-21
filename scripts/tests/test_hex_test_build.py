@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import shutil
+import signal
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -1074,6 +1075,116 @@ class ReleaseCargoTests(unittest.TestCase):
             self.assertEqual(owner.read_bytes(), owner_before)
             print("real release A -> B -> A: APIs, additive dependency output, cache preservation, and removed/renamed/version refusal verified", flush=True)
 
+
+
+@unittest.skipUnless(os.environ.get("HEX_VST3_DISCOVERY_RECEIPT") and os.environ.get("HEX_VST3_PACKAGE_SCANNER")
+                     and os.environ.get("HEX_VST3_PACKAGE_FIXTURES"), "explicit native package qualification inputs required")
+class NativeDiscoveryPackageTests(unittest.TestCase):
+    """Real nested signing/lookup/protocol fixtures; never starts the Hex UI."""
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="hex-discovery-package-")
+        self.addCleanup(self.temporary.cleanup)
+        self.app = Path(self.temporary.name) / "hex.app"
+        self.contents = self.app / "Contents"
+        (self.contents / "MacOS").mkdir(parents=True)
+        (self.contents / "Resources").mkdir()
+        self.input = Path(os.environ["HEX_VST3_DISCOVERY_RECEIPT"]).resolve()
+        self.scanner = Path(os.environ["HEX_VST3_PACKAGE_SCANNER"]).resolve()
+        self.fixtures = Path(os.environ["HEX_VST3_PACKAGE_FIXTURES"]).resolve()
+        self.candidate = json.loads(self.input.read_text())["source_commit"]
+        self.signing = delivery.signing_configuration(json.loads((delivery.ROOT / "scripts/hex-test-build.json").read_text()))
+        # Original isolated package fixture, not a playable desktop/user-test app.
+        shutil.copy2(self.scanner, self.contents / "MacOS/hex")
+        (self.contents / "Info.plist").write_bytes(plistlib.dumps({
+            "CFBundleExecutable": "hex", "CFBundleIdentifier": delivery.IDENTITY, "CFBundlePackageType": "APPL"}))
+        evidence = delivery.stage_discovery(self.app, self.input, self.candidate,
+                                           {"path": str(self.scanner), "sha256": delivery.sha(self.scanner)}, self.signing)
+        self.receipt = {"schema": 2, "profile": "release", "source": self.candidate,
+                        "signing": self.signing, "vst3_discovery": evidence}
+        self.seal()
+
+    def seal(self):
+        self.receipt["files"] = delivery.inventory(self.app, signed_payload=True)
+        delivery.write_json(self.contents / "Resources/test-build.json", self.receipt)
+        delivery.sign_bundle(self.app, self.signing)
+        delivery.verify(self.app)
+
+    def scan(self, name="normal"):
+        executable = self.app / delivery.DISCOVERY_ROOT / delivery.DISCOVERY_SCANNER
+        module = self.fixtures / "hex-vst3-host.app/Contents/Resources/factory-fixtures" / (name + ".vst3")
+        process = subprocess.Popen([str(executable), "--bundled", "--trust-user-code", str(module), "3000"],
+                                   cwd="/", env={"PATH": "/no-checkout-or-tools"}, stdin=subprocess.PIPE,
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        # communicate cannot be retried with new input after its first call.
+        # Initial stdin remains open so cancellation is available if needed.
+        try:
+            out, err = process.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.send_signal(signal.SIGTERM)  # standalone scoped cancellation, never group kill
+            try:
+                process.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                self.fail(f"owned scanner {process.pid} retained after cancellation; no forced termination")
+            self.fail("packaged original fixture exceeded qualification deadline")
+        return process.returncode, out, err
+
+    def test_signed_package_scans_thin_and_universal_outside_checkout(self):
+        for name in ("normal", "universal"):
+            code, out, err = self.scan(name)
+            self.assertEqual(code, 0, err.decode(errors="replace"))
+            report = json.loads(out)
+            self.assertIsNone(report["error"])
+            self.assertTrue(report["cleanup"]["direct_reaped"])
+            self.assertEqual(report["cleanup"]["direct_exit_code"], 0)
+            self.assertEqual(len(report["discovery"]["classes"]), 2)
+            self.assertNotIn(b"forbidden ordinary instance", report["stderr"].encode())
+
+    def test_missing_changed_and_stale_package_refuse_before_selected_module_load(self):
+        root = self.app / delivery.DISCOVERY_ROOT
+        helper = root / "hex-vst3-host.app/Contents/MacOS/hex-vst3-factory-scan"
+        original = helper.read_bytes()
+        for change in ("missing", "changed"):
+            if change == "missing":
+                helper.unlink()
+            else:
+                helper.write_bytes(original + b"changed")
+            code, out, err = self.scan("load-crash")
+            self.assertEqual(code, 1)
+            self.assertEqual(out, b"")
+            self.assertIn(b"factory scan refused", err)
+            helper.write_bytes(original)
+            helper.chmod(0o755)
+        receipt = root / "controlled-macos.json"
+        data = json.loads(receipt.read_text())
+        data["source_commit"] = "0" * 40
+        delivery.write_json(receipt, data)
+        self.receipt["vst3_discovery"]["receipt_sha256"] = delivery.sha(receipt)
+        # Re-seal caller-owned fixture to reach the source-binding refusal.
+        self.receipt["files"] = delivery.inventory(self.app, signed_payload=True)
+        delivery.write_json(self.contents / "Resources/test-build.json", self.receipt)
+        delivery.sign_bundle(self.app, self.signing)
+        code, out, err = self.scan("load-crash")
+        self.assertEqual((code, out), (1, b""))
+        self.assertIn(b"stale native discovery package source", err)
+
+    def test_resealed_real_wrong_architecture_helper_is_rejected_before_load(self):
+        root = self.app / delivery.DISCOVERY_ROOT
+        helper_app = root / "hex-vst3-host.app"
+        helper = helper_app / "Contents/MacOS/hex-vst3-factory-scan"
+        wrong = self.fixtures / "hex-vst3-host.app/Contents/Resources/factory-fixtures/wrong-architecture.vst3/Contents/MacOS/fixture"
+        shutil.copy2(wrong, helper)
+        delivery.sign_discovery(helper_app, "org.portalsurfer.hex.vst3.discovery", self.signing)
+        receipt = root / "controlled-macos.json"
+        data = json.loads(receipt.read_text())
+        data["bundle_files"] = delivery.discovery_builder().inventory(helper_app)
+        delivery.write_json(receipt, data)
+        self.receipt["vst3_discovery"]["receipt_sha256"] = delivery.sha(receipt)
+        self.receipt["files"] = delivery.inventory(self.app, signed_payload=True)
+        delivery.write_json(self.contents / "Resources/test-build.json", self.receipt)
+        delivery.sign_bundle(self.app, self.signing)
+        code, out, err = self.scan("load-crash")
+        self.assertEqual((code, out), (1, b""))
+        self.assertIn(b"factory scan refused", err)
 
 if __name__ == "__main__":
     unittest.main()

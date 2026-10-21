@@ -320,3 +320,38 @@ tests do not establish macOS permission persistence, native UI,
 physical audio deadlines, listening quality or arbitrary crash/power-loss safety.
 The coordinator supplies the optimized app and finite checklist; the user owns
 native interaction tests while present.
+
+## Optional native VST3 discovery tools
+
+Build a minimal native helper from the exact clean candidate using the pinned
+SDK already present locally:
+
+```sh
+python3 crates/hex-plugin-scan/native/macos_bootstrap.py build --discovery-only \
+  --sdk artifacts/vst3-sdk --output artifacts/vst3-native-discovery
+```
+
+Pass its `controlled-macos.json` to the normal optimized bundler with
+`--vst3-discovery-receipt`. The existing CI, included revisions, finite checklist,
+release ownership and stable-path safety requirements still apply. Without the
+option the development app contains no VST3 scanner; no discovery capability is
+inferred. No runtime Python, compiler or SDK lookup is added.
+
+The bundler builds the optimized standalone Rust scanner in the same guarded
+Cargo invocation as the desktop, copies only the minimal native factory helper
+and required SDK notices, signs nested tools first with the configured Developer
+ID, refreshes their final receipt/inventory and seals the outer app. It adds no
+entitlements or hardened-runtime relaxation to the main app. This remains local
+development signing, not notarized distribution; hardened production helper
+library-validation policy and full hosting qualification remain separate work.
+
+The fixed `Contents/Helpers/vst3/` package is checked for exact source, native
+arm64 role, selected helper contents and final hashes before factory admission.
+The scanner's `--bundled --trust-user-code /one/module.vst3` command resolves its
+own fixed application-relative tools, without source/PATH fallback. It executes
+explicitly selected trusted same-user code. Packaging does not establish a
+malicious-code sandbox, browser scanning, playable hosting or compatibility.
+
+The native package regression fixture runs only the standalone tools, from an
+isolated `hex.app` outside the checkout. It does not launch the Hex UI, replace
+the installed development app, or establish physical audio/listening acceptance.

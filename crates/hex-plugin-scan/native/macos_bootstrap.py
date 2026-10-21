@@ -83,18 +83,31 @@ def verify(receipt, run=False):
     if receipt.stat().st_size > MAX_FILE:
         raise ValueError("oversized receipt")
     data = json.loads(receipt.read_text())
-    if (data.get("version"), data.get("scope"), data.get("platform")) != (
-        1, "original-macos-bootstrap", "darwin-arm64"
-    ) or data.get("sdk_pins") != PINS or data.get("source_sha256") != source_digest():
+    minimal = data.get("scope") == "native-macos-factory-discovery"
+    if (data.get("version") != 1 or data.get("platform") != "darwin-arm64"
+            or data.get("scope") not in ("original-macos-bootstrap", "native-macos-factory-discovery")
+            or data.get("sdk_pins") != PINS or data.get("source_sha256") != source_digest()):
         raise ValueError("unsupported or stale bootstrap receipt")
     root = receipt.parent
     actual = inventory(root / APP)
     if not actual or actual != data.get("bundle_files"):
         raise ValueError("missing or changed bundle contents")
-    executable = root / EXECUTABLE
-    macho(executable, 2)
     scan_executable = root / APP / "Contents/MacOS/hex-vst3-factory-scan"
     macho(scan_executable, 2)
+    info = plistlib.loads((root / APP / "Contents/Info.plist").read_bytes())
+    if minimal:
+        allowed = {str(APP / member) for member in (
+            "Contents/Info.plist", "Contents/MacOS/hex-vst3-factory-scan",
+            "Contents/Resources/sdk-notices.json", "Contents/_CodeSignature/CodeResources")}
+        if set(actual) != allowed or data.get("factory_fixtures") != [] or data.get("factory_scan_fault_helper") is not None:
+            raise ValueError("minimal discovery bundle contains unexpected or fault assets")
+        if info.get("CFBundleExecutable") != "hex-vst3-factory-scan" or info.get("CFBundleIdentifier") != "org.portalsurfer.hex.vst3.discovery":
+            raise ValueError("unexpected discovery helper package identity")
+        if run:
+            raise ValueError("discovery helper requires owned factory protocol; use scanner fixture qualification")
+        return data
+    executable = root / EXECUTABLE
+    macho(executable, 2)
     for name in ("effect", "instrument"):
         fixture = root / APP / "Contents/Resources/fixtures" / (name + ".vst3")
         info = plistlib.loads((fixture / "Contents/Info.plist").read_bytes())
@@ -123,7 +136,7 @@ def verify(receipt, run=False):
     return data
 
 
-def build(sdk, output):
+def build(sdk, output, *, discovery_only=False):
     if platform.system() != "Darwin" or platform.machine() != "arm64":
         raise ValueError("native bootstrap builds require Darwin arm64")
     sdk, output = sdk.resolve(), output.resolve()
@@ -177,70 +190,74 @@ def build(sdk, output):
         runtime[str(destination.relative_to(output))] = command(["/usr/bin/otool", "-L", str(destination)]).splitlines()[1:]
 
     resources = output / APP / "Contents/Resources"
-    digests = {}
-    for instrument, name in enumerate(("effect", "instrument")):
-        bundle = resources / "fixtures" / (name + ".vst3")
-        (bundle / "Contents").mkdir(parents=True)
-        info = {"CFBundleExecutable": "fixture", "CFBundleIdentifier": "org.portalsurfer.hex.fixture." + name,
-                "CFBundlePackageType": "BNDL", "CFBundleVersion": "1"}
-        (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(info, sort_keys=True))
-        binary = bundle / "Contents/MacOS/fixture"
-        compile_one("macos_fixture.cpp", binary, ["-bundle", "-framework", "CoreFoundation", "-DHEX_INSTRUMENT=" + str(instrument)])
-        digests[name] = sha(binary)
-    factory_fixtures = []
-    modes = ["normal", "entry-hang", "entry-crash", "enumerate-hang", "malformed-count", "malformed-string",
-             "duplicate-uid", "exit-fail", "exit-hang", "exit-crash", "flood", "open-channel-child",
-             "leave-group-hang", "enumerate-crash", "load-hang", "load-crash"]
+    resources.mkdir(parents=True, exist_ok=True)
+    digests, factory_fixtures = {}, []
+    if not discovery_only:
+        for instrument, name in enumerate(("effect", "instrument")):
+            bundle = resources / "fixtures" / (name + ".vst3")
+            (bundle / "Contents").mkdir(parents=True)
+            info = {"CFBundleExecutable": "fixture", "CFBundleIdentifier": "org.portalsurfer.hex.fixture." + name,
+                    "CFBundlePackageType": "BNDL", "CFBundleVersion": "1"}
+            (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(info, sort_keys=True))
+            binary = bundle / "Contents/MacOS/fixture"
+            compile_one("macos_fixture.cpp", binary, ["-bundle", "-framework", "CoreFoundation", "-DHEX_INSTRUMENT=" + str(instrument)])
+            digests[name] = sha(binary)
+        modes = ["normal", "entry-hang", "entry-crash", "enumerate-hang", "malformed-count", "malformed-string",
+                 "duplicate-uid", "exit-fail", "exit-hang", "exit-crash", "flood", "open-channel-child",
+                 "leave-group-hang", "enumerate-crash", "load-hang", "load-crash"]
 
-    def factory_bundle(name):
-        bundle = resources / "factory-fixtures" / (name + ".vst3")
-        (bundle / "Contents/MacOS").mkdir(parents=True)
-        (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({
-            "CFBundleExecutable": "fixture", "CFBundleIdentifier": "org.portalsurfer.hex.factory-fixture." + name,
-            "CFBundlePackageType": "BNDL", "CFBundleVersion": "1"}, sort_keys=True))
-        return bundle
+        def factory_bundle(name):
+            bundle = resources / "factory-fixtures" / (name + ".vst3")
+            (bundle / "Contents/MacOS").mkdir(parents=True)
+            (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps({
+                "CFBundleExecutable": "fixture", "CFBundleIdentifier": "org.portalsurfer.hex.factory-fixture." + name,
+                "CFBundlePackageType": "BNDL", "CFBundleVersion": "1"}, sort_keys=True))
+            return bundle
 
-    for mode, name in enumerate(modes):
-        bundle = factory_bundle(name)
-        compile_one("macos_factory_fixture.cpp", bundle / "Contents/MacOS/fixture",
-                    ["-bundle", "-framework", "CoreFoundation", "-DHEX_FACTORY_MODE=" + str(mode)])
-        factory_fixtures.append({"name": name, "bundle": str(bundle.relative_to(output))})
-    wrong = factory_bundle("wrong-architecture")
-    compile_one("macos_factory_fixture.cpp", wrong / "Contents/MacOS/fixture",
-                ["-bundle", "-framework", "CoreFoundation"], architecture="x86_64")
-    factory_fixtures.append({"name": "wrong-architecture", "bundle": str(wrong.relative_to(output))})
-    universal = factory_bundle("universal")
-    normal = resources / "factory-fixtures/normal.vst3/Contents/MacOS/fixture"
-    args = ["xcrun", "lipo", "-create", str(normal), str(wrong / "Contents/MacOS/fixture"), "-output", str(universal / "Contents/MacOS/fixture")]
-    commands.append(args)
-    subprocess.run(args, check=True, timeout=120)
-    subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(universal)], check=True, timeout=120)
-    if set(command(["xcrun", "lipo", "-archs", str(universal / "Contents/MacOS/fixture")]).split()) != {"arm64", "x86_64"}:
-        raise ValueError("universal fixture architectures changed")
-    runtime[str((universal / "Contents/MacOS/fixture").relative_to(output))] = command(["/usr/bin/otool", "-L", str(universal / "Contents/MacOS/fixture")]).splitlines()[1:]
-    factory_fixtures.append({"name": "universal", "bundle": str(universal.relative_to(output))})
+        for mode, name in enumerate(modes):
+            bundle = factory_bundle(name)
+            compile_one("macos_factory_fixture.cpp", bundle / "Contents/MacOS/fixture",
+                        ["-bundle", "-framework", "CoreFoundation", "-DHEX_FACTORY_MODE=" + str(mode)])
+            factory_fixtures.append({"name": name, "bundle": str(bundle.relative_to(output))})
+        wrong = factory_bundle("wrong-architecture")
+        compile_one("macos_factory_fixture.cpp", wrong / "Contents/MacOS/fixture",
+                    ["-bundle", "-framework", "CoreFoundation"], architecture="x86_64")
+        factory_fixtures.append({"name": "wrong-architecture", "bundle": str(wrong.relative_to(output))})
+        universal = factory_bundle("universal")
+        normal = resources / "factory-fixtures/normal.vst3/Contents/MacOS/fixture"
+        args = ["xcrun", "lipo", "-create", str(normal), str(wrong / "Contents/MacOS/fixture"), "-output", str(universal / "Contents/MacOS/fixture")]
+        commands.append(args)
+        subprocess.run(args, check=True, timeout=120)
+        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(universal)], check=True, timeout=120)
+        if set(command(["xcrun", "lipo", "-archs", str(universal / "Contents/MacOS/fixture")]).split()) != {"arm64", "x86_64"}:
+            raise ValueError("universal fixture architectures changed")
+        runtime[str((universal / "Contents/MacOS/fixture").relative_to(output))] = command(["/usr/bin/otool", "-L", str(universal / "Contents/MacOS/fixture")]).splitlines()[1:]
+        factory_fixtures.append({"name": "universal", "bundle": str(universal.relative_to(output))})
     header = output / "fixture_identity.hpp"
     header.write_text('#define HEX_SDK_PIN "' + PINS["sdk"] + '"\n' +
                       '#define HEX_PUBLIC_SDK_PIN "' + PINS["public.sdk"] + '"\n' + "".join(
         '#define HEX_' + name.upper() + '_SHA256 "' + digest + '"\n' for name, digest in digests.items()))
     (output / APP / "Contents/Info.plist").write_bytes(plistlib.dumps({
-        "CFBundleExecutable": "hex-vst3-host", "CFBundleIdentifier": "org.portalsurfer.hex.vst3.bootstrap",
+        "CFBundleExecutable": "hex-vst3-factory-scan" if discovery_only else "hex-vst3-host",
+        "CFBundleIdentifier": "org.portalsurfer.hex.vst3.discovery" if discovery_only else "org.portalsurfer.hex.vst3.bootstrap",
         "CFBundlePackageType": "APPL", "CFBundleVersion": "1", "LSBackgroundOnly": True,
     }, sort_keys=True))
     # CommonCrypto's legacy one-shot function remains available for local identity.
-    compile_one("macos_helper.mm", output / EXECUTABLE, ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations"])
+    if not discovery_only:
+        compile_one("macos_helper.mm", output / EXECUTABLE, ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations"])
     scan_executable = APP / "Contents/MacOS/hex-vst3-factory-scan"
     compile_one("macos_scan.mm", output / scan_executable, ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations"])
     reply_hang = APP / "Contents/MacOS/hex-vst3-factory-scan-reply-hang"
-    compile_one("macos_scan.mm", output / reply_hang,
-                ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations", "-DHEX_SCAN_HANG_AFTER_REPLY=1"])
-    compile_one("launch_ignored.cpp", output / APP / "Contents/MacOS/hex-vst3-launch-ignored", [])
+    if not discovery_only:
+        compile_one("macos_scan.mm", output / reply_hang,
+                    ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations", "-DHEX_SCAN_HANG_AFTER_REPLY=1"])
+        compile_one("launch_ignored.cpp", output / APP / "Contents/MacOS/hex-vst3-launch-ignored", [])
     (resources / "sdk-notices.json").write_text(json.dumps(licenses, indent=2) + "\n")
     subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(output / APP)], check=True, timeout=120)
-    receipt = {"version": 1, "scope": "original-macos-bootstrap", "platform": "darwin-arm64",
+    receipt = {"version": 1, "scope": "native-macos-factory-discovery" if discovery_only else "original-macos-bootstrap", "platform": "darwin-arm64",
                "sdk_pins": PINS, "source_sha256": source_digest(), "factory_scan_helper": str(scan_executable),
                "factory_fixtures": factory_fixtures,
-               "factory_scan_fault_helper": str(reply_hang),
+               "factory_scan_fault_helper": None if discovery_only else str(reply_hang),
                "source_commit": command(["git", "rev-parse", "HEAD"], cwd=ROOT),
                "source_dirty": bool(command(["git", "status", "--porcelain"], cwd=ROOT)),
                "compiler": {"path": str(compiler), "sha256": sha(compiler), "version": command([str(compiler), "--version"])},
@@ -256,7 +273,7 @@ def build(sdk, output):
                "signing": "ad-hoc, local original fixtures only; no entitlements or notarization"}
     path = output / "controlled-macos.json"
     path.write_text(json.dumps(receipt, indent=2) + "\n")
-    verify(path, run=True)
+    verify(path, run=not discovery_only)
     return path
 
 
@@ -264,6 +281,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="mode", required=True)
     builder = commands.add_parser("build")
+    builder.add_argument("--discovery-only", action="store_true", help="minimal deployable factory scanner, without bootstrap/fault fixtures")
     builder.add_argument("--sdk", type=Path, required=True)
     builder.add_argument("--output", type=Path, required=True)
     checker = commands.add_parser("verify")
@@ -271,7 +289,7 @@ def main():
     checker.add_argument("--run", action="store_true")
     args = parser.parse_args()
     try:
-        result = build(args.sdk, args.output) if args.mode == "build" else verify(args.receipt, args.run)
+        result = build(args.sdk, args.output, discovery_only=args.discovery_only) if args.mode == "build" else verify(args.receipt, args.run)
         print(result if isinstance(result, Path) else json.dumps({"verified": True, "scope": result["scope"]}))
     except (ValueError, OSError, KeyError, subprocess.SubprocessError) as error:
         parser.exit(1, "controlled macOS bootstrap refused: " + str(error) + "\n")

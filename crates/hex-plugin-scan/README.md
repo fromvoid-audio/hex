@@ -344,3 +344,27 @@ permission errors and cancellation at publication. Native suites are visibly
 ignored without an explicit receipt; they must be run deliberately for the final
 candidate. Synthetic/parser and original-fixture passes are not installed-plugin,
 physical-device, listening, Windows or complete VST3-host acceptance.
+
+### Packaged discovery tools
+
+`macos_bootstrap.py build --discovery-only` produces a minimal factory scanner
+bundle with SDK notices and no bootstrap instruments, fault helpers or fixture
+libraries. Its receipt has the separate `native-macos-factory-discovery` scope.
+The ordinary original-fixture build remains the native regression profile.
+
+The optimized app bundler's `--vst3-discovery-receipt` option accepts only this
+minimal profile from the exact clean candidate. It builds the Rust standalone
+scanner alongside the desktop under the same release target/source lock, signs
+both nested tools with the configured local Developer ID, updates their final
+byte inventory, then seals the outer app. These local development signatures do
+not establish notarization or third-party compatibility.
+
+The fixed package is `Contents/Helpers/vst3/`: `hex-vst3-scan-macos`, the minimal
+`hex-vst3-host.app`, and `controlled-macos.json`. Invoke the packaged scanner as
+`hex-vst3-scan-macos --bundled --trust-user-code /selected/module.vst3`.
+`macos::package::Package` resolves and checks only these application-relative
+paths and source/hash bindings, with no PATH, Python, SDK or checkout fallback.
+Filesystem work belongs on a control worker, never UI/audio callbacks. The
+selected sealed app/local receipt remains a caller trust root; this is not
+malicious tamper resistance or an authentication service. Discovery remains
+factory-only, with no processing instance or native browser insertion.
