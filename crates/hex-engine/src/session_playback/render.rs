@@ -275,7 +275,11 @@ impl SessionPlayback {
             ));
         }
         output.fill([0.0; 2]);
-        if output.is_empty() || (!self.playing && self.computer_keyboard.is_none()) {
+        if output.is_empty()
+            || (!self.playing
+                && self.computer_keyboard.is_none()
+                && self.current_sampler_keyboards.is_empty())
+        {
             if let Some(capture) = capture.as_mut() {
                 capture.commit(output.len());
             }
@@ -326,10 +330,13 @@ impl SessionPlayback {
         if let Some(keyboard) = &mut self.computer_keyboard {
             keyboard.begin_block();
         }
+        for keyboard in &mut self.current_sampler_keyboards {
+            keyboard.begin_block();
+        }
         let result = if self.playing {
             self.render_playing(output, pages, &mut observer, &mut capture, sources)
         } else {
-            self.render_keyboard_monitor(output, &mut observer, &mut capture)
+            self.render_keyboard_monitor(output, &mut observer, &mut capture, sources)
         };
         if result.is_err() {
             for chain in self
@@ -344,6 +351,9 @@ impl SessionPlayback {
                 chain.rollback_block();
             }
             if let Some(keyboard) = &mut self.computer_keyboard {
+                keyboard.rollback();
+            }
+            for keyboard in &mut self.current_sampler_keyboards {
                 keyboard.rollback();
             }
             if let Some(compensation) = self.compensation.as_mut() {
@@ -362,6 +372,9 @@ impl SessionPlayback {
             }
         } else {
             if let Some(keyboard) = &mut self.computer_keyboard {
+                keyboard.commit();
+            }
+            for keyboard in &mut self.current_sampler_keyboards {
                 keyboard.commit();
             }
             if let Some(compensation) = self.compensation.as_mut() {
@@ -723,6 +736,11 @@ impl SessionPlayback {
                 .computer_keyboard
                 .as_ref()
                 .is_some_and(|keyboard| keyboard.track() == self.route_scratch[index].id);
+            let live_target = live_target
+                || self
+                    .current_sampler_keyboards
+                    .iter()
+                    .any(|k| k.track() == self.route_scratch[index].id);
             let buffered = live_target
                 || stateful_effects
                 || mutable_active
@@ -901,6 +919,19 @@ impl SessionPlayback {
                         keyboard
                             .render(render_output, Some(&clock))
                             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
+                    }
+                    for keyboard in self
+                        .current_sampler_keyboards
+                        .iter_mut()
+                        .filter(|k| k.track() == self.route_scratch[index].id)
+                    {
+                        let source = sources.ok_or(SessionPlaybackError::DeviceRuntime)?;
+                        let resources = source
+                            .resources(keyboard.track())
+                            .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+                        keyboard
+                            .render_with_resources(render_output, None, &resources)
+                            .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
                     }
                     track.apply_instrument_output_gain(render_output);
                     if self.device_metering {

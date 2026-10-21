@@ -592,3 +592,10 @@ all checks. Refusal and first-panic states remain host-owned until explicit
 control-side cleanup; these APIs do not publish, grant readiness or certify
 complete storage. The host must keep draft/custody wrappers and all their
 charges until their normal destruction, including after successful transfer.
+
+Native sampler CURRENT preallocates independent live keyboard pairs from its exact
+constructor factories/bank. They reuse the existing key scheduler and sampler DSP,
+remain nontransferable Session storage under the32MiB limit, and render in the same
+stopped/playing route transaction. Input is scalar, with no UI input/source owner
+in the callback; ordinary registry keyboard admission is unchanged. See
+[the bounded keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).

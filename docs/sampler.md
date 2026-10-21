@@ -5,9 +5,9 @@ Requested 17 October 2026: a native equivalent of Ableton Live **Simpler**, name
 Pulse2679 owns the full request; [PR296](https://github.com/PORTALSURFER/hex/pull/296)
 contains the first original playback-kernel prerequisite. A bounded first-load
 browser action now fills an empty instrument slot with a canonical sampler and
-supports frame-zero Arrangement playback/Stop and offline Main export. Sampler
-is not registered in the general device catalog; controls, replacement, live
-keyboard and history remain unavailable. Current-format SaveNew/SaveCurrent and
+supports computer-keyboard audition, frame-zero Arrangement playback/Stop and
+offline Main export. Sampler
+is not registered in the general device catalog; controls, replacement and history remain unavailable. Current-format SaveNew/SaveCurrent and
 original-content-checked reopen are supported through the normal project flow. No reference parity or
 physical native interaction/listening acceptance is claimed.
 
@@ -516,8 +516,9 @@ replacement remains refused by the existing native owner guard.
 The panel displays canonical sample identity and read-only readiness/limitations.
 Frame-zero UI Play requires callback-confirmed source context, canonical revision,
 project generation and output identity. There is no public seek candidate for
-private sampler CURRENT. Nonzero seek, Pause, Session launch, live keyboard,
-active edits and history remain explicit unsupported operations. Save/reopen is
+private sampler CURRENT. Nonzero seek, Pause, Session launch, active edits and
+history remain explicit unsupported operations. The later keyboard increment
+below extends this same closed CURRENT route without enabling live edits. Save/reopen is
 added by the next increment below.
 Stop resets the existing native runtime; Play then starts from frame zero again.
 Existing browser Enter and drag import behavior is unchanged.
@@ -536,8 +537,9 @@ listening or installation. Exact required merge evidence belongs to PR549/Pulse.
 
 Finite future user checklist, after a separately qualified optimized build:
 
-1. Author an Arrangement MIDI note before activation, select its empty instrument
-   slot, then right-click an original WAV and choose `load into sampler`.
+1. Select a MIDI track's empty instrument slot, then right-click an original WAV
+   and choose `load into sampler`. The later keyboard increment below removes
+   the original PR549 requirement to author an Arrangement note first.
 2. Change selected track while loading; confirm the original target owns the
    sample, its canonical filename is visible, and focus stays where moved.
 3. Play from start, Stop, then Play again; compare both starts and stereo image.
@@ -545,7 +547,8 @@ Finite future user checklist, after a separately qualified optimized build:
    Main and compare playback. Record the exact source/build and device settings.
 5. Check missing/corrupt media, pending cancellation and an occupied slot refuse
    clearly. Save, choose New again to confirm, then reopen and compare sound.
-   Replacement, live keyboard and nonzero seeking remain unsupported.
+   Replacement and nonzero seeking remain unsupported; the keyboard has its own
+   checklist below.
 
 
 ## save and reopen original sources — pulse2906 / PR499
@@ -610,5 +613,85 @@ existing stale picker/confirmation guards remain shared. Only the existing
 headless backend replaces physical output; the driver closes actual callback
 carriers and waits real lease/install proof. Physical UI/fonts/audio/listening,
 optimized build delivery and installation are unexecuted. Controls, replacement,
-live keyboard, user history, Session launch and nonzero seeking remain open.
+user history, Session launch and nonzero seeking remain open. The following
+increment adds live computer-keyboard audition.
 Exact required merge/review qualification belongs to canonical PR499/Pulse2906.
+
+## native computer keyboard — pulse2966 / PR550
+
+An empty MIDI track can load a sampler and play it with the existing computer
+keyboard toggle/keys. Authored notes are optional. Native activation requires the
+actual callback-installed CURRENT, exact output/context/audio revision and
+canonical track/device. The existing UI input remains solely on control; public
+Events acknowledge metadata and never expose sampler sources or a new graph.
+The generic registry/ordinary source-free keyboard admission stays closed.
+
+The constructor prepares one independent live pair per sampler configuration from
+that configuration's existing factory. It uses the same sampler DSP and exact
+borrowed CURRENT bank. Actual Box/Vec/pair/input/expression storage is charged in
+the nontransferable Session inventory. Pool preflight precedes pair construction,
+the existing32MiB runtime limit remains, and the final constructor ledger still
+checks actual retained/peak DATA and closure. Source, PCM, history and retirement
+ownership do not move into the keyboard input. The native helper returns its Box
+directly, avoiding the large by-value temporary that overflowed the Session worker
+in the first integrated debug test; worker stack/runtime caps were not raised.
+
+A fixed scalar mailbox is inline in the already-owned audio Status and its
+existing boundary quote. Control is the sole activation-binding writer; the UI
+is the sole per-key writer. Each has its own checked sequence, and every desired
+word carries its activation epoch. The existing17-key word/token/velocity law is
+shared; callback readers use at most three binding attempts and three reads per key
+within each attempt, without waiting. Epochs and sequences refuse exhaustion instead of wrapping.
+Wrong-output/context/revision, old epochs, unacknowledged or malformed input cannot
+start a voice. Refused malformed activation preserves the prior live voice.
+
+The UI reserves an epoch before asking the worker to activate. Key down/up writes
+directly through the existing Client, preserving polyphony while the worker is
+busy. UI/control cancellation and the sole callback writer have separate
+monotonic revocation words; callback cancellation/refusal uses bounded atomic
+load/store, without an atomic-max retry loop. Both frontiers defeat late
+activation; an old cancel cannot revoke a newer activation. Control Stop captures
+its reserved epoch prefix; callback Stop revokes the actual runtime activation,
+so a later fresh press remains valid even before that Stop is consumed. Focus loss, toggle
+off, track/project/output changes, Stop and shutdown invalidate the activation.
+The existing physical-key cancellation law requires a fresh press; old held
+words/autorepeat do not restart a stopped voice. Capacity/pitch refusal reports a
+keyboard error and keeps the canonical/native source intact.
+
+Stopped rendering advances live voice/release age while both project clocks stay
+frozen. Playing rendering sums live and authored voices before the shared
+instrument output trim, Utility/local effects, track pan/fader/sends and Main.
+Each applies once. Keyboard begin/commit/rollback participates in the existing
+whole-block transaction. No callback preparation, allocation/free, source-owner
+replacement or final owner destruction is introduced.
+
+Owning checks include actual rendered browser load -> SaveNew/Current -> New/Open
+-> real keyboard toggle/key down/up -> native CURRENT PCM, stereo/default and
+mono/A880 at8k source/16k output, both stopped and alongside Arrangement playback.
+An empty-track variant proves load/reopen/audition without authored notes. Looped
+polyphony has independent literal pitch/velocity and two-frame release oracles;
+with Service deliberately blocked, one key releases while another holds, a fresh
+press retriggers, and focus cancellation silences immediately. A separate gate
+pauses activation after worker validation: cancelled late activation stays silent.
+Stop/post-Stop fresh-activation ordering, old-autorepeat,16-voice overflow and visible refusal are covered, with zero
+measured total and signed-net callback allocations/bytes. Constructor checks cover
+host/Utility/track gains once, velocity100/127, exact/one-under DATA/runtime limits
+and zero pair-construction entries on preflight refusal. Bounded mailbox tests
+cover stale/torn input and counter exhaustion; ordinary keyboard tests remain.
+These are headless source/PCM/allocation checks, not physical device deadlines,
+font/pixel/input/listening or optimized-installation acceptance. Required exact
+merge evidence belongs to PR550/Pulse2966.
+
+Future finite user checklist after a separately qualified optimized build:
+
+1. Load a mono or stereo WAV into an empty MIDI track, enable the keyboard toggle
+   (`m` when editor/MIDI focus permits), and play/release `a`, `k` and chords.
+2. Use `z/x` and `c/v`; compare pitch/velocity with the project tuning. Stop and
+   refocus/toggle; held-key repeats must not restart notes without a fresh press.
+3. Add an Arrangement MIDI clip, play from start and audition live notes alongside
+   it; confirm release, gains, stereo image and Stop.
+4. Save/New/Open and compare the sample and tuning; changing track/window focus
+   must stop the previous live activation without editing another instrument.
+5. Confirm missing/refused loads and voice-capacity refusal remain truthful.
+   Controls, replacement/history, Console launch/recording and nonzero seek remain
+   separate work. Record exact tested source/build and physical results.

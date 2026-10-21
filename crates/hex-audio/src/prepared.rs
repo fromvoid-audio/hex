@@ -35,6 +35,7 @@ mod applied_source;
 #[cfg(test)]
 mod project_spectrum_tests;
 mod runtime_view;
+mod sampler_keyboard;
 pub use applied_source::AppliedAudioSource;
 mod streaming;
 pub(crate) const RETIRED: usize = 2;
@@ -350,6 +351,7 @@ impl FreshRuntimeFence {
 }
 
 pub struct Status {
+    sampler_keyboard: sampler_keyboard::Mailbox,
     project_spectrum: crate::spectrum_worker::ProjectSelectionMailbox,
     pending_stop_marker: AtomicU64,
     admitted_ticket: AtomicU64,
@@ -482,6 +484,7 @@ impl Status {
     }
     fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
         Self {
+            sampler_keyboard: Default::default(),
             project_spectrum: Default::default(),
             pending_stop_marker: AtomicU64::new(0),
             admitted_ticket: AtomicU64::new(0),
@@ -1371,6 +1374,7 @@ impl PublicationControl {
         self.candidate_root.report()
     }
     pub fn request_shutdown(&mut self) {
+        self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
         self.status.pending_stop_marker.store(
             self.status.admitted_ticket.load(Acquire).saturating_add(1),
@@ -1433,6 +1437,7 @@ impl Control {
         endpoints::legacy_enqueue(self, action)
     }
     pub fn stop(&self) {
+        self.status.sampler_keyboard.revoke_all();
         // Ticket MAX is refused for ordinary commands, so the supported marker
         // encoding (ticket + 1) is always nonzero and cannot wrap.
         self.status
@@ -1443,6 +1448,7 @@ impl Control {
     /// Freeze publication, return active/queued graphs over subsequent callbacks.
     /// Control must continue reclaiming until shutdown_complete before stream teardown.
     pub fn request_shutdown(&mut self) {
+        self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
         self.sample_preview.shutdown();
         self.stop();
@@ -2175,6 +2181,7 @@ impl Callback {
 
     fn consume_commands_through(&mut self, cut: CommandCut) {
         if cut.stop_through.is_some() {
+            self.revoke_current_sampler_keyboard();
             #[cfg(all(test, feature = "allocation-probe"))]
             self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
             self.invalidate_gain_recording(crate::gain_recording::AbortReason::TransportChanged);
@@ -2206,6 +2213,12 @@ impl Callback {
             {
                 #[cfg(all(test, feature = "allocation-probe"))]
                 self.apply_candidate_action(queued.action);
+                if matches!(
+                    queued.action,
+                    PlaybackAction::Transport(PlaybackCommand::Stop)
+                ) {
+                    self.revoke_current_sampler_keyboard();
+                }
                 let mut invalidate_audition = false;
                 if let Some(mut active) = self
                     .active
@@ -2260,6 +2273,7 @@ impl Callback {
     }
     /// Stop immediately after a render fault; does not dispose graph ownership.
     pub fn stop_after_fault(&mut self) {
+        self.status.sampler_keyboard.revoke_on_callback();
         #[cfg(all(test, feature = "allocation-probe"))]
         self.apply_candidate_action(PlaybackAction::Transport(PlaybackCommand::Stop));
         self.invalidate_gain_recording(crate::gain_recording::AbortReason::OutputFailed);
@@ -2302,6 +2316,7 @@ impl Callback {
             self.advance_eligible_publication(Some(output.len()));
         }
         self.render_project(output)?;
+        self.report_sampler_keyboard_rejection();
         if !self.status.closing.load(Acquire) {
             self.sample_preview.mix(output);
         }
@@ -2309,6 +2324,7 @@ impl Callback {
     }
 
     fn render_project(&mut self, output: &mut [Frame]) -> Result<(), Invalid> {
+        self.read_sampler_keyboard();
         if let Some(ActivePublication::Candidate(active)) = self.active.as_mut() {
             if self.status.closing.load(Acquire) {
                 output.fill([0.0; 2]);

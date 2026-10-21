@@ -1652,6 +1652,23 @@ pub(super) struct ArrangementPan {
     timeline_width: f32,
 }
 
+#[cfg(feature = "ui-test-support")]
+pub(crate) fn sampler_keyboard_fixture_status(
+    window: gpui::AnyWindowHandle,
+    cx: &gpui::App,
+) -> Result<String, String> {
+    window.read(cx, |view: gpui::Entity<EditorView>, cx| {
+        let view = view.read(cx);
+        format!("enabled={} suspended={} ready={} target={:?} request={} input={:?} cancelled={} desired={:?} current={} error={:?}",
+            view.computer_keyboard.enabled, view.computer_keyboard.suspended,
+            view.computer_keyboard.native_ready, view.computer_keyboard.target,
+            view.computer_keyboard.request_id,
+            view.computer_keyboard.input.as_ref().and_then(|i| i.native_sampler_activation()),
+            view.computer_keyboard.input.as_ref().is_some_and(|i| i.is_cancelled()),
+            view.computer_keyboard.desired_notes(), view.first_sampler_current(), view.error)
+    }).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod shortcut_tests {
     use super::{

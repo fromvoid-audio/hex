@@ -786,6 +786,21 @@ prerequisite. Linux cannot run the installed macOS Live reference or provide
 native macOS listening/visual evidence. Full local CI and final PR evidence
 are recorded on the ticket; targeted checks do not authorize merge.
 
+## sampler live computer keyboard — #2966 / PR550
+
+The existing computer-keyboard producer now auditions a loaded/reopened native
+CURRENT sampler, including empty MIDI tracks. Constructor-owned live pairs share
+the exact source scope/kernel; fixed Status binding/key mailboxes carry scalar
+input only. UI key release and epoch cancellation bypass a busy worker. Actual
+rendered stereo/default and mono/A880 stopped/playing PCM, blocked-worker
+polyphony/release/focus/late-activation, Stop/autorepeat/capacity refusal and zero
+callback allocation probes have owning checks. Exact/one-under pool/DATA checks,
+gain/velocity oracles and ordinary keyboard regressions are retained. Final exact
+source review/local audit and merge evidence belong to the canonical PR/ticket.
+Physical acceptance and optimized delivery remain outstanding, as do controls,
+replacement/history, Console/recording and nonzero seek. See
+[the keyboard contract/checklist](docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
+
 ## sampler first browser load — #2965 / PR549
 
 A WAV row context action captures an authored-MIDI track's empty instrument

@@ -483,6 +483,10 @@ impl Playback {
     }
 
     pub fn cancel_computer_keyboard(&mut self) {
+        if let Some(runtime) = self.session_runtime.as_mut() {
+            runtime.cancel_current_sampler_keyboard();
+        }
+
         if let Some(keyboard) = self
             .session_runtime
             .as_mut()
@@ -504,6 +508,31 @@ impl Playback {
         let runtime =
             SessionPlayback::new_current_sampler_candidate(Arc::clone(&revision), sources)?;
         Ok(Self::from_parts(revision, Some(Box::new(runtime)), None))
+    }
+    pub(crate) fn current_sampler_keyboard_epoch(&self) -> Option<u64> {
+        let epoch = self
+            .session_runtime
+            .as_ref()?
+            .current_sampler_keyboard_epoch;
+        (epoch != 0).then_some(epoch)
+    }
+    pub(crate) fn current_sampler_keyboard_rejected_epoch(&self) -> Option<u64> {
+        let runtime = self.session_runtime.as_ref()?;
+        (runtime.current_sampler_keyboard_epoch != 0
+            && runtime
+                .current_sampler_keyboards
+                .iter()
+                .any(|k| k.current_rejected()))
+        .then_some(runtime.current_sampler_keyboard_epoch)
+    }
+    pub(crate) fn apply_current_sampler_keyboard(
+        &mut self,
+        frame: Option<crate::computer_keyboard::CurrentSamplerKeyboardFrame>,
+    ) -> Result<(), Invalid> {
+        self.session_runtime
+            .as_mut()
+            .ok_or(Invalid("sampler runtime unavailable"))?
+            .apply_current_sampler_keyboard(frame)
     }
     pub(crate) fn render_current_sampler<P: MediaPages + ?Sized>(
         &mut self,

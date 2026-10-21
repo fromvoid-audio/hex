@@ -321,3 +321,11 @@ It grants no stop/dispose or retirement proof. The test driver must actually
 drop both callback carriers; the existing lifecycle owner then proves quiescence
 and the real exclusive output lease must be available before reopening. Sampler
 UI save/open fixtures use this path, not a UI acknowledgement or physical device.
+
+Sampler keyboard input uses a fixed inline Status mailbox, included in the
+existing boundary storage quote. The publication worker validates actual CURRENT
+binding; Client key/cancel methods publish scalar words/epochs directly. Separate
+single-writer binding and per-key sequences have bounded callback reads. Callback
+revocation/refusal has its own sole-writer atomic words; no input/source owner is
+attached, no callback CAS retry or new retirement path is introduced. See
+[the keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).

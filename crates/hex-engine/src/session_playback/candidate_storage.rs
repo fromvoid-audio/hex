@@ -13,6 +13,9 @@ impl SessionPlayback {
         let Self {
             live_expression,
             computer_keyboard,
+            current_sampler_keyboards,
+            current_sampler_keyboard_epoch: _,
+            current_sampler_keyboard_revoked: _,
             capture_runtime: _,
             capture_epoch: _,
             gain_recording_override: _,
@@ -111,6 +114,13 @@ impl SessionPlayback {
                 }
                 runtime.visit_current_sampler_storage(l)?;
             }
+        }
+        l.vec(current_sampler_keyboards)?;
+        if !current_sampler_keyboards.is_empty() && revision.resource_scope.is_none() {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
+        for keyboard in current_sampler_keyboards {
+            keyboard.visit_current_sampler_storage(l)?;
         }
         l.vec(mutable_events)?;
         l.vec(tail_groups)?;

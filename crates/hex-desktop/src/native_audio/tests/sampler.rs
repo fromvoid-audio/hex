@@ -1,4 +1,5 @@
 use super::*;
+mod keyboard;
 use hex_project::{BeatTime, Command, Created};
 
 impl Harness {
@@ -620,15 +621,38 @@ fn actual_old_resident_current_pcm_remains_charged_across_new_and_sampler_prefli
 fn rendered_browser_first_load_reaches_real_service_and_native_current_without_retargeting(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, true);
+    rendered_sampler_save_open(cx, true, false, false);
 }
 #[gpui::test]
 fn rendered_browser_mono_sampler_save_open_preserves_absolute_tuning(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, false);
+    rendered_sampler_save_open(cx, false, false, false);
 }
-fn rendered_sampler_save_open(cx: &mut gpui::TestAppContext, stereo: bool) {
+#[gpui::test]
+fn rendered_empty_midi_track_load_and_reopen_is_playable_from_computer_keyboard(
+    cx: &mut gpui::TestAppContext,
+) {
+    rendered_sampler_save_open(cx, true, true, false);
+}
+#[gpui::test]
+fn rendered_sampler_key_release_and_focus_cancel_do_not_wait_for_blocked_service(
+    cx: &mut gpui::TestAppContext,
+) {
+    rendered_sampler_save_open(cx, true, false, true);
+}
+#[gpui::test]
+fn rendered_mono_a880_sampler_keyboard_playing_and_blocked_release_are_literal(
+    cx: &mut gpui::TestAppContext,
+) {
+    rendered_sampler_save_open(cx, false, false, true);
+}
+fn rendered_sampler_save_open(
+    cx: &mut gpui::TestAppContext,
+    stereo: bool,
+    empty: bool,
+    looped: bool,
+) {
     use gpui::{Modifiers, MouseButton, VisualTestContext};
     let _serial = NATIVE_FIXTURE
         .lock()
@@ -649,24 +673,26 @@ fn rendered_sampler_save_open(cx: &mut gpui::TestAppContext, stereo: bool) {
     else {
         panic!("track")
     };
-    let Some(Created::Clip(clip)) = h
-        .run(Request::Edit(Command::PlaceMidiClip {
-            track,
+    if !empty {
+        let Some(Created::Clip(clip)) = h
+            .run(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            }))
+            .created
+        else {
+            panic!("clip")
+        };
+        h.run(Request::Edit(Command::AddMidiNote {
+            clip,
             start: BeatTime::ZERO,
-            length: BeatTime::ONE,
-        }))
-        .created
-    else {
-        panic!("clip")
-    };
-    h.run(Request::Edit(Command::AddMidiNote {
-        clip,
-        start: BeatTime::ZERO,
-        duration: BeatTime::ONE,
-        pitch: 60,
-        channel: 0,
-        velocity: 127,
-    }));
+            duration: BeatTime::ONE,
+            pitch: 60,
+            channel: 0,
+            velocity: 127,
+        }));
+    }
     let Some(Created::Track(other)) = h
         .run(Request::Edit(Command::AddMidiTrack {
             name: "other".into(),
@@ -676,7 +702,7 @@ fn rendered_sampler_save_open(cx: &mut gpui::TestAppContext, stereo: bool) {
         panic!("track")
     };
     let loaded_revision = if stereo {
-        5
+        if empty { 3 } else { 5 }
     } else {
         let event = h.run(Request::Edit(Command::SetTuning(tuning(880.0))));
         assert!(event.error.is_none());
@@ -697,6 +723,8 @@ fn rendered_sampler_save_open(cx: &mut gpui::TestAppContext, stereo: bool) {
     let window =
         hex_ui::open_sampler_load_test_backend(cx, backend, files.0.clone(), samples).unwrap();
     let mut visual = VisualTestContext::from_window(window, cx);
+    visual.update(|w, _| w.activate_window());
+    visual.run_until_parked();
     let target_selector = Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
     let other_selector = Box::leak(format!("track-name-{}", other.value()).into_boxed_str());
     let other_selected = Box::leak(format!("selected-track-{}", other.value()).into_boxed_str());
@@ -858,6 +886,31 @@ fn rendered_sampler_save_open(cx: &mut gpui::TestAppContext, stereo: bool) {
     for _ in 0..12 {
         pulse(&mut visual);
     }
+    let open_path = if looped {
+        let mut editor = hex_project::Editor::new(stored.clone(), 8).unwrap();
+        let device = stored.track(track).unwrap().instrument().unwrap();
+        let asset = stored.assets().next().unwrap().id();
+        let state =
+            hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+                4,
+                asset,
+                2.0 / 16000.0,
+            )
+            .unwrap()
+            .with_host_metadata_from(device.state())
+            .unwrap();
+        editor
+            .execute(Command::ReplaceDeviceState {
+                device: device.id(),
+                state,
+            })
+            .unwrap();
+        let path = files.0.join("looped.hex");
+        hex_storage::save_new(&path, editor.project()).unwrap();
+        path
+    } else {
+        saved.clone()
+    };
     visual.simulate_keystrokes("cmd-n");
     visual.run_until_parked();
     assert!(
@@ -880,7 +933,7 @@ fn rendered_sampler_save_open(cx: &mut gpui::TestAppContext, stereo: bool) {
         pulse(&mut visual);
         assert!(Instant::now() < end, "actual Open picker did not open");
     }
-    cx.simulate_paths_selection(Some(vec![saved.clone()]));
+    cx.simulate_paths_selection(Some(vec![open_path]));
     loop {
         pulse(&mut visual);
         if h.backend
@@ -906,6 +959,95 @@ fn rendered_sampler_save_open(cx: &mut gpui::TestAppContext, stereo: bool) {
         pulse(&mut visual);
     }
     fs::remove_file(path).unwrap();
+    let target_bounds = visual.debug_bounds(target_selector).unwrap();
+    visual.simulate_click(target_bounds.center(), Modifiers::default());
+    let keyboard_toggle = visual.debug_bounds("computer midi keyboard").unwrap();
+    visual.simulate_click(keyboard_toggle.center(), Modifiers::default());
+    visual.simulate_keystrokes("v v");
+    for _ in 0..12 {
+        pulse(&mut visual);
+    }
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("a").unwrap(),
+        is_held: false,
+    });
+    visual.run_until_parked();
+    if looped {
+        keyboard::exercise_blocked_sampler_keyboard(cx, &mut visual, &mut h, window, end, stereo);
+        visual.update(|w, _| w.remove_window());
+        visual.run_until_parked();
+        return;
+    }
+    let keyboard = loop {
+        cx.background_executor
+            .advance_clock(Duration::from_millis(16));
+        visual.run_until_parked();
+        if let Some(backend) = h.backend.lock().unwrap().as_mut() {
+            let mut block = [[0.0; 2]; 64];
+            let measured = allocation_counter::measure(|| backend.render(&mut block).unwrap());
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            if block.iter().any(|f| *f != [0.0; 2]) {
+                let status = backend.status().unwrap();
+                assert!(!status.playing.load(std::sync::atomic::Ordering::Acquire));
+                assert_eq!(
+                    status.position.load(std::sync::atomic::Ordering::Acquire),
+                    0
+                );
+                assert_eq!(
+                    status
+                        .performance_frame
+                        .load(std::sync::atomic::Ordering::Acquire),
+                    0
+                );
+                break block;
+            }
+        }
+        assert!(
+            Instant::now() < end,
+            "real UI keyboard did not reach stopped CURRENT: {:?}",
+            cx.update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
+        );
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let literal: &[[f32; 2]] = if stereo {
+        &[
+            [0.125, -0.25],
+            [0.3125, -0.125],
+            [0.5, 0.0],
+            [0.1875, 0.125],
+            [-0.125, 0.25],
+            [-0.0625, 0.125],
+            [0.0, 0.0],
+        ]
+    } else {
+        &[[0.125, 0.125], [0.5, 0.5], [-0.125, -0.125], [0.0, 0.0]]
+    };
+    for (i, actual) in keyboard.iter().enumerate() {
+        let expected = literal.get(i).copied().unwrap_or([0.0; 2]);
+        for (a, e) in actual.iter().zip(expected) {
+            assert!(
+                (*a - e).abs() < 1e-6,
+                "keyboard {i}: {actual:?} != {expected:?}"
+            );
+        }
+    }
+    visual.simulate_event(gpui::KeyUpEvent {
+        keystroke: gpui::Keystroke::parse("a").unwrap(),
+    });
+    visual.simulate_keystrokes("m");
+    if empty {
+        visual.update(|w, _| w.remove_window());
+        visual.run_until_parked();
+        return;
+    }
     visual.simulate_keystrokes("space");
     let output = loop {
         cx.background_executor

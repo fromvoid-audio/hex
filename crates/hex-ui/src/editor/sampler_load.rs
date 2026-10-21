@@ -65,13 +65,6 @@ impl EditorView {
                 "first sampler load requires an empty instrument slot; replacement is unavailable",
             );
         }
-        if !track
-            .midi_clips()
-            .iter()
-            .any(|clip| !clip.notes().is_empty())
-        {
-            return Err("add arrangement midi notes before loading this sampler");
-        }
         Ok(Target {
             generation: self.project_generation,
             revision: state.revision,
@@ -246,7 +239,7 @@ impl EditorView {
                     .map(|n| n.to_string_lossy().into_owned())
             })
             .unwrap_or_else(|| "sample".into());
-        self.status = format!("loaded {name} into sampler · play from start and stop only");
+        self.status = format!("loaded {name} into sampler · computer keyboard or play from start");
     }
 }
 
