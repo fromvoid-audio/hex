@@ -24,7 +24,8 @@ static bool fixture(const char* kind,const char* expected) {
     // CFBundle selects its executable from Info.plist. Bind the actual selected
     // URL before hashing or loading, rather than trusting a parallel fixed path.
     CFURLRef executable=CFBundleCopyExecutableURL(bundle);
-    CFStringRef selected=executable?CFURLCopyFileSystemPath(executable,kCFURLPOSIXPathStyle):nullptr;
+    CFURLRef absolute=executable?CFURLCopyAbsoluteURL(executable):nullptr;
+    CFStringRef selected=absolute?CFURLCopyFileSystemPath(absolute,kCFURLPOSIXPathStyle):nullptr;
     NSString* identifier=[@"org.portalsurfer.hex.fixture." stringByAppendingString:name];
     bool exact=selected && [(__bridge NSString*)selected isEqualToString:binary] &&
         [(__bridge id)CFBundleGetValueForInfoDictionaryKey(bundle,CFSTR("CFBundleExecutable")) isEqual:@"fixture"] &&
@@ -35,7 +36,13 @@ static bool fixture(const char* kind,const char* expected) {
         NSDictionary* info=[[NSFileManager defaultManager] attributesOfItemAtPath:member error:nullptr];
         exact=exact && info && ![[info fileType] isEqualToString:NSFileTypeSymbolicLink];
     }
+    if(!exact) {
+        NSString* actual=selected?(__bridge NSString*)selected:@"missing";
+        std::fprintf(stderr,"fixture executable selection refused: %s (expected %s)\n",
+                     [actual UTF8String],[binary UTF8String]);
+    }
     if(selected) CFRelease(selected);
+    if(absolute) CFRelease(absolute);
     if(executable) CFRelease(executable);
     if(!exact) { CFRelease(bundle); return false; }
     NSDictionary* attrs=[[NSFileManager defaultManager] attributesOfItemAtPath:binary error:nullptr];
