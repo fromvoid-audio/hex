@@ -24,7 +24,25 @@ impl Session {
         mode: DocumentAudioMode,
         reservation: Option<SourcePlanReservation>,
     ) -> Result<Self, SessionError> {
-        let mut session = Self::new(rate, history, max_resident_frames)?;
+        Self::new_with_audio_mode_in_overview_domain(
+            rate,
+            history,
+            max_resident_frames,
+            mode,
+            reservation,
+            crate::source_overview::OverviewBudget::standard()?,
+        )
+    }
+    pub(crate) fn new_with_audio_mode_in_overview_domain(
+        rate: u32,
+        history: usize,
+        max_resident_frames: u64,
+        mode: DocumentAudioMode,
+        reservation: Option<SourcePlanReservation>,
+        overview_budget: crate::source_overview::OverviewBudget,
+    ) -> Result<Self, SessionError> {
+        let mut session =
+            Self::new_with_overview_budget(rate, history, max_resident_frames, overview_budget)?;
         session.source_reservation = match mode {
             DocumentAudioMode::Resident => None,
             DocumentAudioMode::VerifiedStreaming => Some(

@@ -331,3 +331,24 @@ fence readiness without blocking New/Open, then prepares/admitsoverlap and seals
 the pending native cell before the existing canonical/history commit. Public
 completion Events contain request metadata only. Precommit refusal preserves the
 old document; postcommit open failure retains authored gain/save/export.
+
+## original-source overview cache
+
+Session owns derived peak-only original-source overviews, built on control from
+borrowed staged/reconstructed native PCM. The immutable sorted table is shared
+with ViewState through one context-bound handle; previews/edits reuse it. No PCM,
+Audio owner, resource scope or path is retained, and native/export snapshots do
+not contain the cache. Imports install the prepared table only with successful
+editor/source commit; reopen uses verified content/rate/length in the same budget
+domain across New/Open and retained old views.
+
+A dedicated8MiB limit bounds admitted live fixed128-bin Box backing. A separate
+logical metadata quote covers overview/table/charge/control-block storage and
+two maximum row capacities. Box/Vec backing frees before charges return. This
+excludes allocator bookkeeping, Arc shells pending deallocation (including Weak
+shells), parent ViewStates and handle copies; it is not a physical heap/RSS cap.
+Native PCM/frame/storage reservations remain unchanged. See
+[the complete bounded contract](../../docs/sampler.md#original-source-waveform-overview).
+The nondefault `source-overview-test-support` feature exposes only peak fixture
+construction for UI and existing desktop allocator probes, with no native source
+admission capability or production allocation-counter dependency.

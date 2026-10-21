@@ -800,7 +800,7 @@ Finite user checks after a separately qualified optimized build: with transport
 stopped and a loaded sampler, confirm pitch0/+12/−12 changes keyboard and
 Arrangement pitch by one octave while retaining gain; enter0.5, Save/New/Open
 and verify persistence; attempt an edit while playing and confirm refusal.
-Waveform, replacement and history controls remain separate work.
+Replacement and history controls remain separate work.
 
 
 ## stopped original-frame region — pulse2969 / PR553
@@ -837,7 +837,7 @@ These are headless path checks. Physical interaction/display/device/listening an
 optimized delivery remain unexecuted. Finite later user checks: load a sample,
 stop transport, trim start/end to a nonempty region and audition keyboard and
 Arrangement; verify the exclusive end, Save/New/Open, and confirm an invalid or
-playing edit refuses. Waveform selection, replacement and history remain separate work.
+playing edit refuses. Waveform selection gestures, replacement and history remain separate work.
 
 
 ## Classic loop controls
@@ -862,7 +862,7 @@ repair. No automatic clamp, source/clip edit or loop-point reset is performed.
 
 The panel exposes an on/off readout and whole-frame loop start/end fields, using
 the existing one-pending stopped transaction. All eleven fields retain independent
-gesture captures. The sampler frame is520px wide with the existing168px body and
+gesture captures. The sampler frame is720px wide with the existing168px body and
 a fixed three-column control grid; bounded source/status detail cannot displace the
 controls. Source units and UI bounds are original frames, not project-rate frames.
 Runtime preparation still maps the enabled flag to the existing optional Classic
@@ -881,7 +881,7 @@ physical input/display/device/listening or optimized installation acceptance.
 Finite later user checks: stop transport, set a custom Classic loop and audition
 its wrap; toggle off/on and Save/New/Open to verify both states retain the range;
 trim while off, confirm an outside-range enable refuses, repair endpoints and
-retry; verify key release and Stop end the sound. Waveform editing,
+retry; verify key release and Stop end the sound. Waveform editing gestures,
 replacement/history, Session playback and full musical-use acceptance remain
 separate contracts.
 
@@ -918,4 +918,76 @@ scopes require zero total and signed-net allocation/deallocation counts/bytes.
 These fixtures do not establish physical device, display, input or listening
 acceptance. Later user checks should audition short/long ADSR, direct note release,
 Save/New/Open, stopped-only refusal and unchanged source/loop/pitch/gain settings
-on the exact optimized candidate. Waveform, replacement and history remain open.
+on the exact optimized candidate. Waveform editing gestures, replacement and history remain open.
+
+## Original-source waveform overview
+
+The sampler shows a read-only normalized stereo waveform beside the existing
+controls. Its cached peaks use original source frames and rate, including when
+project-rate playback has a different frame count. Start/end and remembered
+Classic loop markers use those same original coordinates; off-loop points stay
+visible in a muted color. There is no waveform drag, zoom, replacement or new
+musical behavior. The frame is720px wide:180px overview plus the existing control
+area, within the unchanged168px body/213px dock and horizontal chain viewport.
+
+Session computes at most128 disjoint min/max bins from borrowed original PCM
+once on control during import and qualified reopen. Nondivisible intervals cover
+every source frame exactly once. The immutable overview holds only frames, rate,
+verified normalized-content facts and peaks. It holds no PCM/Audio, bank, scope,
+path allocation or waveform pyramid; original file channel count is not claimed.
+A private sorted asset/overview table has one shared handle in Session and ordinary
+or preview ViewState. Gain, selection and other edits reuse its backing instead
+of cloning rows or scanning audio. Native/export snapshots do not retain it.
+
+Each controller has one derived-data budget domain shared across current, staged,
+New/Open and externally retained old views. The admitted **live peak Box backing**
+limit is8MiB:4096 sources times fixed128 stereo bins times16 bytes. Short sources
+still reserve128-bin capacity, exposing only their nonempty valid bins. A separate
+checked metadata ceiling derives from4096 overview headers plus two maximum4096-row
+tables, including quoted wrapper, charge and shared-control-block storage.
+Reservation precedes allocation and checks actual table capacity and simultaneous
+old/new construction. Peak Boxes and table Vec backing are destroyed before their
+capacity charges return. A retained view keeps its actual backing charged after
+Session clears; insufficient capacity visibly refuses import/Open, and dropping
+the final old reference permits retry.
+
+The metadata boundary is **logical live overview/table ownership**. It excludes
+Arc shells awaiting deallocation (including Weak-retained shells), allocator
+bookkeeping/RSS, existing parent ViewState storage and arbitrary copied handles.
+It is not a physical metadata heap ceiling or total application memory bound.
+Internal owning Arcs remain private. The separate native PCM/frame/32MiB limits,
+callback ownership and retirement behavior are unchanged. No generalized budget
+or allocation framework is introduced.
+
+Import builds peaks and the replacement table inside the existing staged editor/
+native-source transaction, then installs the successful table by infallible move.
+Reopen checks actual catalog content/rate/length before building the new overview
+in the old budget domain. Cancellation is polled at most4096 scanned frames apart;
+failed, cancelled or stale preparation drops staged data and preserves the old
+project, history, cache and applied sound.
+
+Published handles bind the exact project generation/revision without copying the
+table. UI lookup requires this context, matching asset ID/rate/original frame count
+and strict saved content facts when present. Fresh imports intentionally acquire
+saved content facts only in the save snapshot; their same-view overview comes
+from the actual staged native catalog and therefore enables source-bound numeric
+controls before Save/Open. Missing/mismatched/stale pairs show unavailable and
+cannot dispatch a hidden source-bound control. An ordinary derivative waveform
+never grants original-source authority. No project schema mutation is needed.
+
+Owning tests cover literal mono-normalized/stereo/short/nondivisible peaks and
+intervals, exact/one-under budgets and staged cancellation, a real retained worker
+view across New/Open/refusal/final-drop/retry, table identity across edits, actual
+allocator quotes and Box/Vec destruction before budget return. The rendered native
+fixture loads via the browser, edits all four source/loop endpoints and checks
+literal Arrangement PCM **before any Save/Open**, then verifies reconstruction
+while retaining old peak-only data under the existing native frame cap. Bounds
+cover all eleven controls, overview and original-coordinate markers. Separate UI
+cases reject wrong source ID/rate/frames/content and stale generation/revision.
+These are headless fixtures, not physical display/input/device/listening acceptance.
+
+Finite later user checks on an exact optimized candidate: load a WAV, confirm its
+identity and original-rate waveform, edit start/end and loop points immediately,
+compare markers with the audible region/wrap, and Save/New/Open. Confirm layout
+and horizontal scrolling in a smaller window. Waveform gestures, replacement,
+history, broader playback and qualified native delivery remain separate work.

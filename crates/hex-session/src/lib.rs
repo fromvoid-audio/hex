@@ -21,6 +21,10 @@ pub mod arrangement_seek;
 mod audio_sources;
 mod clip_conversion;
 mod native_assets;
+mod source_overview;
+#[cfg(feature = "source-overview-test-support")]
+pub use source_overview::test_support as source_overview_test_support;
+pub use source_overview::{OriginalSourceOverview, OriginalSourceOverviews, SourceOverviewUsage};
 mod resident_pcm;
 pub use native_assets::ResidentNativeReservation;
 mod verified_import;
@@ -186,6 +190,8 @@ pub struct Session {
     media: HashMap<AssetId, ResidentAsset>,
     native_assets: hex_engine::native_device_resources::ResidentDeviceAssets,
     native_reservation: Option<ResidentNativeReservation>,
+    overview_budget: source_overview::OverviewBudget,
+    source_overviews: OriginalSourceOverviews,
     verified_sources: BTreeMap<AssetId, VerifiedAudioFile>,
     semantic_source_epoch: u64,
     audio_mode: DocumentAudioMode,
@@ -225,6 +231,19 @@ impl Session {
         history_capacity: usize,
         max_resident_frames: u64,
     ) -> Result<Self, SessionError> {
+        Self::new_with_overview_budget(
+            sample_rate,
+            history_capacity,
+            max_resident_frames,
+            source_overview::OverviewBudget::standard()?,
+        )
+    }
+    pub(crate) fn new_with_overview_budget(
+        sample_rate: u32,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        overview_budget: source_overview::OverviewBudget,
+    ) -> Result<Self, SessionError> {
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         Ok(Self {
             audio_transforms: hex_engine::audio_transform::AudioTransformPreparation::new(
@@ -237,6 +256,8 @@ impl Session {
             media: HashMap::new(),
             native_assets: hex_engine::native_device_resources::ResidentDeviceAssets::default(),
             native_reservation: None,
+            overview_budget,
+            source_overviews: OriginalSourceOverviews::default(),
             verified_sources: BTreeMap::new(),
             semantic_source_epoch: 0,
             audio_mode: DocumentAudioMode::Resident,
@@ -363,6 +384,25 @@ impl Session {
         sine_table: Arc<hex_engine::SineTable>,
         native: Option<ResidentNativeReservation>,
     ) -> Result<Self, SessionError> {
+        Self::from_prepared_with_native_limits_in_overview_domain(
+            project,
+            history_capacity,
+            max_resident_frames,
+            prepared_assets,
+            sine_table,
+            native,
+            source_overview::OverviewBudget::standard()?,
+        )
+    }
+    pub(crate) fn from_prepared_with_native_limits_in_overview_domain(
+        project: Project,
+        history_capacity: usize,
+        max_resident_frames: u64,
+        prepared_assets: Vec<(AssetId, PreparedImport)>,
+        sine_table: Arc<hex_engine::SineTable>,
+        native: Option<ResidentNativeReservation>,
+        overview_budget: source_overview::OverviewBudget,
+    ) -> Result<Self, SessionError> {
         if hex_engine::native_device_resources::requires_private_sampler_sources(&project)
             || project.assets().any(|a| a.original_source().is_some())
         {
@@ -377,7 +417,11 @@ impl Session {
             prepared_assets,
             sine_table,
             native,
-            hex_engine::native_device_resources::ResidentDeviceAssets::default(),
+            native_assets::ReconstructedOriginalSources {
+                assets: hex_engine::native_device_resources::ResidentDeviceAssets::default(),
+                overview_budget,
+                cancel: &std::sync::atomic::AtomicBool::new(false),
+            },
         )
     }
     /// Recovery-only reconstruction: actual original native banks have already
@@ -389,8 +433,13 @@ impl Session {
         prepared_assets: Vec<(AssetId, PreparedImport)>,
         sine_table: Arc<hex_engine::SineTable>,
         native: Option<ResidentNativeReservation>,
-        native_assets: hex_engine::native_device_resources::ResidentDeviceAssets,
+        originals: native_assets::ReconstructedOriginalSources<'_>,
     ) -> Result<Self, SessionError> {
+        let native_assets::ReconstructedOriginalSources {
+            assets: native_assets,
+            overview_budget,
+            cancel,
+        } = originals;
         let native_count = native_assets.ids().count();
         if native_count != 0 && native.is_none() {
             return Err(SessionError::Invalid(
@@ -423,6 +472,24 @@ impl Session {
                 .map_err(hex_engine::native_device_resources::ResourcePreparationError::from)?;
         }
 
+        let mut source_overviews = OriginalSourceOverviews::default();
+        for id in native_assets.ids() {
+            let source = native_assets
+                .source(id)
+                .ok_or(SessionError::Invalid("native source is unavailable"))?;
+            let frames = source
+                .resident_frames()
+                .ok_or(SessionError::Invalid("native source is not resident"))?;
+            let facts = native_assets.original_source_facts_on_control(id)?;
+            let overview = source_overview::OriginalSourceOverview::prepare(
+                &overview_budget,
+                frames,
+                source.sample_rate(),
+                facts,
+                cancel,
+            )?;
+            source_overviews = source_overviews.inserted(&overview_budget, id, overview)?;
+        }
         device_comparison::validate_project(&project)?;
         let asset_count = project.assets().count();
         let editor = Editor::new(project, history_capacity)?;
@@ -515,6 +582,9 @@ impl Session {
                 .storage_on_control(bytes, limits.storage)
                 .map_err(hex_engine::native_device_resources::ResourcePreparationError::from)?;
         }
+        if cancel.load(std::sync::atomic::Ordering::Acquire) {
+            return Err(SessionError::Invalid("source overview reopen cancelled"));
+        }
         let shutdown = Arc::new(std::sync::atomic::AtomicBool::new(false));
         Ok(Self {
             audio_transforms: hex_engine::audio_transform::AudioTransformPreparation::new(
@@ -527,6 +597,8 @@ impl Session {
             media,
             native_assets,
             native_reservation: native,
+            overview_budget,
+            source_overviews,
             verified_sources: BTreeMap::new(),
             semantic_source_epoch: 0,
             audio_mode: DocumentAudioMode::Resident,
@@ -648,6 +720,13 @@ impl Session {
         self.resident_waveform_bytes = accounting.total_waveform_bytes;
     }
 
+    /// Peak-only immutable original-source data, shared without copying rows.
+    pub fn source_overviews(&self) -> OriginalSourceOverviews {
+        self.source_overviews.clone()
+    }
+    pub fn source_overview_usage(&self) -> SourceOverviewUsage {
+        self.overview_budget.usage()
+    }
     pub const fn resident_waveform_bins(&self) -> usize {
         self.resident_waveform_bins
     }

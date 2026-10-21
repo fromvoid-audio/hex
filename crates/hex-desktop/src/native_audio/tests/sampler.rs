@@ -1,6 +1,7 @@
 mod controls;
 mod envelope;
 mod gain;
+mod overview;
 use super::*;
 mod keyboard;
 use hex_project::{BeatTime, Command, Created};
@@ -671,12 +672,19 @@ fn rendered_sampler_trigger_release_is_visible_but_inactive_without_mode_convers
         rendered_sampler_save_open(cx, true, false, false, Some(fixture));
     }
 }
+#[gpui::test]
+fn rendered_sampler_fresh_source_overview_and_controls_work_before_save_and_reconstruct_on_open(
+    cx: &mut gpui::TestAppContext,
+) {
+    rendered_sampler_save_open(cx, true, false, false, Some(ControlsFixture::Overview));
+}
 #[derive(Clone, Copy)]
 enum ControlsFixture {
     Scalar,
     Envelope,
     TriggerOneShot,
     TriggerSlice,
+    Overview,
 }
 fn rendered_sampler_save_open(
     cx: &mut gpui::TestAppContext,
@@ -734,7 +742,7 @@ fn rendered_sampler_save_open(
     else {
         panic!("track")
     };
-    let loaded_revision = if stereo && !gain {
+    let mut loaded_revision = if stereo && !gain {
         if empty { 3 } else { 5 }
     } else {
         let event = h.run(Request::Edit(Command::SetTuning(tuning(880.0))));
@@ -888,6 +896,13 @@ fn rendered_sampler_save_open(
     assert_eq!(after_cancel.output_identity, before_output);
     assert_eq!(after_cancel.context.project_generation, 0);
     assert_eq!(after_cancel.context.editor_revision, loaded_revision);
+    let fresh_overview = if matches!(controls, Some(ControlsFixture::Overview)) {
+        let fresh = overview::fresh(cx, &mut visual, &h, window, end, track);
+        loaded_revision += 8;
+        Some(fresh)
+    } else {
+        None
+    };
     let saved = files.0.join("saved.hex");
     visual.simulate_keystrokes("cmd-s");
     while !cx.did_prompt_for_new_path() {
@@ -1031,6 +1046,15 @@ fn rendered_sampler_save_open(
     }
     if gain {
         match controls.unwrap() {
+            ControlsFixture::Overview => {
+                overview::reopened(
+                    cx,
+                    &mut visual,
+                    window,
+                    track,
+                    fresh_overview.as_ref().unwrap(),
+                );
+            }
             ControlsFixture::Scalar => {
                 controls::exercise(cx, &mut visual, &mut h, window, end, track, &saved)
             }

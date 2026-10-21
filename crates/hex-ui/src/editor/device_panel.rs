@@ -54,6 +54,7 @@ mod operator_panel;
 mod parameter_rows;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
+mod sampler_overview;
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
@@ -2056,12 +2057,23 @@ fn render_instrument(
         let details = div().flex_1().min_h_0().overflow_hidden().child(theme::text(format!(
             "{name} · {readiness} · edits require stopped audio · * release inactive in trigger mode · replacement unavailable"
         )));
+        let overview = sampler_overview::render(view, device, &name);
         let body = crate::device_composition::body()
-            .flex_col()
-            .child(controls)
+            .flex()
+            .gap(px(8.0))
             .p(px(5.0))
             .text_xs()
-            .child(details);
+            .child(overview)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h_full()
+                    .flex()
+                    .flex_col()
+                    .child(controls)
+                    .child(details),
+            );
         device_frame(
             theme::text("sampler"),
             theme::device_frame_style(selected),

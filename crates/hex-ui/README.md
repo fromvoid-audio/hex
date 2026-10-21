@@ -288,11 +288,17 @@ state. An output-bound epoch is reserved before worker activation; correlated
 acknowledgement enables direct Client desired-key publication. Key up and terminal
 cancellation bypass worker I/O, with old-held/autorepeat suppression. Empty MIDI
 tracks can first-load samples. Captured final gain, pitch, original-frame region and Classic-loop edits share one stopped-only operation,
-with truthful pending state; ADSR uses explicit ms/percent controls and the existing envelope. Waveform/replacement/history remain unavailable.
+with truthful pending state; ADSR uses explicit ms/percent controls and the existing envelope. The waveform overview is read only; replacement/history remain unavailable.
 The eleven persistent widgets keep focus across revisions and reject stale gestures. Region inputs are integral; actual retained-source extent is checked before canonical commit.
 See [the native keyboard boundary](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
 
 Classic loop off/on retains authored endpoints; dormant ranges can be repaired
 outside a trimmed playback region before enabling. Loop fields do not convert
-One-Shot/Slice. The520px sampler frame keeps a fixed three-column field grid inside
+One-Shot/Slice. The720px sampler frame places a180px source overview beside the fixed three-column field grid inside
 the shared168px body, with source/status details bounded below it.
+
+Sampler source views clone one peak-only immutable table handle, never PCM or an
+owning generic Waveform. Publication context and original ID/rate/frame/content
+facts gate both rendering and source-bound input targets, including fresh imports
+before Save/Open. The fixed-height overview has no input gestures; source/loop
+markers use original frames. See [the overview contract](../../docs/sampler.md#original-source-waveform-overview).

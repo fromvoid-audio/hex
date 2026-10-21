@@ -69,6 +69,15 @@ pub struct StagedNativeAssetView<'a> {
     pub(super) staged: &'a StagedDeviceAsset,
 }
 impl StagedNativeAssetView<'_> {
+    /// Borrow original PCM from this exact staged transaction; no owning handle
+    /// escapes and the view cannot outlive either uncommitted source or store.
+    pub fn source(&self, asset: AssetId) -> Option<crate::OwnedAudioSourceView<'_>> {
+        if self.staged.asset.0 != asset {
+            return self.store.source(asset);
+        }
+        let bank = &self.staged.asset.1.bank;
+        bank.source_view(&bank.source_token(asset).ok()?).ok()
+    }
     /// Expected content from this actual staged bank's immutable catalog.
     pub fn original_source_facts_on_control(
         &self,

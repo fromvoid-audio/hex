@@ -697,6 +697,7 @@ fn with_project_view(
         comparison_audio: state.comparison_audio.clone(),
         project,
         waveforms: state.waveforms.clone(),
+        source_overviews: state.source_overviews.clone(),
         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
         midi_preview: state.midi_preview.clone(),
         gain_preview: state.gain_preview.clone(),
