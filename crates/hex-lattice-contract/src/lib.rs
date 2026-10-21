@@ -1,4 +1,12 @@
-//! Bounded metadata and authored state shared across native device boundaries.
+//! # Purpose
+//! Own neutral bounded native-device metadata, identifiers and authored state envelopes.
+//!
+//! # Dependencies
+//! Uses only the standard library; no DSP or other workspace dependency.
+//!
+//! # Does not own
+//! Does not construct processors, resolve assets, schedule notes or perform storage migrations.
+//! Opaque payloads and asset references require provider and host validation before processing.
 mod device_assets;
 #[cfg(test)]
 mod device_assets_tests;

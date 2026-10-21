@@ -1,0 +1,28 @@
+{
+  "photocraft": {
+    "repository": "https://github.com/storytold/photocraft",
+    "revision": "eec4af65513b52084926f3c679fc6ac7821cafaf",
+    "inspected": "2026-10-08",
+    "usage": "engineering reference only; no application code or assets copied"
+  },
+  "freqs": {
+    "repository": "PORTALSURFER/freqs",
+    "revision": "f90669b0b193a55d049fc1cd7d30d7127233edca",
+    "version": "0.3.4",
+    "inspected": "2026-10-17",
+    "usage": "original user-owned scale and analysis source; unpublished inspected contents identified separately; no third-party license grant inferred",
+    "file_sha256": {
+      "README.md": "b123016b3589db87edc0727d991f6cf0a69dd1d6750f03a292290c73d7568b53",
+      "docs/PROJECT.md": "dafc5335fcc35dc7c920fbeba609e7d03fa184da1f125d26d39ad508f2f521ad",
+      "src/scale.rs": "1a301975075ed6cd0e99690e316c4746be395b104644bfe37dd279584d428f9d",
+      "src/analysis.rs": "cbde3d936060539b750fe975f4f701920a7a78e4ab97ae218ae6773e19bdacb8",
+      "src/gui_gpui.rs": "f3a95d2e0bac32a789274fb041c2e177c1fd1e45cb44684462c98c4bf946d1ae",
+      "src/library.rs": "64ab92a8c1d9124e249eeee1aedf133f0fad92701319739bec8ff3d7479749c2",
+      "src/shared.rs": "31040a2a3bcbd024e7bcce5bf8e364f18f4567a909d4b6d968bdeb1650900f68",
+      "src/synth.rs": "3d96700ed4ecccf7a54136cb78722f075dc7754eeb24647683b95bbb7378ea6e",
+      "src/mts.rs": "be8737e4f8cb8bcf6325e15bdb8529ff169349c46063ff014ca95f1234a2dfab",
+      "src/vst3/controller.rs": "d9056be4afa76749ba3066372324e824ee55fb6e931f695a94aa8fa5c2381cf3",
+      "src/vst3/synth_audio.rs": "3669c8ce4a99157dfc181b2b5d2afa6c9cec8a3bed6c6bf21b0af13c3cb0e96e"
+    }
+  }
+}

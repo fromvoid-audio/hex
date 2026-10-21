@@ -1,5 +1,13 @@
-//! Bounded custody only. Queue acceptance, no-install closure and normal physical
-//! disposal are different facts. No state here grants render/admission authority.
+//! Bounded candidate custody with exact root/slot/incarnation/runtime identity.
+//!
+//! Reservation, queue acceptance, installation, source readiness, terminal return and normal
+//! physical disposal are separate transitions. Synchronous refusal preserves the original
+//! owner/container; accepted tickets and scalar acknowledgments grant no cleanup authority. Full
+//! return queues retain the actual owner in persistent held storage. Never-installed and
+//! final-active returns retain distinct physical paths. Control/lifecycle execution records
+//! Pending before destructive takes, retains the first failed payload and remaining owners, and
+//! never reuses occupancy after an incomplete destructor, worker join or page-pool conservation
+//! check.
 use crate::candidate_catalog::{CandidateDomain, CatalogCustody};
 use hex_engine::{
     AudioCandidateDisposed, AudioCandidateIdentity, AudioCandidateOwner, OwnedAudioInputs,

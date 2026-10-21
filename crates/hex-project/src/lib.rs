@@ -1,5 +1,14 @@
-//! Canonical, control-side audio/MIDI arrangement and transactional editing.
-//! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
+//! # Purpose
+//! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
+//! transactional history.
+//!
+//! # Dependencies
+//! Uses hex-tuning and neutral hex-lattice-contract metadata/state; never DSP implementations.
+//!
+//! # Does not own
+//! Does not render DSP, access audio devices or maintain a parallel UI editing model. Audio
+//! placement uses project-rate frames; MIDI uses checked Q32.32 quarter-note beats. Failed
+//! preparation must preserve project, IDs and history.
 mod audio_events;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;

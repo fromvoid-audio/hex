@@ -1,9 +1,14 @@
-//! Original sampler kernel and its explicit empty catalog state.
+//! Original source-coordinate sampler kernel and explicit empty catalog state.
 //!
-//! The catalog default is silent; source-bearing playback requires host admission.
-//! The control owner validates PCM once and retains it for every borrowed voice.
-//! Rendering is deterministic, allocation-free and independent of block size.
-//! See `docs/sampler.md` for host asset and reference acceptance still required.
+//! The empty catalog sentinel is silent and owns no asset or substitute PCM; malformed or
+//! source-bearing state without its actual source must refuse preparation. Loaded playback
+//! currently uses the host's private resident-source path, not ordinary registered
+//! mixed-instrument publication. The control owner validates original-rate PCM and retains its
+//! exact configuration for current and outgoing voices. Source regions are nonempty half-open
+//! frame intervals. Pitch/rate conversion, reverse, Classic loops, One-Shot/Slice gate laws and
+//! envelope ages share the same bounded scalar preparation. Voices borrow immutable PCM without
+//! per-note scan, copy or owning handle; sample queries remain deterministic across block sizes.
+//! These original laws do not establish Live parity or native deadline acceptance.
 mod binding;
 pub mod catalog;
 mod envelope;
