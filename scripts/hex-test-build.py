@@ -110,7 +110,8 @@ def optimized_artifact(runner, *, package: str = "hex-desktop", adopt: bool = Fa
         yield binaries[0], ownership
 
 
-DISCOVERY_ROOT = Path("Contents/Helpers/vst3")
+DISCOVERY_ROOT = Path("Contents/Helpers")
+DISCOVERY_RECEIPT = Path("Contents/Resources/vst3-discovery.json")
 DISCOVERY_APP = "hex-vst3-host.app"
 DISCOVERY_SCANNER = "hex-vst3-scan-macos"
 
@@ -127,11 +128,12 @@ def discovery_builder():
         sys.path.pop(0)
 
 
-def validate_discovery_input(path: Path, candidate: str) -> dict:
+def validate_discovery_input(path: Path, candidate: str, *, packaged=False) -> dict:
     assert_plain_path(path.absolute())
     data = discovery_builder().verify(path)
     if (data.get("scope") != "native-macos-factory-discovery"
-            or data.get("source_commit") != candidate or data.get("source_dirty") is not False):
+            or data.get("source_commit") != candidate or data.get("source_dirty") is not False
+            or data.get("package_layout") != ("hex-app-discovery-v1" if packaged else None)):
         raise DeliveryError("discovery helper must be minimal and built from the exact clean candidate")
     return data
 
@@ -167,12 +169,14 @@ def stage_discovery(stage: Path, source: Path, candidate: str, scanner: dict, si
     sign_discovery(destination / DISCOVERY_SCANNER, "org.portalsurfer.hex.vst3.scan", signing)
     data["bundle_files"] = builder.inventory(destination / DISCOVERY_APP)
     data["signing"] = {"mode": "Developer ID local discovery; not notarized; no added entitlements", **signing}
-    write_json(destination / "controlled-macos.json", data)
-    builder.verify(destination / "controlled-macos.json")
+    data["package_layout"] = "hex-app-discovery-v1"
+    packaged_receipt = stage / DISCOVERY_RECEIPT
+    write_json(packaged_receipt, data)
+    builder.verify(packaged_receipt)
     # Re-signing is explicit: preserve input provenance and identify final bytes.
     return {"source": candidate, "input_receipt_sha256": input_receipt_sha256, "input_scanner": scanner,
             "root": str(DISCOVERY_ROOT), "scanner_sha256": sha(destination / DISCOVERY_SCANNER),
-            "receipt_sha256": sha(destination / "controlled-macos.json"), "signing": signing}
+            "receipt_sha256": sha(packaged_receipt), "signing": signing}
 
 
 def verify_discovery_package(app: Path, receipt: dict) -> None:
@@ -180,8 +184,9 @@ def verify_discovery_package(app: Path, receipt: dict) -> None:
     if evidence.get("source") != receipt.get("source") or evidence.get("root") != str(DISCOVERY_ROOT):
         raise DeliveryError("discovery package source/location mismatch")
     root = app / DISCOVERY_ROOT
-    data = validate_discovery_input(root / "controlled-macos.json", receipt["source"])
-    if sha(root / "controlled-macos.json") != evidence.get("receipt_sha256") or sha(root / DISCOVERY_SCANNER) != evidence.get("scanner_sha256"):
+    packaged_receipt = app / DISCOVERY_RECEIPT
+    data = validate_discovery_input(packaged_receipt, receipt["source"], packaged=True)
+    if sha(packaged_receipt) != evidence.get("receipt_sha256") or sha(root / DISCOVERY_SCANNER) != evidence.get("scanner_sha256"):
         raise DeliveryError("discovery package changed")
     discovery_builder().macho(root / DISCOVERY_SCANNER, 2)
     for path, identifier in [(root / DISCOVERY_APP, "org.portalsurfer.hex.vst3.discovery"),

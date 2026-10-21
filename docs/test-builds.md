@@ -345,7 +345,7 @@ entitlements or hardened-runtime relaxation to the main app. This remains local
 development signing, not notarized distribution; hardened production helper
 library-validation policy and full hosting qualification remain separate work.
 
-The fixed `Contents/Helpers/vst3/` package is checked for exact source, native
+The fixed `Contents/Helpers/` package is checked for exact source, native
 arm64 role, selected helper contents and final hashes before factory admission.
 The scanner's `--bundled --trust-user-code /one/module.vst3` command resolves its
 own fixed application-relative tools, without source/PATH fallback. It executes

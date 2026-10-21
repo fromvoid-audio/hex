@@ -359,8 +359,9 @@ both nested tools with the configured local Developer ID, updates their final
 byte inventory, then seals the outer app. These local development signatures do
 not establish notarization or third-party compatibility.
 
-The fixed package is `Contents/Helpers/vst3/`: `hex-vst3-scan-macos`, the minimal
-`hex-vst3-host.app`, and `controlled-macos.json`. Invoke the packaged scanner as
+The fixed tools in `Contents/Helpers/` are `hex-vst3-scan-macos` and the minimal
+`hex-vst3-host.app`; their receipt is `Contents/Resources/vst3-discovery.json`.
+Invoke the packaged scanner as
 `hex-vst3-scan-macos --bundled --trust-user-code /selected/module.vst3`.
 `macos::package::Package` resolves and checks only these application-relative
 paths and source/hash bindings, with no PATH, Python, SDK or checkout fallback.

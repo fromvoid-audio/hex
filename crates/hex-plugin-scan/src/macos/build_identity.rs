@@ -187,7 +187,26 @@ impl Build {
         let path = path
             .canonicalize()
             .map_err(|_| "helper receipt path failed")?;
-        let root = path.parent().ok_or("helper root missing")?.to_path_buf();
+        let parent = path.parent().ok_or("helper root missing")?;
+        let root = if data["package_layout"].is_null() {
+            parent.to_path_buf()
+        } else if data["package_layout"] == "hex-app-discovery-v1"
+            && data["scope"] == "native-macos-factory-discovery"
+            && path.file_name().and_then(|v| v.to_str()) == Some("vst3-discovery.json")
+            && parent.file_name().and_then(|v| v.to_str()) == Some("Resources")
+            && parent
+                .parent()
+                .and_then(Path::file_name)
+                .and_then(|v| v.to_str())
+                == Some("Contents")
+        {
+            parent
+                .parent()
+                .ok_or("app contents missing")?
+                .join("Helpers")
+        } else {
+            return Err("unknown discovery package layout".into());
+        };
         if inventory(&root)? != files {
             return Err("helper bundle content changed".into());
         }

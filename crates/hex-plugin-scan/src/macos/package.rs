@@ -8,9 +8,9 @@ use super::{
 use crate::{MAX_BINARY, hash};
 use std::path::{Path, PathBuf};
 
-const ROOT: &str = "Contents/Helpers/vst3";
-const SCANNER: &str = "Contents/Helpers/vst3/hex-vst3-scan-macos";
-const RECEIPT: &str = "Contents/Helpers/vst3/controlled-macos.json";
+const ROOT: &str = "Contents/Helpers";
+const SCANNER: &str = "Contents/Helpers/hex-vst3-scan-macos";
+const RECEIPT: &str = "Contents/Resources/vst3-discovery.json";
 
 #[derive(Debug)]
 pub struct Package {
@@ -93,7 +93,7 @@ impl Package {
     pub fn from_scanner(executable: &Path) -> Result<Self, String> {
         let app = executable
             .ancestors()
-            .nth(4)
+            .nth(3)
             .ok_or("scanner is outside a hex app")?;
         let package = Self::inspect(app)?;
         if executable != package.scanner {

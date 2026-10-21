@@ -89,6 +89,12 @@ def verify(receipt, run=False):
             or data.get("sdk_pins") != PINS or data.get("source_sha256") != source_digest()):
         raise ValueError("unsupported or stale bootstrap receipt")
     root = receipt.parent
+    if data.get("package_layout") is not None:
+        if (data["package_layout"] != "hex-app-discovery-v1" or not minimal
+                or receipt.name != "vst3-discovery.json" or root.name != "Resources"
+                or root.parent.name != "Contents"):
+            raise ValueError("unknown discovery package layout")
+        root = root.parent / "Helpers"
     actual = inventory(root / APP)
     if not actual or actual != data.get("bundle_files"):
         raise ValueError("missing or changed bundle contents")

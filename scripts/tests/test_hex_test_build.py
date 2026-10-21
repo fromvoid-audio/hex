@@ -1154,7 +1154,7 @@ class NativeDiscoveryPackageTests(unittest.TestCase):
             self.assertIn(b"factory scan refused", err)
             helper.write_bytes(original)
             helper.chmod(0o755)
-        receipt = root / "controlled-macos.json"
+        receipt = self.app / delivery.DISCOVERY_RECEIPT
         data = json.loads(receipt.read_text())
         data["source_commit"] = "0" * 40
         delivery.write_json(receipt, data)
@@ -1174,7 +1174,7 @@ class NativeDiscoveryPackageTests(unittest.TestCase):
         wrong = self.fixtures / "hex-vst3-host.app/Contents/Resources/factory-fixtures/wrong-architecture.vst3/Contents/MacOS/fixture"
         shutil.copy2(wrong, helper)
         delivery.sign_discovery(helper_app, "org.portalsurfer.hex.vst3.discovery", self.signing)
-        receipt = root / "controlled-macos.json"
+        receipt = self.app / delivery.DISCOVERY_RECEIPT
         data = json.loads(receipt.read_text())
         data["bundle_files"] = delivery.discovery_builder().inventory(helper_app)
         delivery.write_json(receipt, data)
