@@ -7,7 +7,7 @@ contains the first original playback-kernel prerequisite. A bounded first-load
 browser action now fills an empty instrument slot with a canonical sampler and
 supports computer-keyboard audition, frame-zero Arrangement playback/Stop and
 offline Main export. Sampler
-is not registered in the general device catalog; controls, replacement and history remain unavailable. Current-format SaveNew/SaveCurrent and
+is not registered in the general device catalog. Stopped gain editing is supported; other controls, replacement and user history remain unavailable. Current-format SaveNew/SaveCurrent and
 original-content-checked reopen are supported through the normal project flow. No reference parity or
 physical native interaction/listening acceptance is claimed.
 
@@ -403,8 +403,9 @@ assets, loaded sampler instruments and the existing Utility-only effect chain.
 Project and MIDI-source loops, Session MIDI/launches, routing/return devices,
 mutable handoff, tails, checkpoints, live expression, preview and nonzero seeks
 remain closed. Source/configuration/topology edits refuse before canonical
-commit while this limited native owner is active. New/Open explicitly retires
-it; history and loaded-project reconstruction remain separate work.
+commit while this limited native owner is active, except the stopped gain
+transaction described below. New/Open explicitly retires it. Current-format
+reconstruction is supported; user history remains separate work.
 
 Construction regenerates the catalog, device scope and authored tuning against
 the newly copied bank. The actual `SessionPlayback`, sampler runtime twins,
@@ -693,5 +694,71 @@ Future finite user checklist after a separately qualified optimized build:
 4. Save/New/Open and compare the sample and tuning; changing track/window focus
    must stop the previous live activation without editing another instrument.
 5. Confirm missing/refused loads and voice-capacity refusal remain truthful.
-   Controls, replacement/history, Console launch/recording and nonzero seek remain
+   Other controls, replacement/history, Console launch/recording and nonzero seek remain
    separate work. Record exact tested source/build and physical results.
+
+
+## stopped native gain — pulse2967 / PR551
+
+The sampler panel's shared numeric gain field reads actual authored gain, with
+linear range0–4 and unity1. A completed numeric confirmation or drag release
+submits one captured generation/revision/track/device edit. Intermediate widget
+changes remain local previews. The narrow codec patch preserves every other
+sampler setting, source reference and host input/output gain. Sampler remains
+outside the generic registry. The same persistent widget survives accepted
+revision changes; each gesture captures its initial revision and stale commits
+refuse. Retiring its focused control restores editor focus only if that exact
+retired field still owns focus, preserving Save/New/Open shortcuts.
+
+Gain edits require the actual native callback to acknowledge the stopped
+CURRENT, exact applied source and captured command prefix. Fixed scalar fence
+storage lives inline in audio Status and its existing boundary quote. The sole
+control writer uses checked odd-request/even-idle identities; callback owns
+ACK/abort-retirement observations. Commands admitted before the cut retain their
+semantics: an earlier Play runs and refuses the edit. New/raced non-Stop commands
+are refused explicitly; their producer serial prevents replay after release or
+later edits. Stop retains priority. Existing keyboard key-up/cancel continues,
+while new epochs/bindings are excluded. Callback readers never wait or allocate.
+
+Session polls the fence without blocking request processing. Invalid/stale,
+playing, cancelled or over-budget preparation preserves canonical state,
+revision/history/document and installed configuration. A lost-callback timeout
+finishes the edit with an error, retaining one scalar abort fence until callback
+consumes the captured prefix. New gain attempts remain refused until that
+retirement; New/Open/shutdown can instead retire the actual old endpoints.
+This preserves an earlier accepted Play even if the callback returns late.
+
+Inside the existing prepared canonical transaction, a synchronous borrowed
+candidate/original-source input admits the actual old/new/private/export/outbound
+and native/control overlap, then creates and seals one separately retained
+pending cell. Its quote and actual ledger include sampler keyboard pools and
+PCM. Canonical commit follows successful preparation and a final cancel check.
+Only then does control revoke the old keyboard epoch, drain the old output and
+adopt/stage that exact sealed cell, with no second PCM copy or seamless voice
+carry. Actual acquisition of the new exclusive output lease proves retirement.
+An incomplete unpublished cleanup remains quarantined, without implicit retry.
+
+A hardware-open failure after drain retains the new authored gain and supports
+Save/offline export. It reports audio unavailable, not applied or rolled back.
+Explicit audio retry can rebuild a refused sampler output; requesting that retry
+on an already working sampler refuses before disturbing it. Only a matching
+actual native installation establishes readiness. Gain adds an ordinary authored
+history step, but sampler Undo/Redo remains gated until its separate lifecycle
+work is complete.
+
+Owning checks exercise the real numeric field through fresh native CURRENT,
+literal keyboard and Arrangement PCM at gain1/0.5/0, SaveCurrent/New/Open,
+unchanged source/other settings, stale/invalid/cancelled/tight-budget refusal,
+earlier/later Play and Stop, lost-callback abort followed by actual callback and
+New/output teardown, postcommit hardware-open failure plus Save/export/retry,
+and exact prepared-to-draining cell identity. Covered callbacks, including
+publication, measure zero total allocations and zero signed-net counts/bytes.
+These are headless native-path tests; physical display/input/device/listening
+and optimized build delivery remain unexecuted. Required exact source review
+and merge-plan evidence belong to PR551/Pulse2967.
+
+Finite user checks after a separately qualified optimized build: stop transport,
+confirm gain0.5/unity/0 changes keyboard and Arrangement level once, Save/New/Open
+and verify it persists, then try editing while playing and confirm refusal.
+Record the tested build/source and physical results. Waveform/region/envelope
+and remaining controls, replacement, history and broader playback stay open.

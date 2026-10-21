@@ -32,3 +32,9 @@ Read ../../AGENTS.md and ../../docs/architecture.md before extending this crate.
 
 Session logging is injected by desktop through `hex-diagnostics`; only that
 crate's worker owns log file I/O. See [session diagnostics](../../docs/diagnostics.md).
+
+The stopped sampler gain path seals one pending cell while old CURRENT remains
+installed. Successful canonical preparation commits first, then drains/adopts the
+same cell through the existing fresh-output path. The sink retains and accounts
+old/new overlap, cleans on control, reports postcommit open failure truthfully and
+allows explicit retry of refused sampler audio. No seamless carry is claimed.

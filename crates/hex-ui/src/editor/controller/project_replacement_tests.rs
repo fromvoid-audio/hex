@@ -33,6 +33,7 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         error: None,
         request_complete: true,
         sampler_load_complete: None,
+        sampler_gain_complete: None,
         computer_keyboard_complete: None,
         tuning_audition_complete: None,
         live_expression_complete: None,

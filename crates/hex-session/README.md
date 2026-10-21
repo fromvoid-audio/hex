@@ -325,3 +325,9 @@ replacement. The UI input object stays on control. Empty-track first load is
 supported; native source/configuration edits, history and other runtime tools
 retain their existing refusals. See
 [the keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
+
+Sampler gain is one captured stopped-only final edit. The worker polls native
+fence readiness without blocking New/Open, then prepares/admitsoverlap and seals
+the pending native cell before the existing canonical/history commit. Public
+completion Events contain request metadata only. Precommit refusal preserves the
+old document; postcommit open failure retains authored gain/save/export.

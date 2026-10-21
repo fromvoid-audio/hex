@@ -24,9 +24,18 @@ pub struct NativeSamplerRetryFacts {
 }
 /// This borrow cannot be cloned, retained by a sink or obtained from an Event.
 pub struct NativeSamplerInput<'a> {
-    session: &'a Session,
-    context: hex_engine::AudioSourceContext,
-    admission: Admission<'a>,
+    pub(in crate::service) project: &'a Project,
+    pub(in crate::service) media:
+        &'a std::collections::HashMap<hex_project::AssetId, crate::ResidentAsset>,
+    pub(in crate::service) native: &'a hex_engine::native_device_resources::ResidentDeviceAssets,
+    pub(in crate::service) reservation: Option<crate::ResidentNativeReservation>,
+    pub(in crate::service) audio_mode: crate::DocumentAudioMode,
+    pub(in crate::service) max_frames: u64,
+    pub(in crate::service) shutdown: &'a AtomicBool,
+    pub(in crate::service) candidate:
+        Option<hex_engine::native_device_resources::ControlSamplerSelection<'a>>,
+    pub(in crate::service) context: hex_engine::AudioSourceContext,
+    pub(in crate::service) admission: Admission<'a>,
 }
 impl NativeSamplerInput<'_> {
     pub fn retry_facts(&self) -> NativeSamplerRetryFacts {
@@ -41,22 +50,19 @@ impl NativeSamplerInput<'_> {
         self.context
     }
     pub fn sample_rate(&self) -> u32 {
-        self.session.project().sample_rate()
+        self.project.sample_rate()
     }
     pub fn requires_sampler(&self) -> bool {
-        hex_engine::native_device_resources::requires_private_sampler_sources(
-            self.session.project(),
-        )
+        hex_engine::native_device_resources::requires_private_sampler_sources(self.project)
     }
     fn needed(&self, asset: hex_project::AssetId) -> bool {
-        let project = self.session.project();
+        let project = self.project;
         project.tracks().iter().any(|t| t.clips().iter().any(|c| c.asset() == asset)
             || t.instrument().is_some_and(|d| d.state().asset_references().iter().any(|r| r.asset.value() == asset.value())))
             || project.session_cells().iter().any(|c| matches!(c.content(), hex_project::SessionCellContent::Audio(c) if c.asset() == asset))
     }
     fn sampler_asset(&self, asset: hex_project::AssetId) -> bool {
-        self.session
-            .project()
+        self.project
             .tracks()
             .iter()
             .filter_map(|t| t.instrument())
@@ -79,31 +85,25 @@ impl NativeSamplerInput<'_> {
         String,
     > {
         if !self.requires_sampler()
-            || self.session.audio_mode() != crate::DocumentAudioMode::Resident
-            || self.session.native_reservation.is_none()
+            || self.audio_mode != crate::DocumentAudioMode::Resident
+            || self.reservation.is_none()
         {
             return Err("sampler native playback requires an explicit resident reservation".into());
         }
         let mut count = 0usize;
         let mut frames = 0u64;
-        for asset in self
-            .session
-            .project()
-            .assets()
-            .filter(|a| self.needed(a.id()))
-        {
+        for asset in self.project.assets().filter(|a| self.needed(a.id())) {
             let length = if self.sampler_asset(asset.id()) {
                 let source = self
-                    .session
-                    .native_source(asset.id())
+                    .native
+                    .source(asset.id())
                     .ok_or("sampler original source is unavailable")?;
                 source
                     .resident_frames()
                     .ok_or("sampler native source must be resident")?
                     .len()
             } else {
-                self.session
-                    .media
+                self.media
                     .get(&asset.id())
                     .ok_or("resident source is unavailable")?
                     .audio
@@ -115,7 +115,7 @@ impl NativeSamplerInput<'_> {
                 .ok_or("source frame count overflow")?;
             count = count.checked_add(1).ok_or("source count overflow")?;
         }
-        let quote = AudioCandidateReservationQuote::for_project(self.session.project(), count)
+        let quote = AudioCandidateReservationQuote::for_project(self.project, count)
             .map_err(|e| format!("sampler constructor quote refused: {e:?}").to_lowercase())?;
         let pcm = usize::try_from(frames)
             .ok()
@@ -153,8 +153,20 @@ impl NativeSamplerInput<'_> {
             .frames
             .checked_add(hold.frames)
             .ok_or("native frame reservation overflow")?;
+        let legacy = self
+            .media
+            .values()
+            .flat_map(|m| [&m.source_audio, &m.audio])
+            .collect::<Vec<_>>();
         admission
-            .check_legacy_stage(self.session, &[])
+            .check_native_parts(
+                self.native,
+                &legacy,
+                self.reservation,
+                self.max_frames,
+                self.candidate,
+            )
+            .map(|_| ())
             .map_err(|e| e.to_string())
     }
     /// Original sampler PCM is copied directly into persistent constructor
@@ -164,24 +176,18 @@ impl NativeSamplerInput<'_> {
         catalog: u64,
         cell: &mut AudioCandidatePreparation,
     ) -> Result<(), hex_engine::AudioStorageError> {
-        for asset in self
-            .session
-            .project()
-            .assets()
-            .filter(|a| self.needed(a.id()))
-        {
+        for asset in self.project.assets().filter(|a| self.needed(a.id())) {
             if self.sampler_asset(asset.id()) {
                 cell.copy_original_source_on_control(
                     asset.id(),
-                    self.session
-                        .native_source(asset.id())
+                    self.native
+                        .source(asset.id())
                         .ok_or(hex_engine::AudioStorageError::SourceMismatch)?,
                 )?;
             } else {
                 cell.copy_resident_source_on_control(
                     asset.id(),
                     &self
-                        .session
                         .media
                         .get(&asset.id())
                         .ok_or(hex_engine::AudioStorageError::SourceMismatch)?
@@ -190,15 +196,14 @@ impl NativeSamplerInput<'_> {
             }
         }
         let limits = self
-            .session
-            .native_reservation
+            .reservation
             .ok_or(hex_engine::AudioStorageError::ReservationExceeded)?;
         cell.prepare_current_sampler_on_control(
-            self.session.project(),
+            self.project,
             catalog,
             self.context,
             limits.max_scan_frames,
-            &self.session.shutdown,
+            self.shutdown,
         )
     }
 }
@@ -213,7 +218,14 @@ pub(in crate::service) fn drive(
     if let Some(audio) = audio {
         lane.native_hold = audio.native_sampler_hold();
         audio.native_sampler_input(NativeSamplerInput {
-            session,
+            project: session.project(),
+            media: &session.media,
+            native: &session.native_assets,
+            reservation: session.native_reservation,
+            audio_mode: session.audio_mode,
+            max_frames: session.max_resident_frames,
+            shutdown: &session.shutdown,
+            candidate: None,
             context,
             admission: lane.admission(current),
         });

@@ -1,3 +1,4 @@
+mod gain;
 use super::*;
 mod keyboard;
 use hex_project::{BeatTime, Command, Created};
@@ -621,37 +622,42 @@ fn actual_old_resident_current_pcm_remains_charged_across_new_and_sampler_prefli
 fn rendered_browser_first_load_reaches_real_service_and_native_current_without_retargeting(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, true, false, false);
+    rendered_sampler_save_open(cx, true, false, false, false);
 }
 #[gpui::test]
 fn rendered_browser_mono_sampler_save_open_preserves_absolute_tuning(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, false, false, false);
+    rendered_sampler_save_open(cx, false, false, false, false);
 }
 #[gpui::test]
 fn rendered_empty_midi_track_load_and_reopen_is_playable_from_computer_keyboard(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, true, true, false);
+    rendered_sampler_save_open(cx, true, true, false, false);
 }
 #[gpui::test]
 fn rendered_sampler_key_release_and_focus_cancel_do_not_wait_for_blocked_service(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, true, false, true);
+    rendered_sampler_save_open(cx, true, false, true, false);
 }
 #[gpui::test]
 fn rendered_mono_a880_sampler_keyboard_playing_and_blocked_release_are_literal(
     cx: &mut gpui::TestAppContext,
 ) {
-    rendered_sampler_save_open(cx, false, false, true);
+    rendered_sampler_save_open(cx, false, false, true, false);
+}
+#[gpui::test]
+fn rendered_sampler_gain_edits_rebuild_stopped_current_and_persist(cx: &mut gpui::TestAppContext) {
+    rendered_sampler_save_open(cx, true, false, false, true);
 }
 fn rendered_sampler_save_open(
     cx: &mut gpui::TestAppContext,
     stereo: bool,
     empty: bool,
     looped: bool,
+    gain: bool,
 ) {
     use gpui::{Modifiers, MouseButton, VisualTestContext};
     let _serial = NATIVE_FIXTURE
@@ -663,7 +669,7 @@ fn rendered_sampler_save_open(
     let source = wav(&files, stereo);
     let path = samples.join("original.wav");
     fs::rename(source, &path).unwrap();
-    let mut h = Harness::resident_sampler(8);
+    let mut h = Harness::resident_sampler(if gain { 12 } else { 8 });
     h.next();
     let Some(Created::Track(track)) = h
         .run(Request::Edit(Command::AddMidiTrack {
@@ -728,7 +734,12 @@ fn rendered_sampler_save_open(
     let target_selector = Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
     let other_selector = Box::leak(format!("track-name-{}", other.value()).into_boxed_str());
     let other_selected = Box::leak(format!("selected-track-{}", other.value()).into_boxed_str());
-    let end = Instant::now() + h.wait;
+    let end = Instant::now()
+        + if gain {
+            Duration::from_secs(30)
+        } else {
+            h.wait
+        };
     let pulse = |visual: &mut VisualTestContext| {
         cx.background_executor
             .advance_clock(Duration::from_millis(16));
@@ -957,6 +968,12 @@ fn rendered_sampler_save_open(
     }
     for _ in 0..12 {
         pulse(&mut visual);
+    }
+    if gain {
+        gain::exercise(cx, &mut visual, &mut h, window, end, track, &saved);
+        visual.update(|w, _| w.remove_window());
+        visual.run_until_parked();
+        return;
     }
     fs::remove_file(path).unwrap();
     let target_bounds = visual.debug_bounds(target_selector).unwrap();

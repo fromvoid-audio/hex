@@ -6,6 +6,8 @@ use std::sync::{
     Mutex,
     atomic::Ordering::{AcqRel, Release},
 };
+mod gain;
+pub(super) use gain::GainPending;
 
 // One native output already has exclusive lifecycle custody. Its single
 // unpublished preflight has one persistent cleanup owner, including on failure.
@@ -58,14 +60,32 @@ fn add(a: Hold, b: Hold) -> Hold {
     }
 }
 impl NativeAudioSink {
+    pub(super) fn reset_refused_sampler_for_retry(&mut self) -> Result<(), String> {
+        if self
+            .sampler
+            .as_ref()
+            .is_some_and(|s| s.phase != Phase::Refused)
+        {
+            return Err(
+                "sampler audio retry requires a refused output; current audio is unchanged".into(),
+            );
+        }
+        if self.sampler.is_some() && !self.cancel_sampler() {
+            return Err(
+                "sampler output cleanup is incomplete; save project and restart hex".into(),
+            );
+        }
+        Ok(())
+    }
     pub(super) fn sampler_hold(&self) -> Hold {
-        add(
+        let held = add(
             add(
                 add(self.retired_sampler_hold, self.output_hold),
                 pcm_hold(self.ordinary_pcm_frames),
             ),
             self.sampler.as_ref().map_or(Hold::default(), |s| s.hold),
-        )
+        );
+        add(held, self.gain_hold())
     }
     pub(super) fn opened_output(&mut self, output: WorkerPreparedOutput) {
         // Both production and headless factories must acquire the existing
@@ -156,6 +176,7 @@ impl NativeAudioSink {
         true
     }
     pub(super) fn cancel_sampler(&mut self) -> bool {
+        self.cancel_gain();
         if !self.clean_preflight() {
             return false;
         }
@@ -517,6 +538,7 @@ impl NativeAudioSink {
         }
     }
     pub(super) fn shutdown_sampler(&mut self) {
+        self.shutdown_gain();
         if !self.clean_preflight() {
             if let Some(state) = self.sampler.as_mut() {
                 // The exclusive preflight slot remains closed until process exit.

@@ -599,3 +599,8 @@ remain nontransferable Session storage under the32MiB limit, and render in the s
 stopped/playing route transaction. Input is scalar, with no UI input/source owner
 in the callback; ordinary registry keyboard admission is unchanged. See
 [the bounded keyboard contract](../../docs/sampler.md#native-computer-keyboard--pulse2966--pr550).
+
+Sampler gain metadata reads/patches use the strict current sampler codec without
+adding registry admission. A narrow opaque CURRENT observation supplies actual
+transport and the live keyboard epoch (including idle zero) to the stopped edit
+fence; it exposes no source owner, mutable runtime or alternate rendering path.

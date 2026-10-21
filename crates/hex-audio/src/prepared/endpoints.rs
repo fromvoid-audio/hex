@@ -457,6 +457,10 @@ fn enqueue_action(
     audition: &mut processor_audition::ProcessorAuditionTargetControl,
     action: PlaybackAction,
 ) -> Result<u64, PlaybackAction> {
+    let sampler_edit_gate = status.sampler_edit.gate();
+    if sampler_edit_gate & 1 != 0 && !sampler_edit::is_stop(action) {
+        return Err(action);
+    }
     if status.closing.load(Acquire) || revision == 0 {
         return Err(action);
     }
@@ -467,6 +471,7 @@ fn enqueue_action(
         .push(QueuedCommand {
             ticket: next,
             action,
+            sampler_edit_gate,
         })
         .map_err(|PushError::Full(q)| q.action)?;
     *ticket = next;
