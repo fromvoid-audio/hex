@@ -455,12 +455,16 @@ pub enum Request {
         path: PathBuf,
         cancel: Arc<AtomicBool>,
     },
-    /// One captured first-load transaction; never replaces an occupied slot.
+    /// One captured first load into an absent or exact empty sampler slot.
     LoadFirstSampler {
         request_id: u64,
         project_generation: u64,
         revision: u64,
         track: hex_project::TrackId,
+        empty_sampler: Option<(
+            hex_project::DeviceId,
+            hex_lattice_contract::NativeDeviceState,
+        )>,
         path: PathBuf,
         cancel: Arc<AtomicBool>,
     },
@@ -2345,6 +2349,7 @@ fn run_worker(
                     project_generation: target_generation,
                     revision: target_revision,
                     track,
+                    empty_sampler,
                     path,
                     cancel,
                 } => {
@@ -2356,9 +2361,19 @@ fn run_worker(
                             .project()
                             .track(track)
                             .ok_or(SessionError::Invalid("sampler track no longer exists"))?;
-                        if target.instrument().is_some() {
+                        let target_current = match (&empty_sampler, target.instrument()) {
+                            (None, None) => true,
+                            (Some((id, expected)), Some(device)) => {
+                                device.id() == *id
+                                    && device.state() == expected
+                                    && !device.bypassed()
+                                    && hex_engine::is_empty_sampler_state_on_control(expected)
+                            }
+                            _ => false,
+                        };
+                        if !target_current {
                             return Err(SessionError::Invalid(
-                                "first sampler load requires an empty instrument slot; replacement is unavailable",
+                                "sampler load target changed or slot is occupied",
                             ));
                         }
                         if private_sampler {
@@ -2389,11 +2404,12 @@ fn run_worker(
                                 prepared: Some(p),
                             }
                         });
-                        session.import_service_snapshot_to(
+                        session.import_service_snapshot_to_sampler(
                             decoded,
                             &cancel,
                             export_lane.admission(current),
-                            Some(track),
+                            track,
+                            empty_sampler,
                         )
                     })();
                     match result {

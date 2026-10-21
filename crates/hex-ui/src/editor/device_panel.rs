@@ -1978,7 +1978,25 @@ fn render_instrument(
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
     let leading = bypass_action(device, NativeDeviceClass::Instrument, selected, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
-    let rendered = if is_sampler {
+    let rendered = if hex_engine::is_empty_sampler_state_on_control(device.state()) {
+        device_frame(
+            device_drag_title(
+                view,
+                cx,
+                device,
+                NativeDeviceClass::Instrument,
+                theme::text("sampler"),
+            ),
+            theme::device_frame_style(selected),
+            leading,
+            header_actions,
+            crate::device_composition::body()
+                .p(px(8.0))
+                .child(theme::text(
+                    "empty sampler · choose a wav in the sample browser and load into sampler",
+                )),
+        )
+    } else if is_sampler {
         let name = view
             .state
             .as_ref()

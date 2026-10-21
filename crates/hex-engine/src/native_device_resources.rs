@@ -383,7 +383,7 @@ pub fn requires_private_sampler_sources(project: &hex_project::Project) -> bool 
     project.tracks().iter().any(|track| {
         track
             .instrument()
-            .is_some_and(|device| device.state().type_id() == hex_devices::sampler::state::TYPE_ID)
+            .is_some_and(|device| hex_devices::sampler::state::requires_source(device.state()))
     })
 }
 #[cfg(feature = "instrument-test-support")]

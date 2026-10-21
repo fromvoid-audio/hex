@@ -1469,3 +1469,100 @@ fn rejected_sampler_open_keeps_actual_native_current_document_and_original_sound
         );
     }
 }
+
+#[test]
+fn catalog_empty_sampler_fills_same_device_and_reaches_native_current_from_ordinary_output() {
+    let _serial = NATIVE_FIXTURE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let files = Files::new();
+    let mut h = Harness::resident_sampler(8);
+    assert!(h.next().error.is_none());
+    h.open();
+    let Some(Created::Track(track)) = h
+        .run(Request::Edit(Command::AddMidiTrack {
+            name: "sampler".into(),
+        }))
+        .created
+    else {
+        panic!("track")
+    };
+    let inserted = h.run(Request::AddNativeDevice {
+        track,
+        class: hex_engine::NativeDeviceClass::Instrument,
+        type_id: Box::new(hex_engine::DeviceTypeId::from_static(
+            "hex.instrument.sampler",
+        )),
+        before: None,
+    });
+    let device = inserted
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .clone();
+    assert!(hex_engine::is_empty_sampler_state_on_control(
+        device.state()
+    ));
+    let Some(Created::Clip(clip)) = h
+        .run(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        }))
+        .created
+    else {
+        panic!("clip")
+    };
+    let before = h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    let old_identity = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 9,
+        project_generation: h.context.unwrap().project_generation,
+        revision: before.state.revision,
+        track,
+        empty_sampler: Some((device.id(), device.state().clone())),
+        path: wav(&files, false),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    assert_eq!(
+        loaded
+            .state
+            .project
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id(),
+        device.id()
+    );
+    assert_eq!(loaded.state.project.assets().count(), 1);
+    h.open_sampler(old_identity);
+    h.applied(h.context.unwrap());
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let output = h.render();
+    let mut expected = [[0.0; 2]; 64];
+    for (frame, sample) in [0.125, 0.3125, 0.5, 0.1875, -0.125, -0.0625, 0.0]
+        .into_iter()
+        .enumerate()
+    {
+        expected[frame] = [sample; 2];
+    }
+    assert_eq!(output, expected);
+    h.audio.as_ref().unwrap().control.stop();
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+}

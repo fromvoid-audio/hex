@@ -5146,6 +5146,16 @@ fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_lo
         editor.update(cx, |view, cx| {
             let state = view.state.as_ref().unwrap();
             let mut model = Editor::new((*state.project).clone(), 4).unwrap();
+            model
+                .execute(Command::InsertInstrument {
+                    track: tracks[0],
+                    state: hex_engine::default_native_device_state_for_class(
+                        hex_engine::NativeDeviceClass::Instrument,
+                        hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sampler"),
+                    )
+                    .unwrap(),
+                })
+                .unwrap();
             let Created::Clip(clip) = model
                 .execute(Command::PlaceMidiClip {
                     track: tracks[0],
@@ -5189,6 +5199,20 @@ fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_lo
             else {
                 panic!("sampler menu action")
             };
+            assert_eq!(
+                view.context_menu.as_ref().unwrap().items[0].label,
+                "load into sampler"
+            );
+            assert!(
+                target
+                    .replacement
+                    .as_ref()
+                    .is_some_and(|(_, state)| hex_engine::is_empty_sampler_state_on_control(state))
+            );
+            assert!(
+                !view.first_sampler_current(),
+                "an empty sampler has no loaded audio requirement"
+            );
             let generation = view.project_generation;
             let pending = view.worker_requests_pending;
             view.project_generation += 1;
