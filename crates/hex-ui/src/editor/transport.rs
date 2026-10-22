@@ -140,12 +140,8 @@ impl EditorView {
                 cx,
             ))
             .children([self.snap_control(cx)])
-            .child(self.control_icon(
-                "fit",
-                "fit timeline · cmd+0",
-                |view, _, _| view.fit_timeline(),
-                cx,
-            ))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx))
             .child(
                 self.control_icon(
                     "▤",

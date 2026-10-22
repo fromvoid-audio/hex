@@ -157,6 +157,7 @@ mod viewport;
 mod waveform;
 mod waveform_geometry;
 mod waveform_stretch;
+mod zoom_fit;
 
 use crate::theme;
 use audio_admission::AudioAdmissionStatus;
@@ -342,6 +343,8 @@ actions!(
         ZoomIn,
         ZoomOut,
         FitTimeline,
+        ZoomToFit,
+        ZoomBack,
         PanTimelineLeft,
         PanTimelineRight,
         AddTrack,
@@ -505,6 +508,8 @@ fn bind_editor_keys(cx: &mut App) {
         KeyBinding::new("cmd-+", ZoomIn, Some("hex_editor")),
         KeyBinding::new("cmd--", ZoomOut, Some("hex_editor")),
         KeyBinding::new("cmd-0", FitTimeline, Some("hex_editor")),
+        KeyBinding::new("z", ZoomToFit, Some("hex_editor && !hex_text_editing")),
+        KeyBinding::new("x", ZoomBack, Some("hex_editor && !hex_text_editing")),
         KeyBinding::new("alt-left", PanTimelineLeft, Some("hex_editor")),
         KeyBinding::new("alt-right", PanTimelineRight, Some("hex_editor")),
         KeyBinding::new("cmd-q", Quit, None),
@@ -704,6 +709,7 @@ pub(super) struct EditorView {
     pending_metronome_ticket: Option<u64>,
     pending_session_ticket: Option<(u64, u64)>,
     viewport: Option<Viewport>,
+    zoom_fit: zoom_fit::State,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
     // One existing read-only view per transient protocol, never a prepared graph/resource set.
@@ -1316,6 +1322,7 @@ impl EditorView {
             pending_metronome_ticket: None,
             pending_session_ticket: None,
             viewport: None,
+            zoom_fit: zoom_fit::State::default(),
             playback_candidates: VecDeque::new(),
             audible_playback: None,
             resident_device_preview: None,
@@ -1643,7 +1650,7 @@ impl EditorView {
         self.audio.as_ref().and_then(|audio| audio.status())
     }
 
-    fn visible_viewport(&self, horizon: u64) -> Viewport {
+    fn viewport_horizon(&self, horizon: u64) -> u64 {
         // Display all authored points while this editor is open. Canonical content/export
         // extent stays unchanged; a held gain endpoint is not an audible source duration.
         let gain_end = self.state.as_ref().and_then(|state| {
@@ -1663,7 +1670,11 @@ impl EditorView {
         });
         let horizon = horizon.max(gain_end.map_or(0, |frame| frame.saturating_add(1)));
         // Only a current resize owner may extend the transient display extent.
-        let horizon = horizon.max(self.trim_display_end().unwrap_or(0));
+        horizon.max(self.trim_display_end().unwrap_or(0))
+    }
+
+    fn visible_viewport(&self, horizon: u64) -> Viewport {
+        let horizon = self.viewport_horizon(horizon);
         self.viewport
             .unwrap_or_else(|| Viewport::fit(horizon))
             .clamp(horizon)
@@ -1692,6 +1703,8 @@ impl EditorView {
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {
             self.piano_view_clip = None;
+            self.zoom_fit.clear_clip();
+            self.audio_event_editor.clear_fit_back();
             self.midi_creation = None;
             self.midi_note_gesture = None;
             self.midi_hit_cycle = None;

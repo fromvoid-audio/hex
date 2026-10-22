@@ -109,6 +109,7 @@ impl EditorView {
             .raw();
         let owner = (self.project_generation, selected);
         if self.piano_view_clip != Some(owner) {
+            self.zoom_fit.clear_clip();
             self.cancel_midi_note_gesture();
             self.clear_midi_time_selection();
             self.piano_view_clip = Some(owner);
@@ -1657,14 +1658,8 @@ impl EditorView {
                     cx.notify();
                 }),
             )])
-            .children([self.midi_button(
-                "⤢",
-                "fit midi clip in piano roll",
-                cx.listener(|v, _, _, cx| {
-                    v.fit_piano();
-                    cx.notify();
-                }),
-            )])
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Midi, false, cx))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Midi, true, cx))
             .children([self.midi_button(
                 "o−",
                 "lower piano roll pitch range",
@@ -1976,16 +1971,6 @@ impl EditorView {
             clip_length,
             self.piano_beat_span.raw(),
         ));
-    }
-
-    fn fit_piano(&mut self) {
-        self.cancel_midi_note_gesture();
-        let length = self
-            .midi_clip()
-            .map_or(BeatTime::ONE.raw(), |clip| clip.source_length().raw());
-        self.piano_beat_span =
-            BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
-        self.piano_beat_start = BeatTime::ZERO;
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
