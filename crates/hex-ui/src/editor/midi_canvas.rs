@@ -738,6 +738,9 @@ impl EditorView {
                         height,
                     ];
                     mouse_down_entity.update(cx, |view, view_cx| {
+                        if view.midi_ruler.cancel() {
+                            view_cx.notify();
+                        }
                         if view.project_generation == generation
                             && view.state.as_ref().is_some_and(|s| s.revision == revision)
                             && view.detail_clip_id() == Some(clip_id)
@@ -1803,6 +1806,7 @@ impl EditorView {
             .flex()
             .children([self.piano_keys(pitch_low, cx)])
             .children([roll]);
+        let source_ruler = self.midi_source_ruler(cx);
         panel = panel.child(source_column).child(
             div()
                 .flex_1()
@@ -1811,6 +1815,7 @@ impl EditorView {
                 .flex()
                 .flex_col()
                 .child(toolbar)
+                .children([source_ruler])
                 .child(roll_area),
         );
         let velocity = self.velocity_lane(cx);
@@ -1938,6 +1943,7 @@ impl EditorView {
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
+        let ruler = self.midi_ruler.cancel();
         let pan = self.midi_pan.gesture.take().is_some();
         let velocity = self.midi_velocity.cancel();
         let pending_selection = self.pending_created_note_selection.take().is_some();
@@ -1947,7 +1953,9 @@ impl EditorView {
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
         let marquee = self.midi_marquee.take().is_some();
-        pan || velocity
+        ruler
+            || pan
+            || velocity
             || pending_selection
             || pitch_zoom
             || creation
