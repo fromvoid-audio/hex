@@ -2167,13 +2167,14 @@ impl EditorView {
             self.device_panel.main_selected = None;
             self.track_selection = super::selection::TrackSelection::default();
             self.selected_clip = None;
+            self.retained_clip_detail = None;
             self.selected_scene = None;
             self.selected_cell = None;
             self.session_copy_source = None;
             self.session_track_start = 0;
             self.midi_selection.clear();
         } else if let Some(state) = self.state.clone() {
-            let previous_clip = self.selected_clip;
+            let previous_clip = self.detail_clip_id();
             if self.session_copy_source.is_some_and(|clip| {
                 state.project.midi_clip(clip).is_none()
                     && !state
@@ -2192,13 +2193,17 @@ impl EditorView {
                 // A completed time range deliberately has no primary clip. The
                 // generic stale-clip fallback must not reselect its first original
                 // after a range copy (or on a later unrelated worker response).
+                // Retained inspector context also keeps that selection empty
+                // during a range gesture and after its cancellation.
                 let time_range_owns_selection = self.selected_clip.is_none()
-                    && self.time_selection_gesture.is_none()
-                    && self.time_range_move_gesture.is_none()
-                    && self
-                        .edit_cursor
-                        .is_some_and(|cursor| cursor.generation == self.project_generation)
-                    && self.normalized_time_selection().is_some();
+                    && ((self.mode == super::EditorMode::Arrangement
+                        && self.retained_clip_detail.is_some())
+                        || (self.time_selection_gesture.is_none()
+                            && self.time_range_move_gesture.is_none()
+                            && self.edit_cursor.is_some_and(|cursor| {
+                                cursor.generation == self.project_generation
+                            })
+                            && self.normalized_time_selection().is_some()));
                 (self.selected_track, self.selected_clip) =
                     selection::reconcile(&state.project, self.selected_track, self.selected_clip);
                 if time_range_owns_selection {
@@ -2227,13 +2232,13 @@ impl EditorView {
             }) {
                 self.selected_cell = None;
             }
-            if self.selected_clip != previous_clip {
+            if self.detail_clip_id() != previous_clip {
                 self.cancel_midi_note_gesture();
                 self.midi_hit_cycle = None;
                 self.midi_selection.clear();
                 self.piano_beat_start = hex_project::BeatTime::ZERO;
                 if let Some(length) = self
-                    .selected_clip
+                    .detail_clip_id()
                     .and_then(|clip| state.project.midi_source(clip))
                     .map(|source| source.source_length().raw())
                 {
@@ -2243,7 +2248,7 @@ impl EditorView {
                 }
             }
             if let Some(clip) = self
-                .selected_clip
+                .detail_clip_id()
                 .and_then(|clip| state.project.midi_source(clip))
             {
                 // Source markers and Arrangement duration may change independently.
@@ -2349,7 +2354,7 @@ impl EditorView {
                 .and_then(|state| state.project.midi_source(clip))
             {
                 match super::midi_draw::created_range_ids(
-                    self.selected_clip,
+                    self.detail_clip_id(),
                     clip,
                     current.notes(),
                     first,

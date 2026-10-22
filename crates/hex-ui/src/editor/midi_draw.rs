@@ -175,7 +175,7 @@ impl EditorView {
         modifiers: StrokeModifiers,
     ) -> Option<StrokeContext> {
         let state = self.state.as_ref()?;
-        let clip_id = self.selected_clip?;
+        let clip_id = self.detail_clip_id()?;
         let clip = state.project.midi_source(clip_id)?;
         Some(StrokeContext {
             generation: self.project_generation,
