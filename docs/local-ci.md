@@ -9,15 +9,109 @@ python3 scripts/local-ci.py --quick
 python3 scripts/local-ci.py --help
 ```
 
-No flags runs the complete audit. Merge resolves the required plan from actual
+No flags runs the complete audit. Merge resolves the runner's plan from actual
 Git inputs and Cargo dependencies. Quick runs guards/formatting only and records
-partial feedback. See [development-workflow.md](development-workflow.md).
+partial feedback. Runner certification and reviewed change-based verification
+are distinct evidence routes under AGENTS.md; neither implies native acceptance.
+See [development-workflow.md](development-workflow.md).
 
 The runner executes sequentially and stops on failure. Read the numbered log for
 the failing step; later `not_run` steps did not pass. Results are in
-`artifacts/local-ci/<run-id>/summary.json` and adjacent raw logs. A qualifying run
+`artifacts/local-ci/<run-id>/summary.json` and adjacent raw logs. A runner-certified run
 must pass on the exact final commit with an unchanged source digest and no stale
 flag. Preserve failed/interrupted logs; do not weaken assertions to obtain green.
+
+## Merge selection
+
+`scripts/ci_plan.py` selects checks from both sides of changed Git paths, Cargo
+ownership and transitive normal/dev/build/optional/target dependencies. Rust,
+package manifests and package build scripts select owning packages and consumers,
+including reviewed runtime relationships such as opaque device state in storage.
+Mixed tooling/Rust changes combine comprehensive Python checks with affected Rust
+configurations. Contributor prose, including AGENTS.md, gets link/path checks;
+executable selector/runner policy gets comprehensive tooling tests and guards.
+
+The first narrower device boundary is compressor implementation and owning tests.
+With host interfaces, registration and build inputs unchanged, it selects real
+compressor DSP, session revision, generic device-chain, callback/allocation,
+storage round-trip and UI source tests. All affected Cargo/runtime consumers still
+compile through default and relevant feature Clippy checks. Whole unrelated
+instrument/export and UI/audio behavior suites are omitted with reasons in the
+plan. A new consumer or macro/include input widens to complete affected-package
+tests; missing required consumers/targets refuse. Other device modules currently
+retain affected-package coverage until their runtime relationships are reviewed.
+
+Package plans retain default tests/lints, applicable allocation/UI/export feature
+configurations, gallery and desktop build checks, and independently declared
+additional features. Feature combinations need reviewed contract rules; individual
+feature runs do not prove all combinations. Global manifests/lockfiles, toolchain,
+vendor, unowned resources and unknown inputs conservatively select the comprehensive
+audit with explicit input reasons. Review unknown effects rather than assuming
+an omitted domain is covered. A merge or core path alone does not require full.
+Full/release profiles and native delivery keep their comprehensive configurations.
+
+The existing summary retains changed inputs, exact selected argv, boundary and
+Python exclusions/rationale, source digest, counts, logs and cache identity. Empty
+named targets, zero passing tests, stale source or mismatched reuse evidence cannot
+qualify. Quick/edit/custom probes remain partial. For an unsupported boundary a
+reviewed change-based command set remains available under AGENTS.md; record its
+source/base, contracts/consumers, configurations, results and limitations in the PR.
+
+Reviewed evidence reuse must identify the original tested inputs and assumptions.
+The runner's `--reuse-report SUMMARY.json` is narrower: it accepts an original
+complete runtime report for a prose-only continuation with matching executable
+inputs and guarded dependencies. It does not compose arbitrary per-owner reports.
+Neither reviewed merge evidence nor a merge certificate replaces the full audit
+required by [qualified native delivery](test-builds.md).
+
+For ordinary app-only Rust merge inputs, reviewed Python shared invariants run
+alongside affected Rust checks and repository guards. Tooling, executable policy,
+build/configuration, mixed UI/core or unknown inputs, and new/missing/nested test
+modules retain comprehensive discovery. Full/release profiles always discover all
+modules. The summary records selected and excluded groups and exact selectors.
+
+Explicit native acceptance inputs (`HEX_VST3_MACOS_RECEIPT`,
+`HEX_VST3_DISCOVERY_RECEIPT`, `HEX_VST3_PACKAGE_SCANNER`,
+`HEX_VST3_PACKAGE_FIXTURES`, or `HEX_TEST_SIGNING_IDENTITY`) keep comprehensive
+Python discovery for app-only merges too. Native suites retain their own opt-in
+requirements; a skipped fixture is not native acceptance.
+
+## Measure feedback time
+
+Each executed step records monotonic `start_offset_seconds` and `duration_seconds`;
+the run records `time_to_first_result_seconds` and total `duration_seconds`.
+Offsets start at runner construction, after CLI plan resolution. Measure invocation
+wall time separately when that preparation matters. Durations survive command
+failure and interruption; `not_run` steps have null timing. UTC timestamps remain
+for correlation, not precise elapsed measurements.
+
+Per-step `timing_estimates` contains log-derived Cargo build-phase, Rust harness
+and Python harness seconds plus the unclassified residual. Cargo's build phase
+includes more than compiler CPU. Harness output is rounded and may be nested;
+missing values and negative/overlapping residuals are null, not zero. Residual
+time can include setup, I/O, process overhead and other work; do not label all of
+it setup. These diagnostic fields never change qualification or test counts.
+
+For a comparison, retain each summary and raw log with exact source/base,
+toolchain, hardware, features, command and target/cache conditions. Start with a
+warm quick run and one named owning edit regression. Use three paired runs for
+cheap workloads, alternate order, and compare medians; retain warm-up/compilation
+samples separately. Reuse justified full and representative UI merge reports
+instead of adding repeated full audits. Label historical/different-source reports
+and unavailable maintenance/diagnostic measures explicitly. Do not delete caches
+to manufacture a saving or infer reduced detection from fewer executables.
+
+Inspect a retained report without rerunning checks:
+
+```sh
+python3 - SUMMARY.json <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+print(s['commit'], s['status'], s.get('time_to_first_result_seconds'), s['duration_seconds'])
+for step in s['steps']:
+    print(step['step_id'], step['status'], step.get('duration_seconds'), step.get('timing_estimates'))
+PY
+```
 
 ## Target ownership
 
@@ -28,12 +122,36 @@ ownership refuses before normal checks. Read the diagnostic before recovery.
 and establishes the checkout's development owner; it is not permission to remove
 another executor's active cache, release artifacts or user data.
 
+Package-scoped handoffs use Cargo-supported plain package names only after
+complete metadata proves each selected workspace/path name is unique across
+sources and versions. Provenance retains full package IDs. Ambiguous names or
+removed/version-changed path dependencies require a fresh target; qualifiers
+cannot make Cargo cleanup narrower. Ordinary package handoffs preserve unrelated
+dependencies and the other profile. Existing compiler-profile changes retain their
+separate profile invalidation rule.
+
 The runner may refuse insufficient disk headroom. Inspect and remove only known
 reproducible, inactive generated outputs. Do not delete projects, source, accepted
 artifacts or another worktree's target merely to get a run started. Do not edit
 ownership markers to claim a successful check.
 
 ## Focused commands
+
+For partial edit feedback, optionally select the owning library or named
+integration test from the package's Cargo metadata:
+
+```sh
+python3 scripts/local-ci.py --profile edit --base BASE_SHA --source HEAD_SHA \
+  --package hex-storage --test-filter injected_precommit_failure --lib
+python3 scripts/local-ci.py --profile edit --base BASE_SHA --source HEAD_SHA \
+  --package hex-storage --test-filter TEST_NAME --test INTEGRATION_TARGET
+```
+
+Omit `--lib`/`--test` to retain package-wide test selection. They are mutually
+exclusive and require an explicit edit package/filter; unknown targets, disabled
+required features and zero passing matches refuse qualification. Edit still runs
+package Clippy and formatting and remains partial. These options do not change
+runner merge/full/release plans.
 
 ```sh
 python3 scripts/check-architecture.py
@@ -48,7 +166,9 @@ cargo test -p hex-stream --features allocation-probe --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-Focused tests support iteration; they do not replace the resolved merge plan.
+Focused tests can form part of a reviewed change-based merge check set when its
+affected contracts, consumers and configurations are covered; an isolated passing
+test alone does not establish that scope.
 Allocation probes cover their named headless fixtures, not all callback faults,
 native allocations, physical device deadlines or audible quality. Report those
 limits. User native interaction and listening checks remain separate.

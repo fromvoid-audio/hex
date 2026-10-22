@@ -11,6 +11,7 @@
 //! These original laws do not establish Live parity or native deadline acceptance.
 mod binding;
 pub mod catalog;
+pub mod control;
 mod envelope;
 mod plan;
 mod runtime;

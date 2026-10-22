@@ -3,11 +3,13 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 # Module import only: never expose an imported TestCase class in this namespace.
 import test_ci_plan as existing
@@ -23,9 +25,10 @@ INVENTORY = [
 ]
 
 
-def selection(paths, profile="merge", modules=None):
+def selection(paths, profile="merge", modules=None, env=None):
     return impact.select(profile, paths, INVENTORY, {"hex-ui", "hex-widgets"},
-                         sorted(impact.REVIEWED_MODULES) if modules is None else modules)
+                         sorted(impact.REVIEWED_MODULES) if modules is None else modules,
+                         env={} if env is None else env)
 
 
 def cases(suite):
@@ -46,6 +49,60 @@ class SelectionTests(unittest.TestCase):
         self.assertIn("test_local_ci", ui["excluded_groups"])
         self.assertIn("test_launch_restart_compile", ui["excluded_groups"])
         self.assertIn("test_ci_plan:remaining-cases", ui["excluded_groups"])
+
+    def test_current_repository_inventory_retains_scoped_feedback_and_impact_fallbacks(self):
+        modules = impact.available_modules(ROOT)
+        for path in ("crates/hex-ui/src/editor.rs", "crates/hex-engine/src/lib.rs"):
+            with self.subTest(path=path):
+                chosen = selection([path], modules=modules)
+                self.assertEqual(chosen["mode"], "shared")
+                self.assertEqual(chosen["test_selectors"], [*impact.SHARED_TESTS, "test_python_test_plan"])
+        for path in (
+            "scripts/check-architecture.py", "scripts/tests/test_architecture.py", "AGENTS.md",
+            "crates/hex-plugin-scan/native/macos_bootstrap.py",
+            "crates/hex-plugin-scan/native/macos_helper.mm",
+            "crates/hex-plugin-scan/native/macos_fixture.cpp",
+            "crates/hex-plugin-scan/native/build.py", "crates/hex-plugin-scan/build.rs",
+            "scripts/tests/test_vst3_macos_bootstrap.py", "Cargo.toml", ".cargo/config.toml",
+        ):
+            with self.subTest(path=path):
+                chosen = selection([path], modules=modules)
+                self.assertEqual(chosen["mode"], "comprehensive")
+                self.assertEqual(chosen["selected_groups"], modules)
+        for profile in ("full", "release"):
+            chosen = selection(["crates/hex-ui/src/editor.rs"], profile, modules)
+            self.assertEqual(chosen["selected_groups"], modules)
+            self.assertEqual(impact.argv(chosen), impact.COMPREHENSIVE_ARGV)
+
+    def test_explicit_native_inputs_keep_comprehensive_discovery_and_native_cases(self):
+        for key in ("HEX_VST3_MACOS_RECEIPT", "HEX_VST3_DISCOVERY_RECEIPT",
+                    "HEX_VST3_PACKAGE_SCANNER", "HEX_VST3_PACKAGE_FIXTURES", "HEX_TEST_SIGNING_IDENTITY"):
+            with self.subTest(key=key):
+                chosen = selection(["crates/hex-ui/src/editor.rs"], env={key: "explicit-input"})
+                self.assertEqual(chosen["mode"], "comprehensive")
+                self.assertEqual(impact.argv(chosen), impact.COMPREHENSIVE_ARGV)
+                self.assertIn(key, chosen["reasons"][0])
+        # Fresh process: the native suite's opt-in decorator is evaluated at
+        # import time. Collect actual cases without executing any fake fixture.
+        code = """
+import sys, unittest
+from pathlib import Path
+sys.path[:0] = ['scripts', 'scripts/tests']
+import python_test_plan as impact
+chosen = impact.select('merge', ['crates/hex-ui/src/lib.rs'],
+    [{'name': 'hex-ui', 'manifest': 'crates/hex-ui/Cargo.toml'}],
+    {'hex-ui'}, impact.available_modules(Path.cwd()))
+assert impact.argv(chosen) == impact.COMPREHENSIVE_ARGV
+import test_vst3_macos_bootstrap as native
+assert not getattr(native.NativeBootstrapTests, "__unittest_skip__", False)
+suite = unittest.defaultTestLoader.loadTestsFromTestCase(native.NativeBootstrapTests)
+assert any(case.id().endswith(".test_actual_native_identity_and_effect_instrument_pcm")
+           for case in suite)
+"""
+        result = subprocess.run([sys.executable, "-c", code], cwd=ROOT,
+                                env={**os.environ, "HEX_VST3_MACOS_RECEIPT": "collection-only"},
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_tooling_configuration_vendor_and_unknown_inputs_stay_comprehensive(self):
         for path in (
@@ -166,12 +223,13 @@ class SelectionTests(unittest.TestCase):
             git("config", "user.email", "fixture@invalid")
             git("add", ".");git("commit", "-qm", "base")
             base = git("rev-parse", "HEAD")
-            for name, expected_scope in (("hex-ui", "ui"), ("hex-engine", "full")):
+            for name, expected_scope in (("hex-ui", "ui"), ("hex-engine", "rust")):
                 (root / "crates" / name / "src/lib.rs").write_text("changed")
                 git("add", ".");git("commit", "-qm", name)
                 source = git("rev-parse", "HEAD")
-                resolved = existing.plan.resolve(root, profile="merge", base=base,
-                                                 source=source, metadata=metadata)
+                with patch.dict(os.environ, dict.fromkeys(impact.NATIVE_ACCEPTANCE_ENV, "")):
+                    resolved = existing.plan.resolve(root, profile="merge", base=base,
+                                                     source=source, metadata=metadata)
                 self.assertEqual(resolved["scope"], expected_scope)
                 self.assertEqual(resolved["python_tests"]["mode"], "shared")
                 unhashed = copy.deepcopy(resolved)

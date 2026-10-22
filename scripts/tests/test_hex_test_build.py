@@ -453,6 +453,10 @@ class DeliveryTests(unittest.TestCase):
         runner.git_identity = {"workspace_root":str(source), "git_common_dir":str(source / ".git"), "commit":candidate}
         scope = [{"name":"hex-desktop", "version":"0.1.0", "spec":"hex-desktop@0.1.0"}]
         runner.cargo_identity["workspace_packages"] = scope
+        # The substituted metadata query must populate the same complete package
+        # view as production before name-scoped cleanup can be proven safe.
+        runner._release_metadata = {"workspace_members": [scope[0]["spec"]], "packages": [
+            {"id": scope[0]["spec"], "name": "hex-desktop", "source": None}]}
         _, dev_owner = delivery.ci.target_state_paths(target.parent.parent, runner.target_state_dir)
         owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
         event = {"reason":"compiler-artifact", "executable":str(executable),
@@ -731,7 +735,7 @@ class DeliveryTests(unittest.TestCase):
         impact = delivery.ci.ci_plan.python_tests
         selected = impact.select("merge", ["crates/hex-engine/src/lib.rs"],
             [{"name": "hex-engine", "manifest": "crates/hex-engine/Cargo.toml"}],
-            delivery.ci.ci_plan.UI_PACKAGES, sorted(impact.REVIEWED_MODULES))
+            delivery.ci.ci_plan.UI_PACKAGES, sorted(impact.REVIEWED_MODULES), env={})
         plan = {"scope": "full", "profile": "merge", "qualifies_merge": True,
                 "source": tree["commit"], "base": "base", "python_tests": selected}
         dependencies = {"fixture": "same guarded inputs"}
@@ -909,6 +913,8 @@ class ReleaseCargoTests(unittest.TestCase):
                     shutil.copy2(binary, base / (name + "-retained-binary"))
                 self.assertIsNone(instance.target_lock)
                 self.assertEqual(ownership["state"], "ready")
+                if ownership.get("cleanup_log"):
+                    self.assertNotIn("qualifier", Path(ownership["cleanup_log"]).read_text())
                 self.assertEqual(checks, ["before-build", "artifact"])
                 return ownership
             first = build(root, "release-a", "16")

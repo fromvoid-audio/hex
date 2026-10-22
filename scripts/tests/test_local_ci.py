@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "local-ci.py"
@@ -57,6 +57,32 @@ echo "completed $tool $*"
 
 
 class LocalCiRunnerTests(unittest.TestCase):
+    def test_log_timing_estimates_label_unknown_and_overlapping_durations(self):
+        text = ("    Finished `test` profile target(s) in 1m 2.50s\n"
+                "test result: ok. 2 passed; finished in 3.25s\n"
+                "test result: FAILED. 1 failed; finished in 0.75s\n"
+                "Ran 1 test in 0.500s\n")
+        result = local_ci.log_timing_estimates(text, 70.0)
+        self.assertEqual(result, {"cargo_build_phase_seconds": 62.5, "rust_harness_seconds": 4.0,
+                                  "python_harness_seconds": 0.5, "unclassified_seconds": 3.0})
+        self.assertIsNone(local_ci.log_timing_estimates(text, 1.0)["unclassified_seconds"])
+        unknown = local_ci.log_timing_estimates("unrecognized tool output", 0.123456)
+        self.assertIsNone(unknown["cargo_build_phase_seconds"])
+        self.assertIsNone(unknown["rust_harness_seconds"])
+        self.assertEqual(unknown["unclassified_seconds"], 0.123456)
+
+    def test_step_timing_uses_monotonic_clock_even_with_constant_utc(self):
+        runner = self.runner("clock", steps=(local_ci.Step("first", ("first",)),))
+        with patch.object(local_ci, "utc_now", return_value="2026-01-01T00:00:00Z"):
+            self.assertEqual(runner.run(), 0)
+        summary = self.summary("clock")
+        step = summary["steps"][0]
+        self.assertEqual(step["started_at"], step["ended_at"])
+        self.assertGreater(step["duration_seconds"], 0)
+        self.assertAlmostEqual(summary["time_to_first_result_seconds"],
+                               step["start_offset_seconds"] + step["duration_seconds"], places=5)
+        self.assertGreaterEqual(summary["duration_seconds"], summary["time_to_first_result_seconds"])
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         # Ordinary fixtures use the same physical identity as the runner.
@@ -385,6 +411,8 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertEqual(summary["status"], "failed")
         self.assertEqual([step["status"] for step in summary["steps"]], ["failed", "not_run"])
         self.assertEqual(summary["steps"][0]["exit_code"], 7)
+        self.assertGreater(summary["steps"][0]["duration_seconds"], 0)
+        self.assertIsNone(summary["steps"][1]["duration_seconds"])
         self.assertIn("intentional failure", (self.repo / summary["steps"][0]["log"]).read_text())
 
     def test_missing_executable_is_logged_as_failure(self) -> None:
@@ -398,7 +426,58 @@ class LocalCiRunnerTests(unittest.TestCase):
         summary = self.summary("missing")
         self.assertEqual(summary["steps"][0]["status"], "failed")
         self.assertIsNone(summary["steps"][0]["exit_code"])
+        self.assertGreater(summary["steps"][0]["duration_seconds"], 0)
         self.assertIn("not-installed", (self.repo / summary["steps"][0]["log"]).read_text())
+        self.assertIn("required executable not found", summary["steps"][0]["error"])
+
+    def test_invalid_step_ids_refuse_entire_plan_and_restore_resources(self) -> None:
+        handlers = {sig: local_ci.signal.getsignal(sig)
+                    for sig in (local_ci.signal.SIGINT, local_ci.signal.SIGTERM)}
+        for index, step_id in enumerate(("transport/routes", "../escape", "..", ".", "/absolute",
+                                         "transport\\routes", "", "a" * 101, "a\n", "é")):
+            with self.subTest(step_id=step_id):
+                run_id = f"invalid-{index}"
+                runner = self.runner(run_id, steps=(local_ci.Step("first", ("first",)),
+                                                    local_ci.Step(step_id, ("cargo", "build"))))
+                lock = Mock()
+                lock.release.return_value = None
+                runner.target_lock = lock
+                with patch.object(local_ci.subprocess, "run") as command:
+                    self.assertEqual(runner.run(), 2)
+                command.assert_not_called()
+                lock.release.assert_called_once_with()
+                self.assertIsNone(runner.target_lock)
+                for sig, handler in handlers.items():
+                    self.assertIs(local_ci.signal.getsignal(sig), handler)
+                summary = self.summary(run_id)
+                self.assertEqual(summary["status"], "failed")
+                self.assertEqual(summary["verification_status"], "failed")
+                self.assertIsNone(summary["time_to_first_result_seconds"])
+                self.assertTrue(all(s["duration_seconds"] is None for s in summary["steps"]))
+                self.assertIn("invalid step IDs", summary["step_id_error"])
+                self.assertNotIn("required executable", json.dumps(summary))
+                self.assertEqual([s["step_id"] for s in summary["steps"]], ["first", step_id])
+                self.assertTrue(all(s["status"] == "not_run" and s["log"] is None
+                                    and s["exit_code"] is None for s in summary["steps"]))
+                self.assertEqual(list(runner.output_dir.iterdir()), [runner.output_dir / "summary.json"])
+                self.assertFalse(self.call_log.exists())
+
+    def test_safe_step_ids_keep_distinct_numbered_log_linkage(self) -> None:
+        ids = ("transport-routes", "transport_routes", "A0", "a" * 100, "transport-routes")
+        runner = self.runner("safe-ids", steps=tuple(local_ci.Step(s, ("first", s)) for s in ids))
+        self.assertEqual(runner.run(), 0)
+        summary = self.summary("safe-ids")
+        self.assertEqual(summary["status"], "passed")
+        logs = []
+        for index, (step_id, entry) in enumerate(zip(ids, summary["steps"]), start=1):
+            log = self.repo / entry["log"]
+            self.assertEqual(log, runner.output_dir / f"{index:02d}-{step_id}.log")
+            self.assertEqual(log.resolve().parent, runner.output_dir.resolve())
+            self.assertEqual(entry["step_id"], step_id)
+            self.assertEqual(entry["status"], "passed")
+            self.assertIn(f"completed first {step_id}", log.read_text())
+            logs.append(log)
+        self.assertEqual(len(set(logs)), len(ids))
 
     def test_source_change_during_run_marks_evidence_stale(self) -> None:
         source = self.repo / "source.rs"
@@ -429,6 +508,8 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertEqual(summary["steps"][0]["status"], "interrupted")
         self.assertEqual(summary["steps"][0]["exit_code"], 130)
         self.assertIsNotNone(summary["steps"][0]["ended_at"])
+        self.assertGreater(summary["steps"][0]["duration_seconds"], 0)
+        self.assertIsNotNone(summary["time_to_first_result_seconds"])
         self.assertEqual(summary["steps"][1]["status"], "not_run")
 
     def test_cargo_metadata_resolves_and_pins_exact_target_and_source_identity(self) -> None:
@@ -521,7 +602,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(cache["cleanup_status"], "passed")
         self.assertEqual(cache["cleanup_argv"][2:4], ["--profile", "dev"])
         self.assertEqual(cache["cleanup_argv"][-4:], [
-            "--package", "fixture 0.1.0", "--package", "other 0.1.0",
+            "--package", "fixture", "--package", "other",
         ])
         self.assertEqual(sentinel.read_bytes(), b"external dependency")
         self.assertIn(f"[target={target.resolve()}]", self.call_log.read_text())
@@ -557,7 +638,7 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         )
         calls = self.call_log.read_text()
         self.assertIn("cargo clean", calls)
-        self.assertIn("--package fixture 0.1.0 --package other 0.1.0", calls)
+        self.assertIn("--package fixture --package other", calls)
 
     def test_replaced_target_fails_closed_before_cross_worktree_cleanup(self) -> None:
         target = Path(self.env["FAKE_METADATA_TARGET"]).resolve()
@@ -691,7 +772,8 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         api = root / "crates/fixture-api"
         app = root / "crates/fixture-app"
         helper = self.base / "shared-external-helper"
-        for directory in (api / "src", app / "src", helper / "src"):
+        retained = self.base / "retained-external-helper"
+        for directory in (api / "src", app / "src", helper / "src", retained / "src"):
             directory.mkdir(parents=True)
         (root / "Cargo.toml").write_text(
             '[workspace]\nmembers = ["crates/*"]\nexclude = ["external-helper"]\n'
@@ -709,10 +791,14 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             encoding="utf-8",
         )
         (helper / "src/lib.rs").write_text("pub fn helper() -> u32 { 1 }\n", encoding="utf-8")
+        (retained / "Cargo.toml").write_text(
+            '[package]\nname = "retained-helper"\nversion = "0.1.0"\nedition = "2021"\n')
+        (retained / "src/lib.rs").write_text("pub fn value() -> u32 { 9 }\n")
         (app / "Cargo.toml").write_text(
             '[package]\nname = "fixture-app"\nversion = "0.1.0"\nedition = "2021"\n'
             '[dependencies]\nfixture-api = { path = "../fixture-api" }\n'
-            f'external-helper = {{ path = {json.dumps(str(helper))} }}\n',
+            f'external-helper = {{ path = {json.dumps(str(helper))} }}\n'
+            f'retained-helper = {{ path = {json.dumps(str(retained))} }}\n',
             encoding="utf-8",
         )
         (app / "src/main.rs").write_text(
@@ -776,6 +862,8 @@ runpy.run_path(sys.argv[1], run_name='__main__')
             "    if stale:\n"
             "        print('stale workspace API artifacts survived handoff: ' + ', '.join(stale), file=sys.stderr)\n"
             "        raise SystemExit(23)\n"
+            "if os.environ.get('ASSERT_PATH_CLEAN') == '1' and sys.argv[1:2] == ['build']:\n"
+            "    assert not glob.glob(os.path.join(os.environ['CARGO_TARGET_DIR'], 'debug/deps/libexternal_helper-*.rlib'))\n"
             "os.execv(real, [real, *sys.argv[1:]])\n",
             encoding="utf-8",
         )
@@ -790,6 +878,9 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         helper_artifacts = sorted((target / "debug/deps").glob("libexternal_helper-*.rlib"))
         self.assertTrue(helper_artifacts, "external path dependency artifact was not produced")
         helper_digests = {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in helper_artifacts}
+        retained_digests = {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                            for p in (target / "debug/deps").glob("libretained_helper-*.rlib")}
+        self.assertTrue(retained_digests)
         api_artifacts = sorted((target / "debug/deps").glob("libfixture_api-*.rlib"))
         self.assertTrue(api_artifacts, "old workspace API artifact was not produced")
 
@@ -817,10 +908,10 @@ runpy.run_path(sys.argv[1], run_name='__main__')
         self.assertEqual(summary_b["target_cache"]["cleanup_argv"][5], str(target.resolve()))
         cleanup_argv = summary_b["target_cache"]["cleanup_argv"]
         cleanup_packages = [cleanup_argv[index + 1] for index, arg in enumerate(cleanup_argv[:-1]) if arg == "--package"]
-        self.assertTrue(any("/fixture-api#0.1.0" in package for package in cleanup_packages), cleanup_packages)
-        self.assertTrue(any("/fixture-app#0.1.0" in package for package in cleanup_packages), cleanup_packages)
+        self.assertEqual(set(cleanup_packages), {"fixture-api", "fixture-app"})
         cleanup_log = worktree_b / summary_b["target_cache"]["cleanup_log"]
         self.assertIn("Removed", cleanup_log.read_text(encoding="utf-8"))
+        self.assertNotIn("qualifier", cleanup_log.read_text(encoding="utf-8"))
         self.assertEqual(
             hashlib.sha256(release_binary.read_bytes()).hexdigest(), release_digest,
             "dev handoff cleanup changed the release artifact",
@@ -829,11 +920,66 @@ runpy.run_path(sys.argv[1], run_name='__main__')
                              for path in (target / "debug/deps").glob("libexternal_helper-*.rlib")}
         self.assertEqual(surviving_helpers, helper_digests,
                          "dev handoff cleanup changed an external path dependency artifact")
+        # A changed path dependency is invalidated by its unique name too.
+        # The wrapper observes removal before rebuilding; the other path package
+        # and the release binary must remain byte-identical.
+        (helper / "src/lib.rs").write_text("pub fn helper() -> u32 { 2 }\n")
+        run_c = local_ci.LocalCiRunner(
+            worktree_b, run_id="path-change", env={**env, "ASSERT_PATH_CLEAN": "1"},
+            steps=(steps[0],), min_free_bytes=0, target_state_dir=state)
+        self.assertEqual(run_c.run(), 0)
+        cache = run_c.summary["target_cache"]
+        selected = [cache["cleanup_argv"][i + 1] for i, arg in enumerate(cache["cleanup_argv"][:-1])
+                    if arg == "--package"]
+        self.assertEqual(set(selected), {"fixture-api", "fixture-app", "external-helper"})
+        self.assertNotIn("qualifier", (worktree_b / cache["cleanup_log"]).read_text())
+        self.assertEqual({p.name: hashlib.sha256(p.read_bytes()).hexdigest()
+                          for p in (target / "debug/deps").glob("libretained_helper-*.rlib")}, retained_digests)
+        self.assertEqual(hashlib.sha256(release_binary.read_bytes()).hexdigest(), release_digest)
         print(
             "real cargo handoff: workspace dev outputs rebuilt; external path dependency and "
             f"release binary preserved (target={target})",
             flush=True,
         )
+
+    @unittest.skipUnless(shutil.which("cargo") and shutil.which("git"), "requires real Cargo and Git")
+    def test_real_duplicate_path_package_names_refuse_without_cleaning_artifacts(self):
+        root = self.base / "collision-workspace"
+        (root / "src").mkdir(parents=True)
+        dependencies = []
+        for alias, version in (("first", "0.1.0"), ("second", "0.2.0")):
+            dependency = self.base / alias
+            (dependency / "src").mkdir(parents=True)
+            (dependency / "Cargo.toml").write_text(
+                f'[package]\nname="same-name"\nversion="{version}"\nedition="2021"\n')
+            (dependency / "src/lib.rs").write_text('pub fn value() -> u32 { 1 }\n')
+            dependencies.append(f'{alias}={{package="same-name",path={json.dumps(str(dependency))}}}')
+        (root / "Cargo.toml").write_text(
+            '[package]\nname="collision-app"\nversion="0.1.0"\nedition="2021"\n'
+            '[workspace]\n[dependencies]\n' + '\n'.join(dependencies) + '\n')
+        (root / "src/main.rs").write_text('fn main() { println!("{}", first::value()+second::value()); }\n')
+        (root / ".gitignore").write_text("/artifacts/\n")
+        target = self.base / "collision-target"
+        env = {**os.environ, "CARGO_TARGET_DIR": str(target)}
+        for argv in (["git", "init", "-q"], ["cargo", "build", "--offline"],
+                     ["git", "config", "user.name", "cleanup fixture"],
+                     ["git", "config", "user.email", "fixture@example.invalid"],
+                     ["git", "add", "."], ["git", "commit", "-qm", "collision fixture"]):
+            result = subprocess.run(argv, cwd=root, env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        before = {str(p.relative_to(target)): hashlib.sha256(p.read_bytes()).hexdigest()
+                  for p in target.rglob("*") if p.is_file()}
+        state = self.base / "collision-ownership"
+        runner = local_ci.LocalCiRunner(
+            root, run_id="ambiguous", env=env, adopt_target=True, min_free_bytes=0,
+            steps=(local_ci.Step("build", ("cargo", "build", "--offline")),), target_state_dir=state)
+        self.assertEqual(runner.run(), 1)
+        self.assertIn("ambiguous package name", runner.summary["target_cache_error"])
+        self.assertFalse(list(state.glob("*.owner.json")))
+        self.assertFalse((runner.output_dir / "target-handoff-clean.log").exists())
+        self.assertEqual({str(p.relative_to(target)): hashlib.sha256(p.read_bytes()).hexdigest()
+                          for p in target.rglob("*") if p.is_file()}, before)
+        print("real Cargo source/version name collision refused before cleanup; artifacts preserved", flush=True)
 
 
 if __name__ == "__main__":

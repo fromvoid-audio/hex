@@ -4,158 +4,24 @@ use hex_lattice_contract::{
     DeviceTypeId, NativeDeviceMetadata, NativeDeviceState, ParameterDescriptor, ParameterValue,
 };
 
-/// Closed authored sampler controls. This metadata never registers the device
-/// or grants resource/runtime admission.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum SamplerParameter {
-    Gain,
-    Transpose,
-    StartFrame,
-    EndFrame,
-    LoopEnabled,
-    LoopStartFrame,
-    LoopEndFrame,
-    AttackMs,
-    DecayMs,
-    SustainPercent,
-    ReleaseMs,
-}
-impl SamplerParameter {
-    pub const fn is_envelope(self) -> bool {
-        matches!(
-            self,
-            Self::AttackMs | Self::DecayMs | Self::SustainPercent | Self::ReleaseMs
-        )
-    }
-    pub const fn is_source_frame(self) -> bool {
-        matches!(
-            self,
-            Self::StartFrame | Self::EndFrame | Self::LoopStartFrame | Self::LoopEndFrame
-        )
-    }
-    pub const fn is_integer(self) -> bool {
-        self.is_source_frame() || matches!(self, Self::LoopEnabled)
-    }
-    pub const fn is_loop(self) -> bool {
-        matches!(
-            self,
-            Self::LoopEnabled | Self::LoopStartFrame | Self::LoopEndFrame
-        )
-    }
-    pub const fn key(self) -> &'static str {
-        match self {
-            Self::LoopStartFrame => "loop-start",
-            Self::LoopEndFrame => "loop-end",
-            _ => self.label(),
-        }
-    }
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::Gain => "gain",
-            Self::Transpose => "pitch",
-            Self::StartFrame => "start",
-            Self::EndFrame => "end",
-            Self::LoopEnabled => "loop",
-            Self::LoopStartFrame => "loop start",
-            Self::LoopEndFrame => "loop end",
-            Self::AttackMs => "attack",
-            Self::DecayMs => "decay",
-            Self::SustainPercent => "sustain",
-            Self::ReleaseMs => "release",
-        }
-    }
-    pub const fn bounds(self) -> (f64, f64) {
-        match self {
-            Self::AttackMs | Self::DecayMs | Self::ReleaseMs => (0.0, 60_000.0),
-            Self::SustainPercent => (0.0, 100.0),
-            Self::Gain => (0.0, 4.0),
-            Self::Transpose => (-48.0, 48.0),
-            Self::LoopEnabled => (0.0, 1.0),
-            Self::StartFrame | Self::LoopStartFrame => {
-                (0.0, (hex_devices::sampler::MAX_SAMPLE_FRAMES - 1) as f64)
-            }
-            Self::EndFrame | Self::LoopEndFrame => {
-                (1.0, hex_devices::sampler::MAX_SAMPLE_FRAMES as f64)
-            }
-        }
-    }
-    pub const fn default_value(self) -> f64 {
-        match self {
-            Self::AttackMs | Self::DecayMs | Self::ReleaseMs => 0.0,
-            Self::SustainPercent => 100.0,
-            Self::Gain => 1.0,
-            Self::Transpose => 0.0,
-            Self::StartFrame | Self::LoopStartFrame | Self::LoopEnabled => 0.0,
-            Self::EndFrame | Self::LoopEndFrame => 1.0,
-        }
-    }
-    pub const fn unit(self) -> Option<&'static str> {
-        match self {
-            Self::AttackMs | Self::DecayMs | Self::ReleaseMs => Some("ms"),
-            Self::SustainPercent => Some("%"),
-            Self::Gain | Self::LoopEnabled => None,
-            Self::Transpose => Some("st"),
-            Self::StartFrame | Self::EndFrame | Self::LoopStartFrame | Self::LoopEndFrame => {
-                Some("frames")
-            }
-        }
-    }
-}
+/// Intentional host facade for the provider-owned closed scalar contract.
+pub use hex_devices::sampler::control::SamplerParameter;
+
 pub fn sampler_parameter_value_on_control(
     parameter: SamplerParameter,
     state: &NativeDeviceState,
 ) -> Result<f64, Invalid> {
-    let authored = hex_devices::sampler::state::SamplerState::from_native(state)
-        .map_err(sampler_state_error)?;
-    use SamplerParameter::*;
-    use hex_devices::sampler::state::AuthoredMode::Classic;
-    Ok(match (parameter, &authored.mode) {
-        (AttackMs, _) => authored.envelope.attack_seconds * 1000.0,
-        (DecayMs, _) => authored.envelope.decay_seconds * 1000.0,
-        (SustainPercent, _) => authored.envelope.sustain * 100.0,
-        (ReleaseMs, _) => authored.envelope.release_seconds * 1000.0,
-        (Gain, _) => authored.gain,
-        (Transpose, _) => authored.transpose_semitones,
-        (StartFrame, _) => authored.region.start as f64,
-        (EndFrame, _) => authored.region.end as f64,
-        (LoopEnabled, Classic { loop_enabled, .. }) => {
-            if *loop_enabled {
-                1.0
-            } else {
-                0.0
-            }
-        }
-        (LoopStartFrame, Classic { loop_region, .. }) => loop_region.start as f64,
-        (LoopEndFrame, Classic { loop_region, .. }) => loop_region.end as f64,
-        (LoopEnabled | LoopStartFrame | LoopEndFrame, _) => {
-            return Err(Invalid("loop controls require classic mode"));
-        }
-    })
+    hex_devices::sampler::control::sampler_parameter_value_on_control(parameter, state)
+        .map_err(sampler_control_error)
 }
-/// Whether a displayed control affects the current authored gate mode.
-/// Values remain readable when inactive; this never converts a mode.
+
+/// Values remain readable when inactive; this never converts a gate mode.
 pub fn sampler_parameter_active_on_control(
     parameter: SamplerParameter,
     state: &NativeDeviceState,
 ) -> Result<bool, Invalid> {
-    let authored = hex_devices::sampler::state::SamplerState::from_native(state)
-        .map_err(sampler_state_error)?;
-    use hex_devices::sampler::{GateMode, state::AuthoredMode};
-    Ok(match parameter {
-        SamplerParameter::LoopEnabled
-        | SamplerParameter::LoopStartFrame
-        | SamplerParameter::LoopEndFrame => matches!(authored.mode, AuthoredMode::Classic { .. }),
-        SamplerParameter::ReleaseMs => !matches!(
-            authored.mode,
-            AuthoredMode::OneShot {
-                gate: GateMode::Trigger
-            } | AuthoredMode::Slice {
-                gate: GateMode::Trigger,
-                ..
-            }
-        ),
-        _ => true,
-    })
+    hex_devices::sampler::control::sampler_parameter_active_on_control(parameter, state)
+        .map_err(sampler_control_error)
 }
 
 pub fn patch_sampler_parameter_on_control(
@@ -163,12 +29,15 @@ pub fn patch_sampler_parameter_on_control(
     state: &NativeDeviceState,
     value: f64,
 ) -> Result<NativeDeviceState, Invalid> {
-    let (min, max) = parameter.bounds();
-    if !value.is_finite()
-        || !(min..=max).contains(&value)
-        || (parameter.is_integer() && value.fract() != 0.0)
-    {
-        return Err(Invalid(match parameter {
+    hex_devices::sampler::control::patch_sampler_parameter_on_control(parameter, state, value)
+        .map_err(sampler_control_error)
+}
+
+fn sampler_control_error(error: hex_devices::sampler::control::ControlError) -> Invalid {
+    use hex_devices::sampler::control::ControlError;
+    Invalid(match error {
+        ControlError::State(error) => return sampler_state_error(error),
+        ControlError::InvalidValue(parameter) => match parameter {
             SamplerParameter::AttackMs
             | SamplerParameter::DecayMs
             | SamplerParameter::ReleaseMs => {
@@ -186,34 +55,12 @@ pub fn patch_sampler_parameter_on_control(
             | SamplerParameter::LoopEndFrame => {
                 "sampler region endpoints must be bounded whole source frames"
             }
-        }));
-    }
-    let mut authored = hex_devices::sampler::state::SamplerState::from_native(state)
-        .map_err(sampler_state_error)?;
-    use SamplerParameter::*;
-    use hex_devices::sampler::state::AuthoredMode::Classic;
-    match (parameter, &mut authored.mode) {
-        (AttackMs, _) => authored.envelope.attack_seconds = value / 1000.0,
-        (DecayMs, _) => authored.envelope.decay_seconds = value / 1000.0,
-        (SustainPercent, _) => authored.envelope.sustain = value / 100.0,
-        (ReleaseMs, _) => authored.envelope.release_seconds = value / 1000.0,
-        (Gain, _) => authored.gain = value,
-        (Transpose, _) => authored.transpose_semitones = value,
-        (StartFrame, _) => authored.region.start = value as usize,
-        (EndFrame, _) => authored.region.end = value as usize,
-        (LoopEnabled, Classic { loop_enabled, .. }) => *loop_enabled = value == 1.0,
-        (LoopStartFrame, Classic { loop_region, .. }) => loop_region.start = value as usize,
-        (LoopEndFrame, Classic { loop_region, .. }) => loop_region.end = value as usize,
-        (LoopEnabled | LoopStartFrame | LoopEndFrame, _) => {
-            return Err(Invalid("loop controls require classic mode"));
-        }
-    }
-    authored.replace_in(state).map_err(|_| {
-        Invalid(if parameter.is_source_frame() || parameter.is_loop() {
+        },
+        ControlError::RequiresClassic => "loop controls require classic mode",
+        ControlError::InvalidRegion => {
             "sampler region must be nonempty and preserve loop and slice bounds"
-        } else {
-            "sampler setting is invalid"
-        })
+        }
+        ControlError::InvalidSetting => "sampler setting is invalid",
     })
 }
 
