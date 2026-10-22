@@ -135,6 +135,22 @@ impl PreparedMidiGateTemplate {
         end_frame: u64,
         buffer: &mut MidiSpanBuffer,
     ) -> Result<(), MidiTemplateError> {
+        self.query_with_origin(
+            SessionMidiOrigin::launch(launch),
+            timing,
+            start_frame,
+            end_frame,
+            buffer,
+        )
+    }
+    pub(crate) fn query_with_origin<T: MidiTiming + ?Sized>(
+        &self,
+        origin: SessionMidiOrigin,
+        timing: &T,
+        start_frame: u64,
+        end_frame: u64,
+        buffer: &mut MidiSpanBuffer,
+    ) -> Result<(), MidiTemplateError> {
         let view = SpanQueryView {
             track: self.track,
             clip: self.clip,
@@ -154,7 +170,7 @@ impl PreparedMidiGateTemplate {
             event_source: true,
         };
         buffer.len = 0;
-        let result = view.query_inner(launch, timing, start_frame, end_frame, buffer, None);
+        let result = view.query_inner(origin, timing, start_frame, end_frame, buffer, None);
         if result.is_err() {
             buffer.len = 0;
         }
@@ -172,7 +188,7 @@ fn copy<T: Copy>(source: &[T]) -> Result<Vec<T>, MidiTemplateError> {
 impl SpanQueryView<'_> {
     pub(super) fn query_inner<T: MidiTiming + ?Sized>(
         &self,
-        launch: BeatTime,
+        origin: SessionMidiOrigin,
         timing: &T,
         start_frame: u64,
         end_frame: u64,
@@ -200,22 +216,16 @@ impl SpanQueryView<'_> {
         let upper = timing
             .beat_lower_bound_for_frame(end_frame)
             .map_err(|_| MidiTemplateError::TempoConversion)?;
-        if upper <= u128::from(launch.raw()) {
-            return Ok(());
-        }
         if lower == TempoMap::BEAT_RANGE_SENTINEL {
             return Err(MidiTemplateError::BeatDomainExhausted);
         }
-        let launch_raw = u128::from(launch.raw());
-        let relative_start = lower.saturating_sub(launch_raw);
-        let relative_end = upper.saturating_sub(launch_raw);
-        if relative_start >= relative_end {
+        let Some((relative_start, relative_end)) = origin.query_bounds(lower, upper)? else {
             return Ok(());
-        }
+        };
         let low = relative_start;
         let high = relative_end;
         let mut context = QueryContext {
-            launch_raw,
+            origin,
             timing,
             start_frame,
             end_frame,
@@ -378,27 +388,25 @@ impl SpanQueryView<'_> {
         let start_relative = base
             .checked_add(u128::from(span.start))
             .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        let gate_relative = base
-            .checked_add(u128::from(span.gate_end))
-            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        let start_raw = context
-            .launch_raw
-            .checked_add(start_relative)
-            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
-        let gate_raw = context
-            .launch_raw
-            .checked_add(gate_relative)
-            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
+        // Reject pre-cue onsets before projection or tempo conversion. Equality
+        // is included, matching the existing global handoff-floor semantics.
+        let Some(start_raw) = context.origin.project(start_relative)? else {
+            return Ok(());
+        };
         if context
             .onset_floor_exclusive
-            .is_some_and(|floor| start_raw < u128::from(floor))
+            .is_some_and(|floor| start_raw < floor)
         {
             return Ok(());
         }
-        let start_raw =
-            u64::try_from(start_raw).map_err(|_| MidiTemplateError::BeatDomainExhausted)?;
-        let gate_raw =
-            u64::try_from(gate_raw).map_err(|_| MidiTemplateError::BeatDomainExhausted)?;
+        let gate_relative = base
+            .checked_add(u128::from(span.gate_end))
+            .ok_or(MidiTemplateError::BeatDomainExhausted)?;
+        let Some(gate_raw) = context.origin.project(gate_relative)? else {
+            return Err(MidiTemplateError::InvalidSource(
+                "midi gate precedes its origin",
+            ));
+        };
         let onset = context
             .timing
             .beat_to_frame(BeatTime::from_raw(start_raw))
