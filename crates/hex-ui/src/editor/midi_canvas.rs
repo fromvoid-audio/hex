@@ -111,6 +111,7 @@ impl EditorView {
             self.cancel_midi_note_gesture();
             self.piano_view_clip = Some(owner);
             self.midi_marker = Some(BeatTime::ZERO.raw());
+            self.cancel_midi_audition();
             self.midi_step.cancel_pending();
             if self.midi_step.enabled {
                 self.cancel_computer_keyboard();
@@ -753,6 +754,7 @@ impl EditorView {
                             }
                             if event.modifiers.shift {
                                 let changed = view.midi_selection.toggle(note.id).unwrap_or(false);
+                                view.audition_midi_selection();
                                 if changed {
                                     view.midi_note_gesture = None;
                                     view.midi_group_gesture = None;
@@ -765,6 +767,7 @@ impl EditorView {
                                 view.midi_note_gesture = None;
                                 view.midi_group_gesture = None;
                             }
+                            view.audition_midi_selection();
                             let Some((left, right)) = super::midi_scene::pixel_bounds(note, width)
                             else {
                                 return;
@@ -1159,8 +1162,9 @@ impl EditorView {
                                     .and_then(|_| {
                                         marquee.finish(context, &mut view.midi_selection)
                                     });
-                                if let Err(error) = result {
-                                    view.error = Some(error.into());
+                                match result {
+                                    Ok(_) => view.audition_midi_selection(),
+                                    Err(error) => view.error = Some(error.into()),
                                 }
                             }
                             view_cx.notify();
@@ -1466,6 +1470,16 @@ impl EditorView {
                 cx.listener(|v, _, _, cx| {
                     v.midi_draw_pitch_locked = !v.midi_draw_pitch_locked;
                     v.cancel_midi_note_gesture();
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
+                if self.midi_audition.enabled { "a+" } else { "a" },
+                "toggle note audition · selection plays up to 17 notes · physical keyboard takes priority",
+                cx.listener(|v, _, window, cx| {
+                    v.midi_audition.enabled = !v.midi_audition.enabled;
+                    v.cancel_midi_audition();
+                    v.midi_focus.focus(window);
                     cx.notify();
                 }),
             )])
@@ -2131,7 +2145,7 @@ mod tests {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_creation_ui_tests.rs"]
-mod creation_tests;
+pub(super) mod creation_tests;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_zoom_ui_tests.rs"]
@@ -2156,3 +2170,7 @@ mod cursor_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_step_ui_tests.rs"]
 mod step_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_audition_ui_tests.rs"]
+mod audition_tests;

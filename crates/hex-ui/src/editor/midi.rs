@@ -246,6 +246,8 @@ impl EditorView {
         self.midi_group_gesture = None;
         if let Err(error) = self.midi_selection.select_all(notes) {
             self.error = Some(error.into());
+        } else {
+            self.audition_midi_selection();
         }
     }
 
