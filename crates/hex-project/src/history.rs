@@ -121,6 +121,7 @@ impl Editor {
         }
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
+        candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_device_asset_references()?;
         candidate.validate_playable_routes()?;
         let effect = plan.and_then(|p| p.finish(result, &self.project, &candidate));
@@ -170,6 +171,7 @@ impl Editor {
         for command in commands {
             results.push(candidate.apply(command)?);
         }
+        candidate.validate_changed_midi_occupancy(&self.project)?;
         candidate.validate_device_asset_references()?;
         candidate.validate_playable_routes()?;
         // Reserve before preparation/commit. No history allocation follows it.

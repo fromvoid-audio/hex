@@ -86,6 +86,9 @@ impl ComputerKeyboardInput {
     /// A fresh physical press after priority Stop reuses the admitted root. Terminal lifecycle
     /// cancellation is irreversible. Clear old words before publishing the new activation epoch.
     pub fn reactivate_on_control(&self) -> Result<(), Invalid> {
+        if self.is_note_audition() {
+            return Err(Invalid("note audition requires a fresh input"));
+        }
         if self.is_cancelled() {
             return Err(Invalid("computer keyboard input is cancelled"));
         }
@@ -116,7 +119,11 @@ impl ComputerKeyboardInput {
                 .output_activation
                 .as_ref()
                 .map_or(0, |a| a.epoch.load(SeqCst));
-            let words = std::array::from_fn(|index| self.notes[index].load(SeqCst));
+            let words = if self.note_audition_finished() {
+                [0; COMPUTER_KEY_COUNT]
+            } else {
+                std::array::from_fn(|index| self.notes[index].load(SeqCst))
+            };
             if before == self.sequence.load(SeqCst)
                 && !self.is_cancelled()
                 && self

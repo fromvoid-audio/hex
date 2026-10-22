@@ -2,8 +2,14 @@
 //!
 //! MIDI timing uses checked Q32.32 quarter-note beats, independent of audio frame anchors. Source
 //! extent/start and retained loop markers are independent of a clip's finite Arrangement length.
-//! Notes keep stable distinct IDs even at equal pitch; channel, pitch, velocity and positive
-//! duration are validated before mutation. Source shrink refuses notes it would invalidate.
+//! Notes on the same pitch cannot overlap inside one source, irrespective of channel.
+//! New/moved/resized authors win, retaining only an older left prefix with its ID and
+//! expression; no right fragment is resurrected. Batch originals are excluded
+//! together, then authors resolve in input order, later members winning. Other pitches remain
+//! polyphonic. Current-format loading refuses overlapping authored notes without
+//! rewriting files; loop occurrences and DSP releases retain their separate semantics.
+//! Channel, pitch, velocity and positive duration are validated before mutation.
+//! Source shrink refuses notes it would invalidate.
 //! Strict note edits remain inside the source; the explicit authoring command may grow
 //! extent to inserted note ends in the same transaction, without moving placement or loops.
 //! Copy-on-write identity tokens retain the actual source, preventing address reuse from making
@@ -706,29 +712,21 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             channel,
             velocity,
         } => {
-            let length = project
-                .midi_source(clip)
-                .ok_or(Invalid("midi clip no longer exists"))?
-                .source_length;
-            validate_note(start, duration, length, pitch, channel, velocity)?;
-            if note_count(project) >= MAX_NOTES {
-                return Err(Invalid("note limit reached"));
+            match crate::midi_batch::edit(
+                project,
+                clip,
+                Vec::new(),
+                vec![crate::MidiNoteInsert {
+                    start,
+                    duration,
+                    pitch,
+                    channel,
+                    velocity,
+                }],
+            )? {
+                Created::Notes { first, .. } => Ok(Created::Note(first)),
+                _ => Err(Invalid("single midi note authoring returned no note")),
             }
-            let id = NoteId(project.allocate_id()?);
-            let target = project.midi_source_mut(clip)?;
-            target
-                .notes
-                .try_reserve(1)
-                .map_err(|_| Invalid("could not reserve midi note storage"))?;
-            target.notes.push(MidiNote {
-                id,
-                start,
-                duration,
-                pitch,
-                channel,
-                velocity,
-            });
-            Ok(Created::Note(id))
         }
         Command::AddMidiNotes { clip, notes } => {
             crate::midi_batch::edit(project, clip, Vec::new(), notes)
@@ -751,21 +749,22 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             channel,
             velocity,
         } => {
-            let (clip_id, length) =
+            let (clip_id, _) =
                 find_note_source(project, note).ok_or(Invalid("midi note no longer exists"))?;
-            validate_note(start, duration, length, pitch, channel, velocity)?;
-            let target = project
-                .midi_source_mut(clip_id)?
-                .notes
-                .iter_mut()
-                .find(|n| n.id == note)
-                .ok_or(Invalid("midi note no longer exists"))?;
-            target.start = start;
-            target.duration = duration;
-            target.pitch = pitch;
-            target.channel = channel;
-            target.velocity = velocity;
-            Ok(Created::None)
+            apply(
+                project,
+                Command::UpdateMidiNotes {
+                    clip: clip_id,
+                    notes: vec![MidiNoteUpdate {
+                        note,
+                        start,
+                        duration,
+                        pitch,
+                        channel,
+                        velocity,
+                    }],
+                },
+            )
         }
         Command::UpdateMidiNotes { clip, notes } => {
             let target = project
@@ -782,6 +781,32 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     update.velocity,
                 )?;
             }
+            let mut removed = Vec::new();
+            let mut authored = Vec::new();
+            removed
+                .try_reserve_exact(notes.len())
+                .map_err(|_| Invalid("could not reserve selected midi identities"))?;
+            authored
+                .try_reserve_exact(notes.len())
+                .map_err(|_| Invalid("could not reserve authored midi geometry"))?;
+            for update in &notes {
+                removed.push(update.note);
+                authored.push(crate::MidiNoteInsert {
+                    start: update.start,
+                    duration: update.duration,
+                    pitch: update.pitch,
+                    channel: update.channel,
+                    velocity: update.velocity,
+                });
+            }
+            let mut plan = target.preview_note_overwrite(&removed, &authored)?;
+            for (&index, gate) in indices.iter().zip(&plan.authored) {
+                let retained = plan
+                    .retained
+                    .get_mut(index)
+                    .ok_or(Invalid("midi note no longer exists in target clip"))?;
+                *retained = *gate;
+            }
             let target = project.midi_source_mut(clip)?;
             for (index, update) in indices.into_iter().zip(notes) {
                 let note = target
@@ -790,6 +815,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                     .ok_or(Invalid("midi note no longer exists in target clip"))?;
                 apply_note_update(note, update);
             }
+            crate::midi_note_overwrite::retain_gates(target, &plan.retained)?;
             Ok(Created::None)
         }
         Command::RemoveMidiNote(note) => {
