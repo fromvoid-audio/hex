@@ -459,6 +459,49 @@ class ScopeTests(unittest.TestCase):
             git("commit", "-qm", "delete")
             self.assertIn("docs/renamed.md", plan.changed_paths(root, "HEAD^", "HEAD"))
 
+    def test_cheap_guards_precede_self_tests_once_in_every_qualifying_scope(self):
+        for scope in ("full", "tooling", "ui"):
+            with self.subTest(scope=scope):
+                steps = ci.planned_steps({"scope": scope})
+                self.assertEqual(steps[:len(ci.QUICK_STEPS)], ci.QUICK_STEPS)
+                ids = [s.step_id for s in steps]
+                self.assertEqual(ids[len(ci.QUICK_STEPS)], "runner-tests")
+                self.assertEqual(len(ids), len(set(ids)))
+
+    def test_real_architecture_failure_stops_before_self_tests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "src").mkdir()
+            (root / "scripts").mkdir()
+            (root / "src/lib.rs").write_text("")
+            (root / "Cargo.toml").write_text(
+                '[package]\nname="unregistered-boundary"\nversion="0.1.0"\nedition="2021"\n')
+            (root / "scripts/check-architecture.py").write_bytes(
+                (SCRIPTS / "check-architecture.py").read_bytes())
+            (root / ".gitignore").write_text('/target/\n/artifacts/\n')
+            for command in (("git", "init", "-q"), ("git", "config", "user.name", "guard fixture"),
+                            ("git", "config", "user.email", "fixture@invalid"),
+                            ("cargo", "generate-lockfile", "--offline"),
+                            ("git", "add", "."), ("git", "commit", "-qm", "fixture")):
+                subprocess.check_call(command, cwd=root, stdout=subprocess.DEVNULL)
+            marker = "open('artifacts/self-tests-started', 'w').close(); print('Ran 1 test in 0.001s\\nOK')"
+            steps = tuple(ci.Step(s.step_id,
+                                  (sys.executable, "-c", "pass") if s.step_id == "changelog" else
+                                  (sys.executable, "-c", marker)
+                                  if s.step_id == "runner-tests" else s.argv,
+                                  s.uses_cargo_target, s.requires_tests)
+                          for s in ci.planned_steps({"scope": "tooling"}))
+            runner = ci.LocalCiRunner(root, steps=steps, mode="custom", min_free_bytes=0,
+                                      env={**os.environ, "CARGO_TARGET_DIR": str(root / "target")})
+            self.assertEqual(runner.run(), 1)
+            self.assertFalse((root / "artifacts/self-tests-started").exists())
+            self.assertEqual([(s["step_id"], s["status"]) for s in runner.summary["steps"]],
+                             [("changelog", "passed"), ("architecture", "failed")]
+                             + [(s.step_id, "not_run") for s in steps[2:]])
+            failed = runner.summary["steps"][1]
+            self.assertIn("register a purpose and dependency policy", (root / failed["log"]).read_text())
+            self.assertFalse(runner.summary.get("qualifies_merge", False))
+
     def test_profiles_preserve_default_and_feature_configurations(self):
         selected = ci.planned_steps({"scope": "ui"})
         argv = [s.argv for s in selected]
@@ -466,7 +509,8 @@ class ScopeTests(unittest.TestCase):
         self.assertTrue(any("ui-test-support" in a for a in argv))
         self.assertTrue(any("layout_review" in a for a in argv))
         self.assertTrue(any(a[:2] == ("cargo", "clippy") and "--features" not in a for a in argv))
-        self.assertTrue(ci.planned_steps({"scope": "tooling"})[0].uses_cargo_target)
+        self.assertTrue(next(s for s in ci.planned_steps({"scope": "tooling"})
+                             if s.step_id == "runner-tests").uses_cargo_target)
         full = ci.planned_steps({"scope": "full"})
         self.assertEqual([s.argv for s in full], [s.argv for s in ci.FULL_STEPS])
 
@@ -484,6 +528,8 @@ class ScopeTests(unittest.TestCase):
         resolved = {"scope": scope, "affected_packages": affected,
                     "boundary": boundary, "cargo_inventory": inventory}
         steps = ci.planned_steps(resolved)
+        self.assertEqual(steps[:len(ci.QUICK_STEPS)], ci.QUICK_STEPS)
+        self.assertEqual(steps[len(ci.QUICK_STEPS)].step_id, "runner-tests")
         commands = [s.argv for s in steps]
         self.assertTrue(all(s.requires_tests for s in steps if s.argv[:2] == ("cargo", "test")))
         self.assertTrue(any("device_chain" in a for a in commands))

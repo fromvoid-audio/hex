@@ -119,13 +119,14 @@ QUICK_STEPS = (
     Step("format", ("cargo", "fmt", "--all", "--check")),
 )
 
+# Cheap failures should stop before self-tests; keep every configuration once.
 FULL_STEPS = (
+    *QUICK_STEPS,
     Step(
         "runner-tests",
         ("python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py"),
         uses_cargo_target=True,
     ),
-    *QUICK_STEPS,
     Step("dependency-future-lints", ("python3", "scripts/check-dependency-future-lints.py"), uses_cargo_target=True),
     Step("workspace-tests", ("cargo", "test", "--workspace", "--locked")),
     Step("prepared-export-instrument-tests", ("cargo", "test", "-p", "hex-export", "--features", "instrument-test-support", "--locked")),
@@ -205,7 +206,7 @@ def boundary_steps(plan: dict) -> tuple[Step, ...]:
     if sorted(affected) != sorted(plan["affected_packages"]):
         raise ValueError("boundary consumers do not match resolved Cargo closure")
     packages = tuple(arg for p in affected for arg in ("-p", p))
-    steps = [FULL_STEPS[0], *QUICK_STEPS]
+    steps = [*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests")]
     if any(path.endswith(("Cargo.toml", "/build.rs")) for path in plan.get("paths", [])):
         steps.append(next(s for s in FULL_STEPS if s.step_id == "dependency-future-lints"))
     tests = boundary["tests"]
@@ -276,7 +277,7 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
         return (Step("edit-tests", ("cargo", "test", "-p", edit["package"], *feature, *target, "--locked", edit["filter"], "--", "--nocapture"),
                      requires_tests=True),
                 Step("edit-clippy", ("cargo", "clippy", "-p", edit["package"], *feature, "--all-targets", "--locked", "--", "-D", "warnings")),
-                QUICK_STEPS[-1])
+                next(s for s in QUICK_STEPS if s.step_id == "format"))
     if plan.get("reuse"):
         return (Step("metadata-continuation", ("python3", "scripts/ci_plan.py", "--check-metadata",
                                              "--base", plan["reuse"]["source"], "--source", plan["source"]),
@@ -289,9 +290,9 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
         return (Step("metadata", ("python3", "scripts/ci_plan.py", "--check-metadata",
                                   "--base", plan["base"], "--source", plan["source"])),)
     elif scope == "tooling":
-        steps = (FULL_STEPS[0], *QUICK_STEPS)
+        steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"))
     elif scope == "ui":
-        steps = (FULL_STEPS[0], *QUICK_STEPS,
+        steps = (*QUICK_STEPS, next(s for s in FULL_STEPS if s.step_id == "runner-tests"),
                  Step("ui-default-tests", ("cargo", "test", "-p", "hex-ui", "-p", "hex-widgets", "--locked")),
                  next(s for s in FULL_STEPS if s.step_id == "ui-feature-tests"),
                  next(s for s in FULL_STEPS if s.step_id == "device-gallery-tests"),

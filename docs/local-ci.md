@@ -39,6 +39,12 @@ does not change exit codes, qualification, skipped steps or ownership cleanup.
 
 ## Merge selection
 
+Plans containing self-tests run the existing changelog, architecture, dependency,
+UI/layout and formatting checks first, once each, before Python self-tests and
+slower Cargo checks. A failure stops the plan and records later steps as `not_run`.
+Ordering changes no required commands, configurations or qualification rules;
+quick/edit/custom probes remain partial. Preflight source/target checks still apply.
+
 `scripts/ci_plan.py` selects checks from both sides of changed Git paths, Cargo
 ownership and transitive normal/dev/build/optional/target dependencies. Rust,
 package manifests and package build scripts select owning packages and consumers,
