@@ -1,7 +1,7 @@
 //! Real focused key input, canonical worker ACK, source growth and history.
 use super::creation_tests::{fixture, pump};
 use gpui::{KeyDownEvent, KeyUpEvent, Keystroke, Modifiers, TestAppContext};
-use hex_project::BeatTime;
+use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 
 const STEP: &str = "toggle step entry · enable computer keyboard with m · hold notes and press right · no notes inserts a rest";
@@ -9,10 +9,10 @@ const STEP: &str = "toggle step entry · enable computer keyboard with m · hold
 #[gpui::test]
 fn held_chord_steps_across_ack_release_rest_growth_and_history(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
-    visual.simulate_keystrokes("m");
-    visual.run_until_parked();
     let button = visual.debug_bounds(STEP).unwrap();
     visual.simulate_click(button.center(), Modifiers::default());
+    visual.run_until_parked();
+    visual.simulate_keystrokes("m");
     visual.run_until_parked();
     for key in ["a", "d"] {
         visual.simulate_event(KeyDownEvent {
@@ -213,4 +213,64 @@ fn failed_or_stale_step_cannot_advance_and_focus_loss_releases_physical_input(
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.computer_keyboard.physical_notes().count(), 0)
     });
+}
+
+#[gpui::test]
+fn clip_view_change_only_cancels_held_keys_when_step_mode_owns_them(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, first) = fixture(cx);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+            track: v.selected_track.unwrap(),
+            start: BeatTime::from_quarters(8).unwrap(),
+            length: BeatTime::from_quarters(4).unwrap(),
+        })));
+    });
+    pump(&editor, &mut visual);
+    let second = editor.read_with(&visual, |v, _| {
+        v.state
+            .as_ref()
+            .unwrap()
+            .project
+            .track(v.selected_track.unwrap())
+            .unwrap()
+            .midi_clips()
+            .iter()
+            .find(|clip| clip.id() != first)
+            .unwrap()
+            .id()
+    });
+    editor.update(&mut visual, |v, cx| {
+        v.selected_clip = Some(first);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("m");
+    for step in [false, true] {
+        if step {
+            let button = visual.debug_bounds(STEP).unwrap();
+            visual.simulate_click(button.center(), Modifiers::default());
+        }
+        visual.simulate_event(KeyDownEvent {
+            keystroke: Keystroke::parse("a").unwrap(),
+            is_held: false,
+        });
+        editor.read_with(&visual, |v, _| {
+            assert!(v.computer_keyboard.desired_notes()[0].is_some())
+        });
+        editor.update(&mut visual, |v, cx| {
+            v.selected_clip = Some(if step { first } else { second });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.computer_keyboard.desired_notes()[0].is_none(), step);
+            assert_eq!(
+                v.computer_keyboard.physical_notes().count(),
+                usize::from(!step)
+            );
+        });
+        visual.simulate_event(KeyUpEvent {
+            keystroke: Keystroke::parse("a").unwrap(),
+        });
+    }
 }

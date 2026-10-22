@@ -112,7 +112,9 @@ impl EditorView {
             self.piano_view_clip = Some(owner);
             self.midi_marker = Some(BeatTime::ZERO.raw());
             self.midi_step.cancel_pending();
-            self.cancel_computer_keyboard();
+            if self.midi_step.enabled {
+                self.cancel_computer_keyboard();
+            }
             self.piano_zoom_wheel_accum = 0.0;
             self.piano_beat_start = BeatTime::ZERO;
             self.piano_beat_span =

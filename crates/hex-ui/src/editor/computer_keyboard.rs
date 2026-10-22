@@ -195,7 +195,9 @@ impl super::EditorView {
         self.cancel_computer_keyboard();
         self.computer_keyboard.toggle();
         self.computer_keyboard.suspended = false;
-        self.focus.focus(window);
+        if !self.midi_step.enabled || !self.midi_focus.is_focused(window) {
+            self.focus.focus(window);
+        }
         self.tick_computer_keyboard();
         cx.notify();
     }
