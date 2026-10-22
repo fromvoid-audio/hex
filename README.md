@@ -37,8 +37,9 @@ python3 scripts/local-ci.py --profile merge --base BASE_SHA --source HEAD_SHA
 python3 scripts/local-ci.py --quick  # partial feedback only
 ```
 
-Only a complete passing required plan on the unchanged final source qualifies a
-merge. Checks run locally; do not create or trigger hosted CI.
+Merge requires a complete passing change-based check set on the final candidate,
+with affected contracts, consumers and configurations covered or explicitly resolved.
+Checks run locally; do not create or trigger hosted CI.
 See [local CI](docs/local-ci.md) and [development workflow](docs/development-workflow.md).
 Native UI, listening and physical audio deadlines require separate evidence.
 
