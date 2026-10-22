@@ -96,6 +96,7 @@ mod midi_step;
 mod midi_stroke;
 mod midi_thumbnail;
 mod midi_velocity;
+mod midi_velocity_randomize;
 mod midi_velocity_ui;
 mod mixer;
 mod musical_audio_controls;
@@ -663,6 +664,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_marker: Option<u64>,
     midi_step: midi_step::StepEntry,
     midi_velocity: midi_velocity_ui::State,
+    midi_velocity_randomize: midi_velocity_randomize::State,
     midi_audition: midi_audition::MidiAudition,
     pending_created_note_selection: Option<midi_created_selection::Pending>,
     pub(in crate::editor) midi_marquee: Option<midi_selection::Marquee>,
@@ -1271,6 +1273,7 @@ impl EditorView {
             midi_marker: None,
             midi_step: midi_step::StepEntry::default(),
             midi_velocity: midi_velocity_ui::State::default(),
+            midi_velocity_randomize: midi_velocity_randomize::State::default(),
             midi_audition: midi_audition::MidiAudition::default(),
             pending_created_note_selection: None,
             midi_marquee: None,
