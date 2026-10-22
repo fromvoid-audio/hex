@@ -1,4 +1,4 @@
-//! Immutable group-note move/edge-resize previews and one-shot canonical payloads.
+//! Immutable note-group move, edge-resize and copy previews with atomic payloads.
 use super::midi_drag::{self, HitKind, MidiGrid};
 use hex_project::{BeatTime, ClipId, MidiNoteUpdate, NoteId};
 use std::sync::Arc;
@@ -211,6 +211,7 @@ pub(super) struct GroupContext {
 }
 
 pub(super) struct GroupStart {
+    pub(super) copy: bool,
     pub(super) kind: HitKind,
     pub(super) generation: u64,
     pub(super) revision: u64,
@@ -229,6 +230,7 @@ pub(super) struct GroupStart {
 
 #[derive(Clone)]
 pub(super) struct GroupGesture {
+    copy: bool,
     kind: HitKind,
     generation: u64,
     revision: u64,
@@ -250,7 +252,8 @@ pub(super) struct GroupGesture {
 
 impl GroupGesture {
     pub(super) fn begin(mut start: GroupStart) -> Option<Self> {
-        if start.originals.len() < 2
+        if start.originals.is_empty()
+            || (!start.copy && start.originals.len() < 2)
             || start.originals.len() > hex_project::MAX_NOTES
             || start.beat_span == 0
             || start.clip_length == 0
@@ -289,7 +292,12 @@ impl GroupGesture {
             start.pitch_rows,
         )?;
         Some(Self {
-            kind: start.kind,
+            copy: start.copy,
+            kind: if start.copy {
+                HitKind::Move
+            } else {
+                start.kind
+            },
             generation: start.generation,
             revision: start.revision,
             clip: start.clip,
@@ -341,7 +349,11 @@ impl GroupGesture {
         let resolved = if self.kind == HitKind::Move {
             resolve_common_delta(
                 &self.originals,
-                self.clip_length,
+                if self.copy {
+                    super::midi_scene::zoom_limit(self.clip_length)
+                } else {
+                    self.clip_length
+                },
                 desired_delta,
                 i16::from(pointer_pitch) - i16::from(self.pointer_pitch),
             )
@@ -368,6 +380,33 @@ impl GroupGesture {
 
     pub(super) fn is_noop(&self) -> bool {
         self.delta == 0 && self.pitch_delta == 0
+    }
+
+    pub(super) fn is_copy(&self) -> bool {
+        self.copy
+    }
+
+    pub(super) fn copied_notes(&self) -> Result<Vec<hex_project::MidiNoteInsert>, &'static str> {
+        if !self.copy || self.is_noop() {
+            return Err("midi copy is a no-op");
+        }
+        let mut result = Vec::new();
+        result
+            .try_reserve_exact(self.originals.len())
+            .map_err(|_| "could not reserve midi copies")?;
+        for original in self.originals.iter() {
+            let note = self
+                .preview(original.id)
+                .ok_or("midi copy target changed")?;
+            result.push(hex_project::MidiNoteInsert {
+                start: BeatTime::from_raw(note.start),
+                duration: BeatTime::from_raw(note.duration),
+                pitch: note.pitch,
+                channel: note.channel,
+                velocity: note.velocity,
+            });
+        }
+        Ok(result)
     }
 
     pub(super) fn kind(&self) -> HitKind {
@@ -638,6 +677,7 @@ mod tests {
         pitch_low: u8,
     ) -> GroupGesture {
         GroupGesture::begin(GroupStart {
+            copy: false,
             kind: super::HitKind::Move,
             generation: 3,
             revision: 7,

@@ -173,7 +173,7 @@ impl EditorView {
         let selected_note_data = selected.and_then(|id| state.project.midi_note(id));
         let status = if self.midi_selection.len() > 1 {
             format!(
-                "{} notes selected · drag to move · backspace to delete · cmd+a select all",
+                "{} notes selected · drag to move · option-drag/cmd+d copy · backspace to delete · cmd+a select all",
                 self.midi_selection.len()
             )
         } else {
@@ -388,10 +388,11 @@ impl EditorView {
                             .as_ref()
                             .is_some_and(|stroke| stroke.removed.binary_search(&note.id).is_ok())
                         || draw_preview.is_some_and(|(id, _)| id == note.id)
-                        || draw_group.as_ref().is_some_and(|(originals, _)| {
-                            originals
-                                .binary_search_by_key(&note.id, |item| item.id)
-                                .is_ok()
+                        || draw_group.as_ref().is_some_and(|(originals, gesture)| {
+                            !gesture.is_copy()
+                                && originals
+                                    .binary_search_by_key(&note.id, |item| item.id)
+                                    .is_ok()
                         })
                     {
                         continue;
@@ -439,8 +440,9 @@ impl EditorView {
                         || draw_stroke
                             .as_ref()
                             .is_some_and(|stroke| stroke.removed.binary_search(&id).is_ok())
-                        || draw_group.as_ref().is_some_and(|(originals, _)| {
-                            originals.binary_search_by_key(&id, |item| item.id).is_ok()
+                        || draw_group.as_ref().is_some_and(|(originals, gesture)| {
+                            !gesture.is_copy()
+                                && originals.binary_search_by_key(&id, |item| item.id).is_ok()
                         })
                     {
                         continue;
@@ -827,7 +829,7 @@ impl EditorView {
                                 note.trailing_edge_visible,
                                 was_selected,
                             );
-                            if view.midi_selection.len() > 1 {
+                            if view.midi_selection.len() > 1 || event.modifiers.alt {
                                 let Some(project_clip) = view
                                     .state
                                     .as_ref()
@@ -865,6 +867,7 @@ impl EditorView {
                                 view.midi_group_gesture =
                                     super::midi_group_drag::GroupGesture::begin(
                                         super::midi_group_drag::GroupStart {
+                                            copy: event.modifiers.alt,
                                             kind,
                                             generation,
                                             revision,
@@ -1275,6 +1278,22 @@ impl EditorView {
                                     f32::from(event.position.y),
                                 )
                             {
+                                if gesture.is_copy() {
+                                    match gesture.copied_notes() {
+                                        Ok(insert) => {
+                                            view.enqueue(Request::Edit(
+                                                Command::EditMidiNotesWithSourceExtent {
+                                                    clip: clip_id,
+                                                    remove: Vec::new(),
+                                                    insert,
+                                                },
+                                            ));
+                                        }
+                                        Err(error) => view.error = Some(error.into()),
+                                    }
+                                    view_cx.notify();
+                                    return;
+                                }
                                 match gesture.updates() {
                                     Ok(notes) => {
                                         view.enqueue(Request::Edit(Command::UpdateMidiNotes {
@@ -2293,3 +2312,7 @@ mod pan_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_resize_ui_tests.rs"]
 mod resize_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_note_copy_ui_tests.rs"]
+mod copy_tests;
