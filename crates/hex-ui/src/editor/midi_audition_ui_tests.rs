@@ -194,16 +194,50 @@ fn physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_canno
                 .is_note_audition()
         )
     });
+    // Hold a physical key while changing selection, so preparation cannot race
+    // the focus-loss boundary before this test takes custody of its real event.
+    visual.simulate_event(KeyDownEvent {
+        keystroke: Keystroke::parse("a").unwrap(),
+        is_held: false,
+    });
+    pump(&editor, &mut visual);
     let a = position(&mut visual, &editor, 1.125, 60);
     visual.simulate_click(a, Modifiers::default());
-    let old = editor.update(&mut visual, |v, cx| {
-        v.tick(cx);
-        Arc::clone(v.computer_keyboard.input.as_ref().unwrap())
+    pump(&editor, &mut visual);
+    let (old, prepared) = editor.update(&mut visual, |v, _| {
+        assert!(v.computer_keyboard_up("a"));
+        assert_eq!(v.tick_midi_audition(), Some(true));
+        let input = Arc::clone(v.computer_keyboard.input.as_ref().unwrap());
+        let request = v.computer_keyboard.request_id;
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let event = loop {
+            if let Ok(event) = v.service.try_event() {
+                assert_eq!(event.computer_keyboard_complete, Some(request));
+                assert!(event.error.is_none(), "{:?}", event.error);
+                assert!(event.playback.is_some(), "real preparation must succeed");
+                break event;
+            }
+            assert!(std::time::Instant::now() < until);
+            std::thread::yield_now();
+        };
+        for key in 0..17 {
+            assert_eq!(input.key_word(key), Some(0));
+        }
+        (input, event)
     });
     visual.update(|window, cx| editor.read_with(cx, |v, _| v.focus.focus(window)));
-    pump(&editor, &mut visual);
+    visual.run_until_parked();
     assert!(old.is_cancelled());
-    assert_eq!(old.key_word(0), Some(0));
+    for key in 0..17 {
+        assert_eq!(old.key_word(key), Some(0));
+    }
+    // Deliver the actual worker completion only after cancellation, then settle
+    // subsequent frames: a stale completion must never resurrect or trigger it.
+    editor.update(&mut visual, |v, _| v.receive(prepared));
+    pump(&editor, &mut visual);
+    for key in 0..17 {
+        assert_eq!(old.key_word(key), Some(0));
+    }
     editor.read_with(&visual, |v, _| assert!(v.computer_keyboard.input.is_none()));
 }
 #[gpui::test]
