@@ -10,7 +10,7 @@ pub(crate) fn edit(
     remove: Vec<NoteId>,
     insert: Vec<MidiNoteInsert>,
 ) -> Result<Created, Invalid> {
-    edit_bounded(project, clip_id, remove, insert, false)
+    edit_bounded(project, clip_id, remove, insert, None)
 }
 
 pub(crate) fn edit_with_source_extent(
@@ -19,7 +19,35 @@ pub(crate) fn edit_with_source_extent(
     remove: Vec<NoteId>,
     insert: Vec<MidiNoteInsert>,
 ) -> Result<Created, Invalid> {
-    edit_bounded(project, clip_id, remove, insert, true)
+    let target = project
+        .midi_source(clip_id)
+        .ok_or(Invalid("midi clip no longer exists"))?;
+    let length = extended_source_length(target.source_length(), &insert)?;
+    edit_bounded(project, clip_id, remove, insert, Some(length))
+}
+
+/// Range authoring retains silent destination time as well as note ends. The
+/// caller has checked the complete extent before entering atomic batch admission.
+/// Empty growth changes only extent; empty/no-growth remains a true no-op.
+pub(crate) fn edit_range(
+    project: &mut Project,
+    clip_id: ClipId,
+    insert: Vec<MidiNoteInsert>,
+    length: BeatTime,
+) -> Result<Created, Invalid> {
+    let old = project
+        .midi_source(clip_id)
+        .ok_or(Invalid("midi clip no longer exists"))?;
+    if length < old.source_length() {
+        return Err(Invalid("midi range cannot shrink its source"));
+    }
+    if insert.is_empty() {
+        if length != old.source_length() {
+            project.midi_source_mut(clip_id)?.source_length = length;
+        }
+        return Ok(Created::None);
+    }
+    edit_bounded(project, clip_id, Vec::new(), insert, Some(length))
 }
 
 /// Checked extent calculation shared with the closed MIDI history proof.
@@ -45,7 +73,7 @@ fn edit_bounded(
     clip_id: ClipId,
     remove: Vec<NoteId>,
     insert: Vec<MidiNoteInsert>,
-    extend_source: bool,
+    source_length: Option<BeatTime>,
 ) -> Result<Created, Invalid> {
     if remove.is_empty() && insert.is_empty() {
         return Err(Invalid("midi note edit batch must not be empty"));
@@ -57,11 +85,7 @@ fn edit_bounded(
     let target = project
         .midi_source(clip_id)
         .ok_or(Invalid("midi clip no longer exists"))?;
-    let length = if extend_source {
-        extended_source_length(target.source_length(), &insert)?
-    } else {
-        target.source_length()
-    };
+    let length = source_length.unwrap_or_else(|| target.source_length());
     for note in &insert {
         validate_note(
             note.start,

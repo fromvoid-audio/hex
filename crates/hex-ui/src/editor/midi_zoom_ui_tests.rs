@@ -354,10 +354,8 @@ fn short_source_long_arrangement_notes_visibly_shrink_when_zooming_out(cx: &mut 
         });
         pump(&editor, &mut visual);
     }
-    editor.update(&mut visual, |v, cx| {
-        v.fit_piano();
-        cx.notify();
-    });
+    let fit = visual.debug_bounds("midi-zoom-fit").unwrap();
+    visual.simulate_click(fit.center(), Modifiers::default());
     visual.run_until_parked();
     let widths = |v: &super::super::EditorView| {
         let state = v.state.as_ref().unwrap();

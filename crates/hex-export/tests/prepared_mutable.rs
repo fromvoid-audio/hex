@@ -330,9 +330,25 @@ fn prepared_hybrid(
             state: mutable_state(),
         })
         .expect("mutable instrument");
+    // Keep the authored MIDI on a silent input track. The hybrid owner retains
+    // its audio prefix, mutable instrument gap and suffix without stacked clips.
+    let Created::Track(source) = editor
+        .execute(Command::AddTrack {
+            name: "silent midi source".into(),
+        })
+        .expect("midi source")
+    else {
+        panic!("source track")
+    };
+    editor
+        .execute(Command::SetMidiSource {
+            destination: track,
+            source: Some(source),
+        })
+        .expect("route authored midi to hybrid owner");
     let clip = match editor
         .execute(Command::PlaceMidiClip {
-            track,
+            track: source,
             start: BeatTime::ZERO,
             length: BeatTime::ONE,
         })
@@ -428,7 +444,7 @@ fn prepared_hybrid(
         };
         let session_clip = match editor
             .execute(Command::CreateSessionMidiClip {
-                track,
+                track: source,
                 scene,
                 name: "unused loop".into(),
                 source_length: BeatTime::ONE,

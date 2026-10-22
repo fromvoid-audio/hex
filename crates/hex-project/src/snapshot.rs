@@ -966,6 +966,7 @@ impl Project {
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
             project.adopt_playable_snapshot(&candidate)?;
         }
+        project.validate_arrangement_occupancy()?;
         Ok(project)
     }
 }

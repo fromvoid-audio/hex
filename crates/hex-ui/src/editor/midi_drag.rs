@@ -208,6 +208,34 @@ pub(super) fn hit_kind(
     }
 }
 
+/// Tiny unselected halos stay easy to select/move. Once explicitly selected,
+/// their left/right thirds expose the two real, visible note edges while the
+/// middle third still moves. Hidden clipped edges never become resize handles.
+pub(super) fn selected_hit_kind(
+    local_x: f32,
+    left: f32,
+    width: f32,
+    leading: bool,
+    trailing: bool,
+    selected: bool,
+) -> HitKind {
+    if selected
+        && (3.0..6.0).contains(&width)
+        && local_x.is_finite()
+        && left.is_finite()
+        && (left..=left + width).contains(&local_x)
+    {
+        let handle = width / 3.0;
+        if leading && local_x <= left + handle {
+            return HitKind::ResizeLeading;
+        }
+        if trailing && local_x >= left + width - handle {
+            return HitKind::ResizeTrailing;
+        }
+    }
+    hit_kind(local_x, left, width, leading, trailing)
+}
+
 pub(super) fn begin(start: GestureStart) -> Option<NoteGesture> {
     let pointer_beat_raw = beat_at_point(
         start.pointer[0],
@@ -323,7 +351,7 @@ pub(super) fn update_with_modifier(
             note_end,
         } => {
             let delta = delta_from(down_beat);
-            let min_gate = effective_grid.minimum_gate().min(note_end);
+            let min_gate = effective_grid.minimum_gate().min(gesture.original.duration);
             let max_start = note_end.saturating_sub(min_gate);
             let start =
                 (i128::from(gesture.original.start) + delta).clamp(0, i128::from(max_start)) as u64;
@@ -340,9 +368,7 @@ pub(super) fn update_with_modifier(
             pointer_beat_raw: down_beat,
         } => {
             let delta = delta_from(down_beat);
-            let min_gate = effective_grid
-                .minimum_gate()
-                .min(gesture.clip_length.saturating_sub(gesture.original.start));
+            let min_gate = effective_grid.minimum_gate().min(gesture.original.duration);
             let min_end = gesture.original.start.saturating_add(min_gate);
             let original_end = gesture
                 .original
@@ -837,6 +863,54 @@ mod tests {
             assert_eq!(resizing.preview, original);
             assert!(is_noop(&resizing));
         }
+    }
+
+    #[test]
+    fn shrinking_sub_grid_notes_does_not_expand_them() {
+        let original = NotePreview {
+            start: BeatTime::ONE.raw(),
+            duration: BeatTime::ONE.raw() / 32,
+            pitch: 60,
+        };
+        for (kind, x) in [
+            (HitKind::ResizeLeading, 151.0),
+            (HitKind::ResizeTrailing, 101.0),
+        ] {
+            let mut resize = gesture_for(original, kind, [126.0, 335.0]);
+            update(&mut resize, x, 335.0);
+            assert_eq!(
+                resize.preview, original,
+                "a coarse-grid shrink may clamp, never grow"
+            );
+        }
+    }
+
+    #[test]
+    fn only_explicitly_selected_tiny_edges_offer_resize_and_hidden_edges_stay_hidden() {
+        use super::selected_hit_kind;
+        for (x, expected) in [
+            (8.25, HitKind::ResizeLeading),
+            (10.0, HitKind::Move),
+            (11.75, HitKind::ResizeTrailing),
+        ] {
+            assert_eq!(selected_hit_kind(x, 8.0, 4.0, true, true, true), expected);
+            assert_eq!(
+                selected_hit_kind(x, 8.0, 4.0, true, true, false),
+                HitKind::Move
+            );
+        }
+        assert_eq!(
+            selected_hit_kind(8.25, 8.0, 4.0, false, true, true),
+            HitKind::Move
+        );
+        assert_eq!(
+            selected_hit_kind(11.75, 8.0, 4.0, true, false, true),
+            HitKind::Move
+        );
+        assert_eq!(
+            selected_hit_kind(f32::NAN, 8.0, 4.0, true, true, true),
+            HitKind::Move
+        );
     }
 
     #[test]

@@ -109,7 +109,9 @@ impl EditorView {
             .raw();
         let owner = (self.project_generation, selected);
         if self.piano_view_clip != Some(owner) {
+            self.zoom_fit.clear_clip();
             self.cancel_midi_note_gesture();
+            self.clear_midi_time_selection();
             self.piano_view_clip = Some(owner);
             self.midi_marker = Some(BeatTime::ZERO.raw());
             self.cancel_midi_audition();
@@ -171,9 +173,15 @@ impl EditorView {
         let selection_epoch = self.midi_selection.epoch();
         let preview = self.midi_note_gesture.map(|gesture| gesture.preview);
         let selected_note_data = selected.and_then(|id| state.project.midi_note(id));
-        let status = if self.midi_selection.len() > 1 {
+        let status = if let Some((first, last)) = self.midi_time_selection_bounds() {
             format!(
-                "{} notes selected · drag to move · backspace to delete · cmd+a select all",
+                "time {}–{}b · cmd+d duplicate",
+                beat_label(first),
+                beat_label(last)
+            )
+        } else if self.midi_selection.len() > 1 {
+            format!(
+                "{} notes selected · drag to move · option-drag/cmd+d copy · backspace to delete · cmd+a select all",
                 self.midi_selection.len()
             )
         } else {
@@ -216,6 +224,7 @@ impl EditorView {
         let draw_creation = self.midi_creation.as_ref().map(|creation| creation.preview);
         let draw_marquee = self.midi_marquee.clone();
         let draw_marker = self.midi_marker;
+        let draw_time = self.midi_time_selection_bounds();
         let draw_pitch_locked = self.midi_draw_pitch_locked;
         let draw_mode = self.midi_draw_mode;
         let draw_hit_cycle = self.midi_hit_cycle;
@@ -236,7 +245,11 @@ impl EditorView {
                 .or_else(|| {
                     self.midi_group_gesture
                         .as_ref()
-                        .map(|_| gpui::CursorStyle::ClosedHand)
+                        .map(|gesture| match gesture.kind() {
+                            midi_drag::HitKind::Move => gpui::CursorStyle::ClosedHand,
+                            midi_drag::HitKind::ResizeLeading => gpui::CursorStyle::ResizeLeft,
+                            midi_drag::HitKind::ResizeTrailing => gpui::CursorStyle::ResizeRight,
+                        })
                 })
                 .or_else(|| {
                     self.midi_stroke
@@ -300,6 +313,7 @@ impl EditorView {
                         width,
                         height,
                         draw_hit_cycle,
+                        &draw_selected,
                     )
                 } else {
                     None
@@ -377,16 +391,35 @@ impl EditorView {
                         },
                     );
                 }
+                if let Some((first, last)) = draw_time {
+                    let end = beat_start.raw().saturating_add(beat_span.raw());
+                    let first = first.max(beat_start.raw());
+                    let last = last.min(end);
+                    if first < last {
+                        let left = ((first - beat_start.raw()) as f64 / beat_span.raw() as f64)
+                            as f32
+                            * width;
+                        let right = ((last - beat_start.raw()) as f64 / beat_span.raw() as f64)
+                            as f32
+                            * width;
+                        let color = theme::color(theme::PaletteRole::Primary);
+                        quad(left, 0.0, 1.0, height, color);
+                        quad(right - 1.0, 0.0, 1.0, height, color);
+                        quad(left, 0.0, right - left, 2.0, color);
+                        quad(left, height - 2.0, right - left, 2.0, color);
+                    }
+                }
                 for note in canvas_scene.notes() {
                     if draw_selected.binary_search(&note.id).is_ok()
                         || draw_stroke
                             .as_ref()
                             .is_some_and(|stroke| stroke.removed.binary_search(&note.id).is_ok())
                         || draw_preview.is_some_and(|(id, _)| id == note.id)
-                        || draw_group.as_ref().is_some_and(|(originals, _)| {
-                            originals
-                                .binary_search_by_key(&note.id, |item| item.id)
-                                .is_ok()
+                        || draw_group.as_ref().is_some_and(|(originals, gesture)| {
+                            !gesture.is_copy()
+                                && originals
+                                    .binary_search_by_key(&note.id, |item| item.id)
+                                    .is_ok()
                         })
                     {
                         continue;
@@ -434,8 +467,9 @@ impl EditorView {
                         || draw_stroke
                             .as_ref()
                             .is_some_and(|stroke| stroke.removed.binary_search(&id).is_ok())
-                        || draw_group.as_ref().is_some_and(|(originals, _)| {
-                            originals.binary_search_by_key(&id, |item| item.id).is_ok()
+                        || draw_group.as_ref().is_some_and(|(originals, gesture)| {
+                            !gesture.is_copy()
+                                && originals.binary_search_by_key(&id, |item| item.id).is_ok()
                         })
                     {
                         continue;
@@ -469,7 +503,7 @@ impl EditorView {
                         quad(x, y + 1.0, w, accent, color);
                         quad(x, y + 1.0 + note_height - accent, w, accent, color);
                     }
-                    if w >= 6.0 && note.leading_edge_visible {
+                    if w >= 3.0 && note.leading_edge_visible {
                         quad(
                             x,
                             y + 1.0,
@@ -478,7 +512,7 @@ impl EditorView {
                             theme::color(theme::PaletteRole::Text),
                         );
                     }
-                    if w >= 6.0 && note.trailing_edge_visible {
+                    if w >= 3.0 && note.trailing_edge_visible {
                         quad(
                             x + w - 1.0,
                             y + 1.0,
@@ -733,6 +767,9 @@ impl EditorView {
                         height,
                     ];
                     mouse_down_entity.update(cx, |view, view_cx| {
+                        if view.midi_ruler.cancel() {
+                            view_cx.notify();
+                        }
                         if view.project_generation == generation
                             && view.state.as_ref().is_some_and(|s| s.revision == revision)
                             && view.detail_clip_id() == Some(clip_id)
@@ -759,6 +796,7 @@ impl EditorView {
                             return;
                         }
                         view.midi_focus.focus(window);
+                        view.clear_midi_time_selection();
                         let mut hit_cycle = view.midi_hit_cycle;
                         let hit = event_scene
                             .hit(x, y, width, height, &mut hit_cycle)
@@ -799,7 +837,8 @@ impl EditorView {
                                 view_cx.notify();
                                 return;
                             }
-                            if !view.midi_selection.contains(note.id) {
+                            let was_selected = view.midi_selection.contains(note.id);
+                            if !was_selected {
                                 view.midi_selection.set_single(note.id);
                                 view.midi_note_gesture = None;
                                 view.midi_group_gesture = None;
@@ -810,20 +849,15 @@ impl EditorView {
                                 return;
                             };
                             let note_width = right - left;
-                            let kind = midi_drag::hit_kind(
+                            let kind = midi_drag::selected_hit_kind(
                                 x,
                                 left,
                                 note_width,
                                 note.leading_edge_visible,
                                 note.trailing_edge_visible,
+                                was_selected,
                             );
-                            if view.midi_selection.len() > 1 {
-                                if kind != midi_drag::HitKind::Move {
-                                    view.midi_note_gesture = None;
-                                    view.midi_group_gesture = None;
-                                    view_cx.notify();
-                                    return;
-                                }
+                            if view.midi_selection.len() > 1 || event.modifiers.alt {
                                 let Some(project_clip) = view
                                     .state
                                     .as_ref()
@@ -861,6 +895,8 @@ impl EditorView {
                                 view.midi_group_gesture =
                                     super::midi_group_drag::GroupGesture::begin(
                                         super::midi_group_drag::GroupStart {
+                                            copy: event.modifiers.alt,
+                                            kind,
                                             generation,
                                             revision,
                                             clip: clip_id,
@@ -1004,6 +1040,7 @@ impl EditorView {
                                     width,
                                     height,
                                     view.midi_hit_cycle,
+                                    view.midi_selection.ids(),
                                 )
                             } else {
                                 None
@@ -1269,6 +1306,22 @@ impl EditorView {
                                     f32::from(event.position.y),
                                 )
                             {
+                                if gesture.is_copy() {
+                                    match gesture.copied_notes() {
+                                        Ok(insert) => {
+                                            view.enqueue(Request::Edit(
+                                                Command::EditMidiNotesWithSourceExtent {
+                                                    clip: clip_id,
+                                                    remove: Vec::new(),
+                                                    insert,
+                                                },
+                                            ));
+                                        }
+                                        Err(error) => view.error = Some(error.into()),
+                                    }
+                                    view_cx.notify();
+                                    return;
+                                }
                                 match gesture.updates() {
                                     Ok(notes) => {
                                         view.enqueue(Request::Edit(Command::UpdateMidiNotes {
@@ -1605,14 +1658,8 @@ impl EditorView {
                     cx.notify();
                 }),
             )])
-            .children([self.midi_button(
-                "⤢",
-                "fit midi clip in piano roll",
-                cx.listener(|v, _, _, cx| {
-                    v.fit_piano();
-                    cx.notify();
-                }),
-            )])
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Midi, false, cx))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Midi, true, cx))
             .children([self.midi_button(
                 "o−",
                 "lower piano roll pitch range",
@@ -1800,6 +1847,7 @@ impl EditorView {
             .flex()
             .children([self.piano_keys(pitch_low, cx)])
             .children([roll]);
+        let source_ruler = self.midi_source_ruler(cx);
         panel = panel.child(source_column).child(
             div()
                 .flex_1()
@@ -1808,6 +1856,7 @@ impl EditorView {
                 .flex()
                 .flex_col()
                 .child(toolbar)
+                .children([source_ruler])
                 .child(roll_area),
         );
         let velocity = self.velocity_lane(cx);
@@ -1924,17 +1973,8 @@ impl EditorView {
         ));
     }
 
-    fn fit_piano(&mut self) {
-        self.cancel_midi_note_gesture();
-        let length = self
-            .midi_clip()
-            .map_or(BeatTime::ONE.raw(), |clip| clip.source_length().raw());
-        self.piano_beat_span =
-            BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
-        self.piano_beat_start = BeatTime::ZERO;
-    }
-
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
+        let ruler = self.midi_ruler.cancel() | self.midi_time_selection.cancel();
         let pan = self.midi_pan.gesture.take().is_some();
         let velocity = self.midi_velocity.cancel();
         let pending_selection = self.pending_created_note_selection.take().is_some();
@@ -1944,7 +1984,9 @@ impl EditorView {
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
         let marquee = self.midi_marquee.take().is_some();
-        pan || velocity
+        ruler
+            || pan
+            || velocity
             || pending_selection
             || pitch_zoom
             || creation
@@ -2278,3 +2320,11 @@ mod created_selection_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_pan_ui_tests.rs"]
 mod pan_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_resize_ui_tests.rs"]
+mod resize_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_note_copy_ui_tests.rs"]
+mod copy_tests;
