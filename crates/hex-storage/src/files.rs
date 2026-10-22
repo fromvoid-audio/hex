@@ -297,10 +297,11 @@ mod tests {
         };
         let mut snapshot = editor.project().snapshot();
         let device_id = snapshot.next_id;
-        let mut payload = Vec::with_capacity(28);
+        let mut payload = Vec::with_capacity(32);
         for value in [-42.0_f32, 8.0, 0.5, 250.0, 9.0, 3.0, 0.375] {
             payload.extend_from_slice(&value.to_le_bytes());
         }
+        payload.extend_from_slice(&1_u32.to_le_bytes());
         let track_snapshot = snapshot
             .tracks
             .iter_mut()
@@ -310,7 +311,7 @@ mod tests {
             comparison: None,
             id: device_id,
             bypassed: false,
-            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.compressor"), 2, payload)
+            state: NativeDeviceState::new(DeviceTypeId::from_static("hex.compressor"), 3, payload)
                 .expect("bounded opaque native state"),
         });
         snapshot.next_id = device_id + 1;
@@ -326,7 +327,8 @@ mod tests {
             .and_then(|candidate| candidate.devices().first())
             .expect("saved Compressor");
         assert_eq!(device.state().type_id().as_str(), Ok("hex.compressor"));
-        assert_eq!(device.state().state_version(), 2);
+        assert_eq!(device.state().state_version(), 3);
+        assert_eq!(&device.state().payload()[28..32], &1_u32.to_le_bytes());
         assert_eq!(&device.state().payload()[24..28], &0.375_f32.to_le_bytes());
         assert_eq!(
             device.state().payload(),

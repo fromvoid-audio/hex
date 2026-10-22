@@ -1,0 +1,271 @@
+"""Identity refusal tests; native evidence requires explicit original receipts."""
+import importlib.util
+import json
+import os
+import plistlib
+from pathlib import Path
+import shutil
+import struct
+import subprocess
+import sys
+import tempfile
+import unittest
+from unittest import mock
+
+NATIVE = Path(__file__).resolve().parents[2] / "crates/hex-plugin-scan/native"
+sys.path.insert(0, str(NATIVE))
+try:
+    SPEC = importlib.util.spec_from_file_location("hex_macos_bootstrap", NATIVE / "macos_bootstrap.py")
+    BOOT = importlib.util.module_from_spec(SPEC)
+    SPEC.loader.exec_module(BOOT)
+finally:
+    sys.path.pop(0)
+
+
+class MachHeaderTests(unittest.TestCase):
+    def test_wrong_role_and_architecture_refuse(self):
+        # Parser component evidence only; not an executable native fixture.
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "header"
+            for cpu, kind in [(0x01000007, 2), (0x0100000C, 8)]:
+                path.write_bytes(struct.pack("<8I", 0xFEEDFACF, cpu, 0, kind, 1, 8, 0, 0) + b"\0" * 8)
+                with self.subTest(cpu=cpu, kind=kind), self.assertRaisesRegex(ValueError, "native arm64"):
+                    BOOT.macho(path, 2)
+
+    def test_truncation_and_command_bounds_refuse(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "header"
+            for data in [b"\xcf\xfa", struct.pack("<8I", 0xFEEDFACF, 0x0100000C, 0, 2, 1, 8, 0, 0)]:
+                path.write_bytes(data)
+                with self.subTest(size=len(data)), self.assertRaises(ValueError):
+                    BOOT.macho(path, 2)
+
+
+@unittest.skipUnless(os.environ.get("HEX_VST3_MACOS_RECEIPT"), "explicit original macOS fixture receipt required")
+class NativeBootstrapTests(unittest.TestCase):
+    def setUp(self):
+        self.original = Path(os.environ["HEX_VST3_MACOS_RECEIPT"]).resolve()
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        shutil.copytree(self.original.parent / BOOT.APP, self.root / BOOT.APP)
+        self.receipt = self.root / "controlled-macos.json"
+        shutil.copyfile(self.original, self.receipt)
+
+    def test_actual_native_identity_and_effect_instrument_pcm(self):
+        self.assertEqual(BOOT.verify(self.receipt, run=True), {
+            "version": 1, "scope": "original-macos-bootstrap", "effect_frames": 64, "instrument_frames": 64})
+
+    def lifecycle(self, mode, failure, expected_exit=0):
+        # Own original helper only; source/inventory admission before execution.
+        BOOT.verify(self.receipt)
+        run = subprocess.run([str(self.root / BOOT.EXECUTABLE), "--lifecycle-self-test",
+                              str(mode), str(failure)], capture_output=True, text=True, timeout=10)
+        self.assertEqual(run.returncode, expected_exit, run.stdout + run.stderr)
+        self.assertLessEqual(len(run.stdout.encode()), 4096)
+        value = json.loads(run.stdout)
+        self.assertEqual(value["version"], 1)
+        self.assertEqual(value["scope"], "original-macos-instance-lifecycle")
+        self.assertEqual((value["mode"], value["failure"]), (mode, failure))
+        observation = value["observation"]
+        self.assertLessEqual(len(observation), 135)
+        self.assertGreaterEqual(len(observation), 7)
+        self.assertEqual(observation[6], len(observation) - 7)
+        self.assertEqual(observation[0], 0, value)  # independent SDK order/thread/ref oracle
+        self.assertTrue(value["pcm"], value)  # two literal, different block outputs
+        self.assertTrue(value["stable_close"], value)  # no repeated foreign teardown
+        return value, observation[7:]
+
+    def test_persistent_component_controller_lifecycle_and_transition_failures(self):
+        for mode in range(3):  # absent, separate, combined controller
+            with self.subTest(mode=mode, failure=0):
+                normal, trace = self.lifecycle(mode, 0)
+                for field in ("opened", "configured", "started", "processed", "stopped", "closed", "unloaded"):
+                    self.assertTrue(normal[field], normal)
+                observation = normal["observation"]
+                self.assertEqual(observation[1:6], [1, int(mode == 1), 2, 0, 1])
+                # One actual component persists across both process calls. Combined
+                # interfaces get no duplicate initialization/termination or self-connect.
+                self.assertEqual(trace.count(2), 1)
+                self.assertEqual(trace.count(24), 1)
+                self.assertEqual(trace.count(5), int(mode == 1))
+                self.assertEqual(trace.count(23), int(mode == 1))
+                self.assertEqual(trace.count(7), int(mode == 1))
+                self.assertEqual(trace.count(8), int(mode == 1))
+                self.assertEqual(trace.count(15), 2)
+                for before, after in ((2, 13), (13, 14), (14, 15), (15, 16), (16, 17), (17, 24)):
+                    self.assertLess(trace.index(before), trace.index(after))
+                if mode == 1:
+                    self.assertLess(trace.index(7), trace.index(13))
+                    self.assertLess(trace.index(20), trace.index(23))
+                    self.assertLess(trace.index(21), trace.index(24))
+            # Only real transitions for this variant, not duplicate no-op cases.
+            for failure in sorted(set(trace)):
+                with self.subTest(mode=mode, failure=failure):
+                    value, failed_trace = self.lifecycle(mode, failure)
+                    self.assertIn(failure, failed_trace)
+                    if failure >= 16:
+                        # A refused teardown leaves resources in the isolated helper.
+                        # No later calls, repeat cleanup, live release or module unload.
+                        self.assertFalse(value["closed"], value)
+                        self.assertFalse(value["unloaded"], value)
+                        self.assertGreater(value["observation"][4], 0, value)
+                        self.assertEqual(failed_trace[-1], failure)
+                    else:
+                        self.assertTrue(value["closed"], value)
+                        self.assertTrue(value["unloaded"], value)
+                        self.assertEqual(value["observation"][4], 0, value)
+                    if failure <= 8:
+                        self.assertFalse(value["opened"], value)
+                    elif failure <= 13:
+                        self.assertEqual(failed_trace.count(failure), 1, "partial preparation is not replayed")
+                        self.assertFalse(value["configured"], value)
+                    elif failure == 14:
+                        self.assertEqual(failed_trace.count(14), 1, "failed processing start is not replayed")
+                        self.assertFalse(value["started"], value)
+                    elif failure == 15:
+                        self.assertEqual(failed_trace.count(15), 1, "failed foreign DSP is never replayed")
+                        self.assertFalse(value["processed"], value)
+                        self.assertTrue(value["stopped"], value)
+
+    def test_factory_alias_never_initializes_the_component_twice(self):
+        value, trace = self.lifecycle(1, 25)
+        self.assertFalse(value["opened"], value)
+        self.assertTrue(value["closed"], value)
+        self.assertTrue(value["unloaded"], value)
+        self.assertEqual(value["observation"][1:6], [1, 0, 0, 0, 1])
+        self.assertEqual(trace.count(2), 1)
+        self.assertNotIn(5, trace)
+        self.assertEqual(trace.count(24), 1)
+
+    def test_refused_module_exit_is_not_followed_by_live_unload(self):
+        value, _trace = self.lifecycle(1, 26, expected_exit=1)
+        self.assertTrue(value["closed"], value)  # component/controller retired
+        self.assertFalse(value["unloaded"], value)  # module remains owned until child exit
+        self.assertEqual(value["observation"][4], 0)
+
+    def test_lifecycle_arguments_refuse_unsupported_inputs(self):
+        for mode, failure in (("3", "0"), ("0", "27"), ("-1", "0"), ("0", "999999999999"), ("a", "0")):
+            with self.subTest(mode=mode, failure=failure):
+                run = subprocess.run([str(self.root / BOOT.EXECUTABLE), "--lifecycle-self-test", mode, failure],
+                                     capture_output=True, timeout=10)
+                self.assertEqual(run.returncode, 2)
+                self.assertEqual(run.stdout, b"")
+
+    def test_absent_helper_refuses_before_execution(self):
+        (self.root / BOOT.EXECUTABLE).unlink()
+        with self.assertRaisesRegex(ValueError, "missing or changed"):
+            BOOT.verify(self.receipt, run=True)
+
+    def test_changed_fixture_and_helper_refuse_before_execution(self):
+        for relative in [BOOT.EXECUTABLE, BOOT.APP / "Contents/Resources/fixtures/effect.vst3/Contents/MacOS/fixture"]:
+            path = self.root / relative
+            original = path.read_bytes()
+            path.write_bytes(original + b"changed")
+            with self.subTest(path=str(relative)), self.assertRaisesRegex(ValueError, "missing or changed"):
+                BOOT.verify(self.receipt, run=True)
+            path.write_bytes(original)
+
+    def test_actual_x86_64_binary_refuses_even_with_updated_manifest(self):
+        # A real wrong-architecture Mach-O, not a patched header or hash-only refusal.
+        binary = self.root / BOOT.EXECUTABLE
+        compiler = BOOT.command(["xcrun", "--find", "clang++"])
+        subprocess.run([compiler, "-arch", "x86_64", "-x", "c++", "-", "-o", str(binary)],
+                       input="int main() { return 0; }\n", text=True, check=True, timeout=120)
+        data = json.loads(self.receipt.read_text())
+        data["bundle_files"] = BOOT.inventory(self.root / BOOT.APP)
+        self.receipt.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "native arm64"):
+            BOOT.verify(self.receipt, run=True)
+
+    def test_helper_itself_refuses_changed_fixture_before_loading(self):
+        path = self.root / BOOT.APP / "Contents/Resources/fixtures/effect.vst3/Contents/MacOS/fixture"
+        path.write_bytes(path.read_bytes() + b"changed")
+        # Bypass the Python verifier deliberately: native compiled-in identity
+        # must still refuse the changed original module, before CFBundle load.
+        result = subprocess.run([str(self.root / BOOT.EXECUTABLE), "--self-test"],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("original fixture smoke failed", result.stderr)
+
+    def test_redirected_bundle_executable_never_runs_even_after_resealing(self):
+        sdk = Path(os.environ.get("HEX_VST3_MACOS_SDK", BOOT.ROOT / "artifacts/vst3-sdk"))
+        if not sdk.is_dir():
+            self.skipTest("pinned native build SDK required for executable-selection regression")
+        bundle = self.root / BOOT.APP / "Contents/Resources/fixtures/effect.vst3"
+        redirected = bundle / "Contents/MacOS/redirected"
+        compiler = BOOT.command(["xcrun", "--find", "clang++"])
+        # Real original effect plus a load-time marker: refusal must occur
+        # before foreign initialization, not only after comparing its output.
+        marker_source = '''#include <cstdio>
+#include <cstdlib>
+__attribute__((constructor)) static void marker() {
+    const char* path=std::getenv("HEX_VST3_REDIRECT_MARKER");
+    if(path) { auto* f=std::fopen(path,"w"); if(f) { std::fputs("executed",f); std::fclose(f); } }
+}
+'''
+        subprocess.run([compiler, "-std=c++17", "-arch", "arm64", "-bundle", "-I" + str(sdk),
+                        str(NATIVE / "macos_fixture.cpp"), "-x", "c++", "-", "-framework", "CoreFoundation",
+                        "-o", str(redirected)], input=marker_source, text=True, check=True, timeout=120)
+        info_path = bundle / "Contents/Info.plist"
+        info = plistlib.loads(info_path.read_bytes())
+        info["CFBundleExecutable"] = "redirected"
+        info_path.write_bytes(plistlib.dumps(info))
+        for target in [bundle, self.root / BOOT.APP]:
+            subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(target)],
+                           check=True, capture_output=True, timeout=120)
+        data = json.loads(self.receipt.read_text())
+        data["bundle_files"] = BOOT.inventory(self.root / BOOT.APP)
+        self.receipt.write_text(json.dumps(data))
+        marker = self.root / "redirected-ran"
+        env = {**os.environ, "HEX_VST3_REDIRECT_MARKER": str(marker)}
+        # Invoke directly as well as through the manifest verifier, so each
+        # boundary must refuse the actual selection despite matching hashes.
+        result = subprocess.run([str(self.root / BOOT.EXECUTABLE), "--self-test"],
+                                env=env, capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertFalse(marker.exists())
+        with self.assertRaisesRegex(ValueError, "fixture executable selection"):
+            BOOT.verify(self.receipt, run=True)
+
+    def test_hung_signing_is_bounded_and_publishes_no_receipt(self):
+        sdk = Path(os.environ.get("HEX_VST3_MACOS_SDK", BOOT.ROOT / "artifacts/vst3-sdk"))
+        if not sdk.is_dir():
+            self.skipTest("pinned native build SDK required for signing-failure injection")
+        run = subprocess.run
+
+        def signing_fault(args, **kwargs):
+            if args[0] == "/usr/bin/codesign":
+                # Preserve whether the caller supplied a deadline, scale it for
+                # a fast fault injection, and use a real owned sleeping child.
+                return run([sys.executable, "-c", "import time; time.sleep(0.1)"],
+                           check=True, timeout=0.01 if kwargs.get("timeout") else None)
+            return run(args, **kwargs)
+
+        with tempfile.TemporaryDirectory(dir=BOOT.ROOT / "artifacts") as directory:
+            output = Path(directory) / "failed-build"
+            with mock.patch.object(BOOT.subprocess, "run", side_effect=signing_fault):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    BOOT.build(sdk, output)
+            self.assertFalse((output / "controlled-macos.json").exists())
+
+    def test_helper_does_not_accept_an_installed_module_path(self):
+        result = subprocess.run([str(self.root / BOOT.EXECUTABLE), "/Library/Audio/Plug-Ins/VST3"],
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("arbitrary paths refused", result.stderr)
+
+    def test_stale_source_and_linked_member_refuse(self):
+        data = json.loads(self.receipt.read_text())
+        data["source_sha256"] = "0" * 64
+        self.receipt.write_text(json.dumps(data))
+        with self.assertRaisesRegex(ValueError, "stale bootstrap"):
+            BOOT.verify(self.receipt, run=True)
+        shutil.copyfile(self.original, self.receipt)
+        (self.root / BOOT.APP / "Contents/linked").symlink_to(self.original)
+        with self.assertRaisesRegex(ValueError, "linked bundle"):
+            BOOT.verify(self.receipt, run=True)
+
+
+if __name__ == "__main__":
+    unittest.main()

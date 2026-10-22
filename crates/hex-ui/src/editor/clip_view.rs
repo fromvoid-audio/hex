@@ -12,7 +12,77 @@ fn cancel_eq8_audition(view: &mut EditorView) {
     super::device_panel::clear_eq8_audition_gesture_flags(view);
 }
 
+/// One view-only detail context retained when a range supersedes whole-clip
+/// selection. No source/model copy: every query resolves the current project.
+#[derive(Clone, Copy)]
+pub(super) struct RetainedClipDetail {
+    generation: u64,
+    clip: hex_project::ClipId,
+}
+
 impl EditorView {
+    /// Inspector identity is separate from whole-clip/range selection. Explicit
+    /// focus supersedes this context; deletion and replacement query as empty.
+    pub(super) fn detail_clip_id(&self) -> Option<hex_project::ClipId> {
+        if let Some(clip) = self.selected_clip {
+            return Some(clip);
+        }
+        if self.mode == EditorMode::Arrangement
+            && let Some(owner) = self.retained_clip_detail
+        {
+            let state = self.state.as_ref()?;
+            return (owner.generation == self.project_generation
+                && (state.project.clip(owner.clip).is_some()
+                    || state.project.midi_clip(owner.clip).is_some()))
+            .then_some(owner.clip);
+        }
+        self.selected_clip
+    }
+
+    pub(super) fn retain_clip_detail_for_time_selection(&mut self) {
+        if !self.device_panel_active
+            && let Some(clip) = self.detail_clip_id()
+        {
+            self.retained_clip_detail = Some(RetainedClipDetail {
+                generation: self.project_generation,
+                clip,
+            });
+        }
+    }
+
+    /// Current Arrangement inspector owner and start/duration/source offset/length
+    /// in project frames. Workspace selection remains a separate query.
+    pub(super) fn detail_audio_clip_data(
+        &self,
+    ) -> Option<(
+        hex_project::TrackId,
+        hex_project::ClipId,
+        u64,
+        u64,
+        u64,
+        u64,
+    )> {
+        if self.selected_clip.is_some() {
+            return self.selected_clip_data();
+        }
+        let id = self.detail_clip_id()?;
+        let state = self.state.as_ref()?;
+        let track = state
+            .project
+            .tracks()
+            .iter()
+            .find(|track| track.clips().iter().any(|clip| clip.id() == id))?;
+        let clip = track.clips().iter().find(|clip| clip.id() == id)?;
+        Some((
+            track.id(),
+            id,
+            clip.start(),
+            clip.duration(),
+            clip.source_offset(),
+            clip.source_length(),
+        ))
+    }
+
     /// Change the detail content in response to explicit clip focus. Pane
     /// visibility is a separate user choice and is intentionally untouched.
     pub(super) fn focus_clip_details(
@@ -34,6 +104,7 @@ impl EditorView {
 
     /// Track focus selects devices without implicitly opening a closed pane.
     pub(super) fn focus_track_details(&mut self, window: &mut gpui::Window) {
+        self.retained_clip_detail = None;
         self.cancel_midi_note_gesture();
         cancel_eq8_audition(self);
         self.focused_return = None;
@@ -56,6 +127,7 @@ impl EditorView {
         }
         self.cancel_midi_note_gesture();
         cancel_eq8_audition(self);
+        self.retained_clip_detail = None;
         self.focused_return = Some(return_track);
         self.device_panel_active = true;
         if self.midi_focus.is_focused(window) || self.audio_event_focus.is_focused(window) {
@@ -71,7 +143,11 @@ impl EditorView {
         window: &mut gpui::Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        self.focus_clip_details(window, cx)
+        if !self.focus_clip_details(window, cx) {
+            return false;
+        }
+        self.retained_clip_detail = None;
+        true
     }
 
     fn conversion_selection(&self) -> Option<(hex_project::ClipId, bool)> {
@@ -84,7 +160,7 @@ impl EditorView {
                 hex_project::SessionCellContent::Stop => None,
             }
         } else {
-            let clip = self.selected_clip?;
+            let clip = self.detail_clip_id()?;
             if project.midi_clip(clip).is_some() {
                 Some((clip, true))
             } else {
@@ -98,11 +174,23 @@ impl EditorView {
         window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        self.reconcile_piano_pan();
+        self.reconcile_midi_ruler();
         let open = self.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
-            self.selected_clip
+            self.detail_clip_id()
                 .is_some_and(|clip| state.project.midi_source(clip).is_some())
         });
+        // A conversion can retain ClipId while changing its source kind. Retire
+        // that MIDI viewport too, even when no new MIDI editor is rendered.
+        if self.piano_view_clip.is_some_and(|(generation, clip)| {
+            generation != self.project_generation
+                || self.detail_clip_id() != Some(clip)
+                || !selected_midi
+        }) {
+            self.piano_view_clip = None;
+            self.piano_zoom_wheel_accum = 0.0;
+        }
         let has_session_audio = self.mode == EditorMode::Session
             && self.selected_cell.is_some_and(|(track, scene)| {
                 self.state.as_ref().is_some_and(|state| {
@@ -133,6 +221,8 @@ impl EditorView {
         if detail.is_some() && !self.device_panel_active {
             self.clip_detail_body_height = if has_session_audio {
                 super::session_audio_panel::DETAIL_HEIGHT
+            } else if selected_midi {
+                CLIP_DETAIL_BODY_HEIGHT + self.midi_velocity.visible_height()
             } else {
                 CLIP_DETAIL_BODY_HEIGHT
             };

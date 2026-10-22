@@ -39,8 +39,11 @@ fn return_effect_comparison_keeps_held_pcm_transport_and_callback_allocation_zer
 
 fn callback_comparison(on_return: bool) -> Result<(), Box<dyn Error>> {
     let mut editor = Editor::new(Project::new(48_000)?, 32)?;
-    let Created::Track(track) = editor.execute(Command::AddMidiTrack {
+    let Created::Track(track) = editor.execute(Command::InsertTrackWithDevice {
         name: "held comparison".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state()?,
     })?
     else {
         return Err("track fixture".into());

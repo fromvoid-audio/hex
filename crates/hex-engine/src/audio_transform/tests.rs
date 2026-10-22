@@ -1876,3 +1876,29 @@ fn warp_preview_valid_endpoints_can_be_disconnected_by_marker_tempo_crossings() 
         );
     }
 }
+
+#[test]
+fn derived_pcm_ingress_refusal_keeps_its_actual_reservation_and_buffer() {
+    let budget = Arc::new(budget::Budget::new(1024));
+    let reservation = budget.reserve(32).unwrap();
+    let audio = Audio::from_derived(8_000, vec![[0.25; 2]; 4], reservation).unwrap();
+    let pointer = audio.frames().as_ptr();
+    let refused = crate::OwnedAudioSource::try_from_decoded_audio_on_control(
+        audio,
+        4,
+        &AtomicBool::new(false),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        refused.reason,
+        crate::native_device_resources::ResourcePreparationError::Storage(
+            crate::AudioStorageError::SourceMismatch
+        )
+    );
+    assert_eq!(refused.audio.frames().as_ptr(), pointer);
+    assert!(refused.audio.frames._derived.is_some());
+    assert_eq!(budget.used(), 32);
+    drop(refused);
+    assert_eq!(budget.used(), 0);
+}

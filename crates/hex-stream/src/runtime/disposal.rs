@@ -1,4 +1,10 @@
-//! Pre-reserved, exact-pair control disposal. No native quiescence/admission.
+//! Pre-reserved exact-pair disposal on control, separate from native quiescence.
+//!
+//! The actual control/pages pair enters persistent storage only after preflight. External catalog
+//! leases yield Busy before destructive progress. The real worker handle leaves its mutex before
+//! join, and every fixed page must be recovered in owned worker/endpoint storage before physical
+//! completion. Pending, first panic and remaining endpoints persist on failure; mismatches never
+//! manufacture a successful pool report or release a host's independent native output lease.
 use super::*;
 use std::{
     any::Any,

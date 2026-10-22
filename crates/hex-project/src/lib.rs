@@ -1,5 +1,20 @@
-//! Canonical, control-side audio/MIDI arrangement and transactional editing.
-//! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
+//! # Purpose
+//! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
+//! transactional history. Arrangement clips sharing a hybrid TrackId have disjoint
+//! half-open occupancy. Newly placed/extended material replaces older occupancy;
+//! retained fragments preserve their processing/source domains. Group edits resolve
+//! all incoming members together. Current-format loading refuses overlap without
+//! normalizing or rewriting the source document. Source events and DSP tails have
+//! their own owners and are not top-level Arrangement occupancy.
+//!
+//! # Dependencies
+//! Uses hex-tuning and neutral hex-lattice-contract metadata/state; never DSP implementations.
+//!
+//! # Does not own
+//! Does not render DSP, access audio devices or maintain a parallel UI editing model. Audio
+//! placement uses project-rate frames; MIDI uses checked Q32.32 quarter-note beats. Failed
+//! preparation must preserve project, IDs and history.
+mod arrangement_occupancy;
 mod audio_events;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
@@ -27,6 +42,7 @@ mod clip_fragment;
 mod conversion;
 mod device;
 mod device_comparison;
+mod main_devices;
 pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};
 mod device_assets;
 pub use device::{
@@ -39,6 +55,9 @@ pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };
 mod history;
+mod instrument_history;
+mod midi_history;
+pub use midi_history::MidiHistoryEffect;
 mod provenance;
 pub use provenance::{ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES};
 mod time_range;
@@ -51,7 +70,9 @@ pub use gain_touch::{
 };
 mod midi;
 mod midi_batch;
+mod midi_note_overwrite;
 mod midi_playback;
+mod midi_source_range;
 pub use gain_envelope::{
     AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
     MAX_GAIN_POINTS_PER_TRACK, validate_gain_envelope,
@@ -76,7 +97,9 @@ pub use session::{
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
 pub use history::Editor;
+pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
 pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
+pub use midi_note_overwrite::{MidiNoteOverwriteChange, MidiNoteOverwritePreview};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
 };
@@ -161,9 +184,37 @@ impl fmt::Display for Invalid {
 }
 impl std::error::Error for Invalid {}
 
+/// Expected normalized original PCM content. Presence marks a device-original
+/// asset, never an ordinary clip derivative. Values grant no native custody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalSourceFacts {
+    law_version: u32,
+    content_digest: [u8; 32],
+}
+impl OriginalSourceFacts {
+    /// Domain/rate/frame/f32-bit law owned by the native resource catalog.
+    pub const LAW_VERSION: u32 = 1;
+    pub fn new(law_version: u32, content_digest: [u8; 32]) -> Result<Self, Invalid> {
+        if law_version != Self::LAW_VERSION {
+            return Err(Invalid("unsupported original source content law"));
+        }
+        Ok(Self {
+            law_version,
+            content_digest,
+        })
+    }
+    pub fn law_version(self) -> u32 {
+        self.law_version
+    }
+    pub fn content_digest(self) -> [u8; 32] {
+        self.content_digest
+    }
+}
+
 /// Location and validated metadata. Paths/names retain the user's casing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
+    pub(crate) original_source: Option<OriginalSourceFacts>,
     pub(crate) id: AssetId,
     pub(crate) path: PathBuf,
     pub(crate) source_sample_rate: u32,
@@ -172,6 +223,9 @@ pub struct Asset {
     pub(crate) conversion_version: u32,
 }
 impl Asset {
+    pub fn original_source(&self) -> Option<OriginalSourceFacts> {
+        self.original_source
+    }
     pub fn id(&self) -> AssetId {
         self.id
     }
@@ -479,6 +533,7 @@ pub struct Project {
     pub(crate) session: SessionGrid,
     pub(crate) loop_region: Option<LoopRegion>,
     pub(crate) master_gain: f32,
+    pub(crate) main_devices: Vec<Device>,
     pub(crate) tempo_map: TempoMap,
     pub(crate) meter_map: MeterMap,
 }
@@ -501,6 +556,7 @@ impl Project {
             session: SessionGrid::default(),
             loop_region: None,
             master_gain: 1.0,
+            main_devices: Vec::new(),
             tempo_map: TempoMap::constant(sample_rate, Tempo::new(120_000_000)?)?,
             meter_map: MeterMap::common_time(),
         })
@@ -527,6 +583,7 @@ impl Project {
             session,
             loop_region,
             master_gain,
+            main_devices,
             tempo_map,
             meter_map,
         } = self;
@@ -541,6 +598,7 @@ impl Project {
             && returns == &other.returns
             && session == &other.session
             && loop_region == &other.loop_region
+            && main_devices == &other.main_devices
             && master_gain == &other.master_gain
             && tempo_map == &other.tempo_map
             && meter_map == &other.meter_map
@@ -639,6 +697,11 @@ impl Project {
     pub fn loop_region(&self) -> Option<LoopRegion> {
         self.loop_region
     }
+    /// Effect-only singleton Main chain; never a regular track or clip destination.
+    pub fn main_devices(&self) -> &[Device] {
+        &self.main_devices
+    }
+
     /// Linear master output gain in the inclusive range 0..=2.
     pub fn master_gain(&self) -> f32 {
         self.master_gain
@@ -730,6 +793,7 @@ impl Project {
             .iter()
             .flat_map(|track| track.devices().iter().chain(track.instrument.iter()))
             .chain(self.returns.iter().flat_map(|track| track.devices.iter()))
+            .chain(self.main_devices.iter())
             .find(|device| device.id() == id)
     }
     pub(crate) fn device_mut(&mut self, id: DeviceId) -> Result<&mut Device, Invalid> {
@@ -747,6 +811,7 @@ impl Project {
                     .iter_mut()
                     .find_map(|track| track.devices.iter_mut().find(|device| device.id == id))
             })
+            .or_else(|| self.main_devices.iter_mut().find(|device| device.id == id))
             .ok_or(Invalid("device no longer exists"))
     }
     pub(crate) fn clip_mut(&mut self, id: ClipId) -> Result<&mut Clip, Invalid> {
