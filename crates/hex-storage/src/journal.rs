@@ -1,7 +1,9 @@
 //! One complete checkpoint per slot; no backup history or implicit recovery.
 use crate::{FileToken, JournalChange, MAX_DOCUMENT_BYTES, StorageError, encode, replacement};
+mod restart;
 mod slot_lock;
 use hex_project::Project;
+pub use restart::{JournalRestartOutcome, JournalRestartToken, restart_journal};
 use slot_lock::{SlotLock, lock_slot};
 use std::{
     fs::{self, File},

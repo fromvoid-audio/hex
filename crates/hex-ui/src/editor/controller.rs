@@ -1805,6 +1805,7 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
+        self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
