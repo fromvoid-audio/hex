@@ -311,3 +311,70 @@ fn active_tuning_gesture_cannot_queue_a_step_behind_an_implicit_commit(cx: &mut 
         );
     });
 }
+
+#[gpui::test]
+fn stepping_into_a_long_chord_truncates_old_notes_without_right_tails_and_undo_restores_them(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    for pitch in [60, 64] {
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_quarters(2).unwrap(),
+                pitch,
+                channel: 0,
+                velocity: 93,
+            })))
+        });
+        pump(&editor, &mut visual);
+    }
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    let button = visual.debug_bounds(STEP).unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    visual.simulate_keystrokes("m");
+    for key in ["a", "d"] {
+        visual.simulate_event(KeyDownEvent {
+            keystroke: Keystroke::parse(key).unwrap(),
+            is_held: false,
+        });
+    }
+    editor.update(&mut visual, |v, _| {
+        v.midi_marker = Some(BeatTime::ONE.raw())
+    });
+    visual.simulate_keystrokes("right");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let notes = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap()
+            .notes();
+        assert_eq!(notes.len(), 4);
+        for note in notes {
+            if note.start() == BeatTime::ZERO {
+                assert_eq!(note.duration(), BeatTime::ONE);
+                assert_eq!(note.velocity(), 93);
+            } else {
+                assert_eq!(note.start(), BeatTime::ONE);
+                assert_eq!(note.duration().raw(), BeatTime::ONE.raw() / 4);
+                assert_eq!(note.velocity(), 100);
+            }
+            assert!(note.start().raw() + note.duration().raw() <= BeatTime::ONE.raw() * 5 / 4);
+        }
+        assert_eq!(v.midi_marker, Some(BeatTime::ONE.raw() * 5 / 4));
+    });
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        let actual = v.state.as_ref().unwrap().project.snapshot();
+        let mut expected = before;
+        assert!(actual.next_id > expected.next_id);
+        expected.next_id = actual.next_id;
+        assert_eq!(actual, expected);
+    });
+}
