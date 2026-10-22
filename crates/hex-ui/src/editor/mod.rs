@@ -657,6 +657,8 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_marquee: Option<([f32; 2], [f32; 2], bool)>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
+    // Only suppresses redundant pointer invalidations; paint resolves current geometry.
+    pub(in crate::editor) midi_hover: Option<midi_scene::NoteHover>,
     piano_view_clip: Option<(u64, ClipId)>,
     piano_zoom_wheel_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
@@ -1251,6 +1253,7 @@ impl EditorView {
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
             midi_hit_cycle: None,
+            midi_hover: None,
             piano_view_clip: None,
             piano_zoom_wheel_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,

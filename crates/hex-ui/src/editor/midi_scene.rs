@@ -120,6 +120,14 @@ pub(super) struct HitCycle {
     note: NoteId,
 }
 
+/// A passive target shares click/resize geometry without advancing click cycling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct NoteHover {
+    key: SceneKey,
+    pub(super) note: NoteId,
+    pub(super) kind: super::midi_drag::HitKind,
+}
+
 pub(super) struct MidiScene {
     key: SceneKey,
     notes: Box<[NoteGeometry]>,
@@ -202,6 +210,30 @@ impl MidiScene {
             .get(&id)
             .and_then(|index| self.notes.get(*index))
             .copied()
+    }
+
+    pub(super) fn hover(
+        &self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        mut cycle: Option<HitCycle>,
+    ) -> Option<NoteHover> {
+        let id = self.hit(x, y, width, height, &mut cycle)?;
+        let note = self.note(id)?;
+        let (left, right) = pixel_bounds(note, width)?;
+        Some(NoteHover {
+            key: self.key,
+            note: id,
+            kind: super::midi_drag::hit_kind(
+                x,
+                left,
+                right - left,
+                note.leading_edge_visible,
+                note.trailing_edge_visible,
+            ),
+        })
     }
 
     pub(super) fn preview_geometry(
