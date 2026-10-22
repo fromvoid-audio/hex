@@ -67,6 +67,7 @@ impl ExportLane {
         sampler_export::Admission {
             registered: &[],
             seeks: None,
+            preview: None,
             current,
             native: self.native_hold,
             export: self.active.as_ref().map(|a| a.snapshot.selection()),
@@ -85,19 +86,28 @@ impl ExportLane {
             }),
         }
     }
-    pub(super) fn admission_with_seeks<'a>(
+    pub(super) fn admission_with_resident_owners<'a>(
         &'a self,
         current: Option<ControlSamplerSelection<'a>>,
         seeks: Option<&'a super::resident_seek::Lane>,
+        preview: Option<&'a super::resident_preview::Preview>,
     ) -> sampler_export::Admission<'a> {
         let admission = self.admission(current);
         sampler_export::Admission {
             seeks,
-            runtime_bytes: admission.runtime_bytes.saturating_add(
-                seeks
-                    .map_or(Ok(0), super::resident_seek::Lane::allowance)
-                    .unwrap_or(usize::MAX),
-            ),
+            preview,
+            runtime_bytes: admission
+                .runtime_bytes
+                .saturating_add(
+                    seeks
+                        .map_or(Ok(0), super::resident_seek::Lane::allowance)
+                        .unwrap_or(usize::MAX),
+                )
+                .saturating_add(
+                    preview
+                        .map_or(Ok(0), super::resident_preview::Preview::control_bytes)
+                        .unwrap_or(usize::MAX),
+                ),
             ..admission
         }
     }
@@ -108,6 +118,7 @@ impl ExportLane {
         current_sources: Option<&hex_engine::native_device_resources::ControlSamplerSources>,
         resident: Option<(&resident_audio::Snapshot, &dyn WorkerAudioSink)>,
         seeks: Option<&super::resident_seek::Lane>,
+        preview: Option<&super::resident_preview::Preview>,
     ) -> Result<(), String> {
         self.poll();
         if self.worker.is_none() {
@@ -139,7 +150,13 @@ impl ExportLane {
         if let Some(seeks) = seeks {
             registered.extend(seeks.views());
         }
-        let seek_allowance = seeks.map_or(Ok(0), super::resident_seek::Lane::allowance)?;
+        if let Some(preview) = preview {
+            registered.push(preview.admission());
+        }
+        let seek_allowance = seeks
+            .map_or(Ok(0), super::resident_seek::Lane::allowance)?
+            .checked_add(preview.map_or(Ok(0), super::resident_preview::Preview::control_bytes)?)
+            .ok_or("export held control allowance overflow")?;
         let native_hold = resident.map_or(self.native_hold, |(_, sink)| sink.native_sampler_hold());
         // Offline export retains its existing private source-borrowing renderer. It compiles a
         // separate matching snapshot; an ordinary device-resource revision is never handed to
@@ -337,8 +354,15 @@ mod tests {
                 std::process::id()
             ));
             let mut next = job(&snapshot, path.clone());
-            lane.prepare_job(&mut next, &session, snapshot.sources.as_ref(), None, None)
-                .unwrap();
+            lane.prepare_job(
+                &mut next,
+                &session,
+                snapshot.sources.as_ref(),
+                None,
+                None,
+                None,
+            )
+            .unwrap();
             let id = next.job_id;
             injected_terminal.send(id).unwrap();
             lane.poll();

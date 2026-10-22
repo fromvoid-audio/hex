@@ -474,8 +474,15 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
     });
     let mut lane = ExportLane::new(work_tx, finished_rx, worker);
     let mut first = job(&snapshot, files.output.clone());
-    lane.prepare_job(&mut first, &session, snapshot.sources.as_ref(), None, None)
-        .unwrap();
+    lane.prepare_job(
+        &mut first,
+        &session,
+        snapshot.sources.as_ref(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     let active = lane.active.as_ref().unwrap();
     let selections = [
         snapshot.selection(),
@@ -522,7 +529,8 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
                 &session,
                 snapshot.sources.as_ref(),
                 None,
-                None
+                None,
+                None,
             )
             .is_err()
         );
@@ -535,6 +543,7 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
         &mut accepted,
         &session,
         snapshot.sources.as_ref(),
+        None,
         None,
         None,
     )
@@ -628,6 +637,7 @@ fn captured_export_new_and_media_open_check_complete_union_before_adoption() {
     let admission = Admission {
         registered: &[],
         seeks: None,
+        preview: None,
         native: NativeSamplerReservationHold::default(),
         current: Some(snapshot.selection()),
         export: Some(anchor.selection()),
@@ -824,6 +834,7 @@ fn legacy_staged_owner_union_has_independent_exact_byte_limits_before_commit() {
     let admission = Admission {
         registered: &[],
         seeks: None,
+        preview: None,
         native: NativeSamplerReservationHold::default(),
         current: None,
         export: Some(anchor.selection()),

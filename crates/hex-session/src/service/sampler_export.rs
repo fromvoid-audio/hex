@@ -29,6 +29,7 @@ impl ServiceExportSnapshot {
 pub(crate) struct Admission<'a> {
     pub(crate) registered: &'a [resources::DeviceResourceAdmission<'a>],
     pub(crate) seeks: Option<&'a super::resident_seek::Lane>,
+    pub(crate) preview: Option<&'a super::resident_preview::Preview>,
     pub(crate) current: Option<ControlSamplerSelection<'a>>,
     pub(crate) native: NativeSamplerReservationHold,
     pub(crate) export: Option<ControlSamplerSelection<'a>>,
@@ -56,6 +57,10 @@ impl Admission<'_> {
         self.registered
             .iter()
             .copied()
+            .chain(
+                self.preview
+                    .map(super::resident_preview::Preview::admission),
+            )
             .chain(
                 self.seeks
                     .into_iter()

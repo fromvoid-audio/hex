@@ -24,6 +24,7 @@ mod canonical_audio_source;
 mod comparison_audio;
 mod export_lane;
 mod resident_audio;
+mod resident_preview;
 mod resident_seek;
 pub use resident_seek::{ResidentArrangementSeekIntent, ResidentArrangementSeekResult};
 pub(crate) mod sampler_export;
@@ -1562,6 +1563,7 @@ fn run_worker(
     let mut current_sources: Option<hex_engine::native_device_resources::ControlSamplerSources> =
         None;
     let mut resident_snapshot: Option<resident_audio::Snapshot> = None;
+    let mut resident_preview: Option<resident_preview::Preview> = None;
     let mut device_gesture = GestureMachine::default();
     let mut tuning_gesture = TuningGestureMachine::default();
     if events.resident_publication_enabled()
@@ -1688,12 +1690,16 @@ fn run_worker(
                 &session,
                 resident_snapshot.as_mut(),
                 audio.as_deref_mut(),
-                export_lane.admission(compiled.as_ref().map(|(_, p)| {
-                    hex_engine::native_device_resources::ControlSamplerSelection {
-                        sources: current_sources.as_ref(),
-                        prepared: Some(p),
-                    }
-                })),
+                export_lane.admission_with_resident_owners(
+                    compiled.as_ref().map(|(_, p)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(p),
+                        }
+                    }),
+                    None,
+                    resident_preview.as_ref(),
+                ),
                 hex_engine::AudioSourceContext {
                     project_generation,
                     editor_revision: revision,
@@ -1729,12 +1735,16 @@ fn run_worker(
                     &session,
                     resident_snapshot.as_mut(),
                     audio.as_deref_mut(),
-                    export_lane.admission(compiled.as_ref().map(|(_, p)| {
-                        hex_engine::native_device_resources::ControlSamplerSelection {
-                            sources: current_sources.as_ref(),
-                            prepared: Some(p),
-                        }
-                    })),
+                    export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, p)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(p),
+                            }
+                        }),
+                        None,
+                        resident_preview.as_ref(),
+                    ),
                     hex_engine::AudioSourceContext {
                         project_generation,
                         editor_revision: revision,
@@ -1924,15 +1934,54 @@ fn run_worker(
             _ => None,
         });
         if barrier && barrier_failure.is_none() {
-            if let Some(outcome) = device_gesture.finish(
-                &mut session,
-                compiled.as_ref().map(|(_, artifact)| artifact),
-                project_generation,
-            ) {
+            let device_finished = if events.resident_publication_enabled() {
+                let admission = export_lane.admission_with_resident_owners(
+                    compiled.as_ref().map(|(_, prepared)| {
+                        hex_engine::native_device_resources::ControlSamplerSelection {
+                            sources: current_sources.as_ref(),
+                            prepared: Some(prepared),
+                        }
+                    }),
+                    resident_seek.as_ref(),
+                    None,
+                );
+                device_gesture.finish_prepared(
+                    &mut session,
+                    compiled.as_ref().map(|(_, artifact)| artifact),
+                    project_generation,
+                    |session, operation| {
+                        let sink = events
+                            .resident_audio()
+                            .ok_or(SessionError::Invalid("native preview output unavailable"))?;
+                        resident_preview::device_operation(
+                            session,
+                            operation,
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision,
+                            },
+                            &mut resident_snapshot,
+                            &mut resident_preview,
+                            sink,
+                            admission,
+                        )
+                    },
+                )
+            } else {
+                device_gesture.finish(
+                    &mut session,
+                    compiled.as_ref().map(|(_, artifact)| artifact),
+                    project_generation,
+                )
+            };
+            if let Some(outcome) = device_finished {
                 gesture_ack = Some(outcome.ack.clone());
                 gesture_protocol_ack = true;
                 if outcome.ack.accepted {
                     if let Some(prepared) = outcome.playback {
+                        if events.resident_publication_enabled() && !outcome.canonical_changed {
+                            compiled = Some((revision, Arc::clone(&prepared)));
+                        }
                         if outcome.canonical_changed {
                             revision = revision.saturating_add(1);
                             unsaved = true;
@@ -2138,6 +2187,40 @@ fn run_worker(
                             preview_project: None,
                             canonical_changed: false,
                         }
+                    } else if events.resident_publication_enabled() {
+                        let admission = export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                            None,
+                        );
+                        device_gesture.handle_prepared(
+                            &mut session,
+                            gesture,
+                            compiled.as_ref().map(|(_, artifact)| artifact),
+                            project_generation,
+                            |session, operation| {
+                                let sink = events.resident_audio().ok_or(SessionError::Invalid(
+                                    "native preview output unavailable",
+                                ))?;
+                                resident_preview::device_operation(
+                                    session,
+                                    operation,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision,
+                                    },
+                                    &mut resident_snapshot,
+                                    &mut resident_preview,
+                                    sink,
+                                    admission,
+                                )
+                            },
+                        )
                     } else {
                         device_gesture.handle(
                             &mut session,
@@ -2146,8 +2229,18 @@ fn run_worker(
                             project_generation,
                         )
                     };
+                    let native_terminal_accepted = events.resident_publication_enabled()
+                        && outcome.ack.accepted
+                        && matches!(
+                            gesture.phase(),
+                            crate::device_gesture::GesturePhase::Commit
+                                | crate::device_gesture::GesturePhase::Cancel
+                        );
                     gesture_ack = Some(outcome.ack);
                     if let Some(prepared) = outcome.playback {
+                        if native_terminal_accepted && !outcome.canonical_changed {
+                            compiled = Some((revision, Arc::clone(&prepared)));
+                        }
                         if outcome.canonical_changed {
                             unsaved = true;
                             replacement_revision = Some(prepared);
@@ -2287,7 +2380,7 @@ fn run_worker(
                             },
                             &mut events,
                             &mut resident_snapshot,
-                            export_lane.admission_with_seeks(
+                            export_lane.admission_with_resident_owners(
                                 compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
@@ -2295,6 +2388,7 @@ fn run_worker(
                                     }
                                 }),
                                 resident_seek.as_ref(),
+                                resident_preview.as_ref(),
                             ),
                         )
                         .map_err(|error| error.to_string().to_lowercase())
@@ -2426,12 +2520,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                }), resident_seek.as_ref()),
+                                }), resident_seek.as_ref(), resident_preview.as_ref()),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -2484,7 +2578,7 @@ fn run_worker(
                             if session.audio_mode() == DocumentAudioMode::Resident
                                 && let Some(sink) = events.resident_audio()
                             {
-                                let admission = export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }), resident_seek.as_ref());
+                                let admission = export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }), resident_seek.as_ref(), resident_preview.as_ref());
                                 return job.run_with_storage_admission_using(
                                     &mut session, compiled.as_ref().map(|(_, prepared)| prepared.as_ref()), || actual,
                                     |session, prepared| admission.check_legacy_stage(session, prepared),
@@ -2500,7 +2594,7 @@ fn run_worker(
                                 &mut session,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                                 || actual,
-                                |session, prepared| export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()).check_legacy_stage(session, prepared),
+                                |session, prepared| export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), resident_preview.as_ref()).check_legacy_stage(session, prepared),
                             )
                         })
                     };
@@ -2610,7 +2704,11 @@ fn run_worker(
                                     editor_revision: revision.saturating_add(1),
                                 },
                                 sink,
-                                export_lane.admission_with_seeks(current, resident_seek.as_ref()),
+                                export_lane.admission_with_resident_owners(
+                                    current,
+                                    resident_seek.as_ref(),
+                                    resident_preview.as_ref(),
+                                ),
                                 resident_snapshot.as_ref(),
                             )?;
                             let prepared = Arc::clone(&snapshot.prepared);
@@ -2626,7 +2724,11 @@ fn run_worker(
                         session.import_service_snapshot_to_sampler(
                             decoded,
                             &cancel,
-                            export_lane.admission_with_seeks(current, resident_seek.as_ref()),
+                            export_lane.admission_with_resident_owners(
+                                current,
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            ),
                             track,
                             empty_sampler,
                         )
@@ -2654,8 +2756,11 @@ fn run_worker(
                             prepared: Some(p.as_ref()),
                         }
                     });
-                    let admission =
-                        export_lane.admission_with_seeks(current, resident_seek.as_ref());
+                    let admission = export_lane.admission_with_resident_owners(
+                        current,
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
                     let assignment = if session.native_reservation.is_none() {
                         Err(SessionError::Invalid(
                             "sampler requires an explicit resident reservation",
@@ -2709,7 +2814,7 @@ fn run_worker(
                         project_generation,
                         editor_revision: revision.saturating_add(1),
                     };
-                    let admission = export_lane.admission_with_seeks(
+                    let admission = export_lane.admission_with_resident_owners(
                         compiled.as_ref().map(|(_, prepared)| {
                             hex_engine::native_device_resources::ControlSamplerSelection {
                                 sources: current_sources.as_ref(),
@@ -2717,6 +2822,7 @@ fn run_worker(
                             }
                         }),
                         resident_seek.as_ref(),
+                        resident_preview.as_ref(),
                     );
                     let result = events
                         .resident_audio()
@@ -2754,7 +2860,11 @@ fn run_worker(
                     });
                     match session.command_service_snapshot(
                         command,
-                        export_lane.admission_with_seeks(current, resident_seek.as_ref()),
+                        export_lane.admission_with_resident_owners(
+                            current,
+                            resident_seek.as_ref(),
+                            resident_preview.as_ref(),
+                        ),
                     ) {
                         Ok((new, snapshot)) => {
                             created = Some(new);
@@ -2788,8 +2898,11 @@ fn run_worker(
                                 prepared: Some(p.as_ref()),
                             }
                         });
-                        let admission =
-                            export_lane.admission_with_seeks(current, resident_seek.as_ref());
+                        let admission = export_lane.admission_with_resident_owners(
+                            current,
+                            resident_seek.as_ref(),
+                            resident_preview.as_ref(),
+                        );
                         decode_wav_file(path, Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT))
                             .map_err(|reason| reason.to_string())
                             .and_then(|decoded| {
@@ -2867,7 +2980,7 @@ fn run_worker(
                                 editor_revision: revision.saturating_add(1),
                             },
                             sink,
-                            export_lane.admission_with_seeks(
+                            export_lane.admission_with_resident_owners(
                                 compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
@@ -2875,6 +2988,7 @@ fn run_worker(
                                     }
                                 }),
                                 resident_seek.as_ref(),
+                                resident_preview.as_ref(),
                             ),
                             &mut resident_snapshot,
                         )
@@ -2892,7 +3006,7 @@ fn run_worker(
                     &mut session,
                     path,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                    export_lane.admission_with_seeks(
+                    export_lane.admission_with_resident_owners(
                         compiled.as_ref().map(|(_, p)| {
                             hex_engine::native_device_resources::ControlSamplerSelection {
                                 sources: current_sources.as_ref(),
@@ -2900,6 +3014,7 @@ fn run_worker(
                             }
                         }),
                         resident_seek.as_ref(),
+                        resident_preview.as_ref(),
                     ),
                 ) {
                     Ok(prepared) => {
@@ -2916,7 +3031,7 @@ fn run_worker(
                     start,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                     false,
-                    export_lane.admission_with_seeks(
+                    export_lane.admission_with_resident_owners(
                         compiled.as_ref().map(|(_, p)| {
                             hex_engine::native_device_resources::ControlSamplerSelection {
                                 sources: current_sources.as_ref(),
@@ -2924,6 +3039,7 @@ fn run_worker(
                             }
                         }),
                         resident_seek.as_ref(),
+                        resident_preview.as_ref(),
                     ),
                 ) {
                     Ok(prepared) => {
@@ -2941,7 +3057,7 @@ fn run_worker(
                         start,
                         compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
                         true,
-                        export_lane.admission_with_seeks(
+                        export_lane.admission_with_resident_owners(
                             compiled.as_ref().map(|(_, p)| {
                                 hex_engine::native_device_resources::ControlSamplerSelection {
                                     sources: current_sources.as_ref(),
@@ -2949,6 +3065,7 @@ fn run_worker(
                                 }
                             }),
                             resident_seek.as_ref(),
+                            resident_preview.as_ref(),
                         ),
                     ) {
                         Ok(prepared) => {
@@ -2969,7 +3086,7 @@ fn run_worker(
                     before_track,
                     start,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                    export_lane.admission_with_seeks(
+                    export_lane.admission_with_resident_owners(
                         compiled.as_ref().map(|(_, p)| {
                             hex_engine::native_device_resources::ControlSamplerSelection {
                                 sources: current_sources.as_ref(),
@@ -2977,6 +3094,7 @@ fn run_worker(
                             }
                         }),
                         resident_seek.as_ref(),
+                        resident_preview.as_ref(),
                     ),
                 ) {
                     Ok(prepared) => {
@@ -2992,7 +3110,7 @@ fn run_worker(
                     track,
                     scene,
                     compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                    export_lane.admission_with_seeks(
+                    export_lane.admission_with_resident_owners(
                         compiled.as_ref().map(|(_, p)| {
                             hex_engine::native_device_resources::ControlSamplerSelection {
                                 sources: current_sources.as_ref(),
@@ -3000,6 +3118,7 @@ fn run_worker(
                             }
                         }),
                         resident_seek.as_ref(),
+                        resident_preview.as_ref(),
                     ),
                 ) {
                     Ok(prepared) => {
@@ -3031,8 +3150,11 @@ fn run_worker(
                             prepared: Some(p.as_ref()),
                         }
                     });
-                    let admission =
-                        export_lane.admission_with_seeks(current, resident_seek.as_ref());
+                    let admission = export_lane.admission_with_resident_owners(
+                        current,
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
                     match candidate.and_then(|candidate| {
                         let prepared = compile(&candidate, None)?;
                         if session.native_reservation.is_some() {
@@ -3092,8 +3214,11 @@ fn run_worker(
                             prepared: Some(p.as_ref()),
                         }
                     });
-                    let admission =
-                        export_lane.admission_with_seeks(current, resident_seek.as_ref());
+                    let admission = export_lane.admission_with_resident_owners(
+                        current,
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
                     let candidate = admission
                         .replacement_frame_allowance(&session)
                         .map_err(|e| e.to_string())
@@ -3184,12 +3309,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                }), resident_seek.as_ref()),
+                                }), resident_seek.as_ref(), resident_preview.as_ref()),
                             ) {
                                 Ok((_, prepared)) => {
                                     range_clipboard =
@@ -3232,7 +3357,7 @@ fn run_worker(
                             },
                             &mut events,
                             &mut resident_snapshot,
-                            export_lane.admission_with_seeks(
+                            export_lane.admission_with_resident_owners(
                                 compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
@@ -3240,6 +3365,7 @@ fn run_worker(
                                     }
                                 }),
                                 resident_seek.as_ref(),
+                                resident_preview.as_ref(),
                             ),
                         ) {
                             Ok((_, prepared)) => {
@@ -3287,7 +3413,7 @@ fn run_worker(
                             },
                             &mut events,
                             &mut resident_snapshot,
-                            export_lane.admission_with_seeks(
+                            export_lane.admission_with_resident_owners(
                                 compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
@@ -3295,6 +3421,7 @@ fn run_worker(
                                     }
                                 }),
                                 resident_seek.as_ref(),
+                                resident_preview.as_ref(),
                             ),
                         ) {
                             Ok((_, prepared)) => {
@@ -3361,12 +3488,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                }), resident_seek.as_ref()),
+                                }), resident_seek.as_ref(), resident_preview.as_ref()),
                             ) {
                                 Ok((result, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -3409,12 +3536,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                }), resident_seek.as_ref()),
+                                }), resident_seek.as_ref(), resident_preview.as_ref()),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -3482,33 +3609,36 @@ fn run_worker(
                         && session.audio_mode() == DocumentAudioMode::Resident =>
                 {
                     sampler_edit_complete = Some(edit.request_id());
-                    let result =
-                        (|| {
-                            if !edit
-                                .validate_resident(&session, project_generation, revision)
-                                .map_err(SessionError::NativeAudio)?
-                            {
-                                return Ok(None);
-                            }
-                            let sink = events
-                                .resident_audio()
-                                .ok_or(SessionError::Invalid("native worker unavailable"))?;
-                            session.sampler_resident_edit(
+                    let result = (|| {
+                        if !edit
+                            .validate_resident(&session, project_generation, revision)
+                            .map_err(SessionError::NativeAudio)?
+                        {
+                            return Ok(None);
+                        }
+                        let sink = events
+                            .resident_audio()
+                            .ok_or(SessionError::Invalid("native worker unavailable"))?;
+                        session.sampler_resident_edit(
                             edit,
                             hex_engine::AudioSourceContext {
                                 project_generation,
                                 editor_revision: revision.saturating_add(1),
                             },
                             sink,
-                            export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
-                                hex_engine::native_device_resources::ControlSamplerSelection {
-                                    sources: current_sources.as_ref(),
-                                    prepared: Some(prepared),
-                                }
-                            }), resident_seek.as_ref()),
+                            export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            ),
                             resident_snapshot.as_ref(),
                         )
-                        })();
+                    })();
                     match result {
                         Ok(Some((new, snapshot))) => {
                             created = Some(new);
@@ -3566,7 +3696,7 @@ fn run_worker(
                             let audio = events.sampler_edit_audio().ok_or("sampler edit output is unavailable")?;
                             audio.sampler_edit_ready().ok_or("sampler edit fence is not ready")??;
                             let current = compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) });
-                            let prepared = edit.prepare(&mut session, export_lane.admission_with_seeks(current, resident_seek.as_ref()), context, audio)
+                            let prepared = edit.prepare(&mut session, export_lane.admission_with_resident_owners(current, resident_seek.as_ref(), resident_preview.as_ref()), context, audio)
                                 .map_err(|e| e.to_string())?;
                             // Authored commit is complete. Audio failure from here is truthful
                             // unavailability, never an invented rollback of the exclusive output.
@@ -3626,12 +3756,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                }), resident_seek.as_ref()),
+                                }), resident_seek.as_ref(), resident_preview.as_ref()),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before_project => {
                                     unsaved = true;
@@ -3666,7 +3796,7 @@ fn run_worker(
                                 .ok_or(SessionError::Invalid("native gain output unavailable"))?;
                             session.prepare_resident_gain_recording(track,
                                 hex_engine::AudioSourceContext { project_generation, editor_revision: revision }, sink,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()), current)
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), resident_preview.as_ref()), current)
                         })();
                         match result {
                             Ok(snapshot) => {
@@ -3713,7 +3843,7 @@ fn run_worker(
                             },
                             &mut events,
                             &mut resident_snapshot,
-                            export_lane.admission_with_seeks(
+                            export_lane.admission_with_resident_owners(
                                 compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
@@ -3721,6 +3851,7 @@ fn run_worker(
                                     }
                                 }),
                                 resident_seek.as_ref(),
+                                resident_preview.as_ref(),
                             ),
                         ) {
                             Ok((result, prepared)) if session.project() != &before => {
@@ -3756,12 +3887,12 @@ fn run_worker(
                                 },
                                 &mut events,
                                 &mut resident_snapshot,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, prepared)| {
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
                                         prepared: Some(prepared),
                                     }
-                                }), resident_seek.as_ref()),
+                                }), resident_seek.as_ref(), resident_preview.as_ref()),
                             ) {
                                 Ok((_, prepared)) if session.project() != &before => {
                                     unsaved = true;
@@ -3801,7 +3932,7 @@ fn run_worker(
                                 clip,
                                 &root,
                                 compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                                |session, prepared| export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()).check_legacy_stage(session, std::slice::from_ref(prepared)),
+                                |session, prepared| export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), resident_preview.as_ref()).check_legacy_stage(session, std::slice::from_ref(prepared)),
                             )
                         })
                     } else {
@@ -3815,7 +3946,7 @@ fn run_worker(
                             },
                             &mut events,
                             &mut resident_snapshot,
-                            export_lane.admission_with_seeks(
+                            export_lane.admission_with_resident_owners(
                                 compiled.as_ref().map(|(_, prepared)| {
                                     hex_engine::native_device_resources::ControlSamplerSelection {
                                         sources: current_sources.as_ref(),
@@ -3823,6 +3954,7 @@ fn run_worker(
                                     }
                                 }),
                                 resident_seek.as_ref(),
+                                resident_preview.as_ref(),
                             ),
                         )
                         .map_err(|e| e.to_string())
@@ -3879,7 +4011,7 @@ fn run_worker(
                     if events.resident_publication_enabled()
                         && session.audio_mode() == DocumentAudioMode::Resident =>
                 {
-                    let admission = export_lane.admission_with_seeks(
+                    let admission = export_lane.admission_with_resident_owners(
                         compiled.as_ref().map(|(_, prepared)| {
                             hex_engine::native_device_resources::ControlSamplerSelection {
                                 sources: current_sources.as_ref(),
@@ -3887,6 +4019,7 @@ fn run_worker(
                             }
                         }),
                         resident_seek.as_ref(),
+                        resident_preview.as_ref(),
                     );
                     let result = events
                         .resident_audio()
@@ -4150,7 +4283,7 @@ fn run_worker(
                             ))?;
                             let selected = snapshot.inputs.clone();
                             session.publish_resident_runtime_inputs(snapshot, sink,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), resident_preview.as_ref()),
                                 ResidentPublicationMetadata {
                                     context: hex_engine::AudioSourceContext { project_generation, editor_revision: revision },
                                     device_preview: None, tuning_preview: None, seek_request: None,
@@ -4220,7 +4353,7 @@ fn run_worker(
                                 "native controller output unavailable",
                             ))?;
                             session.publish_resident_runtime_inputs(snapshot, sink,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), resident_preview.as_ref()),
                                 metadata, ResidentPublicationPolicy::InheritRuntime, selected, Some(resident_audio::RequiredInput::Expression))
                         })();
                         match result {
@@ -4345,7 +4478,7 @@ fn run_worker(
                                 "native audition output unavailable",
                             ))?;
                             session.publish_resident_runtime_inputs(snapshot, sink,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), resident_preview.as_ref()),
                                 metadata, ResidentPublicationPolicy::InheritRuntime, selected, Some(resident_audio::RequiredInput::Audition))
                         })();
                         match result {
@@ -4426,12 +4559,16 @@ fn run_worker(
                             &session,
                             current,
                             sink,
-                            export_lane.admission(compiled.as_ref().map(|(_, p)| {
-                                hex_engine::native_device_resources::ControlSamplerSelection {
-                                    sources: current_sources.as_ref(),
-                                    prepared: Some(p),
-                                }
-                            })),
+                            export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, p)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(p),
+                                    }
+                                }),
+                                None,
+                                resident_preview.as_ref(),
+                            ),
                             context,
                         )
                     })();
@@ -4464,7 +4601,7 @@ fn run_worker(
                             let mut selected = snapshot.inputs.clone();
                             selected.keyboard = Some((track, Arc::clone(&input)));
                             session.publish_resident_runtime_inputs(snapshot, sink,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), resident_preview.as_ref()),
                                 ResidentPublicationMetadata {
                                     context: hex_engine::AudioSourceContext { project_generation, editor_revision: revision },
                                     device_preview: None, tuning_preview: None, seek_request: None,
@@ -4585,7 +4722,7 @@ fn run_worker(
                                 "native restore output unavailable",
                             ))?;
                             session.publish_resident_runtime_inputs(snapshot, sink,
-                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
+                                export_lane.admission_with_resident_owners(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref(), resident_preview.as_ref()),
                                 metadata, ResidentPublicationPolicy::InheritRuntime, selected, None)
                         })();
                         match result {
@@ -4637,6 +4774,7 @@ fn run_worker(
             range_clipboard = None;
             device_gesture.reset();
             tuning_gesture.reset();
+            resident_preview = None;
             project_generation = project_generation.saturating_add(1);
         }
         if comparison_changed {
@@ -4708,11 +4846,65 @@ fn run_worker(
             keyboard_tuning_hint = None;
         }
         if canonical_changed && !project_replaced && device_gesture.snapshot().is_some() {
-            if let Some(outcome) = device_gesture.rebase(
-                &mut session,
-                compiled.as_ref().map(|(_, artifact)| artifact),
-                project_generation,
-            ) {
+            let outcome = if events.resident_publication_enabled() {
+                // This path is permitted to retire a failed rebase only after the actual
+                // canonical snapshot accepted publication, never merely after a model edit.
+                let accepted = resident_snapshot
+                    .as_ref()
+                    .zip(compiled.as_ref())
+                    .is_some_and(|(snapshot, (_, prepared))| {
+                        Arc::ptr_eq(&snapshot.prepared, prepared)
+                    });
+                if accepted {
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, prepared)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(prepared),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        None,
+                    );
+                    let outcome = device_gesture.rebase_prepared(
+                        &mut session,
+                        compiled.as_ref().map(|(_, artifact)| artifact),
+                        &mut |session, operation| {
+                            let sink = events.resident_audio().ok_or(SessionError::Invalid(
+                                "native preview output unavailable",
+                            ))?;
+                            resident_preview::device_operation(
+                                session,
+                                operation,
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                },
+                                &mut resident_snapshot,
+                                &mut resident_preview,
+                                sink,
+                                admission,
+                            )
+                        },
+                    );
+                    if outcome
+                        .as_ref()
+                        .is_some_and(|outcome| !outcome.ack.accepted)
+                    {
+                        resident_preview = None;
+                    }
+                    outcome
+                } else {
+                    None
+                }
+            } else {
+                device_gesture.rebase(
+                    &mut session,
+                    compiled.as_ref().map(|(_, artifact)| artifact),
+                    project_generation,
+                )
+            };
+            if let Some(outcome) = outcome {
                 gesture_ack = Some(outcome.ack);
                 preview_prepared = outcome.playback;
                 preview_project = outcome.preview_project;
@@ -4763,18 +4955,27 @@ fn run_worker(
                 });
             }
         }
+        if let Some(preview) = resident_preview.as_ref() {
+            preview_project = Some(Arc::clone(&preview.project));
+            preview_prepared = Some(Arc::clone(&preview.snapshot.prepared));
+        }
         let device_preview = match (
             device_gesture.snapshot(),
             preview_project.clone(),
             preview_prepared.as_ref(),
         ) {
             (Some(snapshot), Some(project), Some(prepared)) => Some(DevicePreview {
-                identity: DevicePreviewIdentity {
-                    project_generation,
-                    key: snapshot.key,
-                    sequence: snapshot.sequence,
-                    canonical_revision: revision,
-                },
+                identity: resident_preview.as_ref().map_or(
+                    DevicePreviewIdentity {
+                        project_generation,
+                        key: snapshot.key,
+                        sequence: snapshot.sequence,
+                        canonical_revision: revision,
+                    },
+                    |preview| match preview.identity {
+                        resident_preview::Identity::Device(identity) => identity,
+                    },
+                ),
                 state: preview_view_state(&state, project.clone(), Arc::clone(prepared)),
             }),
             _ => None,
@@ -4882,6 +5083,7 @@ fn run_worker(
                         .map(|sink| &*sink as &dyn WorkerAudioSink),
                 ),
                 resident_seek.as_ref(),
+                resident_preview.as_ref(),
             ) {
                 let failed = export_job.take();
                 if let Some(job) = failed {
@@ -4931,12 +5133,16 @@ fn run_worker(
                         &session,
                         resident_snapshot.as_mut(),
                         audio.as_deref_mut(),
-                        export_lane.admission(compiled.as_ref().map(|(_, p)| {
-                            hex_engine::native_device_resources::ControlSamplerSelection {
-                                sources: current_sources.as_ref(),
-                                prepared: Some(p),
-                            }
-                        })),
+                        export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, p)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(p),
+                                }
+                            }),
+                            None,
+                            resident_preview.as_ref(),
+                        ),
                         hex_engine::AudioSourceContext {
                             project_generation,
                             editor_revision: revision,

@@ -191,15 +191,6 @@ impl Inputs<'_> {
         sink: &mut dyn WorkerAudioSink,
         context: hex_engine::AudioSourceContext,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let mut playback = Playback::try_from_prepared_with_device_resources(
-            Arc::clone(&snapshot.prepared),
-            &snapshot.resources,
-        )
-        .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
-        let previous = snapshot.inputs.clone();
-        let mut selected = previous.clone();
-        selected.attach(project, &mut playback)?;
-        selected.selected_after(&previous)?;
         let metadata = ResidentPublicationMetadata {
             context,
             device_preview: None,
@@ -210,6 +201,24 @@ impl Inputs<'_> {
             gain_recording_track: snapshot.prepared.gain_recording_track(),
             requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
         };
+        self.publish_tagged(snapshot, project, sink, metadata)
+    }
+    fn publish_tagged(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        metadata: ResidentPublicationMetadata,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        let mut playback = Playback::try_from_prepared_with_device_resources(
+            Arc::clone(&snapshot.prepared),
+            &snapshot.resources,
+        )
+        .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let previous = snapshot.inputs.clone();
+        let mut selected = previous.clone();
+        selected.attach(project, &mut playback)?;
+        selected.selected_after(&previous)?;
         let accepted = self.publish_runtime(
             snapshot,
             playback,
@@ -774,6 +783,44 @@ impl Session {
         )?;
         inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
+    }
+    pub(super) fn prepare_resident_preview(
+        &self,
+        command: Command,
+        context: hex_engine::AudioSourceContext,
+        identity: resident_preview::Identity,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: &Snapshot,
+    ) -> Result<(Arc<Project>, Snapshot), SessionError> {
+        let inputs = self.resident_seek_inputs(admission, Some(current), None)?;
+        let mut editor = hex_project::Editor::new(self.project().clone(), 1)?;
+        let (_, prepared) = editor.execute_prepared_transition(command, |_, candidate| {
+            let mut snapshot = inputs.prepare(
+                candidate,
+                sink,
+                &self.media_bank(),
+                self.sine_table(),
+                &self.audio_transforms,
+                &self.audio_clip_waveforms,
+            )?;
+            let project = Arc::new(candidate.clone());
+            let metadata = ResidentPublicationMetadata {
+                context,
+                device_preview: Some(match identity {
+                    resident_preview::Identity::Device(identity) => identity,
+                }),
+                tuning_preview: None,
+                seek_request: None,
+                stopped_restore: false,
+                computer_keyboard_request: None,
+                gain_recording_track: snapshot.prepared.gain_recording_track(),
+                requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+            };
+            inputs.publish_tagged(&mut snapshot, &project, sink, metadata)?;
+            Ok::<_, SessionError>((project, snapshot))
+        })?;
+        Ok(prepared)
     }
     pub(super) fn prepare_resident_gain_recording(
         &self,

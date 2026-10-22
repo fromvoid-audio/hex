@@ -238,6 +238,10 @@ impl NativeAudioSink {
             );
             return match result {
                 Ok(audio_revision) => {
+                    // Initial worker publication can precede Client exposure. The accepted
+                    // control already proves this identity; retain its exact submission now
+                    // rather than losing the observation while deliver_open is still pending.
+                    self.output_identity = Some(output_identity);
                     self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
                     self.observe(
                         metadata.context,

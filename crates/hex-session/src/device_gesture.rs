@@ -3,8 +3,10 @@ use crate::{Session, SessionError};
 use hex_engine::{NativeDeviceClass, PreparedRevision};
 use hex_project::{DeviceId, Project, ReturnId, TrackId};
 use std::sync::Arc;
+mod preparation;
 #[cfg(test)]
 mod snapshot_tests;
+pub(crate) use preparation::command_for_snapshot;
 
 pub use hex_lattice_contract::{
     DeviceParameterSnapshot, DeviceTypeId, ParameterId, ParameterValue,
@@ -956,6 +958,17 @@ pub(crate) struct GestureOutcome {
     pub canonical_changed: bool,
 }
 
+/// The existing machine validates ordering/targets; the worker prepares and publishes before
+/// this operation may advance its active snapshot or canonical history.
+#[derive(Clone, Copy)]
+pub(crate) enum GesturePreparation {
+    Preview(GestureSnapshot),
+    Commit(GestureSnapshot),
+    Restore,
+}
+pub(crate) type PreparedGesture =
+    Result<Option<(Arc<Project>, Arc<PreparedRevision>)>, SessionError>;
+
 struct Active {
     snapshot: GestureSnapshot,
     kind: ActiveKind,
@@ -1033,6 +1046,34 @@ impl GestureMachine {
         previous: Option<&Arc<PreparedRevision>>,
         generation: u64,
     ) -> GestureOutcome {
+        self.handle_using(
+            session,
+            request,
+            previous,
+            generation,
+            false,
+            |session, operation| default_preparation(session, operation, previous),
+        )
+    }
+    pub(crate) fn handle_prepared(
+        &mut self,
+        session: &mut Session,
+        request: GestureRequest,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        prepare: impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
+    ) -> GestureOutcome {
+        self.handle_using(session, request, previous, generation, true, prepare)
+    }
+    fn handle_using(
+        &mut self,
+        session: &mut Session,
+        request: GestureRequest,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        retain_terminal: bool,
+        mut prepare: impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
+    ) -> GestureOutcome {
         let mut outcome = GestureOutcome {
             ack: GestureAck {
                 preview_retained: false,
@@ -1046,14 +1087,21 @@ impl GestureMachine {
             preview_project: None,
             canonical_changed: false,
         };
-        let result = self.apply(session, request, previous, generation, &mut outcome);
+        let result = self.apply(session, request, generation, &mut outcome, &mut prepare);
         match result {
             Ok(()) => outcome.ack.accepted = true,
             Err(error) => {
                 outcome.ack.reason = Some(error.to_string().to_lowercase());
-                // A refused terminal still retires its own overlay and restores
-                // canonical sound. Never retire another gesture for a stale key.
-                if request.phase() == GesturePhase::Commit
+                // Native terminal refusal keeps the actual accepted overlay. The legacy
+                // adapter retains its existing retirement behavior; stale keys own neither.
+                if retain_terminal
+                    && matches!(request.phase(), GesturePhase::Commit | GesturePhase::Cancel)
+                    && self
+                        .snapshot()
+                        .is_some_and(|active| active.key == request.key())
+                {
+                    outcome.ack.preview_retained = true;
+                } else if request.phase() == GesturePhase::Commit
                     && request.sequence() != 0
                     && self.snapshot().is_some_and(|active| {
                         active.key == request.key() && request.sequence() >= active.sequence
@@ -1071,9 +1119,9 @@ impl GestureMachine {
         &mut self,
         session: &mut Session,
         request: GestureRequest,
-        previous: Option<&Arc<PreparedRevision>>,
         generation: u64,
         outcome: &mut GestureOutcome,
+        prepare: &mut impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
     ) -> Result<(), SessionError> {
         let key = request.key();
         if key.generation != generation || key.token == 0 {
@@ -1146,24 +1194,35 @@ impl GestureMachine {
                 {
                     return Err(SessionError::Invalid("snapshot gesture parameters changed"));
                 }
-                let GestureTarget::DeviceParameterSnapshot { device } = active.target else {
+                let GestureTarget::DeviceParameterSnapshot { .. } = active.target else {
                     return Err(SessionError::Invalid("snapshot gesture target changed"));
                 };
                 if terminal {
                     let before = session.project().clone();
-                    outcome.playback = Some(session.commit_device_snapshot(
-                        device,
-                        &snapshot,
-                        previous.map(Arc::as_ref),
-                    )?);
+                    let (_, prepared) = prepare(
+                        session,
+                        GesturePreparation::Commit(GestureSnapshot {
+                            sequence,
+                            parameters: Some(snapshot),
+                            ..active
+                        }),
+                    )?
+                    .ok_or(SessionError::Invalid("gesture commit produced no revision"))?;
+                    outcome.playback = Some(prepared);
                     outcome.canonical_changed = session.project() != &before;
                     self.active = None;
                 } else {
-                    let (project, prepared) = session.preview_device_snapshot(
-                        device,
-                        &snapshot,
-                        previous.map(Arc::as_ref),
-                    )?;
+                    let (project, prepared) = prepare(
+                        session,
+                        GesturePreparation::Preview(GestureSnapshot {
+                            sequence,
+                            parameters: Some(snapshot),
+                            ..active
+                        }),
+                    )?
+                    .ok_or(SessionError::Invalid(
+                        "gesture preview produced no revision",
+                    ))?;
                     let current = self.active.as_mut().unwrap();
                     current.snapshot.sequence = sequence;
                     current.snapshot.parameters = Some(snapshot);
@@ -1302,8 +1361,17 @@ impl GestureMachine {
                 if sequence == 0 || sequence <= active.sequence {
                     return Err(SessionError::Invalid("device gesture update is stale"));
                 }
-                let (project, prepared) =
-                    preview_target(session, active.target, value, previous.map(Arc::as_ref))?;
+                let (project, prepared) = prepare(
+                    session,
+                    GesturePreparation::Preview(GestureSnapshot {
+                        sequence,
+                        value,
+                        ..active
+                    }),
+                )?
+                .ok_or(SessionError::Invalid(
+                    "gesture preview produced no revision",
+                ))?;
                 if let Some(current) = self.active.as_mut() {
                     current.snapshot.sequence = sequence;
                     current.snapshot.value = value;
@@ -1318,8 +1386,18 @@ impl GestureMachine {
                 if sequence == 0 || sequence <= active.sequence {
                     return Err(SessionError::Invalid("device gesture update is stale"));
                 }
-                let (project, prepared) =
-                    preview_pair_target(session, active.target, value, previous.map(Arc::as_ref))?;
+                let (project, prepared) = prepare(
+                    session,
+                    GesturePreparation::Preview(GestureSnapshot {
+                        sequence,
+                        value: value.first,
+                        secondary_value: Some(value.second),
+                        ..active
+                    }),
+                )?
+                .ok_or(SessionError::Invalid(
+                    "gesture preview produced no revision",
+                ))?;
                 if let Some(current) = self.active.as_mut() {
                     current.snapshot.sequence = sequence;
                     current.snapshot.value = value.first;
@@ -1336,8 +1414,15 @@ impl GestureMachine {
                     return Err(SessionError::Invalid("device gesture commit is stale"));
                 }
                 let before = session.project().clone();
-                let prepared =
-                    commit_target(session, active.target, value, previous.map(Arc::as_ref))?;
+                let (_, prepared) = prepare(
+                    session,
+                    GesturePreparation::Commit(GestureSnapshot {
+                        sequence,
+                        value,
+                        ..active
+                    }),
+                )?
+                .ok_or(SessionError::Invalid("gesture commit produced no revision"))?;
                 outcome.canonical_changed = session.project() != &before;
                 outcome.playback = Some(prepared);
                 self.active = None;
@@ -1350,16 +1435,25 @@ impl GestureMachine {
                     return Err(SessionError::Invalid("device gesture commit is stale"));
                 }
                 let before = session.project().clone();
-                let prepared =
-                    commit_pair_target(session, active.target, value, previous.map(Arc::as_ref))?;
+                let (_, prepared) = prepare(
+                    session,
+                    GesturePreparation::Commit(GestureSnapshot {
+                        sequence,
+                        value: value.first,
+                        secondary_value: Some(value.second),
+                        ..active
+                    }),
+                )?
+                .ok_or(SessionError::Invalid("gesture commit produced no revision"))?;
                 outcome.canonical_changed = session.project() != &before;
                 outcome.playback = Some(prepared);
                 self.active = None;
             }
             GestureRequest::Cancel { .. } => {
                 self.checked_key(key)?;
+                let prepared = prepare(session, GesturePreparation::Restore)?;
                 self.active = None;
-                outcome.playback = previous.cloned();
+                outcome.playback = prepared.map(|(_, prepared)| prepared);
             }
         }
         Ok(())
@@ -1547,6 +1641,67 @@ impl GestureMachine {
         }
     }
 
+    pub(crate) fn rebase_prepared(
+        &mut self,
+        session: &mut Session,
+        previous: Option<&Arc<PreparedRevision>>,
+        prepare: &mut impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
+    ) -> Option<GestureOutcome> {
+        let active = self.snapshot()?;
+        let result = self
+            .checked_active(session, active.key)
+            .and_then(|_| prepare(session, GesturePreparation::Preview(active)))
+            .and_then(|prepared| {
+                prepared.ok_or(SessionError::Invalid(
+                    "gesture preview produced no revision",
+                ))
+            });
+        match result {
+            Ok((project, prepared)) => Some(GestureOutcome {
+                ack: GestureAck {
+                    preview_retained: false,
+                    key: active.key,
+                    phase: GesturePhase::Change,
+                    sequence: active.sequence,
+                    accepted: true,
+                    reason: None,
+                },
+                playback: Some(prepared),
+                preview_project: Some(project),
+                canonical_changed: false,
+            }),
+            Err(error) => {
+                // The caller has already accepted an independent canonical graph, so its normal
+                // publication retires this invalid overlay. Never claim that edit rolled back.
+                self.active = None;
+                Some(GestureOutcome {
+                    ack: GestureAck {
+                        preview_retained: false,
+                        key: active.key,
+                        phase: GesturePhase::Cancel,
+                        sequence: 0,
+                        accepted: false,
+                        reason: Some(error.to_string()),
+                    },
+                    playback: previous.cloned(),
+                    preview_project: None,
+                    canonical_changed: false,
+                })
+            }
+        }
+    }
+    pub(crate) fn finish_prepared(
+        &mut self,
+        session: &mut Session,
+        previous: Option<&Arc<PreparedRevision>>,
+        generation: u64,
+        prepare: impl FnMut(&mut Session, GesturePreparation) -> PreparedGesture,
+    ) -> Option<GestureOutcome> {
+        let active = self.snapshot()?;
+        let request = terminal_request(active);
+        Some(self.handle_prepared(session, request, previous, generation, prepare))
+    }
+
     pub fn finish(
         &mut self,
         session: &mut Session,
@@ -1554,29 +1709,96 @@ impl GestureMachine {
         generation: u64,
     ) -> Option<GestureOutcome> {
         let active = self.snapshot()?;
-        let request = if let Some(snapshot) = active.parameters {
-            GestureRequest::CommitSnapshot {
-                key: active.key,
-                sequence: active.sequence.max(1),
-                snapshot,
-            }
-        } else if let Some(second) = active.secondary_value {
-            GestureRequest::CommitPair {
-                key: active.key,
-                sequence: active.sequence.max(1),
-                value: ParameterPairValue {
-                    first: active.value,
-                    second,
-                },
-            }
-        } else {
-            GestureRequest::Commit {
-                key: active.key,
-                sequence: active.sequence.max(1),
-                value: active.value,
-            }
-        };
+        let request = terminal_request(active);
         Some(self.handle(session, request, previous, generation))
+    }
+}
+
+fn terminal_request(active: GestureSnapshot) -> GestureRequest {
+    if let Some(snapshot) = active.parameters {
+        GestureRequest::CommitSnapshot {
+            key: active.key,
+            sequence: active.sequence.max(1),
+            snapshot,
+        }
+    } else if let Some(second) = active.secondary_value {
+        GestureRequest::CommitPair {
+            key: active.key,
+            sequence: active.sequence.max(1),
+            value: ParameterPairValue {
+                first: active.value,
+                second,
+            },
+        }
+    } else {
+        GestureRequest::Commit {
+            key: active.key,
+            sequence: active.sequence.max(1),
+            value: active.value,
+        }
+    }
+}
+fn default_preparation(
+    session: &mut Session,
+    operation: GesturePreparation,
+    previous: Option<&Arc<PreparedRevision>>,
+) -> PreparedGesture {
+    match operation {
+        GesturePreparation::Preview(active) => {
+            let prepared = if let Some(parameters) = active.parameters {
+                let GestureTarget::DeviceParameterSnapshot { device } = active.target else {
+                    return Err(SessionError::Invalid("snapshot target changed"));
+                };
+                session.preview_device_snapshot(device, &parameters, previous.map(Arc::as_ref))
+            } else if let Some(second) = active.secondary_value {
+                preview_pair_target(
+                    session,
+                    active.target,
+                    ParameterPairValue {
+                        first: active.value,
+                        second,
+                    },
+                    previous.map(Arc::as_ref),
+                )
+            } else {
+                preview_target(
+                    session,
+                    active.target,
+                    active.value,
+                    previous.map(Arc::as_ref),
+                )
+            }?;
+            Ok(Some(prepared))
+        }
+        GesturePreparation::Commit(active) => {
+            let prepared = if let Some(parameters) = active.parameters {
+                let GestureTarget::DeviceParameterSnapshot { device } = active.target else {
+                    return Err(SessionError::Invalid("snapshot target changed"));
+                };
+                session.commit_device_snapshot(device, &parameters, previous.map(Arc::as_ref))
+            } else if let Some(second) = active.secondary_value {
+                commit_pair_target(
+                    session,
+                    active.target,
+                    ParameterPairValue {
+                        first: active.value,
+                        second,
+                    },
+                    previous.map(Arc::as_ref),
+                )
+            } else {
+                commit_target(
+                    session,
+                    active.target,
+                    active.value,
+                    previous.map(Arc::as_ref),
+                )
+            }?;
+            Ok(Some((Arc::new(session.project().clone()), prepared)))
+        }
+        GesturePreparation::Restore => Ok(
+            previous.map(|prepared| (Arc::new(session.project().clone()), Arc::clone(prepared)))
+        ),
     }
 }
 

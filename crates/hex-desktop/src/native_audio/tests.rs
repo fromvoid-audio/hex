@@ -1,6 +1,7 @@
 //! Output completion alone is substituted. Session, verified readers, source
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
+mod resident_preview;
 mod sampler;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;
