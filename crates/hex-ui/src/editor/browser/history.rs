@@ -29,7 +29,9 @@ impl Entry {
     fn bounded(&self) -> bool {
         let path_fits = |path: &PathBuf| path.as_os_str().as_encoded_bytes().len() <= FIELD_BYTES;
         let key_fits = |key: &Option<BrowserItemKey>| match key {
-            Some(BrowserItemKey::File(path)) => path_fits(path),
+            Some(BrowserItemKey::File(path)) | Some(BrowserItemKey::Plugin(path, _)) => {
+                path_fits(path)
+            }
             _ => true,
         };
         self.location.query.len() <= FIELD_BYTES
@@ -114,7 +116,9 @@ impl History {
 
 impl EditorView {
     fn browser_history_entry(&self, cx: &App) -> Entry {
-        let count = self.browser_visible_entries(cx).len() + self.browser_visible_devices(cx).len();
+        let count = self.browser_visible_entries(cx).len()
+            + self.browser_visible_devices(cx).len()
+            + self.browser_visible_plugins(cx).len();
         let top = self.browser_history_top_index(count);
         Entry {
             location: Location {
@@ -281,26 +285,34 @@ impl EditorView {
         cx.notify();
     }
 
-    fn browser_item_at(&self, index: usize, cx: &App) -> Option<BrowserItemKey> {
+    pub(super) fn browser_item_at(&self, index: usize, cx: &App) -> Option<BrowserItemKey> {
         let files = self.browser_visible_entries(cx);
         if let Some(entry) = files.get(index) {
-            Some(BrowserItemKey::File(entry.path.clone()))
-        } else {
-            self.browser_visible_devices(cx)
-                .get(index.checked_sub(files.len())?)
-                .map(|(class, entry)| BrowserItemKey::Device(*class, entry.type_id))
+            return Some(BrowserItemKey::File(entry.path.clone()));
         }
+        let devices = self.browser_visible_devices(cx);
+        let index = index.checked_sub(files.len())?;
+        if let Some((class, entry)) = devices.get(index) {
+            return Some(BrowserItemKey::Device(*class, entry.type_id));
+        }
+        self.browser_visible_plugins(cx)
+            .get(index.checked_sub(devices.len())?)
+            .map(|row| BrowserItemKey::Plugin(row.module.clone(), row.cid))
     }
-
-    fn browser_history_index(&self, key: &BrowserItemKey, cx: &App) -> Option<usize> {
+    pub(super) fn browser_history_index(&self, key: &BrowserItemKey, cx: &App) -> Option<usize> {
         let files = self.browser_visible_entries(cx);
+        let devices = self.browser_visible_devices(cx);
         match key {
             BrowserItemKey::File(path) => files.iter().position(|entry| &entry.path == path),
-            BrowserItemKey::Device(class, id) => self
-                .browser_visible_devices(cx)
+            BrowserItemKey::Device(class, id) => devices
                 .iter()
                 .position(|(candidate, entry)| candidate == class && entry.type_id == *id)
-                .map(|index| files.len() + index),
+                .map(|i| files.len() + i),
+            BrowserItemKey::Plugin(path, id) => self
+                .browser_visible_plugins(cx)
+                .iter()
+                .position(|row| &row.module == path && row.cid == *id)
+                .map(|i| files.len() + devices.len() + i),
         }
     }
 
@@ -312,7 +324,9 @@ impl EditorView {
             BrowserSection::All => (indexed, true, indexed),
             BrowserSection::Place(_) => (true, true, indexed),
             BrowserSection::Projects => (true, true, false),
-            BrowserSection::Instruments | BrowserSection::Collection(_) => (false, false, false),
+            BrowserSection::Instruments
+            | BrowserSection::Plugins
+            | BrowserSection::Collection(_) => (false, false, false),
         };
         if (listing && self.browser.loading)
             || (tree

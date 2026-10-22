@@ -169,13 +169,13 @@ impl EditorView {
         }
     }
 
-    fn current_stroke_context(
+    pub(super) fn current_stroke_context(
         &self,
         bounds: midi_stroke::CanvasBounds,
         modifiers: StrokeModifiers,
     ) -> Option<StrokeContext> {
         let state = self.state.as_ref()?;
-        let clip_id = self.selected_clip?;
+        let clip_id = self.detail_clip_id()?;
         let clip = state.project.midi_source(clip_id)?;
         Some(StrokeContext {
             generation: self.project_generation,
@@ -196,7 +196,7 @@ impl EditorView {
     }
 }
 
-fn same_rendered_frame(current: StrokeContext, rendered: StrokeContext) -> bool {
+pub(super) fn same_rendered_frame(current: StrokeContext, rendered: StrokeContext) -> bool {
     current.generation == rendered.generation
         && current.revision == rendered.revision
         && current.clip == rendered.clip
@@ -210,7 +210,7 @@ fn same_rendered_frame(current: StrokeContext, rendered: StrokeContext) -> bool 
         && current.draw_mode == rendered.draw_mode
 }
 
-fn canvas_bounds(bounds: [f32; 4]) -> midi_stroke::CanvasBounds {
+pub(super) fn canvas_bounds(bounds: [f32; 4]) -> midi_stroke::CanvasBounds {
     midi_stroke::CanvasBounds {
         x: bounds[0],
         y: bounds[1],

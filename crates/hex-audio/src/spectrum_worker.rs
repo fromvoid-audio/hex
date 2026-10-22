@@ -7,6 +7,7 @@
 
 use crate::spectrum::{FFT_SIZE, SpectrumFrame, SpectrumKernel};
 mod native;
+pub(crate) use native::constructor_storage_quote;
 mod project;
 pub(crate) use native::{
     NativeSpectrumIdentity, NativeSpectrumReceipt, spawn_native_spectrum_worker,

@@ -1,3 +1,12 @@
+//! Native canonical editor view and bounded UI intent coordination.
+//!
+//! Session owns the editable project and prepare-before-commit workers; this module owns
+//! display/selection/focus and captured typed requests. Render cached summaries and visible
+//! content, never decode or perform filesystem/audio setup in painting. Pending requests preserve
+//! captured generation/revision/target identity. Canonical commit and native applied-source
+//! acknowledgment are separate states; do not claim current playback from a submitted revision
+//! alone. Native keyboard/pointer delivery uses the pinned excluded GPUI dependency boundary, with
+//! no unsafe workspace bridge.
 mod arrangement;
 mod arrangement_audio_panel;
 mod arrangement_device_drop;
@@ -24,6 +33,7 @@ mod workspace_view;
 mod workspace_view_ui_test;
 
 mod group_copy;
+mod pending_clip_move;
 #[cfg(test)]
 mod test_environment;
 
@@ -70,6 +80,7 @@ mod loop_selection_ui_test;
 mod menus;
 mod midi;
 mod midi_canvas;
+mod midi_creation;
 mod midi_drag;
 mod midi_draw;
 mod midi_group_drag;
@@ -95,6 +106,8 @@ mod refresh;
 mod render;
 mod return_tracks;
 mod routing_controls;
+mod sampler_load;
+mod sampler_parameter;
 mod save;
 mod scrub;
 mod seek;
@@ -234,6 +247,8 @@ struct PendingEditorPublicationObservation {
 
 #[derive(Clone)]
 struct PlaybackCandidate {
+    worker_requires_preroll: Option<bool>,
+    observation: Option<Arc<hex_engine::PreparedPlaybackObservation>>,
     audio_revision: u64,
     project_generation: u64,
     state: Arc<ViewState>,
@@ -528,6 +543,60 @@ pub(super) fn open_backend(cx: &mut App, backend: crate::EditorBackend) -> Resul
     Ok(())
 }
 
+#[cfg(feature = "ui-test-support")]
+pub(crate) fn sampler_load_fixture(
+    cx: &mut gpui::TestAppContext,
+    backend: crate::EditorBackend,
+    root: std::path::PathBuf,
+    directory: std::path::PathBuf,
+) -> Result<gpui::AnyWindowHandle, String> {
+    if !root.is_absolute()
+        || !root.starts_with(std::env::temp_dir())
+        || !directory.starts_with(&root)
+    {
+        return Err("sampler fixture requires an owned temporary root".into());
+    }
+    let home = root.join("home");
+    std::fs::create_dir_all(home.join("Music")).map_err(|e| e.to_string())?;
+    let preferences = root.join("browser.json");
+    let places =
+        hex_preferences::BrowserPlaces::new(vec![directory.clone()]).map_err(|e| e.to_string())?;
+    hex_preferences::save(&preferences, &places).map_err(|e| e.to_string())?;
+    cx.update(move |cx| {
+        // GPUI's headless TestPlatform uses NoopTextSystem, which cannot
+        // register fonts. This fixture exercises input/render contracts only;
+        // production startup still requires verified bundled fonts.
+        bind_editor_keys(cx);
+        menus::install(cx, &[]);
+        dialogs::install_project_actions(cx);
+        let window = cx
+            .open_window(editor_window_options(cx), move |window, cx| {
+                cx.new(|cx| {
+                    let mut view = EditorView::new_with_browser_paths(
+                        window,
+                        cx,
+                        backend.service,
+                        Err("preparing audio output".into()),
+                        (
+                            preferences,
+                            root.join("recent.json"),
+                            root.join("theme.json"),
+                            root.join("project-directory.json"),
+                        ),
+                        Some(sampler_load::FixturePaths { home, directory }),
+                        #[cfg(test)]
+                        test_environment::Inputs::default(),
+                    );
+                    view.audio_events = backend.audio_events;
+                    view.source_reservation = Some(backend.source_reservation);
+                    view
+                })
+            })
+            .map_err(|e| e.to_string())?;
+        Ok(window.into())
+    })
+}
+
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct EnqueuedNativeDeviceDrop {
@@ -577,6 +646,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_selection: midi_selection::MidiSelection,
     pub(in crate::editor) midi_note_gesture: Option<midi_drag::NoteGesture>,
     pub(in crate::editor) midi_group_gesture: Option<midi_group_drag::GroupGesture>,
+    pub(in crate::editor) midi_creation: Option<midi_creation::Creation>,
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
     pub(in crate::editor) midi_draw_pitch_locked: bool,
@@ -584,6 +654,8 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_marquee: Option<([f32; 2], [f32; 2], bool)>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
+    piano_view_clip: Option<(u64, ClipId)>,
+    piano_zoom_wheel_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
@@ -595,6 +667,8 @@ pub(super) struct EditorView {
     device_panel: device_panel::DevicePanelState,
     project_spectrum: project_spectrum::ProjectSpectrumState,
     worker_requests_pending: usize,
+    sampler_load: sampler_load::State,
+    sampler_parameter: sampler_parameter::State,
     audio_batch: Option<Arc<hex_session::import_batch_decode::AudioBatchControl>>,
     audio_batch_progress: Option<hex_session::import_batch_decode::AudioBatchProgress>,
     pending_playback: Option<PendingPlayback>,
@@ -606,9 +680,13 @@ pub(super) struct EditorView {
     viewport: Option<Viewport>,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
+    // One existing read-only view per transient protocol, never a prepared graph/resource set.
+    resident_device_preview: Option<hex_session::service::DevicePreview>,
+    resident_tuning_preview: Option<hex_session::service::TuningPreview>,
     audio_admission: AudioAdmissionStatus,
     session_routes: session_route_view::RouteView,
     prepared_seek: Option<arrangement_seek::PendingSeek>,
+    seek_request_serial: u64,
     latched_seek_intent: Option<arrangement_seek::SeekIntent>,
     retired_seek_result: Option<hex_session::arrangement_seek::ArrangementSeekResult>,
     applied_project_revision: Option<u64>,
@@ -626,6 +704,7 @@ pub(super) struct EditorView {
     duplicate_intent: DuplicateIntent,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     pending_group_copy: Option<group_copy::Pending>,
+    pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
     export_control: Option<hex_session::service::ExportControl>,
@@ -657,6 +736,7 @@ pub(super) struct EditorView {
     clip_view_open: bool,
     device_panel_active: bool,
     clip_detail_body_height: f32,
+    retained_clip_detail: Option<clip_view::RetainedClipDetail>,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
     pending_loop: Option<loop_rail::PendingLoop>,
     loop_rail_cursor: gpui::CursorStyle,
@@ -788,6 +868,8 @@ impl EditorView {
                     std::path::PathBuf::new(),
                     std::path::PathBuf::new(),
                 ),
+                #[cfg(feature = "ui-test-support")]
+                None,
                 test_environment::Inputs {
                     defaults: [true; 4],
                     ..Default::default()
@@ -816,6 +898,8 @@ impl EditorView {
                 std::path::PathBuf::new(),
                 std::path::PathBuf::new(),
             ),
+            #[cfg(feature = "ui-test-support")]
+            None,
             test_environment::Inputs {
                 defaults: [false, false, true, true],
                 ..Default::default()
@@ -880,6 +964,8 @@ impl EditorView {
                 directory.join("theme.json"),
                 project_preferences,
             ),
+            #[cfg(feature = "ui-test-support")]
+            None,
             test_environment::Inputs {
                 directory: Some(directory.join("samples")),
                 ..Default::default()
@@ -907,6 +993,8 @@ impl EditorView {
                 std::path::PathBuf::new(),
                 std::path::PathBuf::new(),
             ),
+            #[cfg(feature = "ui-test-support")]
+            None,
             test_environment::Inputs {
                 existing_environment: Some(environment),
                 directory: Some(directory),
@@ -936,6 +1024,8 @@ impl EditorView {
                 theme_preferences_path,
                 project_directory::default_preferences_path(),
             ),
+            #[cfg(feature = "ui-test-support")]
+            None,
             #[cfg(test)]
             test_environment::Inputs {
                 defaults: [false, false, false, true],
@@ -955,6 +1045,7 @@ impl EditorView {
             std::path::PathBuf,
             std::path::PathBuf,
         ),
+        #[cfg(feature = "ui-test-support")] fixture_paths: Option<sampler_load::FixturePaths>,
         #[cfg(test)] test_paths: test_environment::Inputs,
     ) -> Self {
         #[cfg(test)]
@@ -1025,6 +1116,10 @@ impl EditorView {
                 view.cancel_project_spectrum_resize(cx);
                 if view.cancel_trim_gesture(cx) {
                     cx.stop_active_drag(window);
+                    // Blur runs after paint in GPUI's focus phase. Notify again
+                    // through the normal effect queue so the canceled overlay
+                    // is removed in the next frame, without another input.
+                    cx.defer_in(window, |_, _, cx| cx.notify());
                 }
                 view.cancel_track_resize(cx);
             }
@@ -1141,6 +1236,7 @@ impl EditorView {
             midi_selection: midi_selection::MidiSelection::default(),
             midi_note_gesture: None,
             midi_group_gesture: None,
+            midi_creation: None,
             midi_stroke: None,
             midi_draw_mode: false,
             midi_draw_pitch_locked: true,
@@ -1148,6 +1244,8 @@ impl EditorView {
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
             midi_hit_cycle: None,
+            piano_view_clip: None,
+            piano_zoom_wheel_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
@@ -1160,6 +1258,8 @@ impl EditorView {
             device_panel: device_panel::DevicePanelState::default(),
             project_spectrum: Default::default(),
             worker_requests_pending: 0,
+            sampler_load: Default::default(),
+            sampler_parameter: Default::default(),
             audio_batch: None,
             audio_batch_progress: None,
             pending_playback: None,
@@ -1171,9 +1271,12 @@ impl EditorView {
             viewport: None,
             playback_candidates: VecDeque::new(),
             audible_playback: None,
+            resident_device_preview: None,
+            resident_tuning_preview: None,
             audio_admission: AudioAdmissionStatus::default(),
             session_routes: session_route_view::RouteView::default(),
             prepared_seek: None,
+            seek_request_serial: 0,
             latched_seek_intent: None,
             retired_seek_result: None,
             applied_project_revision: None,
@@ -1191,6 +1294,7 @@ impl EditorView {
             duplicate_intent: DuplicateIntent::default(),
             pending_scene_duplicate: None,
             pending_group_copy: None,
+            pending_clip_move: None,
             close_prompt_open: false,
             export_pending: false,
             export_control: None,
@@ -1222,6 +1326,7 @@ impl EditorView {
             clip_view_open: true,
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
+            retained_clip_detail: None,
             loop_rail_gesture: None,
             pending_loop: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
@@ -1299,6 +1404,11 @@ impl EditorView {
         if let Some(directory) = test_paths.directory {
             view.browser.directory = directory.clone();
             view.browser.places = vec![directory];
+        }
+        #[cfg(feature = "ui-test-support")]
+        if let Some(paths) = fixture_paths {
+            view.browser
+                .set_native_sampler_fixture_paths(paths.home, paths.directory);
         }
         view.browser_scan_initial(cx);
         view.start_recent_projects_load(cx);
@@ -1528,9 +1638,12 @@ impl EditorView {
         if !self.focus_clip_details(window, cx) {
             return false;
         }
+        self.retained_clip_detail = None;
         self.advance_selection_intent();
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {
+            self.piano_view_clip = None;
+            self.midi_creation = None;
             self.midi_note_gesture = None;
             self.midi_hit_cycle = None;
             self.midi_scene_cache.clear();
@@ -1577,6 +1690,68 @@ pub(super) struct ArrangementPan {
     last_x: f32,
     last_y: f32,
     timeline_width: f32,
+}
+
+#[cfg(feature = "ui-test-support")]
+pub(crate) fn sampler_source_fixture_view(
+    window: gpui::AnyWindowHandle,
+    track: hex_project::TrackId,
+    cx: &gpui::App,
+) -> Result<Option<crate::SamplerSourceTestView>, String> {
+    window
+        .read(cx, |view: gpui::Entity<EditorView>, cx| {
+            let view = view.read(cx);
+            let state = view.state.as_ref()?;
+            let device = state.project.track(track)?.instrument()?;
+            let reference = device.state().asset_references().first()?;
+            let asset = state
+                .project
+                .assets()
+                .find(|a| a.id().value() == reference.asset.value())?;
+            Some(crate::SamplerSourceTestView {
+                device: device.id(),
+                asset: asset.id(),
+                generation: view.project_generation,
+                revision: state.revision,
+                source_frames: asset.source_frames(),
+                playback_frames: asset.playback_frames(),
+                original_source: asset.original_source(),
+                overviews: state.source_overviews.clone(),
+            })
+        })
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "ui-test-support")]
+pub(crate) fn sampler_keyboard_fixture_status(
+    window: gpui::AnyWindowHandle,
+    cx: &gpui::App,
+) -> Result<String, String> {
+    window.read(cx, |view: gpui::Entity<EditorView>, cx| {
+        let view = view.read(cx);
+        format!("enabled={} suspended={} target={:?} request={} input={} cancelled={} desired={:?} current={} edit_pending={} error={:?} clip={:?} draw={} stroke={} note_count={:?} selected_notes={} worker_pending={}",
+            view.computer_keyboard.enabled, view.computer_keyboard.suspended,
+            view.computer_keyboard.target,
+            view.computer_keyboard.request_id,
+            view.computer_keyboard.input.is_some(),
+            view.computer_keyboard.input.as_ref().is_some_and(|i| i.is_cancelled()),
+            view.computer_keyboard.desired_notes(), view.first_sampler_current(), view.edit_pending(), view.error, view.selected_clip,view.midi_draw_mode,view.midi_stroke.is_some(),view.selected_clip.and_then(|id|view.state.as_ref()?.project.midi_source(id).map(|s|s.notes().len())),view.midi_selection.len(),view.worker_requests_pending)
+    }).map_err(|e| e.to_string())
+}
+
+#[cfg(feature = "ui-test-support")]
+pub(crate) fn sampler_midi_fixture_ready(
+    window: gpui::AnyWindowHandle,
+    cx: &gpui::App,
+) -> Result<bool, String> {
+    window
+        .read(cx, |view: gpui::Entity<EditorView>, cx| {
+            let view = view.read(cx);
+            view.first_sampler_current()
+                && !view.edit_pending()
+                && view.stopped_playback_restore.is_none()
+        })
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

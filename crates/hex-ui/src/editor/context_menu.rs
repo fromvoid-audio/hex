@@ -24,6 +24,10 @@ pub(super) struct UtilityModeAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    LoadFirstSampler(super::sampler_load::Target),
+    CancelSamplerLoad {
+        request_id: u64,
+    },
     RemoveBrowserSource(super::browser::BrowserSection),
     AdaptiveGrid {
         generation: u64,
@@ -301,6 +305,10 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::LoadFirstSampler(target) => self.load_first_sampler(target, cx),
+            EditorContextAction::CancelSamplerLoad { request_id } => {
+                self.cancel_first_sampler_load(Some(request_id))
+            }
             EditorContextAction::RemoveBrowserSource(source) => {
                 self.remove_browser_source(source, window, cx);
             }
@@ -433,6 +441,12 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::LoadFirstSampler(target) => {
+                    !self.first_sampler_target_current(target)
+                }
+                EditorContextAction::CancelSamplerLoad { request_id } => {
+                    !self.first_sampler_pending_matches(*request_id)
+                }
                 EditorContextAction::DeviceComparison(target) => {
                     !super::device_comparison::current(self, target)
                 }
@@ -652,6 +666,7 @@ mod tests {
                         comparison_audio: None,
                         project: Arc::new(project),
                         waveforms: Default::default(),
+                        source_overviews: Default::default(),
                         audio_clip_waveforms: Default::default(),
                         midi_preview: Arc::default(),
                         gain_preview: Ok(Arc::default()),

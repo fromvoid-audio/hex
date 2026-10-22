@@ -78,6 +78,7 @@ impl RuntimeRef<'_> {
                 playing: p.playing(),
                 metronome_enabled: p.metronome_enabled(),
                 session_capability: p.session_capability_status(),
+                sampler_console: false,
                 route_state_generation: p.session_route_state_generation(),
                 route_count: p.session_route_count(),
             }),
@@ -106,6 +107,9 @@ impl RuntimeRef<'_> {
             .map_or(SessionCapabilityStatus::RuntimeUnavailable, |s| {
                 s.session_capability
             })
+    }
+    pub(super) fn sampler_console_available(&self) -> bool {
+        self.status().is_some_and(|s| s.sampler_console)
     }
     pub(super) fn session_route_state_generation(&self) -> u64 {
         self.status().map_or(0, |s| s.route_state_generation)
@@ -173,6 +177,17 @@ impl RuntimeMut<'_> {
         match self {
             Self::Legacy(p) => p.try_apply_action(action),
             Self::Eligible(p) => p.apply_action(action),
+        }
+    }
+    pub(super) fn apply_priority_stop(
+        &mut self,
+        clock: &hex_engine::computer_keyboard::KeyboardActivationClock,
+    ) {
+        match self {
+            Self::Legacy(p) => p.apply_priority_stop(clock),
+            Self::Eligible(p) => {
+                let _ = p.apply_priority_stop(clock);
+            }
         }
     }
     pub(super) fn apply(&mut self, command: PlaybackCommand) {

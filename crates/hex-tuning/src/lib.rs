@@ -1,8 +1,13 @@
-//! Control-side repeating scales and immutable project tuning contracts.
+//! # Purpose
+//! Own control-side repeating-scale math, harmonic analysis, portable tuning presets and validated
+//! immutable tuning values. Adapted from the user-owned Freqs scale/analysis implementation.
 //!
-//! Adapted from the user's Freqs scale/analysis implementation; see
-//! docs/project-tuning.md for source identity and the complete feature inventory.
-//! This crate performs no audio, I/O, native FFI, or process-global publication.
+//! # Dependencies
+//! Uses only the standard library; no workspace dependencies.
+//!
+//! # Does not own
+//! Does not perform audio, filesystem I/O, native FFI or process-global tuning publication. Hosts
+//! own project history, instruments and MTS-ESP lifecycle.
 pub mod analysis;
 pub mod preset;
 mod scale;

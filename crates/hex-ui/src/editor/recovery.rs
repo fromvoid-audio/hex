@@ -3,6 +3,10 @@ use super::EditorView;
 use hex_engine::playback::PlaybackCommand;
 use std::sync::atomic::Ordering::{Acquire, Relaxed};
 
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "recovery_tests.rs"]
+mod tests;
+
 impl EditorView {
     pub(super) fn recover_audio(&mut self) {
         self.invalidate_prepared_seek();
@@ -69,32 +73,89 @@ impl EditorView {
             );
             return true;
         }
-        let Some(audio) = self.audio.as_mut() else {
-            return false;
-        };
         if let Some(position) = self.recovery.seek_needed(graph_is_current) {
-            if let Ok(ticket) = audio
-                .control
-                .command_with_ticket(PlaybackCommand::Seek(position))
+            let prepared = position != 0
+                && self.current_seek_requires_preroll() == Some(true)
+                && self
+                    .audio
+                    .as_ref()
+                    .is_some_and(|audio| audio.control.worker_owns_graph_publication());
+            if prepared {
+                let Some(generation) = self.recovery.generation() else {
+                    return false;
+                };
+                if let Some(request) = self.request_recovery_prepared_seek(position, generation) {
+                    self.recovery.prepared_seeking(generation, request);
+                } else {
+                    let reason = self.error.as_ref().map_or_else(
+                        || "could not prepare recovered cursor · retry available".to_owned(),
+                        ToString::to_string,
+                    );
+                    self.fail_audio_recovery(reason);
+                }
+                return true;
+            } else if let Some(audio) = self.audio.as_mut()
+                && let Ok(ticket) = audio
+                    .control
+                    .command_with_ticket(PlaybackCommand::Seek(position))
             {
                 self.recovery.seeking(ticket);
                 self.pending_seek_ticket = Some(ticket);
             }
         }
-        let Some(status) = audio.control.status() else {
+        let Some(status) = self.audio.as_ref().and_then(|audio| audio.control.status()) else {
             return false;
         };
-        if self.recovery.complete(
-            graph_is_current,
-            if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
-                status.stream_applied_command_prefix.load(Acquire)
-            } else {
-                status.consumed_command.load(Acquire)
-            },
-            status.position.load(Relaxed),
-            status.playing.load(Relaxed),
-        ) {
-            self.offline_cursor = status.position.load(Relaxed);
+        if self.recovery.prepared_revision().is_some_and(|revision| {
+            status
+                .rejected_revision()
+                .is_some_and(|(rejected, _)| rejected == revision)
+                && status.applied_revision.load(Acquire) < revision
+        }) {
+            self.fail_audio_recovery(
+                "recovered cursor publication was rejected · retry available".into(),
+            );
+            return true;
+        }
+        let position = status.position.load(Relaxed);
+        let playing = status.playing.load(Relaxed);
+        let ready = if self.recovery.prepared_request().is_some() {
+            let audible = self.audible_playback.as_ref().and_then(|candidate| {
+                (candidate.project_generation == self.project_generation
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| candidate.state.revision == state.revision)
+                    && candidate.device_preview_identity.is_none()
+                    && candidate.tuning_preview_identity.is_none())
+                .then_some(
+                    candidate
+                        .seek_request_id
+                        .map(|request| (request, candidate.audio_revision)),
+                )
+                .flatten()
+            });
+            self.recovery.complete_prepared(
+                graph_is_current,
+                audible,
+                status.applied_revision.load(Acquire),
+                position,
+                playing,
+            )
+        } else {
+            self.recovery.complete(
+                graph_is_current,
+                if self.document_audio_mode == hex_session::DocumentAudioMode::VerifiedStreaming {
+                    status.stream_applied_command_prefix.load(Acquire)
+                } else {
+                    status.consumed_command.load(Acquire)
+                },
+                position,
+                playing,
+            )
+        };
+        if ready {
+            self.offline_cursor = position;
             self.pending_recovery_generation = None;
             self.status = "audio ready · stopped".into();
             self.error = None;

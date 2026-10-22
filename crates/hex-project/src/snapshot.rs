@@ -83,6 +83,7 @@ pub struct MidiSourceSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssetSnapshot {
+    pub original_source: Option<crate::OriginalSourceFacts>,
     pub id: u64,
     pub path: PathBuf,
     pub source_sample_rate: u32,
@@ -250,6 +251,7 @@ impl Project {
                 .assets
                 .values()
                 .map(|asset| AssetSnapshot {
+                    original_source: asset.original_source,
                     id: asset.id.0,
                     path: asset.path.clone(),
                     source_sample_rate: asset.source_sample_rate,
@@ -506,6 +508,7 @@ impl Project {
             assets.insert(
                 id,
                 Asset {
+                    original_source: asset.original_source,
                     id,
                     path: asset.path,
                     source_sample_rate: asset.source_sample_rate,

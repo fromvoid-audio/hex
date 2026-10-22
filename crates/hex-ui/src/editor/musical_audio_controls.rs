@@ -430,7 +430,7 @@ fn button(
             if disabled
                 || view.edit_pending()
                 || view.project_generation != capture.generation
-                || view.selected_clip != Some(capture.clip)
+                || view.detail_clip_id() != Some(capture.clip)
             {
                 return;
             }

@@ -108,6 +108,9 @@ impl Callback {
             .store(self.stream_prefix, Release);
     }
     fn apply_stream_zero_page_action(&mut self, action: PlaybackAction, ticket: u64) {
+        if matches!(action, PlaybackAction::Transport(PlaybackCommand::Stop)) {
+            self.revoke_current_sampler_keyboard();
+        }
         if let Some(mut active) = self
             .active
             .as_mut()
