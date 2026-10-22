@@ -66,7 +66,7 @@ pub(super) fn wheel_zoom(
 }
 
 pub(super) fn clamp_start(start: u64, clip_length: u64, span: u64) -> u64 {
-    start.min(clip_length.saturating_sub(span))
+    start.min(zoom_limit(clip_length).saturating_sub(span))
 }
 
 pub(super) fn pixel_bounds(note: NoteGeometry, width: f32) -> Option<(f32, f32)> {
@@ -668,7 +668,7 @@ mod tests {
     }
 
     #[test]
-    fn horizontal_zoom_and_pan_stay_inside_local_clip_bounds() {
+    fn horizontal_zoom_and_pan_stay_inside_bounded_authoring_domain() {
         let beat = BeatTime::ONE.raw();
         let length = 96 * beat;
         assert_eq!(fit_span(length, beat), 96 * beat);
@@ -680,8 +680,8 @@ mod tests {
         assert_eq!(zoom_span(beat / 8, length, beat, true), beat / 16);
         assert_eq!(fit_span(beat / 512, beat), beat / 512);
         assert_eq!(zoom_span(beat / 512, beat / 512, beat, true), beat / 512);
-        assert_eq!(clamp_start(100 * beat, length, 16 * beat), 80 * beat);
-        assert_eq!(clamp_start(4 * beat, 3 * beat, 4 * beat), 0);
+        assert_eq!(clamp_start(100 * beat, length, 16 * beat), 100 * beat);
+        assert_eq!(clamp_start(4 * beat, 3 * beat, 4 * beat), 4 * beat);
     }
 
     #[test]
