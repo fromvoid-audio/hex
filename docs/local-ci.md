@@ -9,15 +9,37 @@ python3 scripts/local-ci.py --quick
 python3 scripts/local-ci.py --help
 ```
 
-No flags runs the complete audit. Merge resolves the required plan from actual
+No flags runs the complete audit. Merge resolves the runner's plan from actual
 Git inputs and Cargo dependencies. Quick runs guards/formatting only and records
-partial feedback. See [development-workflow.md](development-workflow.md).
+partial feedback. Runner certification and reviewed change-based verification
+are distinct evidence routes under AGENTS.md; neither implies native acceptance.
+See [development-workflow.md](development-workflow.md).
 
 The runner executes sequentially and stops on failure. Read the numbered log for
 the failing step; later `not_run` steps did not pass. Results are in
-`artifacts/local-ci/<run-id>/summary.json` and adjacent raw logs. A qualifying run
+`artifacts/local-ci/<run-id>/summary.json` and adjacent raw logs. A runner-certified run
 must pass on the exact final commit with an unchanged source digest and no stale
 flag. Preserve failed/interrupted logs; do not weaken assertions to obtain green.
+
+## Current selector limits
+
+`scripts/ci_plan.py` currently scopes prose, supported UI and tooling inputs;
+other Rust, policy (including AGENTS.md), build/manifest/vendor, mixed or unknown
+inputs select a full audit. This describes existing executable behavior, not a
+requirement to run unrelated suites. This policy change does not implement a new
+selector. Until a boundary is supported, use a reviewed change-based command set
+with exact source/base, affected contracts/consumers/configurations, results and
+reasons for omissions in the PR. Do not call it runner-certified or change a report's
+qualification flag. Explain and resolve unknowns or conservatively check their
+concrete impact; use full when that breadth is justified. Quick/edit alone is
+insufficient. No bootstrap full audit or repeated full run per slice is required.
+
+Reviewed evidence reuse must identify the original tested inputs and assumptions.
+The runner's `--reuse-report SUMMARY.json` is narrower: it accepts an original
+complete runtime report for a prose-only continuation with matching executable
+inputs and guarded dependencies. It does not compose arbitrary per-owner reports.
+Neither reviewed merge evidence nor a merge certificate replaces the full audit
+required by [qualified native delivery](test-builds.md).
 
 For ordinary app-only Rust merge inputs, reviewed Python shared invariants run
 alongside the unchanged Rust checks and repository guards. Tooling, policy,
@@ -51,7 +73,7 @@ For a comparison, retain each summary and raw log with exact source/base,
 toolchain, hardware, features, command and target/cache conditions. Start with a
 warm quick run and one named owning edit regression. Use three paired runs for
 cheap workloads, alternate order, and compare medians; retain warm-up/compilation
-samples separately. Reuse required full and representative UI merge reports
+samples separately. Reuse justified full and representative UI merge reports
 instead of adding repeated full audits. Label historical/different-source reports
 and unavailable maintenance/diagnostic measures explicitly. Do not delete caches
 to manufacture a saving or infer reduced detection from fewer executables.
@@ -105,8 +127,8 @@ python3 scripts/local-ci.py --profile edit --base BASE_SHA --source HEAD_SHA \
 Omit `--lib`/`--test` to retain package-wide test selection. They are mutually
 exclusive and require an explicit edit package/filter; unknown targets, disabled
 required features and zero passing matches refuse qualification. Edit still runs
-package Clippy and formatting and remains partial. Merge/full/release plans are
-unchanged.
+package Clippy and formatting and remains partial. These options do not change
+runner merge/full/release plans.
 
 ```sh
 python3 scripts/check-architecture.py
@@ -121,7 +143,9 @@ cargo test -p hex-stream --features allocation-probe --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
 ```
 
-Focused tests support iteration; they do not replace the resolved merge plan.
+Focused tests can form part of a reviewed change-based merge check set when its
+affected contracts, consumers and configurations are covered; an isolated passing
+test alone does not establish that scope.
 Allocation probes cover their named headless fixtures, not all callback faults,
 native allocations, physical device deadlines or audible quality. Report those
 limits. User native interaction and listening checks remain separate.
