@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstring>
 #include <thread>
+#include <algorithm>
+#include "macos_lifecycle_case.hpp"
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -63,7 +65,29 @@ static bool fixture(const char* kind,const char* expected) {
     bool entered=loaded && entry && exit && get && entry(bundle);
     bool ok=false;
     if(entered) {
+        const bool lifecycle=std::strcmp(kind,"lifecycle")==0;
+        if (lifecycle) {
+            auto configure=reinterpret_cast<bool(*)(int,int)>(CFBundleGetFunctionPointerForName(bundle,CFSTR("HexLifecycleCase")));
+            if (!configure || !configure(lifecycle_evidence.mode,lifecycle_evidence.failure)) {
+                exit(); CFBundleUnloadExecutable(bundle); CFRelease(bundle); return false;
+            }
+        }
         auto* factory=get();
+        if (lifecycle) {
+            ok=lifecycle_case(bundle,factory);
+            if (!lifecycle_evidence.closed) {
+                // Failed teardown retains the module and both factory references.
+                // The standalone process owner must reap this helper; no live unload.
+                return ok;
+            }
+            if (factory) factory->release();
+            if (!exit()) return false; // retain refused module exit until process retirement
+            if (loaded) CFBundleUnloadExecutable(bundle);
+            lifecycle_evidence.unloaded=!CFBundleIsExecutableLoaded(bundle);
+            ok=lifecycle_evidence.unloaded && ok;
+            CFRelease(bundle);
+            return ok;
+        }
         PClassInfo info{};
         if(factory && factory->countClasses()==1 && factory->getClassInfo(0,&info)==kResultOk) {
             IComponent* component=nullptr;
@@ -124,6 +148,22 @@ static bool fixture(const char* kind,const char* expected) {
 
 int main(int argc,char** argv) {
     @autoreleasepool {
+        if (argc==4 && !std::strcmp(argv[1],"--lifecycle-self-test")) {
+            const auto number=[](const char* value,int maximum)->int {
+                if (!value || !*value || std::strlen(value)>2) return -1;
+                int result=0;
+                for (const char* p=value;*p;++p) { if (*p<'0' || *p>'9') return -1; result=result*10+(*p-'0'); }
+                return result<=maximum?result:-1;
+            };
+            lifecycle_evidence.mode=number(argv[2],2);
+            lifecycle_evidence.failure=number(argv[3],26);
+            if (lifecycle_evidence.mode<0 || lifecycle_evidence.failure<0) return 2;
+            try {
+                const bool valid=fixture("lifecycle",HEX_LIFECYCLE_SHA256);
+                print_lifecycle();
+                return valid?0:1;
+            } catch (...) { std::fprintf(stderr,"lifecycle fault; module custody retained until process exit\n"); return 1; }
+        }
         if(argc!=2) { std::fprintf(stderr,"controlled helper requires --identity or --self-test\n"); return 2; }
         if(!std::strcmp(argv[1],"--identity")) {
             std::puts("{\"version\":1,\"scope\":\"original-macos-bootstrap\",\"platform\":\"darwin-arm64\",\"sdk\":\"" HEX_SDK_PIN "\"}");
