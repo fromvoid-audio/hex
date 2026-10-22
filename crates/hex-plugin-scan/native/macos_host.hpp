@@ -14,7 +14,7 @@ struct ParameterSnapshot {
     uint32 count=0;
     uint64 revision=0;
 };
-enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread };
+enum class HostDisposition { Idle, Refreshed, InvalidMetadata, NoController, Recursive, Retiring, WrongThread, Capacity };
 struct HostDispatch {
     uint64 sequence=0, metadata_revision=0;
     int32 flags=0;
@@ -22,7 +22,7 @@ struct HostDispatch {
 };
 enum HostRefusal : uint32 { WrongThread=1, UnknownRestart=2, GraphControlRequired=4,
     QueueFull=8, RecursiveRestart=16, InvalidMetadata=32, Retiring=64,
-    UnsupportedCapability=128, UnsupportedEdit=256, MessagePoolFull=512 };
+    UnsupportedCapability=128, UnsupportedEdit=256, MessagePoolFull=512, MetadataCapacity=1024 };
 
 // One instance's control owner. Only title/value refresh is admitted here. IO,
 // latency/reload/routing require actual graph preparation and remain explicitly
@@ -133,7 +133,10 @@ public:
         struct Leave { bool& flag; ~Leave() { flag=false; } } leave{dispatching};
         ParameterSnapshot staged{};
         const auto total=controller->getParameterCount();
-        bool valid=total>=0 && total<=static_cast<int32>(staged.parameters.size());
+        if (total>static_cast<int32>(staged.parameters.size())) {
+            refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
+        }
+        bool valid=total>=0;
         if (valid) staged.count=static_cast<uint32>(total);
         for (uint32 i=0;valid && i<staged.count;++i) {
             auto& parameter=staged.parameters[i];
@@ -156,8 +159,9 @@ public:
         }
         if (metadata.revision && staged.count!=metadata.count) valid=false;
         if (recursive) { result.disposition=HostDisposition::Recursive; return result; }
-        if (!valid || metadata.revision==std::numeric_limits<uint64>::max()) {
-            refuse(InvalidMetadata); result.disposition=HostDisposition::InvalidMetadata; return result;
+        if (!valid) { refuse(InvalidMetadata); result.disposition=HostDisposition::InvalidMetadata; return result; }
+        if (metadata.revision==std::numeric_limits<uint64>::max()) {
+            refuse(MetadataCapacity); result.disposition=HostDisposition::Capacity; return result;
         }
         staged.revision=metadata.revision+1;
         metadata=staged;

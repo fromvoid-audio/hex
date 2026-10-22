@@ -195,15 +195,16 @@ class NativeBootstrapTests(unittest.TestCase):
         self.assertTrue(value["refusals"] & 8)
         self.assertTrue(value["closed"] and value["unloaded"])
 
-    def test_malformed_and_recursive_metadata_preserves_the_last_complete_snapshot(self):
+    def test_malformed_recursive_and_over_capacity_metadata_preserves_the_last_snapshot(self):
         for scenario in range(3, 10):
             with self.subTest(scenario=scenario):
                 value = self.host_control(scenario)
                 self.assertEqual(value["callback"], 0, "callback acknowledges queued work, not application")
                 self.assertEqual(value["dispatched"], 1)
-                self.assertEqual(value["disposition"], 4 if scenario == 8 else 2)
+                disposition, refusal = (4, 16) if scenario == 8 else (7, 1024) if scenario == 7 else (2, 32)
+                self.assertEqual(value["disposition"], disposition)
                 self.assertEqual((value["after_revision"], value["after_value"]), (1, 0.25))
-                self.assertTrue(value["refusals"] & (16 if scenario == 8 else 32))
+                self.assertTrue(value["refusals"] & refusal)
                 self.assertTrue(value["closed"] and value["unloaded"])
 
     def test_processing_thread_callbacks_refuse_before_controller_or_message_work(self):
