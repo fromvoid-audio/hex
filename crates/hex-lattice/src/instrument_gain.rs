@@ -3,33 +3,36 @@
 //! evaluate the same samples without rounding new intermediate endpoints.
 use crate::NativeInstrumentRuntimeError;
 
-pub const INSTRUMENT_GAIN_UNITY: u32 = 65_536;
-pub const MAX_INSTRUMENT_OCCURRENCE_GAIN: u32 = 4 * INSTRUMENT_GAIN_UNITY;
+pub const INSTRUMENT_GAIN_UNITY: f64 = 1.0;
+pub const MAX_INSTRUMENT_OCCURRENCE_GAIN: f64 = 4.0;
 
 /// One frame-linear ramp on a stable runtime occurrence. Endpoints are unsigned
-/// Q16.16 linear gain; `span_frames` ends at the exclusive ramp boundary.
+/// linear gain; `span_frames` ends at the exclusive ramp boundary. Prepared
+/// tempo/cue boundaries may have fractional gains; never re-quantize them.
 /// `offset_frames` selects the beginning of the borrowed processing segment.
 /// Missing occurrences in a gain batch retain unity. This value owns no state
 /// and never changes a voice's velocity, cursor, gate or age.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NativeInstrumentOccurrenceGain {
     occurrence_id: u64,
-    start_q16: u32,
-    end_q16: u32,
+    start_gain: f64,
+    end_gain: f64,
     span_frames: u64,
     offset_frames: u64,
 }
 impl NativeInstrumentOccurrenceGain {
     pub fn new(
         occurrence_id: u64,
-        start_q16: u32,
-        end_q16: u32,
+        start_gain: f64,
+        end_gain: f64,
         span_frames: u64,
         offset_frames: u64,
     ) -> Result<Self, NativeInstrumentRuntimeError> {
         if occurrence_id == 0
-            || start_q16 > MAX_INSTRUMENT_OCCURRENCE_GAIN
-            || end_q16 > MAX_INSTRUMENT_OCCURRENCE_GAIN
+            || !start_gain.is_finite()
+            || !end_gain.is_finite()
+            || !(0.0..=MAX_INSTRUMENT_OCCURRENCE_GAIN).contains(&start_gain)
+            || !(0.0..=MAX_INSTRUMENT_OCCURRENCE_GAIN).contains(&end_gain)
             || span_frames == 0
             || offset_frames > span_frames
         {
@@ -37,8 +40,8 @@ impl NativeInstrumentOccurrenceGain {
         }
         Ok(Self {
             occurrence_id,
-            start_q16,
-            end_q16,
+            start_gain,
+            end_gain,
             span_frames,
             offset_frames,
         })
@@ -53,8 +56,8 @@ impl NativeInstrumentOccurrenceGain {
     ) -> Result<Self, NativeInstrumentRuntimeError> {
         Self::new(
             self.occurrence_id,
-            self.start_q16,
-            self.end_q16,
+            self.start_gain,
+            self.end_gain,
             self.span_frames,
             offset_frames,
         )
@@ -67,10 +70,14 @@ impl NativeInstrumentOccurrenceGain {
             .offset_frames
             .saturating_add(offset)
             .min(self.span_frames);
+        if position == self.span_frames {
+            return self.end_gain;
+        }
+        if position == 0 || self.start_gain == self.end_gain {
+            return self.start_gain;
+        }
         let fraction = position as f64 / self.span_frames as f64;
-        (f64::from(self.start_q16)
-            + (f64::from(self.end_q16) - f64::from(self.start_q16)) * fraction)
-            / f64::from(INSTRUMENT_GAIN_UNITY)
+        self.start_gain + (self.end_gain - self.start_gain) * fraction
     }
     pub(crate) fn covers_frames(self, frames: usize) -> bool {
         u64::try_from(frames)
@@ -104,11 +111,16 @@ mod tests {
     #[test]
     fn invalid_ramp_fields_and_slice_overflow_are_refused() {
         for args in [
-            (0, 0, 0, 1, 0),
-            (1, MAX_INSTRUMENT_OCCURRENCE_GAIN + 1, 0, 1, 0),
-            (1, 0, MAX_INSTRUMENT_OCCURRENCE_GAIN + 1, 1, 0),
-            (1, 0, 0, 0, 0),
-            (1, 0, 0, 1, 2),
+            (0, 0.0, 0.0, 1, 0),
+            (1, MAX_INSTRUMENT_OCCURRENCE_GAIN + 1.0, 0.0, 1, 0),
+            (1, 0.0, MAX_INSTRUMENT_OCCURRENCE_GAIN + 1.0, 1, 0),
+            (1, -0.01, 1.0, 1, 0),
+            (1, 0.0, -0.01, 1, 0),
+            (1, f64::NAN, 1.0, 1, 0),
+            (1, 0.0, f64::INFINITY, 1, 0),
+            (1, f64::NEG_INFINITY, 1.0, 1, 0),
+            (1, 0.0, 0.0, 0, 0),
+            (1, 0.0, 0.0, 1, 2),
         ] {
             assert_eq!(
                 NativeInstrumentOccurrenceGain::new(args.0, args.1, args.2, args.3, args.4),
@@ -116,10 +128,13 @@ mod tests {
             );
         }
         let ramp =
-            NativeInstrumentOccurrenceGain::new(1, 0, INSTRUMENT_GAIN_UNITY, u64::MAX, u64::MAX)
+            NativeInstrumentOccurrenceGain::new(1, 0.0, INSTRUMENT_GAIN_UNITY, u64::MAX, u64::MAX)
                 .unwrap();
         assert!(!ramp.covers_frames(1));
         assert_eq!(ramp.value_at_offset(u64::MAX), 1.0);
         assert!(ramp.with_offset_frames(0).unwrap().covers_frames(7));
+        let tiny = NativeInstrumentOccurrenceGain::new(1, 4.0, f64::MIN_POSITIVE, 1, 0).unwrap();
+        assert_eq!(tiny.value_at_offset(0), 4.0);
+        assert_eq!(tiny.value_at_offset(1), f64::MIN_POSITIVE);
     }
 }

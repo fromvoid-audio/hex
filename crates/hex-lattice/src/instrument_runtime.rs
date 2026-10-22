@@ -1920,7 +1920,7 @@ mod tests {
         let mut runtime = new_pair(1, 2);
         assert!(!runtime.supports_occurrence_gain());
         let gain =
-            crate::NativeInstrumentOccurrenceGain::new(1, 0, crate::INSTRUMENT_GAIN_UNITY, 4, 0)
+            crate::NativeInstrumentOccurrenceGain::new(1, 0.0, crate::INSTRUMENT_GAIN_UNITY, 4, 0)
                 .unwrap();
         let events = [NativeInstrumentEvent::NoteOn {
             frame_offset: 0,

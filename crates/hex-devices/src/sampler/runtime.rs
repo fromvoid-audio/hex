@@ -205,13 +205,31 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         events: &[NativeInstrumentEvent],
         gains: &[NativeInstrumentOccurrenceGain],
     ) -> Result<(), Error> {
-        for gain in gains {
-            let id = gain.occurrence_id();
-            if !self.active.iter().flatten().any(|voice| voice.occurrence == id)
-                && !events.iter().any(|event| matches!(event, NativeInstrumentEvent::NoteOn { occurrence_id, .. } if *occurrence_id == id))
-            {
-                return Err(Error::InvalidOccurrenceGain);
+        if events.len() > self.prepared.max_events
+            || gains.len() > MAX_EVENTS + MAX_SAMPLER_RUNTIME_VOICES
+        {
+            return Err(Error::EventCapacityExceeded);
+        }
+        // Mark the bounded union once instead of scanning the entire event
+        // batch for every gain (up to 1,024 incoming identities). The caller
+        // already proved sorted unique gain IDs. This is local validation
+        // scratch, not retained voice/gain state.
+        let mut known = [false; MAX_EVENTS + MAX_SAMPLER_RUNTIME_VOICES];
+        let mut mark = |id| {
+            if let Ok(index) = gains.binary_search_by_key(&id, |gain| gain.occurrence_id()) {
+                known[index] = true;
             }
+        };
+        for voice in self.active.iter().flatten() {
+            mark(voice.occurrence);
+        }
+        for event in events {
+            if let NativeInstrumentEvent::NoteOn { occurrence_id, .. } = event {
+                mark(*occurrence_id);
+            }
+        }
+        if !known[..gains.len()].iter().all(|known| *known) {
+            return Err(Error::InvalidOccurrenceGain);
         }
         Ok(())
     }

@@ -313,7 +313,7 @@ fn resident_sampler_occurrence_gains_allocate_and_free_nothing_in_the_actual_pai
     ];
     let gains =
         [
-            NativeInstrumentOccurrenceGain::new(1, 0, hex_lattice::INSTRUMENT_GAIN_UNITY, 7, 0)
+            NativeInstrumentOccurrenceGain::new(1, 0.0, hex_lattice::INSTRUMENT_GAIN_UNITY, 7, 0)
                 .unwrap(),
         ];
     let mut frames = [[0.0; 2]; 7];

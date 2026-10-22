@@ -397,8 +397,9 @@ fn occurrence_ramp_preserves_midway_onset_release_other_voice_and_arbitrary_part
         },
         4,
     );
-    let ramp = NativeInstrumentOccurrenceGain::new(1, 0, hex_lattice::INSTRUMENT_GAIN_UNITY, 7, 0)
-        .unwrap();
+    let ramp =
+        NativeInstrumentOccurrenceGain::new(1, 1.0 / 3.0, hex_lattice::INSTRUMENT_GAIN_UNITY, 7, 0)
+            .unwrap();
     let mut whole = pair(&prepared);
     assert!(whole.supports_occurrence_gain());
     let mut output = [[0.125; 2]; 7];
@@ -418,19 +419,19 @@ fn occurrence_ramp_preserves_midway_onset_release_other_voice_and_arbitrary_part
     let expected = [
         1.125,
         1.125,
-        1.125 + 2.0 / 7.0,
-        1.125 + 3.0 / 7.0,
-        1.125 + 4.0 / 7.0,
-        1.125 + 5.0 / 7.0,
-        1.125 + 6.0 / 7.0,
+        1.125 + 11.0 / 21.0,
+        1.125 + 13.0 / 21.0,
+        1.125 + 15.0 / 21.0,
+        1.125 + 17.0 / 21.0,
+        1.125 + 19.0 / 21.0,
     ];
     for (actual, expected) in output.iter().zip(expected) {
         for channel in actual {
             assert!((f64::from(*channel) - expected).abs() < 0.000001);
         }
     }
-    // 3/7 is not representable in Q16.16. Keep original endpoints instead of
-    // rounding a new midpoint, and require sample-identical split output.
+    // The prepared boundary gain 1/3 and split position 3/7 are not Q16.16
+    // values. Retain original f64 endpoints and require identical split PCM.
     let mut split = pair(&prepared);
     let mut partitioned = [[0.125; 2]; 7];
     split.begin_block();
@@ -483,7 +484,7 @@ fn occurrence_gain_refusal_after_a_successful_segment_preserves_scratch_and_pcm(
         4,
     );
     let gain = |id| {
-        NativeInstrumentOccurrenceGain::new(id, 0, hex_lattice::INSTRUMENT_GAIN_UNITY, 7, 0)
+        NativeInstrumentOccurrenceGain::new(id, 0.0, hex_lattice::INSTRUMENT_GAIN_UNITY, 7, 0)
             .unwrap()
     };
     let mut runtime = pair(&prepared);
@@ -572,8 +573,8 @@ fn occurrence_gain_scales_actual_gated_release_without_touching_the_other_voice(
     let mut runtime = pair(&prepared);
     let gain = NativeInstrumentOccurrenceGain::new(
         1,
-        hex_lattice::INSTRUMENT_GAIN_UNITY / 2,
-        hex_lattice::INSTRUMENT_GAIN_UNITY / 2,
+        hex_lattice::INSTRUMENT_GAIN_UNITY / 2.0,
+        hex_lattice::INSTRUMENT_GAIN_UNITY / 2.0,
         7,
         0,
     )
@@ -603,4 +604,44 @@ fn occurrence_gain_scales_actual_gated_release_without_touching_the_other_voice(
         [[1.0; 2], [0.75; 2], [0.5; 2], [0.25; 2], [0.0; 2]]
     );
     assert!(runtime.committed_is_quiescent());
+}
+
+#[test]
+fn gain_batch_can_cover_more_incoming_identities_than_simultaneously_active_voices() {
+    let pcm = [1.0; 32];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(views[0], Mode::Classic { loop_region: None }, 4);
+    let mut runtime = pair(&prepared);
+    let mut events = Vec::new();
+    let mut gains = Vec::new();
+    for id in 1..=64 {
+        events.push(on(0, id, 60));
+        if id < 64 {
+            events.push(off(0, id));
+        }
+        gains.push(
+            NativeInstrumentOccurrenceGain::new(
+                id,
+                hex_lattice::INSTRUMENT_GAIN_UNITY / 2.0,
+                hex_lattice::INSTRUMENT_GAIN_UNITY / 2.0,
+                7,
+                0,
+            )
+            .unwrap(),
+        );
+    }
+    let mut output = [[0.0; 2]; 7];
+    runtime.begin_block();
+    runtime
+        .process_block_with_clock_and_occurrence_gains(
+            &events,
+            &mut output,
+            None,
+            &gains,
+            &resources,
+        )
+        .unwrap();
+    runtime.commit_block();
+    assert_eq!(output, [[0.5; 2]; 7]);
 }
