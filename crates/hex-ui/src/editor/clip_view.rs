@@ -103,6 +103,16 @@ impl EditorView {
             self.selected_clip
                 .is_some_and(|clip| state.project.midi_source(clip).is_some())
         });
+        // A conversion can retain ClipId while changing its source kind. Retire
+        // that MIDI viewport too, even when no new MIDI editor is rendered.
+        if self.piano_view_clip.is_some_and(|(generation, clip)| {
+            generation != self.project_generation
+                || self.selected_clip != Some(clip)
+                || !selected_midi
+        }) {
+            self.piano_view_clip = None;
+            self.piano_zoom_wheel_accum = 0.0;
+        }
         let has_session_audio = self.mode == EditorMode::Session
             && self.selected_cell.is_some_and(|(track, scene)| {
                 self.state.as_ref().is_some_and(|state| {

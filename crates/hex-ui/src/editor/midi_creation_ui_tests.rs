@@ -22,7 +22,7 @@ fn next(service: &Service) -> Event {
         std::thread::yield_now();
     }
 }
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
 ) -> (
     VisualTestContext,
@@ -80,7 +80,7 @@ fn fixture(
     visual.run_until_parked();
     (visual, editor, environment, clip)
 }
-fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let until = Instant::now() + Duration::from_secs(5);
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
@@ -97,7 +97,7 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
         std::thread::yield_now();
     }
 }
-fn double_down(
+pub(super) fn double_down(
     visual: &mut VisualTestContext,
     at: gpui::Point<gpui::Pixels>,
     modifiers: Modifiers,
