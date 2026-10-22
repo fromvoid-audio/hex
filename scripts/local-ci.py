@@ -94,6 +94,13 @@ def terminal_progress(label: str, *, announce: bool = True):
 
 @dataclass(frozen=True)
 class Step:
+    """A check with a 1–100 character ASCII ID starting with a letter or digit.
+
+    Remaining characters may be letters, digits, underscores or hyphens.
+    The runner validates the entire plan before executing any command. IDs are
+    used verbatim in numbered log basenames; the index keeps repeated IDs distinct.
+    """
+
     step_id: str
     argv: tuple[str, ...]
     uses_cargo_target: bool = False
@@ -1480,7 +1487,14 @@ class LocalCiRunner:
 
         failed = False
         try:
-            if not self._capture_repository_state("start_tree"):
+            invalid_ids = [step.step_id for step in self.steps
+                           if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", step.step_id) is None]
+            if invalid_ids:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    step_id_error=f"invalid step IDs: {invalid_ids!r}; expected 1–100 ASCII characters: "
+                                                  "alphanumeric first, then alphanumeric, underscore or hyphen")
+                print(self.summary["step_id_error"], file=sys.stderr, flush=True)
+            elif not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not capture exact commit and dirty state"

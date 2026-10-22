@@ -14,7 +14,7 @@ import subprocess
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / "local-ci.py"
@@ -399,6 +399,54 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertEqual(summary["steps"][0]["status"], "failed")
         self.assertIsNone(summary["steps"][0]["exit_code"])
         self.assertIn("not-installed", (self.repo / summary["steps"][0]["log"]).read_text())
+        self.assertIn("required executable not found", summary["steps"][0]["error"])
+
+    def test_invalid_step_ids_refuse_entire_plan_and_restore_resources(self) -> None:
+        handlers = {sig: local_ci.signal.getsignal(sig)
+                    for sig in (local_ci.signal.SIGINT, local_ci.signal.SIGTERM)}
+        for index, step_id in enumerate(("transport/routes", "../escape", "..", ".", "/absolute",
+                                         "transport\\routes", "", "a" * 101, "a\n", "é")):
+            with self.subTest(step_id=step_id):
+                run_id = f"invalid-{index}"
+                runner = self.runner(run_id, steps=(local_ci.Step("first", ("first",)),
+                                                    local_ci.Step(step_id, ("cargo", "build"))))
+                lock = Mock()
+                lock.release.return_value = None
+                runner.target_lock = lock
+                with patch.object(local_ci.subprocess, "run") as command:
+                    self.assertEqual(runner.run(), 2)
+                command.assert_not_called()
+                lock.release.assert_called_once_with()
+                self.assertIsNone(runner.target_lock)
+                for sig, handler in handlers.items():
+                    self.assertIs(local_ci.signal.getsignal(sig), handler)
+                summary = self.summary(run_id)
+                self.assertEqual(summary["status"], "failed")
+                self.assertEqual(summary["verification_status"], "failed")
+                self.assertIn("invalid step IDs", summary["step_id_error"])
+                self.assertNotIn("required executable", json.dumps(summary))
+                self.assertEqual([s["step_id"] for s in summary["steps"]], ["first", step_id])
+                self.assertTrue(all(s["status"] == "not_run" and s["log"] is None
+                                    and s["exit_code"] is None for s in summary["steps"]))
+                self.assertEqual(list(runner.output_dir.iterdir()), [runner.output_dir / "summary.json"])
+                self.assertFalse(self.call_log.exists())
+
+    def test_safe_step_ids_keep_distinct_numbered_log_linkage(self) -> None:
+        ids = ("transport-routes", "transport_routes", "A0", "a" * 100, "transport-routes")
+        runner = self.runner("safe-ids", steps=tuple(local_ci.Step(s, ("first", s)) for s in ids))
+        self.assertEqual(runner.run(), 0)
+        summary = self.summary("safe-ids")
+        self.assertEqual(summary["status"], "passed")
+        logs = []
+        for index, (step_id, entry) in enumerate(zip(ids, summary["steps"]), start=1):
+            log = self.repo / entry["log"]
+            self.assertEqual(log, runner.output_dir / f"{index:02d}-{step_id}.log")
+            self.assertEqual(log.resolve().parent, runner.output_dir.resolve())
+            self.assertEqual(entry["step_id"], step_id)
+            self.assertEqual(entry["status"], "passed")
+            self.assertIn(f"completed first {step_id}", log.read_text())
+            logs.append(log)
+        self.assertEqual(len(set(logs)), len(ids))
 
     def test_source_change_during_run_marks_evidence_stale(self) -> None:
         source = self.repo / "source.rs"
