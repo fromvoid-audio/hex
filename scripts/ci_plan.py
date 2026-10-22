@@ -139,6 +139,10 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
     if scopes == {"ui"} and affected - UI_PACKAGES - {"hex-desktop"}:
         scopes.add("rust")
         reasons.append("UI has additional consumers: include their package configurations")
+    if scopes == {"ui"} and any(set(p["features"]) - ({"ui-test-support"} if p["name"] == "hex-ui" else set())
+                                for p in inventory if p["name"] in UI_PACKAGES):
+        scopes.add("rust")
+        reasons.append("additional UI features require affected-package configurations")
     scope = ("full" if "full" in scopes else "rust" if "rust" in scopes
              or "ui" in scopes and "tooling" in scopes else
              "metadata" if not scopes else next(iter(scopes)))
@@ -186,6 +190,7 @@ def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affe
             {"package": "hex-storage", "lib": True, "filter": "compressor"},
             {"package": "hex-audio", "lib": True, "filter": "compressor", "features": "allocation-probe"},
             {"package": "hex-audio", "test": "device_comparison", "filter": "", "features": "allocation-probe"},
+            {"package": "hex-audio", "test": "allocation_probe_calibration", "filter": "", "features": "allocation-probe"},
             {"package": "hex-ui", "lib": True, "filter": "compressor", "features": "ui-test-support"},
         ]
     return {"kind": "compressor" if narrow else "packages", "tests": tests,

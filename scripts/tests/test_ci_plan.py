@@ -411,6 +411,9 @@ class ScopeTests(unittest.TestCase):
         self.assertEqual(affected, ["hex-desktop", "hex-ui", "hex-widgets"])
         self.assertEqual(plan.classify(["launch", "docs/a.md"], inventory)[0], "tooling")
         self.assertEqual(plan.classify(["docs/a.md"], inventory)[0], "metadata")
+        inventory[0]["features"] = {"new-configuration": []}
+        self.assertEqual(plan.classify(["crates/hex-widgets/src/a.rs"], inventory)[0], "rust")
+        inventory[0]["features"] = {}
         inventory.append(dict(name="hex-engine", manifest="crates/hex-engine/Cargo.toml",
                               dependencies=[{"name": "hex-ui", "kind": "dev"}]))
         self.assertEqual(plan.classify(["crates/hex-ui/src/a.rs"], inventory)[0], "rust")
@@ -484,6 +487,7 @@ class ScopeTests(unittest.TestCase):
         commands = [s.argv for s in steps]
         self.assertTrue(all(s.requires_tests for s in steps if s.argv[:2] == ("cargo", "test")))
         self.assertTrue(any("device_chain" in a for a in commands))
+        self.assertTrue(any("allocation_probe_calibration" in a for a in commands))
         self.assertTrue(any("hex-storage" in a and "compressor" in a for a in commands))
         self.assertTrue(any("allocation-probe" in a and "compressor" in a for a in commands))
         self.assertTrue(any("ui-test-support" in a and "compressor" in a for a in commands))
