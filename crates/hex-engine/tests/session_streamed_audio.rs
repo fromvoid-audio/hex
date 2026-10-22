@@ -32,6 +32,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
         next_id: 10,
         assets: vec![
             AssetSnapshot {
+                original_source: None,
                 id: STREAM_ASSET,
                 path: "session-source.wav".into(),
                 source_sample_rate: RATE,
@@ -40,6 +41,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             },
             AssetSnapshot {
+                original_source: None,
                 id: BED_ASSET,
                 path: "resident-bed.wav".into(),
                 source_sample_rate: RATE,
@@ -48,6 +50,7 @@ fn project(source_start: u64, source_end: u64) -> Project {
                 conversion_version: hex_project::IDENTITY_CONVERSION,
             },
             AssetSnapshot {
+                original_source: None,
                 id: 9,
                 path: "unused.wav".into(),
                 source_sample_rate: RATE,

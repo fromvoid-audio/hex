@@ -771,8 +771,8 @@ fn ongoing_instrument_admits_repeating_32_note_chord_and_matches_finite_pcm() {
         BeatTime::ZERO,
         Some((BeatTime::ZERO, beat(4))),
     );
-    for _ in 0..32 {
-        add_note(&mut fixture, BeatTime::ZERO, beat(4), 48);
+    for index in 0..32 {
+        add_note(&mut fixture, BeatTime::ZERO, beat(4), 48 + index);
     }
 
     let project = fixture.editor.project();
@@ -999,8 +999,8 @@ fn ongoing_instrument_admission_rejects_voice_pileups() {
         BeatTime::ZERO,
         None,
     );
-    for _ in 0..65 {
-        add_note(&mut fixture, beat(0), beat(1), 48);
+    for index in 0..65 {
+        add_note(&mut fixture, beat(0), beat(1), 36 + index);
     }
     let project = fixture.editor.project();
     let timing =
@@ -1024,20 +1024,20 @@ fn ongoing_instrument_admission_counts_repeat_voices_that_start_during_intro_rel
         BeatTime::ZERO,
         Some((BeatTime::ZERO, beat(3))),
     );
-    for _ in 0..63 {
+    for index in 0..63 {
         add_note(
             &mut fixture,
             BeatTime::from_ratio(29, 10).unwrap(),
             BeatTime::from_ratio(1, 10).unwrap(),
-            48,
+            36 + index,
         );
     }
-    for _ in 0..64 {
+    for index in 0..64 {
         add_note(
             &mut fixture,
             BeatTime::from_ratio(1, 20).unwrap(),
             BeatTime::from_ratio(1, 100).unwrap(),
-            55,
+            36 + index,
         );
     }
     let project = fixture.editor.project();
@@ -1392,7 +1392,18 @@ fn density_refuses_clustered_edges_and_admits_dense_spread_out_notes() {
         None,
     );
     for pitch in 0..129 {
-        add_note(&mut clustered, BeatTime::ZERO, beat(1), (pitch % 128) as u8);
+        // The repeated pitch has an adjacent gate; all 129 onsets still fall
+        // within 24 frames, so this tests onset pressure rather than overwrite.
+        add_note(
+            &mut clustered,
+            BeatTime::from_ratio(pitch / 128, 1024).unwrap(),
+            if pitch == 0 {
+                BeatTime::from_ratio(1, 1024).unwrap()
+            } else {
+                beat(1)
+            },
+            (pitch % 128) as u8,
+        );
     }
     let project = clustered.editor.project();
     let timing = PreparedTempoMap::prepare(project.tempo_map().clone(), 48_000).unwrap();

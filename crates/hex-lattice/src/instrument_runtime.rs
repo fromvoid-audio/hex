@@ -150,6 +150,12 @@ pub struct NativeInstrumentRuntimeLimits {
 /// envelope release and internal feedback/output state; the runtime must
 /// become quiescent by that bound.
 pub trait PreparedMutableInstrumentRuntime: Send + Sync {
+    /// Opt-in declaration that the immutable factory owns only its inline Box payload, with no
+    /// owned heap backing. The host cross-checks this against dynamic `size_of_val` for resource
+    /// admission. Default unknown; twin-runtime storage never proves factory storage ownership.
+    fn resource_factory_inline_bytes(&self) -> Option<usize> {
+        None
+    }
     /// Fixed algorithmic buffering latency at this prepared sample rate.
     /// Unknown is explicit; envelope attack, filter phase and musical release
     /// are not buffering latency. A mutable factory must agree with its source.
@@ -470,6 +476,21 @@ impl NativeInstrumentRuntimePair {
         self.primary
             .fixed_storage_bytes()
             .checked_add(self.scratch.fixed_storage_bytes())
+    }
+    /// Actual concrete Box payload sizes, without exposing either runtime.
+    /// Matching a type does not prove absence of nested allocations; an owning
+    /// host must separately audit its explicitly supported concrete class.
+    pub fn inline_storage_for_type<T: Any>(&self) -> Option<(usize, usize)> {
+        if !self.primary.as_any().is::<T>() || !self.scratch.as_any().is::<T>() {
+            return None;
+        }
+        let primary = std::mem::size_of_val(self.primary.as_ref());
+        let scratch = std::mem::size_of_val(self.scratch.as_ref());
+        (primary == std::mem::size_of::<T>()
+            && scratch == std::mem::size_of::<T>()
+            && self.primary.fixed_storage_bytes() == primary
+            && self.scratch.fixed_storage_bytes() == scratch)
+            .then_some((primary, scratch))
     }
 
     /// Begin a speculative block by restoring scratch from committed primary.

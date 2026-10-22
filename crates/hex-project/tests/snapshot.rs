@@ -15,6 +15,7 @@ fn valid_snapshot() -> Snapshot {
         sample_rate: 48_000,
         next_id: 100,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 10,
             path: PathBuf::from("Media/Source.WAV"),
             source_sample_rate: 48_000,
@@ -55,7 +56,7 @@ fn valid_snapshot() -> Snapshot {
                         gain: hex_project::ClipGain::UNITY,
                         id: 40,
                         asset: 10,
-                        start: 128,
+                        start: 1_024,
                         duration: 80,
                         source_offset: 64,
                         source_length: 32,
@@ -207,6 +208,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let mut assets = valid_snapshot();
     assets.assets = (0..=MAX_ASSETS)
         .map(|index| AssetSnapshot {
+            original_source: None,
             id: 1_000 + index as u64,
             path: PathBuf::from(format!("Samples/{index}.wav")),
             source_sample_rate: 48_000,

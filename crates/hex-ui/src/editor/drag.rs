@@ -60,6 +60,16 @@ pub(super) struct ClipDrag {
     pub(super) last_pointer: Rc<Cell<Option<(f32, f32)>>>,
 }
 
+impl ClipDrag {
+    pub(super) fn retire(&self) {
+        self.preview.set(None);
+        self.group.borrow_mut().capture = None;
+        self.destination.set(None);
+        self.insertion_line_y.set(None);
+        self.lane_hovered.set(false);
+    }
+}
+
 /// In-window drag payload for a WAV file from the library browser.
 #[derive(Clone)]
 pub(super) struct BrowserAudioDrag {
@@ -778,11 +788,7 @@ impl super::EditorView {
         let Some(drag) = self.active_clip_drag.take() else {
             return false;
         };
-        drag.preview.set(None);
-        drag.group.borrow_mut().capture = None;
-        drag.destination.set(None);
-        drag.insertion_line_y.set(None);
-        drag.lane_hovered.set(false);
+        drag.retire();
         true
     }
 
@@ -1300,11 +1306,10 @@ impl super::EditorView {
     ) {
         drag.snap_modifier.set(window.modifiers().platform);
         drag.copy_modifier.set(window.modifiers().alt);
-        if drag.group.borrow().ids.len() > 1
-            && !self
-                .active_clip_drag
-                .as_ref()
-                .is_some_and(|active| Rc::ptr_eq(&active.group, &drag.group))
+        if !self
+            .active_clip_drag
+            .as_ref()
+            .is_some_and(|active| Rc::ptr_eq(&active.group, &drag.group))
         {
             return;
         }
@@ -1401,7 +1406,17 @@ impl super::EditorView {
             move_command(drag.clip, target_track, preview.position)
         };
         let copy_intent = super::group_copy::Pending::capture(self, &command);
-        clear(self);
+        if !drag.copy_modifier.get() {
+            // Freeze the release-time projection before transferring display
+            // custody. Retiring the held capture would also erase group content.
+            drag.preview.set(Some(preview));
+            self.pending_clip_move = self
+                .active_clip_drag
+                .take()
+                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone()));
+        } else {
+            clear(self);
+        }
         let before_pending = self.worker_requests_pending;
         if self.enqueue(Request::Edit(command)) {
             if let Some(mut intent) = copy_intent {
@@ -1410,6 +1425,9 @@ impl super::EditorView {
                 }
                 self.pending_group_copy = Some(intent);
             }
+        } else {
+            self.retire_pending_clip_move();
+            clear(self);
         }
         cx.notify();
     }

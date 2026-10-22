@@ -427,6 +427,7 @@ mod tests {
                         comparison_audio: None,
                         project: Arc::new(canonical.project().clone()),
                         waveforms: Default::default(),
+                        source_overviews: Default::default(),
                         audio_clip_waveforms: Default::default(),
                         midi_preview: Arc::default(),
                         gain_preview: Ok(Arc::default()),

@@ -1,3 +1,13 @@
+//! # Purpose
+//! Compose canonical headless project, import, recovery and WAV-export commands.
+//!
+//! # Dependencies
+//! Uses hex-project for edits, hex-engine for preparation, and hex-media, hex-storage and
+//! hex-export for file workflows.
+//!
+//! # Does not own
+//! Does not own a second project model, desktop UI, native device lifecycle or a separate export
+//! codec.
 use hex_engine::{Audio, Frame, Tempo, compile};
 mod import;
 mod projects;
