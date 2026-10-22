@@ -147,7 +147,7 @@ impl ComputerKeyboard {
 }
 
 impl super::EditorView {
-    fn retire_computer_keyboard_audio(&mut self) {
+    pub(super) fn retire_computer_keyboard_audio(&mut self) {
         if let Some(input) = self.computer_keyboard.input.take() {
             input.cancel();
         }
@@ -156,6 +156,7 @@ impl super::EditorView {
     }
 
     pub(super) fn cancel_computer_keyboard(&mut self) {
+        self.midi_audition.clear();
         self.retire_computer_keyboard_audio();
         self.computer_keyboard.release_all();
     }
@@ -165,6 +166,7 @@ impl super::EditorView {
     /// graph without waiting for a publication slot. Other lifecycle cancellation stays terminal.
     pub(super) fn stop_computer_keyboard(&mut self) {
         self.invalidate_hardware_step();
+        self.midi_audition.clear();
         if self.reusable_worker_keyboard_input(self.worker_owns_keyboard_publication())
             && self
                 .computer_keyboard
@@ -203,7 +205,7 @@ impl super::EditorView {
         cx.notify();
     }
 
-    fn worker_owns_keyboard_publication(&self) -> bool {
+    pub(super) fn worker_owns_keyboard_publication(&self) -> bool {
         self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self
                 .audio
@@ -217,6 +219,7 @@ impl super::EditorView {
         worker_owned
             && self.computer_keyboard.input.as_ref().is_some_and(|input| {
                 !input.is_cancelled()
+                    && !input.is_note_audition()
                     && (!input.is_output_bound()
                         || self.audio.as_ref().is_some_and(|audio| {
                             audio.control.computer_keyboard_input_matches_output(input)
@@ -237,6 +240,9 @@ impl super::EditorView {
     }
 
     pub(super) fn tick_computer_keyboard(&mut self) -> bool {
+        if let Some(changed) = self.tick_midi_audition() {
+            return changed;
+        }
         self.tick_computer_keyboard_with_policy(self.worker_owns_keyboard_publication())
     }
 
@@ -418,6 +424,11 @@ impl super::EditorView {
                 cx.stop_propagation();
                 return;
             }
+            let deferred_audition = if !event.is_held && NOTE_KEYS.contains(&key) {
+                self.pause_midi_audition_for_keyboard()
+            } else {
+                None
+            };
             let worker_owned = self.worker_owns_keyboard_publication();
             let retain_input = self.reusable_worker_keyboard_input(worker_owned);
             if (self.device_gesture_pending()
@@ -451,6 +462,7 @@ impl super::EditorView {
             if self.computer_keyboard.key_down(key, event.is_held) {
                 self.publish_computer_keyboard();
             }
+            self.defer_paused_midi_audition(deferred_audition);
             cx.notify();
         }
         cx.stop_propagation();
@@ -468,6 +480,9 @@ impl super::EditorView {
         let Some(input) = &self.computer_keyboard.input else {
             return;
         };
+        if input.is_note_audition() {
+            return;
+        }
         for (key, held) in self.computer_keyboard.held.iter().enumerate() {
             if let Err(error) = input.set_key(
                 key,

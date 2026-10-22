@@ -621,3 +621,119 @@ fn ordinary_mutable_enable_or_restored_note_suppresses_precut_and_dispatches_exa
         }
     }
 }
+
+#[test]
+fn exact_selection_bank_uses_ordinary_current_sampler_and_releases_without_callback_allocation() {
+    let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+    let mut sources = ResidentDeviceAssets::default();
+    let asset = source(&mut editor, &mut sources, 0.25);
+    let Created::Track(track) = editor
+        .execute(Command::AddTrack {
+            name: "selected sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state:
+                hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+                    1024, asset, 0.001,
+                )
+                .unwrap(),
+        })
+        .unwrap();
+    let before = editor.project().snapshot();
+    let (mut control, mut callback) = channel(8000).unwrap();
+    let input = Arc::new(
+        control
+            .new_computer_keyboard_input_on_control()
+            .unwrap()
+            .with_note_audition(&[(60, 37), (64, 93)], 125)
+            .unwrap(),
+    );
+    let mut actual = compile(&editor, &sources);
+    actual
+        .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+        .unwrap();
+    assert_eq!(editor.project().snapshot(), before);
+    let Created::Clip(clip) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    for (pitch, velocity) in [(60, 37), (64, 93)] {
+        editor
+            .execute(Command::AddMidiNote {
+                clip,
+                start: BeatTime::ZERO,
+                duration: BeatTime::from_raw(BeatTime::ONE.raw() / 32),
+                pitch,
+                channel: 0,
+                velocity,
+            })
+            .unwrap();
+    }
+    let mut oracle = compile(&editor, &sources);
+    oracle.apply(PlaybackCommand::Play);
+    control
+        .configure_device_resource_publication_on_control(limits())
+        .unwrap();
+    control
+        .publish_with_policy_and_context_generation(actual, PublicationPolicy::InheritRuntime, 7)
+        .unwrap();
+    // Admission alone does not trigger. The eventual ACK publishes the complete bank.
+    assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
+    input.trigger_note_audition().unwrap();
+    let mut peak = 0.0_f32;
+    let mut output = [[0.0; 2]; 25];
+    for _ in 0..40 {
+        let mut expected = [[0.0; 2]; 25];
+        oracle.render(&mut expected).unwrap();
+        let measured = allocation_counter::measure(|| {
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        for (actual, expected) in output.iter().flatten().zip(expected.iter().flatten()) {
+            peak = peak.max(actual.abs());
+            assert!((actual - expected).abs() < 1e-6, "{actual} != {expected}");
+        }
+    }
+    assert!(peak > 0.001);
+    assert!(input.note_audition_finished());
+    assert_eq!(output, [[0.0; 2]; 25]);
+    assert!(input.trigger_note_audition().is_err());
+    // A newly prepared graph with the same completed immutable bank cannot replay it.
+    let mut fresh = compile(&editor, &sources);
+    fresh
+        .prepare_computer_keyboard(editor.project(), track, Arc::clone(&input))
+        .unwrap();
+    control
+        .publish_with_policy_and_context_generation(fresh, PublicationPolicy::InheritRuntime, 7)
+        .unwrap();
+    assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
+    assert!(!input.is_cancelled());
+    control.stop();
+    assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
+    assert!(input.is_cancelled());
+    control.reclaim();
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+}

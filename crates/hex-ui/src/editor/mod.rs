@@ -81,6 +81,7 @@ mod loop_region;
 mod loop_selection_ui_test;
 mod menus;
 mod midi;
+mod midi_audition;
 mod midi_canvas;
 mod midi_creation;
 mod midi_drag;
@@ -658,6 +659,7 @@ pub(super) struct EditorView {
     /// Pure view state: never transport position or a canonical project edit.
     pub(in crate::editor) midi_marker: Option<u64>,
     midi_step: midi_step::StepEntry,
+    midi_audition: midi_audition::MidiAudition,
     pub(in crate::editor) midi_marquee: Option<midi_selection::Marquee>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
@@ -1261,6 +1263,7 @@ impl EditorView {
             midi_draw_pitch_locked: true,
             midi_marker: None,
             midi_step: midi_step::StepEntry::default(),
+            midi_audition: midi_audition::MidiAudition::default(),
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
             midi_hit_cycle: None,

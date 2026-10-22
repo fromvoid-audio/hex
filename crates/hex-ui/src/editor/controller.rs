@@ -1947,27 +1947,38 @@ impl EditorView {
             }
         }
         if let Some(request_id) = event.computer_keyboard_complete {
-            let current = self.computer_keyboard.enabled
-                && !self.computer_keyboard.suspended
-                && request_id == self.computer_keyboard.request_id
-                && self.computer_keyboard.target
-                    == self
-                        .selected_track
-                        .map(|track| (self.project_generation, event.state.revision, track))
-                && self
-                    .computer_keyboard
-                    .input
-                    .as_ref()
-                    .is_some_and(|input| !input.is_cancelled())
-                && self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.revision == event.state.revision);
+            let note_audition =
+                self.midi_audition_preparation_matches(request_id, event.state.revision);
+            let current = note_audition
+                || (self.computer_keyboard.enabled
+                    && !self.computer_keyboard.suspended
+                    && request_id == self.computer_keyboard.request_id
+                    && self.computer_keyboard.target
+                        == self
+                            .selected_track
+                            .map(|track| (self.project_generation, event.state.revision, track))
+                    && self
+                        .computer_keyboard
+                        .input
+                        .as_ref()
+                        .is_some_and(|input| !input.is_cancelled())
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == event.state.revision));
             if current {
+                let audition_ok = note_audition && event.error.is_none();
                 if let Some(error) = event.error {
                     self.error = Some(error.into());
                     self.cancel_computer_keyboard();
                     self.computer_keyboard.suspended = true;
+                }
+                if audition_ok {
+                    if let Err(error) = self.trigger_prepared_midi_audition() {
+                        self.error = Some(error.to_string().into());
+                        self.cancel_computer_keyboard();
+                        return None;
+                    }
                 }
                 if let Some(playback) = event.playback {
                     let previous_reset = self
