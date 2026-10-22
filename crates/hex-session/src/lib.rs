@@ -1349,6 +1349,41 @@ impl Session {
         overwrite: bool,
         bounce: Option<hex_project::ClipId>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.import_prepared_audio_clip_revision_using(
+            prepared,
+            track,
+            start,
+            previous,
+            overwrite,
+            bounce,
+            |input| {
+                prepare_with_waveforms(
+                    input.project,
+                    input.media,
+                    input.table,
+                    input.previous.map(|artifact| artifact.session().as_ref()),
+                    input.transforms,
+                    input.waveforms,
+                )
+                .map(Arc::new)
+                .map_err(SessionError::from)
+            },
+        )
+    }
+
+    /// All media/history capacity is reserved before this final preparation hook. It may
+    /// enqueue only as its last fallible step; success is followed solely by fixed commit moves.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn import_prepared_audio_clip_revision_using<T>(
+        &mut self,
+        prepared: PreparedImport,
+        track: hex_project::TrackId,
+        start: u64,
+        previous: Option<&hex_engine::PreparedRevision>,
+        overwrite: bool,
+        bounce: Option<hex_project::ClipId>,
+        prepare: impl FnOnce(import_batch::Preparation<'_>) -> Result<T, SessionError>,
+    ) -> Result<(Created, T), SessionError> {
         if prepared.audio.sample_rate() != self.project().sample_rate() {
             return Err(SessionError::Invalid(
                 "prepared audio sample rate differs from project",
@@ -1382,10 +1417,17 @@ impl Session {
             .map_err(|_| SessionError::Allocation)?;
         let (new_resident_bins, new_resident_waveform_bytes) =
             self.reserve_waveform_accounting(&prepared.waveform)?;
+        let staged_waveform = Arc::new(prepared.waveform);
         let mut candidate_media = self.media_bank();
         let staged_audio = prepared.audio.clone();
         let staged_asset = prepared.audio.clone();
         let sine_table = self.sine_table();
+        let legacy = self
+            .media
+            .values()
+            .flat_map(|media| [&media.source_audio, &media.audio])
+            .chain([&prepared.source_audio, &prepared.audio])
+            .collect::<Vec<_>>();
         let (created, (asset_id, revision)) = self.editor.execute_prepared(
             if let Some(clip) = bounce {
                 Command::ConvertMidiClipToAudio {
@@ -1428,16 +1470,19 @@ impl Session {
                     ));
                 }
                 candidate_media.insert(asset_id, staged_asset.clone());
-                let revision = prepare_with_waveforms(
-                    candidate,
-                    &candidate_media,
-                    Arc::clone(&sine_table),
-                    previous.map(|artifact| artifact.session().as_ref()),
-                    &self.audio_transforms,
-                    &self.audio_clip_waveforms,
-                )
-                .map(Arc::new)
-                .map_err(SessionError::from)?;
+                let revision = prepare(import_batch::Preparation {
+                    project: candidate,
+                    media: &candidate_media,
+                    native: &self.native_assets,
+                    table: sine_table,
+                    transforms: &self.audio_transforms,
+                    waveforms: &self.audio_clip_waveforms,
+                    legacy: &legacy,
+                    limits: self.native_reservation,
+                    max_frames: self.max_resident_frames,
+                    shutdown: &self.shutdown,
+                    previous,
+                })?;
                 Ok((asset_id, revision))
             },
         )?;
@@ -1446,7 +1491,7 @@ impl Session {
             ResidentAsset {
                 source_audio: prepared.source_audio,
                 audio: staged_audio,
-                waveform: Arc::new(prepared.waveform),
+                waveform: staged_waveform,
                 frames,
             },
         );

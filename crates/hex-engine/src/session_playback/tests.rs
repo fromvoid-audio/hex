@@ -1,4 +1,5 @@
 use super::*;
+mod authored_history;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};

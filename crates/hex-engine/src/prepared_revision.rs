@@ -14,6 +14,7 @@ use crate::{
 };
 use hex_devices::SineTable;
 pub(crate) mod assembly;
+mod authored_midi;
 use hex_project::{
     AssetId, Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity,
     Project, TrackId,
@@ -48,6 +49,7 @@ struct PreparedArrangementMidiSource {
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedMutableTrackRevision {
     id: TrackId,
+    midi_source_track: TrackId,
     instrument: Option<PreparedDeviceIdentity>,
     instrument_position: Option<usize>,
     effects: Vec<PreparedDeviceIdentity>,
@@ -104,6 +106,7 @@ pub struct PreparedRevision {
     session: crate::owned_shared::OwnedShared<PreparedSessionInventory>,
     midi_preview: crate::owned_shared::OwnedShared<MidiArrangementPreview>,
     mutable_track_revisions: Vec<PreparedMutableTrackRevision>,
+    authored_midi_sources: Vec<authored_midi::Source>,
     gain_recording_track: Option<TrackId>,
 }
 
@@ -184,6 +187,9 @@ impl PreparedRevision {
                 &previous_revision.arrangement,
                 previous_revision.device_resource_scope.is_some(),
             )? != previous_revision.mutable_track_revisions
+            || (previous_revision.device_resource_scope.is_some()
+                && authored_midi::prepare(previous_project)?
+                    != previous_revision.authored_midi_sources)
             || previous_project
                 .tracks()
                 .iter()
@@ -444,6 +450,14 @@ impl PreparedRevision {
                 session: crate::owned_shared::OwnedShared::new_owned(session),
                 midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
                 mutable_track_revisions,
+                authored_midi_sources: if samplers
+                    .and_then(|sources| sources.device_scope())
+                    .is_some()
+                {
+                    authored_midi::prepare(project)?
+                } else {
+                    Vec::new()
+                },
                 gain_recording_track: None,
             })
         })
@@ -631,6 +645,7 @@ impl PreparedRevision {
             session: crate::owned_shared::OwnedShared::new_owned(session),
             midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
             mutable_track_revisions,
+            authored_midi_sources: Vec::new(),
             gain_recording_track: None,
         })
     }
@@ -767,7 +782,7 @@ impl PreparedRevision {
                         .checked_add(clip.source_identity().retained_control_metadata_bytes()?)?;
                 }
             }
-            Some(bytes)
+            bytes.checked_add(authored_midi::construction_bytes(project).ok()?)
         })();
         let candidate = bytes.ok_or(Invalid("device handoff metadata byte count overflow"))?;
         // Tuning continuation validates same_except_tuning before rebuilding predecessor
@@ -811,7 +826,7 @@ impl PreparedRevision {
                     bytes = bytes.checked_add(clip.source.retained_control_metadata_bytes()?)?;
                 }
             }
-            Some(bytes)
+            bytes.checked_add(authored_midi::retained_bytes(&self.authored_midi_sources)?)
         })();
         bytes.ok_or(crate::AudioStorageError::Overflow)
     }
@@ -843,6 +858,40 @@ impl PreparedRevision {
         old.instrument.as_ref().is_none_or(|device| {
             device.bypassed || device.id != new_device.id || device.state != new_device.state
         })
+    }
+
+    /// Missing DSP history is suppressed only for a genuinely added/restored stable authored
+    /// identity. Complete global evidence prevents a moved clip or an old note outside playback
+    /// markers from being mistaken for a new note. This grants no voice/history continuity.
+    pub(crate) fn newly_authored_mutable_note(
+        &self,
+        candidate: &Self,
+        key: crate::mutable_instrument::MutableOccurrenceKey,
+        session: bool,
+    ) -> bool {
+        if self.device_resource_scope.is_none()
+            || candidate.device_resource_scope.is_none()
+            || !self.mutable_track_topology_matches(candidate, key.track)
+        {
+            return false;
+        }
+        let source = |revision: &Self| {
+            revision
+                .mutable_track_revision(key.track)
+                .map(|track| track.midi_source_track)
+        };
+        let (Some(old_root), Some(new_root)) = (source(self), source(candidate)) else {
+            return false;
+        };
+        old_root == new_root
+            && authored_midi::newly_authored(
+                &self.authored_midi_sources,
+                &candidate.authored_midi_sources,
+                key.clip,
+                key.note,
+                new_root,
+                session,
+            )
     }
 
     pub(crate) fn mutable_arrangement_sources_match(
@@ -968,6 +1017,7 @@ fn prepare_mutable_track_revisions(
 
         revisions.push(PreparedMutableTrackRevision {
             id: track.id(),
+            midi_source_track: source_id,
             instrument: track.instrument().map(PreparedDeviceIdentity::from),
             instrument_position: track.instrument_position(),
             effects,

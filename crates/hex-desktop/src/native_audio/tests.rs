@@ -2,6 +2,7 @@
 //! domains, graph preparation, publication and callback are production paths.
 use super::*;
 mod resident_authoring;
+mod resident_bounce;
 mod resident_export;
 mod resident_lifecycle;
 mod resident_preview;

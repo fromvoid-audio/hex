@@ -4227,6 +4227,25 @@ fn run_worker(
                                 .and_then(Path::parent)
                                 .ok_or("bounce media folder is unavailable")?
                                 .join("media/bounces");
+                            if let Some(sink) = events.resident_audio() {
+                                return resident_audio::bounce_clip(
+                                    &mut session,
+                                    clip,
+                                    &root,
+                                    hex_engine::AudioSourceContext {
+                                        project_generation,
+                                        editor_revision: revision.saturating_add(1),
+                                    },
+                                    sink,
+                                    export_lane.admission_with_resident_owners(
+                                        compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection {
+                                            sources: current_sources.as_ref(), prepared: Some(p),
+                                        }),
+                                        resident_seek.as_ref(), resident_preview.as_ref(),
+                                    ),
+                                    &mut resident_snapshot,
+                                );
+                            }
                             session.bounce_midi_clip_with_admission(
                                 clip,
                                 &root,

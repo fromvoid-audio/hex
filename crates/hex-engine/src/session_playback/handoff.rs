@@ -1040,6 +1040,7 @@ impl SessionPlayback {
         // Complete ordinary predecessor evidence distinguishes installation from a MIDI/history
         // edit. This one-shot eligibility is not runtime continuity or an occurrence proof.
         let mut fresh_mutable_install = [false; MAX_TRACKS];
+        let mut newly_authored_notes = [false; MAX_TRACKS];
         // A mutable candidate may retain only occurrences proven to have been dispatched under
         // the old law. The fresh-install exception only supplies bounded suppression below.
         for (new_index, runtime) in self.mutable_instruments.iter().enumerate() {
@@ -1062,9 +1063,10 @@ impl SessionPlayback {
             }) {
                 continue;
             }
-            let candidate_owner = if let Some(old_index) = old_index {
-                let old_route =
-                    effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+            let old_route = old_index
+                .map(|index| effective_midi_route(&previous.revision, &previous.routes, index))
+                .transpose()?;
+            let candidate_owner = if let Some(old_route) = old_route {
                 if old_route
                     .pending
                     .is_some_and(|pending| pending.frame > previous.performance_frame)
@@ -1134,6 +1136,17 @@ impl SessionPlayback {
                     .revision
                     .fresh_mutable_device_install(&self.revision, new_route.id)
                 && fresh_source_matches;
+            // A new/restored stable authored identity may be suppressed, never chased. Keep
+            // this separate from fresh device installation and from runtime/proof continuity.
+            newly_authored_notes[new_index] = !timing_changed
+                && old_loop == new_loop
+                && !midi_layout_changed
+                && new_route.pending.is_none()
+                && old_route.is_some_and(|route| route.pending.is_none())
+                && matches!(
+                    candidate_owner,
+                    RouteOwner::Arrangement | RouteOwner::Session { .. }
+                );
             let (candidates, candidate_count, source_frame) = Self::mutable_candidates_at_cut(
                 &self.revision,
                 new_index,
@@ -1166,6 +1179,12 @@ impl SessionPlayback {
                     && exact.is_none()
                     && !carried
                     && !fresh_mutable_install[new_index]
+                    && !(newly_authored_notes[new_index]
+                        && previous.revision.newly_authored_mutable_note(
+                            &self.revision,
+                            candidate.signature.key(),
+                            matches!(candidate_owner, RouteOwner::Session { .. }),
+                        ))
                 {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
@@ -1819,7 +1838,14 @@ impl SessionPlayback {
                     })
                     .map(|entry| entry.until_frame)
                     .max();
-                let fresh_deadline = (fresh_install && candidate.source_frame < source_frame)
+                let new_note = newly_authored_notes[new_index]
+                    && previous.revision.newly_authored_mutable_note(
+                        &self.revision,
+                        candidate.signature.key(),
+                        matches!(route.owner, RouteOwner::Session { .. }),
+                    );
+                let fresh_deadline = ((fresh_install || new_note)
+                    && candidate.source_frame < source_frame)
                     .then_some(candidate.end_frame);
                 let Some(old_deadline) = proof_deadline
                     .into_iter()

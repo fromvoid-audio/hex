@@ -9,7 +9,9 @@ use hex_engine::native_device_resources::{
     DeviceResourceAdmission, DeviceResourcePhase, PreparedDeviceResources,
 };
 
+mod bounce;
 mod runtime_inputs;
+pub(super) use bounce::bounce_clip;
 pub(super) use runtime_inputs::{RequiredInput, RuntimeInputs};
 
 pub(super) struct Snapshot {
