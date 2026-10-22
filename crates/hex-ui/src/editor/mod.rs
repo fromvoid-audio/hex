@@ -652,8 +652,10 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
     pub(in crate::editor) midi_draw_pitch_locked: bool,
+    /// Source-relative insertion beat; reset with the existing piano_view_clip owner.
+    /// Pure view state: never transport position or a canonical project edit.
     pub(in crate::editor) midi_marker: Option<u64>,
-    pub(in crate::editor) midi_marquee: Option<([f32; 2], [f32; 2], bool)>,
+    pub(in crate::editor) midi_marquee: Option<midi_selection::Marquee>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
     // Only suppresses redundant pointer invalidations; paint resolves current geometry.
