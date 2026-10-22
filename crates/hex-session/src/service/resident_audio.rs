@@ -189,6 +189,7 @@ impl Inputs<'_> {
             sink,
             metadata,
             ResidentPublicationPolicy::InheritRuntime,
+            0,
         )
     }
     fn publish_runtime(
@@ -198,6 +199,7 @@ impl Inputs<'_> {
         sink: &mut dyn WorkerAudioSink,
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
+        additional_runtime_bytes: usize,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
         if self.shutdown.load(Ordering::Acquire)
             || self
@@ -206,9 +208,7 @@ impl Inputs<'_> {
         {
             return Err(SessionError::Invalid("resident publication cancelled"));
         }
-        let quoted =
-            hex_engine::SessionPlayback::linear_export_runtime_allowance(&snapshot.prepared)
-                .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let quoted = runtime_allowance(&snapshot.prepared, additional_runtime_bytes)?;
         if playback
             .accounted_session_runtime_bytes_on_control()
             .is_none_or(|bytes| bytes > quoted)
@@ -222,6 +222,29 @@ impl Inputs<'_> {
             .construction_bytes
             .checked_add(quoted)
             .ok_or(SessionError::Invalid("resident runtime allowance overflow"))?;
+        let observation_quote =
+            hex_engine::PreparedPlaybackObservation::preparation_storage_quote_on_control(
+                &snapshot.prepared,
+            )
+            .map_err(SessionError::Engine)?;
+        self.admit(
+            &snapshot.resources,
+            Some(&snapshot.prepared),
+            &sink.resident_admission(),
+            runtime,
+            observation_quote,
+        )?;
+        let observation = Arc::new(
+            hex_engine::PreparedPlaybackObservation::prepare_on_control(&snapshot.prepared)
+                .map_err(SessionError::Engine)?,
+        );
+        let runtime = runtime
+            .checked_add(
+                observation
+                    .retained_bytes_on_control()
+                    .ok_or(SessionError::Invalid("observation storage overflow"))?,
+            )
+            .ok_or(SessionError::Invalid("observation storage overflow"))?;
         // The offline sink may capture configuration handles before final admission. Reserve
         // their bounded metadata overlap before that allocation; actual capacities are visited
         // again together with the old pending owner before acceptance.
@@ -235,6 +258,7 @@ impl Inputs<'_> {
         sink.publish_resident(
             playback,
             Some(&snapshot.resources),
+            observation,
             metadata,
             policy,
             self.limits.storage.max_retained_bytes,
@@ -261,6 +285,14 @@ impl Inputs<'_> {
         )
         .map_err(|refused| SessionError::NativeAudio(refused.error))
     }
+}
+
+fn runtime_allowance(prepared: &PreparedRevision, extra: usize) -> Result<usize, SessionError> {
+    hex_engine::SessionPlayback::linear_export_runtime_allowance(prepared)
+        .map_err(|error| SessionError::NativeAudio(error.to_string()))?
+        .checked_add(extra)
+        .map(|quote| quote.min(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES))
+        .ok_or(SessionError::Invalid("runtime input allowance overflow"))
 }
 
 /// One command seam for typed worker requests and ordinary edits. The native consumer publishes
@@ -597,7 +629,39 @@ impl Session {
         cancelled: &AtomicBool,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
         self.resident_seek_inputs(admission, Some(current), Some(cancelled))?
-            .publish_runtime(snapshot, playback, sink, metadata, policy)
+            .publish_runtime(snapshot, playback, sink, metadata, policy, 0)
+    }
+    #[allow(clippy::too_many_arguments)] // One actual source graph and bounded runtime-input preparation before final enqueue.
+    pub(super) fn publish_resident_runtime_input<T>(
+        &self,
+        snapshot: &Snapshot,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        extra_runtime: usize,
+        prepare: impl FnOnce(&mut Playback) -> Result<T, hex_engine::Invalid>,
+    ) -> Result<T, SessionError> {
+        let inputs = self.resident_seek_inputs(admission, None, None)?;
+        let quote = runtime_allowance(&snapshot.prepared, extra_runtime)?;
+        inputs.admit(
+            &snapshot.resources,
+            Some(&snapshot.prepared),
+            &sink.resident_admission(),
+            sink.native_sampler_hold()
+                .construction_bytes
+                .checked_add(quote)
+                .ok_or(SessionError::Invalid("runtime input allowance overflow"))?,
+            0,
+        )?;
+        let mut playback = Playback::try_from_prepared_with_device_resources(
+            Arc::clone(&snapshot.prepared),
+            &snapshot.resources,
+        )
+        .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let result = prepare(&mut playback).map_err(SessionError::Engine)?;
+        inputs.publish_runtime(snapshot, playback, sink, metadata, policy, extra_runtime)?;
+        Ok(result)
     }
     fn resident_seek_inputs<'a>(
         &'a self,
@@ -778,10 +842,16 @@ mod tests {
         refuse: AtomicBool,
         closed: AtomicUsize,
         seek_attempts: AtomicUsize,
+        publications: Mutex<Vec<(ResidentPublicationMetadata, ResidentPublicationPolicy)>>,
+        keyboard_peak: Mutex<f32>,
     }
     struct OfflineSink {
         observed: Arc<Observed>,
-        pending: Option<(Playback, PreparedDeviceResources)>,
+        pending: Option<(
+            Playback,
+            PreparedDeviceResources,
+            Arc<hex_engine::PreparedPlaybackObservation>,
+        )>,
     }
     impl WorkerAudioSink for OfflineSink {
         fn resident_publication_enabled(&self) -> bool {
@@ -791,7 +861,7 @@ mod tests {
             [
                 self.pending.as_ref().map_or(
                     DeviceResourceAdmission::default(),
-                    |(playback, resources)| {
+                    |(playback, resources, _)| {
                         DeviceResourceAdmission::unpublished_on_control(playback, Some(resources))
                     },
                 ),
@@ -802,8 +872,9 @@ mod tests {
         #[allow(clippy::result_large_err)] // Return the exact unpublished owner.
         fn publish_resident(
             &mut self,
-            playback: Playback,
+            mut playback: Playback,
             resources: Option<&PreparedDeviceResources>,
+            observation: Arc<hex_engine::PreparedPlaybackObservation>,
             metadata: ResidentPublicationMetadata,
             policy: ResidentPublicationPolicy,
             metadata_limit: usize,
@@ -832,7 +903,20 @@ mod tests {
             })();
             match result {
                 Ok(resources) => {
-                    self.pending = Some((playback, resources));
+                    if metadata.computer_keyboard_request.is_some() {
+                        let mut pcm = [[0.0; 2]; 32];
+                        playback.render(&mut pcm).unwrap();
+                        *self.observed.keyboard_peak.lock().unwrap() = pcm
+                            .iter()
+                            .flatten()
+                            .fold(0.0_f32, |peak, sample| peak.max(sample.abs()));
+                    }
+                    self.observed
+                        .publications
+                        .lock()
+                        .unwrap()
+                        .push((metadata, policy));
+                    self.pending = Some((playback, resources, observation));
                     self.observed
                         .accepted
                         .lock()
@@ -841,6 +925,17 @@ mod tests {
                     Ok(ResidentPublicationAcceptance::OfflineRetained)
                 }
                 Err(error) => Err(ResidentPublicationRefusal { playback, error }),
+            }
+        }
+        fn native_sampler_hold(&self) -> NativeSamplerReservationHold {
+            let bytes = self
+                .pending
+                .as_ref()
+                .map_or(0, |(_, _, view)| view.retained_bytes_on_control().unwrap());
+            NativeSamplerReservationHold {
+                retained_bytes: bytes,
+                construction_bytes: bytes,
+                ..NativeSamplerReservationHold::default()
             }
         }
         fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
@@ -860,6 +955,15 @@ mod tests {
     #[test]
     fn default_worker_prepares_private_resident_graph_and_refuses_before_commit() {
         let observed = Arc::new(Observed::default());
+        // One old pending owner and one candidate use the existing graph ceiling, as the
+        // production policy does per runtime role. This fixture's former20MB reservation could
+        // not reserve the existing3MiB keyboard allowance; no production limit is changed.
+        let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            .checked_mul(2)
+            .unwrap();
+        let peak = retained
+            .checked_add(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+            .unwrap();
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             1024,
@@ -873,8 +977,8 @@ mod tests {
                     data_rows: 512,
                     handle_rows: 64,
                     root_rows: 64,
-                    max_retained_bytes: 20_000_000,
-                    max_construction_peak_bytes: 30_000_000,
+                    max_retained_bytes: retained,
+                    max_construction_peak_bytes: peak,
                 },
                 max_scan_frames: 1024,
             },
@@ -926,6 +1030,49 @@ mod tests {
         let loaded = receive();
         assert!(loaded.error.is_none(), "{:?}", loaded.error);
         assert!(loaded.playback.is_none());
+        let input = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+        input.set_key(0, Some((60, 127, 1))).unwrap();
+        service
+            .submit(Request::PrepareComputerKeyboard {
+                project_generation: 0,
+                revision: loaded.state.revision,
+                request_id: 51,
+                track: sampler_track_id,
+                input: Arc::clone(&input),
+            })
+            .unwrap();
+        let keyboard = receive();
+        assert!(keyboard.error.is_none(), "{:?}", keyboard.error);
+        assert_eq!(keyboard.computer_keyboard_complete, Some(51));
+        assert!(keyboard.playback.is_none());
+        assert!(
+            *observed.keyboard_peak.lock().unwrap() > 0.0,
+            "ordinary shared keyboard input renders real original sampler PCM while paused"
+        );
+        assert_eq!(
+            observed
+                .publications
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .0
+                .computer_keyboard_request,
+            Some(51)
+        );
+        input.cancel();
+        service.submit(Request::RestoreStoppedPlayback).unwrap();
+        let restored = receive();
+        assert!(restored.error.is_none(), "{:?}", restored.error);
+        assert!(restored.stopped_playback_restore_complete);
+        let publications = observed.publications.lock().unwrap();
+        let (metadata, policy) = publications.last().unwrap();
+        assert!(metadata.stopped_restore);
+        assert!(matches!(
+            policy,
+            ResidentPublicationPolicy::InstallFreshRuntime
+        ));
+        drop(publications);
         let accepted_before_seek = observed.accepted.lock().unwrap().len();
         let seek = ResidentArrangementSeekIntent {
             request_id: 1,

@@ -487,6 +487,12 @@ impl EditorView {
                     }
                     _ => None,
                 };
+                let observation = match &state {
+                    crate::EditorPublicationState::ResidentSubmitted { observation, .. } => {
+                        Some(Arc::clone(observation))
+                    }
+                    _ => None,
+                };
                 if metadata.is_some_and(|metadata| metadata.context != context) {
                     self.error =
                         Some("audio publication metadata does not match its context".into());
@@ -512,6 +518,7 @@ impl EditorView {
                 {
                     self.playback_candidates.push_back(PlaybackCandidate {
                         worker_requires_preroll: metadata.map(|metadata| metadata.requires_preroll),
+                        observation,
                         audio_revision,
                         project_generation: context.project_generation,
                         state,
@@ -835,6 +842,7 @@ impl EditorView {
                 }
                 self.playback_candidates.push_back(PlaybackCandidate {
                     worker_requires_preroll: None,
+                    observation: None,
                     audio_revision,
                     project_generation: pending.project_generation,
                     state: pending.state,
@@ -1365,6 +1373,7 @@ impl EditorView {
                 }) {
                     self.audible_playback = Some(PlaybackCandidate {
                         worker_requires_preroll: None,
+                        observation: None,
                         audio_revision: source.audio_revision,
                         project_generation: source.context.project_generation,
                         state: Arc::clone(state),
@@ -4324,6 +4333,7 @@ mod tests {
         let project = Arc::new(Project::new(48_000).expect("project"));
         PlaybackCandidate {
             worker_requires_preroll: None,
+            observation: None,
             audio_revision,
             project_generation: generation,
             state: Arc::new(ViewState {
@@ -4930,6 +4940,17 @@ mod sampler_native_ui_protocol_tests {
                 Err(error) => panic!("{error}"),
             }
         };
+        let observation = Arc::new(
+            hex_engine::PreparedPlaybackObservation::prepare_on_control(
+                event
+                    .playback
+                    .as_ref()
+                    .unwrap()
+                    .prepared_revision()
+                    .unwrap(),
+            )
+            .unwrap(),
+        );
         let canonical = event.state;
         let context = canonical.canonical_audio_source.as_ref().unwrap().context();
         let preview = Arc::new(ViewState {
@@ -4980,6 +5001,7 @@ mod sampler_native_ui_protocol_tests {
                 context,
                 crate::EditorPublicationState::ResidentSubmitted {
                     audio_revision: 7,
+                    observation: Arc::clone(&observation),
                     metadata,
                 },
             );
@@ -4996,12 +5018,21 @@ mod sampler_native_ui_protocol_tests {
                 context,
                 crate::EditorPublicationState::ResidentSubmitted {
                     audio_revision: 7,
+                    observation: Arc::clone(&observation),
                     metadata,
                 },
             );
             let candidate = view.playback_candidates.back().unwrap();
             assert!(Arc::ptr_eq(&candidate.state, &preview));
             assert!(candidate.prepared_revision.is_none());
+            assert!(Arc::ptr_eq(
+                candidate.observation.as_ref().unwrap(),
+                &observation,
+            ));
+            assert!(
+                view.audible_playback.is_none(),
+                "submission is not application"
+            );
             assert_eq!(candidate.worker_requires_preroll, Some(true));
             assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &canonical));
             assert_eq!(view.audio_admission, before);
@@ -5012,6 +5043,7 @@ mod sampler_native_ui_protocol_tests {
                 output_identity: 41,
                 state: crate::EditorPublicationState::ResidentSubmitted {
                     audio_revision: 7,
+                    observation: Arc::clone(&observation),
                     metadata,
                 },
             });
@@ -5026,6 +5058,7 @@ mod sampler_native_ui_protocol_tests {
                 output_identity: 42,
                 state: crate::EditorPublicationState::ResidentSubmitted {
                     audio_revision: 7,
+                    observation: Arc::clone(&observation),
                     metadata,
                 },
             });
@@ -5035,6 +5068,7 @@ mod sampler_native_ui_protocol_tests {
                 context,
                 crate::EditorPublicationState::ResidentSubmitted {
                     audio_revision: 7,
+                    observation: Arc::clone(&observation),
                     metadata,
                 },
             );
@@ -5047,6 +5081,7 @@ mod sampler_native_ui_protocol_tests {
                 context,
                 crate::EditorPublicationState::ResidentSubmitted {
                     audio_revision: 8,
+                    observation: Arc::clone(&observation),
                     metadata: canonical_metadata,
                 },
             );
@@ -5060,6 +5095,7 @@ mod sampler_native_ui_protocol_tests {
                 context,
                 crate::EditorPublicationState::ResidentSubmitted {
                     audio_revision: 9,
+                    observation: Arc::clone(&observation),
                     metadata: canonical_metadata,
                 },
             );

@@ -4118,6 +4118,28 @@ fn run_worker(
                         error = Some(
                             "finish the device gesture before restoring stopped playback".into(),
                         );
+                    } else if events.resident_publication_enabled() {
+                        let result = (|| {
+                            let snapshot = resident_snapshot.as_ref().ok_or(
+                                SessionError::Invalid("current playback revision is unavailable"),
+                            )?;
+                            let sink = events.resident_audio().ok_or(SessionError::Invalid(
+                                "native restore output unavailable",
+                            ))?;
+                            session.publish_resident_runtime_input(snapshot, sink,
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
+                                ResidentPublicationMetadata {
+                                    context: hex_engine::AudioSourceContext { project_generation, editor_revision: revision },
+                                    device_preview: None, tuning_preview: None, seek_request: None,
+                                    stopped_restore: true, computer_keyboard_request: None,
+                                    gain_recording_track: snapshot.prepared.gain_recording_track(),
+                                    requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+                                }, ResidentPublicationPolicy::InstallFreshRuntime, 0, |_| Ok(()))
+                        })();
+                        match result {
+                            Ok(()) => status = Some("restoring stopped playback".into()),
+                            Err(reason) => error = Some(reason.to_string()),
+                        }
                     } else if let Some((compiled_revision, prepared)) = compiled.as_ref()
                         && *compiled_revision == revision
                     {
@@ -4302,6 +4324,40 @@ fn run_worker(
                         || input.is_cancelled()
                     {
                         error = Some("computer keyboard preparation is stale".into());
+                    } else if events.resident_publication_enabled() {
+                        let result = (|| {
+                            let snapshot = resident_snapshot.as_ref().ok_or(
+                                SessionError::Invalid("native keyboard source unavailable"),
+                            )?;
+                            let sink = events.resident_audio().ok_or(SessionError::Invalid(
+                                "native keyboard output unavailable",
+                            ))?;
+                            session.publish_resident_runtime_input(snapshot, sink,
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
+                                ResidentPublicationMetadata {
+                                    context: hex_engine::AudioSourceContext { project_generation, editor_revision: revision },
+                                    device_preview: None, tuning_preview: None, seek_request: None,
+                                    stopped_restore: false, computer_keyboard_request: Some(request_id),
+                                    gain_recording_track: snapshot.prepared.gain_recording_track(),
+                                    requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+                                }, ResidentPublicationPolicy::InheritRuntime,
+                                hex_engine::computer_keyboard::MAX_COMPUTER_KEYBOARD_STORAGE_BYTES,
+                                |playback| {
+                                    playback.prepare_computer_keyboard(session.project(), track, Arc::clone(&input))?;
+                                    Ok(playback.computer_keyboard_tuning_hint())
+                                })
+                        })();
+                        match result {
+                            Ok(hint) => {
+                                keyboard_activation =
+                                    Some((project_generation, revision, track, input));
+                                keyboard_tuning_hint = hint;
+                            }
+                            Err(reason) => {
+                                input.cancel();
+                                error = Some(reason.to_string());
+                            }
+                        }
                     } else if private_sampler {
                         let activation = (|| -> Result<(), String> {
                             let (output, epoch) = input

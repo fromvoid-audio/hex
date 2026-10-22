@@ -1337,6 +1337,7 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         view.playback_candidates
             .push_back(crate::editor::PlaybackCandidate {
                 worker_requires_preroll: None,
+                observation: None,
                 audio_revision,
                 project_generation: 0,
                 state: state.clone(),

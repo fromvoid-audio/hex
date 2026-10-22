@@ -30,6 +30,8 @@ pub struct ResidentFreshRuntimeFence {
 #[derive(Clone, Copy, Debug)]
 pub enum ResidentPublicationPolicy {
     InheritRuntime,
+    /// Existing explicit fresh installation used after priority Stop restoration.
+    InstallFreshRuntime,
     FreshIfUnchanged(ResidentFreshRuntimeFence),
 }
 /// Successful worker acceptance is either an actual queue submission or explicit offline custody.
@@ -74,11 +76,12 @@ pub trait WorkerAudioSink: Send {
     /// Final fallible prepared-transition operation. An active output must refuse queue/resource
     /// pressure unchanged; explicit unavailable/opening state may accept one admitted latest owner
     /// privately with no submitted/applied revision. Cancellation checks precede this call.
-    #[allow(clippy::result_large_err)] // Preserve the exact graph owner on refusal.
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)] // Exact graph/resources/observation custody and unchanged refusal remain explicit.
     fn publish_resident(
         &mut self,
         playback: Playback,
         _resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+        _observation: Arc<hex_engine::PreparedPlaybackObservation>,
         _metadata: ResidentPublicationMetadata,
         _policy: ResidentPublicationPolicy,
         _metadata_limit: usize,

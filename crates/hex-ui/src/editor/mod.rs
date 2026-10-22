@@ -246,6 +246,7 @@ struct PendingEditorPublicationObservation {
 #[derive(Clone)]
 struct PlaybackCandidate {
     worker_requires_preroll: Option<bool>,
+    observation: Option<Arc<hex_engine::PreparedPlaybackObservation>>,
     audio_revision: u64,
     project_generation: u64,
     state: Arc<ViewState>,

@@ -1307,3 +1307,266 @@ fn generated_100_track_project_uses_actual_verified_service_and_callback() {
         .unwrap();
     h.render();
 }
+
+#[test]
+fn resident_same_context_submissions_keep_tags_and_refuse_before_enqueue_when_events_are_full() {
+    use hex_session::service::{
+        ResidentPublicationAcceptance, ResidentPublicationMetadata, ResidentPublicationPolicy,
+    };
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let (mut output, mut backend) = loop {
+        match hex_audio::worker_fixture::open(48_000) {
+            Ok(pair) => break pair,
+            Err(error) if error == "audio output is open or still shutting down" => {}
+            Err(error) => panic!("{error}"),
+        }
+        assert!(Instant::now() < deadline);
+        std::thread::sleep(Duration::from_millis(1));
+    };
+    let policy = AudioPolicy::new().unwrap();
+    let control = output.publication.control().unwrap();
+    control
+        .configure_device_resource_publication_on_control(policy.resident_native.storage)
+        .unwrap();
+    let output_identity = control.output_identity().unwrap();
+    let context = AudioSourceContext {
+        project_generation: 7,
+        editor_revision: 1,
+    };
+    let prepared = Arc::new(
+        hex_engine::PreparedRevision::prepare(
+            &hex_project::Project::new(48_000).unwrap(),
+            &std::collections::BTreeMap::new(),
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let view =
+        Arc::new(hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap());
+    let graph = || {
+        hex_engine::playback::Playback::try_from_prepared_with_session(Arc::clone(&prepared))
+            .unwrap()
+    };
+    let metadata = ResidentPublicationMetadata {
+        context,
+        device_preview: None,
+        tuning_preview: None,
+        seek_request: None,
+        stopped_restore: false,
+        computer_keyboard_request: Some(51),
+        gain_recording_track: None,
+        requires_preroll: false,
+    };
+    let (events, receiver) = mpsc::sync_channel(1);
+    let mut sink = NativeAudioSink::new(events);
+    sink.output = Some(output);
+    sink.output_identity = Some(output_identity);
+    sink.output_generation = Some(context.project_generation);
+    let mut admit = |_: &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>]| Ok(());
+    let ResidentPublicationAcceptance::Submitted {
+        audio_revision: first,
+        ..
+    } = sink
+        .publish_resident_graph(
+            graph(),
+            None,
+            Arc::clone(&view),
+            metadata,
+            ResidentPublicationPolicy::InheritRuntime,
+            0,
+            &mut admit,
+        )
+        .unwrap()
+    else {
+        panic!("active publication")
+    };
+    sink.flush_events(); // The bounded channel is occupied by the first exact submission.
+    // The real publication lane permits one pending graph; install it while deliberately
+    // leaving its scalar observation in the full UI channel before submitting the successor.
+    let mut first_pcm = [[0.0; 2]; 64];
+    let measured = allocation_counter::measure(|| backend.render(&mut first_pcm).unwrap());
+    assert_eq!(
+        (
+            measured.count_total,
+            measured.bytes_total,
+            measured.count_current,
+            measured.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    sink.output
+        .as_mut()
+        .unwrap()
+        .publication
+        .control()
+        .unwrap()
+        .reclaim();
+    let second_metadata = ResidentPublicationMetadata {
+        computer_keyboard_request: None,
+        stopped_restore: true,
+        ..metadata
+    };
+    let ResidentPublicationAcceptance::Submitted {
+        audio_revision: second,
+        ..
+    } = sink
+        .publish_resident_graph(
+            graph(),
+            None,
+            Arc::clone(&view),
+            second_metadata,
+            ResidentPublicationPolicy::InstallFreshRuntime,
+            0,
+            &mut admit,
+        )
+        .unwrap()
+    else {
+        panic!("active publication")
+    };
+    assert_ne!(first, second);
+    sink.observe(context, "preparing", EditorPublicationState::Preparing);
+    sink.observe(context, "busy", EditorPublicationState::Busy);
+    let candidate = graph();
+    let exact = Arc::clone(candidate.prepared_revision().unwrap());
+    let refused = sink
+        .publish_resident_graph(
+            candidate,
+            None,
+            Arc::clone(&view),
+            metadata,
+            ResidentPublicationPolicy::InheritRuntime,
+            0,
+            &mut admit,
+        )
+        .unwrap_err();
+    assert!(refused.error.contains("observation is waiting"));
+    assert!(Arc::ptr_eq(
+        refused.playback.prepared_revision().unwrap(),
+        &exact
+    ));
+    let take = |expected_revision, keyboard, restore| {
+        let EditorAudioEvent::Publication {
+            output_identity: actual_output,
+            context: actual_context,
+            state:
+                EditorPublicationState::ResidentSubmitted {
+                    audio_revision,
+                    metadata,
+                    observation,
+                },
+        } = receiver.try_recv().unwrap()
+        else {
+            panic!("exact submission")
+        };
+        assert_eq!(
+            (actual_output, actual_context, audio_revision),
+            (output_identity, context, expected_revision)
+        );
+        assert_eq!(metadata.computer_keyboard_request, keyboard);
+        assert_eq!(metadata.stopped_restore, restore);
+        assert!(Arc::ptr_eq(&observation, &view));
+    };
+    take(first, Some(51), false);
+    sink.flush_events();
+    take(second, None, true);
+    sink.flush_events();
+    assert!(matches!(
+        receiver.try_recv().unwrap(),
+        EditorAudioEvent::Publication {
+            state: EditorPublicationState::Busy,
+            ..
+        }
+    ));
+    assert!(sink.pending_observation.is_none());
+    assert!(sink.pending_status_observation.is_none());
+    // Refusal did not consume another publication revision. The accepted queue remains usable,
+    // and callback installation keeps the existing zero-allocation/zero-free contract.
+    let mut pcm = [[0.0; 2]; 64];
+    for _ in 0..2 {
+        let measured = allocation_counter::measure(|| backend.render(&mut pcm).unwrap());
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        sink.output
+            .as_mut()
+            .unwrap()
+            .publication
+            .control()
+            .unwrap()
+            .reclaim();
+    }
+    drop(refused);
+    // Returned audio graphs do not retire a telemetry view still held by a UI consumer. Fill
+    // the existing three observation rows, refuse intact, then release one actual external
+    // owner and prove control reaps just that row without raising the production bound.
+    let mut held_views = Vec::new();
+    for _ in 1..RUNTIME_CELLS {
+        let next_view = Arc::new(
+            hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap(),
+        );
+        let accepted = sink
+            .publish_resident_graph(
+                graph(),
+                None,
+                Arc::clone(&next_view),
+                second_metadata,
+                ResidentPublicationPolicy::InheritRuntime,
+                0,
+                &mut admit,
+            )
+            .unwrap();
+        assert!(matches!(
+            accepted,
+            ResidentPublicationAcceptance::Submitted { .. }
+        ));
+        held_views.push(next_view);
+        sink.flush_events();
+        drop(receiver.try_recv().unwrap());
+        backend.render(&mut pcm).unwrap();
+        sink.output
+            .as_mut()
+            .unwrap()
+            .publication
+            .control()
+            .unwrap()
+            .reclaim();
+    }
+    let incoming =
+        Arc::new(hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap());
+    let refused = sink
+        .publish_resident_graph(
+            graph(),
+            None,
+            Arc::clone(&incoming),
+            second_metadata,
+            ResidentPublicationPolicy::InheritRuntime,
+            0,
+            &mut admit,
+        )
+        .unwrap_err();
+    assert!(refused.error.contains("observation retirement is waiting"));
+    drop(held_views.pop());
+    assert!(matches!(
+        sink.publish_resident_graph(
+            refused.playback,
+            None,
+            incoming,
+            second_metadata,
+            ResidentPublicationPolicy::InheritRuntime,
+            0,
+            &mut admit
+        )
+        .unwrap(),
+        ResidentPublicationAcceptance::Submitted { .. }
+    ));
+    sink.close();
+    drop(backend);
+}

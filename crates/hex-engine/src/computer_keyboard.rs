@@ -35,7 +35,9 @@ pub struct CurrentSamplerKeyboardFrame {
 }
 const VOICES: usize = 64;
 const NOTES: usize = 128 * COMPUTER_KEY_VELOCITIES.len();
-const MAX_STORAGE: usize = 3 * 1024 * 1024;
+/// Existing selected-keyboard runtime ceiling, including its bounded mutable pair/context.
+/// Control consumers reserve this before attachment and still validate actual graph storage.
+pub const MAX_COMPUTER_KEYBOARD_STORAGE_BYTES: usize = 3 * 1024 * 1024;
 
 /// One immutable activation lease. Cancellation bypasses every worker/audio queue.
 /// Control is the sole desired-note writer; each physical key is independent.
@@ -499,7 +501,7 @@ impl ComputerKeyboardRuntime {
         };
         if result
             .storage_bytes()
-            .is_none_or(|bytes| bytes > MAX_STORAGE)
+            .is_none_or(|bytes| bytes > MAX_COMPUTER_KEYBOARD_STORAGE_BYTES)
         {
             return Err(Invalid("computer keyboard storage exceeds its budget"));
         }

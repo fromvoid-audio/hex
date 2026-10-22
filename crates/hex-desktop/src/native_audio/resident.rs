@@ -16,6 +16,7 @@ use hex_session::service::{
 pub(super) struct Pending {
     playback: Playback,
     resources: Option<PreparedDeviceResources>,
+    observation: Arc<hex_engine::PreparedPlaybackObservation>,
     metadata: ResidentPublicationMetadata,
     policy: ResidentPublicationPolicy,
 }
@@ -23,6 +24,27 @@ pub(super) struct Pending {
 pub(super) struct Resident {
     pub(super) pending: Option<Pending>,
     pub(super) retired: Option<(DeviceResourcePublication, u64)>,
+    observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
+}
+impl Resident {
+    pub(super) fn reap_observations(&mut self) {
+        for row in &mut self.observations {
+            if row
+                .as_ref()
+                .is_some_and(|view| Arc::strong_count(view) == 1)
+            {
+                *row = None;
+            }
+        }
+    }
+    fn observation_bytes(&self) -> Option<usize> {
+        self.observations
+            .iter()
+            .flatten()
+            .try_fold(std::mem::size_of_val(&self.observations), |bytes, view| {
+                bytes.checked_add(view.retained_bytes_on_control()?)
+            })
+    }
 }
 impl NativeAudioSink {
     pub(super) fn resident_runtime_hold(
@@ -32,7 +54,11 @@ impl NativeAudioSink {
             .output
             .as_ref()
             .and_then(|output| output.publication.unreturned_resident_graphs_on_control());
-        if active.is_none() && self.resident.retired.is_none() && self.resident.pending.is_none() {
+        if active.is_none()
+            && self.resident.retired.is_none()
+            && self.resident.pending.is_none()
+            && self.resident.observations.iter().all(Option::is_none)
+        {
             return None;
         }
         let bytes = (|| {
@@ -59,7 +85,7 @@ impl NativeAudioSink {
                     )?
                     .checked_add(policy.ordinary_graph_metadata_bytes)?;
             }
-            Some(bytes)
+            bytes.checked_add(self.resident.observation_bytes()?)
         })()
         .unwrap_or(usize::MAX);
         // Original banks and legacy clip capacities are selected by resident_inventory. These
@@ -123,11 +149,32 @@ impl NativeAudioSink {
         &mut self,
         playback: Playback,
         resources: Option<&PreparedDeviceResources>,
+        observation: Arc<hex_engine::PreparedPlaybackObservation>,
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
         metadata_limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        self.resident.reap_observations();
+        let existing = self.resident.observations.iter().position(|row| {
+            row.as_ref()
+                .is_some_and(|old| Arc::ptr_eq(old, &observation))
+        });
+        let Some(observation_slot) =
+            existing.or_else(|| self.resident.observations.iter().position(Option::is_none))
+        else {
+            return Err(ResidentPublicationRefusal {
+                playback,
+                error: "audio observation retirement is waiting for capacity".into(),
+            });
+        };
+        self.flush_events();
+        if self.pending_observation.is_some() || self.pending_status_observation.is_some() {
+            return Err(ResidentPublicationRefusal {
+                playback,
+                error: "audio publication observation is waiting for capacity".into(),
+            });
+        }
         // Active-output refusal never enters the offline slot. The prospective view already
         // includes the active book, so it must not also be selected from resident_inventory.
         if let Some(control) = self
@@ -148,6 +195,9 @@ impl NativeAudioSink {
             let policy = match policy {
                 ResidentPublicationPolicy::InheritRuntime => {
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
+                }
+                ResidentPublicationPolicy::InstallFreshRuntime => {
+                    hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
                 }
                 ResidentPublicationPolicy::FreshIfUnchanged(expected) => {
                     let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
@@ -188,12 +238,14 @@ impl NativeAudioSink {
             );
             return match result {
                 Ok(audio_revision) => {
+                    self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
                     self.observe(
                         metadata.context,
                         "submitted",
                         EditorPublicationState::ResidentSubmitted {
                             audio_revision,
                             metadata,
+                            observation,
                         },
                     );
                     Ok(ResidentPublicationAcceptance::Submitted {
@@ -247,9 +299,11 @@ impl NativeAudioSink {
         if let Err(error) = admit(&[candidate, current[0], current[1], current[2]]) {
             return Err(ResidentPublicationRefusal { playback, error });
         }
+        self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
         self.resident.pending = Some(Pending {
             playback,
             resources: captured,
+            observation,
             metadata,
             policy,
         });
@@ -268,6 +322,7 @@ impl NativeAudioSink {
         let Pending {
             playback,
             resources,
+            observation,
             metadata,
             policy,
         } = pending;
@@ -285,6 +340,7 @@ impl NativeAudioSink {
         if let Err(refused) = self.publish_resident_graph(
             playback,
             resources.as_ref(),
+            Arc::clone(&observation),
             metadata,
             policy,
             0,
@@ -293,6 +349,7 @@ impl NativeAudioSink {
             self.resident.pending = Some(Pending {
                 playback: refused.playback,
                 resources,
+                observation,
                 metadata,
                 policy,
             });

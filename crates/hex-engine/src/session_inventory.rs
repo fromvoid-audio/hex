@@ -1300,6 +1300,17 @@ impl PreparedSessionInventory {
     pub fn midi_clips(&self) -> &[PreparedSessionMidiClip] {
         &self.midi_clips
     }
+    pub(crate) fn activity_midi_clips(
+        &self,
+    ) -> impl Iterator<Item = &PreparedSessionMidiClip> + Clone {
+        self.midi_clips
+            .iter()
+            .chain(&self.routed_midi_clips)
+            .filter(move |clip| {
+                self.midi_clip_for_track(clip.id, clip.track)
+                    .is_some_and(|selected| std::ptr::eq(*clip, selected))
+            })
+    }
 
     pub fn midi_clip(&self, id: ClipId) -> Option<&PreparedSessionMidiClip> {
         self.midi_clips
