@@ -453,6 +453,10 @@ class DeliveryTests(unittest.TestCase):
         runner.git_identity = {"workspace_root":str(source), "git_common_dir":str(source / ".git"), "commit":candidate}
         scope = [{"name":"hex-desktop", "version":"0.1.0", "spec":"hex-desktop@0.1.0"}]
         runner.cargo_identity["workspace_packages"] = scope
+        # The substituted metadata query must populate the same complete package
+        # view as production before name-scoped cleanup can be proven safe.
+        runner._release_metadata = {"workspace_members": [scope[0]["spec"]], "packages": [
+            {"id": scope[0]["spec"], "name": "hex-desktop", "source": None}]}
         _, dev_owner = delivery.ci.target_state_paths(target.parent.parent, runner.target_state_dir)
         owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
         event = {"reason":"compiler-artifact", "executable":str(executable),
@@ -712,7 +716,8 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(delivery.DeliveryError, "differs"):
                 delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
             resolve.return_value = plan
-            evidence["steps"][0]["test_results"] = {"python_executions": [2], "python_skipped": [2]}
+            next(s for s in evidence["steps"] if s["step_id"] == "runner-tests")["test_results"] = {
+                "python_executions": [2], "python_skipped": [2]}
             delivery.write_json(report, evidence)
             with self.assertRaisesRegex(delivery.DeliveryError, "no executed"):
                 delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
@@ -909,6 +914,8 @@ class ReleaseCargoTests(unittest.TestCase):
                     shutil.copy2(binary, base / (name + "-retained-binary"))
                 self.assertIsNone(instance.target_lock)
                 self.assertEqual(ownership["state"], "ready")
+                if ownership.get("cleanup_log"):
+                    self.assertNotIn("qualifier", Path(ownership["cleanup_log"]).read_text())
                 self.assertEqual(checks, ["before-build", "artifact"])
                 return ownership
             first = build(root, "release-a", "16")
