@@ -1,4 +1,4 @@
-//! Immutable group-note move/edge-resize previews and one-shot canonical payloads.
+//! Immutable note-group move, edge-resize and copy previews with atomic payloads.
 use super::midi_drag::{self, HitKind, MidiGrid};
 use hex_project::{BeatTime, ClipId, MidiNoteUpdate, NoteId};
 use std::sync::Arc;

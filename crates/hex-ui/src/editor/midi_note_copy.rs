@@ -77,6 +77,10 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
+        if self.midi_selection.is_empty() {
+            self.error = Some("select notes to duplicate".into());
+            return;
+        }
         let Some(clip) = self.detail_midi_clip_data() else {
             return;
         };
