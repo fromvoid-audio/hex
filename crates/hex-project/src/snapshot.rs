@@ -83,6 +83,7 @@ pub struct MidiSourceSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssetSnapshot {
+    pub original_source: Option<crate::OriginalSourceFacts>,
     pub id: u64,
     pub path: PathBuf,
     pub source_sample_rate: u32,
@@ -250,6 +251,7 @@ impl Project {
                 .assets
                 .values()
                 .map(|asset| AssetSnapshot {
+                    original_source: asset.original_source,
                     id: asset.id.0,
                     path: asset.path.clone(),
                     source_sample_rate: asset.source_sample_rate,
@@ -506,6 +508,7 @@ impl Project {
             assets.insert(
                 id,
                 Asset {
+                    original_source: asset.original_source,
                     id,
                     path: asset.path,
                     source_sample_rate: asset.source_sample_rate,
@@ -720,6 +723,7 @@ impl Project {
                         velocity: note.velocity,
                     });
                 }
+                crate::midi_note_overwrite::validate_occupancy(&notes)?;
                 compiled_midi.push(MidiClip {
                     name: clip.name.clone(),
                     flavor: clip.flavor,
@@ -859,6 +863,7 @@ impl Project {
                             velocity: note.velocity,
                         });
                     }
+                    crate::midi_note_overwrite::validate_occupancy(&notes)?;
                     crate::SessionCellContent::Midi(crate::SessionMidiClip {
                         flavor: clip.flavor,
                         id: ClipId(clip.id),
@@ -961,6 +966,7 @@ impl Project {
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
             project.adopt_playable_snapshot(&candidate)?;
         }
+        project.validate_arrangement_occupancy()?;
         Ok(project)
     }
 }

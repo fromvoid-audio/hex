@@ -1,4 +1,12 @@
-//! Bounded, versioned preferences independent of project documents.
+//! # Purpose
+//! Own bounded versioned application preferences independent of project documents and history.
+//!
+//! # Dependencies
+//! Uses serde/serde_json and the standard library for recoverable settings publication.
+//!
+//! # Does not own
+//! Does not mutate projects, decode media or run filesystem work on UI/audio callbacks. Preserve
+//! original paths and malformed settings instead of silently replacing user data.
 
 mod project_directory;
 pub use project_directory::{load_project_directory, save_project_directory};

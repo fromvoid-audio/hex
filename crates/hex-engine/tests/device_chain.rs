@@ -408,9 +408,24 @@ fn second_registered_definition_compiles_through_generic_registry() {
 fn registered_stateful_device_processes_the_summed_track_once() {
     let (mut editor, asset, track) = imported_audio_project();
     add_device(&mut editor, track, TestDevice.default_state().unwrap());
+    let Created::Track(source) = editor
+        .execute(Command::AddTrack {
+            name: "dry source".into(),
+        })
+        .unwrap()
+    else {
+        panic!("source track")
+    };
+    editor
+        .execute(Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Track(source),
+            destination: track,
+            gain: 1.0,
+        })
+        .unwrap();
     editor
         .execute(Command::PlaceClip {
-            track,
+            track: source,
             asset,
             start: 0,
             duration: 1,
@@ -427,9 +442,10 @@ fn registered_stateful_device_processes_the_summed_track_once() {
     renderer.play();
     let mut output = [[0.0; 2]; 1];
     renderer.render(&mut output).unwrap();
-    // The clips sum to [0.5, -1.0], the matrix swaps them, then the one
-    // stateful pass squares the summed signal: [-1, .5] -> [1, .25].
-    assert_eq!(output, [[1.0, 0.25]]);
+    // Local audio and its incoming feed sum to [.5, -1], then one matrix
+    // and stateful pass gives [1, .25]. The independent dry source also reaches
+    // Main as [.25, -.5]; it never passes through the owner's processor twice.
+    assert_eq!(output, [[1.25, -0.25]]);
 }
 
 #[test]

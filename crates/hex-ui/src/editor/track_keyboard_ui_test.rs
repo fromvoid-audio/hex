@@ -24,6 +24,7 @@ fn publish(view: &mut EditorView, project: hex_project::Project) {
             .and_then(|state| state.comparison_audio.clone()),
         project: Arc::new(project),
         waveforms: Default::default(),
+        source_overviews: Default::default(),
         audio_clip_waveforms: Default::default(),
         midi_preview: Arc::default(),
         gain_preview: Ok(Arc::default()),

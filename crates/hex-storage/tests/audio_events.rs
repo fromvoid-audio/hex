@@ -49,7 +49,7 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
     let bytes = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(hex_storage::decode(&bytes).unwrap(), *editor.project());
     let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(value["version"], 33);
+    assert_eq!(value["version"], 34);
     for mutate in 0..4 {
         let mut bad = value.clone();
         match mutate {
@@ -75,6 +75,10 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
         .as_object_mut()
         .unwrap()
         .remove("device_assets");
+    appearance27
+        .as_object_mut()
+        .unwrap()
+        .remove("asset_sources");
     appearance27.as_object_mut().unwrap().remove("fade_shapes");
     appearance27["version"] = 27.into();
     appearance27.as_object_mut().unwrap().remove("main_devices");
@@ -99,6 +103,7 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
     events27.as_object_mut().unwrap().remove("main_devices");
     events27.as_object_mut().unwrap().remove("tuning");
     events27.as_object_mut().unwrap().remove("device_assets");
+    events27.as_object_mut().unwrap().remove("asset_sources");
     events27.as_object_mut().unwrap().remove("track_colors");
     events27.as_object_mut().unwrap().remove("accented_clips");
     let migrated = hex_storage::decode(&serde_json::to_vec(&events27).unwrap()).unwrap();
@@ -127,6 +132,7 @@ fn events_roundtrip_and_strict_complete_overlay_rejects_loss_and_bad_references(
     let mut legacy = value;
     legacy.as_object_mut().unwrap().remove("tuning");
     legacy.as_object_mut().unwrap().remove("device_assets");
+    legacy.as_object_mut().unwrap().remove("asset_sources");
     legacy.as_object_mut().unwrap().remove("fade_shapes");
     legacy["version"] = 26.into();
     legacy.as_object_mut().unwrap().remove("main_devices");

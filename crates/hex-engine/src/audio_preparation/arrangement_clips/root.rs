@@ -99,6 +99,13 @@ impl ArrangementRootAssembly {
         &mut self,
         project: &hex_project::Project,
     ) -> Result<(), AudioStorageError> {
+        self.reserve_with_sampler(project, false)
+    }
+    pub(super) fn reserve_with_sampler(
+        &mut self,
+        project: &hex_project::Project,
+        sampler: bool,
+    ) -> Result<(), AudioStorageError> {
         if self.project.is_some()
             || !self.tracks.is_empty()
             || !self.returns.is_empty()
@@ -110,20 +117,26 @@ impl ArrangementRootAssembly {
         }
         // Eligibility is audited again here rather than inferred from an empty
         // mutable-descriptor destination or from a legacy compiler outcome.
-        if !project.main_devices().is_empty()
-            || project.tracks().iter().any(|t| {
-                t.devices()
+        if sampler {
+            if !crate::native_device_resources::current_sampler::validate_project(project)? {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
+        } else {
+            if !project.main_devices().is_empty()
+                || project.tracks().iter().any(|t| {
+                    t.devices()
+                        .iter()
+                        .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
+                        || t.instrument().is_some()
+                        || !t.midi_clips().is_empty()
+                })
+                || project
+                    .return_tracks()
                     .iter()
-                    .any(|d| d.state().type_id() != hex_devices::utility::UTILITY_TYPE_ID)
-                    || t.instrument().is_some()
-                    || !t.midi_clips().is_empty()
-            })
-            || project
-                .return_tracks()
-                .iter()
-                .any(|r| !r.devices().is_empty())
-        {
-            return Err(AudioStorageError::UnsupportedGraph);
+                    .any(|r| !r.devices().is_empty())
+            {
+                return Err(AudioStorageError::UnsupportedGraph);
+            }
         }
         let master_gain = PreparedMasterGain::new(project.master_gain())
             .map_err(|_| AudioStorageError::SourceMismatch)?;
@@ -305,6 +318,21 @@ impl ArrangementRootAssembly {
                 .iter()
                 .flat_map(|t| &t.clips)
                 .any(Clip::is_streamed);
+            let audible_end_frame =
+                self.tracks
+                    .iter()
+                    .flat_map(|track| {
+                        track.clips.iter().map(|clip| clip.end).chain(
+                            track.instrument.iter().flat_map(|instrument| {
+                                instrument
+                                    .timeline_end
+                                    .into_iter()
+                                    .chain(instrument.spans.iter().map(|span| span.end))
+                            }),
+                        )
+                    })
+                    .max()
+                    .or(scalars.audible_end_frame);
             self.project = Some(Project {
                 project_track_ids: crate::project_output::ProjectTrackIds::prepare(&self.tracks),
                 audio_clip_views: Vec::new(),
@@ -319,7 +347,7 @@ impl ArrangementRootAssembly {
                 return_feed_plan: mem::take(&mut self.feed),
                 loop_region: scalars.loop_region,
                 master_gain: scalars.master_gain,
-                audible_end_frame: scalars.audible_end_frame,
+                audible_end_frame,
                 has_streamed_sources,
                 shared_contexts: contexts,
             });

@@ -1,5 +1,5 @@
 //! Canonical metadata-only copies for Arrangement clip drag duplication.
-use crate::{ClipId, Created, Invalid, MAX_CLIPS, NoteId, Project, TrackId};
+use crate::{ClipId, Created, Invalid, Project, TrackId};
 
 pub(crate) fn audio_to(
     project: &mut Project,
@@ -12,9 +12,6 @@ pub(crate) fn audio_to(
         .cloned()
         .ok_or(Invalid("clip no longer exists"))?;
     crate::audio_edit::move_clip(&mut copied, start, project.tempo_map())?;
-    let end = start
-        .checked_add(copied.duration)
-        .ok_or(Invalid("timeline end overflow"))?;
     project
         .track(track)
         .ok_or(Invalid("destination track no longer exists"))?;
@@ -22,30 +19,7 @@ pub(crate) fn audio_to(
         return Ok(Created::None);
     }
 
-    crate::edit::overwrite_audio_interval(project, track, start, end, ClipId(0))?;
-    crate::midi::overwrite_midi_in_frames(project, track, start, end, ClipId(0))?;
-    let id = append_audio(project, copied, track)?;
-    Project::from_snapshot(project.snapshot())?;
-    Ok(Created::Clip(id))
-}
-
-/// Append an already projected whole clip after the batch cleared old content.
-pub(crate) fn append_audio(
-    project: &mut Project,
-    mut copied: crate::Clip,
-    track: TrackId,
-) -> Result<ClipId, Invalid> {
-    if clip_count(project) >= MAX_CLIPS {
-        return Err(Invalid("clip limit reached"));
-    }
-    copied.id = ClipId(project.allocate_id()?);
-    let copied_id = copied.id;
-    let clips = project.audio_clips_mut(track)?;
-    clips
-        .try_reserve(1)
-        .map_err(|_| Invalid("could not reserve copied clip storage"))?;
-    clips.push(copied);
-    Ok(copied_id)
+    crate::clip_group::place_one(project, track, crate::ClipGroupContent::Audio(copied), true)
 }
 
 pub(crate) fn midi_to(
@@ -64,54 +38,16 @@ pub(crate) fn midi_to(
         .midi_clip(clip_id)
         .cloned()
         .ok_or(Invalid("midi clip no longer exists"))?;
-    let end_raw = start
-        .raw()
-        .checked_add(copied.length.raw())
-        .ok_or(Invalid("midi timeline end overflow"))?;
-    let end = crate::BeatTime::from_raw(end_raw);
+    crate::midi::validate_clip(start, copied.length())?;
     project
         .track(track)
         .ok_or(Invalid("destination track no longer exists"))?;
     if source_track == track && copied.start == start {
         return Ok(Created::None);
     }
-    crate::edit::overwrite_audio_in_beats(project, track, start, end, ClipId(0))?;
-    crate::midi::overwrite_midi_interval(project, track, start, end, ClipId(0))?;
-    let id = append_midi(project, copied, track, start)?;
-    Project::from_snapshot(project.snapshot())?;
-    Ok(Created::Clip(id))
-}
-
-/// Keep batch members intact, including overlaps already present in the source.
-pub(crate) fn append_midi(
-    project: &mut Project,
-    mut copied: crate::MidiClip,
-    track: TrackId,
-    start: crate::BeatTime,
-) -> Result<ClipId, Invalid> {
-    let added_notes = copied.source.notes.len();
-    if clip_count(project) >= MAX_CLIPS {
-        return Err(Invalid("clip limit reached"));
-    }
-    if crate::midi::note_count(project)
-        .checked_add(added_notes)
-        .is_none_or(|count| count > crate::MAX_NOTES)
-    {
-        return Err(Invalid("midi note limit reached"));
-    }
-    copied.id = ClipId(project.allocate_id()?);
+    let mut copied = copied;
     copied.start = start;
-    let source = std::sync::Arc::make_mut(&mut copied.source);
-    for note in &mut source.notes {
-        note.id = NoteId(project.allocate_id()?);
-    }
-    let copied_id = copied.id;
-    let clips = &mut project.track_mut(track)?.content.midi_clips;
-    clips
-        .try_reserve(1)
-        .map_err(|_| Invalid("could not reserve copied midi clip storage"))?;
-    clips.push(copied);
-    Ok(copied_id)
+    crate::clip_group::place_one(project, track, crate::ClipGroupContent::Midi(copied), true)
 }
 
 fn original_audio_at(project: &Project, track: TrackId, clip: ClipId, start: u64) -> bool {
@@ -121,25 +57,6 @@ fn original_audio_at(project: &Project, track: TrackId, clip: ClipId, start: u64
             .iter()
             .any(|item| item.id() == clip && item.start() == start)
     })
-}
-
-fn clip_count(project: &Project) -> usize {
-    project
-        .tracks()
-        .iter()
-        .map(|track| track.clips().len() + track.midi_clips().len())
-        .sum::<usize>()
-        + project
-            .session
-            .cells
-            .iter()
-            .filter(|cell| {
-                matches!(
-                    cell.content,
-                    crate::SessionCellContent::Midi(_) | crate::SessionCellContent::Audio(_)
-                )
-            })
-            .count()
 }
 
 #[cfg(test)]

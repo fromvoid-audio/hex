@@ -7,7 +7,7 @@ use hex_lattice::{
 use std::any::Any;
 
 pub const MAX_SAMPLER_RUNTIME_VOICES: usize = 32;
-const MAX_EVENTS: usize = 1024;
+pub(super) const MAX_EVENTS: usize = 1024;
 
 /// Control-prepared key table and original source binding, without PCM/markers.
 /// Not registry admission: the actual owner graph must still qualify separately.
@@ -72,11 +72,16 @@ struct ActiveVoice {
     gate: Option<u64>,
 }
 type Active = [Option<ActiveVoice>; MAX_SAMPLER_RUNTIME_VOICES];
-struct SamplerRuntime {
+/// Opaque fixed-storage sampler processor created only by its prepared factory.
+/// Hosts may identify this concrete audited type; no source owner is stored here.
+pub struct SamplerRuntime {
     prepared: PreparedSamplerRuntime,
     active: Active,
 }
 impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
+    fn resource_factory_inline_bytes(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
+    }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
     }

@@ -58,7 +58,7 @@ pub(super) fn view(view: &mut EditorView, cx: &mut Context<EditorView>) -> Optio
     }
     let state = view.state.as_ref()?.clone();
     let (track, clip_id, position, length, source_start, source_length) =
-        view.selected_clip_data()?;
+        view.detail_audio_clip_data()?;
     let clip = state.project.clip(clip_id)?;
     let asset = state.project.asset(clip.asset())?;
     let source_end = source_start.checked_add(source_length)?;
@@ -666,8 +666,9 @@ fn command_for(window: ClipWindow, field: Field, direction: i8, step: u64) -> Op
 fn clip_window_is_current(view: &EditorView, captured: ClipWindow) -> bool {
     if view.mode != super::EditorMode::Arrangement
         || view.project_generation != captured.generation
-        || view.selected_track != Some(captured.track)
-        || view.selected_clip != Some(captured.clip)
+        || view
+            .detail_audio_clip_data()
+            .is_none_or(|(track, clip, ..)| track != captured.track || clip != captured.clip)
     {
         return false;
     }
@@ -957,6 +958,7 @@ mod tests {
                 comparison_audio: old.comparison_audio.clone(),
                 project: Arc::new(hex_project::Project::from_snapshot(snapshot).unwrap()),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: old.gain_preview.clone(),

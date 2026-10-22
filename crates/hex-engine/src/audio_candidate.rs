@@ -1,5 +1,12 @@
-//! Constructor-owned runtime custody, independent of cost/admission authority.
-//! Teardown follows original177 claims_teardown's Pending-before-take protocol.
+//! Constructor-owned runtime custody, separate from cost and publication authority.
+//!
+//! The actual root, preparation incarnation and runtime identity travel together; caller scalars,
+//! equal graph values and raw Playback owners cannot manufacture that association. The constructor
+//! admits only its explicitly implemented closed classes, not every device accepted by the
+//! ordinary registry. Origin books follow real owner moves; copying compatible DSP history does
+//! not transfer source custody. Every destructive frontier records Pending before taking an owner.
+//! Only a normal return from the actual destructor closes that frontier; failure retains the first
+//! payload and remaining owners without retry or invented completion.
 mod claimed;
 mod draft;
 mod preparation;
@@ -276,8 +283,15 @@ struct Group {
     closed: bool,
     origin: Option<groups::Origin>,
 }
+mod current_sampler;
 struct RuntimeOwner {
     playback: Playback,
+    sampler_sources: Option<(
+        crate::owned_shared::OwnedShared<
+            crate::native_device_resources::current_sampler::CurrentSamplerSources,
+        >,
+        u64,
+    )>,
     #[cfg(any(test, feature = "instrument-test-support"))]
     probe: Option<RuntimeDropProbe>,
 }
@@ -300,6 +314,14 @@ pub struct AudioCandidateOwner {
     inner: Box<CandidateState>,
 }
 impl AudioCandidateOwner {
+    /// Read-only scalar identity for actual opaque runtime custody probes.
+    #[cfg(any(test, feature = "instrument-test-support"))]
+    pub fn test_runtime_address(&self) -> Option<usize> {
+        self.inner
+            .runtime
+            .as_deref()
+            .map(|r| r as *const RuntimeOwner as usize)
+    }
     /// Control-only headless observer on the actual nested Runtime Box Drop.
     /// Returns a scalar address only; no pointer, Playback or owning handle escapes.
     #[cfg(any(test, feature = "instrument-test-support"))]
@@ -330,8 +352,7 @@ impl AudioCandidateOwner {
             .as_mut()
             .ok_or(crate::Invalid("candidate runtime unavailable"))?;
         runtime
-            .playback
-            .try_apply_action(action)
+            .apply_action(action)
             .map_err(|_| crate::Invalid("candidate action refused"))
     }
     #[cfg(any(test, feature = "instrument-test-support"))]
@@ -341,7 +362,7 @@ impl AudioCandidateOwner {
             .runtime
             .as_mut()
             .ok_or(crate::Invalid("candidate runtime unavailable"))?;
-        runtime.playback.render(output)
+        runtime.render_with_signal_observers(output, None, None)
     }
     #[cfg(any(test, feature = "instrument-test-support"))]
     pub fn test_transport(&self) -> Option<(u64, u64, bool)> {
@@ -652,9 +673,9 @@ fn validate_runtime_groups(
 // every vacant slot; absence is validated, never converted into an owner group.
 fn validate_supported_location(kind: u8, present: bool) -> Result<(), AudioStorageError> {
     match kind {
-        0 | 4 | 7 | 9..=12 => Ok(()),
-        1 | 2 | 3 | 5 | 6 | 8 | 13 if !present => Ok(()),
-        1 | 2 | 3 | 5 | 6 | 8 | 13 => Err(AudioStorageError::UnsupportedGraph),
+        0 | 2 | 4 | 7 | 9..=12 => Ok(()),
+        1 | 3 | 5 | 6 | 8 | 13 if !present => Ok(()),
+        1 | 3 | 5 | 6 | 8 | 13 => Err(AudioStorageError::UnsupportedGraph),
         _ => Err(AudioStorageError::SourceMismatch),
     }
 }
