@@ -152,6 +152,76 @@ class NativeBootstrapTests(unittest.TestCase):
                 self.assertEqual(run.returncode, 2)
                 self.assertEqual(run.stdout, b"")
 
+    def host_control(self, scenario):
+        BOOT.verify(self.receipt)
+        run = subprocess.run([str(self.root / BOOT.EXECUTABLE), "--host-self-test", str(scenario)],
+                             capture_output=True, text=True, timeout=10)
+        self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+        self.assertLessEqual(len(run.stdout.encode()), 4096)
+        value = json.loads(run.stdout)
+        self.assertEqual((value["version"], value["scope"], value["scenario"]),
+                         (1, "original-macos-host-control", scenario))
+        self.assertEqual(value["violations"], 0, value)
+        self.assertTrue(value["pcm"], value)  # same instance, same worker, two different literal blocks
+        self.assertEqual(value["before_revision"], 1)
+        self.assertEqual(value["before_value"], 0.25)
+        return value
+
+    def test_real_host_messages_and_editor_metadata_refresh(self):
+        value = self.host_control(0)
+        self.assertEqual(value["message"], 0, value)
+        self.assertEqual(value["received"], 1)
+        self.assertEqual(value["disposition"], 1)
+        self.assertEqual(value["after_revision"], 2)
+        self.assertEqual(value["after_value"], 0.75)
+        self.assertTrue(value["refusals"] & 512, "message pool exhaustion was explicit")
+        self.assertTrue(value["closed"] and value["unloaded"])
+
+    def test_unknown_and_graph_restart_classes_refuse_without_partial_cache_update(self):
+        value = self.host_control(1)
+        for field in ("unknown", "graph", "known"):
+            self.assertNotEqual(value[field], 0, value)
+        self.assertEqual(value["dispatched"], 0)
+        self.assertEqual((value["after_revision"], value["after_value"]), (1, 0.25))
+        self.assertEqual(value["refusals"] & (2 | 4 | 128), 2 | 4 | 128)
+        self.assertTrue(value["closed"] and value["unloaded"])
+
+    def test_restart_queue_has_bounded_ordered_backpressure(self):
+        value = self.host_control(2)
+        self.assertEqual((value["enqueued"], value["dispatched"]), (8, 8))
+        self.assertNotEqual(value["callback"], 0)
+        self.assertEqual((value["first_sequence"], value["last_sequence"]), (2, 9))
+        self.assertEqual((value["after_revision"], value["after_value"]), (9, 0.75))
+        self.assertTrue(value["refusals"] & 8)
+        self.assertTrue(value["closed"] and value["unloaded"])
+
+    def test_malformed_and_recursive_metadata_preserves_the_last_complete_snapshot(self):
+        for scenario in range(3, 10):
+            with self.subTest(scenario=scenario):
+                value = self.host_control(scenario)
+                self.assertEqual(value["callback"], 0, "callback acknowledges queued work, not application")
+                self.assertEqual(value["dispatched"], 1)
+                self.assertEqual(value["disposition"], 4 if scenario == 8 else 2)
+                self.assertEqual((value["after_revision"], value["after_value"]), (1, 0.25))
+                self.assertTrue(value["refusals"] & (16 if scenario == 8 else 32))
+                self.assertTrue(value["closed"] and value["unloaded"])
+
+    def test_processing_thread_callbacks_refuse_before_controller_or_message_work(self):
+        value = self.host_control(10)
+        self.assertNotEqual(value["processing_callback"], 0)
+        self.assertNotEqual(value["processing_message"], 0)
+        self.assertEqual(value["worker_dispatch"], 6)
+        self.assertEqual(value["dispatched"], 0)
+        self.assertEqual((value["after_revision"], value["after_value"]), (1, 0.25))
+        self.assertTrue(value["refusals"] & 1)
+        self.assertTrue(value["closed"] and value["unloaded"])
+
+    def test_retained_message_keeps_host_pool_and_module_until_process_retirement(self):
+        value = self.host_control(11)
+        self.assertEqual(value["message"], 0)
+        self.assertFalse(value["closed"])
+        self.assertFalse(value["unloaded"])
+
     def test_absent_helper_refuses_before_execution(self):
         (self.root / BOOT.EXECUTABLE).unlink()
         with self.assertRaisesRegex(ValueError, "missing or changed"):

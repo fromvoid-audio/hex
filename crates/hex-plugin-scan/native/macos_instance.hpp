@@ -7,7 +7,7 @@
 #include <Foundation/Foundation.h>
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
-#include "pluginterfaces/vst/ivsthostapplication.h"
+#include "macos_host.hpp"
 #include "pluginterfaces/vst/ivstmessage.h"
 #include <atomic>
 #include <cmath>
@@ -18,51 +18,6 @@
 namespace hex_instance {
 using namespace Steinberg;
 using namespace Steinberg::Vst;
-
-inline bool same(const TUID left, const TUID right) {
-    return std::memcmp(left, right, sizeof(TUID)) == 0;
-}
-
-// A deliberately finite host context. Unsupported message factories and edit
-// callbacks report unsupported; they never pretend a canonical edit was applied.
-// Their product implementations belong to later host-capability/parameter leaves.
-class Host final : public IHostApplication, public IComponentHandler {
-    std::atomic<uint32> references{1};
-public:
-    uint32 PLUGIN_API addRef() override { return ++references; }
-    uint32 PLUGIN_API release() override {
-        auto remaining = --references;
-        if (!remaining) delete this;
-        return remaining;
-    }
-    tresult PLUGIN_API queryInterface(const TUID iid, void** out) override {
-        if (!out) return kInvalidArgument;
-        *out = nullptr;
-        if (same(iid, INLINE_UID_OF(FUnknown)) || same(iid, INLINE_UID_OF(IHostApplication)))
-            *out = static_cast<IHostApplication*>(this);
-        else if (same(iid, INLINE_UID_OF(IComponentHandler)))
-            *out = static_cast<IComponentHandler*>(this);
-        else return kNoInterface;
-        addRef();
-        return kResultOk;
-    }
-    tresult PLUGIN_API getName(String128 name) override {
-        if (![NSThread isMainThread] || !name) return kInvalidArgument;
-        std::memset(name, 0, sizeof(String128));
-        const char16_t label[] = u"hex";
-        std::memcpy(name, label, sizeof(label));
-        return kResultOk;
-    }
-    tresult PLUGIN_API createInstance(TUID, TUID, void** out) override {
-        if (!out) return kInvalidArgument;
-        *out = nullptr;
-        return kNoInterface;
-    }
-    tresult PLUGIN_API beginEdit(ParamID) override { return kNotImplemented; }
-    tresult PLUGIN_API performEdit(ParamID, ParamValue) override { return kNotImplemented; }
-    tresult PLUGIN_API endEdit(ParamID) override { return kNotImplemented; }
-    tresult PLUGIN_API restartComponent(int32) override { return kNotImplemented; }
-};
 
 class Instance final {
     IPluginFactory* factory = nullptr;
@@ -213,8 +168,19 @@ public:
         return true;
     }
 
+    HostDispatch dispatch_host_callbacks() {
+        if (![NSThread isMainThread]) { HostDispatch refused{}; refused.disposition=HostDisposition::WrongThread; return refused; }
+        if (!opened || !host || quarantined.load()) { HostDispatch refused{}; refused.disposition=HostDisposition::Retiring; return refused; }
+        return host->dispatch(controller);
+    }
+    const ParameterSnapshot* parameter_snapshot() const {
+        return host?host->snapshot():nullptr;
+    }
+    uint32 host_refusals() const { return host?host->refusal_flags():0; }
+
     bool close() {
         if (![NSThread isMainThread] || processing.load() || quarantined.load()) return false;
+        if (host) host->stop_accepting();
         // Stop/join is the caller's prerequisite. Never release/unload past a
         // refused teardown step; its foreign state cannot be assumed rolled back.
         if (active) {
@@ -257,9 +223,10 @@ public:
         if (component) { component->release(); component = nullptr; }
         if (factory) { factory->release(); factory = nullptr; }
         if (host) {
-            const auto outstanding = host->release();
-            host = nullptr;
-            if (outstanding) return refuse_cleanup();
+            // Keep the control lease when a message/context is still retained.
+            // Its last release on another thread cannot finally free this pool.
+            if (host->reference_count()!=1) return refuse_cleanup();
+            host->release(); host=nullptr;
         }
         return true;
     }

@@ -9,6 +9,7 @@
 #include <thread>
 #include <algorithm>
 #include "macos_lifecycle_case.hpp"
+#include "macos_host_case.hpp"
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -74,7 +75,7 @@ static bool fixture(const char* kind,const char* expected) {
         }
         auto* factory=get();
         if (lifecycle) {
-            ok=lifecycle_case(bundle,factory);
+            ok=host_evidence.scenario>=0?host_case(bundle,factory):lifecycle_case(bundle,factory);
             if (!lifecycle_evidence.closed) {
                 // Failed teardown retains the module and both factory references.
                 // The standalone process owner must reap this helper; no live unload.
@@ -148,6 +149,16 @@ static bool fixture(const char* kind,const char* expected) {
 
 int main(int argc,char** argv) {
     @autoreleasepool {
+        if (argc==3 && !std::strcmp(argv[1],"--host-self-test")) {
+            const size_t length=std::strlen(argv[2]);
+            if (!length || length>2) return 2;
+            int scenario=0;
+            for (size_t n=0;n<length;++n) { if (argv[2][n]<'0' || argv[2][n]>'9') return 2; scenario=scenario*10+(argv[2][n]-'0'); }
+            if (scenario>11) return 2;
+            host_evidence.scenario=scenario; lifecycle_evidence.mode=1; lifecycle_evidence.failure=0;
+            try { const bool valid=fixture("lifecycle",HEX_LIFECYCLE_SHA256); print_host(); return valid?0:1; }
+            catch (...) { std::fprintf(stderr,"host-control fault; module custody retained until process exit\n"); return 1; }
+        }
         if (argc==4 && !std::strcmp(argv[1],"--lifecycle-self-test")) {
             const auto number=[](const char* value,int maximum)->int {
                 if (!value || !*value || std::strlen(value)>2) return -1;

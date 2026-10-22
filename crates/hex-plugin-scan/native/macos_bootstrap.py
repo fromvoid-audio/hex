@@ -19,7 +19,8 @@ APP = Path("hex-vst3-host.app")
 EXECUTABLE = APP / "Contents/MacOS/hex-vst3-host"
 SOURCES = ("macos_bootstrap.py", "macos_helper.mm", "macos_fixture.cpp", "build.py",
            "macos_scan.mm", "macos_scan_wire.hpp", "macos_factory_fixture.cpp", "launch_ignored.cpp",
-           "macos_instance.hpp", "macos_lifecycle_fixture.cpp", "macos_lifecycle_case.hpp")
+           "macos_instance.hpp", "macos_lifecycle_fixture.cpp", "macos_lifecycle_case.hpp",
+           "macos_host_messages.hpp", "macos_host.hpp", "macos_host_case.hpp")
 MAX_FILE = 16 * 1024 * 1024
 
 
