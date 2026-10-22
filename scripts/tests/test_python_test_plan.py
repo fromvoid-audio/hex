@@ -118,7 +118,7 @@ assert any(case.id().endswith(".test_actual_native_identity_and_effect_instrumen
             with self.subTest(path=path):
                 result = selection([path])
                 self.assertEqual(result["mode"], "comprehensive")
-                self.assertEqual(impact.argv(result), existing.ci.FULL_STEPS[0].argv)
+                self.assertEqual(impact.argv(result), next(s for s in existing.ci.FULL_STEPS if s.step_id == "runner-tests").argv)
                 self.assertEqual(result["excluded_groups"], [])
 
     def test_mixed_inputs_and_unregistered_rename_endpoint_cannot_take_fast_path(self):
@@ -190,13 +190,18 @@ assert any(case.id().endswith(".test_actual_native_identity_and_effect_instrumen
             before = existing.ci.planned_steps({"scope": scope})
             chosen = selection(["crates/hex-ui/src/a.rs"]) if scope == "ui" else selection(["launch"])
             after = existing.ci.planned_steps({"scope": scope, "python_tests": chosen})
-            self.assertEqual(before[1:], after[1:])
-            self.assertEqual(before[0].uses_cargo_target, after[0].uses_cargo_target)
-            self.assertTrue(after[0].requires_tests)
+            self.assertEqual([s for s in before if s.step_id != "runner-tests"],
+                             [s for s in after if s.step_id != "runner-tests"])
+            runner = next(s for s in after if s.step_id == "runner-tests")
+            self.assertTrue(runner.uses_cargo_target)
+            self.assertTrue(runner.requires_tests)
         core = existing.ci.planned_steps({"scope": "full", "python_tests": selection([
             "crates/hex-engine/src/lib.rs"])})
-        self.assertEqual(core[1:], existing.ci.planned_steps({"scope": "full"})[1:])
-        self.assertNotEqual(core[0].argv, existing.ci.FULL_STEPS[0].argv)
+        original = existing.ci.planned_steps({"scope": "full"})
+        self.assertEqual([s for s in core if s.step_id != "runner-tests"],
+                         [s for s in original if s.step_id != "runner-tests"])
+        self.assertNotEqual(next(s.argv for s in core if s.step_id == "runner-tests"),
+                            next(s.argv for s in original if s.step_id == "runner-tests"))
 
     def test_real_git_planner_embeds_python_impact_and_hash_independent_of_rust_scope(self):
         with tempfile.TemporaryDirectory() as directory:

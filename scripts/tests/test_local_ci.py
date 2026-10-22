@@ -646,6 +646,8 @@ runpy.run_path(sys.argv[1], run_name='__main__')
                              steps=local_ci.FULL_STEPS)
         self.assertEqual(runner.run(), 0)
         summary = self.summary("python-cargo")
+        self.assertEqual([(s["step_id"], s["argv"], s["status"]) for s in summary["steps"]],
+                         [(s.step_id, list(s.argv), "passed") for s in local_ci.FULL_STEPS])
         self.assertEqual(summary["target_cache"]["action"], "claim-empty")
         self.assertTrue((target / "debug/fixture.rlib").is_file())
         self.assertNotIn("cargo clean", self.call_log.read_text())
