@@ -46,6 +46,18 @@ fn native_source() -> String {
             "launch_ignored.cpp",
             include_bytes!("../../native/launch_ignored.cpp"),
         ),
+        (
+            "macos_instance.hpp",
+            include_bytes!("../../native/macos_instance.hpp"),
+        ),
+        (
+            "macos_lifecycle_fixture.cpp",
+            include_bytes!("../../native/macos_lifecycle_fixture.cpp"),
+        ),
+        (
+            "macos_lifecycle_case.hpp",
+            include_bytes!("../../native/macos_lifecycle_case.hpp"),
+        ),
     ];
     let mut h = Sha256::new();
     for (name, bytes) in inputs {

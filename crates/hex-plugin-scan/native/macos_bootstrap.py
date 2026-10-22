@@ -18,7 +18,8 @@ ROOT = NATIVE.parents[2]
 APP = Path("hex-vst3-host.app")
 EXECUTABLE = APP / "Contents/MacOS/hex-vst3-host"
 SOURCES = ("macos_bootstrap.py", "macos_helper.mm", "macos_fixture.cpp", "build.py",
-           "macos_scan.mm", "macos_scan_wire.hpp", "macos_factory_fixture.cpp", "launch_ignored.cpp")
+           "macos_scan.mm", "macos_scan_wire.hpp", "macos_factory_fixture.cpp", "launch_ignored.cpp",
+           "macos_instance.hpp", "macos_lifecycle_fixture.cpp", "macos_lifecycle_case.hpp")
 MAX_FILE = 16 * 1024 * 1024
 
 
@@ -114,7 +115,7 @@ def verify(receipt, run=False):
         return data
     executable = root / EXECUTABLE
     macho(executable, 2)
-    for name in ("effect", "instrument"):
+    for name in ("effect", "instrument", "lifecycle"):
         fixture = root / APP / "Contents/Resources/fixtures" / (name + ".vst3")
         info = plistlib.loads((fixture / "Contents/Info.plist").read_bytes())
         if info.get("CFBundleExecutable") != "fixture" or info.get("CFBundleIdentifier") != "org.portalsurfer.hex.fixture." + name:
@@ -199,14 +200,16 @@ def build(sdk, output, *, discovery_only=False):
     resources.mkdir(parents=True, exist_ok=True)
     digests, factory_fixtures = {}, []
     if not discovery_only:
-        for instrument, name in enumerate(("effect", "instrument")):
+        for instrument, name, source in ((0, "effect", "macos_fixture.cpp"),
+                                         (1, "instrument", "macos_fixture.cpp"),
+                                         (0, "lifecycle", "macos_lifecycle_fixture.cpp")):
             bundle = resources / "fixtures" / (name + ".vst3")
             (bundle / "Contents").mkdir(parents=True)
             info = {"CFBundleExecutable": "fixture", "CFBundleIdentifier": "org.portalsurfer.hex.fixture." + name,
                     "CFBundlePackageType": "BNDL", "CFBundleVersion": "1"}
             (bundle / "Contents/Info.plist").write_bytes(plistlib.dumps(info, sort_keys=True))
             binary = bundle / "Contents/MacOS/fixture"
-            compile_one("macos_fixture.cpp", binary, ["-bundle", "-framework", "CoreFoundation", "-DHEX_INSTRUMENT=" + str(instrument)])
+            compile_one(source, binary, ["-bundle", "-framework", "CoreFoundation", "-DHEX_INSTRUMENT=" + str(instrument)])
             digests[name] = sha(binary)
         modes = ["normal", "entry-hang", "entry-crash", "enumerate-hang", "malformed-count", "malformed-string",
                  "duplicate-uid", "exit-fail", "exit-hang", "exit-crash", "flood", "open-channel-child",
