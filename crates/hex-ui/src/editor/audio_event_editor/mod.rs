@@ -13,6 +13,8 @@ pub(super) struct State {
     revision: u64,
     pub(super) source_view: bool,
     viewport: Option<Viewport>,
+    // Outer option is a retained fit; inner None preserves automatic full-view mode.
+    fit_back: Option<Option<Viewport>>,
     cursor: u64,
     selected: Option<u64>,
     range: Option<(u64, u64)>,
@@ -20,6 +22,11 @@ pub(super) struct State {
     bounds: Option<Bounds<Pixels>>,
     pub(super) gesture: Option<Gesture>,
     clipboard: Option<Clipboard>,
+}
+impl State {
+    pub(super) fn clear_fit_back(&mut self) {
+        self.fit_back = None;
+    }
 }
 struct Clipboard {
     owner: (ClipId, u64),
@@ -483,6 +490,63 @@ impl EditorView {
             return false;
         };
         self.event_update_pointer(pointer, platform);
+        true
+    }
+    pub(super) fn event_zoom_back_available(&self) -> bool {
+        self.event_context_current() && self.audio_event_editor.fit_back.is_some()
+    }
+    pub(super) fn event_fit_selection(&mut self, back: bool) -> bool {
+        if !self.event_context_current() {
+            return false;
+        }
+        let Some((_, root, _)) = self.event_context() else {
+            return false;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return false;
+        };
+        let Ok(first) = root.root_frame_at(root.view_start, state.project.tempo_map()) else {
+            return false;
+        };
+        let Ok(end) = root.root_frame_at(root.view_end, state.project.tempo_map()) else {
+            return false;
+        };
+        let horizon = end.saturating_sub(first);
+        if horizon == 0 {
+            return false;
+        }
+        let current = self.event_viewport(&root);
+        let next = if back {
+            let Some(prior) = self.audio_event_editor.fit_back.take() else {
+                return false;
+            };
+            prior.map(|viewport| viewport.clamp(horizon))
+        } else {
+            let range = self.audio_event_editor.range.and_then(|(a, b)| {
+                let first = a.min(b).clamp(root.view_start, root.view_end);
+                let last = a.max(b).clamp(root.view_start, root.view_end);
+                (first < last).then_some((first, last))
+            });
+            let (a, b) = range.unwrap_or((root.view_start, root.view_end));
+            let Ok(a) = root.root_frame_at(a, state.project.tempo_map()) else {
+                return false;
+            };
+            let Ok(b) = root.root_frame_at(b, state.project.tempo_map()) else {
+                return false;
+            };
+            let next = Viewport {
+                start: a.saturating_sub(first),
+                length: b.saturating_sub(a).max(1),
+            }
+            .clamp(horizon);
+            if next == current {
+                return false;
+            }
+            self.audio_event_editor.fit_back = Some(self.audio_event_editor.viewport);
+            Some(next)
+        };
+        self.audio_event_editor.gesture = None;
+        self.audio_event_editor.viewport = next;
         true
     }
     fn event_zoom(&mut self, inward: bool) {
