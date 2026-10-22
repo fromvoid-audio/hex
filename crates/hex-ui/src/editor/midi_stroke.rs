@@ -1218,13 +1218,13 @@ mod tests {
     }
 
     #[test]
-    fn baseline_overlap_chooses_lowest_id_and_free_gate_clamps_at_clip_end() {
+    fn baseline_cell_overlap_chooses_lowest_id_and_free_gate_clamps_at_clip_end() {
         let (mut editor, clip) = fixture(beat(2));
         let Created::Note(first) = editor
             .execute(Command::AddMidiNote {
                 clip,
                 start: BeatTime::ZERO,
-                duration: BeatTime::from_ratio(1, 2).unwrap(),
+                duration: BeatTime::from_ratio(3, 8).unwrap(),
                 pitch: 60,
                 channel: 1,
                 velocity: 12,
@@ -1236,8 +1236,8 @@ mod tests {
         let Created::Note(second) = editor
             .execute(Command::AddMidiNote {
                 clip,
-                start: BeatTime::ZERO,
-                duration: BeatTime::from_ratio(1, 2).unwrap(),
+                start: BeatTime::from_ratio(3, 8).unwrap(),
+                duration: BeatTime::from_ratio(1, 8).unwrap(),
                 pitch: 60,
                 channel: 2,
                 velocity: 99,

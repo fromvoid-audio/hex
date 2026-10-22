@@ -63,7 +63,8 @@ fn fixture(notes: usize, duration: u64) -> Project {
                 id: first + index as u64,
                 start_raw: 0,
                 duration_raw: duration,
-                pitch: 36 + (index % 48) as u8,
+                // Keep all 64 simultaneous voices on distinct authored pitches.
+                pitch: 36 + index as u8,
                 channel: 0,
                 velocity: 100,
             })
