@@ -56,6 +56,7 @@ fn audio_fixture_project(sends: bool, return_muted: bool, solo: bool) -> Project
             gain: 0.25,
             muted: return_muted,
             devices: vec![DeviceSnapshot {
+                comparison: None,
                 id: 21,
                 bypassed: false,
                 state,
@@ -134,6 +135,7 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         };
         let mut snapshot = audio_fixture_project(true, false, false).snapshot();
         snapshot.tracks[0].devices.push(DeviceSnapshot {
+            comparison: None,
             id: 22,
             bypassed: false,
             state: digital(24.0),
@@ -141,6 +143,7 @@ fn nonlinear_track_and_shared_return_capture_follow_actual_processing_order() {
         snapshot.return_tracks[0].devices.insert(
             0,
             DeviceSnapshot {
+                comparison: None,
                 id: 23,
                 bypassed: false,
                 state: digital(9.0),
@@ -503,6 +506,7 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
     snapshot.tracks[0].gain = 0.5;
     snapshot.tracks[0].balance = -0.5;
     snapshot.assets = vec![AssetSnapshot {
+        original_source: None,
         id: 80,
         path: "hybrid.wav".into(),
         source_sample_rate: 48_000,
@@ -638,11 +642,13 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
         routed.next_id = 110;
         routed.tracks[0].devices = vec![
             DeviceSnapshot {
+                comparison: None,
                 id: 100,
                 bypassed: false,
                 state: prefix,
             },
             DeviceSnapshot {
+                comparison: None,
                 id: 101,
                 bypassed: false,
                 state: suffix,
@@ -659,6 +665,7 @@ fn hybrid_metered_capture_preserves_prefix_suffix_send_return_processing_order()
             gain: 0.25,
             muted: false,
             devices: vec![DeviceSnapshot {
+                comparison: None,
                 id: 103,
                 bypassed: false,
                 state: utility.default_state().unwrap(),
@@ -982,18 +989,21 @@ fn owned_effect_revision(compensated: bool) -> Arc<PreparedRevision> {
     use hex_lattice::conformance::owned_delay;
     let mut snapshot = audio_fixture_project(true, false, false).snapshot();
     snapshot.tracks[0].devices = vec![DeviceSnapshot {
+        comparison: None,
         id: 31,
         bypassed: false,
         state: owned_delay::state(17).unwrap(),
     }];
     if compensated {
         snapshot.tracks[1].devices = vec![DeviceSnapshot {
+            comparison: None,
             id: 32,
             bypassed: false,
             state: crate::signal_graph::tests::state(7).unwrap(),
         }];
     }
     snapshot.return_tracks[0].devices = vec![DeviceSnapshot {
+        comparison: None,
         id: 21,
         bypassed: false,
         state: owned_delay::state(19).unwrap(),

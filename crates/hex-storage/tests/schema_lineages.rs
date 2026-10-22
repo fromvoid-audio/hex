@@ -36,7 +36,7 @@ fn exact_published_lineages_migrate_edit_and_reopen_without_data_loss() {
         assert_eq!(project.tuning(), hex_tuning::ProjectTuning::default());
         let encoded = encode(&project).unwrap();
         let doc = value(&encoded);
-        assert_eq!(doc["version"], 31);
+        assert_eq!(doc["version"], 34);
         assert_eq!(decode(&encoded).unwrap(), project);
         assert_eq!(
             doc["tracks"][0]["devices"][0]["payload"],
@@ -81,6 +81,7 @@ fn main17_to19_defaults_are_preserved_and_hybrid_shapes_refuse() {
     for version in 17..=19 {
         let mut doc = value(MAIN19);
         doc["version"] = version.into();
+        doc.as_object_mut().unwrap().remove("main_devices");
         doc.as_object_mut().unwrap().remove("track_colors");
         doc.as_object_mut().unwrap().remove("accented_clips");
         assert_eq!(
@@ -115,6 +116,7 @@ fn main17_to19_defaults_are_preserved_and_hybrid_shapes_refuse() {
     // Legacy gain18 is a subset of the main gain lineage, never an ambiguity.
     let mut old = value(MAIN19);
     old["version"] = 18.into();
+    old.as_object_mut().unwrap().remove("main_devices");
     old.as_object_mut().unwrap().remove("track_colors");
     old.as_object_mut().unwrap().remove("accented_clips");
     old["tracks"][0]["devices"][0]
@@ -130,6 +132,7 @@ fn branch23_requires_both_gains_and_refuses_invalid_duplicate_and_future_fields(
     // exercised separately by the host_gain unit regression.
     let mut base = value(FOUNDATION[3]);
     base["version"] = 23.into();
+    base.as_object_mut().unwrap().remove("main_devices");
     base.as_object_mut().unwrap().remove("track_colors");
     base.as_object_mut().unwrap().remove("accented_clips");
     for track in base["tracks"].as_array_mut().unwrap() {
@@ -185,7 +188,8 @@ fn branch23_requires_both_gains_and_refuses_invalid_duplicate_and_future_fields(
     doc["tracks"][0]["devices"][0]["unknown"] = true.into();
     assert!(decode(&bytes(&doc)).is_err());
     let mut doc = base;
-    doc["version"] = 31.into();
+    doc["version"] = 32.into();
+    doc.as_object_mut().unwrap().remove("main_devices");
     assert!(decode(&bytes(&doc)).is_err());
     // Output-only22 must never silently accept input gains by widening its DTO.
     let mut doc = value(FOUNDATION[3]);

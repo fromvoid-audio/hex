@@ -147,7 +147,14 @@ fn names_preserve_case_history_copies_and_storage_in_all_clip_domains() {
 
 #[test]
 fn schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25() {
-    let (editor, _, audio, _) = fixture();
+    let (mut editor, track, audio, _) = fixture();
+    // This legacy document predates authored track colors.
+    editor
+        .execute(Command::SetTrackColor {
+            track,
+            color: hex_project::ElementColor::Gray,
+        })
+        .unwrap();
     let value: serde_json::Value =
         serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
     let mut unchanged = Editor::new(editor.project().clone(), 8).unwrap();
@@ -186,8 +193,10 @@ fn schema26_requires_exact_valid_arrangement_name_inventory_and_migrates25() {
     }
     let mut legacy = value.clone();
     legacy["version"] = 25.into();
+    legacy.as_object_mut().unwrap().remove("main_devices");
     legacy.as_object_mut().unwrap().remove("tuning");
     legacy.as_object_mut().unwrap().remove("device_assets");
+    legacy.as_object_mut().unwrap().remove("asset_sources");
     legacy.as_object_mut().unwrap().remove("track_colors");
     legacy.as_object_mut().unwrap().remove("accented_clips");
     legacy.as_object_mut().unwrap().remove("clip_names");

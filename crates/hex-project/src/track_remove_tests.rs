@@ -2,7 +2,12 @@
 use crate::{BeatTime, Command, Created, Editor, Project, RoutingOwner, TrackId};
 fn track(editor: &mut Editor, name: &str) -> TrackId {
     let Created::Track(id) = editor
-        .execute(Command::AddMidiTrack { name: name.into() })
+        .execute(Command::InsertTrackWithDevice {
+            name: name.into(),
+            before_track: None,
+            slot: crate::TrackDeviceSlot::Instrument,
+            state: crate::default_instrument_state().unwrap(),
+        })
         .unwrap()
     else {
         panic!("track")

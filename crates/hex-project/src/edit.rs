@@ -102,6 +102,17 @@ pub enum Command {
         destination: ReturnId,
         gain: f32,
     },
+    /// Insert an opaque effect state on the singleton Main bus. Preparation
+    /// validates provider class before a Session history transaction commits.
+    InsertMainDevice {
+        before: Option<DeviceId>,
+        state: hex_lattice_contract::NativeDeviceState,
+    },
+    /// Reorder within Main; cross-owner moves retain their existing commands.
+    MoveMainDevice {
+        device: DeviceId,
+        before: Option<DeviceId>,
+    },
     InsertDevice {
         track: TrackId,
         before: Option<DeviceId>,
@@ -135,11 +146,12 @@ pub enum Command {
         state: hex_lattice_contract::NativeDeviceState,
     },
     /// Atomically replace opaque device state and reserve fresh identities.
-    /// Expected source and allocator cursor prevent stale UI edits overwriting
+    /// Expected source, active A/B slot and allocator cursor prevent stale UI edits overwriting
     /// another edit; history preserves the allocator high-water mark on undo.
     ReplaceDeviceStateWithIdentityReservation {
         device: DeviceId,
         expected_state: hex_lattice_contract::NativeDeviceState,
+        expected_variant: crate::DeviceVariant,
         state: hex_lattice_contract::NativeDeviceState,
         expected_next_id: u64,
         reserved_ids: u64,
@@ -147,6 +159,18 @@ pub enum Command {
     SetDeviceBypass {
         device: DeviceId,
         bypassed: bool,
+    },
+    /// Compare provider settings without changing bypass, routing or host trims.
+    CompareDevice {
+        device: DeviceId,
+        expected: crate::DeviceVariant,
+        action: crate::DeviceComparisonAction,
+    },
+    /// Restore a validated complete comparison pair (for current-format presets).
+    ReplaceDeviceComparison {
+        device: DeviceId,
+        state: hex_lattice_contract::NativeDeviceState,
+        comparison: Option<crate::DeviceComparison>,
     },
     AddReturnTrack {
         name: String,
@@ -341,6 +365,36 @@ pub enum Command {
         sample_rate: u32,
         frames: u64,
     },
+    /// Original device source. Conversion metadata describes the expected clip
+    /// playback shape; this command does not materialize a converted derivative.
+    ImportDeviceAsset {
+        path: PathBuf,
+        sample_rate: u32,
+        frames: u64,
+    },
+    /// One prepared import creates source metadata and fills an empty instrument
+    /// slot. The neutral state template has no asset references; the new source
+    /// ID is bound inside this candidate, never predicted by a UI caller.
+    ImportDeviceAssetIntoEmptyInstrument {
+        track: TrackId,
+        path: PathBuf,
+        sample_rate: u32,
+        frames: u64,
+        state: hex_lattice_contract::NativeDeviceState,
+        source_slot: hex_lattice_contract::DeviceAssetSlot,
+    },
+    /// Atomically import an original source and bind or rebind an existing instrument.
+    /// Captured identity/state/provider must still match; no IDs are predicted.
+    ImportDeviceAssetReplacingInstrument {
+        track: TrackId,
+        device: DeviceId,
+        expected_state: hex_lattice_contract::NativeDeviceState,
+        path: PathBuf,
+        sample_rate: u32,
+        frames: u64,
+        state: hex_lattice_contract::NativeDeviceState,
+        source_slot: hex_lattice_contract::DeviceAssetSlot,
+    },
     RemoveAsset(AssetId),
     PlaceClip {
         track: TrackId,
@@ -387,6 +441,14 @@ pub enum Command {
         clip: ClipId,
         track: TrackId,
         start: u64,
+    },
+    /// Move/copy one selected Arrangement group with a single prepared history edit.
+    MoveClipsWithOverwrite {
+        clips: Vec<ClipId>,
+        anchor: ClipId,
+        track: TrackId,
+        position: crate::ClipGroupPosition,
+        copy: bool,
     },
     /// Atomically insert a hybrid track before a stable anchor/end and move an
     /// existing audio clip there, preserving its ID and source metadata.
@@ -453,6 +515,12 @@ pub enum Command {
         edge: TrimEdge,
         frame: u64,
     },
+    /// Recompute a clip-local loop operation from the current authored source.
+    /// Outer growth carves both clip kinds; cycle edits retain outer occupancy.
+    ResizeAudioClipView {
+        clip: ClipId,
+        operation: crate::AudioViewResizeOperation,
+    },
     SetAudioClipWarp {
         clip: ClipId,
         settings: Option<crate::WarpSettings>,
@@ -499,6 +567,11 @@ pub enum Command {
     },
     AddScene {
         name: String,
+    },
+    /// Insert before an existing stable scene, or explicitly append with None.
+    InsertScene {
+        name: String,
+        before: Option<crate::SceneId>,
     },
     /// Copy a scene immediately after it with fresh IDs for copied MIDI content.
     DuplicateScene(crate::SceneId),
@@ -609,6 +682,7 @@ pub enum Command {
         looping: bool,
         length: crate::BeatTime,
     },
+    /// Author one note using the same source/pitch overwrite rule as `AddMidiNotes`.
     AddMidiNote {
         clip: ClipId,
         start: crate::BeatTime,
@@ -617,18 +691,30 @@ pub enum Command {
         channel: u8,
         velocity: u8,
     },
-    /// Atomically append several notes to one MIDI clip as one history step.
-    /// Identical musical values remain distinct notes, as with `AddMidiNote`.
+    /// Atomically author several notes in one MIDI source as one history step.
+    /// Later input wins on the same pitch across channels, retaining only an
+    /// older positive left prefix. Only surviving authors receive new IDs.
     AddMidiNotes {
         clip: ClipId,
         notes: Vec<MidiNoteInsert>,
     },
-    /// Atomically remove and insert notes in one MIDI clip as one history step.
+    /// Atomically remove and author notes in one MIDI source as one history step.
+    /// Insertions use the same destructive same-pitch rule as `AddMidiNotes`.
     EditMidiNotes {
         clip: ClipId,
         remove: Vec<NoteId>,
         insert: Vec<MidiNoteInsert>,
     },
+    /// Author notes beyond the current source extent in one atomic edit/history step.
+    /// Only source length may grow, exactly to the furthest inserted note end;
+    /// Arrangement placement, source start and loop markers remain unchanged.
+    /// Existing strict note commands continue to refuse notes outside the source.
+    EditMidiNotesWithSourceExtent {
+        clip: ClipId,
+        remove: Vec<NoteId>,
+        insert: Vec<MidiNoteInsert>,
+    },
+    /// Move/resize one stable note, overwriting older same-pitch intersections.
     UpdateMidiNote {
         note: NoteId,
         start: crate::BeatTime,
@@ -638,6 +724,9 @@ pub enum Command {
         velocity: u8,
     },
     /// Atomically update several notes in one MIDI clip as one history step.
+    /// Exclude all selected originals together, then resolve authored geometry
+    /// in input order using the same overwrite rule as `AddMidiNotes`.
+    /// Surviving notes keep their original IDs and source order.
     UpdateMidiNotes {
         clip: ClipId,
         notes: Vec<MidiNoteUpdate>,
@@ -713,11 +802,18 @@ pub enum Created {
     Device(DeviceId),
     Asset(AssetId),
     Clip(ClipId),
+    /// Actual Arrangement clip births in this inclusive range are copies from
+    /// one group command. Filter committed clips; note-ID holes are permitted.
+    Clips {
+        first: ClipId,
+        last: ClipId,
+    },
     Note(NoteId),
     Scene(crate::SceneId),
     SessionClip(ClipId),
     /// Inclusive contiguous note-ID range created in `clip`; select IDs in the
-    /// current clip whose values fall within this range.
+    /// current clip whose values fall within this range. Only authored members
+    /// surviving this atomic edit consume IDs, in their original input order.
     Notes {
         clip: ClipId,
         first: NoteId,
@@ -758,13 +854,12 @@ pub(crate) fn insert_track_before(
             .ok_or(Invalid("track insertion anchor no longer exists"))?,
         None => project.tracks.len(),
     };
-    let instrument_state = crate::default_instrument_state()?;
-    let (first_id, instrument_id) = project.allocate_id_range(2)?;
-    let id = TrackId(first_id);
+    let id = TrackId(project.allocate_id()?);
+    let color = crate::appearance::new_track_color(project);
     project.tracks.insert(
         index,
         Track {
-            color: crate::ElementColor::default(),
+            color,
             gain_lane: crate::GainLane::default(),
             id,
             name,
@@ -773,12 +868,8 @@ pub(crate) fn insert_track_before(
             muted: false,
             soloed: false,
             devices: Vec::new(),
-            instrument: Some(crate::Device {
-                id: DeviceId(instrument_id),
-                state: instrument_state,
-                bypassed: false,
-            }),
-            instrument_position: Some(0),
+            instrument: None,
+            instrument_position: None,
             content: TrackContent::default(),
             sends: Vec::new(),
         },
@@ -1056,6 +1147,13 @@ pub(crate) fn split_clip_at_tempo(
     if frame <= original.start || frame >= end {
         return Err(Invalid("split cursor must be inside the clip"));
     }
+    if edit.placement.is_some() {
+        let left = crate::audio_edit::trim_view(original, crate::TrimEdge::Right, frame, tempo)?;
+        let mut right =
+            crate::audio_edit::trim_view(original, crate::TrimEdge::Left, frame, tempo)?;
+        right.id = right_id;
+        return Ok((left, right));
+    }
     let cut = edit.crop_at_frame(original, frame, tempo)?;
     if cut <= edit.view_start || cut >= edit.view_end {
         return Err(Invalid("split has no positive musical crop"));
@@ -1079,6 +1177,35 @@ pub(crate) fn split_clip_at_tempo(
     Ok((left, right))
 }
 
+/// Crop one retained interval through the existing typed split law.
+pub(crate) fn retained_audio_fragment(
+    victim: &Clip,
+    start: u64,
+    end: u64,
+    id: ClipId,
+    tempo: &crate::TempoMap,
+) -> Result<Clip, Invalid> {
+    let original_end = victim
+        .start
+        .checked_add(victim.duration)
+        .ok_or(Invalid("timeline end overflow"))?;
+    if start < victim.start || start >= end || end > original_end {
+        return Err(Invalid(
+            "retained audio interval is outside its source clip",
+        ));
+    }
+    let mut retained = if start > victim.start {
+        split_clip_at_tempo(victim, start, id, tempo)?.1
+    } else {
+        victim.clone()
+    };
+    if end < original_end {
+        retained = split_clip_at_tempo(&retained, end, id, tempo)?.0;
+    }
+    retained.id = id;
+    Ok(retained)
+}
+
 struct AudioOverwriteFragments {
     left: Option<Clip>,
     right: Option<Clip>,
@@ -1090,6 +1217,16 @@ pub(crate) fn overwrite_audio_interval(
     start: u64,
     end: u64,
     excluded: ClipId,
+) -> Result<(), Invalid> {
+    overwrite_audio_interval_excluding(project, track, start, end, |id| id == excluded)
+}
+
+pub(crate) fn overwrite_audio_interval_excluding(
+    project: &mut Project,
+    track: TrackId,
+    start: u64,
+    end: u64,
+    excluded: impl Fn(ClipId) -> bool,
 ) -> Result<(), Invalid> {
     if start >= end {
         return Err(Invalid("overwrite interval must be positive"));
@@ -1108,7 +1245,7 @@ pub(crate) fn overwrite_audio_interval(
         .try_reserve_exact(snapshot.len())
         .map_err(|_| Invalid("could not reserve overwrite fragment storage"))?;
     for victim in snapshot {
-        if victim.id == excluded {
+        if excluded(victim.id) {
             continue;
         }
         let victim_end = victim
@@ -1121,18 +1258,26 @@ pub(crate) fn overwrite_audio_interval(
         let keeps_left = victim.start < start;
         let keeps_right = victim_end > end;
         let left = keeps_left
-            .then(|| split_clip_at_tempo(&victim, start, victim.id, project.tempo_map()))
-            .transpose()?
-            .map(|parts| parts.0);
+            .then(|| {
+                retained_audio_fragment(
+                    &victim,
+                    victim.start,
+                    start,
+                    victim.id,
+                    project.tempo_map(),
+                )
+            })
+            .transpose()?;
         let right_id = if keeps_left && keeps_right {
             ClipId(0)
         } else {
             victim.id
         };
         let right = keeps_right
-            .then(|| split_clip_at_tempo(&victim, end, right_id, project.tempo_map()))
-            .transpose()?
-            .map(|parts| parts.1);
+            .then(|| {
+                retained_audio_fragment(&victim, end, victim_end, right_id, project.tempo_map())
+            })
+            .transpose()?;
         fragments.push((victim.id, AudioOverwriteFragments { left, right }));
     }
     if fragments.is_empty() {
@@ -1208,10 +1353,20 @@ pub(crate) fn overwrite_audio_in_beats(
     end: crate::BeatTime,
     excluded: ClipId,
 ) -> Result<(), Invalid> {
+    overwrite_audio_in_beats_excluding(project, track, start, end, |id| id == excluded)
+}
+
+pub(crate) fn overwrite_audio_in_beats_excluding(
+    project: &mut Project,
+    track: TrackId,
+    start: crate::BeatTime,
+    end: crate::BeatTime,
+    excluded: impl Fn(ClipId) -> bool,
+) -> Result<(), Invalid> {
     let start_frame = project.tempo_map().beat_to_frame(start)?;
     let end_frame = project.tempo_map().beat_to_frame(end)?;
     if start_frame < end_frame {
-        overwrite_audio_interval(project, track, start_frame, end_frame, excluded)?;
+        overwrite_audio_interval_excluding(project, track, start_frame, end_frame, excluded)?;
     }
     Ok(())
 }
@@ -1338,6 +1493,9 @@ impl Project {
                 destination,
                 gain,
             } => self.set_return_feed(source, destination, gain),
+            main_command @ (Command::InsertMainDevice { .. } | Command::MoveMainDevice { .. }) => {
+                crate::main_devices::apply(self, main_command)
+            }
             device_command @ (Command::InsertDevice { .. }
             | Command::InsertInstrument { .. }
             | Command::RemoveInstrument { .. }
@@ -1346,7 +1504,11 @@ impl Project {
             | Command::MoveTrackDevice { .. }
             | Command::ReplaceDeviceState { .. }
             | Command::ReplaceDeviceStateWithIdentityReservation { .. }
-            | Command::SetDeviceBypass { .. }) => crate::device::apply(self, device_command),
+            | Command::SetDeviceBypass { .. }
+            | Command::CompareDevice { .. }
+            | Command::ReplaceDeviceComparison { .. }) => {
+                crate::device::apply(self, device_command)
+            }
             return_command @ (Command::AddReturnTrack { .. }
             | Command::RemoveReturnTrack(_)
             | Command::RenameReturnTrack { .. }
@@ -1395,6 +1557,7 @@ impl Project {
             | Command::AddMidiNote { .. }
             | Command::AddMidiNotes { .. }
             | Command::EditMidiNotes { .. }
+            | Command::EditMidiNotesWithSourceExtent { .. }
             | Command::UpdateMidiNote { .. }
             | Command::UpdateMidiNotes { .. }
             | Command::RemoveMidiNote(_)
@@ -1416,6 +1579,7 @@ impl Project {
                 Ok(Created::Track(track))
             }
             session_command @ (Command::AddScene { .. }
+            | Command::InsertScene { .. }
             | Command::DuplicateScene(_)
             | Command::MoveScene { .. }
             | Command::RenameScene { .. }
@@ -1613,12 +1777,7 @@ impl Project {
                 let track = insert_track_before(self, name, before_track)?;
                 match slot {
                     TrackDeviceSlot::Instrument => {
-                        let device = self
-                            .track(track)
-                            .and_then(|track| track.instrument())
-                            .ok_or(Invalid("new track has no default instrument"))?
-                            .id();
-                        self.apply(Command::ReplaceDeviceState { device, state })?;
+                        self.apply(Command::InsertInstrument { track, state })?;
                     }
                     TrackDeviceSlot::Effect => {
                         self.apply(Command::InsertDevice {
@@ -1972,6 +2131,122 @@ impl Project {
                 self.add_prepared_asset(path, sample_rate, frames, frames, IDENTITY_CONVERSION)
                     .map(Created::Asset)
             }
+            Command::ImportDeviceAsset {
+                path,
+                sample_rate,
+                frames,
+            } => {
+                let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
+                let conversion = if sample_rate == self.sample_rate {
+                    IDENTITY_CONVERSION
+                } else {
+                    crate::SINC_CONVERSION_V1
+                };
+                self.add_prepared_asset(path, sample_rate, frames, playback, conversion)
+                    .map(Created::Asset)
+            }
+            Command::ImportDeviceAssetIntoEmptyInstrument {
+                track,
+                path,
+                sample_rate,
+                frames,
+                state,
+                source_slot,
+            } => {
+                let target = self
+                    .track(track)
+                    .ok_or(Invalid("instrument track no longer exists"))?;
+                if target.instrument().is_some() || !state.asset_references().is_empty() {
+                    return Err(Invalid(
+                        "device source import requires an empty instrument slot and unbound state",
+                    ));
+                }
+                let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
+                let conversion = if sample_rate == self.sample_rate {
+                    IDENTITY_CONVERSION
+                } else {
+                    crate::SINC_CONVERSION_V1
+                };
+                let asset =
+                    self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
+                let state = state
+                    .with_asset_references(vec![hex_lattice_contract::DeviceAssetReference {
+                        slot: source_slot,
+                        asset: hex_lattice_contract::DeviceAssetKey::new(asset.value())
+                            .map_err(|_| Invalid("invalid device source id"))?,
+                    }])
+                    .map_err(|_| Invalid("invalid device source binding"))?;
+                // Editor applies this composite command to one private candidate;
+                // preparation/refusal commits neither the asset nor instrument.
+                self.apply(Command::InsertInstrument { track, state })?;
+                Ok(Created::Asset(asset))
+            }
+            Command::ImportDeviceAssetReplacingInstrument {
+                track,
+                device,
+                expected_state,
+                path,
+                sample_rate,
+                frames,
+                state,
+                source_slot,
+            } => {
+                let target = self
+                    .track(track)
+                    .and_then(|track| track.instrument())
+                    .filter(|target| target.id() == device && target.state() == &expected_state)
+                    .ok_or(Invalid("instrument source replacement target changed"))?;
+                if state.type_id() != target.state().type_id()
+                    || state.input_gain_millidb() != expected_state.input_gain_millidb()
+                    || state.output_gain_millidb() != expected_state.output_gain_millidb()
+                    || state.asset_references() != expected_state.asset_references()
+                    || (!state.asset_references().is_empty()
+                        && state
+                            .asset_references()
+                            .iter()
+                            .filter(|r| r.slot == source_slot)
+                            .count()
+                            != 1)
+                {
+                    return Err(Invalid(
+                        "instrument replacement must preserve provider and host metadata",
+                    ));
+                }
+                let playback = converted_frame_count(frames, sample_rate, self.sample_rate)?;
+                let conversion = if sample_rate == self.sample_rate {
+                    IDENTITY_CONVERSION
+                } else {
+                    crate::SINC_CONVERSION_V1
+                };
+                let asset =
+                    self.add_prepared_asset(path, sample_rate, frames, playback, conversion)?;
+                let key = hex_lattice_contract::DeviceAssetKey::new(asset.value())
+                    .map_err(|_| Invalid("invalid device source id"))?;
+                let references = if state.asset_references().is_empty() {
+                    vec![hex_lattice_contract::DeviceAssetReference {
+                        slot: source_slot,
+                        asset: key,
+                    }]
+                } else {
+                    state
+                        .asset_references()
+                        .iter()
+                        .map(|reference| hex_lattice_contract::DeviceAssetReference {
+                            slot: reference.slot,
+                            asset: if reference.slot == source_slot {
+                                key
+                            } else {
+                                reference.asset
+                            },
+                        })
+                        .collect()
+                };
+                let state = state
+                    .with_asset_references(references)
+                    .map_err(|_| Invalid("invalid device source binding"))?;
+                self.apply(Command::ReplaceDeviceState { device, state })?;
+                Ok(Created::Asset(asset))
+            }
             Command::RemoveAsset(id) => {
                 if self.device_uses_asset(id) {
                     return Err(Invalid("media is still referenced by a device"));
@@ -2060,6 +2335,13 @@ impl Project {
                 self.audio_clips_mut(track)?.push(moved);
                 Ok(Created::None)
             }
+            Command::MoveClipsWithOverwrite {
+                clips,
+                anchor,
+                track,
+                position,
+                copy,
+            } => crate::clip_group::apply(self, clips, anchor, track, position, copy),
             Command::MoveClipWithOverwrite { clip, track, start } => {
                 let mut incoming = self
                     .clip(clip)
@@ -2178,6 +2460,9 @@ impl Project {
                     original.preview_fade_edge_trim(edge, frame, asset_frames, self.tempo_map())?;
                 *self.clip_mut(clip)? = trimmed;
                 Ok(Created::None)
+            }
+            Command::ResizeAudioClipView { clip, operation } => {
+                crate::audio_edit::resize_view(self, clip, operation)
             }
             command @ (Command::SetAudioClipPitch { .. }
             | Command::SetAudioClipMusical { .. }
@@ -2299,6 +2584,7 @@ impl Project {
         self.assets.insert(
             id,
             Asset {
+                original_source: None,
                 id,
                 path,
                 source_sample_rate,

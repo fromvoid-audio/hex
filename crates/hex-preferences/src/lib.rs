@@ -1,4 +1,15 @@
-//! Bounded, versioned preferences independent of project documents.
+//! # Purpose
+//! Own bounded versioned application preferences independent of project documents and history.
+//!
+//! # Dependencies
+//! Uses serde/serde_json and the standard library for recoverable settings publication.
+//!
+//! # Does not own
+//! Does not mutate projects, decode media or run filesystem work on UI/audio callbacks. Preserve
+//! original paths and malformed settings instead of silently replacing user data.
+
+mod project_directory;
+pub use project_directory::{load_project_directory, save_project_directory};
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -34,6 +45,14 @@ pub fn recent_projects_path(home: &Path) -> PathBuf {
         .join("Application Support")
         .join("hex")
         .join("recent-projects.json")
+}
+
+/// Stable location for the last successfully used project folder.
+pub fn project_directory_preferences_path(home: &Path) -> PathBuf {
+    home.join("Library")
+        .join("Application Support")
+        .join("hex")
+        .join("project-directory.json")
 }
 
 /// Stable app-support location for the independent four-color theme.
@@ -84,11 +103,28 @@ impl RgbColor {
     }
 }
 
+/// Stable identities independent of the user's current Home path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrowserBuiltin {
+    Home,
+    Music,
+    Samples,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct BuiltinPreference {
+    hidden: bool,
+    icon: Option<String>,
+}
+
 /// Additional browser folders, in user-visible order.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BrowserPlaces {
     additional: Vec<PathBuf>,
     icons: BTreeMap<PathBuf, String>,
+    builtins: BTreeMap<BrowserBuiltin, BuiltinPreference>,
+    hidden_places: HashSet<PathBuf>,
 }
 
 impl BrowserPlaces {
@@ -125,7 +161,53 @@ impl BrowserPlaces {
         Ok(Self {
             additional,
             icons: BTreeMap::new(),
+            builtins: BTreeMap::new(),
+            hidden_places: HashSet::new(),
         })
+    }
+
+    pub fn builtin_icon(&self, source: BrowserBuiltin) -> Option<&str> {
+        self.builtins
+            .get(&source)
+            .and_then(|value| value.icon.as_deref())
+    }
+
+    pub fn builtin_hidden(&self, source: BrowserBuiltin) -> bool {
+        self.builtins.get(&source).is_some_and(|value| value.hidden)
+    }
+
+    pub fn set_builtin_icon(
+        &mut self,
+        source: BrowserBuiltin,
+        icon: Option<&str>,
+    ) -> Result<(), PreferencesError> {
+        if let Some(id) = icon {
+            validate_icon_id(id)?;
+        }
+        self.builtins.entry(source).or_default().icon = icon.map(str::to_owned);
+        Ok(())
+    }
+
+    pub fn set_builtin_hidden(&mut self, source: BrowserBuiltin, hidden: bool) {
+        self.builtins.entry(source).or_default().hidden = hidden;
+    }
+
+    pub fn place_hidden(&self, path: &Path) -> bool {
+        self.hidden_places.contains(path)
+    }
+
+    pub fn set_place_hidden(&mut self, path: &Path, hidden: bool) -> Result<(), PreferencesError> {
+        if !self.additional.iter().any(|place| place == path) {
+            return Err(PreferencesError::InvalidDocument(
+                "hidden source has no matching place".into(),
+            ));
+        }
+        if hidden {
+            self.hidden_places.insert(path.to_owned());
+        } else {
+            self.hidden_places.remove(path);
+        }
+        Ok(())
     }
 
     pub fn additional(&self) -> &[PathBuf] {
@@ -151,20 +233,22 @@ impl BrowserPlaces {
             ));
         }
         if let Some(id) = id {
-            if id.is_empty()
-                || id.len() > MAX_PLACE_ICON_ID_BYTES
-                || id.chars().any(char::is_control)
-            {
-                return Err(PreferencesError::InvalidDocument(
-                    "invalid place icon identifier".into(),
-                ));
-            }
+            validate_icon_id(id)?;
             self.icons.insert(path.to_owned(), id.to_owned());
         } else {
             self.icons.remove(path);
         }
         Ok(())
     }
+}
+
+fn validate_icon_id(id: &str) -> Result<(), PreferencesError> {
+    if id.is_empty() || id.len() > MAX_PLACE_ICON_ID_BYTES || id.chars().any(char::is_control) {
+        return Err(PreferencesError::InvalidDocument(
+            "invalid place icon identifier".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Recently opened project files, most recent first.
@@ -323,6 +407,41 @@ pub fn load(path: &Path) -> Result<BrowserPlaces, PreferencesError> {
         }
         places.set_icon(&path, Some(&icon.id))?;
     }
+    if document.builtin_sources.len() > 3 || document.hidden_places.len() > MAX_USER_PLACES {
+        return Err(PreferencesError::InvalidDocument(
+            "too many source preferences".into(),
+        ));
+    }
+    for value in document.builtin_sources {
+        let source = value.source;
+        if let Some(id) = &value.icon {
+            validate_icon_id(id)?;
+        }
+        if places
+            .builtins
+            .insert(
+                source,
+                BuiltinPreference {
+                    hidden: value.hidden,
+                    icon: value.icon,
+                },
+            )
+            .is_some()
+        {
+            return Err(PreferencesError::InvalidDocument(
+                "duplicate builtin identity".into(),
+            ));
+        }
+    }
+    for stored in document.hidden_places {
+        let path = stored.into_path()?;
+        if places.place_hidden(&path) {
+            return Err(PreferencesError::InvalidDocument(
+                "duplicate hidden place".into(),
+            ));
+        }
+        places.set_place_hidden(&path, true)?;
+    }
     Ok(places)
 }
 
@@ -438,6 +557,21 @@ pub fn save(path: &Path, places: &BrowserPlaces) -> Result<(), PreferencesError>
     }
     let document = Document {
         version: DOCUMENT_VERSION,
+        builtin_sources: places
+            .builtins
+            .iter()
+            .map(|(source, value)| StoredBuiltinPreference {
+                source: *source,
+                hidden: value.hidden,
+                icon: value.icon.clone(),
+            })
+            .collect(),
+        hidden_places: places
+            .additional
+            .iter()
+            .filter(|path| places.place_hidden(path))
+            .map(|path| StoredPath::from_path(path))
+            .collect::<Result<Vec<_>, _>>()?,
         place_icons: places
             .icons
             .iter()
@@ -584,6 +718,18 @@ struct Document {
     additional_places: Vec<StoredPath>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     place_icons: Vec<StoredPlaceIcon>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    builtin_sources: Vec<StoredBuiltinPreference>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    hidden_places: Vec<StoredPath>,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct StoredBuiltinPreference {
+    source: BrowserBuiltin,
+    hidden: bool,
+    icon: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1032,5 +1178,110 @@ mod tests {
         save(&config, &places).unwrap();
         assert_eq!(load(&config).unwrap(), places);
         assert_eq!(load(&config).unwrap().icon(&path), Some("waveform"));
+    }
+    #[test]
+    fn builtin_sources_and_hidden_places_round_trip_without_path_or_icon_loss() {
+        let directory = TestDirectory::new();
+        let config = directory.0.join("browser.json");
+        let first = directory.0.join("one/same");
+        let second = directory.0.join("two/same");
+        let mut places = BrowserPlaces::new([first.clone(), second.clone()]).unwrap();
+        places.set_icon(&first, Some("samples")).unwrap();
+        places.set_place_hidden(&first, true).unwrap();
+        places
+            .set_builtin_icon(BrowserBuiltin::Home, Some("future-bundled-icon"))
+            .unwrap();
+        places
+            .set_builtin_icon(BrowserBuiltin::Music, Some("samples"))
+            .unwrap();
+        for source in [
+            BrowserBuiltin::Home,
+            BrowserBuiltin::Music,
+            BrowserBuiltin::Samples,
+        ] {
+            places.set_builtin_hidden(source, true);
+        }
+        save(&config, &places).unwrap();
+        assert_eq!(load(&config).unwrap(), places);
+        assert_eq!(
+            load(&config).unwrap().additional(),
+            &[first.clone(), second.clone()]
+        );
+        assert_eq!(
+            load(&config).unwrap().builtin_icon(BrowserBuiltin::Home),
+            Some("future-bundled-icon")
+        );
+        places.set_builtin_icon(BrowserBuiltin::Home, None).unwrap();
+        places.set_builtin_hidden(BrowserBuiltin::Music, false);
+        places.set_place_hidden(&first, false).unwrap();
+        save(&config, &places).unwrap();
+        assert_eq!(load(&config).unwrap(), places);
+        assert!(!places.place_hidden(&second));
+        assert_eq!(places.icon(&first), Some("samples"));
+        assert!(
+            !first.exists() && !second.exists(),
+            "preferences must not create source folders"
+        );
+    }
+
+    #[test]
+    fn builtin_source_invalid_identity_duplicate_and_hidden_path_errors_preserve_document() {
+        let directory = TestDirectory::new();
+        let config = directory.0.join("browser.json");
+        for sources in [
+            serde_json::json!([{"source":"home","hidden":false,"icon":null},{"source":"home","hidden":true,"icon":null}]),
+            serde_json::json!([{"source":"unknown-source","hidden":false,"icon":null}]),
+            serde_json::json!([{"source":"music","hidden":false,"icon":"bad\nicon"}]),
+        ] {
+            let bytes = serde_json::to_vec(
+                &serde_json::json!({"version":1,"additional_places":[],"builtin_sources":sources}),
+            )
+            .unwrap();
+            fs::write(&config, &bytes).unwrap();
+            assert!(load(&config).is_err());
+            assert!(save(&config, &BrowserPlaces::default()).is_err());
+            assert_eq!(fs::read(&config).unwrap(), bytes);
+        }
+        let mut places = BrowserPlaces::default();
+        assert!(
+            places
+                .set_place_hidden(&directory.0.join("absent"), true)
+                .is_err()
+        );
+        assert!(
+            places
+                .set_builtin_icon(BrowserBuiltin::Home, Some(""))
+                .is_err()
+        );
+        assert!(
+            places
+                .set_builtin_icon(BrowserBuiltin::Home, Some(&"x".repeat(65)))
+                .is_err()
+        );
+    }
+    #[cfg(unix)]
+    #[test]
+    fn hidden_places_preserve_original_native_bytes_and_reject_orphan_records() {
+        use std::os::unix::ffi::OsStringExt;
+        let directory = TestDirectory::new();
+        let config = directory.0.join("browser.json");
+        let native = PathBuf::from(OsString::from_vec(b"/offline/same-\xff".to_vec()));
+        let mut places = BrowserPlaces::new([native.clone()]).unwrap();
+        places.set_place_hidden(&native, true).unwrap();
+        save(&config, &places).unwrap();
+        assert_eq!(load(&config).unwrap(), places);
+        let stored = serde_json::to_value(StoredPath::from_path(&native).unwrap()).unwrap();
+        for additional in [serde_json::json!([]), serde_json::json!([stored.clone()])] {
+            let hidden = if additional.as_array().unwrap().is_empty() {
+                serde_json::json!([stored.clone()])
+            } else {
+                serde_json::json!([stored.clone(), stored.clone()])
+            };
+            let bytes = serde_json::to_vec(&serde_json::json!({"version":1,"additional_places":additional,"hidden_places":hidden})).unwrap();
+            fs::write(&config, &bytes).unwrap();
+            assert!(load(&config).is_err());
+            assert!(save(&config, &places).is_err());
+            assert_eq!(fs::read(&config).unwrap(), bytes);
+        }
     }
 }

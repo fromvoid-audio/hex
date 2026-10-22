@@ -176,8 +176,11 @@ fn fixture() -> (
         .expect("project loop");
 
     let midi_track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("midi track")
     {
@@ -325,8 +328,11 @@ fn ordered_hybrid_streamed_render_matches_resident_audio_and_midi() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
     let asset = add_asset(&mut editor, "ordered-stream.wav", SOURCE_FRAMES as u64);
     let track = match editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "ordered hybrid".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {

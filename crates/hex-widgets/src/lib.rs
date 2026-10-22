@@ -1,4 +1,13 @@
-//! Small reusable GPUI controls for compact native audio-device interfaces.
+//! # Purpose
+//! Own reusable native GPUI controls, local gesture state and typed edit events.
+//!
+//! # Dependencies
+//! Uses pinned GPUI and the standard library; the caller supplies display text, style, typography
+//! and canonical bindings.
+//!
+//! # Does not own
+//! Does not construct devices, edit projects, perform DSP, own audio queues or access files. Local
+//! previews do not become authored state until the owner accepts a validated event.
 mod bar_editor;
 pub use bar_editor::{BarEditor, BarEditorEvent, BarEditorPhase};
 mod color_picker;
@@ -18,11 +27,16 @@ mod numeric;
 mod numeric_control;
 mod numeric_text;
 mod response_graph;
+mod spectrum_painter;
 mod spectrum_plot;
 mod style;
+mod text_case;
+mod text_click_selection;
 pub use spectrum_plot::{
     MAX_SPECTRUM_PLOT_LAYERS, SpectrumPlotLayer, SpectrumPlotLayers, layered_spectrum_plot,
 };
+pub use text_case::TextCase;
+pub use text_click_selection::TextClickSelection;
 
 pub use color_picker::{
     ColorPicker, ColorPickerConfig, ColorPickerEvent, HsvColor, RgbColor, hsv_to_rgb, rgb_to_hsv,
@@ -46,12 +60,13 @@ pub use frame::{
 pub use numeric::{NumericError, NumericScale, NumericSpec};
 pub use numeric_control::{
     NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlFinalValue, NumericControlKind, NumericEscape, NumericEventPhase,
-    bind_numeric_control_keys,
+    NumericControlFinalValue, NumericControlKind, NumericDragAxis, NumericEscape,
+    NumericEventPhase, bind_numeric_control_keys,
 };
 pub use response_graph::{
-    ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphEvent, ResponseGraphModel,
-    ResponseGraphNode, ResponseGraphPhase, bind_response_graph_keys,
+    ResponseGraph, ResponseGraphAnalyzerStyle, ResponseGraphAxes, ResponseGraphEvent,
+    ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase, ResponseGraphScrollEvent,
+    ResponseGraphScrollPhase, bind_response_graph_keys,
 };
 pub use style::{
     CONTROL_CORNER_RADIUS, ControlStyle, DEVICE_CORNER_RADIUS, DeviceActionStyle, DeviceFrameStyle,

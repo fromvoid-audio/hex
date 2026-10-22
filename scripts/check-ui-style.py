@@ -14,6 +14,9 @@ widgets = (
     'self.arrangement(', 'self.ruler(', 'self.clip_view(',
     # Clip name components normalize labels or render a native text-input entity.
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
+    # Waveform body wrappers contain view elements; preview titles normalize text.
+    'clip_waveform_body(', 'self.clip_name_preview_header(',
+    'clip_fade_layer(', 'self.clip_name_drag_header(', 'clip_name_text(',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
@@ -51,7 +54,9 @@ widgets = (
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     # Split browser components normalize every caption at their boundary.
+    'self.browser_history_arrow(',
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
+    'picker_label(', 'picker_heading(', 'picker_group_heading(',
     # Audition row controls normalize labels; miniature waveform contains no text.
     'self.browser_audition_row(', 'mini_waveform(',
     'browser_pending(', 'browser_divider(', 'group)', 'groups)', 'tags.child(',
@@ -63,8 +68,11 @@ widgets = (
 
     'folder_dialog)', 'self.browser.search.clone())', 'rows.flex_1()',
     'resize)', 'panel)', 'div().w(px(4.0))', 'canvas(', 'BrowserSearchElement',
+    'layout::resize_divider_line(', 'resize_divider_line(',
     'scene_rows)', 'cell)', 'session_scenes_header()', 'scene_column)',
     'musical_control_row(', 'musical_control_label(', 'super::musical_audio_controls::view(',
+    # Beats controls compose themed buttons/labels, not direct text children.
+    'beats_controls(', 'choices)',
     'super::musical_audio_controls::warp_header(', 'sample_bpm::field(',
     'super::waveform::prepared_waveform_view_cached(',
     'super::waveform::timeline_waveform_view_cached(',
@@ -79,14 +87,18 @@ widgets = (
     'mode_control)', 'lane_button(', 'left)', 'compact_selector(', 'graph_entity',
     'section_heading(', 'unavailable(',
     'menu_message(', 'action_button(', 'action_button_sized(', 'text_action_button(', 'entity.clone())', 'control.entity.clone())',
-    'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'detail)', 'ruler_label)',
+    'super::waveform::waveform_source_segment_view(', 'self.mixer_strip(', 'self.track_volume(', 'detail)', 'ruler_label)',
     'self.title_bar()', 'self.title_bar(cx)', 'self.theme_button(', 'card)',
     'header::title_bar(', 'header::loading_toolbar(',
-    'lights)', 'crate::build_info::label()', 'version_label()', 'debug_button()',
+    # Changelog body/group captions normalize text; the test paint probe has no label.
+    'self.changelog_group(', 'self.changelog_paint_probe(', 'notes)',
+    'lights)', 'crate::build_info::label()', 'crate::build_info::editor_label()', 'version_label()', 'debug_button()',
     'super::loop_rail::view(', 'render_device_card_target(', 'render_device_end_target(',
     # Device preset header actions reuse themed compact action buttons.
     'super::device_preset::actions(', 'super::device_panel::action_button(',
     'super::super::device_preset::actions(',
+    # Shared A/B actions compose themed compact buttons, never raw text.
+    'super::device_comparison::actions(', 'super::super::device_comparison::actions(',
     'device_drag_title(', 'render_return_drop_target(', 'uniform_list(',
     'loop_grid_layer(',
     # Track sizing composes non-text pointer handles and capture listeners.
@@ -135,7 +147,23 @@ for path in (ROOT / 'crates/hex-ui/src').rglob('*.rs'):
             path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/display_error.rs'
             and suffix.startswith('self.display_text())')
         )
-        if not suffix.startswith(widgets) and not typed_error:
+        # This fixture canvas records paint bounds and emits no text. Keep the
+        # qualified call local rather than exempting its file or other canvases.
+        fixture_canvas = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/waveform_header_ui_test.rs'
+            and suffix.startswith('gpui::canvas(')
+        )
+        # Header mixer composition uses typed controls; each caption is checked
+        # separately at its theme::text boundary. Keep variable names file-local.
+        header_mixer_component = (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/tracks.rs'
+            and suffix.startswith(('utilities)', 'activator)', 'solo)', 'arm)',
+                                   'self.track_pan(', 'header_content)'))
+        ) or (
+            path.relative_to(ROOT).as_posix() == 'crates/hex-ui/src/editor/return_tracks.rs'
+            and suffix.startswith(('self.return_volume(', 'gain_control)'))
+        )
+        if not suffix.startswith(widgets) and not typed_error and not fixture_canvas and not header_mixer_component:
             line = source.count('\n', 0, match.start()) + 1
             errors.append(f'{path.relative_to(ROOT)}:{line}: route text through theme::text or add an explicit view component')
     for match in re.finditer(r'\.font_family\(([^)]*)\)', source):

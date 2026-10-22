@@ -112,6 +112,7 @@ impl Gallery {
                     .child(fixture.number(1))
                     .child(fixture.number(2)),
             ),
+            Entry::Eq => eq::body(fixture),
             Entry::Eq8 => {
                 let mut bands = device_composition::rail_column()
                     .w(px(96.0))

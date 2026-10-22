@@ -307,8 +307,11 @@ fn prepared_hybrid(
 ) -> (Arc<PreparedRevision>, AssetId) {
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 8).expect("editor");
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "hybrid".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("track")
     {
@@ -591,8 +594,11 @@ fn nonmutable_prepared_export_keeps_nonzero_range_support() {
     let range_path = dir.0.join("range.wav");
     let mut editor = Editor::new(Project::new(RATE).expect("project"), 8).expect("editor");
     let track = match editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "analytic".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("track")
     {
@@ -632,6 +638,10 @@ fn nonmutable_prepared_export_keeps_nonzero_range_support() {
         .expect("nonmutable range remains supported");
     assert_eq!(report.frames, 16);
     let full = fs::read(full_path).expect("read full wav");
+    assert!(
+        full[44..].iter().any(|sample_byte| *sample_byte != 0),
+        "analytic range control must retain its audible instrument workload"
+    );
     let range = fs::read(range_path).expect("read range wav");
     assert_eq!(range.len(), 44 + 16 * 4);
     assert_eq!(&range[44..], &full[44 + 10 * 4..44 + 26 * 4]);

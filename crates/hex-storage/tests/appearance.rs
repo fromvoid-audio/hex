@@ -55,8 +55,8 @@ fn track_colors_and_both_clip_domains_roundtrip_with_history_and_copies() {
         editor
             .execute(Command::SetTrackColor { track, color })
             .unwrap();
-        // Gray is the initial default; other colors produce a history step.
-        if color != ElementColor::Gray {
+        // Every actual color change produces a history step, including Gray.
+        if color != before.track(track).unwrap().color() {
             assert!(editor.undo());
             assert_eq!(editor.project(), &before);
             assert!(editor.redo());
@@ -223,13 +223,22 @@ fn track_colors_and_both_clip_domains_roundtrip_with_history_and_copies() {
 
 #[test]
 fn schema26_defaults_and_strict_appearance_validation() {
-    let (editor, _, _, _) = fixture();
+    let (mut editor, track, _, _) = fixture();
+    // This historical omitted-color fixture authors its neutral value explicitly.
+    editor
+        .execute(Command::SetTrackColor {
+            track,
+            color: ElementColor::Gray,
+        })
+        .unwrap();
     let value: Value = serde_json::from_slice(&encode(editor.project()).unwrap()).unwrap();
-    assert_eq!(value["version"], 31);
+    assert_eq!(value["version"], 34);
     let mut legacy = value.clone();
     legacy["version"] = json!(26);
+    legacy.as_object_mut().unwrap().remove("main_devices");
     legacy.as_object_mut().unwrap().remove("tuning");
     legacy.as_object_mut().unwrap().remove("device_assets");
+    legacy.as_object_mut().unwrap().remove("asset_sources");
     legacy.as_object_mut().unwrap().remove("fade_shapes");
     legacy.as_object_mut().unwrap().remove("audio_event_state");
     legacy.as_object_mut().unwrap().remove("track_colors");

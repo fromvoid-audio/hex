@@ -735,7 +735,7 @@ fn batch_note_insert_preserves_input_order_expression_and_one_step_history() {
             velocity: 91,
         },
         MidiNoteInsert {
-            start: BeatTime::from_ratio(1, 3).unwrap(),
+            start: BeatTime::ZERO,
             duration: BeatTime::from_ratio(1, 8).unwrap(),
             pitch: 72,
             channel: 3,
@@ -841,7 +841,7 @@ fn mixed_note_edit_compacts_then_appends_in_one_ordered_history_step() {
             velocity: 1,
         },
         MidiNoteInsert {
-            start: BeatTime::from_ratio(1, 3).unwrap(),
+            start: BeatTime::ZERO,
             duration: BeatTime::from_ratio(1, 8).unwrap(),
             pitch: 90,
             channel: 14,
@@ -1136,7 +1136,14 @@ fn mixed_batch_checks_final_global_cap_and_id_range_before_removing() {
             .execute(Command::EditMidiNotes {
                 clip,
                 remove: vec![created],
-                insert: vec![inserts[0], inserts[1], inserts[0]],
+                insert: vec![
+                    inserts[0],
+                    inserts[1],
+                    MidiNoteInsert {
+                        pitch: 72,
+                        ..inserts[0]
+                    }
+                ],
             })
             .is_err()
     );
@@ -1317,7 +1324,13 @@ fn batch_insert_rejects_size_project_cap_and_allocator_exhaustion_atomically() {
     let Created::Notes { first, last, .. } = exact
         .execute(Command::AddMidiNotes {
             clip,
-            notes: vec![note; 2],
+            notes: vec![
+                note,
+                MidiNoteInsert {
+                    start: BeatTime::from_raw(1),
+                    ..note
+                },
+            ],
         })
         .unwrap()
     else {
@@ -1355,7 +1368,13 @@ fn batch_insert_rejects_size_project_cap_and_allocator_exhaustion_atomically() {
         exhausted
             .execute(Command::AddMidiNotes {
                 clip,
-                notes: vec![note; 2],
+                notes: vec![
+                    note,
+                    MidiNoteInsert {
+                        start: BeatTime::from_raw(1),
+                        ..note
+                    }
+                ],
             })
             .is_err()
     );
@@ -1395,7 +1414,7 @@ fn project_with_notes_in_other_clip(editor: &Editor, count: usize) -> Project {
             notes: (0..count)
                 .map(|index| MidiNoteSnapshot {
                     id: first_note_id + index as u64,
-                    start_raw: 0,
+                    start_raw: index as u64,
                     duration_raw: 1,
                     pitch: 60,
                     channel: 0,

@@ -208,8 +208,11 @@ fn review_lifecycle_failed_tuning_terminal_refuses_save_as_and_deferred_export(
     let export_path = directory.0.join("must-not-export.freqs");
     let (_, editor) = window(cx);
     editor.update(cx, |view, _| {
-        assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
-            name: "notes".into()
+        assert!(view.enqueue(Request::Edit(Command::InsertTrackWithDevice {
+            name: "notes".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })))
     });
     let added = next(&editor, cx);

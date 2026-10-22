@@ -1351,7 +1351,7 @@ fn mixed_rate_import_save_reopen_is_exact_and_changed_source_is_atomic() {
     assert!(!saved.state.unsaved);
     let json = fs::read_to_string(&project_path).expect("saved JSON");
     let document: serde_json::Value = serde_json::from_str(&json).expect("project json");
-    assert_eq!(document["version"], 31);
+    assert_eq!(document["version"], 34);
     assert_eq!(document["routing"], serde_json::json!([]));
     assert!(document["import_provenance"].is_null());
     service
@@ -2042,8 +2042,11 @@ fn arrangement_catalog_drop_refuses_stale_catalog_and_captured_targets_atomicall
     let service = Service::new(48_000, 16, 128).unwrap();
     next_event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "target".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let baseline = next_event(&service);

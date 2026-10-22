@@ -72,10 +72,20 @@ pub(super) struct PendingTimeRangeMove {
     pub destination_first_index: usize,
     pub destination_last_index: usize,
     pub source_revision: u64,
+    pub selection_intent_epoch: u64,
     pub copy_modifier: bool,
 }
 
 impl EditorView {
+    /// Actual selection choices supersede pending ACK side effects, even when
+    /// the user returns to identical coordinates. Exhaustion stays invalid for
+    /// this view's lifetime; never reuse an epoch or cancel the canonical edit.
+    pub(super) fn advance_selection_intent(&mut self) {
+        self.selection_intent_epoch = self
+            .selection_intent_epoch
+            .and_then(|epoch| epoch.checked_add(1));
+    }
+
     pub(super) fn normalized_time_selection(&self) -> Option<hex_project::TimeRange> {
         let selection = self.time_selection?;
         if selection.anchor_frame == selection.end_frame {
@@ -158,6 +168,7 @@ impl EditorView {
             anchor_frame: frame,
             end_frame: frame,
         };
+        self.advance_selection_intent();
         self.time_selection_project_scope = true;
         self.edit_cursor = Some(EditCursor {
             track: first_track,
@@ -177,6 +188,7 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
+        self.retain_clip_detail_for_time_selection();
         self.selected_clip = None;
         true
     }
@@ -293,6 +305,7 @@ impl EditorView {
             anchor_frame: frame,
             end_frame: frame,
         };
+        self.advance_selection_intent();
         self.edit_cursor = Some(EditCursor {
             track,
             frame,
@@ -312,10 +325,10 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
+        self.retain_clip_detail_for_time_selection();
         self.selected_track = Some(track);
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
-        self.device_panel_active = true;
         true
     }
 
@@ -546,8 +559,16 @@ impl EditorView {
                 frame: destination.start(),
             }
         };
+        let Some(selection_intent_epoch) = self.selection_intent_epoch else {
+            self.error = Some(
+                "selection intent exhausted · reopen the editor before moving or copying time"
+                    .into(),
+            );
+            return true;
+        };
         if self.enqueue(Request::Edit(command)) {
             self.pending_time_range_move = Some(PendingTimeRangeMove {
+                selection_intent_epoch,
                 source,
                 range: destination,
                 project_scope,
@@ -628,8 +649,16 @@ impl EditorView {
             track: range.tracks()[0],
             frame: range.end(),
         };
+        let Some(selection_intent_epoch) = self.selection_intent_epoch else {
+            self.error = Some(
+                "selection intent exhausted · reopen the editor before moving or copying time"
+                    .into(),
+            );
+            return true;
+        };
         if self.enqueue(Request::Edit(command)) {
             self.pending_time_range_move = Some(PendingTimeRangeMove {
+                selection_intent_epoch,
                 source: range,
                 range: destination,
                 project_scope: self.time_selection_project_scope,
@@ -727,7 +756,22 @@ impl EditorView {
             self.pending_time_range_move = Some(pending);
             return;
         }
-        if event.error.is_some() || event.state.revision <= pending.source_revision {
+        // The copy/move is admitted with no other pending edit. Its advanced
+        // canonical revision witnesses the commit; a later recovery checkpoint
+        // can still attach an error to that same completion. Keep that diagnostic,
+        // but settle the committed destination. Refused edits do not advance it.
+        if event.state.revision <= pending.source_revision {
+            return;
+        }
+        // The accepted copy still commits, but its selection intent does not
+        // own a later pointer choice or a range the user has cancelled.
+        if self.selection_intent_epoch != Some(pending.selection_intent_epoch)
+            || self
+                .edit_cursor
+                .is_none_or(|cursor| cursor.generation != self.project_generation)
+            || self.time_selection_project_scope != pending.project_scope
+            || self.normalized_time_selection().as_ref() != Some(&pending.source)
+        {
             return;
         }
         let (first_track, last_track) = if pending.project_scope {
@@ -864,6 +908,7 @@ impl EditorView {
         let had_move = self.cancel_time_range_move_gesture();
         let had_gesture = self.time_selection_gesture.take().is_some();
         if had_move {
+            self.advance_selection_intent();
             self.suppress_cursor_click = false;
             return true;
         }
@@ -872,6 +917,9 @@ impl EditorView {
             selection.anchor_frame != selection.end_frame
                 || selection.anchor_track != selection.end_track
         });
+        if had_gesture || had_range {
+            self.advance_selection_intent();
+        }
         if let Some(cursor) = self.edit_cursor {
             self.time_selection = Some(TimeSelection {
                 anchor_track: cursor.track,
@@ -1266,3 +1314,6 @@ fn lane_contains(x: f32, y: f32, lane: super::drag::LaneBounds) -> bool {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 mod duplicate_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod retained_duplicate_tests;

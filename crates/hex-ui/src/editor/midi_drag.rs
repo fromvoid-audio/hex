@@ -127,6 +127,7 @@ pub(super) struct NoteGesture {
     pub(super) beat_span: u64,
     pub(super) clip_length: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
     pub(super) grid: MidiGrid,
 }
 
@@ -145,6 +146,7 @@ pub(super) struct GestureStart {
     pub(super) beat_span: u64,
     pub(super) clip_length: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
     pub(super) grid: MidiGrid,
 }
 
@@ -159,6 +161,7 @@ pub(super) struct GestureContext {
     pub(super) beat_start: u64,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
     pub(super) grid: MidiGrid,
     pub(super) bounds: [f32; 4],
 }
@@ -173,6 +176,7 @@ pub(super) fn is_current(gesture: &NoteGesture, context: GestureContext) -> bool
         && gesture.beat_start == context.beat_start
         && gesture.beat_span == context.beat_span
         && gesture.pitch_low == context.pitch_low
+        && gesture.pitch_rows == context.pitch_rows
         && gesture.grid == context.grid
         && gesture.bounds == context.bounds
 }
@@ -211,7 +215,12 @@ pub(super) fn begin(start: GestureStart) -> Option<NoteGesture> {
         start.beat_start,
         start.beat_span,
     )?;
-    let pointer_pitch = pitch_at_point(start.pointer[1], start.bounds, start.pitch_low)?;
+    let pointer_pitch = pitch_at_point(
+        start.pointer[1],
+        start.bounds,
+        start.pitch_low,
+        start.pitch_rows,
+    )?;
     let note_end = start.original.start.checked_add(start.original.duration)?;
     if start.original.duration == 0 || note_end > start.clip_length {
         return None;
@@ -242,6 +251,7 @@ pub(super) fn begin(start: GestureStart) -> Option<NoteGesture> {
         beat_span: start.beat_span,
         clip_length: start.clip_length,
         pitch_low: start.pitch_low,
+        pitch_rows: start.pitch_rows,
         grid: start.grid,
     })
 }
@@ -265,7 +275,12 @@ pub(super) fn update_with_modifier(
     ) else {
         return false;
     };
-    let Some(pointer_pitch) = pitch_at_point(pointer_y, gesture.bounds, gesture.pitch_low) else {
+    let Some(pointer_pitch) = pitch_at_point(
+        pointer_y,
+        gesture.bounds,
+        gesture.pitch_low,
+        gesture.pitch_rows,
+    ) else {
         return false;
     };
     let effective_grid = effective_grid(gesture.grid, invert_snap);
@@ -407,7 +422,12 @@ pub(super) fn quantize_delta(delta: i128, grid: MidiGrid) -> i128 {
     if delta < 0 { -snapped } else { snapped }
 }
 
-pub(super) fn pitch_at_point(y: f32, bounds: [f32; 4], pitch_low: u8) -> Option<u8> {
+pub(super) fn pitch_at_point(
+    y: f32,
+    bounds: [f32; 4],
+    pitch_low: u8,
+    pitch_rows: u8,
+) -> Option<u8> {
     let [left, top, width, height] = bounds;
     if !y.is_finite()
         || !left.is_finite()
@@ -416,13 +436,17 @@ pub(super) fn pitch_at_point(y: f32, bounds: [f32; 4], pitch_low: u8) -> Option<
         || !height.is_finite()
         || width <= 0.0
         || height <= 0.0
-        || pitch_low > 104
+        || !super::midi_scene::valid_pitch_range(pitch_low, pitch_rows)
     {
         return None;
     }
-    let row = (((y - top) / height) * 24.0).floor();
+    let row = (((y - top) / height) * f32::from(pitch_rows)).floor();
     let row = row.clamp(i32::MIN as f32, i32::MAX as f32) as i32;
-    Some((i32::from(pitch_low) + 23 - row).clamp(0, 127) as u8)
+    Some(
+        (i32::from(pitch_low) + i32::from(pitch_rows) - 1)
+            .saturating_sub(row)
+            .clamp(0, 127) as u8,
+    )
 }
 
 fn snap_clamped(raw: i128, min: u64, max: u64, step: u64) -> u64 {
@@ -481,6 +505,7 @@ mod tests {
             beat_span: 4 * BeatTime::ONE.raw(),
             clip_length: CLIP_LENGTH,
             pitch_low: 48,
+            pitch_rows: 24,
             grid,
         })
         .expect("valid note gesture")
@@ -508,6 +533,7 @@ mod tests {
             beat_span: 4 * BeatTime::ONE.raw(),
             clip_length,
             pitch_low: 48,
+            pitch_rows: 24,
             grid: MidiGrid::Sixteenth,
         })
         .expect("valid note gesture")
@@ -535,6 +561,7 @@ mod tests {
             beat_span,
             clip_length: CLIP_LENGTH,
             pitch_low: 48,
+            pitch_rows: 24,
             grid: MidiGrid::Sixteenth,
         })
         .expect("valid note gesture")
@@ -736,6 +763,7 @@ mod tests {
                 beat_span: 4 * BeatTime::ONE.raw(),
                 clip_length: CLIP_LENGTH,
                 pitch_low: 48,
+                pitch_rows: 24,
                 grid: MidiGrid::Sixteenth,
             })
             .is_none()
@@ -988,6 +1016,7 @@ mod tests {
             beat_start: drag.beat_start,
             beat_span: drag.beat_span,
             pitch_low: drag.pitch_low,
+            pitch_rows: drag.pitch_rows,
             grid: drag.grid,
             bounds: drag.bounds,
         };

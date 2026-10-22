@@ -1,6 +1,7 @@
 //! Bounded response graph with reusable node hit targets and pointer capture.
 use crate::ControlStyle;
 use crate::focus_marker::corner_markers;
+use crate::spectrum_painter::{self, Layer as SpectrumLayer, Pass as SpectrumPass};
 use gpui::{
     App, Bounds, Context, CursorStyle, Element, ElementId, Entity, EventEmitter, FocusHandle,
     Focusable, GlobalElementId, LayoutId, Modifiers, MouseButton, MouseDownEvent, MouseMoveEvent,
@@ -17,6 +18,11 @@ pub fn bind_response_graph_keys(cx: &mut App) {
         gpui::KeyBinding::new("escape", CancelPointer, Some("hex_response_graph_remove")),
     ]);
 }
+
+mod axes;
+mod scroll;
+pub use axes::ResponseGraphAxes;
+pub use scroll::{ResponseGraphScrollEvent, ResponseGraphScrollPhase};
 
 const MAX_CURVE_POINTS: usize = 256;
 const MAX_NODES: usize = 64;
@@ -124,9 +130,11 @@ pub struct ResponseGraph {
     model: ResponseGraphModel,
     style: ControlStyle,
     analyzer_style: Option<ResponseGraphAnalyzerStyle>,
+    axes: Option<ResponseGraphAxes>,
     bounds: Option<Bounds<Pixels>>,
     drag: Option<Drag>,
     press: Option<Press>,
+    relative_option_y_nodes: Vec<u32>,
     editable: bool,
     creation_enabled: bool,
     creation_drag_enabled: bool,
@@ -134,6 +142,7 @@ pub struct ResponseGraph {
     backspace_removal: bool,
     focus: FocusHandle,
     focus_blur: Option<Subscription>,
+    scroll: scroll::State,
 }
 
 #[derive(Clone, Copy)]
@@ -142,6 +151,7 @@ struct Drag {
     pointer_origin: [f32; 2],
     node_origin: [f32; 2],
     modifiers: Modifiers,
+    relative_option_y: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -150,6 +160,7 @@ struct Press {
     pointer_origin: [f32; 2],
     node_origin: [f32; 2],
     modifiers: Modifiers,
+    relative_option_y: bool,
 }
 
 impl ResponseGraph {
@@ -166,9 +177,11 @@ impl ResponseGraph {
             model,
             style,
             analyzer_style: None,
+            axes: None,
             bounds: None,
             drag: None,
             press: None,
+            relative_option_y_nodes: Vec::new(),
             editable: false,
             creation_enabled: false,
             creation_drag_enabled: false,
@@ -176,7 +189,30 @@ impl ResponseGraph {
             backspace_removal: false,
             focus: cx.focus_handle(),
             focus_blur: None,
+            scroll: scroll::State::default(),
         }
+    }
+
+    /// Optional owner-authored normalized axes; all graphics and input share this plot.
+    pub fn set_axes(
+        &mut self,
+        axes: Option<ResponseGraphAxes>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if axes.as_ref().is_some_and(|axes| !axes.valid()) {
+            return Err("invalid response graph axes");
+        }
+        if self.axes != axes {
+            self.axes = axes;
+            cx.notify();
+        }
+        Ok(())
+    }
+
+    /// Actual normalized plot rectangle, excluding optional axis labels.
+    pub fn plot_bounds(&self) -> Option<Bounds<Pixels>> {
+        self.bounds
+            .map(|bounds| axes::plot_bounds(bounds, self.axes.is_some()))
     }
 
     /// Allow blank plot presses to create one owner-defined point. Node hits
@@ -191,6 +227,33 @@ impl ResponseGraph {
     /// Disabled by default so existing click-only owners retain their behavior.
     pub fn set_creation_drag_enabled(&mut self, enabled: bool) {
         self.creation_drag_enabled = enabled;
+    }
+
+    /// Opt existing nodes into relative vertical Option drags, independent of
+    /// their bounded display Y coordinate. Empty by default. Only these pointer
+    /// streams may emit position Y outside [0, 1], bounded to [-8, 8]. Owners
+    /// subtract the Begin node origin and apply their existing parameter codec.
+    pub fn set_relative_option_y_nodes(
+        &mut self,
+        mut nodes: Vec<u32>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), &'static str> {
+        if nodes.len() > MAX_NODES || nodes.contains(&0) {
+            return Err("invalid relative drag nodes");
+        }
+        nodes.sort_unstable();
+        nodes.dedup();
+        if self
+            .drag
+            .is_some_and(|drag| drag.relative_option_y && !nodes.contains(&drag.node_id))
+            || self
+                .press
+                .is_some_and(|press| press.relative_option_y && !nodes.contains(&press.node_id))
+        {
+            self.cancel(cx);
+        }
+        self.relative_option_y_nodes = nodes;
+        Ok(())
     }
 
     /// Capture Backspace only while this graph owns focus. Owners decide how
@@ -229,6 +292,7 @@ impl ResponseGraph {
             || self.style != style
         {
             self.model = model;
+            self.retire_missing_scroll_node(cx);
             self.style = style;
             cx.notify();
         }
@@ -267,6 +331,9 @@ impl ResponseGraph {
     /// Opt into focused keyboard node selection/editing and fine pointer drags.
     /// The default preserves the graph's existing select-and-drag behavior.
     pub fn set_editable(&mut self, editable: bool, cx: &mut Context<Self>) {
+        if !editable {
+            self.finish_scroll(true, cx);
+        }
         if self.editable != editable {
             self.editable = editable;
             let tab_stop = self.tab_navigation && self.editable;
@@ -278,6 +345,7 @@ impl ResponseGraph {
     }
 
     pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.finish_scroll(true, cx);
         if let Some(drag) = self.drag.take() {
             let position = self
                 .model
@@ -304,16 +372,18 @@ impl ResponseGraph {
     }
 
     fn normalized_position(&self, position: Point<Pixels>) -> Option<[f32; 2]> {
-        let bounds = self.bounds?;
-        let inset = px(PLOT_INSET);
-        let width = f32::from(bounds.size.width - inset * 2.0);
-        let height = f32::from(bounds.size.height - inset * 2.0);
-        if width <= 0.0 || height <= 0.0 {
+        self.unclamped_position(position)
+            .map(|position| position.map(|value| value.clamp(0.0, 1.0)))
+    }
+
+    fn unclamped_position(&self, position: Point<Pixels>) -> Option<[f32; 2]> {
+        let bounds = self.plot_bounds()?;
+        if bounds.size.width <= px(0.0) || bounds.size.height <= px(0.0) {
             return None;
         }
         Some([
-            ((position.x - bounds.origin.x - inset) / px(width)).clamp(0.0, 1.0),
-            (1.0 - (position.y - bounds.origin.y - inset) / px(height)).clamp(0.0, 1.0),
+            (position.x - bounds.left()) / bounds.size.width,
+            1.0 - (position.y - bounds.top()) / bounds.size.height,
         ])
     }
 
@@ -321,26 +391,33 @@ impl ResponseGraph {
         if event.button != MouseButton::Left || self.drag.is_some() || self.press.is_some() {
             return;
         }
-        let Some(position) = self.normalized_position(event.position) else {
+        self.finish_scroll(false, cx);
+        let Some(raw_position) = self.unclamped_position(event.position) else {
             return;
         };
-        let Some(bounds) = self.bounds else {
+        let position = raw_position.map(|value| value.clamp(0.0, 1.0));
+        let Some(bounds) = self.plot_bounds() else {
             return;
         };
-        let width = f32::from(bounds.size.width - px(PLOT_INSET * 2.0));
-        let height = f32::from(bounds.size.height - px(PLOT_INSET * 2.0));
+        let width = f32::from(bounds.size.width);
+        let height = f32::from(bounds.size.height);
         let hit = self
             .model
             .nodes
             .iter()
             .filter_map(|node| {
-                let dx = (node.position[0] - position[0]) * width;
-                let dy = (node.position[1] - position[1]) * height;
+                let dx = (node.position[0] - raw_position[0]) * width;
+                let dy = (node.position[1] - raw_position[1]) * height;
                 let distance = dx.mul_add(dx, dy * dy);
                 (distance <= NODE_RADIUS * NODE_RADIUS).then_some((distance, node.id))
             })
             .min_by(|left, right| left.0.total_cmp(&right.0));
         let Some((_, node_id)) = hit else {
+            // Visible boundary markers retain their full bounded hit radius.
+            // Only blank axis margins are excluded from node creation.
+            if self.axes.is_some() && !bounds.contains(&event.position) {
+                return;
+            }
             if self.creation_enabled && event.click_count == 1 {
                 if self.creation_drag_enabled {
                     self.press = Some(Press {
@@ -348,6 +425,7 @@ impl ResponseGraph {
                         pointer_origin: position,
                         node_origin: position,
                         modifiers: event.modifiers,
+                        relative_option_y: false,
                     });
                     self.focus.focus(window);
                 }
@@ -368,11 +446,20 @@ impl ResponseGraph {
             .iter()
             .find(|node| node.id == node_id)
             .map_or(position, |node| node.position);
+        let relative_option_y = event.modifiers.alt
+            && !event.modifiers.platform
+            && !event.modifiers.control
+            && self.relative_option_y_nodes.contains(&node_id);
         self.press = Some(Press {
             node_id,
-            pointer_origin: position,
+            pointer_origin: if relative_option_y {
+                self.unclamped_position(event.position).unwrap_or(position)
+            } else {
+                position
+            },
             node_origin,
             modifiers: event.modifiers,
+            relative_option_y,
         });
         self.focus.focus(window);
         cx.emit(ResponseGraphEvent {
@@ -413,7 +500,16 @@ impl ResponseGraph {
         if self.cancel_unfocused_creation(window, cx) {
             return true;
         }
-        let Some(position) = self.normalized_position(event.position) else {
+        let relative_option_y = self.drag.map_or_else(
+            || self.press.is_some_and(|press| press.relative_option_y),
+            |drag| drag.relative_option_y,
+        );
+        let position = if relative_option_y {
+            self.unclamped_position(event.position)
+        } else {
+            self.normalized_position(event.position)
+        };
+        let Some(position) = position else {
             return false;
         };
         if event.pressed_button != Some(MouseButton::Left) {
@@ -422,18 +518,20 @@ impl ResponseGraph {
                 return true;
             }
             let was_dragging = self.drag.is_some();
-            self.cancel(cx);
+            if was_dragging {
+                self.cancel(cx);
+            }
             return was_dragging;
         }
         if self.drag.is_none() {
             let Some(press) = self.press else {
                 return false;
             };
-            let Some(bounds) = self.bounds else {
+            let Some(bounds) = self.plot_bounds() else {
                 return false;
             };
-            let width = f32::from(bounds.size.width - px(PLOT_INSET * 2.0));
-            let height = f32::from(bounds.size.height - px(PLOT_INSET * 2.0));
+            let width = f32::from(bounds.size.width);
+            let height = f32::from(bounds.size.height);
             let dx = (position[0] - press.pointer_origin[0]) * width;
             let dy = (position[1] - press.pointer_origin[1]) * height;
             if !drag_threshold_crossed(dx, dy) {
@@ -445,6 +543,7 @@ impl ResponseGraph {
                 pointer_origin: press.pointer_origin,
                 node_origin: press.node_origin,
                 modifiers: press.modifiers,
+                relative_option_y: press.relative_option_y,
             });
             cx.emit(ResponseGraphEvent {
                 phase: ResponseGraphPhase::Begin,
@@ -493,7 +592,11 @@ impl ResponseGraph {
             cx.notify();
             return true;
         };
-        let normalized = self.normalized_position(event.position);
+        let normalized = if drag.relative_option_y {
+            self.unclamped_position(event.position)
+        } else {
+            self.normalized_position(event.position)
+        };
         let inside = point_inside_graph(self.bounds, event.position);
         if let Some(position) = normalized {
             let (first, second) = pointer_end_phases(true, inside);
@@ -526,7 +629,7 @@ impl ResponseGraph {
     fn cancel_pointer(&mut self, _: &CancelPointer, window: &mut Window, cx: &mut Context<Self>) {
         if self.backspace_removal
             && self.focus.is_focused(window)
-            && (self.drag.is_some() || self.press.is_some())
+            && (self.drag.is_some() || self.press.is_some() || self.scroll.active())
         {
             cx.stop_propagation();
             self.cancel(cx);
@@ -543,6 +646,7 @@ impl ResponseGraph {
         if self.editable
             && self.drag.is_none()
             && self.press.is_none()
+            && !self.scroll.active()
             && let Some(node) = self.model.nodes.iter().find(|node| node.selected)
         {
             cx.emit(ResponseGraphEvent {
@@ -574,7 +678,9 @@ impl ResponseGraph {
             }
             return;
         }
-        if event.keystroke.key == "escape" && (self.drag.is_some() || self.press.is_some()) {
+        if event.keystroke.key == "escape"
+            && (self.drag.is_some() || self.press.is_some() || self.scroll.active())
+        {
             cx.stop_propagation();
             self.cancel(cx);
             return;
@@ -696,7 +802,14 @@ fn drag_position(pointer: [f32; 2], drag: Drag, editable: bool) -> [f32; 2] {
     };
     [
         (drag.node_origin[0] + (pointer[0] - drag.pointer_origin[0]) * precision).clamp(0.0, 1.0),
-        (drag.node_origin[1] + (pointer[1] - drag.pointer_origin[1]) * precision).clamp(0.0, 1.0),
+        {
+            let y = drag.node_origin[1] + (pointer[1] - drag.pointer_origin[1]) * precision;
+            if drag.relative_option_y {
+                y.clamp(-8.0, 8.0)
+            } else {
+                y.clamp(0.0, 1.0)
+            }
+        },
     ]
 }
 
@@ -733,6 +846,11 @@ impl gpui::Render for ResponseGraph {
         });
         let nodes = self.model.nodes.clone();
         let style = self.style;
+        let axes = self.axes.clone();
+        let labels = self
+            .axes
+            .as_ref()
+            .map(|axes| axes.labels(&self.id, style, self.bounds, window));
         let bounds_entity = cx.entity();
         if self.focus_blur.is_none() {
             let focus = self.focus.clone();
@@ -758,13 +876,21 @@ impl gpui::Render for ResponseGraph {
                 CursorStyle::PointingHand
             })
             .on_mouse_down(MouseButton::Left, cx.listener(Self::mouse_down))
+            .on_scroll_wheel(cx.listener(Self::scroll_wheel))
             .child(
                 canvas(
                     |_, _, _| (),
                     move |bounds, _, window, app| {
-                        bounds_entity.update(app, |graph, _| graph.bounds = Some(bounds));
+                        bounds_entity.update(app, |graph, cx| {
+                            let changed = graph.bounds.is_none_or(|old| old.size != bounds.size);
+                            graph.bounds = Some(bounds);
+                            if changed && graph.axes.is_some() {
+                                cx.notify();
+                            }
+                        });
                         paint_graph(
                             bounds,
+                            axes.as_ref(),
                             &primary,
                             &secondary,
                             analyzer.as_deref(),
@@ -780,6 +906,7 @@ impl gpui::Render for ResponseGraph {
                 .inset_0()
                 .size_full(),
             )
+            .children(labels)
             .when(
                 self.focus.tab_stop && self.focus.is_focused(window),
                 |root| root.child(corner_markers(&self.id, style.focus_marker)),
@@ -793,6 +920,7 @@ impl gpui::Render for ResponseGraph {
 #[allow(clippy::too_many_arguments)]
 fn paint_graph(
     bounds: Bounds<Pixels>,
+    axes: Option<&ResponseGraphAxes>,
     primary: &[[f32; 2]],
     secondary: &[[f32; 2]],
     analyzer: Option<&[[f32; 2]]>,
@@ -802,49 +930,57 @@ fn paint_graph(
     style: ControlStyle,
     window: &mut Window,
 ) {
-    let inset = px(PLOT_INSET);
-    let width = bounds.size.width - inset * 2.0;
-    let height = bounds.size.height - inset * 2.0;
+    let bounds = axes::plot_bounds(bounds, axes.is_some());
+    let width = bounds.size.width;
+    let height = bounds.size.height;
     if width <= px(0.0) || height <= px(0.0) {
         return;
     }
-    let origin = point(bounds.origin.x + inset, bounds.origin.y + inset);
+    let origin = bounds.origin;
+    let plot = bounds;
+    let spectra = [
+        input_analyzer.map(|points| SpectrumLayer {
+            points,
+            color: analyzer_style.input,
+            stroke_width: px(0.7),
+        }),
+        analyzer.map(|points| SpectrumLayer {
+            points,
+            color: analyzer_style.output,
+            stroke_width: px(0.9),
+        }),
+    ]
+    .into_iter()
+    .flatten();
+    spectrum_painter::paint(plot, spectra.clone(), SpectrumPass::Fill, window);
     let mut grid = PathBuilder::stroke(px(0.5));
-    for division in 1..4 {
-        let y = origin.y + height * division as f32 / 4.0;
-        grid.move_to(point(origin.x, y));
-        grid.line_to(point(origin.x + width, y));
-    }
-    for division in 1..8 {
-        let x = origin.x + width * division as f32 / 8.0;
-        grid.move_to(point(x, origin.y));
-        grid.line_to(point(x, origin.y + height));
+    if let Some(axes) = axes {
+        for (y, _) in &axes.vertical {
+            let y = origin.y + height * (1.0 - y);
+            grid.move_to(point(origin.x, y));
+            grid.line_to(point(origin.x + width, y));
+        }
+        for (x, _) in &axes.horizontal {
+            let x = origin.x + width * *x;
+            grid.move_to(point(x, origin.y));
+            grid.line_to(point(x, origin.y + height));
+        }
+    } else {
+        for division in 1..4 {
+            let y = origin.y + height * division as f32 / 4.0;
+            grid.move_to(point(origin.x, y));
+            grid.line_to(point(origin.x + width, y));
+        }
+        for division in 1..8 {
+            let x = origin.x + width * division as f32 / 8.0;
+            grid.move_to(point(x, origin.y));
+            grid.line_to(point(x, origin.y + height));
+        }
     }
     if let Ok(grid) = grid.build() {
         window.paint_path(grid, rgb(style.rail));
     }
-    if let Some(input) = input_analyzer {
-        paint_curve(
-            origin,
-            width,
-            height,
-            input,
-            px(0.7),
-            analyzer_style.input,
-            window,
-        );
-    }
-    if let Some(analyzer) = analyzer {
-        paint_curve(
-            origin,
-            width,
-            height,
-            analyzer,
-            px(0.9),
-            analyzer_style.output,
-            window,
-        );
-    }
+    spectrum_painter::paint(plot, spectra, SpectrumPass::Trace, window);
     paint_curve(
         origin,
         width,
@@ -986,6 +1122,26 @@ impl Element for ResponseGraphCaptureElement {
                 window.refresh();
             }
         });
+        let entity = self.entity.clone();
+        window.on_mouse_event(move |event: &gpui::ScrollWheelEvent, phase, window, cx| {
+            if phase.capture()
+                && !event.is_momentum
+                && matches!(
+                    event.touch_phase,
+                    gpui::TouchPhase::Ended | gpui::TouchPhase::Cancelled
+                )
+            {
+                // Observe only the terminal. Normal hit-tested bubble routing
+                // retains first refusal and other panels still receive Ended.
+                entity.update(cx, |graph, cx| {
+                    graph.observe_scroll_end(
+                        matches!(event.touch_phase, gpui::TouchPhase::Cancelled),
+                        window,
+                        cx,
+                    )
+                });
+            }
+        });
     }
 }
 
@@ -1049,6 +1205,7 @@ mod tests {
             pointer_origin: [0.5, 0.5],
             node_origin: [0.45, 0.55],
             modifiers: Modifiers::default(),
+            relative_option_y: false,
         };
         let normal = drag_position([0.7, 0.4], drag, true);
         assert!((normal[0] - 0.65).abs() < 0.00001);
@@ -1067,6 +1224,38 @@ mod tests {
         assert!((unmodified[0] - 0.65).abs() < 0.00001);
         assert!((unmodified[1] - 0.45).abs() < 0.00001);
         assert_eq!(drag_position([5.0, -2.0], drag, true), [1.0, 0.0]);
+    }
+
+    #[test]
+    fn relative_option_y_is_explicit_bounded_and_keeps_shift_precision() {
+        let ordinary = Drag {
+            node_id: 3,
+            pointer_origin: [0.5, 0.5],
+            node_origin: [0.5, 0.0],
+            modifiers: Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+            relative_option_y: false,
+        };
+        assert_eq!(drag_position([0.5, -0.5], ordinary, true), [0.5, 0.0]);
+        let relative = Drag {
+            relative_option_y: true,
+            ..ordinary
+        };
+        assert_eq!(drag_position([0.5, -0.5], relative, true), [0.5, -1.0]);
+        assert_eq!(drag_position([20.0, -100.0], relative, true), [1.0, -8.0]);
+        assert_eq!(drag_position([-20.0, 100.0], relative, true), [0.0, 8.0]);
+        let fine = Drag {
+            modifiers: Modifiers {
+                alt: true,
+                shift: true,
+                ..Default::default()
+            },
+            ..relative
+        };
+        let position = drag_position([0.5, -0.5], fine, true);
+        assert!((position[1] + 0.1).abs() < 0.00001);
     }
 
     #[test]

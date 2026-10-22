@@ -204,6 +204,7 @@ pub(super) struct GroupContext {
     pub(super) beat_start: u64,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
     pub(super) grid: MidiGrid,
     pub(super) bounds: [f32; 4],
     pub(super) pending: bool,
@@ -220,6 +221,7 @@ pub(super) struct GroupStart {
     pub(super) beat_start: u64,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
     pub(super) clip_length: u64,
     pub(super) grid: MidiGrid,
 }
@@ -237,6 +239,7 @@ pub(super) struct GroupGesture {
     beat_start: u64,
     beat_span: u64,
     pitch_low: u8,
+    pitch_rows: u8,
     clip_length: u64,
     grid: MidiGrid,
     delta: i128,
@@ -277,8 +280,12 @@ impl GroupGesture {
             start.beat_start,
             start.beat_span,
         )?;
-        let pointer_pitch =
-            midi_drag::pitch_at_point(start.pointer[1], start.bounds, start.pitch_low)?;
+        let pointer_pitch = midi_drag::pitch_at_point(
+            start.pointer[1],
+            start.bounds,
+            start.pitch_low,
+            start.pitch_rows,
+        )?;
         Some(Self {
             generation: start.generation,
             revision: start.revision,
@@ -291,6 +298,7 @@ impl GroupGesture {
             beat_start: start.beat_start,
             beat_span: start.beat_span,
             pitch_low: start.pitch_low,
+            pitch_rows: start.pitch_rows,
             clip_length: start.clip_length,
             grid: start.grid,
             delta: 0,
@@ -306,6 +314,7 @@ impl GroupGesture {
             && self.beat_start == context.beat_start
             && self.beat_span == context.beat_span
             && self.pitch_low == context.pitch_low
+            && self.pitch_rows == context.pitch_rows
             && self.grid == context.grid
             && self.bounds == context.bounds
             && !context.pending
@@ -317,7 +326,8 @@ impl GroupGesture {
         else {
             return false;
         };
-        let Some(pointer_pitch) = midi_drag::pitch_at_point(point[1], self.bounds, self.pitch_low)
+        let Some(pointer_pitch) =
+            midi_drag::pitch_at_point(point[1], self.bounds, self.pitch_low, self.pitch_rows)
         else {
             return false;
         };
@@ -469,6 +479,7 @@ mod tests {
             beat_start: 0,
             beat_span: CLIP,
             pitch_low,
+            pitch_rows: 24,
             clip_length: CLIP,
             grid,
         })
@@ -549,6 +560,7 @@ mod tests {
             beat_start: 0,
             beat_span: CLIP,
             pitch_low: 104,
+            pitch_rows: 24,
             grid: MidiGrid::Off,
             bounds: BOUNDS,
             pending: false,

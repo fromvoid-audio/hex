@@ -8,6 +8,7 @@ use hex_widgets::{DeviceLayout, DeviceSectionSurface, device_compact_section, de
 /// The accepted native device body, below the shared fourteen-pixel header.
 pub(crate) const BODY_HEIGHT: f32 = 168.0;
 pub(crate) const GENERIC_FRAME_WIDTH: f32 = 286.0;
+pub(crate) const SAMPLER_FRAME_WIDTH: f32 = 720.0;
 pub(crate) const UTILITY_FRAME_WIDTH: f32 = 144.0;
 pub(crate) const SATURATOR_FRAME_WIDTH: f32 = 230.0;
 pub(crate) const EQ8_FRAME_WIDTH: f32 = 600.0;
@@ -216,4 +217,43 @@ pub(crate) fn tabbed_detail(detail: impl IntoElement, tabs: impl IntoElement) ->
                 .px(px(4.0))
                 .child(tabs),
         )
+}
+
+/// Shared graph-dominant EQ geometry. Caller supplies the real bound controls.
+/// The catalog uses these same slots with explicitly view-local fixtures.
+pub(crate) fn eq_sidebar(
+    id: impl Into<gpui::SharedString>,
+    content: impl IntoElement,
+    controls: impl IntoElement,
+) -> gpui::Stateful<Div> {
+    let id = id.into();
+    let scroll_id = gpui::SharedString::from(format!("{id}-scroll"));
+    div()
+        .id(id)
+        .w(px(160.0))
+        .h_full()
+        .flex_shrink_0()
+        .flex()
+        .flex_col()
+        .p(px(2.0))
+        .gap(px(2.0))
+        .text_size(px(8.0))
+        .line_height(px(10.0))
+        .child(
+            div()
+                .id(scroll_id)
+                .w_full()
+                .flex_1()
+                .min_h_0()
+                .overflow_y_scroll()
+                .child(content),
+        )
+        .child(div().w_full().h(px(14.0)).flex_shrink_0().child(controls))
+}
+
+pub(crate) fn eq_graph_body(graph: impl IntoElement, sidebar: impl IntoElement) -> Div {
+    body()
+        .gap(px(2.0))
+        .child(plot(graph).min_w_0())
+        .child(sidebar)
 }

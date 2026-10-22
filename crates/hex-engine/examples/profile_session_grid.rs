@@ -87,6 +87,7 @@ fn fixture(
         }
     }
     let project = Project::from_snapshot(Snapshot {
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
@@ -95,6 +96,7 @@ fn fixture(
         sample_rate: RATE,
         next_id,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: PathBuf::from("memory/grid.wav"),
             source_sample_rate: RATE,

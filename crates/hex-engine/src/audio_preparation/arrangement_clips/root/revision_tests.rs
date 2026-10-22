@@ -670,6 +670,7 @@ fn borrowed_storage_inventory_covers_real_roots_without_retirement_admission() {
         assert_eq!(
             summary.unresolved_handles,
             bank_handles
+                + 1 // actual empty Main prepared-slice allocation
                 + 2
                 + 1
                 + 1
