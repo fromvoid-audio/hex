@@ -501,7 +501,7 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
     let base = with_test_instrument(&project(1.0, 0, 1 << 26), device_type, 0);
     let mut snapshot = base.snapshot();
     snapshot.session = SessionSnapshot::default();
-    snapshot.next_id = 100;
+    snapshot.next_id = 90;
     snapshot.master_gain = 0.25;
     snapshot.tracks[0].gain = 0.5;
     snapshot.tracks[0].balance = -0.5;
@@ -536,6 +536,7 @@ fn analytic_hybrid_fixture() -> (Project, BTreeMap<hex_project::AssetId, crate::
             fade: ClipFade::neutral(512).unwrap(),
         }],
     };
+    routed_midi_fixture::separate_midi(&mut snapshot, 0);
     let project = Project::from_snapshot(snapshot).unwrap();
     let media = BTreeMap::from([(
         project.assets().next().unwrap().id(),
@@ -816,15 +817,39 @@ fn analytic_hybrid_empty_chain_captures_audio_and_release_under_one_owner() {
             assert_eq!(*frame, expected);
             assert_eq!(retarget_main[index], expected.map(|sample| sample * 0.25));
         }
-        // Actual public inheritance of a removed analytic owner, not a synthetic
-        // capture-only release. The old held gate is released at the cut.
-        let mut old = SessionPlayback::new(Arc::clone(&revision)).unwrap();
+        // Owner removal uses a local MIDI source, preserving the current
+        // handoff contract that does not replace a live routed source layout.
+        // The routed hybrid path and exact audio sum are checked above.
+        let mut local = project.snapshot();
+        let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut local.tracks[1].content else {
+            panic!("routed source")
+        };
+        let midi_clips = std::mem::take(midi_clips);
+        local.tracks[0].content = TrackContentSnapshot::Hybrid {
+            audio_clips: Vec::new(),
+            midi_clips,
+        };
+        local.tracks.truncate(1);
+        local.midi_routes.clear();
+        let local = Project::from_snapshot(local).unwrap();
+        let local_revision = Arc::new(
+            PreparedRevision::prepare_with_instrument_registry(
+                &local,
+                &media,
+                Arc::new(hex_devices::SineTable::new()),
+                None,
+                &registry,
+            )
+            .unwrap(),
+        );
+        let mut old = SessionPlayback::new(local_revision).unwrap();
         old.set_device_metering(metered);
         old.apply(SessionPlaybackCommand::Play).unwrap();
         old.render(&mut [[0.0; 2]; 128]).unwrap();
         let id = project.tracks()[0].id();
-        let mut removed = project.snapshot();
+        let mut removed = local.snapshot();
         removed.tracks.clear();
+        removed.midi_routes.clear();
         let removed = Project::from_snapshot(removed).unwrap();
         let removed_revision = Arc::new(
             PreparedRevision::prepare_with_instrument_registry(

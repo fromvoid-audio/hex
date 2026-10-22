@@ -1171,7 +1171,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
         .execute(Command::PlaceClip {
             track,
             asset,
-            start: 1_000,
+            start: 48_000,
             duration: 9,
             source_offset: 20,
             source_length: 3,
@@ -1185,7 +1185,7 @@ fn legacy_schemas_migrate_and_schema_twelve_roundtrips_complete_state() {
     editor
         .execute(Command::SplitClip {
             clip: loop_clip,
-            frame: 1_002,
+            frame: 48_002,
         })
         .unwrap();
     editor

@@ -154,8 +154,7 @@ pub(crate) fn apply(
             project.tempo_map(),
             frames,
         )?;
-        *project.clip_mut(id)? = stretched;
-        return Ok(crate::Created::None);
+        return crate::clip_group::replace_audio(project, stretched);
     }
     if clip.edit.is_none()
         && matches!(
@@ -241,8 +240,7 @@ pub(crate) fn apply(
     clip.edit = Some(owned_edit);
     project_clip(&mut clip, project.tempo_map())?;
     validate_clip(project, &clip)?;
-    *project.clip_mut(id)? = clip;
-    Ok(crate::Created::None)
+    crate::clip_group::replace_audio(project, clip)
 }
 fn validate_clip(project: &crate::Project, clip: &Clip) -> Result<(), Invalid> {
     let frames = project
@@ -299,8 +297,7 @@ pub(crate) fn reset_region(
     clip.edit = Some(Arc::new(edit));
     project_clip(&mut clip, project.tempo_map())?;
     validate_clip(project, &clip)?;
-    *project.clip_mut(id)? = clip;
-    Ok(crate::Created::None)
+    crate::clip_group::replace_audio(project, clip)
 }
 
 pub(crate) fn set_fades(
@@ -327,8 +324,7 @@ pub(crate) fn set_fade_envelope(
         .ok_or(Invalid("audio clip is missing"))?;
     set_clip_fade_envelope(&mut clip, fade, project.tempo_map())?;
     validate_clip(project, &clip)?;
-    *project.clip_mut(id)? = clip;
-    Ok(crate::Created::None)
+    crate::clip_group::replace_audio(project, clip)
 }
 
 pub(crate) fn set_clip_fade_envelope(
@@ -408,6 +404,5 @@ pub(crate) fn source_policy(
     clip.source_phase = domain.source_phase;
     clip.edit = Some(owned_edit);
     validate_clip(project, &clip)?;
-    *project.clip_mut(id)? = clip;
-    Ok(crate::Created::None)
+    crate::clip_group::replace_audio(project, clip)
 }

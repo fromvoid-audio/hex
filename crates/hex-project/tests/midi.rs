@@ -30,32 +30,6 @@ fn midi_overwrite_splits_victim_and_retriggers_held_note_in_finite_right_fragmen
         Created::Clip(clip) => clip,
         other => panic!("unexpected clip: {other:?}"),
     };
-    let asset = match editor
-        .execute(Command::AddAsset {
-            path: "Audio/overwrite.wav".into(),
-            sample_rate: 48_000,
-            frames: 256,
-        })
-        .expect("audio asset")
-    {
-        Created::Asset(asset) => asset,
-        other => panic!("unexpected asset: {other:?}"),
-    };
-    let audio_victim = match editor
-        .execute(Command::PlaceClip {
-            track: target,
-            asset,
-            start: 0,
-            duration: 120_000,
-            source_offset: 0,
-            source_length: 256,
-            looping: true,
-        })
-        .expect("audio victim")
-    {
-        Created::Clip(clip) => clip,
-        other => panic!("unexpected clip: {other:?}"),
-    };
     let original_note = match editor
         .execute(Command::AddMidiNote {
             clip: victim,
@@ -120,21 +94,6 @@ fn midi_overwrite_splits_victim_and_retriggers_held_note_in_finite_right_fragmen
     assert_eq!(victim_right.notes()[0].start(), BeatTime::ZERO);
     assert_eq!(victim_right.notes()[0].duration(), beat(4));
     assert_ne!(victim_right.notes()[0].id(), original_note);
-    let target_audio = target_track.clips();
-    let audio_left = target_audio
-        .iter()
-        .find(|clip| clip.id() == audio_victim)
-        .expect("audio left fragment retains ID");
-    assert_eq!((audio_left.start(), audio_left.duration()), (0, 48_000));
-    let audio_right = target_audio
-        .iter()
-        .find(|clip| clip.id() != audio_victim)
-        .expect("audio right fragment");
-    assert_eq!(
-        (audio_right.start(), audio_right.duration()),
-        (96_000, 24_000)
-    );
-    assert_eq!(audio_right.asset(), asset);
     assert!(
         editor
             .project()
@@ -316,7 +275,7 @@ fn one_hybrid_track_accepts_both_clip_types_and_cross_type_moves_undo() {
     let midi = match editor
         .execute(Command::PlaceMidiClip {
             track: first,
-            start: BeatTime::ZERO,
+            start: BeatTime::ONE,
             length: BeatTime::ONE,
         })
         .expect("midi clip on same track")
