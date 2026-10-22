@@ -40,6 +40,14 @@ ownership refuses before normal checks. Read the diagnostic before recovery.
 and establishes the checkout's development owner; it is not permission to remove
 another executor's active cache, release artifacts or user data.
 
+Package-scoped handoffs use Cargo-supported plain package names only after
+complete metadata proves each selected workspace/path name is unique across
+sources and versions. Provenance retains full package IDs. Ambiguous names or
+removed/version-changed path dependencies require a fresh target; qualifiers
+cannot make Cargo cleanup narrower. Ordinary package handoffs preserve unrelated
+dependencies and the other profile. Existing compiler-profile changes retain their
+separate profile invalidation rule.
+
 The runner may refuse insufficient disk headroom. Inspect and remove only known
 reproducible, inactive generated outputs. Do not delete projects, source, accepted
 artifacts or another worktree's target merely to get a run started. Do not edit

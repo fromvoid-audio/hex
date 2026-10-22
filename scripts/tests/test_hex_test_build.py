@@ -909,6 +909,8 @@ class ReleaseCargoTests(unittest.TestCase):
                     shutil.copy2(binary, base / (name + "-retained-binary"))
                 self.assertIsNone(instance.target_lock)
                 self.assertEqual(ownership["state"], "ready")
+                if ownership.get("cleanup_log"):
+                    self.assertNotIn("qualifier", Path(ownership["cleanup_log"]).read_text())
                 self.assertEqual(checks, ["before-build", "artifact"])
                 return ownership
             first = build(root, "release-a", "16")
