@@ -69,8 +69,9 @@ class ScopeTests(unittest.TestCase):
             source = root / "src/lib.rs"
             source.write_text('#[test] fn library_case() { assert_eq!(2 + 2, 4); }\n')
             (root / "tests/roundtrip.rs").write_text('#[test] fn integration_case() {}\n')
+            env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
             def command(*argv):
-                return subprocess.check_output(argv, cwd=root).decode().strip()
+                return subprocess.check_output(argv, cwd=root, env=env).decode().strip()
             command("git", "init", "-q")
             command("git", "config", "user.name", "target fixture")
             command("git", "config", "user.email", "fixture@invalid")
@@ -83,7 +84,7 @@ class ScopeTests(unittest.TestCase):
             def run(name, *, test_filter="case", **target):
                 edit = ci.edit_selection(inventory, package="edit-target-fixture", test_filter=test_filter, **target)
                 selected = {"scope": "full", "qualifies_merge": False, "edit": edit}
-                runner = ci.LocalCiRunner(root, mode="edit", plan=selected, run_id=name, min_free_bytes=0)
+                runner = ci.LocalCiRunner(root, mode="edit", plan=selected, env=env, run_id=name, min_free_bytes=0)
                 code = runner.run()
                 log = (runner.output_dir / "01-edit-tests.log").read_text()
                 return code, log, runner.summary
