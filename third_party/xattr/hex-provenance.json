@@ -24,6 +24,7 @@
     "src/sys/linux_macos/linux.rs": "688c65425e23446e036ecfe38116f7a2ac7298b164346cbc63f719b431148aa6"
   },
   "patched_files": {
-    "src/sys/mod.rs": "ac92372458840d20d3bdfe685483758cbd889ca247eae7515a0aa3b4bec16f00"
+    "src/sys/mod.rs": "ac92372458840d20d3bdfe685483758cbd889ca247eae7515a0aa3b4bec16f00",
+    "src/sys/linux_macos/macos.rs": "8c242c84744c9cc43cea073d22b2f01b9cddff6284d60c7770bdeb356e80579b"
   }
 }
