@@ -12,6 +12,7 @@ import fcntl
 import hashlib
 import importlib.util
 import json
+import math
 import os
 import re
 import shutil
@@ -138,6 +139,25 @@ FULL_STEPS = (
     Step("stream-feature-clippy", ("cargo", "clippy", "-p", "hex-stream", "--all-targets", "--features", "allocation-probe", "--locked", "--", "-D", "warnings")),
     Step("desktop-build", ("cargo", "build", "-p", "hex-desktop", "--locked")),
 )
+
+
+def log_timing_estimates(text: str, duration: float) -> dict[str, float | None]:
+    """Diagnostic wall estimates from Cargo/harness logs, never qualification evidence.
+
+    Cargo's Finished duration includes its build phase, not just compiler CPU.
+    Rounded or nested harness output can overlap; do not invent a negative residual.
+    """
+    build = [3600 * float(h or 0) + 60 * float(m or 0) + float(s)
+             for h, m, s in re.findall(
+                 r"^\s*Finished [^\n]* in (?:(\d+)h )?(?:(\d+)m )?(\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    rust = [float(s) for s in re.findall(r"^test result: [^\n]*finished in (\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    python = [float(s) for s in re.findall(r"^Ran \d+ tests? in (\d+(?:\.\d+)?)s", text, re.MULTILINE)]
+    result = {name: sum(values) if values and math.isfinite(sum(values)) else None
+              for name, values in (("cargo_build_phase_seconds", build),
+                                   ("rust_harness_seconds", rust), ("python_harness_seconds", python))}
+    known = sum(value for value in result.values() if value is not None)
+    result["unclassified_seconds"] = round(duration - known, 6) if known <= duration else None
+    return result
 
 
 def edit_selection(inventory: list[dict], *, package: str, test_filter: str,
@@ -399,6 +419,7 @@ class LocalCiRunner:
             "invocation_argv": list(sys.argv),
             "steps": [],
             "plan": plan,
+            "time_to_first_result_seconds": None,
         }
         self.git_identity: dict[str, object] | None = None
         self.cargo_identity: dict[str, object] | None = None
@@ -1447,6 +1468,8 @@ class LocalCiRunner:
         return True
 
     def _run_step(self, step: Step, index: int) -> dict[str, object]:
+        started = time.monotonic()
+        text = None
         log_path = self.output_dir / f"{index:02d}-{step.step_id}.log"
         entry: dict[str, object] = {
             "step_id": step.step_id,
@@ -1454,6 +1477,9 @@ class LocalCiRunner:
             "status": "running",
             "started_at": utc_now(),
             "ended_at": None,
+            "start_offset_seconds": round(started - self.started_monotonic, 6),
+            "duration_seconds": None,
+            "timing_estimates": None,
             "exit_code": None,
             "log": str(log_path.relative_to(self.root)),
             "error": None,
@@ -1504,7 +1530,20 @@ class LocalCiRunner:
             entry["status"] = "failed"
             entry["error"] = str(error)
             log_path.write_text(f"command could not run: {error}\n", encoding="utf-8")
-        entry["ended_at"] = utc_now()
+        finally:
+            ended = time.monotonic()
+            duration = ended - started
+            entry["ended_at"] = utc_now()
+            entry["duration_seconds"] = round(duration, 6)
+            if self.summary["time_to_first_result_seconds"] is None:
+                self.summary["time_to_first_result_seconds"] = round(ended - self.started_monotonic, 6)
+            if text is None:
+                try:
+                    text = log_path.read_text(errors="replace")
+                except OSError:
+                    pass  # Missing diagnostics do not change the step's result.
+            if text is not None:
+                entry["timing_estimates"] = log_timing_estimates(text, duration)
         self._write_summary()
         print(f"[{index}/{len(self.steps)}] {step.step_id}: {entry['status']}", flush=True)
         return entry
@@ -1618,7 +1657,6 @@ class LocalCiRunner:
                         finally:
                             self.target_lock = None
                 self.summary["ended_at"] = utc_now()
-                self.summary["duration_seconds"] = round(time.monotonic() - self.started_monotonic, 3)
                 if self.summary.get("start_tree") is not None:
                     if self._capture_repository_state("end_tree"):
                         start_tree = self.summary["start_tree"]
@@ -1644,11 +1682,15 @@ class LocalCiRunner:
                                 "status": "not_run",
                                 "started_at": None,
                                 "ended_at": None,
+                                "start_offset_seconds": None,
+                                "duration_seconds": None,
+                                "timing_estimates": None,
                                 "exit_code": None,
                                 "log": None,
                                 "error": "pipeline stopped before this step",
                             }
                         )
+                self.summary["duration_seconds"] = round(time.monotonic() - self.started_monotonic, 6)
                 self._write_summary()
             finally:
                 # Even an end-snapshot or summary-write exception must restore

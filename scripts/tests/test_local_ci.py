@@ -57,6 +57,32 @@ echo "completed $tool $*"
 
 
 class LocalCiRunnerTests(unittest.TestCase):
+    def test_log_timing_estimates_label_unknown_and_overlapping_durations(self):
+        text = ("    Finished `test` profile target(s) in 1m 2.50s\n"
+                "test result: ok. 2 passed; finished in 3.25s\n"
+                "test result: FAILED. 1 failed; finished in 0.75s\n"
+                "Ran 1 test in 0.500s\n")
+        result = local_ci.log_timing_estimates(text, 70.0)
+        self.assertEqual(result, {"cargo_build_phase_seconds": 62.5, "rust_harness_seconds": 4.0,
+                                  "python_harness_seconds": 0.5, "unclassified_seconds": 3.0})
+        self.assertIsNone(local_ci.log_timing_estimates(text, 1.0)["unclassified_seconds"])
+        unknown = local_ci.log_timing_estimates("unrecognized tool output", 0.123456)
+        self.assertIsNone(unknown["cargo_build_phase_seconds"])
+        self.assertIsNone(unknown["rust_harness_seconds"])
+        self.assertEqual(unknown["unclassified_seconds"], 0.123456)
+
+    def test_step_timing_uses_monotonic_clock_even_with_constant_utc(self):
+        runner = self.runner("clock", steps=(local_ci.Step("first", ("first",)),))
+        with patch.object(local_ci, "utc_now", return_value="2026-01-01T00:00:00Z"):
+            self.assertEqual(runner.run(), 0)
+        summary = self.summary("clock")
+        step = summary["steps"][0]
+        self.assertEqual(step["started_at"], step["ended_at"])
+        self.assertGreater(step["duration_seconds"], 0)
+        self.assertAlmostEqual(summary["time_to_first_result_seconds"],
+                               step["start_offset_seconds"] + step["duration_seconds"], places=5)
+        self.assertGreaterEqual(summary["duration_seconds"], summary["time_to_first_result_seconds"])
+
     def setUp(self) -> None:
         self.temp = tempfile.TemporaryDirectory()
         # Ordinary fixtures use the same physical identity as the runner.
@@ -385,6 +411,8 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertEqual(summary["status"], "failed")
         self.assertEqual([step["status"] for step in summary["steps"]], ["failed", "not_run"])
         self.assertEqual(summary["steps"][0]["exit_code"], 7)
+        self.assertGreater(summary["steps"][0]["duration_seconds"], 0)
+        self.assertIsNone(summary["steps"][1]["duration_seconds"])
         self.assertIn("intentional failure", (self.repo / summary["steps"][0]["log"]).read_text())
 
     def test_missing_executable_is_logged_as_failure(self) -> None:
@@ -398,6 +426,7 @@ class LocalCiRunnerTests(unittest.TestCase):
         summary = self.summary("missing")
         self.assertEqual(summary["steps"][0]["status"], "failed")
         self.assertIsNone(summary["steps"][0]["exit_code"])
+        self.assertGreater(summary["steps"][0]["duration_seconds"], 0)
         self.assertIn("not-installed", (self.repo / summary["steps"][0]["log"]).read_text())
         self.assertIn("required executable not found", summary["steps"][0]["error"])
 
@@ -423,6 +452,8 @@ class LocalCiRunnerTests(unittest.TestCase):
                 summary = self.summary(run_id)
                 self.assertEqual(summary["status"], "failed")
                 self.assertEqual(summary["verification_status"], "failed")
+                self.assertIsNone(summary["time_to_first_result_seconds"])
+                self.assertTrue(all(s["duration_seconds"] is None for s in summary["steps"]))
                 self.assertIn("invalid step IDs", summary["step_id_error"])
                 self.assertNotIn("required executable", json.dumps(summary))
                 self.assertEqual([s["step_id"] for s in summary["steps"]], ["first", step_id])
@@ -477,6 +508,8 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertEqual(summary["steps"][0]["status"], "interrupted")
         self.assertEqual(summary["steps"][0]["exit_code"], 130)
         self.assertIsNotNone(summary["steps"][0]["ended_at"])
+        self.assertGreater(summary["steps"][0]["duration_seconds"], 0)
+        self.assertIsNotNone(summary["time_to_first_result_seconds"])
         self.assertEqual(summary["steps"][1]["status"], "not_run")
 
     def test_cargo_metadata_resolves_and_pins_exact_target_and_source_identity(self) -> None:
