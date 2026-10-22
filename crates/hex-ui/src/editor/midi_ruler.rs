@@ -75,6 +75,20 @@ struct Gesture {
     handle: Handle,
     preview: SourceValues,
 }
+// Bounds are inclusive and ordered by the validated source context. Restrict
+// snapping to legal grid points, rather than snapping then landing off-grid at a
+// raw boundary. A sub-grid interval with no grid point keeps the legal raw clamp.
+fn clamp_loop_grid(raw: u64, first: u64, last: u64, grid: MidiGrid) -> u64 {
+    if let Some(step) = grid.step_raw() {
+        let wide_step = u128::from(step);
+        let snapped_first = u128::from(first).div_ceil(wide_step) * wide_step;
+        let snapped_last = last / step * step;
+        if snapped_first <= u128::from(snapped_last) {
+            return raw.clamp(snapped_first as u64, snapped_last);
+        }
+    }
+    raw.clamp(first, last)
+}
 impl Gesture {
     fn update(&mut self, x: f32, invert_snap: bool) -> bool {
         if !x.is_finite() {
@@ -100,7 +114,8 @@ impl Gesture {
                     next.source_start = moved(original.source_start).min(last);
                 }
                 Handle::LoopStart => {
-                    next.loop_start = moved(original.loop_start).min(original.loop_end - 1)
+                    next.loop_start =
+                        clamp_loop_grid(moved(original.loop_start), 0, original.loop_end - 1, grid)
                 }
                 Handle::LoopEnd => {
                     let first = if original.looping {
@@ -108,7 +123,12 @@ impl Gesture {
                     } else {
                         original.loop_start + 1
                     };
-                    next.loop_end = moved(original.loop_end).clamp(first, original.source_length);
+                    next.loop_end = clamp_loop_grid(
+                        moved(original.loop_end),
+                        first,
+                        original.source_length,
+                        grid,
+                    );
                 }
                 Handle::LoopBody => {
                     let length = original.loop_end - original.loop_start;
@@ -117,8 +137,12 @@ impl Gesture {
                     } else {
                         0
                     };
-                    next.loop_start =
-                        moved(original.loop_start).clamp(first, original.source_length - length);
+                    next.loop_start = clamp_loop_grid(
+                        moved(original.loop_start),
+                        first,
+                        original.source_length - length,
+                        grid,
+                    );
                     next.loop_end = next.loop_start + length;
                 }
             }
@@ -614,6 +638,85 @@ mod geometry_tests {
             assert!(!g.update(x, false));
         }
     }
+
+    #[test]
+    fn loop_grid_limits_remain_snapped_or_use_a_legal_short_interval_fallback() {
+        let beat = hex_project::BeatTime::ONE.raw();
+        let base = context();
+        let mut leading = Gesture {
+            context: base,
+            down_x: 100.0,
+            handle: Handle::LoopStart,
+            preview: base.values,
+        };
+        leading.update(f32::MAX, false);
+        assert_eq!(leading.preview.loop_start, 4 * beat - beat / 4);
+        leading.update(f32::MAX, true);
+        assert_eq!(leading.preview.loop_start, 4 * beat - 1);
+        let short = Context {
+            values: SourceValues {
+                source_start: beat + 2,
+                source_length: beat + 4,
+                loop_start: beat + 1,
+                loop_end: beat + 3,
+                looping: true,
+                ..base.values
+            },
+            ..base
+        };
+        assert!(short.valid());
+        for (handle, x, first, last) in [
+            (Handle::LoopEnd, -f32::MAX, beat + 1, beat + 3),
+            (Handle::LoopEnd, f32::MAX, beat + 1, beat + 4),
+            (Handle::LoopBody, -f32::MAX, beat + 1, beat + 3),
+            (Handle::LoopBody, f32::MAX, beat + 2, beat + 4),
+        ] {
+            let mut g = Gesture {
+                context: short,
+                down_x: 200.0,
+                handle,
+                preview: short.values,
+            };
+            g.update(x, false);
+            assert_eq!((g.preview.loop_start, g.preview.loop_end), (first, last));
+            assert!(g.preview.source_start < g.preview.loop_end);
+            assert!(g.preview.loop_end <= g.preview.source_length);
+            let preview = g.preview;
+            assert!(!g.update(f32::INFINITY, false));
+            assert_eq!(g.preview, preview);
+        }
+        let step = MidiGrid::Sixteenth.step_raw().unwrap();
+        let last_grid = u64::MAX / step * step;
+        assert_eq!(
+            clamp_loop_grid(u64::MAX, 1, u64::MAX, MidiGrid::Sixteenth),
+            last_grid
+        );
+        assert_eq!(
+            clamp_loop_grid(0, u64::MAX - 1, u64::MAX, MidiGrid::Sixteenth),
+            u64::MAX - 1
+        );
+        assert_eq!(
+            clamp_loop_grid(0, beat + 1, beat + 3, MidiGrid::Off),
+            beat + 1
+        );
+        let mut off = Gesture {
+            context: Context {
+                grid: MidiGrid::Off,
+                ..base
+            },
+            down_x: 100.0,
+            handle: Handle::LoopStart,
+            preview: base.values,
+        };
+        off.update(f32::MAX, false);
+        assert_eq!(off.preview.loop_start, 4 * beat - 1);
+        off.update(f32::MAX, true);
+        assert_eq!(off.preview.loop_start, 4 * beat - beat / 4);
+        let preview = off.preview;
+        off.update(102.0, true);
+        assert_eq!(off.preview, base.values); // The original three-pixel no-op threshold.
+        assert_ne!(off.preview, preview);
+    }
     #[test]
     fn loop_source_start_constraint_depends_on_enable_and_snap_override_is_exact() {
         let beat = hex_project::BeatTime::ONE.raw();
@@ -639,7 +742,7 @@ mod geometry_tests {
             assert_eq!(g.preview.loop_start, beat);
             assert_eq!(
                 g.preview.loop_end,
-                if looping { beat * 5 / 2 + 1 } else { beat + 1 }
+                if looping { beat * 11 / 4 } else { beat * 5 / 4 }
             );
             let mut body = Gesture {
                 context: c,
@@ -651,7 +754,7 @@ mod geometry_tests {
             assert_eq!(body.preview.loop_end - body.preview.loop_start, 2 * beat);
             assert_eq!(
                 body.preview.loop_start,
-                if looping { beat / 2 + 1 } else { 0 }
+                if looping { beat * 3 / 4 } else { 0 }
             );
         }
         let c = Context {
