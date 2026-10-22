@@ -79,12 +79,14 @@ impl EditorView {
         self.enqueue(Request::Edit(command));
     }
 
+    /// Whole-clip selection for workspace actions; never infer it from the inspector.
     pub(super) fn selected_midi_clip_data(&self) -> Option<ClipId> {
         let state = self.state.as_ref()?;
         let id = self.selected_clip?;
         state.project.midi_source(id).map(|_| id)
     }
 
+    /// Current inspector source, including a retained non-selection context.
     pub(super) fn detail_midi_clip_data(&self) -> Option<ClipId> {
         let id = self.detail_clip_id()?;
         self.state.as_ref()?.project.midi_source(id).map(|_| id)

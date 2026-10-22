@@ -50,6 +50,8 @@ impl EditorView {
         }
     }
 
+    /// Current Arrangement inspector owner and start/duration/source offset/length
+    /// in project frames. Workspace selection remains a separate query.
     pub(super) fn detail_audio_clip_data(
         &self,
     ) -> Option<(
@@ -158,7 +160,7 @@ impl EditorView {
                 hex_project::SessionCellContent::Stop => None,
             }
         } else {
-            let clip = self.selected_clip?;
+            let clip = self.detail_clip_id()?;
             if project.midi_clip(clip).is_some() {
                 Some((clip, true))
             } else {

@@ -1049,6 +1049,21 @@ fn time_range_detail_context_preserves_pane_modes_and_edit_targets(cx: &mut Test
                     );
                 });
                 assert_eq!(visual.debug_bounds(panel).is_some(), mode == 0);
+                if mode == 1 {
+                    assert!(visual.debug_bounds("device-panel").is_some());
+                }
+                let height = visual.debug_bounds("clip-view").unwrap().size.height;
+                assert_eq!(
+                    height < px(60.0),
+                    mode == 2,
+                    "closed intent is reflected in completed layout"
+                );
+                if mode == 0 {
+                    assert!(
+                        visual.debug_bounds("convert-clip").is_some(),
+                        "conversion is an explicit action on the retained inspector source"
+                    );
+                }
             };
             let lanes = [source, target]
                 .map(|track| editor.read_with(&visual, |v, _| v.drag_lanes[&track]));
@@ -1099,6 +1114,36 @@ fn time_range_detail_context_preserves_pane_modes_and_edit_targets(cx: &mut Test
             pump(&editor, &mut visual);
             assert_detail(&mut visual);
             if mode == 0 {
+                if !midi {
+                    let convert = visual.debug_bounds("convert-clip").unwrap();
+                    visual.simulate_click(convert.center(), Modifiers::default());
+                    pump(&editor, &mut visual);
+                    editor.read_with(&visual, |v, _| {
+                        assert_eq!(v.detail_clip_id(), Some(clip));
+                        assert!(v.state.as_ref().unwrap().project.midi_clip(clip).is_some());
+                        assert_eq!(
+                            v.selected_clip_ids(),
+                            vec![clip],
+                            "explicit conversion keeps its existing clip-focus behavior"
+                        );
+                    });
+                    assert!(visual.debug_bounds("midi-source-controls").is_some());
+                    visual.simulate_keystrokes("cmd-z");
+                    pump(&editor, &mut visual);
+                    editor.read_with(&visual, |v, _| {
+                        assert_eq!(v.detail_clip_id(), Some(clip));
+                        assert!(
+                            v.piano_view_clip.is_none(),
+                            "conversion Undo retires the changed source-kind viewport"
+                        );
+                    });
+                    // A new time gesture again owns selection independently.
+                    visual.simulate_mouse_down(down, MouseButton::Left, Modifiers::default());
+                    visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
+                    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+                    visual.run_until_parked();
+                    assert_detail(&mut visual);
+                }
                 let old_looping = editor.read_with(&visual, |v, _| {
                     v.state
                         .as_ref()
