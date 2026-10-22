@@ -98,6 +98,7 @@ mod midi_step;
 mod midi_stroke;
 mod midi_thumbnail;
 mod midi_velocity;
+mod midi_velocity_randomize;
 mod midi_velocity_ui;
 mod mixer;
 mod musical_audio_controls;
@@ -665,6 +666,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_marker: Option<u64>,
     midi_step: midi_step::StepEntry,
     midi_velocity: midi_velocity_ui::State,
+    midi_velocity_randomize: midi_velocity_randomize::State,
     midi_pan: midi_pan::State,
     midi_ruler: midi_ruler::State,
     midi_audition: midi_audition::MidiAudition,
@@ -1275,6 +1277,7 @@ impl EditorView {
             midi_marker: None,
             midi_step: midi_step::StepEntry::default(),
             midi_velocity: midi_velocity_ui::State::default(),
+            midi_velocity_randomize: midi_velocity_randomize::State::default(),
             midi_pan: midi_pan::State::default(),
             midi_ruler: midi_ruler::State::default(),
             midi_audition: midi_audition::MidiAudition::default(),

@@ -135,9 +135,9 @@ impl EditorView {
                     .h(px(18.0))
                     .cursor_pointer()
                     .child(theme::text(if self.midi_velocity.open {
-                        "▾ velocity"
+                        format!("▾ {label}")
                     } else {
-                        "▸ velocity"
+                        "▸ velocity".to_string()
                     }))
                     .on_mouse_down(
                         MouseButton::Left,
@@ -150,7 +150,93 @@ impl EditorView {
                     ),
             )
             .when(self.midi_velocity.open, |left| {
-                left.child(theme::text(label))
+                let captured = self.velocity_random_context();
+                let enabled = !self.edit_pending() && !self.midi_selection.is_empty();
+                left.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_1()
+                        .text_xs()
+                        .child(
+                            div()
+                                .id("midi-velocity-randomize")
+                                .debug_selector(|| "midi-velocity-randomize".into())
+                                .cursor_pointer()
+                                .px_1()
+                                .text_color(rgb(theme::color(if enabled {
+                                    theme::PaletteRole::Text
+                                } else {
+                                    theme::PaletteRole::Muted
+                                })))
+                                .hover(|style| {
+                                    style.bg(rgb(theme::color(theme::PaletteRole::Hover)))
+                                })
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| super::transport::MiniTooltip {
+                                        description:
+                                            "randomize selected velocities only · one undo".into(),
+                                    })
+                                    .into()
+                                })
+                                .on_click(cx.listener(move |view, _, _, cx| {
+                                    if let Some(captured) = captured {
+                                        view.randomize_selected_velocities(captured);
+                                    }
+                                    cx.notify();
+                                }))
+                                .child(theme::text("rnd")),
+                        )
+                        .child(
+                            div()
+                                .id("midi-velocity-random-less")
+                                .debug_selector(|| "midi-velocity-random-less".into())
+                                .cursor_pointer()
+                                .px_1()
+                                .child(theme::text("−"))
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| super::transport::MiniTooltip {
+                                        description:
+                                            "reduce velocity randomization amount · minimum 0"
+                                                .into(),
+                                    })
+                                    .into()
+                                })
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    view.midi_velocity_randomize.amount =
+                                        view.midi_velocity_randomize.amount.saturating_sub(8);
+                                    cx.notify();
+                                })),
+                        )
+                        .child(theme::text(format!(
+                            "±{}",
+                            self.midi_velocity_randomize.amount
+                        )))
+                        .child(
+                            div()
+                                .id("midi-velocity-random-more")
+                                .debug_selector(|| "midi-velocity-random-more".into())
+                                .cursor_pointer()
+                                .px_1()
+                                .child(theme::text("+"))
+                                .tooltip(|_, cx| {
+                                    cx.new(|_| super::transport::MiniTooltip {
+                                        description:
+                                            "increase velocity randomization amount · maximum 126"
+                                                .into(),
+                                    })
+                                    .into()
+                                })
+                                .on_click(cx.listener(|view, _, _, cx| {
+                                    view.midi_velocity_randomize.amount = view
+                                        .midi_velocity_randomize
+                                        .amount
+                                        .saturating_add(8)
+                                        .min(126);
+                                    cx.notify();
+                                })),
+                        ),
+                )
             });
         let mut row = div()
             .flex()
