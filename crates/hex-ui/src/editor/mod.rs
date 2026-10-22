@@ -653,7 +653,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_draw_mode: bool,
     pub(in crate::editor) midi_draw_pitch_locked: bool,
     pub(in crate::editor) midi_marker: Option<u64>,
-    pub(in crate::editor) midi_marquee: Option<([f32; 2], [f32; 2], bool)>,
+    pub(in crate::editor) midi_marquee: Option<midi_selection::Marquee>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
     // Only suppresses redundant pointer invalidations; paint resolves current geometry.

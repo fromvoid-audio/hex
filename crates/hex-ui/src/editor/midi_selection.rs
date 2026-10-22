@@ -3,6 +3,142 @@ use super::midi_scene::{self, NoteGeometry};
 use hex_project::NoteId;
 use std::sync::Arc;
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(super) struct MarqueeContext {
+    pub(super) scene: midi_scene::SceneKey,
+    pub(super) bounds: super::midi_stroke::CanvasBounds,
+    pub(super) selection_epoch: u64,
+}
+
+/// Cancellable visual selection. The actual selection stays unchanged until release.
+/// Context identity includes geometry and selection, so a stale preview cannot win.
+#[derive(Clone)]
+pub(super) struct Marquee {
+    first: [f32; 2],
+    last: [f32; 2],
+    context: MarqueeContext,
+    additive: bool,
+    hits: Arc<[NoteId]>,
+    highlighted: Arc<[NoteId]>,
+}
+
+impl Marquee {
+    pub(super) fn begin(
+        context: MarqueeContext,
+        first: [f32; 2],
+        additive: bool,
+        selection: &MidiSelection,
+    ) -> Option<Self> {
+        if !context.bounds.is_valid()
+            || context.scene.beat_span == 0
+            || context
+                .scene
+                .beat_start
+                .checked_add(context.scene.beat_span)
+                .is_none()
+            || !midi_scene::valid_pitch_range(context.scene.pitch_low, context.scene.pitch_rows)
+            || !first.into_iter().all(f32::is_finite)
+            || first[0] < 0.0
+            || first[0] >= context.bounds.width
+            || first[1] < 0.0
+            || first[1] >= context.bounds.height
+            || context.selection_epoch != selection.epoch()
+        {
+            return None;
+        }
+        Some(Self {
+            first,
+            last: first,
+            context,
+            additive,
+            hits: Arc::from([]),
+            highlighted: if additive {
+                selection.shared_ids()
+            } else {
+                Arc::from([])
+            },
+        })
+    }
+
+    pub(super) fn is_current(&self, context: MarqueeContext) -> bool {
+        self.context == context && context.bounds.is_valid()
+    }
+
+    pub(super) fn highlighted(&self) -> Arc<[NoteId]> {
+        Arc::clone(&self.highlighted)
+    }
+
+    pub(super) fn rectangle(&self) -> ([f32; 2], [f32; 2]) {
+        (self.first, self.last)
+    }
+
+    pub(super) fn update(
+        &mut self,
+        context: MarqueeContext,
+        selection: &MidiSelection,
+        scene: &midi_scene::MidiScene,
+        last: [f32; 2],
+    ) -> Result<bool, &'static str> {
+        if !self.is_current(context)
+            || scene.key() != context.scene
+            || selection.epoch() != context.selection_epoch
+            || !last.into_iter().all(f32::is_finite)
+        {
+            return Err("midi marquee changed · selection canceled");
+        }
+        let changed = self.last != last;
+        self.last = last;
+        let hits = if self.has_range() {
+            marquee_hits(
+                scene.notes(),
+                self.first,
+                last,
+                context.bounds.width,
+                context.bounds.height,
+                context.scene.pitch_rows,
+            )?
+        } else {
+            Vec::new()
+        };
+        if self.hits.as_ref() != hits.as_slice() {
+            // Reuse immutable paint data while motion stays over the same hit set.
+            let hits: Arc<[NoteId]> = Arc::from(hits);
+            let highlighted = if self.additive {
+                let mut preview = selection.clone();
+                preview.add_many(&hits)?;
+                preview.shared_ids()
+            } else {
+                Arc::clone(&hits)
+            };
+            self.hits = hits;
+            self.highlighted = highlighted;
+        }
+        Ok(changed)
+    }
+
+    fn has_range(&self) -> bool {
+        (self.first[0] - self.last[0]).abs() >= 3.0 || (self.first[1] - self.last[1]).abs() >= 3.0
+    }
+
+    pub(super) fn finish(
+        self,
+        context: MarqueeContext,
+        selection: &mut MidiSelection,
+    ) -> Result<bool, &'static str> {
+        if !self.is_current(context) || selection.epoch() != context.selection_epoch {
+            return Ok(false);
+        }
+        if !self.has_range() {
+            return Ok(!self.additive && selection.clear());
+        }
+        if self.additive {
+            selection.add_many(&self.hits)
+        } else {
+            selection.select_all(self.hits.iter().copied())
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(super) struct MidiSelection {
     ids: Arc<[NoteId]>,
