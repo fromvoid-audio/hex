@@ -716,7 +716,8 @@ class DeliveryTests(unittest.TestCase):
             with self.assertRaisesRegex(delivery.DeliveryError, "differs"):
                 delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
             resolve.return_value = plan
-            evidence["steps"][0]["test_results"] = {"python_executions": [2], "python_skipped": [2]}
+            next(s for s in evidence["steps"] if s["step_id"] == "runner-tests")["test_results"] = {
+                "python_executions": [2], "python_skipped": [2]}
             delivery.write_json(report, evidence)
             with self.assertRaisesRegex(delivery.DeliveryError, "no executed"):
                 delivery.validate_ci(report, runner, tree["commit"], allow_dev_profile=True)
