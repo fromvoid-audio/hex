@@ -981,6 +981,7 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_pending_clip_move();
@@ -989,6 +990,9 @@ impl EditorView {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
+        }
+        if !self.edit_pending() {
+            self.midi_step.cancel_pending();
         }
         visible_change |= self.poll_editor_audio_events();
         visible_change |= self.poll_export(cx);
@@ -1805,6 +1809,7 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
+        self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
@@ -1812,6 +1817,7 @@ impl EditorView {
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
         let group_copy_intent = self.group_copy_request_complete(&event);
+        let midi_step_complete = self.take_completed_midi_step(&event);
         if event.project_replaced {
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
@@ -1941,27 +1947,38 @@ impl EditorView {
             }
         }
         if let Some(request_id) = event.computer_keyboard_complete {
-            let current = self.computer_keyboard.enabled
-                && !self.computer_keyboard.suspended
-                && request_id == self.computer_keyboard.request_id
-                && self.computer_keyboard.target
-                    == self
-                        .selected_track
-                        .map(|track| (self.project_generation, event.state.revision, track))
-                && self
-                    .computer_keyboard
-                    .input
-                    .as_ref()
-                    .is_some_and(|input| !input.is_cancelled())
-                && self
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.revision == event.state.revision);
+            let note_audition =
+                self.midi_audition_preparation_matches(request_id, event.state.revision);
+            let current = note_audition
+                || (self.computer_keyboard.enabled
+                    && !self.computer_keyboard.suspended
+                    && request_id == self.computer_keyboard.request_id
+                    && self.computer_keyboard.target
+                        == self
+                            .selected_track
+                            .map(|track| (self.project_generation, event.state.revision, track))
+                    && self
+                        .computer_keyboard
+                        .input
+                        .as_ref()
+                        .is_some_and(|input| !input.is_cancelled())
+                    && self
+                        .state
+                        .as_ref()
+                        .is_some_and(|state| state.revision == event.state.revision));
             if current {
+                let audition_ok = note_audition && event.error.is_none();
                 if let Some(error) = event.error {
                     self.error = Some(error.into());
                     self.cancel_computer_keyboard();
                     self.computer_keyboard.suspended = true;
+                }
+                if audition_ok {
+                    if let Err(error) = self.trigger_prepared_midi_audition() {
+                        self.error = Some(error.to_string().into());
+                        self.cancel_computer_keyboard();
+                        return None;
+                    }
                 }
                 if let Some(playback) = event.playback {
                     let previous_reset = self
@@ -2650,6 +2667,7 @@ impl EditorView {
         // Canonical state, generation, gain/loop display extent and selection
         // have now been installed. Normalize only the locally retired owner.
         self.normalize_completed_trim_viewport(retired_trim);
+        self.apply_completed_midi_step(midi_step_complete);
         successfully_opened_path
     }
 
@@ -3437,6 +3455,7 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.midi_step.cancel_pending();
         // Stop explicitly discards voice histories. A previously refused edit
         // or restoration can now install the canonical sound without inheriting
         // an incompatible preview's history. Keep construction on the worker.

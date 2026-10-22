@@ -120,6 +120,14 @@ pub(super) struct HitCycle {
     note: NoteId,
 }
 
+/// A passive target shares click/resize geometry without advancing click cycling.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct NoteHover {
+    key: SceneKey,
+    pub(super) note: NoteId,
+    pub(super) kind: super::midi_drag::HitKind,
+}
+
 pub(super) struct MidiScene {
     key: SceneKey,
     notes: Box<[NoteGeometry]>,
@@ -202,6 +210,30 @@ impl MidiScene {
             .get(&id)
             .and_then(|index| self.notes.get(*index))
             .copied()
+    }
+
+    pub(super) fn hover(
+        &self,
+        x: f32,
+        y: f32,
+        width: f32,
+        height: f32,
+        mut cycle: Option<HitCycle>,
+    ) -> Option<NoteHover> {
+        let id = self.hit(x, y, width, height, &mut cycle)?;
+        let note = self.note(id)?;
+        let (left, right) = pixel_bounds(note, width)?;
+        Some(NoteHover {
+            key: self.key,
+            note: id,
+            kind: super::midi_drag::hit_kind(
+                x,
+                left,
+                right - left,
+                note.leading_edge_visible,
+                note.trailing_edge_visible,
+            ),
+        })
     }
 
     pub(super) fn preview_geometry(
@@ -410,26 +442,21 @@ mod tests {
             TrackContentSnapshot::Audio(_) => panic!("track snapshot has no midi lane"),
         };
         let midi_clip = clips.first_mut().expect("clip snapshot");
+        let gate = BeatTime::ONE.raw()
+            / if stagger && count > 600 {
+                16
+            } else if !stagger && count > 24 {
+                // Adjacent tiny gates have overlapping pixel hit halos.
+                4096
+            } else {
+                8
+            };
         midi_clip.notes = (0..count)
             .map(|index| MidiNoteSnapshot {
                 id: first_note_id + index as u64,
-                start_raw: if stagger {
-                    ((index
-                        % if count > 600 {
-                            clip_beats as usize * 16 - 4
-                        } else {
-                            16
-                        }) as u64)
-                        * BeatTime::ONE.raw()
-                        / 16
-                } else {
-                    BeatTime::ONE.raw() / 4
-                },
-                duration_raw: if stagger {
-                    BeatTime::ONE.raw() / 4
-                } else {
-                    BeatTime::ONE.raw() / 8
-                },
+                start_raw: (index / 24) as u64 * gate
+                    + if stagger { 0 } else { BeatTime::ONE.raw() / 4 },
+                duration_raw: gate,
                 pitch: 48 + (index % 24) as u8,
                 channel: 0,
                 velocity: 100,
@@ -461,15 +488,20 @@ mod tests {
         let scene = MidiScene::build(key(clip), notes);
         assert_eq!(scene.notes().len(), 600);
         let late_id = notes[599].id();
-        assert_eq!(scene.note(late_id).unwrap().id, late_id);
+        let late = scene.note(late_id).unwrap();
+        assert_eq!(late.id, late_id);
+        let (left, right) = pixel_bounds(late, 400.0).unwrap();
         let mut cycle = None;
-        let mut found_late = false;
-        for _ in 0..64 {
-            found_late |= scene.hit(56.0, 5.0, 400.0, 240.0, &mut cycle) == Some(late_id);
-        }
-        assert!(
-            found_late,
-            "every overlapping late note must remain hit-testable"
+        assert_eq!(
+            scene.hit(
+                (left + right) / 2.0,
+                late.y * 240.0 + 5.0,
+                400.0,
+                240.0,
+                &mut cycle
+            ),
+            Some(late_id),
+            "a note after index 512 must remain hit-testable"
         );
     }
 
@@ -486,7 +518,7 @@ mod tests {
     }
 
     #[test]
-    fn same_pitch_overlaps_cycle_deterministically_and_retain_all_candidates() {
+    fn adjacent_same_pitch_hit_halos_cycle_deterministically_and_retain_all_candidates() {
         let (project, clip) = fixture(600, false);
         let notes = project.midi_clip(clip).expect("clip").notes();
         let scene = MidiScene::build(key(clip), notes);
@@ -494,10 +526,23 @@ mod tests {
         let pitch = notes[0].pitch();
         let row = f32::from(48 + 23 - pitch) / 24.0;
         let y = row * 240.0 + 1.0;
-        let first = scene.hit(30.0, y, 400.0, 240.0, &mut cycle).unwrap();
-        let second = scene.hit(30.0, y, 400.0, 240.0, &mut cycle).unwrap();
+        let first = scene.hit(26.0, y, 400.0, 240.0, &mut cycle).unwrap();
+        let second = scene.hit(26.0, y, 400.0, 240.0, &mut cycle).unwrap();
         assert_ne!(first, second);
-        assert_eq!(scene.hit(31.0, y, 400.0, 240.0, &mut cycle), Some(first));
+        let mut expected: Vec<_> = notes
+            .iter()
+            .filter(|n| n.pitch() == pitch)
+            .map(|n| n.id())
+            .collect();
+        let mut actual = vec![first, second];
+        for _ in 2..expected.len() {
+            actual.push(scene.hit(26.0, y, 400.0, 240.0, &mut cycle).unwrap());
+        }
+        actual.sort_unstable();
+        expected.sort_unstable();
+        assert_eq!(actual, expected);
+        assert_eq!(scene.hit(26.0, y, 400.0, 240.0, &mut cycle), Some(first));
+        assert_eq!(scene.hit(27.0, y, 400.0, 240.0, &mut cycle), Some(first));
     }
 
     #[test]
