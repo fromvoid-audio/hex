@@ -31,6 +31,43 @@ Explicit native acceptance inputs (`HEX_VST3_MACOS_RECEIPT`,
 Python discovery for app-only merges too. Native suites retain their own opt-in
 requirements; a skipped fixture is not native acceptance.
 
+## Measure feedback time
+
+Each executed step records monotonic `start_offset_seconds` and `duration_seconds`;
+the run records `time_to_first_result_seconds` and total `duration_seconds`.
+Offsets start at runner construction, after CLI plan resolution. Measure invocation
+wall time separately when that preparation matters. Durations survive command
+failure and interruption; `not_run` steps have null timing. UTC timestamps remain
+for correlation, not precise elapsed measurements.
+
+Per-step `timing_estimates` contains log-derived Cargo build-phase, Rust harness
+and Python harness seconds plus the unclassified residual. Cargo's build phase
+includes more than compiler CPU. Harness output is rounded and may be nested;
+missing values and negative/overlapping residuals are null, not zero. Residual
+time can include setup, I/O, process overhead and other work; do not label all of
+it setup. These diagnostic fields never change qualification or test counts.
+
+For a comparison, retain each summary and raw log with exact source/base,
+toolchain, hardware, features, command and target/cache conditions. Start with a
+warm quick run and one named owning edit regression. Use three paired runs for
+cheap workloads, alternate order, and compare medians; retain warm-up/compilation
+samples separately. Reuse required full and representative UI merge reports
+instead of adding repeated full audits. Label historical/different-source reports
+and unavailable maintenance/diagnostic measures explicitly. Do not delete caches
+to manufacture a saving or infer reduced detection from fewer executables.
+
+Inspect a retained report without rerunning checks:
+
+```sh
+python3 - SUMMARY.json <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+print(s['commit'], s['status'], s.get('time_to_first_result_seconds'), s['duration_seconds'])
+for step in s['steps']:
+    print(step['step_id'], step['status'], step.get('duration_seconds'), step.get('timing_estimates'))
+PY
+```
+
 ## Target ownership
 
 Use one persistent Cargo target per executor, with no concurrent raw Cargo writer.
