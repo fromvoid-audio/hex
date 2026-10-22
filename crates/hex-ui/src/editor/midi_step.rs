@@ -1,6 +1,6 @@
-//! Explicit grid-step note insertion. Physical input stays in computer_keyboard;
+//! Explicit grid-step note insertion. Physical input stays in its input owners;
 //! this view owner sends one canonical batch and advances only on its FIFO ACK.
-//! No callback, audio resources, project history or hardware MIDI is owned here.
+//! No callback, audio resources, project history or hardware MIDI connection is owned here.
 use super::EditorView;
 use hex_project::{BeatTime, ClipId, Command, Created, MidiNoteInsert};
 use hex_session::service::{Event, Request};
@@ -47,8 +47,15 @@ impl EditorView {
             self.error = Some("step entry exceeds the musical time range".into());
             return;
         };
+        let hardware = match self.hardware_step_notes() {
+            Ok(notes) => notes,
+            Err(error) => {
+                self.error = Some(error.into());
+                return;
+            }
+        };
         let mut insert = Vec::new();
-        if insert.try_reserve_exact(17).is_err() {
+        if insert.try_reserve_exact(hex_midi::HELD_NOTE_COUNT).is_err() {
             self.error = Some("could not reserve step-entry notes".into());
             return;
         }
@@ -65,6 +72,22 @@ impl EditorView {
         );
         insert.sort_by_key(|note| note.pitch);
         insert.dedup_by_key(|note| note.pitch);
+        // Computer keys have priority for duplicate pitches. Capture remains
+        // separate from monitoring; exact hardware velocities/channel are edits.
+        if let Some((notes, floor, channel)) = hardware {
+            for note in notes.after(floor) {
+                if !insert.iter().any(|existing| existing.pitch == note.pitch) {
+                    insert.push(MidiNoteInsert {
+                        start: BeatTime::from_raw(cursor),
+                        duration: BeatTime::from_raw(duration),
+                        pitch: note.pitch,
+                        channel,
+                        velocity: note.velocity,
+                    });
+                }
+            }
+        }
+        insert.sort_by_key(|note| note.pitch);
         if insert.is_empty() {
             self.midi_marker = Some(next);
             self.reveal_piano_cursor(next);

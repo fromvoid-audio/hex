@@ -1143,6 +1143,7 @@ impl EditorView {
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
             view.midi_step.cancel_pending();
+            view.invalidate_hardware_step();
             if view.cancel_loop_rail_gesture() {
                 cx.defer_in(window, |_, _, cx| cx.notify());
             }
@@ -1160,6 +1161,7 @@ impl EditorView {
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
             view.midi_step.cancel_pending();
+            view.invalidate_hardware_step();
             let midi_cancelled = view.cancel_midi_note_gesture();
             if midi_cancelled {
                 cx.notify();
@@ -1178,6 +1180,7 @@ impl EditorView {
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
                 view.midi_step.cancel_pending();
+                view.invalidate_hardware_step();
                 view.audio_event_editor.gesture = None;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
