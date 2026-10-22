@@ -203,6 +203,23 @@ impl EditorView {
         let draw_pitch_locked = self.midi_draw_pitch_locked;
         let draw_mode = self.midi_draw_mode;
         let draw_hit_cycle = self.midi_hit_cycle;
+        let drag_cursor = self
+            .midi_note_gesture
+            .map(|gesture| match gesture.kind {
+                midi_drag::GestureKind::Move { .. } => gpui::CursorStyle::ClosedHand,
+                midi_drag::GestureKind::ResizeLeading { .. } => gpui::CursorStyle::ResizeLeft,
+                midi_drag::GestureKind::ResizeTrailing { .. } => gpui::CursorStyle::ResizeRight,
+            })
+            .or_else(|| {
+                self.midi_group_gesture
+                    .as_ref()
+                    .map(|_| gpui::CursorStyle::ClosedHand)
+            })
+            .or_else(|| {
+                self.midi_stroke
+                    .as_ref()
+                    .map(|_| gpui::CursorStyle::Crosshair)
+            });
         let hover_allowed = self.context_menu.is_none()
             && !self.edit_pending()
             && draw_preview.is_none()
@@ -256,6 +273,8 @@ impl EditorView {
                             midi_drag::HitKind::ResizeTrailing => gpui::CursorStyle::ResizeRight,
                         }
                     };
+                    window.set_cursor_style(cursor, &hitbox);
+                } else if let Some(cursor) = drag_cursor {
                     window.set_cursor_style(cursor, &hitbox);
                 }
                 let mut quad = |x: f32, y: f32, w: f32, h: f32, color: u32| {

@@ -39,6 +39,16 @@ fn passive_note_hover_tracks_both_edges_and_clears_without_editing(cx: &mut Test
         visual.simulate_mouse_move(point(x, y), None, Modifiers::default());
         visual.run_until_parked();
         assert_eq!(visual.rendered_cursor_style(), Some(cursor));
+        visual.simulate_mouse_down(point(x, y), MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let active_cursor = if cursor == CursorStyle::OpenHand {
+            CursorStyle::ClosedHand
+        } else {
+            cursor
+        };
+        assert_eq!(visual.rendered_cursor_style(), Some(active_cursor));
+        visual.simulate_mouse_up(point(x, y), MouseButton::Left, Modifiers::default());
+        pump(&editor, &mut visual);
     }
     visual.simulate_mouse_move(
         roll.origin - point(px(2.0), px(2.0)),
