@@ -12,6 +12,7 @@ pub(super) struct Creation {
     context: StrokeContext,
     down_x: f32,
     dragged: bool,
+    minimum_gate: u64,
     pub(super) preview: MidiNoteInsert,
 }
 
@@ -39,10 +40,31 @@ impl EditorView {
         {
             return;
         }
+        // Use the canonical conversion at the fastest authored tempo. Two frames
+        // leave rounding headroom at any note/tempo boundary; a single beat tick
+        // can quantize to zero and be refused by playback preparation.
+        let minimum_gate = self.state.as_ref().and_then(|state| {
+            let project = &state.project;
+            let fastest = project
+                .tempo_map()
+                .points()
+                .iter()
+                .map(|point| point.tempo())
+                .max_by_key(|tempo| tempo.micro_bpm())?;
+            hex_project::TempoMap::constant(project.sample_rate(), fastest)
+                .ok()?
+                .frame_to_beat(2)
+                .ok()
+                .map(|beat| beat.raw().max(1))
+        });
+        let Some(minimum_gate) = minimum_gate else {
+            return;
+        };
         self.midi_creation = Some(Creation {
             context,
             down_x: x,
             dragged: false,
+            minimum_gate,
             preview: note,
         });
     }
@@ -81,7 +103,11 @@ impl EditorView {
         };
         let start = creation.preview.start.raw();
         let remaining = current.clip_length.saturating_sub(start);
-        let minimum = current.effective_grid.minimum_gate().min(remaining);
+        let minimum = current
+            .effective_grid
+            .minimum_gate()
+            .max(creation.minimum_gate)
+            .min(remaining);
         let end = midi_drag::snap_raw(raw, current.effective_grid)
             .clamp(start.saturating_add(minimum), current.clip_length);
         let duration = BeatTime::from_raw(end - start);

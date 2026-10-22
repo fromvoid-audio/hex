@@ -349,7 +349,7 @@ fn normal_delete_and_draw_mode_still_use_their_own_gestures(cx: &mut TestAppCont
 fn held_creation_clamps_to_clip_end_and_positive_minimum(cx: &mut TestAppContext) {
     for (grid, from, to, expected) in [
         (MidiGrid::Sixteenth, 0.25, 0.01, BeatTime::ONE.raw() / 4),
-        (MidiGrid::Off, 0.25, 0.01, 1),
+        (MidiGrid::Off, 0.25, 0.01, 0),
         (MidiGrid::Sixteenth, 0.875, 0.98, BeatTime::ONE.raw() / 2),
     ] {
         let (mut visual, editor, _environment, clip) = fixture(cx);
@@ -368,7 +368,21 @@ fn held_creation_clamps_to_clip_end_and_positive_minimum(cx: &mut TestAppContext
             let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
             assert_eq!(source.notes().len(), 1, "grid={grid:?} from={from} to={to}");
             let note = &source.notes()[0];
-            assert_eq!(note.duration().raw(), expected);
+            if expected > 0 {
+                assert_eq!(note.duration().raw(), expected);
+            } else {
+                let map = v.state.as_ref().unwrap().project.tempo_map();
+                let onset = map.beat_to_frame(note.start()).unwrap();
+                let off = map
+                    .beat_to_frame(BeatTime::from_raw(
+                        note.start().raw() + note.duration().raw(),
+                    ))
+                    .unwrap();
+                assert!(
+                    off > onset,
+                    "free minimum must survive canonical frame quantization"
+                );
+            }
             assert!(note.start().raw() + note.duration().raw() <= source.source_length().raw());
         });
     }
