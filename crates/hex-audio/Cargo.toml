@@ -16,6 +16,8 @@ cpal = "=0.17.3"
 rtrb = "=0.3.4"
 
 [dev-dependencies]
+# Real provider/pair allocation probes only; no production device dependency.
+hex-devices = { path = "../hex-devices" }
 hex-tuning = { path = "../hex-tuning" }
 hex-media = { path = "../hex-media" }
 hex-project = { path = "../hex-project" }
