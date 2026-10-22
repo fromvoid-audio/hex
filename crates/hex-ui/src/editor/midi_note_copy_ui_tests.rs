@@ -423,18 +423,17 @@ fn copy_collision_keeps_left_prefix_and_focus_or_real_revision_cancels_preview(
     });
     let roll = visual.debug_bounds("midi-note-roll").unwrap();
     let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
-    let prefix_left = (roll.origin.x + px(1.0) + (roll.size.width - px(2.0)) / 8.0) * scale;
-    let prefix_width = (roll.size.width - px(2.0)) / 4.0 * scale;
-    let primary = gpui::Hsla::from(gpui::rgb(super::super::theme::color(
-        super::super::theme::PaletteRole::Primary,
-    )));
+    let prefix_left = f32::from(roll.origin.x + px(1.0) + (roll.size.width - px(2.0)) / 8.0);
+    let prefix_width = f32::from((roll.size.width - px(2.0)) / 4.0);
+    let primary: gpui::Background =
+        gpui::rgb(crate::theme::color(crate::theme::PaletteRole::Primary)).into();
     assert!(
         visual
             .rendered_filled_quads("midi-note-roll")
             .iter()
-            .any(|q| q.background.color == primary
-                && (f32::from(q.bounds.origin.x) - f32::from(prefix_left)).abs() < 1.0
-                && (f32::from(q.bounds.size.width) - f32::from(prefix_width)).abs() < 1.0),
+            .any(|(bounds, color)| color == &primary
+                && (bounds.origin.x / scale - prefix_left).abs() < 1.0
+                && (bounds.size.width / scale - prefix_width).abs() < 1.0),
         "held copy paints the surviving original prefix"
     );
     visual.simulate_mouse_up(end, MouseButton::Left, alt);
