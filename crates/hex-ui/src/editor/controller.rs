@@ -2770,6 +2770,7 @@ impl EditorView {
         {
             self.last_enqueued_import_to_new_track = Some((path.clone(), *before_track, *start));
         }
+        self.midi_creation = None;
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();
         }

@@ -79,6 +79,7 @@ mod loop_selection_ui_test;
 mod menus;
 mod midi;
 mod midi_canvas;
+mod midi_creation;
 mod midi_drag;
 mod midi_draw;
 mod midi_group_drag;
@@ -644,6 +645,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_selection: midi_selection::MidiSelection,
     pub(in crate::editor) midi_note_gesture: Option<midi_drag::NoteGesture>,
     pub(in crate::editor) midi_group_gesture: Option<midi_group_drag::GroupGesture>,
+    pub(in crate::editor) midi_creation: Option<midi_creation::Creation>,
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
     pub(in crate::editor) midi_draw_pitch_locked: bool,
@@ -1225,6 +1227,7 @@ impl EditorView {
             midi_selection: midi_selection::MidiSelection::default(),
             midi_note_gesture: None,
             midi_group_gesture: None,
+            midi_creation: None,
             midi_stroke: None,
             midi_draw_mode: false,
             midi_draw_pitch_locked: true,
@@ -1625,6 +1628,7 @@ impl EditorView {
         self.advance_selection_intent();
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {
+            self.midi_creation = None;
             self.midi_note_gesture = None;
             self.midi_hit_cycle = None;
             self.midi_scene_cache.clear();
