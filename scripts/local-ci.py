@@ -94,6 +94,13 @@ def terminal_progress(label: str, *, announce: bool = True):
 
 @dataclass(frozen=True)
 class Step:
+    """A check with a 1–100 character ASCII ID starting with a letter or digit.
+
+    Remaining characters may be letters, digits, underscores or hyphens.
+    The runner validates the entire plan before executing any command. IDs are
+    used verbatim in numbered log basenames; the index keeps repeated IDs distinct.
+    """
+
     step_id: str
     argv: tuple[str, ...]
     uses_cargo_target: bool = False
@@ -133,13 +140,48 @@ FULL_STEPS = (
 )
 
 
+def edit_selection(inventory: list[dict], *, package: str, test_filter: str,
+                   features: str = "", lib: bool = False, test: str | None = None) -> dict:
+    """Validate an explicit edit target; omissions keep Cargo's package-wide behavior."""
+    packages = [item for item in inventory if item["name"] == package]
+    if len(packages) != 1 or not test_filter.strip():
+        raise ValueError("edit feedback requires one known workspace package and a nonempty test filter")
+    owner = packages[0]
+    requested_features = {name for name in features.split(",") if name}
+    if requested_features - owner["features"].keys():
+        raise ValueError("unknown workspace package feature")
+    selection = {"package": package, "filter": test_filter, "features": features}
+    if lib or test is not None:
+        if lib and test is not None:
+            raise ValueError("select either a library or a named integration test")
+        library_kinds = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
+        targets = [target for target in owner["targets"]
+                   if (bool(library_kinds.intersection(target["kind"])) if lib else
+                       "test" in target["kind"] and target["name"] == test)]
+        if len(targets) != 1:
+            raise ValueError("unknown or ambiguous edit test target")
+        enabled = requested_features | ({"default"} if "default" in owner["features"] else set())
+        pending = list(enabled)
+        while pending:
+            for feature in owner["features"].get(pending.pop(), []):
+                if feature not in enabled:
+                    enabled.add(feature)
+                    pending.append(feature)
+        if set(targets[0].get("required-features", [])) - enabled:
+            raise ValueError("edit test target requires features that are not enabled")
+        selection["target"] = {"kind": "lib" if lib else "test", "name": targets[0]["name"]}
+    return selection
+
+
 def planned_steps(plan: dict) -> tuple[Step, ...]:
     """Select complete configurations, never deduplicate by test-name overlap."""
     scope = plan["scope"]
     if plan.get("edit"):
         edit = plan["edit"]
         feature = ("--features", edit["features"]) if edit["features"] else ()
-        return (Step("edit-tests", ("cargo", "test", "-p", edit["package"], *feature, "--locked", edit["filter"], "--", "--nocapture"),
+        selected = edit.get("target")
+        target = () if selected is None else (("--lib",) if selected["kind"] == "lib" else ("--test", selected["name"]))
+        return (Step("edit-tests", ("cargo", "test", "-p", edit["package"], *feature, *target, "--locked", edit["filter"], "--", "--nocapture"),
                      requires_tests=True),
                 Step("edit-clippy", ("cargo", "clippy", "-p", edit["package"], *feature, "--all-targets", "--locked", "--", "-D", "warnings")),
                 QUICK_STEPS[-1])
@@ -765,8 +807,9 @@ class LocalCiRunner:
                 if cleanup_argv is None:
                     cleanup_argv = self._workspace_clean_argv(target)[:8]
                 for spec in invalidated:
-                    if spec not in cleanup_argv:
-                        cleanup_argv.extend(("--package", spec))
+                    name = self._clean_package_name(spec)
+                    if name not in cleanup_argv:
+                        cleanup_argv.extend(("--package", name))
             if cleanup_argv is not None:
                 current = {p["name"]: p for p in dependency_inputs["packages"]}
                 previous = owner_record.get("dependency_inputs", {}) if owner_record else {}
@@ -776,7 +819,7 @@ class LocalCiRunner:
                 old_by_name = {p["name"]: p for p in (previous or {}).get("packages", [])}
                 for package in dependency_inputs["packages"]:
                     if not self._invalidate_dependency_profile and old_by_name.get(package["name"]) != package:
-                        cleanup_argv.extend(("--package", package["spec"]))
+                        cleanup_argv.extend(("--package", self._clean_package_name(package["spec"])))
 
             self.summary["target_cache"] = {
                 "action": ownership_action,
@@ -832,8 +875,28 @@ class LocalCiRunner:
         for package in packages:
             if not isinstance(package, dict) or not isinstance(package.get("spec"), str):
                 raise TargetCacheError("workspace package metadata is malformed")
-            argv.extend(("--package", package["spec"]))
+            argv.extend(("--package", self._clean_package_name(package["spec"])))
         return argv
+
+    def _clean_package_name(self, spec: str) -> str:
+        """Cargo 1.94 clean matches names, ignoring ID URL/version qualifiers.
+
+        Keep full IDs in provenance, but only clean a name when current complete
+        metadata proves it identifies exactly one workspace or path package.
+        Never use a qualifier to imply a narrower cleanup than Cargo performs.
+        """
+        if not isinstance(self._release_metadata, dict):
+            raise TargetCacheError("complete cleanup package metadata is unavailable")
+        packages = self._release_metadata["packages"]
+        matches = [p for p in packages if p["id"] == spec]
+        if len(matches) != 1:
+            raise TargetCacheError("cleanup package is absent or ambiguous in current metadata")
+        name = matches[0]["name"]
+        if (not isinstance(name, str) or not name
+                or sum(p["name"] == name for p in packages) != 1
+                or matches[0].get("source") is not None):
+            raise TargetCacheError("cleanup requires a unique workspace/path package name")
+        return name
 
     def _release_scope(self) -> list[dict[str, str]]:
         """Cargo clean ignores URL/version qualifiers: reject external name collisions."""
@@ -1246,8 +1309,9 @@ class LocalCiRunner:
                 argv = self._workspace_clean_argv(target) if not reuse and not self._invalidate_dependency_profile else self._workspace_clean_argv(target)[:8]
                 argv[3] = "release"
                 for spec in invalidated:
-                    if spec not in argv:
-                        argv.extend(("--package", spec))
+                    name = self._clean_package_name(spec)
+                    if name not in argv:
+                        argv.extend(("--package", name))
                 report["cleanup_argv"] = argv
                 report["cleanup_status"] = "pending"
                 # Keep release and dev cleanup evidence independent.
@@ -1458,7 +1522,14 @@ class LocalCiRunner:
 
         failed = False
         try:
-            if not self._capture_repository_state("start_tree"):
+            invalid_ids = [step.step_id for step in self.steps
+                           if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", step.step_id) is None]
+            if invalid_ids:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    step_id_error=f"invalid step IDs: {invalid_ids!r}; expected 1–100 ASCII characters: "
+                                                  "alphanumeric first, then alphanumeric, underscore or hyphen")
+                print(self.summary["step_id_error"], file=sys.stderr, flush=True)
+            elif not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not capture exact commit and dirty state"
@@ -1603,6 +1674,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--package", help="explicit workspace package for partial edit feedback")
     parser.add_argument("--test-filter", help="explicit nonempty Rust test filter for partial edit feedback")
     parser.add_argument("--features", default="", help="explicit package features for partial edit feedback")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--lib", action="store_true", help="test only the package library in an explicit edit plan")
+    target.add_argument("--test", metavar="NAME", help="test only this named integration target in an explicit edit plan")
     parser.add_argument(
         "--min-free-gib", type=int,
         help="read-only free-space floor in GiB; default 2 for full and 0 for quick; never deletes files",
@@ -1638,13 +1712,12 @@ def main(argv: list[str] | None = None) -> int:
                                    source=arguments.source, metadata=metadata)
             if arguments.reuse_report:
                 plan = reusable_plan(ROOT, plan, arguments.reuse_report)
-            if arguments.package or arguments.test_filter or arguments.features:
+            if arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
                 if arguments.profile != "edit" or not arguments.package or not arguments.test_filter:
                     raise ValueError("package/filter/features require --profile edit with a nonempty package and test filter")
-                package = next((p for p in plan["cargo_inventory"] if p["name"] == arguments.package), None)
-                if package is None or any(f not in package["features"] for f in arguments.features.split(",") if f):
-                    raise ValueError("unknown workspace package or feature")
-                plan["edit"] = {"package": arguments.package, "filter": arguments.test_filter, "features": arguments.features}
+                plan["edit"] = edit_selection(plan["cargo_inventory"], package=arguments.package,
+                                              test_filter=arguments.test_filter, features=arguments.features,
+                                              lib=arguments.lib, test=arguments.test)
                 plan.pop("plan_sha256")
                 plan["plan_sha256"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
         except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
@@ -1654,7 +1727,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--profile cannot be combined with --quick")
     elif arguments.reuse_report:
         parser.error("--reuse-report requires an explicit merge plan")
-    elif arguments.package or arguments.test_filter or arguments.features:
+    elif arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
         parser.error("package/filter/features require an explicit edit plan")
     runner = LocalCiRunner(
         mode=mode,

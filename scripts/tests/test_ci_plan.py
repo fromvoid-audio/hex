@@ -28,6 +28,89 @@ ci = module("runner_scope_fixture", "local-ci.py")
 
 
 class ScopeTests(unittest.TestCase):
+    def test_edit_target_cli_requires_edit_plan_and_exclusive_selection(self):
+        for arguments in (["--lib"], ["--profile", "full", "--lib"],
+                          ["--quick", "--test", "roundtrip"], ["--lib", "--test", "roundtrip"]):
+            with self.subTest(arguments=arguments), patch.object(ci, "LocalCiRunner") as runner:
+                with self.assertRaises(SystemExit) as error:
+                    ci.main(arguments)
+                self.assertEqual(error.exception.code, 2)
+                runner.assert_not_called()
+
+    def test_edit_target_validation_and_required_features(self):
+        inventory = [{"name": "fixture", "features": {"default": ["enabled"], "enabled": [], "extra": []},
+                      "targets": [{"name": "fixture", "kind": ["lib"]},
+                                  {"name": "roundtrip", "kind": ["test"], "required-features": ["enabled"]},
+                                  {"name": "optional", "kind": ["test"], "required-features": ["extra"]}]}]
+        def select(**kwargs):
+            return ci.edit_selection(inventory, **{"package": "fixture", "test_filter": "case", **kwargs})
+        self.assertNotIn("target", select())
+        self.assertEqual(select(lib=True)["target"], {"kind": "lib", "name": "fixture"})
+        self.assertEqual(select(test="roundtrip")["target"]["name"], "roundtrip")
+        self.assertEqual(select(test="optional", features="extra")["target"]["name"], "optional")
+        for options in ({"package": "unknown"}, {"test_filter": " "}, {"features": "unknown"},
+                        {"test": "missing"}, {"test": "optional"}, {"test": ""},
+                        {"lib": True, "test": "roundtrip"}):
+            with self.subTest(options=options), self.assertRaises(ValueError):
+                select(**options)
+        with self.assertRaises(ValueError):
+            ci.edit_selection(inventory * 2, package="fixture", test_filter="case", lib=True)
+        inventory[0]["targets"].append({"name": "other", "kind": ["lib"]})
+        with self.assertRaises(ValueError):
+            select(lib=True)
+
+    def test_edit_target_runs_only_owner_and_rejects_zero_matches_or_regression(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            (root / "src").mkdir()
+            (root / "tests").mkdir()
+            (root / "Cargo.toml").write_text('[package]\nname="edit-target-fixture"\nversion="0.1.0"\nedition="2021"\n')
+            (root / ".gitignore").write_text('/target/\n/artifacts/\n')
+            source = root / "src/lib.rs"
+            source.write_text('#[test] fn library_case() { assert_eq!(2 + 2, 4); }\n')
+            (root / "tests/roundtrip.rs").write_text('#[test] fn integration_case() {}\n')
+            env = {**os.environ, "CARGO_TARGET_DIR": str(root / "target")}
+            def command(*argv):
+                return subprocess.check_output(argv, cwd=root, env=env).decode().strip()
+            command("git", "init", "-q")
+            command("git", "config", "user.name", "target fixture")
+            command("git", "config", "user.email", "fixture@invalid")
+            command("cargo", "generate-lockfile", "--offline")
+            command("cargo", "fmt", "--all")
+            command("git", "add", ".")
+            command("git", "commit", "-qm", "fixture")
+            metadata = json.loads(command("cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"))
+            inventory = plan.cargo_inventory(metadata, root)
+            def run(name, *, test_filter="case", **target):
+                edit = ci.edit_selection(inventory, package="edit-target-fixture", test_filter=test_filter, **target)
+                selected = {"scope": "full", "qualifies_merge": False, "edit": edit}
+                runner = ci.LocalCiRunner(root, mode="edit", plan=selected, env=env, run_id=name, min_free_bytes=0)
+                code = runner.run()
+                log = (runner.output_dir / "01-edit-tests.log").read_text()
+                return code, log, runner.summary
+            code, log, summary = run("package")
+            self.assertEqual(code, 0)
+            self.assertIn("test library_case ... ok", log)
+            self.assertIn("test integration_case ... ok", log)
+            code, log, summary = run("library", lib=True)
+            self.assertEqual(code, 0)
+            self.assertEqual(summary["status"], "partial")
+            self.assertIn("test library_case ... ok", log)
+            self.assertNotIn("integration_case", log)
+            self.assertNotIn("tests/roundtrip.rs", log)
+            code, log, summary = run("integration", test="roundtrip")
+            self.assertEqual(code, 0)
+            self.assertIn("test integration_case ... ok", log)
+            self.assertNotIn("library_case", log)
+            code, log, summary = run("no-match", lib=True, test_filter="absent_case")
+            self.assertEqual(code, 1)
+            self.assertIn("no passing tests", summary["steps"][0]["error"])
+            self.assertTrue(all(s["status"] == "not_run" for s in summary["steps"][1:]))
+            source.write_text('#[test] fn library_case() { assert_eq!(2 + 2, 5); }\n')
+            code, log, summary = run("real-regression", lib=True)
+            self.assertEqual(code, 1)
+            self.assertIn("library_case ... FAILED", log)
+
     def test_current_review_future_timestamp_content_change_is_unproven(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

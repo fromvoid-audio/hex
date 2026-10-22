@@ -5,6 +5,7 @@ unknown inputs and explicit audits retain complete unittest discovery.
 """
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 REVIEWED_MODULES = frozenset({
@@ -13,7 +14,19 @@ REVIEWED_MODULES = frozenset({
     "test_launch", "test_launch_restart", "test_launch_restart_compile",
     "test_local_ci", "test_pcm_build_gate", "test_python_test_plan",
     "test_stream_build_inputs", "test_terminal_progress", "test_ui_build_identity",
+    # Architecture fixtures exercise check-architecture.py policy/refusal logic;
+    # that guard still runs for app source/doc edits. Policy/test edits fall back.
+    "test_architecture",
+    # Mach-O/parser and receipt-bound bootstrap fixtures depend on native helper
+    # sources/build inputs, not ordinary app Rust. Those inputs fall back below.
+    "test_vst3_macos_bootstrap",
 })
+# Explicit native acceptance must never disappear behind app-only selection.
+# Keep partial opt-ins comprehensive too; each owning suite validates its inputs.
+NATIVE_ACCEPTANCE_ENV = (
+    "HEX_VST3_MACOS_RECEIPT", "HEX_VST3_DISCOVERY_RECEIPT",
+    "HEX_VST3_PACKAGE_SCANNER", "HEX_VST3_PACKAGE_FIXTURES", "HEX_TEST_SIGNING_IDENTITY",
+)
 SHARED_TESTS = (
     "test_ci_plan.ScopeTests.test_current_review_native_build_environment_variants_are_semantic",
     "test_ci_plan.ScopeTests.test_review_target_directory_is_ownership_not_semantic_config",
@@ -44,11 +57,13 @@ def available_modules(root: Path) -> list[str]:
 
 
 def select(profile: str, paths: list[str], inventory: list[dict],
-           ui_packages: set[str], modules: list[str]) -> dict:
+           ui_packages: set[str], modules: list[str], *, env: dict | None = None) -> dict:
     """Select from non-prose Git inputs; no test imports or historical cache.
 
     Cargo inventory establishes ownership, not just a crates/ prefix. The caller
     retains ordinary Rust classification and all its reverse-dependency checks.
+    Native opt-ins come from the invoking environment (or an explicit test map);
+    their presence and comprehensive selection are recorded in the resolved plan.
     """
     modules = sorted(set(modules))
 
@@ -62,6 +77,11 @@ def select(profile: str, paths: list[str], inventory: list[dict],
     if not paths:
         return {"mode": "none", "selected_groups": [], "excluded_groups": modules,
                 "test_selectors": [], "reasons": ["prose-only plan retains metadata checks"]}
+    native = [key for key in NATIVE_ACCEPTANCE_ENV
+              if (os.environ if env is None else env).get(key)]
+    if native:
+        return comprehensive("explicit native acceptance inputs retain full Python coverage: "
+                             + ", ".join(native))
     if set(modules) != REVIEWED_MODULES:
         return comprehensive("new, missing or unregistered Python test module")
     categories = set()
