@@ -4,6 +4,13 @@ use gpui::{Entity, Modifiers, MouseButton, TestAppContext, VisualTestContext, po
 use hex_project::{BeatTime, ClipId, Command, MidiNote, MidiNoteInsert};
 use hex_session::service::Request;
 
+fn history_matches(actual: hex_project::Snapshot, expected: &hex_project::Snapshot) {
+    // Canonical history deliberately never reuses allocated identities.
+    assert!(actual.next_id >= expected.next_id);
+    let mut expected = expected.clone();
+    expected.next_id = actual.next_id;
+    assert_eq!(actual, expected);
+}
 fn notes(
     editor: &Entity<super::EditorView>,
     visual: &VisualTestContext,
@@ -126,14 +133,14 @@ fn repeated_keyboard_copy_tracks_only_acknowledged_new_ids_and_roundtrips(cx: &m
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(&v.state.as_ref().unwrap().project.snapshot(), expected)
+            history_matches(v.state.as_ref().unwrap().project.snapshot(), expected)
         });
     }
     for expected in history.iter().skip(1) {
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Redo)));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(&v.state.as_ref().unwrap().project.snapshot(), expected)
+            history_matches(v.state.as_ref().unwrap().project.snapshot(), expected)
         });
     }
     let saved = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
@@ -227,7 +234,228 @@ fn option_drag_copies_single_and_group_with_preview_cancel_and_source_growth(
         editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
-            assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+            history_matches(v.state.as_ref().unwrap().project.snapshot(), &before)
         });
     }
+}
+
+#[gpui::test]
+fn console_copy_keeps_arrangement_isolated_and_invalid_empty_requests_do_not_edit(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, arrangement) = fixture(cx);
+    authored(&editor, &mut visual, arrangement);
+    let original = notes(&editor, &visual, arrangement);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddScene {
+            name: "copy scene".into()
+        })))
+    });
+    pump(&editor, &mut visual);
+    let scene = editor.read_with(&visual, |v, _| {
+        v.state.as_ref().unwrap().project.scenes()[0].id()
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(
+            v.enqueue(Request::Edit(Command::CopyArrangementMidiToSession {
+                source: arrangement,
+                scene
+            }))
+        )
+    });
+    pump(&editor, &mut visual);
+    let clip = editor.update(&mut visual, |v, cx| {
+        let track = v.selected_track.unwrap();
+        let hex_project::SessionCellContent::Midi(clip) = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .session_cell(track, scene)
+            .unwrap()
+        else {
+            panic!("midi cell")
+        };
+        let clip = clip.id();
+        v.mode = super::super::EditorMode::Session;
+        v.selected_scene = Some(scene);
+        v.selected_cell = Some((track, scene));
+        v.selected_clip = Some(clip);
+        v.piano_view_clip = None;
+        v.midi_selection.clear();
+        cx.notify();
+        clip
+    });
+    visual.run_until_parked();
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    visual.simulate_keystrokes("cmd-d");
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    editor.update(&mut visual, |v, cx| {
+        let note = v
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .midi_source(clip)
+            .unwrap()
+            .notes()[0]
+            .clone();
+        let sample = super::super::midi_group_drag::GroupNote {
+            id: note.id(),
+            start: note.start().raw(),
+            duration: note.duration().raw(),
+            pitch: note.pitch(),
+            channel: note.channel(),
+            velocity: note.velocity(),
+        };
+        use super::super::midi_note_copy::insertions;
+        assert!(insertions(&[], 1).is_err());
+        assert!(insertions(&[sample], u64::MAX).is_err());
+        for invalid in [
+            super::super::midi_group_drag::GroupNote {
+                duration: 0,
+                ..sample
+            },
+            super::super::midi_group_drag::GroupNote {
+                pitch: 128,
+                ..sample
+            },
+            super::super::midi_group_drag::GroupNote {
+                channel: 16,
+                ..sample
+            },
+            super::super::midi_group_drag::GroupNote {
+                velocity: 0,
+                ..sample
+            },
+        ] {
+            assert!(insertions(&[invalid], 1).is_err());
+        }
+        v.midi_selection.set_single(note.id());
+        v.midi_snap_grid = super::super::midi_drag::MidiGrid::Off;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("cmd-d");
+    pump(&editor, &mut visual);
+    visual.run_until_parked();
+    assert_eq!(notes(&editor, &visual, arrangement), original);
+    let all = notes(&editor, &visual, clip);
+    assert_eq!(all.len(), 3);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.midi_selection.len(), 1);
+        let copy = all
+            .iter()
+            .find(|n| Some(n.id()) == v.midi_selection.primary())
+            .unwrap();
+        assert_eq!(copy.start().raw(), BeatTime::ONE.raw() * 3 / 4);
+        assert_eq!(copy.velocity(), 37);
+    });
+}
+
+#[gpui::test]
+fn copy_collision_keeps_left_prefix_and_focus_or_real_revision_cancels_preview(
+    cx: &mut TestAppContext,
+) {
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+            duration: BeatTime::from_quarters(2).unwrap(),
+            pitch: 60,
+            channel: 2,
+            velocity: 93
+        })))
+    });
+    pump(&editor, &mut visual);
+    let original = notes(&editor, &visual, clip)[0].clone();
+    let down = at(&editor, &mut visual, 1.0, 60);
+    let end = at(&editor, &mut visual, 2.0, 60);
+    let alt = Modifiers {
+        alt: true,
+        ..Default::default()
+    };
+    let before = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    visual.simulate_mouse_down(down, MouseButton::Left, alt);
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), alt);
+    visual.update(|window, cx| editor.update(cx, |v, _| v.focus.focus(window)));
+    visual.run_until_parked();
+    visual.simulate_mouse_up(end, MouseButton::Left, alt);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+    });
+    visual.update(|window, cx| editor.update(cx, |v, _| v.midi_focus.focus(window)));
+    visual.simulate_mouse_down(down, MouseButton::Left, alt);
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), alt);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddMidiNote {
+            clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 72,
+            channel: 0,
+            velocity: 64
+        })))
+    });
+    pump(&editor, &mut visual);
+    let after_external =
+        editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().project.snapshot());
+    visual.simulate_mouse_up(end, MouseButton::Left, alt);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after_external)
+    });
+    editor.update(&mut visual, |v, cx| {
+        v.midi_selection.set_single(original.id());
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_mouse_down(down, MouseButton::Left, alt);
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), alt);
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), after_external)
+    });
+    let roll = visual.debug_bounds("midi-note-roll").unwrap();
+    let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+    let prefix_left = (roll.origin.x + px(1.0) + (roll.size.width - px(2.0)) / 8.0) * scale;
+    let prefix_width = (roll.size.width - px(2.0)) / 4.0 * scale;
+    let primary = gpui::Hsla::from(gpui::rgb(super::super::theme::color(
+        super::super::theme::PaletteRole::Primary,
+    )));
+    assert!(
+        visual
+            .rendered_filled_quads("midi-note-roll")
+            .iter()
+            .any(|q| q.background.color == primary
+                && (f32::from(q.bounds.origin.x) - f32::from(prefix_left)).abs() < 1.0
+                && (f32::from(q.bounds.size.width) - f32::from(prefix_width)).abs() < 1.0),
+        "held copy paints the surviving original prefix"
+    );
+    visual.simulate_mouse_up(end, MouseButton::Left, alt);
+    pump(&editor, &mut visual);
+    visual.run_until_parked();
+    let all = notes(&editor, &visual, clip);
+    let prefix = all.iter().find(|n| n.id() == original.id()).unwrap();
+    assert_eq!(prefix.duration(), BeatTime::ONE);
+    let copy = all
+        .iter()
+        .find(|n| n.pitch() == 60 && n.id() != original.id())
+        .unwrap();
+    assert_eq!(copy.start().raw(), BeatTime::ONE.raw() * 3 / 2);
+    assert_eq!(copy.duration(), original.duration());
+    assert_eq!(copy.velocity(), 93);
+    editor.update(&mut visual, |v, _| assert!(v.enqueue(Request::Undo)));
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        history_matches(
+            v.state.as_ref().unwrap().project.snapshot(),
+            &after_external,
+        )
+    });
 }
