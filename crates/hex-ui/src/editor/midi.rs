@@ -14,7 +14,7 @@ impl EditorView {
     ) {
         if self.edit_pending()
             || self.project_generation != generation
-            || self.selected_clip != Some(clip_id)
+            || self.detail_clip_id() != Some(clip_id)
             || self
                 .state
                 .as_ref()
@@ -79,10 +79,17 @@ impl EditorView {
         self.enqueue(Request::Edit(command));
     }
 
+    /// Whole-clip selection for workspace actions; never infer it from the inspector.
     pub(super) fn selected_midi_clip_data(&self) -> Option<ClipId> {
         let state = self.state.as_ref()?;
         let id = self.selected_clip?;
         state.project.midi_source(id).map(|_| id)
+    }
+
+    /// Current inspector source, including a retained non-selection context.
+    pub(super) fn detail_midi_clip_data(&self) -> Option<ClipId> {
+        let id = self.detail_clip_id()?;
+        self.state.as_ref()?.project.midi_source(id).map(|_| id)
     }
 
     pub(super) fn selected_arrangement_midi_clip_data(&self) -> Option<ClipId> {
@@ -203,7 +210,7 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
-        let Some(clip) = self.selected_midi_clip_data() else {
+        let Some(clip) = self.detail_midi_clip_data() else {
             return;
         };
         let notes = self.midi_selection.ids().to_vec();
@@ -295,7 +302,7 @@ impl EditorView {
         &mut self,
         parameter: super::midi_group_drag::GroupParameter,
     ) {
-        let Some(clip) = self.selected_midi_clip_data() else {
+        let Some(clip) = self.detail_midi_clip_data() else {
             return;
         };
         let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
@@ -317,7 +324,7 @@ impl EditorView {
         {
             return;
         }
-        let Some(clip_id) = self.selected_midi_clip_data() else {
+        let Some(clip_id) = self.detail_midi_clip_data() else {
             return;
         };
         let Some(state) = self.state.as_ref() else {
@@ -356,7 +363,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || self.detail_midi_clip_data() != Some(clip_id)
             || self.edit_pending()
         {
             self.error = Some("selected midi notes changed · nudge canceled".into());
@@ -393,7 +400,7 @@ impl EditorView {
         if self.edit_pending()
             || self.midi_selection.len() < 2
             || self.midi_selection.len() > hex_project::MAX_NOTES
-            || self.selected_midi_clip_data() != Some(expected_clip)
+            || self.detail_midi_clip_data() != Some(expected_clip)
             || self.project_generation != expected_generation
             || self.midi_selection.epoch() != expected_selection_epoch
             || self
@@ -442,7 +449,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || self.detail_midi_clip_data() != Some(clip_id)
             || self.midi_selection.epoch() != selection_epoch
             || self.midi_selection.shared_ids().as_ref() != selected.as_ref()
             || self.edit_pending()
@@ -470,7 +477,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || self.detail_midi_clip_data() != Some(clip_id)
             || self.midi_selection.epoch() != selection_epoch
             || self.midi_selection.shared_ids().as_ref() != selected.as_ref()
             || self.edit_pending()
@@ -498,7 +505,7 @@ impl EditorView {
         self.state
             .as_ref()?
             .project
-            .midi_source(self.selected_clip?)
+            .midi_source(self.detail_clip_id()?)
     }
 
     pub(super) fn update_note_field(

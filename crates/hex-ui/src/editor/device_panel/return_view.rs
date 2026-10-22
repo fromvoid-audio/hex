@@ -92,9 +92,10 @@ pub(super) fn render(
             .find(|device| device.id() == id)
             .map(|device| device.state().type_id())
     });
+    // The shared retirement helper owns both legacy and current EQ graphs.
     let alive_eq8: HashSet<_> = devices
         .iter()
-        .filter(|device| device.state().type_id().as_str() == Ok("hex.eq8"))
+        .filter(|device| matches!(device.state().type_id().as_str(), Ok("hex.eq8" | "hex.eq")))
         .map(hex_project::Device::id)
         .collect();
     retire_removed_eq8_graphs(view, cx, &alive_eq8);

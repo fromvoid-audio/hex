@@ -33,6 +33,7 @@ mod workspace_view;
 mod workspace_view_ui_test;
 
 mod group_copy;
+mod pending_clip_move;
 #[cfg(test)]
 mod test_environment;
 
@@ -79,6 +80,7 @@ mod loop_selection_ui_test;
 mod menus;
 mod midi;
 mod midi_canvas;
+mod midi_creation;
 mod midi_drag;
 mod midi_draw;
 mod midi_group_drag;
@@ -644,6 +646,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_selection: midi_selection::MidiSelection,
     pub(in crate::editor) midi_note_gesture: Option<midi_drag::NoteGesture>,
     pub(in crate::editor) midi_group_gesture: Option<midi_group_drag::GroupGesture>,
+    pub(in crate::editor) midi_creation: Option<midi_creation::Creation>,
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
     pub(in crate::editor) midi_draw_pitch_locked: bool,
@@ -651,9 +654,13 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_marquee: Option<([f32; 2], [f32; 2], bool)>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
+    piano_view_clip: Option<(u64, ClipId)>,
+    piano_zoom_wheel_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
+    piano_pitch_rows: u8,
+    piano_pitch_zoom: Option<(f32, u8, u8)>,
     pub(in crate::editor) midi_snap_grid: midi_drag::MidiGrid,
     pending_requests: VecDeque<Request>,
     device_gesture: hex_session::device_gesture::GestureClient,
@@ -699,6 +706,7 @@ pub(super) struct EditorView {
     duplicate_intent: DuplicateIntent,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     pending_group_copy: Option<group_copy::Pending>,
+    pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
     export_control: Option<hex_session::service::ExportControl>,
@@ -730,6 +738,7 @@ pub(super) struct EditorView {
     clip_view_open: bool,
     device_panel_active: bool,
     clip_detail_body_height: f32,
+    retained_clip_detail: Option<clip_view::RetainedClipDetail>,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
     pending_loop: Option<loop_rail::PendingLoop>,
     loop_rail_cursor: gpui::CursorStyle,
@@ -1109,6 +1118,10 @@ impl EditorView {
                 view.cancel_project_spectrum_resize(cx);
                 if view.cancel_trim_gesture(cx) {
                     cx.stop_active_drag(window);
+                    // Blur runs after paint in GPUI's focus phase. Notify again
+                    // through the normal effect queue so the canceled overlay
+                    // is removed in the next frame, without another input.
+                    cx.defer_in(window, |_, _, cx| cx.notify());
                 }
                 view.cancel_track_resize(cx);
             }
@@ -1225,6 +1238,7 @@ impl EditorView {
             midi_selection: midi_selection::MidiSelection::default(),
             midi_note_gesture: None,
             midi_group_gesture: None,
+            midi_creation: None,
             midi_stroke: None,
             midi_draw_mode: false,
             midi_draw_pitch_locked: true,
@@ -1232,10 +1246,14 @@ impl EditorView {
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
             midi_hit_cycle: None,
+            piano_view_clip: None,
+            piano_zoom_wheel_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
             piano_pitch_low: 48,
+            piano_pitch_rows: 24,
+            piano_pitch_zoom: None,
             midi_snap_grid: midi_drag::MidiGrid::default(),
             pending_requests: VecDeque::new(),
             device_gesture: hex_session::device_gesture::GestureClient::default(),
@@ -1280,6 +1298,7 @@ impl EditorView {
             duplicate_intent: DuplicateIntent::default(),
             pending_scene_duplicate: None,
             pending_group_copy: None,
+            pending_clip_move: None,
             close_prompt_open: false,
             export_pending: false,
             export_control: None,
@@ -1311,6 +1330,7 @@ impl EditorView {
             clip_view_open: true,
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
+            retained_clip_detail: None,
             loop_rail_gesture: None,
             pending_loop: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
@@ -1622,9 +1642,12 @@ impl EditorView {
         if !self.focus_clip_details(window, cx) {
             return false;
         }
+        self.retained_clip_detail = None;
         self.advance_selection_intent();
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {
+            self.piano_view_clip = None;
+            self.midi_creation = None;
             self.midi_note_gesture = None;
             self.midi_hit_cycle = None;
             self.midi_scene_cache.clear();

@@ -169,13 +169,13 @@ impl EditorView {
         }
     }
 
-    fn current_stroke_context(
+    pub(super) fn current_stroke_context(
         &self,
         bounds: midi_stroke::CanvasBounds,
         modifiers: StrokeModifiers,
     ) -> Option<StrokeContext> {
         let state = self.state.as_ref()?;
-        let clip_id = self.selected_clip?;
+        let clip_id = self.detail_clip_id()?;
         let clip = state.project.midi_source(clip_id)?;
         Some(StrokeContext {
             generation: self.project_generation,
@@ -189,6 +189,7 @@ impl EditorView {
             view_start: self.piano_beat_start.raw(),
             view_span: self.piano_beat_span.raw(),
             pitch_low: self.piano_pitch_low,
+            pitch_rows: self.piano_pitch_rows,
             bounds,
             pitch_locked: self.midi_draw_pitch_locked ^ modifiers.pitch,
             draw_mode: self.midi_draw_mode,
@@ -196,7 +197,7 @@ impl EditorView {
     }
 }
 
-fn same_rendered_frame(current: StrokeContext, rendered: StrokeContext) -> bool {
+pub(super) fn same_rendered_frame(current: StrokeContext, rendered: StrokeContext) -> bool {
     current.generation == rendered.generation
         && current.revision == rendered.revision
         && current.clip == rendered.clip
@@ -205,12 +206,13 @@ fn same_rendered_frame(current: StrokeContext, rendered: StrokeContext) -> bool 
         && current.view_start == rendered.view_start
         && current.view_span == rendered.view_span
         && current.pitch_low == rendered.pitch_low
+        && current.pitch_rows == rendered.pitch_rows
         && current.bounds == rendered.bounds
         && current.pitch_locked == (rendered.pitch_locked ^ current.pitch_modifier)
         && current.draw_mode == rendered.draw_mode
 }
 
-fn canvas_bounds(bounds: [f32; 4]) -> midi_stroke::CanvasBounds {
+pub(super) fn canvas_bounds(bounds: [f32; 4]) -> midi_stroke::CanvasBounds {
     midi_stroke::CanvasBounds {
         x: bounds[0],
         y: bounds[1],
@@ -242,12 +244,21 @@ fn stroke_point(
     }
     let fraction = f64::from(local_x / bounds.width);
     let offset = (fraction * context.view_span as f64) as u64;
-    let beat_raw = context
-        .view_start
-        .checked_add(offset)?
-        .min(context.clip_length.saturating_sub(1));
-    let row = ((local_y / bounds.height * 24.0).floor() as u8).min(23);
-    let pitch = context.pitch_low.checked_add(23)?.checked_sub(row)?;
+    let beat_raw = context.view_start.checked_add(offset)?;
+    let beat_raw = if clamp_to_bounds {
+        beat_raw.min(context.clip_length.checked_sub(1)?)
+    } else {
+        if beat_raw >= context.clip_length {
+            return None;
+        }
+        beat_raw
+    };
+    let row = ((local_y / bounds.height * f32::from(context.pitch_rows)).floor() as u8)
+        .min(context.pitch_rows.checked_sub(1)?);
+    let pitch = context
+        .pitch_low
+        .checked_add(context.pitch_rows.checked_sub(1)?)?
+        .checked_sub(row)?;
     Some(midi_stroke::StrokePoint { beat_raw, pitch })
 }
 
@@ -331,6 +342,7 @@ mod tests {
             view_start: 0,
             view_span: BeatTime::ONE.raw() * 4,
             pitch_low: 48,
+            pitch_rows: 24,
             bounds: midi_stroke::CanvasBounds {
                 x: 10.0,
                 y: 20.0,

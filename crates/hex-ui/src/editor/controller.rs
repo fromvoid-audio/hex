@@ -983,6 +983,7 @@ impl EditorView {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.pending_group_copy.take().is_some();
+                    visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.pending_loop.take().is_some();
                     break;
                 }
@@ -997,6 +998,7 @@ impl EditorView {
                 let resize_request = self.pending_trim_matches(&request);
                 let loop_request = self.pending_loop_matches(&request);
                 let group_copy_request = self.pending_group_copy_matches(&request);
+                let clip_move_request = self.pending_clip_move_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
                         self.worker_requests_pending =
@@ -1009,6 +1011,9 @@ impl EditorView {
                         }
                         if group_copy_request {
                             self.group_copy_submitted();
+                        }
+                        if clip_move_request {
+                            self.clip_move_submitted();
                         }
                     }
                     Err(SubmitError::Full(request)) => {
@@ -1028,6 +1033,9 @@ impl EditorView {
                         clear_rejected_scene_duplicate(&mut self.pending_scene_duplicate, &request);
                         if group_copy_request {
                             self.pending_group_copy = None;
+                        }
+                        if clip_move_request {
+                            self.retire_pending_clip_move();
                         }
                         visible_change |=
                             replace_error(&mut self.error, "an export is already pending");
@@ -1060,6 +1068,9 @@ impl EditorView {
                         if group_copy_request {
                             self.pending_group_copy = None;
                         }
+                        if clip_move_request {
+                            self.retire_pending_clip_move();
+                        }
                         if matches!(
                             &request,
                             Request::Edit(hex_project::Command::DuplicateClip(_))
@@ -1073,6 +1084,7 @@ impl EditorView {
         }
         visible_change |= self.pump_device_gesture();
         visible_change |= self.retire_abandoned_group_copy();
+        visible_change |= self.retire_abandoned_clip_move();
         let now = Instant::now();
         visible_change |= self.tick_time_gesture_autoscroll(now);
         visible_change |= self.tick_clip_gesture_autoscroll(now, cx);
@@ -1796,6 +1808,7 @@ impl EditorView {
         let sampler_edit_complete = event.sampler_edit_complete;
         let sampler_load_complete = event.sampler_load_complete;
         let sampler_load_succeeded = event.error.is_none();
+        self.clip_move_request_complete(&event);
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
         let group_copy_intent = self.group_copy_request_complete(&event);
@@ -2154,13 +2167,14 @@ impl EditorView {
             self.device_panel.main_selected = None;
             self.track_selection = super::selection::TrackSelection::default();
             self.selected_clip = None;
+            self.retained_clip_detail = None;
             self.selected_scene = None;
             self.selected_cell = None;
             self.session_copy_source = None;
             self.session_track_start = 0;
             self.midi_selection.clear();
         } else if let Some(state) = self.state.clone() {
-            let previous_clip = self.selected_clip;
+            let previous_clip = self.detail_clip_id();
             if self.session_copy_source.is_some_and(|clip| {
                 state.project.midi_clip(clip).is_none()
                     && !state
@@ -2179,13 +2193,17 @@ impl EditorView {
                 // A completed time range deliberately has no primary clip. The
                 // generic stale-clip fallback must not reselect its first original
                 // after a range copy (or on a later unrelated worker response).
+                // Retained inspector context also keeps that selection empty
+                // during a range gesture and after its cancellation.
                 let time_range_owns_selection = self.selected_clip.is_none()
-                    && self.time_selection_gesture.is_none()
-                    && self.time_range_move_gesture.is_none()
-                    && self
-                        .edit_cursor
-                        .is_some_and(|cursor| cursor.generation == self.project_generation)
-                    && self.normalized_time_selection().is_some();
+                    && ((self.mode == super::EditorMode::Arrangement
+                        && self.retained_clip_detail.is_some())
+                        || (self.time_selection_gesture.is_none()
+                            && self.time_range_move_gesture.is_none()
+                            && self.edit_cursor.is_some_and(|cursor| {
+                                cursor.generation == self.project_generation
+                            })
+                            && self.normalized_time_selection().is_some()));
                 (self.selected_track, self.selected_clip) =
                     selection::reconcile(&state.project, self.selected_track, self.selected_clip);
                 if time_range_owns_selection {
@@ -2214,13 +2232,13 @@ impl EditorView {
             }) {
                 self.selected_cell = None;
             }
-            if self.selected_clip != previous_clip {
+            if self.detail_clip_id() != previous_clip {
                 self.cancel_midi_note_gesture();
                 self.midi_hit_cycle = None;
                 self.midi_selection.clear();
                 self.piano_beat_start = hex_project::BeatTime::ZERO;
                 if let Some(length) = self
-                    .selected_clip
+                    .detail_clip_id()
                     .and_then(|clip| state.project.midi_source(clip))
                     .map(|source| source.source_length().raw())
                 {
@@ -2230,14 +2248,17 @@ impl EditorView {
                 }
             }
             if let Some(clip) = self
-                .selected_clip
+                .detail_clip_id()
                 .and_then(|clip| state.project.midi_source(clip))
             {
                 // Source markers and Arrangement duration may change independently.
-                // Keep the editor inside the authored source even for the same clip.
+                // Preserve zoom-out space across ACKs; only the start follows source bounds.
                 let source_length = clip.source_length().raw();
                 self.piano_beat_span = hex_project::BeatTime::from_raw(
-                    self.piano_beat_span.raw().min(source_length).max(1),
+                    self.piano_beat_span
+                        .raw()
+                        .min(super::midi_scene::zoom_limit(source_length))
+                        .max(1),
                 );
                 self.piano_beat_start =
                     hex_project::BeatTime::from_raw(super::midi_scene::clamp_start(
@@ -2287,6 +2308,7 @@ impl EditorView {
                 });
                 if let Some(track) = track {
                     self.selected_track = Some(track);
+                    self.retained_clip_detail = None;
                     self.selected_clip = Some(clip);
                     self.piano_beat_start = hex_project::BeatTime::ZERO;
                     self.midi_hit_cycle = None;
@@ -2325,6 +2347,7 @@ impl EditorView {
             self.midi_note_gesture = None;
             self.midi_group_gesture = None;
             self.selected_track = Some(track);
+            self.retained_clip_detail = None;
             self.selected_clip = None;
             self.midi_selection.clear();
         } else if let Some(hex_project::Created::Note(note)) = event.created {
@@ -2336,7 +2359,7 @@ impl EditorView {
                 .and_then(|state| state.project.midi_source(clip))
             {
                 match super::midi_draw::created_range_ids(
-                    self.selected_clip,
+                    self.detail_clip_id(),
                     clip,
                     current.notes(),
                     first,
@@ -2367,6 +2390,7 @@ impl EditorView {
                 self.midi_note_gesture = None;
                 self.midi_group_gesture = None;
                 self.selected_track = Some(track);
+                self.retained_clip_detail = None;
                 self.selected_clip = Some(clip);
                 self.piano_beat_start = hex_project::BeatTime::ZERO;
                 self.midi_hit_cycle = None;
@@ -2770,6 +2794,7 @@ impl EditorView {
         {
             self.last_enqueued_import_to_new_track = Some((path.clone(), *before_track, *start));
         }
+        self.midi_creation = None;
         if self.midi_stroke.is_some() {
             self.cancel_midi_stroke();
         }
@@ -2883,6 +2908,7 @@ impl EditorView {
         let resize_request = self.pending_trim_matches(&request);
         let loop_request = self.pending_loop_matches(&request);
         let group_copy_request = self.pending_group_copy_matches(&request);
+        let clip_move_request = self.pending_clip_move_matches(&request);
         match self.service.submit(request) {
             Ok(()) => {
                 self.worker_requests_pending = self.worker_requests_pending.saturating_add(1);
@@ -2894,6 +2920,9 @@ impl EditorView {
                 }
                 if group_copy_request {
                     self.group_copy_submitted();
+                }
+                if clip_move_request {
+                    self.clip_move_submitted();
                 }
                 true
             }
