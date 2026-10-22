@@ -442,7 +442,11 @@ pub(super) fn pitch_at_point(
     }
     let row = (((y - top) / height) * f32::from(pitch_rows)).floor();
     let row = row.clamp(i32::MIN as f32, i32::MAX as f32) as i32;
-    Some((i32::from(pitch_low) + i32::from(pitch_rows) - 1 - row).clamp(0, 127) as u8)
+    Some(
+        (i32::from(pitch_low) + i32::from(pitch_rows) - 1)
+            .saturating_sub(row)
+            .clamp(0, 127) as u8,
+    )
 }
 
 fn snap_clamped(raw: i128, min: u64, max: u64, step: u64) -> u64 {

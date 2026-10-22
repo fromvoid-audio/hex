@@ -600,6 +600,14 @@ mod tests {
                 );
             }
         }
+        assert_eq!(
+            super::super::midi_drag::pitch_at_point(f32::MIN, [0.0, 0.0, 100.0, 1.0], 0, 128),
+            Some(127)
+        );
+        assert_eq!(
+            super::super::midi_drag::pitch_at_point(f32::MAX, [0.0, 0.0, 100.0, 1.0], 0, 128),
+            Some(0)
+        );
         for (low, rows) in [(0, 0), (127, 2), (128, 1)] {
             let scene = MidiScene::build(
                 SceneKey {

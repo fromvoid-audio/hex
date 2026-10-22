@@ -1563,10 +1563,7 @@ impl EditorView {
         let clip_length = self
             .midi_clip()
             .map_or(BeatTime::ONE.raw(), |clip| clip.source_length().raw());
-        let current = self
-            .piano_beat_span
-            .raw()
-            .max((BeatTime::ONE.raw() / 16).max(1));
+        let current = self.piano_beat_span.raw();
         self.piano_beat_span = BeatTime::from_raw(super::midi_scene::zoom_span(
             current,
             clip_length,
