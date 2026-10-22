@@ -88,6 +88,7 @@ mod midi_creation;
 mod midi_drag;
 mod midi_draw;
 mod midi_group_drag;
+mod midi_note_copy;
 mod midi_note_overwrite;
 mod midi_pan;
 mod midi_ruler;
