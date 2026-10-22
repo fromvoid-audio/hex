@@ -902,7 +902,7 @@ impl Render for EditorView {
                     view.midi_focus.is_focused(window),
                 ) {
                     super::session_navigation::ArrowTarget::Piano => {
-                        view.nudge_selected_note(false);
+                        view.navigate_piano_cursor(false);
                     }
                     super::session_navigation::ArrowTarget::Session => {
                         view.navigate_session(
@@ -928,7 +928,7 @@ impl Render for EditorView {
                     view.midi_focus.is_focused(window),
                 ) {
                     super::session_navigation::ArrowTarget::Piano => {
-                        view.nudge_selected_note(true);
+                        view.navigate_piano_cursor(true);
                     }
                     super::session_navigation::ArrowTarget::Session => {
                         view.navigate_session(

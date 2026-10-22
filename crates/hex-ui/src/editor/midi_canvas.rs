@@ -110,6 +110,7 @@ impl EditorView {
         if self.piano_view_clip != Some(owner) {
             self.cancel_midi_note_gesture();
             self.piano_view_clip = Some(owner);
+            self.midi_marker = Some(BeatTime::ZERO.raw());
             self.piano_zoom_wheel_accum = 0.0;
             self.piano_beat_start = BeatTime::ZERO;
             self.piano_beat_span =
@@ -172,7 +173,7 @@ impl EditorView {
             selected_note_data.map_or_else(
                 || {
                     format!(
-                        "{} beats · click: select time · double-click: add",
+                        "{} beats · click: cursor · drag: select · double-click: add",
                         beat_label(beat_span.raw())
                     )
                 },
@@ -357,21 +358,6 @@ impl EditorView {
                         } else {
                             theme::color(theme::PaletteRole::Grid)
                         },
-                    );
-                }
-                if let Some(marker) = draw_marker
-                    && marker >= beat_start.raw()
-                    && marker < beat_start.raw().saturating_add(raw_span)
-                {
-                    let x = (marker.saturating_sub(beat_start.raw()) as f64 / raw_span as f64)
-                        as f32
-                        * width;
-                    quad(
-                        x,
-                        0.0,
-                        1.0,
-                        height,
-                        theme::color(theme::PaletteRole::Primary),
                     );
                 }
                 for note in canvas_scene.notes() {
@@ -637,6 +623,25 @@ impl EditorView {
                     );
                 }
 
+                // Draw the insertion position last so sustained notes cannot hide it.
+                if let Some(marker) = draw_marker
+                    && marker >= beat_start.raw()
+                    && marker < beat_start.raw().saturating_add(raw_span)
+                {
+                    let x = (marker.saturating_sub(beat_start.raw()) as f64 / raw_span as f64)
+                        as f32
+                        * width;
+                    quad(x, 0.0, 1.0, height, theme::color(theme::PaletteRole::Text));
+                    let cap_left = (x - 3.0).max(0.0);
+                    quad(
+                        cap_left,
+                        0.0,
+                        7.0_f32.min(width - cap_left),
+                        3.0,
+                        theme::color(theme::PaletteRole::Primary),
+                    );
+                }
+
                 let rendered_context = super::midi_stroke::StrokeContext {
                     generation,
                     revision,
@@ -869,7 +874,7 @@ impl EditorView {
                                 beat_start,
                                 beat_span,
                                 authoring_length,
-                                midi_drag::MidiGrid::Off,
+                                effective_grid,
                             ) else {
                                 return;
                             };
@@ -2127,3 +2132,7 @@ mod hover_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_marquee_ui_tests.rs"]
 mod marquee_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_cursor_ui_tests.rs"]
+mod cursor_tests;
