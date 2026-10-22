@@ -245,10 +245,11 @@ fn stroke_point(
     let fraction = f64::from(local_x / bounds.width);
     let offset = (fraction * context.view_span as f64) as u64;
     let beat_raw = context.view_start.checked_add(offset)?;
+    let length = context.authoring_length()?;
     let beat_raw = if clamp_to_bounds {
-        beat_raw.min(context.clip_length.checked_sub(1)?)
+        beat_raw.min(length.checked_sub(1)?)
     } else {
-        if beat_raw >= context.clip_length {
+        if beat_raw >= length {
             return None;
         }
         beat_raw

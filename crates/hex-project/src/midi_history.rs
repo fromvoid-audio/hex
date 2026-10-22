@@ -81,6 +81,7 @@ enum Kind {
     Notes {
         location: Location,
         edit: Notes,
+        source_length: Option<BeatTime>,
     },
     Source {
         location: Location,
@@ -204,6 +205,7 @@ impl Plan {
             }
             Command::AddMidiNote { clip, .. } => Kind::Notes {
                 location: location(*clip)?,
+                source_length: None,
                 edit: Notes::Edit {
                     first: source.next_id,
                     inserted: 1,
@@ -213,10 +215,28 @@ impl Plan {
             },
             Command::AddMidiNotes { clip, notes } => Kind::Notes {
                 location: location(*clip)?,
+                source_length: None,
                 edit: Notes::Edit {
                     first: source.next_id,
                     inserted: notes.len(),
                     removed: 0,
+                    only_removed: None,
+                },
+            },
+            Command::EditMidiNotesWithSourceExtent {
+                clip,
+                remove,
+                insert,
+            } => Kind::Notes {
+                location: location(*clip)?,
+                source_length: Some(crate::midi_batch::extended_source_length(
+                    source.midi_source(*clip).ok_or(MISSING)?.source_length(),
+                    insert,
+                )?),
+                edit: Notes::Edit {
+                    first: source.next_id,
+                    inserted: insert.len(),
+                    removed: remove.len(),
                     only_removed: None,
                 },
             },
@@ -226,6 +246,7 @@ impl Plan {
                 remove,
             } => Kind::Notes {
                 location: location(*clip)?,
+                source_length: None,
                 edit: Notes::Edit {
                     first: source.next_id,
                     inserted: insert.len(),
@@ -235,6 +256,7 @@ impl Plan {
             },
             Command::RemoveMidiNotes { clip, notes } => Kind::Notes {
                 location: location(*clip)?,
+                source_length: None,
                 edit: Notes::Edit {
                     first: source.next_id,
                     inserted: 0,
@@ -244,12 +266,14 @@ impl Plan {
             },
             Command::UpdateMidiNotes { clip, .. } => Kind::Notes {
                 location: location(*clip)?,
+                source_length: None,
                 edit: Notes::Update(None),
             },
             Command::UpdateMidiNote { note, .. } | Command::RemoveMidiNote(note) => {
                 let (clip, _) = crate::midi::find_note_source(source, *note).ok_or(MISSING)?;
                 Kind::Notes {
                     location: location(clip)?,
+                    source_length: None,
                     edit: if matches!(command, Command::UpdateMidiNote { .. }) {
                         Notes::Update(Some(*note))
                     } else {
@@ -291,6 +315,7 @@ impl Plan {
             edit: Notes::Edit {
                 first, inserted, ..
             },
+            ..
         } = self.kind
         {
             let last = u64::try_from(inserted)
@@ -429,12 +454,19 @@ impl MidiHistoryEffect {
                         matches!(source.session_cell(track,scene),Some(SessionCellContent::Midi(c)) if c.id == clip)
                             && target.session_cell(track, scene).is_none()
                     }
-                    Kind::Notes { location, edit } => {
+                    Kind::Notes {
+                        location,
+                        edit,
+                        source_length,
+                    } => {
                         matching_clip_shell(source, target, location, false)
                             && source
                                 .midi_source(location.clip())
                                 .zip(target.midi_source(location.clip()))
-                                .is_some_and(|(a, b)| source_shell(a, b) && notes_match(a, b, edit))
+                                .is_some_and(|(a, b)| {
+                                    source_shell_with_extent(a, b, source_length)
+                                        && notes_match(a, b, edit)
+                                })
                     }
                     Kind::Source { location } => {
                         matching_clip_shell(source, target, location, true)
@@ -446,6 +478,19 @@ impl MidiHistoryEffect {
                     Kind::AppendScene { .. } => false,
                 }
             }
+        }
+    }
+}
+fn source_shell_with_extent(a: &MidiSource, b: &MidiSource, length: Option<BeatTime>) -> bool {
+    match length {
+        None => source_shell(a, b),
+        Some(length) => {
+            a.source_length() <= length
+                && b.source_length() == length
+                && a.source_start() == b.source_start()
+                && a.loop_start() == b.loop_start()
+                && a.loop_end() == b.loop_end()
+                && a.looping() == b.looping()
         }
     }
 }

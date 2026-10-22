@@ -387,3 +387,132 @@ fn held_creation_clamps_to_clip_end_and_positive_minimum(cx: &mut TestAppContext
         });
     }
 }
+
+#[gpui::test]
+fn zoomed_out_creation_continues_past_first_two_time_cells(cx: &mut TestAppContext) {
+    for draw in [false, true] {
+        let (mut visual, editor, _environment, clip) = fixture(cx);
+        let half = BeatTime::from_raw(BeatTime::ONE.raw() / 2);
+        let arrangement = BeatTime::from_raw(BeatTime::ONE.raw() * 11 / 2);
+        editor.update(&mut visual, |v, _| {
+            assert!(v.enqueue(Request::Edit(Command::SetMidiClipSource {
+                clip,
+                source_length: half,
+                source_start: BeatTime::ZERO,
+                loop_start: BeatTime::ZERO,
+                loop_end: half,
+                looping: false,
+                length: arrangement,
+            })))
+        });
+        pump(&editor, &mut visual);
+        editor.update(&mut visual, |v, cx| {
+            v.midi_draw_mode = draw;
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let roll = visual.debug_bounds("midi-note-roll").unwrap();
+        let before = editor.read_with(&visual, |v, _| {
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_source(clip)
+                .unwrap()
+                .clone()
+        });
+        let outside_source = point(roll.origin.x + roll.size.width * 0.75, roll.center().y);
+        if draw {
+            visual.simulate_mouse_down(outside_source, MouseButton::Left, Modifiers::default());
+        } else {
+            double_down(&mut visual, outside_source, Modifiers::default());
+        }
+        visual.simulate_mouse_up(
+            point(roll.origin.x - gpui::px(10.0), roll.center().y),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        pump(&editor, &mut visual);
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(
+                v.state.as_ref().unwrap().project.midi_source(clip).unwrap(),
+                &before,
+                "cancel cannot grow source"
+            )
+        });
+        for (index, fraction) in [0.01, 0.0625, 0.125, 0.25, 0.5, 0.875]
+            .into_iter()
+            .enumerate()
+        {
+            let at = point(
+                roll.origin.x + roll.size.width * fraction,
+                roll.origin.y + roll.size.height * (index as f32 + 3.5) / 24.0,
+            );
+            let before = editor.read_with(&visual, |v, _| {
+                v.state
+                    .as_ref()
+                    .unwrap()
+                    .project
+                    .midi_source(clip)
+                    .unwrap()
+                    .clone()
+            });
+            if draw {
+                visual.simulate_mouse_down(at, MouseButton::Left, Modifiers::default());
+            } else {
+                double_down(&mut visual, at, Modifiers::default());
+            }
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(
+                    v.state.as_ref().unwrap().project.midi_source(clip).unwrap(),
+                    &before,
+                    "preview cannot grow source"
+                )
+            });
+            visual.simulate_mouse_up(at, MouseButton::Left, Modifiers::default());
+            pump(&editor, &mut visual);
+            let authored = editor.read_with(&visual, |v, _| {
+                let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
+                assert_eq!(
+                    source.notes().len(),
+                    index + 1,
+                    "visible time cell {index}, draw={draw}"
+                );
+                let expected = [0, 1, 2, 4, 8, 14][index] * (BeatTime::ONE.raw() / 4);
+                assert_eq!(
+                    source.notes()[index].start().raw(),
+                    expected,
+                    "must not alias final source cell"
+                );
+                assert_eq!(source.loop_end(), half);
+                assert_eq!(
+                    v.state
+                        .as_ref()
+                        .unwrap()
+                        .project
+                        .midi_clip(clip)
+                        .unwrap()
+                        .arrangement_length(),
+                    arrangement
+                );
+                source.clone()
+            });
+            visual.simulate_keystrokes("cmd-z");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(
+                    v.state.as_ref().unwrap().project.midi_source(clip).unwrap(),
+                    &before
+                )
+            });
+            visual.simulate_keystrokes("cmd-shift-z");
+            pump(&editor, &mut visual);
+            editor.read_with(&visual, |v, _| {
+                assert_eq!(
+                    v.state.as_ref().unwrap().project.midi_source(clip).unwrap(),
+                    &authored
+                )
+            });
+        }
+    }
+}

@@ -1,6 +1,6 @@
 //! Shared atomic admission, compaction and append logic for MIDI batch edits.
 use crate::{
-    ClipId, Created, Invalid, MAX_NOTES, MidiNote, MidiNoteInsert, NoteId, Project,
+    BeatTime, ClipId, Created, Invalid, MAX_NOTES, MidiNote, MidiNoteInsert, NoteId, Project,
     midi::{note_count, note_indices, validate_note},
 };
 
@@ -9,6 +9,43 @@ pub(crate) fn edit(
     clip_id: ClipId,
     remove: Vec<NoteId>,
     insert: Vec<MidiNoteInsert>,
+) -> Result<Created, Invalid> {
+    edit_bounded(project, clip_id, remove, insert, false)
+}
+
+pub(crate) fn edit_with_source_extent(
+    project: &mut Project,
+    clip_id: ClipId,
+    remove: Vec<NoteId>,
+    insert: Vec<MidiNoteInsert>,
+) -> Result<Created, Invalid> {
+    edit_bounded(project, clip_id, remove, insert, true)
+}
+
+/// Checked extent calculation shared with the closed MIDI history proof.
+pub(crate) fn extended_source_length(
+    length: BeatTime,
+    insert: &[MidiNoteInsert],
+) -> Result<BeatTime, Invalid> {
+    if insert.len() > MAX_NOTES {
+        return Err(Invalid("midi note batch exceeds note limit"));
+    }
+    insert.iter().try_fold(length, |length, note| {
+        let end = note
+            .start
+            .raw()
+            .checked_add(note.duration.raw())
+            .ok_or(Invalid("midi note end overflow"))?;
+        Ok(BeatTime::from_raw(length.raw().max(end)))
+    })
+}
+
+fn edit_bounded(
+    project: &mut Project,
+    clip_id: ClipId,
+    remove: Vec<NoteId>,
+    insert: Vec<MidiNoteInsert>,
+    extend_source: bool,
 ) -> Result<Created, Invalid> {
     if remove.is_empty() && insert.is_empty() {
         return Err(Invalid("midi note edit batch must not be empty"));
@@ -20,7 +57,11 @@ pub(crate) fn edit(
     let target = project
         .midi_source(clip_id)
         .ok_or(Invalid("midi clip no longer exists"))?;
-    let length = target.source_length();
+    let length = if extend_source {
+        extended_source_length(target.source_length(), &insert)?
+    } else {
+        target.source_length()
+    };
     let removal_indices = if remove.is_empty() {
         Vec::new()
     } else {
@@ -67,6 +108,7 @@ pub(crate) fn edit(
     };
 
     let target = project.midi_source_mut(clip_id)?;
+    target.source_length = length;
     if !removal_indices.is_empty() {
         let mut indices = removal_indices;
         indices.sort_unstable();

@@ -702,6 +702,15 @@ pub enum Command {
         remove: Vec<NoteId>,
         insert: Vec<MidiNoteInsert>,
     },
+    /// Author notes beyond the current source extent in one atomic edit/history step.
+    /// Only source length may grow, exactly to the furthest inserted note end;
+    /// Arrangement placement, source start and loop markers remain unchanged.
+    /// Existing strict note commands continue to refuse notes outside the source.
+    EditMidiNotesWithSourceExtent {
+        clip: ClipId,
+        remove: Vec<NoteId>,
+        insert: Vec<MidiNoteInsert>,
+    },
     UpdateMidiNote {
         note: NoteId,
         start: crate::BeatTime,
@@ -1540,6 +1549,7 @@ impl Project {
             | Command::AddMidiNote { .. }
             | Command::AddMidiNotes { .. }
             | Command::EditMidiNotes { .. }
+            | Command::EditMidiNotesWithSourceExtent { .. }
             | Command::UpdateMidiNote { .. }
             | Command::UpdateMidiNotes { .. }
             | Command::RemoveMidiNote(_)

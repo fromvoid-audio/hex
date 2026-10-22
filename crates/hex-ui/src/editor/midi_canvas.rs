@@ -511,6 +511,10 @@ impl EditorView {
                     pitch_locked: draw_pitch_locked,
                     draw_mode,
                 };
+                let Some(authoring_length) = rendered_context.authoring_length() else {
+                    return;
+                };
+                let authoring_length = BeatTime::from_raw(authoring_length);
                 let wheel_entity = entity.clone();
                 window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
                     if !phase.capture() || !bounds.contains(&event.position) {
@@ -719,7 +723,7 @@ impl EditorView {
                                 width,
                                 beat_start,
                                 beat_span,
-                                clip_len,
+                                authoring_length,
                                 midi_drag::MidiGrid::Off,
                             ) else {
                                 return;
@@ -732,9 +736,14 @@ impl EditorView {
                         if view.midi_draw_mode && event.click_count > 1 {
                             return;
                         }
-                        let Some(local_beat) =
-                            beat_at_x(x, width, beat_start, beat_span, clip_len, effective_grid)
-                        else {
+                        let Some(local_beat) = beat_at_x(
+                            x,
+                            width,
+                            beat_start,
+                            beat_span,
+                            authoring_length,
+                            effective_grid,
+                        ) else {
                             return;
                         };
                         let Some(pitch) = pitch_at_y(y, height, pitch_low, pitch_rows) else {
@@ -742,10 +751,10 @@ impl EditorView {
                         };
                         let local = local_beat.raw();
                         let duration = midi_drag::default_gate_raw(
-                            clip_len.raw().saturating_sub(local),
+                            authoring_length.raw().saturating_sub(local),
                             effective_grid,
                         );
-                        if local >= clip_len.raw() || duration == 0 {
+                        if local >= authoring_length.raw() || duration == 0 {
                             return;
                         }
                         view.midi_marquee = None;
