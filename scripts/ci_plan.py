@@ -17,11 +17,15 @@ if _PYTHON_SPEC is None or _PYTHON_SPEC.loader is None:
 python_tests = importlib.util.module_from_spec(_PYTHON_SPEC)
 _PYTHON_SPEC.loader.exec_module(python_tests)
 
-POLICY_VERSION = 2
+POLICY_VERSION = 3
 UI_PACKAGES = {"hex-ui", "hex-widgets"}
+# Opaque state reaches storage through runtime type IDs, not a Cargo dependency.
+# Changes here must be reviewed with the real registration/codec consumers.
+RUNTIME_CONSUMERS = {"hex-devices": {"hex-storage"}}
 TOOLING = {
     "launch", "scripts/launch-restart.py", "scripts/hex-test-build.py",
     "scripts/hex-test-build.json", "scripts/bundle-macos.sh",
+    "scripts/ci_plan.py", "scripts/local-ci.py", "scripts/python_test_plan.py",
 }
 
 
@@ -30,8 +34,8 @@ def git(root: Path, *args: str, env=None) -> bytes:
 
 
 def metadata_path(path: str) -> bool:
-    """Only prose is metadata. Assets, generated datasets and policy are inputs."""
-    return (path == "README.md"
+    """Only contributor prose is metadata; executable policy and datasets are inputs."""
+    return (path in {"README.md", "AGENTS.md"}
             or path.startswith("docs/") and path.endswith(".md"))
 
 
@@ -109,11 +113,17 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
         if (path in TOOLING or path.startswith("scripts/tests/test_") and path.endswith(".py")):
             scopes.add("tooling")
             continue
-        owner = next((p for p in inventory if path.startswith(str(Path(p["manifest"]).parent) + "/")), None)
-        if (owner and owner["name"] in UI_PACKAGES and path.endswith(".rs")
-                and not path.endswith("/build.rs")):
-            scopes.add("ui")
+        owners = [p for p in inventory if path.startswith(str(Path(p["manifest"]).parent) + "/")]
+        owner = max(owners, key=lambda p: len(p["manifest"]), default=None)
+        if (owner and path.endswith(".rs") and not path.endswith("/build.rs")
+                and Path(path).relative_to(Path(owner["manifest"]).parent).parts[0]
+                in {"src", "tests", "examples", "benches"}):
+            scopes.add("ui" if owner["name"] in UI_PACKAGES else "rust")
             changed.add(owner["name"])
+        elif owner and (path == owner["manifest"] or path.endswith("/build.rs")):
+            scopes.add("rust")
+            changed.add(owner["name"])
+            reasons.append("package build/config input: include owner and declared consumers: " + path)
         else:
             scopes.add("full")
             reasons.append("high-risk or unknown input: " + path)
@@ -121,18 +131,71 @@ def classify(paths: list[str], inventory: list[dict]) -> tuple[str, list[str], l
     while True:
         next_affected = affected | {p["name"] for p in inventory
                                    if any(d["name"] in affected for d in p["dependencies"])}
+        next_affected |= {consumer for owner in affected for consumer in RUNTIME_CONSUMERS.get(owner, set())
+                          if any(p["name"] == consumer for p in inventory)}
         if next_affected == affected:
             break
         affected = next_affected
     if scopes == {"ui"} and affected - UI_PACKAGES - {"hex-desktop"}:
-        scopes.add("full")
-        reasons.append("UI reverse dependency extends beyond supported UI/default-desktop configurations")
-    scope = ("metadata" if not scopes else next(iter(scopes)) if len(scopes) == 1 else "full")
-    if len(scopes) > 1:
-        reasons.append("mixed executable scopes require full coverage")
+        scopes.add("rust")
+        reasons.append("UI has additional consumers: include their package configurations")
+    scope = ("full" if "full" in scopes else "rust" if "rust" in scopes
+             or "ui" in scopes and "tooling" in scopes else
+             "metadata" if not scopes else next(iter(scopes)))
     if not reasons:
         reasons.append("known " + scope + " inputs; prose does not widen executable scope")
     return scope, sorted(affected), reasons
+
+
+def boundary_selection(root: Path, paths: list[str], inventory: list[dict], affected: list[str]) -> dict:
+    """Narrow only reviewed runtime relationships; Cargo closure remains the lint boundary.
+
+    Compressor state/DSP uses the unchanged Lattice host interfaces. Its real
+    registry, session revision, callback/allocation, persistence and panel tests
+    cover the dynamic path that Cargo edges cannot name. Other device modules,
+    registration, host APIs, macros and build inputs retain package coverage.
+    This is a reviewed ownership rule, not inference from diff size or signatures.
+    """
+    executable = [p for p in paths if not metadata_path(p)]
+    names = {p["name"] for p in inventory}
+    missing = {consumer for owner in affected for consumer in RUNTIME_CONSUMERS.get(owner, set())} - names
+    if missing:
+        raise ValueError("reviewed runtime consumers missing from Cargo inventory: " + ", ".join(sorted(missing)))
+    compressor = {"crates/hex-devices/src/compressor.rs", "crates/hex-devices/src/compressor/tests.rs"}
+    known_consumers = {"hex-devices", "hex-engine", "hex-audio", "hex-ui", "hex-storage",
+                       "hex-desktop", "hex-cli", "hex-export", "hex-session", "hex-media", "hex-stream"}
+    reviewed_features = {"hex-engine": {"instrument-test-support"}, "hex-export": {"instrument-test-support"},
+                         "hex-audio": {"allocation-probe"}, "hex-desktop": {"allocation-probe"},
+                         "hex-ui": {"ui-test-support"}, "hex-session": {"source-overview-test-support"},
+                         "hex-stream": {"allocation-probe"}}
+    narrow = bool(executable) and set(executable) <= compressor and set(affected) <= known_consumers
+    narrow = narrow and all(set(p["features"]) <= reviewed_features.get(p["name"], set())
+                            for p in inventory if p["name"] in affected)
+    if narrow:
+        # Macro exports/includes can introduce consumers not represented by the
+        # reviewed runtime relationship. Never try to parse Rust with a regex.
+        narrow = all((root / p).is_file() and not any(token in (root / p).read_text()
+                     for token in ("macro_rules!", "macro_export", "include!", "include_str!", "include_bytes!", "#[path"))
+                     for p in compressor)
+    tests = []
+    if narrow:
+        tests = [
+            {"package": "hex-devices", "lib": True, "filter": "compressor::"},
+            {"package": "hex-engine", "lib": True, "filter": "compressor"},
+            {"package": "hex-engine", "test": "device_chain", "filter": ""},
+            {"package": "hex-storage", "lib": True, "filter": "compressor"},
+            {"package": "hex-audio", "lib": True, "filter": "compressor", "features": "allocation-probe"},
+            {"package": "hex-audio", "test": "device_comparison", "filter": "", "features": "allocation-probe"},
+            {"package": "hex-ui", "lib": True, "filter": "compressor", "features": "ui-test-support"},
+        ]
+    return {"kind": "compressor" if narrow else "packages", "tests": tests,
+            "test_packages": [] if narrow else affected,
+            "lint_packages": affected,
+            "excluded_behavior_packages": sorted(set(affected) - {t["package"] for t in tests}) if narrow else [],
+            "excluded_configurations": (["unrelated instrument/export and whole UI/audio suites: compressor-only implementation; unchanged shared host/registration/build inputs"] if narrow else []),
+            "excluded_packages": sorted({p["name"] for p in inventory} - set(affected)),
+            "rationale": ("unchanged host interfaces/registration; real compressor host, history, allocation, save/reopen and UI consumers; other device behavior omitted; all Cargo consumers linted"
+                          if narrow else "owner plus transitive normal/dev/build/optional/target and reviewed runtime consumers; full package tests and relevant feature configurations; no module isolation assumed")}
 
 
 def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
@@ -169,6 +232,8 @@ def resolve(root: Path, *, profile: str, base: str, source: str, metadata: dict,
                   profile, [path for path in paths if not metadata_path(path)],
                   inventory, UI_PACKAGES, python_tests.available_modules(root)),
               "qualifies_merge": profile in {"merge", "full", "release"}}
+    if scope == "rust":
+        result["boundary"] = boundary_selection(root, paths, inventory, affected)
     result["plan_sha256"] = hashlib.sha256(json.dumps(result, sort_keys=True).encode()).hexdigest()
     return result
 

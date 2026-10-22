@@ -193,6 +193,77 @@ def edit_selection(inventory: list[dict], *, package: str, test_filter: str,
     return selection
 
 
+def boundary_steps(plan: dict) -> tuple[Step, ...]:
+    """Compile consumers even when reviewed device behavior tests are narrower."""
+    boundary = plan["boundary"]
+    inventory = plan["cargo_inventory"]
+    names = {p["name"] for p in inventory}
+    affected = boundary["lint_packages"]
+    if not affected or len(set(affected)) != len(affected) or set(affected) - names:
+        raise ValueError("boundary plan requires nonempty known affected packages")
+    if sorted(affected) != sorted(plan["affected_packages"]):
+        raise ValueError("boundary consumers do not match resolved Cargo closure")
+    packages = tuple(arg for p in affected for arg in ("-p", p))
+    steps = [FULL_STEPS[0], *QUICK_STEPS]
+    if any(path.endswith(("Cargo.toml", "/build.rs")) for path in plan.get("paths", [])):
+        steps.append(next(s for s in FULL_STEPS if s.step_id == "dependency-future-lints"))
+    tests = boundary["tests"]
+    if boundary["kind"] == "packages":
+        if sorted(boundary["test_packages"]) != sorted(affected) or tests:
+            raise ValueError("package boundary must test every affected consumer")
+        steps.append(Step("affected-tests", ("cargo", "test", *packages, "--locked")))
+    elif boundary["kind"] == "compressor":
+        if not tests:
+            raise ValueError("device boundary has no contract targets")
+        for index, test in enumerate(tests):
+            # Reuse the edit target validator, not a second Cargo selector.
+            selected = edit_selection(inventory, package=test["package"],
+                                      test_filter=test["filter"] or "target-validation",
+                                      features=test.get("features", ""), lib=test.get("lib", False),
+                                      test=test.get("test"))
+            target = selected["target"]
+            feature = ("--features", selected["features"]) if selected["features"] else ()
+            selector = ("--lib",) if target["kind"] == "lib" else ("--test", target["name"])
+            steps.append(Step(f"contract-{index}-{selected['package']}",
+                              ("cargo", "test", "-p", selected["package"], *feature, *selector,
+                               "--locked", *([test["filter"]] if test["filter"] else []))))
+    else:
+        raise ValueError("unknown ownership boundary")
+    steps.append(Step("affected-clippy", ("cargo", "clippy", *packages, "--all-targets", "--locked", "--", "-D", "warnings")))
+    # Keep separate default/feature configurations, including feature-gated
+    # examples and allocation probes. Do not deduplicate by overlapping names.
+    covered_features = {"hex-ui": {"ui-test-support"}, "hex-export": {"instrument-test-support"},
+                        "hex-audio": {"allocation-probe"}, "hex-stream": {"allocation-probe"},
+                        "hex-desktop": {"allocation-probe"}}
+    for step in FULL_STEPS:
+        if "--features" not in step.argv:
+            continue
+        owners = [step.argv[i + 1] for i, arg in enumerate(step.argv) if arg == "-p"]
+        selected = [p for p in owners if p in affected]
+        if not selected or boundary["kind"] == "compressor" and step.argv[1] == "test":
+            continue
+        argv = list(step.argv)
+        for owner in set(owners) - set(selected):
+            index = argv.index(owner)
+            del argv[index - 1:index + 1]
+        steps.append(Step(step.step_id, tuple(argv)))
+    for package in inventory:
+        if package["name"] not in affected or boundary["kind"] == "compressor":
+            continue
+        extra = set(package["features"]) - {"default"} - covered_features.get(package["name"], set())
+        # Preserve each declared configuration; all-features alone can mask
+        # mutually exclusive cfg branches. Feature interaction contracts still
+        # need reviewed configuration rules rather than a guessed power set.
+        for index, feature in enumerate(sorted(extra)):
+            for command in ("test", "clippy"):
+                steps.append(Step(f"feature-{command}-{package['name']}-{index}",
+                                  ("cargo", command, "-p", package["name"], "--features", feature, "--all-targets", "--locked",
+                                   *(("--", "-D", "warnings") if command == "clippy" else ()))))
+    if "hex-desktop" in affected:
+        steps.append(next(s for s in FULL_STEPS if s.step_id == "desktop-build"))
+    return tuple(steps)
+
+
 def planned_steps(plan: dict) -> tuple[Step, ...]:
     """Select complete configurations, never deduplicate by test-name overlap."""
     scope = plan["scope"]
@@ -211,6 +282,8 @@ def planned_steps(plan: dict) -> tuple[Step, ...]:
                      uses_cargo_target=True),)
     if scope == "full":
         steps = FULL_STEPS
+    elif scope == "rust":
+        steps = boundary_steps(plan)
     elif scope == "metadata":
         return (Step("metadata", ("python3", "scripts/ci_plan.py", "--check-metadata",
                                   "--base", plan["base"], "--source", plan["source"])),)

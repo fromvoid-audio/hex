@@ -34,6 +34,7 @@ SHARED_TESTS = (
     "test_ci_plan.ScopeTests.test_high_risk_unknown_and_mixed_cannot_be_scoped_away",
     "test_ci_plan.ScopeTests.test_immutable_rename_deletion_untracked_and_prose_digest",
     "test_ci_plan.ScopeTests.test_profiles_preserve_default_and_feature_configurations",
+    "test_ci_plan.ScopeTests.test_runtime_contract_consumers_and_required_configurations",
     "test_ci_plan.ScopeTests.test_requested_zero_match_and_all_skipped_refuse_but_metadata_needs_no_rust",
     "test_ci_plan.CacheIdentityTests.test_source_changes_stay_incremental_but_dependency_config_mode_and_membership_do_not",
 )
