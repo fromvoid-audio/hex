@@ -1,5 +1,5 @@
-//! Source-local piano ruler and playback-start marker. This owns only a captured
-//! preview; release uses the existing source edit command and Session ACK owner.
+//! Source-local piano ruler, playback start and retained loop brace. Owns one
+//! captured preview; release uses the existing source edit command and Session ACK owner.
 //! Source start is neither the insertion cursor nor the Arrangement playhead.
 use super::{
     EditorView,
@@ -14,6 +14,9 @@ use gpui::{
 };
 use hex_project::ClipId;
 use hex_session::service::Request;
+
+#[path = "midi_loop.rs"]
+mod loop_brace;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -58,11 +61,33 @@ impl Context {
             .then(|| self.bounds.x + (offset as f64 / self.span as f64) as f32 * self.bounds.width)
     }
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Handle {
+    Start,
+    LoopStart,
+    LoopEnd,
+    LoopBody,
+}
 #[derive(Clone, Copy)]
 struct Gesture {
     context: Context,
     down_x: f32,
-    preview: u64,
+    handle: Handle,
+    preview: SourceValues,
+}
+// Bounds are inclusive and ordered by the validated source context. Restrict
+// snapping to legal grid points, rather than snapping then landing off-grid at a
+// raw boundary. A sub-grid interval with no grid point keeps the legal raw clamp.
+fn clamp_loop_grid(raw: u64, first: u64, last: u64, grid: MidiGrid) -> u64 {
+    if let Some(step) = grid.step_raw() {
+        let wide_step = u128::from(step);
+        let snapped_first = u128::from(first).div_ceil(wide_step) * wide_step;
+        let snapped_last = last / step * step;
+        if snapped_first <= u128::from(snapped_last) {
+            return raw.clamp(snapped_first as u64, snapped_last);
+        }
+    }
+    raw.clamp(first, last)
 }
 impl Gesture {
     fn update(&mut self, x: f32, invert_snap: bool) -> bool {
@@ -70,20 +95,58 @@ impl Gesture {
             return false;
         }
         let dx = f64::from(x) - f64::from(self.down_x);
-        // A stationary click on an off-grid marker must remain a true no-op.
-        let next = if dx.abs() < 3.0 {
-            self.context.values.source_start
-        } else {
+        let original = self.context.values;
+        let mut next = original;
+        // A stationary click on an off-grid marker remains a true no-op.
+        if dx.abs() >= 3.0 {
             let ticks = (dx / f64::from(self.context.bounds.width) * self.context.span as f64)
                 .round()
                 .clamp(-(u64::MAX as f64), u64::MAX as f64) as i128;
-            let raw = (i128::from(self.context.values.source_start) + ticks)
-                .clamp(0, i128::from(u64::MAX)) as u64;
             let grid = midi_drag::effective_grid(self.context.grid, invert_snap);
-            let last = self.context.exclusive_end() - 1;
-            let last = grid.step_raw().map_or(last, |step| last / step * step);
-            midi_drag::snap_raw(raw, grid).min(last)
-        };
+            let moved = |start: u64| {
+                let raw = (i128::from(start) + ticks).clamp(0, i128::from(u64::MAX)) as u64;
+                midi_drag::snap_raw(raw, grid)
+            };
+            match self.handle {
+                Handle::Start => {
+                    let last = self.context.exclusive_end() - 1;
+                    let last = grid.step_raw().map_or(last, |step| last / step * step);
+                    next.source_start = moved(original.source_start).min(last);
+                }
+                Handle::LoopStart => {
+                    next.loop_start =
+                        clamp_loop_grid(moved(original.loop_start), 0, original.loop_end - 1, grid)
+                }
+                Handle::LoopEnd => {
+                    let first = if original.looping {
+                        original.loop_start.max(original.source_start) + 1
+                    } else {
+                        original.loop_start + 1
+                    };
+                    next.loop_end = clamp_loop_grid(
+                        moved(original.loop_end),
+                        first,
+                        original.source_length,
+                        grid,
+                    );
+                }
+                Handle::LoopBody => {
+                    let length = original.loop_end - original.loop_start;
+                    let first = if original.looping {
+                        original.source_start.saturating_sub(length - 1)
+                    } else {
+                        0
+                    };
+                    next.loop_start = clamp_loop_grid(
+                        moved(original.loop_start),
+                        first,
+                        original.source_length - length,
+                        grid,
+                    );
+                    next.loop_end = next.loop_start + length;
+                }
+            }
+        }
         let changed = next != self.preview;
         self.preview = next;
         changed
@@ -140,16 +203,23 @@ impl EditorView {
         {
             return false;
         }
+        self.begin_midi_ruler(context, x, Handle::Start)
+    }
+    fn begin_midi_ruler(&mut self, context: Context, x: f32, handle: Handle) -> bool {
+        if !x.is_finite() || self.midi_ruler_context(context.bounds) != Some(context) {
+            return false;
+        }
         self.cancel_midi_note_gesture();
         self.midi_hover = None;
         self.midi_ruler.gesture = Some(Gesture {
             context,
             down_x: x,
-            preview: context.values.source_start,
+            handle,
+            preview: context.values,
         });
         true
     }
-    fn update_midi_start(&mut self, bounds: CanvasBounds, x: f32, invert_snap: bool) -> bool {
+    fn update_midi_ruler(&mut self, bounds: CanvasBounds, x: f32, invert_snap: bool) -> bool {
         let Some(gesture) = self.midi_ruler.gesture else {
             return false;
         };
@@ -161,7 +231,7 @@ impl EditorView {
             .as_mut()
             .is_some_and(|gesture| gesture.update(x, invert_snap))
     }
-    fn finish_midi_start(&mut self, bounds: CanvasBounds, x: f32, invert_snap: bool) {
+    fn finish_midi_ruler(&mut self, bounds: CanvasBounds, x: f32, invert_snap: bool) {
         let Some(mut gesture) = self.midi_ruler.gesture.take() else {
             return;
         };
@@ -169,13 +239,10 @@ impl EditorView {
             return;
         }
         gesture.update(x, invert_snap);
-        if gesture.preview == gesture.context.values.source_start {
+        if gesture.preview == gesture.context.values {
             return;
         }
-        let changed = SourceValues {
-            source_start: gesture.preview,
-            ..gesture.context.values
-        };
+        let changed = gesture.preview;
         if let Some(command) = self.state.as_ref().and_then(|state| {
             midi_source_controls::edit_command(&state.project, gesture.context.clip, changed)
         }) {
@@ -188,7 +255,7 @@ impl EditorView {
         let marker = self
             .midi_ruler
             .gesture
-            .map(|gesture| gesture.preview)
+            .map(|gesture| gesture.preview.source_start)
             .or_else(|| self.midi_clip().map(|source| source.source_start().raw()));
         let rendered = self.midi_ruler_context(CanvasBounds {
             x: 0.0,
@@ -196,7 +263,10 @@ impl EditorView {
             width: 1.0,
             height: 1.0,
         });
-        let active = self.midi_ruler.gesture.is_some();
+        let active = self
+            .midi_ruler
+            .gesture
+            .is_some_and(|gesture| gesture.handle == Handle::Start);
         let entity = cx.entity();
         let mut ruler = div()
             .id("midi-source-ruler")
@@ -307,11 +377,15 @@ impl EditorView {
                             return;
                         }
                         move_entity.update(cx, |view, cx| {
-                            if view.midi_ruler.gesture.is_none() {
+                            if view
+                                .midi_ruler
+                                .gesture
+                                .is_none_or(|gesture| gesture.handle != Handle::Start)
+                            {
                                 return;
                             }
                             let changed = if event.pressed_button == Some(MouseButton::Left) {
-                                view.update_midi_start(
+                                view.update_midi_ruler(
                                     b,
                                     f32::from(event.position.x),
                                     event.modifiers.platform,
@@ -331,8 +405,12 @@ impl EditorView {
                             return;
                         }
                         up_entity.update(cx, |view, cx| {
-                            if view.midi_ruler.gesture.is_some() {
-                                view.finish_midi_start(
+                            if view
+                                .midi_ruler
+                                .gesture
+                                .is_some_and(|gesture| gesture.handle == Handle::Start)
+                            {
+                                view.finish_midi_ruler(
                                     b,
                                     f32::from(event.position.x),
                                     event.modifiers.platform,
@@ -363,10 +441,15 @@ impl EditorView {
             )
             .size_full(),
         );
-        div().h(px(18.0)).flex_shrink_0().flex()
+        let source_row=div().h(px(18.0)).flex_shrink_0().flex()
             .child(div().id("midi-source-ruler-label").w(px(38.0)).flex_shrink_0().text_size(px(8.0)).child(theme::text("start"))
                 .tooltip(|_,cx|cx.new(|_|super::transport::MiniTooltip { description:"drag clip playback start · grid snapping · hold cmd/control to invert · no seek".into() }).into()))
-            .children([ruler])
+            .children([ruler]);
+        div()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .children([self.midi_loop_ruler(cx), source_row])
     }
 }
 
@@ -378,7 +461,7 @@ mod tests;
 mod geometry_tests {
     use super::*;
     use hex_project::{BeatTime, Command, Created, Editor, Project};
-    fn context() -> Context {
+    pub(super) fn context() -> Context {
         let mut editor = Editor::new(Project::new(48_000).unwrap(), 2).unwrap();
         let Created::Track(track) = editor
             .execute(Command::AddMidiTrack {
@@ -436,18 +519,19 @@ mod geometry_tests {
             let mut g = Gesture {
                 context: c,
                 down_x: 100.0,
-                preview: 0,
+                handle: Handle::Start,
+                preview: c.values,
             };
             assert!(g.update(250.0, false));
-            assert_eq!(g.preview, beat * 3 / 2); // Also after loop_start.
+            assert_eq!(g.preview.source_start, beat * 3 / 2); // Also after loop_start.
             assert!(g.update(f32::MAX, false));
-            assert_eq!(g.preview, c.exclusive_end() - beat / 4);
+            assert_eq!(g.preview.source_start, c.exclusive_end() - beat / 4);
             assert!(g.update(f32::MAX, true));
-            assert_eq!(g.preview, c.exclusive_end() - 1);
+            assert_eq!(g.preview.source_start, c.exclusive_end() - 1);
             assert!(g.update(-f32::MAX, false));
-            assert_eq!(g.preview, 0);
+            assert_eq!(g.preview.source_start, 0);
             assert!(!g.update(f32::NAN, false));
-            assert_eq!(g.preview, 0);
+            assert_eq!(g.preview.source_start, 0);
         }
         let c = Context {
             values: SourceValues {
@@ -459,10 +543,11 @@ mod geometry_tests {
         let mut g = Gesture {
             context: c,
             down_x: 100.0,
-            preview: c.values.source_start,
+            handle: Handle::Start,
+            preview: c.values,
         };
         assert!(!g.update(100.0, false));
-        assert_eq!(g.preview, beat / 3);
+        assert_eq!(g.preview.source_start, beat / 3);
     }
     #[test]
     fn invalid_or_overflowing_ruler_contexts_are_refused_without_source_growth() {
@@ -509,10 +594,194 @@ mod geometry_tests {
         let mut g = Gesture {
             context: c,
             down_x: 100.0,
-            preview: 0,
+            handle: Handle::Start,
+            preview: c.values,
         };
         g.update(f32::MAX, false);
         assert_eq!(g.context.values, c.values);
-        assert!(g.preview < c.values.source_length);
+        assert!(g.preview.source_start < c.values.source_length);
+    }
+    #[test]
+    fn loop_edges_preserve_opposite_anchor_and_body_preserves_length_inside_source() {
+        let beat = hex_project::BeatTime::ONE.raw();
+        let base = context();
+        let c = Context {
+            values: SourceValues {
+                loop_start: beat,
+                loop_end: 3 * beat,
+                ..base.values
+            },
+            ..base
+        };
+        for (handle, down, x, first, last) in [
+            (Handle::LoopStart, 200.0, 300.0, 2 * beat, 3 * beat),
+            (Handle::LoopEnd, 400.0, 300.0, beat, 2 * beat),
+            (Handle::LoopBody, 300.0, 400.0, 2 * beat, 4 * beat),
+            (Handle::LoopBody, 300.0, -f32::MAX, 0, 2 * beat),
+        ] {
+            let mut g = Gesture {
+                context: c,
+                down_x: down,
+                handle,
+                preview: c.values,
+            };
+            assert!(g.update(x, false));
+            assert_eq!((g.preview.loop_start, g.preview.loop_end), (first, last));
+            assert_eq!(
+                g.preview,
+                SourceValues {
+                    loop_start: first,
+                    loop_end: last,
+                    ..c.values
+                }
+            );
+            assert!(!g.update(x, false));
+        }
+    }
+
+    #[test]
+    fn loop_grid_limits_remain_snapped_or_use_a_legal_short_interval_fallback() {
+        let beat = hex_project::BeatTime::ONE.raw();
+        let base = context();
+        let mut leading = Gesture {
+            context: base,
+            down_x: 100.0,
+            handle: Handle::LoopStart,
+            preview: base.values,
+        };
+        leading.update(f32::MAX, false);
+        assert_eq!(leading.preview.loop_start, 4 * beat - beat / 4);
+        leading.update(f32::MAX, true);
+        assert_eq!(leading.preview.loop_start, 4 * beat - 1);
+        let short = Context {
+            values: SourceValues {
+                source_start: beat + 2,
+                source_length: beat + 4,
+                loop_start: beat + 1,
+                loop_end: beat + 3,
+                looping: true,
+                ..base.values
+            },
+            ..base
+        };
+        assert!(short.valid());
+        for (handle, x, first, last) in [
+            (Handle::LoopEnd, -f32::MAX, beat + 1, beat + 3),
+            (Handle::LoopEnd, f32::MAX, beat + 1, beat + 4),
+            (Handle::LoopBody, -f32::MAX, beat + 1, beat + 3),
+            (Handle::LoopBody, f32::MAX, beat + 2, beat + 4),
+        ] {
+            let mut g = Gesture {
+                context: short,
+                down_x: 200.0,
+                handle,
+                preview: short.values,
+            };
+            g.update(x, false);
+            assert_eq!((g.preview.loop_start, g.preview.loop_end), (first, last));
+            assert!(g.preview.source_start < g.preview.loop_end);
+            assert!(g.preview.loop_end <= g.preview.source_length);
+            let preview = g.preview;
+            assert!(!g.update(f32::INFINITY, false));
+            assert_eq!(g.preview, preview);
+        }
+        let step = MidiGrid::Sixteenth.step_raw().unwrap();
+        let last_grid = u64::MAX / step * step;
+        assert_eq!(
+            clamp_loop_grid(u64::MAX, 1, u64::MAX, MidiGrid::Sixteenth),
+            last_grid
+        );
+        assert_eq!(
+            clamp_loop_grid(0, u64::MAX - 1, u64::MAX, MidiGrid::Sixteenth),
+            u64::MAX - 1
+        );
+        assert_eq!(
+            clamp_loop_grid(0, beat + 1, beat + 3, MidiGrid::Off),
+            beat + 1
+        );
+        let mut off = Gesture {
+            context: Context {
+                grid: MidiGrid::Off,
+                ..base
+            },
+            down_x: 100.0,
+            handle: Handle::LoopStart,
+            preview: base.values,
+        };
+        off.update(f32::MAX, false);
+        assert_eq!(off.preview.loop_start, 4 * beat - 1);
+        off.update(f32::MAX, true);
+        assert_eq!(off.preview.loop_start, 4 * beat - beat / 4);
+        let preview = off.preview;
+        off.update(102.0, true);
+        assert_eq!(off.preview, base.values); // The original three-pixel no-op threshold.
+        assert_ne!(off.preview, preview);
+    }
+    #[test]
+    fn loop_source_start_constraint_depends_on_enable_and_snap_override_is_exact() {
+        let beat = hex_project::BeatTime::ONE.raw();
+        let base = context();
+        for looping in [false, true] {
+            let c = Context {
+                values: SourceValues {
+                    source_start: beat * 5 / 2,
+                    loop_start: beat,
+                    loop_end: 3 * beat,
+                    looping,
+                    ..base.values
+                },
+                ..base
+            };
+            let mut g = Gesture {
+                context: c,
+                down_x: 400.0,
+                handle: Handle::LoopEnd,
+                preview: c.values,
+            };
+            g.update(-f32::MAX, false);
+            assert_eq!(g.preview.loop_start, beat);
+            assert_eq!(
+                g.preview.loop_end,
+                if looping { beat * 11 / 4 } else { beat * 5 / 4 }
+            );
+            let mut body = Gesture {
+                context: c,
+                down_x: 300.0,
+                handle: Handle::LoopBody,
+                preview: c.values,
+            };
+            body.update(-f32::MAX, false);
+            assert_eq!(body.preview.loop_end - body.preview.loop_start, 2 * beat);
+            assert_eq!(
+                body.preview.loop_start,
+                if looping { beat * 3 / 4 } else { 0 }
+            );
+        }
+        let c = Context {
+            values: SourceValues {
+                loop_start: beat,
+                loop_end: 3 * beat,
+                ..base.values
+            },
+            ..base
+        };
+        let mut g = Gesture {
+            context: c,
+            down_x: 200.0,
+            handle: Handle::LoopStart,
+            preview: c.values,
+        };
+        g.update(235.0, false);
+        assert_eq!(g.preview.loop_start, beat * 5 / 4);
+        g.update(235.0, true);
+        assert!((g.preview.loop_start as i128 - (beat as i128 * 135 / 100)).abs() <= 1);
+        assert_eq!(g.preview.loop_end, 3 * beat);
+        let preview = g.preview;
+        assert!(!g.update(f32::NAN, false));
+        assert_eq!(g.preview, preview);
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_loop_ui_tests.rs"]
+mod loop_tests;

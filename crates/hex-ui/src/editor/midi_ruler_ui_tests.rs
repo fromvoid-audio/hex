@@ -50,7 +50,7 @@ fn drag(visual: &mut VisualTestContext, from: f32, to: f32) {
     visual.simulate_mouse_move(up, Some(MouseButton::Left), Modifiers::default());
     visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
 }
-fn next(service: &Service) -> Event {
+pub(super) fn next(service: &Service) -> Event {
     let until = Instant::now() + Duration::from_secs(5);
     loop {
         if let Ok(event) = service.try_event() {
@@ -61,9 +61,9 @@ fn next(service: &Service) -> Event {
         std::thread::yield_now();
     }
 }
-struct FileCustody {
-    environment: Arc<Environment>,
-    acknowledged: bool,
+pub(super) struct FileCustody {
+    pub(super) environment: Arc<Environment>,
+    pub(super) acknowledged: bool,
 }
 impl Drop for FileCustody {
     fn drop(&mut self) {
@@ -72,7 +72,7 @@ impl Drop for FileCustody {
         }
     }
 }
-fn roundtrip(
+pub(super) fn roundtrip(
     editor: &Entity<EditorView>,
     visual: &mut VisualTestContext,
     environment: &Arc<Environment>,
@@ -156,7 +156,10 @@ fn marker_drag_at_nonzero_arrangement_placement_acks_once_and_preserves_other_st
     visual.simulate_mouse_move(up, Some(MouseButton::Left), Modifiers::default());
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before.0);
-        assert_eq!(v.midi_ruler.gesture.unwrap().preview, beat(2).raw());
+        assert_eq!(
+            v.midi_ruler.gesture.unwrap().preview.source_start,
+            beat(2).raw()
+        );
         assert!(!v.edit_pending());
     });
     assert_marker(&mut visual, 0.5);
