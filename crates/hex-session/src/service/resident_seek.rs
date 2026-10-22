@@ -112,12 +112,14 @@ impl Lane {
         let runtime =
             hex_engine::SessionPlayback::linear_export_runtime_allowance(&current.prepared)
                 .map_err(|e| e.to_string())?;
+        let input_capture = current.inputs.capture_bytes().map_err(|e| e.to_string())?;
         let capture_quote = current
             .resources
             .metadata_bytes()
             .map_err(|e| format!("seek metadata: {e:?}"))?
             .checked_mul(2)
             .and_then(|n| n.checked_add(runtime))
+            .and_then(|n| n.checked_add(input_capture))
             .ok_or("seek storage allowance overflow")?;
         let old_views = self.views().collect::<Vec<_>>();
         let registered = admission
@@ -156,6 +158,7 @@ impl Lane {
                 hex_engine::SessionPlayback::linear_export_runtime_allowance(&current.prepared)
                     .map_err(|e| format!("seek preparation: {e:?}"))?,
             )
+            .and_then(|bytes| bytes.checked_add(input_capture))
             .ok_or("seek storage allowance overflow")?;
         let views = self.views().chain(std::iter::once(
             DeviceResourceAdmission::prepared_on_control(&anchor, &current.prepared),
@@ -208,6 +211,7 @@ impl Lane {
             snapshot: resident_audio::Snapshot {
                 prepared: Arc::clone(&current.prepared),
                 resources: anchor,
+                inputs: current.inputs.clone(),
             },
             allowance,
             completion: None,
@@ -217,7 +221,7 @@ impl Lane {
     pub(super) fn drive<'audio>(
         &mut self,
         session: &Session,
-        current: Option<&resident_audio::Snapshot>,
+        current: Option<&mut resident_audio::Snapshot>,
         sink: Option<&mut (dyn WorkerAudioSink + 'audio)>,
         admission: sampler_export::Admission<'_>,
         context: hex_engine::AudioSourceContext,
@@ -255,8 +259,9 @@ impl Lane {
                     || !playback
                         .prepared_revision()
                         .is_some_and(|r| Arc::ptr_eq(r, &job.snapshot.prepared))
-                    || current.is_none_or(|current| {
+                    || current.as_ref().is_none_or(|current| {
                         !Arc::ptr_eq(&current.prepared, &job.snapshot.prepared)
+                            || current.inputs.version != job.snapshot.inputs.version
                     })
                 {
                     return Err("seek target changed or was cancelled".into());

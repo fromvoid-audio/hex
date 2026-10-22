@@ -163,13 +163,50 @@ impl super::EditorView {
         cx.notify();
     }
 
+    fn worker_owns_keyboard_publication(&self) -> bool {
+        self.document_audio_mode == hex_session::DocumentAudioMode::Resident
+            && self
+                .audio
+                .as_ref()
+                .is_some_and(|audio| audio.control.worker_owns_graph_publication())
+    }
+
+    // Worker transactions reprepare this physical input against each accepted instrument.
+    // A model revision is not an input identity; selected track, generation and cancellation are.
+    fn reusable_worker_keyboard_input(&self, worker_owned: bool) -> bool {
+        worker_owned
+            && self
+                .computer_keyboard
+                .input
+                .as_ref()
+                .is_some_and(|input| !input.is_cancelled())
+            && self.state.as_ref().is_some_and(|state| {
+                self.computer_keyboard
+                    .target
+                    .is_some_and(|(generation, revision, track)| {
+                        generation == self.project_generation
+                            && revision <= state.revision
+                            && self.selected_track == Some(track)
+                            && state.project.track(track).is_some_and(|track| {
+                                track.instrument().is_some_and(|device| !device.bypassed())
+                            })
+                    })
+            })
+    }
+
     pub(super) fn tick_computer_keyboard(&mut self) -> bool {
+        self.tick_computer_keyboard_with_policy(self.worker_owns_keyboard_publication())
+    }
+
+    fn tick_computer_keyboard_with_policy(&mut self, worker_owned: bool) -> bool {
         if !self.computer_keyboard.enabled || self.computer_keyboard.suspended {
             return false;
         }
-        if self.device_gesture_pending()
+        let retain_input = self.reusable_worker_keyboard_input(worker_owned);
+        if (self.device_gesture_pending()
             || self.prepared_seek.is_some()
-            || self.stopped_playback_restore.is_some()
+            || self.stopped_playback_restore.is_some())
+            && !retain_input
         {
             self.cancel_computer_keyboard();
             self.computer_keyboard.suspended = true;
@@ -189,6 +226,10 @@ impl super::EditorView {
             self.computer_keyboard.suspended = true;
             return true;
         }
+        let changed = retain_input && target != self.computer_keyboard.target;
+        if changed {
+            self.computer_keyboard.target = target;
+        }
         if target == self.computer_keyboard.target && !cancelled {
             if self
                 .computer_keyboard
@@ -201,9 +242,9 @@ impl super::EditorView {
                     self.error = Some(message.into());
                     return true;
                 }
-                return false;
+                return changed;
             }
-            return false;
+            return changed;
         }
         self.cancel_computer_keyboard();
         let Some((generation, revision, track)) = target else {
@@ -275,9 +316,12 @@ impl super::EditorView {
                 self.toggle_computer_keyboard(window, cx);
             }
         } else {
-            if self.device_gesture_pending()
+            let retain_input =
+                self.reusable_worker_keyboard_input(self.worker_owns_keyboard_publication());
+            if ((self.device_gesture_pending()
                 || self.prepared_seek.is_some()
-                || self.stopped_playback_restore.is_some()
+                || self.stopped_playback_restore.is_some())
+                && !retain_input)
                 || (self.computer_keyboard.suspended && event.is_held)
             {
                 self.cancel_computer_keyboard();
@@ -329,6 +373,160 @@ impl super::EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn worker_edits_keep_physical_keys_but_stop_and_invalid_targets_cancel(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use hex_project::{Command, Created, Editor, Project};
+        use std::sync::Arc;
+        fn state(project: Project, revision: u64) -> Arc<hex_session::service::ViewState> {
+            Arc::new(hex_session::service::ViewState {
+                canonical_audio_source: None,
+                comparison_audio: None,
+                project: Arc::new(project),
+                waveforms: Default::default(),
+                source_overviews: Default::default(),
+                audio_clip_waveforms: Default::default(),
+                midi_preview: Arc::default(),
+                gain_preview: Ok(Arc::default()),
+                timeline_frames: 4096,
+                can_undo: false,
+                can_redo: false,
+                revision,
+                unsaved: true,
+                document_path: None,
+            })
+        }
+        let mut authored = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = authored
+            .execute(Command::AddMidiTrack {
+                name: "keys".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        authored
+            .execute(Command::InsertInstrument {
+                track,
+                state: hex_engine::default_native_device_state_for_class(
+                    hex_engine::NativeDeviceClass::Instrument,
+                    hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sine"),
+                )
+                .unwrap(),
+            })
+            .unwrap();
+        let original = authored.project().clone();
+        let sampler = hex_engine::default_native_device_state_for_class(
+            hex_engine::NativeDeviceClass::Instrument,
+            hex_lattice_contract::DeviceTypeId::from_static("hex.instrument.sampler"),
+        )
+        .unwrap();
+        authored
+            .execute(Command::RemoveInstrument { track })
+            .unwrap();
+        authored
+            .execute(Command::InsertInstrument {
+                track,
+                state: sampler,
+            })
+            .unwrap();
+        let replacement = authored.project().clone();
+        let device = replacement.track(track).unwrap().instrument().unwrap().id();
+        authored
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        let bypassed = authored.project().clone();
+        authored
+            .execute(Command::RemoveInstrument { track })
+            .unwrap();
+        let removed = authored.project().clone();
+        let (_, editor) =
+            crate::editor::clip_drag_ui_test::editor_window(cx, original.clone(), Arc::default());
+        editor.update(cx, |view, _| {
+            view.project_generation = 7;
+            view.selected_track = Some(track);
+            view.computer_keyboard.enabled = true;
+            view.computer_keyboard.target = Some((7, 1, track));
+            view.computer_keyboard.request_id = 51;
+            let input = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+            view.computer_keyboard.input = Some(Arc::clone(&input));
+            assert!(view.computer_keyboard.key_down("a", false));
+            view.publish_computer_keyboard();
+            let held = input.key_word(0).unwrap();
+            assert_ne!(held, 0);
+            view.state = Some(state(replacement.clone(), 2));
+            assert!(view.tick_computer_keyboard_with_policy(true));
+            assert!(!input.is_cancelled());
+            assert!(Arc::ptr_eq(
+                view.computer_keyboard.input.as_ref().unwrap(),
+                &input
+            ));
+            assert_eq!(input.key_word(0), Some(held));
+            assert_eq!(view.computer_keyboard.target, Some((7, 2, track)));
+            assert_eq!(
+                view.computer_keyboard.request_id, 51,
+                "the worker already rebound this input"
+            );
+            view.stopped_playback_restore =
+                Some(crate::editor::audio_admission::StoppedPlaybackRestore::Preparing);
+            assert!(!view.tick_computer_keyboard_with_policy(true));
+            assert!(
+                !input.is_cancelled(),
+                "preparation does not own the physical keys"
+            );
+            view.stopped_playback_restore = None;
+            assert!(view.computer_keyboard_up("a"));
+            assert_eq!(
+                input.key_word(0),
+                Some(0),
+                "the original release reaches the same client"
+            );
+            view.stop();
+            assert!(input.is_cancelled(), "explicit Stop remains terminal");
+            assert!(view.computer_keyboard.held().iter().all(Option::is_none));
+
+            let terminal =
+                Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+            view.computer_keyboard.input = Some(Arc::clone(&terminal));
+            view.computer_keyboard.target = Some((7, 2, track));
+            view.computer_keyboard.suspended = false;
+            assert!(view.computer_keyboard.key_down("a", false));
+            view.publish_computer_keyboard();
+            terminal.cancel();
+            assert!(view.tick_computer_keyboard_with_policy(true));
+            assert!(view.computer_keyboard.input.is_none());
+            assert!(view.computer_keyboard.suspended);
+            assert!(view.computer_keyboard.held().iter().all(Option::is_none));
+
+            // Legacy publication, another project generation, and invalid instruments must not
+            // inherit the physical activation, even when TrackId values happen to be equal.
+            for (worker_owned, generation, project) in [
+                (false, 7, replacement.clone()),
+                (true, 8, replacement.clone()),
+                (true, 7, bypassed),
+                (true, 7, removed),
+            ] {
+                view.project_generation = generation;
+                view.state = Some(state(project, 3));
+                view.computer_keyboard.suspended = false;
+                view.computer_keyboard.target = Some((7, 2, track));
+                let old = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+                view.computer_keyboard.input = Some(Arc::clone(&old));
+                assert!(view.computer_keyboard.key_down("a", false));
+                view.publish_computer_keyboard();
+                assert!(view.tick_computer_keyboard_with_policy(worker_owned));
+                assert!(old.is_cancelled());
+                assert!(view.computer_keyboard.held().iter().all(Option::is_none));
+                view.cancel_computer_keyboard();
+            }
+        });
+    }
 
     #[test]
     fn disabled_default_and_complete_chromatic_mapping() {

@@ -662,6 +662,23 @@ impl ComputerKeyboardRuntime {
     pub(crate) fn requests_preservation_from(&self, previous: &Self) -> bool {
         self.preserves_input_identity(previous) && !self.input.is_cancelled()
     }
+    // Input custody is distinct from voice history. A freshly constructed ordinary monitor
+    // may read the same physical keys against a different source; its old voices never move.
+    pub(crate) fn can_rebind_input_from(&self, previous: &Self) -> bool {
+        self.track == previous.track
+            && self.input.same_lease(&previous.input)
+            && !self.input.is_cancelled()
+            && !self.lease_detached
+            && !self.faulted
+            && self.age == 0
+            && self.primary.iter().all(Option::is_none)
+            && self.scratch.iter().all(Option::is_none)
+            && !previous.lease_detached
+            && !previous.faulted
+    }
+    pub(crate) fn detach_rebound_input(&mut self) {
+        self.lease_detached = true;
+    }
     fn continued_voices(&self, previous: &Self) -> Result<[Option<Voice>; VOICES], Invalid> {
         let mut voices = previous.primary;
         for voice in voices.iter_mut().flatten() {

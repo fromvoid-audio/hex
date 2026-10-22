@@ -256,7 +256,10 @@ impl PreparedRevision {
         self.arm_gain_recording(project, track)
     }
 
-    pub(crate) fn arm_gain_recording(
+    /// Consume an unshared actual compiled graph to arm one transient raw fader. The control
+    /// caller supplies its matching canonical project; no source/factory ownership is adopted
+    /// or recompiled, and an already shared arrangement refuses before mutation.
+    pub fn arm_gain_recording(
         mut self,
         project: &Project,
         track: TrackId,

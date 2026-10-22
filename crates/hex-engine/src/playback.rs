@@ -363,6 +363,18 @@ impl Playback {
         })
     }
     /// Control-side attachment validated against the exact compiled instrument instance.
+    pub fn live_expression_supported_on_control(&self, track: hex_project::TrackId) -> bool {
+        self.session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.live_expression_supported_on_control(track))
+    }
+    /// Existing monitor-latency capability of this actual constructed graph.
+    pub fn computer_keyboard_latency_supported_on_control(&self) -> bool {
+        self.session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.computer_keyboard_latency_supported())
+    }
+    /// Control-side attachment validated against the exact compiled instrument instance.
     pub fn prepare_live_expression(
         &mut self,
         project: &hex_project::Project,
@@ -1287,6 +1299,31 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
+        self.try_inherit_runtime_impl(previous, false)
+    }
+
+    /// Ordinary publication may rebind a fresh monitor to the same physical input client in
+    /// the same explicitly known project generation. This carries no voice/DSP history or
+    /// source compatibility. Unknown generations (including legacy defaults) authorize nothing.
+    /// Selection precedes graph inheritance; old input custody changes only after it succeeds.
+    pub fn try_inherit_runtime_in_control_context(
+        &mut self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+    ) -> Result<(), PlaybackHandoffError> {
+        self.try_inherit_runtime_impl(
+            previous,
+            generation.is_some() && generation == previous_generation,
+        )
+    }
+
+    fn try_inherit_runtime_impl(
+        &mut self,
+        previous: &mut Self,
+        same_control_context: bool,
+    ) -> Result<(), PlaybackHandoffError> {
+        let rebind_keyboard = same_control_context && self.can_rebind_keyboard_input(previous);
         let continued_audition = match (&self.tuning_audition, &previous.tuning_audition) {
             (Some(next), Some(old)) if next.shares_live_lease(old) => {
                 Some(next.continued_synth(old).map_err(|_| {
@@ -1409,9 +1446,56 @@ impl Playback {
                 })?;
             }
         } else {
+            if rebind_keyboard {
+                previous.detach_rebound_keyboard_input();
+            }
             previous.cancel_computer_keyboard();
         }
         Ok(())
+    }
+
+    fn can_rebind_keyboard_input(&self, previous: &Self) -> bool {
+        self.session_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.computer_keyboard.as_ref())
+            .zip(
+                previous
+                    .session_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.computer_keyboard.as_ref()),
+            )
+            .is_some_and(|(next, old)| next.can_rebind_input_from(old))
+    }
+    fn detach_rebound_keyboard_input(&mut self) {
+        if let Some(keyboard) = self
+            .session_runtime
+            .as_mut()
+            .and_then(|runtime| runtime.computer_keyboard.as_mut())
+        {
+            keyboard.detach_rebound_input();
+        }
+    }
+
+    /// Infallible input-only retirement at the callback's final accepted-install cut. Fresh
+    /// seeks retain their reconstructed history and read held keys with fresh monitor voices.
+    /// Call only after all fence/cancellation/refusal decisions, before canceling the old graph.
+    pub fn detach_rebound_inputs_from(
+        &self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+    ) {
+        if generation.is_none() || generation != previous_generation {
+            return;
+        }
+        if self.can_rebind_keyboard_input(previous) {
+            previous.detach_rebound_keyboard_input();
+        }
+        if let (Some(next), Some(old)) = (&self.tuning_audition, &mut previous.tuning_audition)
+            && next.can_rebind_input_from(old)
+        {
+            old.detach_rebound_input();
+        }
     }
 
     /// Render either the selected mixed source or the legacy finite Arrangement.

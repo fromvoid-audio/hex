@@ -198,6 +198,8 @@ pub(crate) struct Publication {
     /// UI/control project context this compiled playback belongs to. This is
     /// audio publication metadata, not project schema or engine state.
     control_context_generation: u64,
+    // A legacy default zero is not proof of a real project generation.
+    explicit_control_context: bool,
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
     playback: Box<Playback>,
@@ -1253,7 +1255,7 @@ impl PublicationControl {
                 if let Err(reason) = admit(view) {
                     return Err(AdmittedPublishError::Admission { reason, playback });
                 }
-                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, false)
+                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, true, false)
                     .map_err(AdmittedPublishError::Publication)
             }).map_err(|error| match error {
                 hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } =>
@@ -1292,25 +1294,26 @@ impl PublicationControl {
         playback: Playback,
         policy: PublicationPolicy,
     ) -> Result<u64, PublishError> {
-        self.publish_with_policy_and_context_generation(playback, policy, 0)
+        self.publish_with_pcm_obligation(playback, policy, 0, false, false)
     }
 
     /// Publish a prepared graph tagged with the control-side project context
-    /// that produced it. Existing callers retain generation zero through
-    /// `publish` and `publish_with_policy`.
+    /// that produced it. Legacy `publish`/`publish_with_policy` retain unknown context,
+    /// even though their scalar generation remains zero for existing telemetry.
     pub fn publish_with_policy_and_context_generation(
         &mut self,
         playback: Playback,
         policy: PublicationPolicy,
         control_context_generation: u64,
     ) -> Result<u64, PublishError> {
-        self.publish_with_pcm_obligation(playback, policy, control_context_generation, false)
+        self.publish_with_pcm_obligation(playback, policy, control_context_generation, true, false)
     }
     fn publish_with_pcm_obligation(
         &mut self,
         playback: Playback,
         policy: PublicationPolicy,
         control_context_generation: u64,
+        explicit_control_context: bool,
         forwarded_pcm: bool,
     ) -> Result<u64, PublishError> {
         let Some(mut resources) = self.device_resources.take() else {
@@ -1324,6 +1327,7 @@ impl PublicationControl {
                 playback,
                 policy,
                 control_context_generation,
+                explicit_control_context,
                 forwarded_pcm,
             );
         };
@@ -1339,7 +1343,7 @@ impl PublicationControl {
             .and_then(|frames| self.legacy_pcm_frames.checked_add(frames));
         let result = if let Some(legacy_pcm) = legacy_pcm {
             resources.publish_on_control(playback, legacy_pcm, |playback| {
-                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, forwarded_pcm)
+                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, explicit_control_context, forwarded_pcm)
             }).map_err(|error| match error {
                 hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } => PublishError {
                     reason: "device resource publication storage reservation exceeded", playback,
@@ -1360,6 +1364,7 @@ impl PublicationControl {
         playback: Playback,
         policy: PublicationPolicy,
         control_context_generation: u64,
+        explicit_control_context: bool,
         forwarded_pcm: bool,
     ) -> Result<u64, PublishError> {
         let reason = if self.candidate_root.domains_configured() {
@@ -1416,6 +1421,7 @@ impl PublicationControl {
             forwarded_pcm,
             revision,
             control_context_generation,
+            explicit_control_context,
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
             playback: Box::new(playback),
@@ -2154,8 +2160,14 @@ impl Callback {
                     .as_mut()
                     .and_then(ActivePublication::legacy_mut)
                     .map(|previous| {
-                        next.playback
-                            .try_inherit_runtime_from(&mut previous.playback)
+                        next.playback.try_inherit_runtime_in_control_context(
+                            &mut previous.playback,
+                            next.explicit_control_context
+                                .then_some(next.control_context_generation),
+                            previous
+                                .explicit_control_context
+                                .then_some(previous.control_context_generation),
+                        )
                     })
             };
             match handoff {
@@ -2224,6 +2236,14 @@ impl Callback {
                     if let Some(previous) =
                         self.active.as_mut().and_then(ActivePublication::legacy_mut)
                     {
+                        next.playback.detach_rebound_inputs_from(
+                            &mut previous.playback,
+                            next.explicit_control_context
+                                .then_some(next.control_context_generation),
+                            previous
+                                .explicit_control_context
+                                .then_some(previous.control_context_generation),
+                        );
                         previous.playback.cancel_computer_keyboard();
                         previous.playback.cancel_tuning_audition();
                     }
@@ -5681,6 +5701,7 @@ mod tests {
                 forwarded_pcm: false,
                 revision: 99,
                 control_context_generation: 0,
+                explicit_control_context: false,
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
                 playback: Box::new(graph().0),
@@ -6021,6 +6042,7 @@ mod tests {
                     forwarded_pcm: false,
                     revision,
                     control_context_generation: 0,
+                    explicit_control_context: false,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(graph().0),
@@ -6535,6 +6557,7 @@ mod tests {
             forwarded_pcm: false,
             revision: 1,
             control_context_generation: 0,
+            explicit_control_context: false,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(playback),
@@ -6650,6 +6673,7 @@ mod tests {
                         forwarded_pcm: false,
                         revision,
                         control_context_generation: 0,
+                        explicit_control_context: false,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
@@ -6725,6 +6749,7 @@ mod tests {
                         forwarded_pcm: false,
                         revision,
                         control_context_generation: 0,
+                        explicit_control_context: false,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
@@ -6739,6 +6764,7 @@ mod tests {
             forwarded_pcm: false,
             revision: 4,
             control_context_generation: 0,
+            explicit_control_context: false,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(held),
@@ -6887,6 +6913,7 @@ mod tests {
                     forwarded_pcm: false,
                     revision: 3,
                     control_context_generation: 0,
+                    explicit_control_context: false,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(queued),
@@ -7068,6 +7095,123 @@ mod tests {
         callback.begin_block();
         control.reclaim();
     }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn contextual_monitor_input_rebind_keeps_keys_across_edits_and_fresh_seek_without_history() {
+        use hex_engine::computer_keyboard::ComputerKeyboardInput;
+        use hex_project::{Command, Created, Editor, Project};
+        // An explicit generation zero is legitimate; the legacy default zero is unknown.
+        for (old_context, next_context, fresh, retained) in [
+            (Some(0), Some(0), false, true),
+            (Some(7), Some(7), true, true),
+            (None, None, false, false),
+            (Some(7), Some(8), false, false),
+        ] {
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::InsertTrackWithDevice {
+                    name: "keys".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            let input = Arc::new(ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 100, 1))).unwrap();
+            let audition = Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(
+                old_context.unwrap_or(0),
+            ));
+            audition.set_key(0, Some((64, 100, 2))).unwrap();
+            let graph = |project: &Project| {
+                let revision = Arc::new(
+                    hex_engine::PreparedRevision::prepare(
+                        project,
+                        &std::collections::BTreeMap::new(),
+                        Arc::new(hex_engine::SineTable::new()),
+                        None,
+                    )
+                    .unwrap(),
+                );
+                let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+                playback
+                    .prepare_computer_keyboard(project, track, Arc::clone(&input))
+                    .unwrap();
+                playback
+                    .prepare_tuning_audition(project, Arc::clone(&audition))
+                    .unwrap();
+                playback
+            };
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            let first = graph(editor.project());
+            match old_context {
+                Some(generation) => control
+                    .publish_with_policy_and_context_generation(
+                        first,
+                        PublicationPolicy::InheritRuntime,
+                        generation,
+                    )
+                    .unwrap(),
+                None => control.publish(first).unwrap(),
+            };
+            let mut output = [[0.0; 2]; 64];
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
+            editor.execute(Command::Gain { track, gain: 0.7 }).unwrap();
+            let next = graph(editor.project());
+            let policy = if fresh {
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(
+                    control.capture_fresh_runtime_fence().unwrap(),
+                )
+            } else {
+                PublicationPolicy::InheritRuntime
+            };
+            let revision = match next_context {
+                Some(generation) => control
+                    .publish_with_policy_and_context_generation(next, policy, generation)
+                    .unwrap(),
+                None => control.publish_with_policy(next, policy).unwrap(),
+            };
+            // Queue pressure returns the candidate and cannot detach the audible input.
+            let refused = control.publish(graph(editor.project())).unwrap_err();
+            drop(refused);
+            assert!(!input.is_cancelled());
+            let measured = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(control.status.applied_revision.load(Acquire), revision);
+            assert_eq!(!input.is_cancelled(), retained);
+            // Normal inheritance retains the existing certified audition continuation. Fresh
+            // runtime installation instead rebinds only its input after the final fence cut.
+            if fresh {
+                assert!(!audition.is_cancelled());
+            }
+            if retained {
+                assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
+            }
+            control.reclaim();
+            control.stop();
+            callback.begin_block();
+            assert!(input.is_cancelled());
+            control.request_shutdown();
+            callback.begin_block();
+            control.reclaim();
+        }
+    }
+
     #[cfg(feature = "allocation-probe")]
     #[test]
     fn computer_keyboard_callback_publication_polyphony_release_pressure_stop_and_retirement_allocate_nothing()

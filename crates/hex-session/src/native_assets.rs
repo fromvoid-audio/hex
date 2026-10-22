@@ -115,7 +115,7 @@ impl Session {
                 admit()?;
                 Ok(Arc::new(prepared))
             },
-            |_, _| Ok(()),
+            |_, _, _| Ok(()),
         )
     }
     /// Complete staged preparation and the final cancel check before invoking `finalize`.
@@ -137,6 +137,7 @@ impl Session {
             &std::collections::HashMap<hex_project::AssetId, crate::ResidentAsset>,
         ) -> Result<T, SessionError>,
         finalize: impl FnOnce(
+            &Project,
             &mut T,
             &hex_engine::native_device_resources::StagedNativeAssetView<'_>,
         ) -> Result<(), SessionError>,
@@ -277,7 +278,7 @@ impl Session {
                         if cancel.load(Ordering::Relaxed) || shutdown.load(Ordering::Relaxed) {
                             return Err(ResourcePreparationError::Cancelled.into());
                         }
-                        finalize(&mut prepared, stage)?;
+                        finalize(candidate, &mut prepared, stage)?;
                         Ok::<_, SessionError>((prepared, source_overviews))
                     },
                 )

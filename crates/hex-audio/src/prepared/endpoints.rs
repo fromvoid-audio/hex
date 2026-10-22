@@ -6,6 +6,7 @@ use crate::native_callback_owner::{Guard, Terminal, reserve};
 
 pub struct Client {
     endpoints: Guard<ClientEndpoints>,
+    worker_owned_publication: bool,
 }
 pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
@@ -67,7 +68,10 @@ impl Control {
         });
         let (endpoint, publication) = reserve(publication);
         (
-            Client { endpoints },
+            Client {
+                endpoints,
+                worker_owned_publication: false,
+            },
             WorkerControl { endpoint },
             EndpointTerminals {
                 client,
@@ -130,10 +134,16 @@ impl Client {
 
     pub(crate) fn activate(&mut self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
-            endpoints
+            self.worker_owned_publication = endpoints
                 .resident_forwarding
                 .expose_client_on_control(&endpoints.status);
         }
+    }
+    /// Immutable publication policy captured under the existing exposure lock. Every graph on
+    /// this output belongs to its control worker; transport and shared input clients remain
+    /// ordinary. Reading this snapshot never locks or grants graph/resource ownership.
+    pub fn worker_owns_graph_publication(&self) -> bool {
+        self.worker_owned_publication
     }
     pub(crate) fn guard(&self) -> &Guard<ClientEndpoints> {
         &self.endpoints

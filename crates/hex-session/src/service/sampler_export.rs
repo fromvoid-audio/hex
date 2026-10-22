@@ -882,7 +882,7 @@ impl Session {
                 }
                 Ok(ServiceExportSnapshot { prepared, sources })
             },
-            |_, _| Ok(()),
+            |_, _, _| Ok(()),
         )
     }
 }

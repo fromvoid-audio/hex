@@ -57,12 +57,13 @@ impl ResidentForwarding {
         slot.worker_owned = true;
         Ok(())
     }
-    pub(super) fn expose_client_on_control(&self, status: &Status) {
-        let _slot = self
+    pub(super) fn expose_client_on_control(&self, status: &Status) -> bool {
+        let slot = self
             .slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         status.client_exposed.store(true, Release);
+        slot.worker_owned
     }
     pub(super) fn new() -> Arc<Self> {
         let shared = Arc::new(Self {
@@ -274,6 +275,7 @@ impl PublicationControl {
             request.playback,
             request.policy,
             request.context_generation,
+            true,
             true,
         );
         // Refused responses keep their accepted PCM obligation until this Root

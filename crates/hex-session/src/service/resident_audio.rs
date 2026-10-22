@@ -9,9 +9,13 @@ use hex_engine::native_device_resources::{
     DeviceResourceAdmission, DeviceResourcePhase, PreparedDeviceResources,
 };
 
+mod runtime_inputs;
+pub(super) use runtime_inputs::{RequiredInput, RuntimeInputs};
+
 pub(super) struct Snapshot {
     pub(super) prepared: Arc<PreparedRevision>,
     pub(super) resources: PreparedDeviceResources,
+    pub(super) inputs: RuntimeInputs,
 }
 struct Inputs<'a> {
     native: NativeSamplerSources<'a>,
@@ -99,6 +103,19 @@ impl Inputs<'_> {
         transforms: &hex_engine::audio_transform::AudioTransformPreparation,
         waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
     ) -> Result<Snapshot, SessionError> {
+        self.prepare_with_gain(project, sink, media, table, transforms, waveforms, None)
+    }
+    #[allow(clippy::too_many_arguments)] // Existing compile inputs plus one transient raw-fader target.
+    fn prepare_with_gain(
+        &self,
+        project: &Project,
+        sink: &dyn WorkerAudioSink,
+        media: &MediaBank,
+        table: Arc<hex_engine::SineTable>,
+        transforms: &hex_engine::audio_transform::AudioTransformPreparation,
+        waveforms: &std::cell::RefCell<BTreeMap<hex_project::ClipId, AudioClipWaveform>>,
+        gain_recording: Option<hex_project::TrackId>,
+    ) -> Result<Snapshot, SessionError> {
         if self.shutdown.load(Ordering::Acquire)
             || self
                 .cancel
@@ -144,13 +161,18 @@ impl Inputs<'_> {
                     self.shutdown,
                 )
             })?;
+        let prepared = match gain_recording {
+            Some(track) => prepared.arm_gain_recording(project, track)?,
+            None => prepared,
+        };
         let snapshot = Snapshot {
             resources,
             prepared: Arc::new(prepared),
+            inputs: self
+                .current
+                .map_or_else(RuntimeInputs::default, |current| current.inputs.clone()),
         };
-        let runtime =
-            hex_engine::SessionPlayback::linear_export_runtime_allowance(&snapshot.prepared)
-                .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let runtime = runtime_allowance(&snapshot.prepared, snapshot.inputs.allowance()?)?;
         self.admit(
             &snapshot.resources,
             Some(&snapshot.prepared),
@@ -164,15 +186,20 @@ impl Inputs<'_> {
     }
     fn publish(
         &self,
-        snapshot: &Snapshot,
+        snapshot: &mut Snapshot,
+        project: &Project,
         sink: &mut dyn WorkerAudioSink,
         context: hex_engine::AudioSourceContext,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        let playback = Playback::try_from_prepared_with_device_resources(
+        let mut playback = Playback::try_from_prepared_with_device_resources(
             Arc::clone(&snapshot.prepared),
             &snapshot.resources,
         )
         .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
+        let previous = snapshot.inputs.clone();
+        let mut selected = previous.clone();
+        selected.attach(project, &mut playback)?;
+        selected.selected_after(&previous)?;
         let metadata = ResidentPublicationMetadata {
             context,
             device_preview: None,
@@ -183,14 +210,17 @@ impl Inputs<'_> {
             gain_recording_track: snapshot.prepared.gain_recording_track(),
             requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
         };
-        self.publish_runtime(
+        let accepted = self.publish_runtime(
             snapshot,
             playback,
             sink,
             metadata,
             ResidentPublicationPolicy::InheritRuntime,
-            0,
-        )
+            selected.allowance()?,
+        )?;
+        selected.cancel_retired_from(&previous);
+        snapshot.inputs = selected;
+        Ok(accepted)
     }
     fn publish_runtime(
         &self,
@@ -344,7 +374,7 @@ pub(super) fn prepare_import(
         current,
         legacy: input.legacy.to_vec(),
     };
-    let snapshot = inputs.prepare(
+    let mut snapshot = inputs.prepare(
         input.project,
         sink,
         input.media,
@@ -353,7 +383,7 @@ pub(super) fn prepare_import(
         input.waveforms,
     )?;
     admit()?;
-    inputs.publish(&snapshot, sink, context)?;
+    inputs.publish(&mut snapshot, input.project, sink, context)?;
     Ok(snapshot)
 }
 
@@ -499,7 +529,7 @@ impl Session {
                 })?;
                 inputs.prepare(project, &**sink, media, table, transforms, waveforms)
             },
-            |snapshot, stage| {
+            |project, snapshot, stage| {
                 let inputs = Inputs {
                     native: NativeSamplerSources::Staged(stage),
                     limits,
@@ -513,7 +543,7 @@ impl Session {
                 let mut sink = sink.try_borrow_mut().map_err(|_| {
                     SessionError::Invalid("resident publication is already borrowed")
                 })?;
-                inputs.publish(snapshot, &mut **sink, context)?;
+                inputs.publish(snapshot, project, &mut **sink, context)?;
                 Ok(())
             },
         )
@@ -620,30 +650,40 @@ impl Session {
     pub(super) fn publish_resident_seek(
         &self,
         snapshot: &Snapshot,
-        current: &Snapshot,
-        playback: Playback,
+        current: &mut Snapshot,
+        mut playback: Playback,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
         cancelled: &AtomicBool,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
-        self.resident_seek_inputs(admission, Some(current), Some(cancelled))?
-            .publish_runtime(snapshot, playback, sink, metadata, policy, 0)
+        let mut selected = snapshot.inputs.clone();
+        let extra = selected.allowance()?;
+        self.admit_resident_seek(current, sink, admission, extra)?;
+        selected.attach(self.project(), &mut playback)?;
+        selected.selected_after(&current.inputs)?;
+        let accepted = self
+            .resident_seek_inputs(admission, Some(current), Some(cancelled))?
+            .publish_runtime(snapshot, playback, sink, metadata, policy, extra)?;
+        selected.cancel_retired_from(&current.inputs);
+        current.inputs = selected;
+        Ok(accepted)
     }
-    #[allow(clippy::too_many_arguments)] // One actual source graph and bounded runtime-input preparation before final enqueue.
-    pub(super) fn publish_resident_runtime_input<T>(
+    #[allow(clippy::too_many_arguments)] // One actual source graph, fixed input bindings and final acceptance.
+    pub(super) fn publish_resident_runtime_inputs(
         &self,
-        snapshot: &Snapshot,
+        snapshot: &mut Snapshot,
         sink: &mut dyn WorkerAudioSink,
         admission: sampler_export::Admission<'_>,
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
-        extra_runtime: usize,
-        prepare: impl FnOnce(&mut Playback) -> Result<T, hex_engine::Invalid>,
-    ) -> Result<T, SessionError> {
+        mut selected: RuntimeInputs,
+        required: Option<RequiredInput>,
+    ) -> Result<Option<hex_engine::computer_keyboard::ComputerKeyboardTuningHint>, SessionError>
+    {
         let inputs = self.resident_seek_inputs(admission, None, None)?;
-        let quote = runtime_allowance(&snapshot.prepared, extra_runtime)?;
+        let quote = runtime_allowance(&snapshot.prepared, selected.allowance()?)?;
         inputs.admit(
             &snapshot.resources,
             Some(&snapshot.prepared),
@@ -659,9 +699,24 @@ impl Session {
             &snapshot.resources,
         )
         .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
-        let result = prepare(&mut playback).map_err(SessionError::Engine)?;
-        inputs.publish_runtime(snapshot, playback, sink, metadata, policy, extra_runtime)?;
-        Ok(result)
+        let requested = selected.clone();
+        selected.attach(self.project(), &mut playback)?;
+        if required.is_some_and(|required| !selected.satisfies(&requested, required)) {
+            return Err(SessionError::Invalid("runtime input source is unavailable"));
+        }
+        selected.selected_after(&snapshot.inputs)?;
+        let hint = playback.computer_keyboard_tuning_hint();
+        inputs.publish_runtime(
+            snapshot,
+            playback,
+            sink,
+            metadata,
+            policy,
+            selected.allowance()?,
+        )?;
+        selected.cancel_retired_from(&snapshot.inputs);
+        snapshot.inputs = selected;
+        Ok(hint)
     }
     fn resident_seek_inputs<'a>(
         &'a self,
@@ -709,7 +764,7 @@ impl Session {
                 .flat_map(|media| [&media.source_audio, &media.audio])
                 .collect(),
         };
-        let snapshot = inputs.prepare(
+        let mut snapshot = inputs.prepare(
             self.project(),
             sink,
             &self.media_bank(),
@@ -717,7 +772,28 @@ impl Session {
             &self.audio_transforms,
             &self.audio_clip_waveforms,
         )?;
-        inputs.publish(&snapshot, sink, context)?;
+        inputs.publish(&mut snapshot, self.project(), sink, context)?;
+        Ok(snapshot)
+    }
+    pub(super) fn prepare_resident_gain_recording(
+        &self,
+        track: hex_project::TrackId,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: &Snapshot,
+    ) -> Result<Snapshot, SessionError> {
+        let inputs = self.resident_seek_inputs(admission, Some(current), None)?;
+        let mut snapshot = inputs.prepare_with_gain(
+            self.project(),
+            sink,
+            &self.media_bank(),
+            self.sine_table(),
+            &self.audio_transforms,
+            &self.audio_clip_waveforms,
+            Some(track),
+        )?;
+        inputs.publish(&mut snapshot, self.project(), sink, context)?;
         Ok(snapshot)
     }
     pub(super) fn command_resident_snapshot(
@@ -797,7 +873,8 @@ impl Session {
         let transforms = &self.audio_transforms;
         let waveforms = &self.audio_clip_waveforms;
         let prepare = |source: &Project, project: &Project| {
-            let snapshot = inputs.prepare(project, sink, &media, table, transforms, waveforms)?;
+            let mut snapshot =
+                inputs.prepare(project, sink, &media, table, transforms, waveforms)?;
             let context = if source == project {
                 hex_engine::AudioSourceContext {
                     editor_revision: context.editor_revision.saturating_sub(1),
@@ -806,7 +883,7 @@ impl Session {
             } else {
                 context
             };
-            inputs.publish(&snapshot, sink, context)?;
+            inputs.publish(&mut snapshot, project, sink, context)?;
             Ok(snapshot)
         };
         match transition {
@@ -844,6 +921,7 @@ mod tests {
         seek_attempts: AtomicUsize,
         publications: Mutex<Vec<(ResidentPublicationMetadata, ResidentPublicationPolicy)>>,
         keyboard_peak: Mutex<f32>,
+        keyboard_publications: AtomicUsize,
     }
     struct OfflineSink {
         observed: Arc<Observed>,
@@ -903,7 +981,10 @@ mod tests {
             })();
             match result {
                 Ok(resources) => {
-                    if metadata.computer_keyboard_request.is_some() {
+                    if playback.computer_keyboard_tuning_hint().is_some() {
+                        self.observed
+                            .keyboard_publications
+                            .fetch_add(1, Ordering::Release);
                         let mut pcm = [[0.0; 2]; 32];
                         playback.render(&mut pcm).unwrap();
                         *self.observed.keyboard_peak.lock().unwrap() = pcm
@@ -1060,7 +1141,94 @@ mod tests {
                 .computer_keyboard_request,
             Some(51)
         );
+        // The same physical client survives transient graph preparation and ordinary edits.
+        let audition = Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(0));
+        audition.set_key(0, Some((67, 100, 2))).unwrap();
+        service
+            .submit(Request::PrepareTuningAudition {
+                revision: loaded.state.revision,
+                input: Arc::clone(&audition),
+            })
+            .unwrap();
+        let audition_ready = receive();
+        assert!(audition_ready.error.is_none(), "{:?}", audition_ready.error);
+        assert!(audition_ready.tuning_audition_complete.is_some());
+        let sampler_device = loaded
+            .state
+            .project
+            .track(sampler_track_id)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let expression = Arc::new(hex_engine::live_expression::LiveExpressionInput::new(
+            0,
+            sampler_track_id,
+            sampler_device,
+        ));
+        service
+            .submit(Request::PrepareLiveExpression {
+                revision: loaded.state.revision,
+                input: Arc::clone(&expression),
+            })
+            .unwrap();
+        let expression_ready = receive();
+        assert!(
+            expression_ready.error.is_none(),
+            "{:?}",
+            expression_ready.error
+        );
+        assert!(expression_ready.live_expression_complete.is_some());
+        service
+            .submit(Request::ArmGainRecording {
+                project_generation: 0,
+                revision: loaded.state.revision,
+                track: sampler_track_id,
+            })
+            .unwrap();
+        let armed = receive();
+        assert!(armed.error.is_none(), "{:?}", armed.error);
+        assert_eq!(
+            observed
+                .publications
+                .lock()
+                .unwrap()
+                .last()
+                .unwrap()
+                .0
+                .gain_recording_track,
+            Some(sampler_track_id)
+        );
+        service
+            .submit(Request::RestorePlayback { generation: 9 })
+            .unwrap();
+        let restore = receive();
+        assert!(restore.error.is_none(), "{:?}", restore.error);
+        assert_eq!(restore.restore_complete, Some(9));
+        assert!(restore.playback.is_none());
+        assert_eq!(observed.keyboard_publications.load(Ordering::Acquire), 5);
+        assert!(!input.is_cancelled());
+        assert!(!audition.is_cancelled());
+        assert!(!expression.is_cancelled());
         input.cancel();
+        audition.cancel();
+        expression.cancel();
+        // A new keyboard client must not be refused because unrelated old monitor clients
+        // were terminally canceled. Only this request's required input is strict.
+        let next_input = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+        service
+            .submit(Request::PrepareComputerKeyboard {
+                project_generation: 0,
+                revision: loaded.state.revision,
+                request_id: 53,
+                track: sampler_track_id,
+                input: Arc::clone(&next_input),
+            })
+            .unwrap();
+        let reselected = receive();
+        assert!(reselected.error.is_none(), "{:?}", reselected.error);
+        assert!(!next_input.is_cancelled());
+        next_input.cancel();
         service.submit(Request::RestoreStoppedPlayback).unwrap();
         let restored = receive();
         assert!(restored.error.is_none(), "{:?}", restored.error);
@@ -1303,6 +1471,61 @@ mod tests {
         let installed = receive();
         assert!(installed.error.is_none(), "{:?}", installed.error);
         assert_eq!(installed.state.project, imported.state.project);
+        let retained_input =
+            Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+        retained_input.set_key(0, Some((60, 127, 3))).unwrap();
+        service
+            .submit(Request::PrepareComputerKeyboard {
+                project_generation: 0,
+                revision: installed.state.revision,
+                request_id: 52,
+                track: sampler_track_id,
+                input: Arc::clone(&retained_input),
+            })
+            .unwrap();
+        assert!(receive().error.is_none());
+        observed.refuse.store(true, Ordering::Release);
+        service
+            .submit(Request::PrepareComputerKeyboard {
+                project_generation: 0,
+                revision: installed.state.revision,
+                request_id: 54,
+                track: sampler_track_id,
+                input: Arc::clone(&retained_input),
+            })
+            .unwrap();
+        let refused_keyboard = receive();
+        assert!(refused_keyboard.error.is_some());
+        assert!(
+            !retained_input.is_cancelled(),
+            "failed reprepare cannot cancel an accepted physical client"
+        );
+        observed.refuse.store(false, Ordering::Release);
+        let before = observed.keyboard_publications.load(Ordering::Acquire);
+        for muted in [true, false] {
+            service
+                .submit(Request::Edit(Command::Mute {
+                    track: sampler_track_id,
+                    muted,
+                }))
+                .unwrap();
+            let changed = receive();
+            assert!(changed.error.is_none(), "{:?}", changed.error);
+            assert_eq!(
+                changed
+                    .state
+                    .project
+                    .track(sampler_track_id)
+                    .unwrap()
+                    .muted(),
+                muted
+            );
+            assert!(!retained_input.is_cancelled());
+        }
+        assert_eq!(
+            observed.keyboard_publications.load(Ordering::Acquire),
+            before + 2
+        );
         service
             .submit(Request::Edit(Command::Mute {
                 track: sampler_track_id,
@@ -1312,7 +1535,37 @@ mod tests {
         let no_change = receive();
         assert!(no_change.error.is_none(), "{:?}", no_change.error);
         assert_eq!(no_change.state.project, installed.state.project);
-        assert_eq!(no_change.state.revision, installed.state.revision);
+        assert_eq!(no_change.state.revision, installed.state.revision + 2);
+        observed.refuse.store(true, Ordering::Release);
+        service
+            .submit(Request::Edit(Command::RemoveInstrument {
+                track: sampler_track_id,
+            }))
+            .unwrap();
+        let refused_remove = receive();
+        assert!(refused_remove.error.is_some());
+        assert_eq!(refused_remove.state.project, no_change.state.project);
+        assert!(
+            !retained_input.is_cancelled(),
+            "refused candidate cannot retire an installed input"
+        );
+        observed.refuse.store(false, Ordering::Release);
+        service
+            .submit(Request::Edit(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            }))
+            .unwrap();
+        let bypassed = receive();
+        assert!(bypassed.error.is_none(), "{:?}", bypassed.error);
+        assert!(
+            retained_input.is_cancelled(),
+            "accepted invalid source retires its input without blocking the edit"
+        );
+        service.submit(Request::Undo).unwrap();
+        let restored_source = receive();
+        assert!(restored_source.error.is_none());
+        assert_eq!(restored_source.state.project, no_change.state.project);
         service
             .submit(Request::Export(files.output().to_owned()))
             .unwrap();
@@ -1350,6 +1603,136 @@ mod tests {
                 .all(|(_, worker)| *worker != thread::current().id())
         );
         drop(service);
+    }
+
+    #[test]
+    fn captured_seek_refuses_a_later_accepted_input_selection_at_the_same_project_revision() {
+        let observed = Arc::new(Observed::default());
+        let mut sink = OfflineSink {
+            observed: Arc::clone(&observed),
+            pending: None,
+        };
+        let bytes = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            .checked_mul(3)
+            .unwrap();
+        let mut session = Session::new(48_000, 8, 1024)
+            .unwrap()
+            .with_native_reservation(crate::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 64,
+                    root_rows: 64,
+                    max_retained_bytes: bytes,
+                    max_construction_peak_bytes: bytes,
+                },
+                max_scan_frames: 1024,
+            })
+            .unwrap();
+        let Created::Track(track) = session
+            .command(Command::InsertTrackWithDevice {
+                name: "keys".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let context = hex_engine::AudioSourceContext {
+            project_generation: 0,
+            editor_revision: 1,
+        };
+        let mut current = session
+            .publish_resident_snapshot(
+                context,
+                &mut sink,
+                sampler_export::Admission::default(),
+                None,
+            )
+            .unwrap();
+        let (results, receiver) = mpsc::sync_channel(4);
+        let mut lane = resident_seek::Lane::new(ArrangementSeekWorker::new().unwrap(), results);
+        let intent = ResidentArrangementSeekIntent {
+            request_id: 1,
+            project_generation: 0,
+            project_revision: 1,
+            destination_frame: 129,
+            start_playing: true,
+            fence: ResidentFreshRuntimeFence {
+                output_identity: 1,
+                active_audio_revision: 1,
+                route_generation: 0,
+                admitted_command_ticket: 0,
+            },
+            device_preview: None,
+            tuning_preview: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        lane.submit(
+            intent,
+            &session,
+            &current,
+            &sink,
+            sampler_export::Admission::default(),
+            context,
+        )
+        .unwrap();
+        // Canonical control deliberately does not drive the result until after accepting the
+        // new physical selection. No scheduler timing or worker-idle inference establishes this cut.
+        let input = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        let mut selected = current.inputs.clone();
+        selected.keyboard = Some((track, Arc::clone(&input)));
+        let metadata = ResidentPublicationMetadata {
+            context,
+            device_preview: None,
+            tuning_preview: None,
+            seek_request: None,
+            stopped_restore: false,
+            computer_keyboard_request: Some(2),
+            gain_recording_track: None,
+            requires_preroll: false,
+        };
+        session
+            .publish_resident_runtime_inputs(
+                &mut current,
+                &mut sink,
+                sampler_export::Admission {
+                    seeks: Some(&lane),
+                    ..Default::default()
+                },
+                metadata,
+                ResidentPublicationPolicy::InheritRuntime,
+                selected,
+                Some(RequiredInput::Keyboard),
+            )
+            .unwrap();
+        assert_eq!(current.inputs.version, 1);
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let result = loop {
+            lane.drive(
+                &session,
+                Some(&mut current),
+                Some(&mut sink),
+                sampler_export::Admission::default(),
+                context,
+            );
+            if let Ok(result) = receiver.try_recv() {
+                break result;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        };
+        assert!(result.result.unwrap_err().contains("seek target changed"));
+        assert_eq!(
+            observed.seek_attempts.load(Ordering::Acquire),
+            0,
+            "stale result never reaches output admission"
+        );
+        assert!(!input.is_cancelled());
+        assert_eq!(current.inputs.version, 1);
+        drop(lane); // The existing worker joins before its exact captured anchors retire.
     }
 
     fn wait_for_seek(service: &Service) -> ResidentArrangementSeekResult {

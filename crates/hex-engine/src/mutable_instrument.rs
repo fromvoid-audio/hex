@@ -351,13 +351,17 @@ impl MutableInstrumentTrackRuntime {
     }
 
     pub(crate) fn supports_live_expression(&self) -> bool {
+        let resources = self.resources.as_ref().map_or(
+            &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+            crate::native_device_resources::PreparedDeviceResourceLease::resources,
+        );
         self.pair.max_events_per_block() >= MAX_MUTABLE_EVENTS_PER_QUERY
             && self
                 .pair
                 .preflight_event_batch(
                     &crate::live_expression::Snapshot::default().events(),
                     1,
-                    &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                    resources,
                 )
                 .is_ok()
     }

@@ -531,7 +531,7 @@ fn first_sampler_staged_prepare_failure_or_late_cancel_keeps_source_model_and_hi
                     Err(SessionError::Invalid("injected staged preparation refusal"))
                 }
             },
-            |_, _| {
+            |_, _, _| {
                 finalized.set(true);
                 Ok(())
             },
@@ -566,7 +566,7 @@ fn accepted_native_import_finalizer_has_no_later_cancellation_rollback() {
             &cancel,
             NativeAssetDestination::Unassigned,
             |_, _, _, _, _, _, _| Ok(()),
-            |_, _stage| {
+            |_, _, _stage| {
                 // Model cancellation racing after successful queue acceptance. Once this final
                 // operation accepts, the prepared source/history transaction must commit.
                 cancel.store(true, Ordering::Release);

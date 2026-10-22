@@ -1686,7 +1686,7 @@ fn run_worker(
         if let Some(seek) = resident_seek.as_mut() {
             seek.drive(
                 &session,
-                resident_snapshot.as_ref(),
+                resident_snapshot.as_mut(),
                 audio.as_deref_mut(),
                 export_lane.admission(compiled.as_ref().map(|(_, p)| {
                     hex_engine::native_device_resources::ControlSamplerSelection {
@@ -1727,7 +1727,7 @@ fn run_worker(
             if let Some(seek) = resident_seek.as_mut() {
                 seek.drive(
                     &session,
-                    resident_snapshot.as_ref(),
+                    resident_snapshot.as_mut(),
                     audio.as_deref_mut(),
                     export_lane.admission(compiled.as_ref().map(|(_, p)| {
                         hex_engine::native_device_resources::ControlSamplerSelection {
@@ -3654,6 +3654,26 @@ fn run_worker(
                         error = Some(
                             "gain recording arm refused · device edit is still applying".into(),
                         );
+                    } else if events.resident_publication_enabled() {
+                        let result = (|| {
+                            let current = resident_snapshot
+                                .as_ref()
+                                .ok_or(SessionError::Invalid("native gain source unavailable"))?;
+                            let sink = events
+                                .resident_audio()
+                                .ok_or(SessionError::Invalid("native gain output unavailable"))?;
+                            session.prepare_resident_gain_recording(track,
+                                hex_engine::AudioSourceContext { project_generation, editor_revision: revision }, sink,
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()), current)
+                        })();
+                        match result {
+                            Ok(snapshot) => {
+                                compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+                                resident_snapshot = Some(snapshot);
+                                status = Some("gain recording target prepared".into());
+                            }
+                            Err(reason) => error = Some(reason.to_string()),
+                        }
                     } else {
                         match session.prepare_gain_recording(
                             track,
@@ -4120,13 +4140,14 @@ fn run_worker(
                         );
                     } else if events.resident_publication_enabled() {
                         let result = (|| {
-                            let snapshot = resident_snapshot.as_ref().ok_or(
+                            let snapshot = resident_snapshot.as_mut().ok_or(
                                 SessionError::Invalid("current playback revision is unavailable"),
                             )?;
                             let sink = events.resident_audio().ok_or(SessionError::Invalid(
                                 "native restore output unavailable",
                             ))?;
-                            session.publish_resident_runtime_input(snapshot, sink,
+                            let selected = snapshot.inputs.clone();
+                            session.publish_resident_runtime_inputs(snapshot, sink,
                                 export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
                                 ResidentPublicationMetadata {
                                     context: hex_engine::AudioSourceContext { project_generation, editor_revision: revision },
@@ -4134,10 +4155,10 @@ fn run_worker(
                                     stopped_restore: true, computer_keyboard_request: None,
                                     gain_recording_track: snapshot.prepared.gain_recording_track(),
                                     requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
-                                }, ResidentPublicationPolicy::InstallFreshRuntime, 0, |_| Ok(()))
+                                }, ResidentPublicationPolicy::InstallFreshRuntime, selected, None)
                         })();
                         match result {
-                            Ok(()) => status = Some("restoring stopped playback".into()),
+                            Ok(_) => status = Some("restoring stopped playback".into()),
                             Err(reason) => error = Some(reason.to_string()),
                         }
                     } else if let Some((compiled_revision, prepared)) = compiled.as_ref()
@@ -4162,8 +4183,61 @@ fn run_worker(
                         || expected_revision != revision
                         || input.is_cancelled()
                     {
-                        input.cancel();
+                        if !events.resident_publication_enabled()
+                            || !resident_snapshot
+                                .as_ref()
+                                .and_then(|s| s.inputs.expression.as_ref())
+                                .is_some_and(|old| Arc::ptr_eq(old, &input))
+                        {
+                            input.cancel();
+                        }
                         error = Some("controller input preparation is stale".into());
+                    } else if events.resident_publication_enabled() {
+                        let result = (|| {
+                            let snapshot = resident_snapshot.as_mut().ok_or(
+                                SessionError::Invalid("native controller source unavailable"),
+                            )?;
+                            let mut selected = snapshot.inputs.clone();
+                            selected.expression = Some(Arc::clone(&input));
+                            let metadata = ResidentPublicationMetadata {
+                                context: hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                },
+                                device_preview: None,
+                                tuning_preview: None,
+                                seek_request: None,
+                                stopped_restore: false,
+                                computer_keyboard_request: None,
+                                gain_recording_track: snapshot.prepared.gain_recording_track(),
+                                requires_preroll: snapshot
+                                    .prepared
+                                    .arrangement_seek_requires_preroll(),
+                            };
+                            let sink = events.resident_audio().ok_or(SessionError::Invalid(
+                                "native controller output unavailable",
+                            ))?;
+                            session.publish_resident_runtime_inputs(snapshot, sink,
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
+                                metadata, ResidentPublicationPolicy::InheritRuntime, selected, Some(resident_audio::RequiredInput::Expression))
+                        })();
+                        match result {
+                            Ok(hint) => {
+                                keyboard_tuning_hint = hint;
+                                live_expression_complete = Some(Arc::clone(&input));
+                                live_expression = Some(input);
+                            }
+                            Err(reason) => {
+                                if !resident_snapshot
+                                    .as_ref()
+                                    .and_then(|s| s.inputs.expression.as_ref())
+                                    .is_some_and(|old| Arc::ptr_eq(old, &input))
+                                {
+                                    input.cancel();
+                                }
+                                error = Some(reason.to_string());
+                            }
+                        }
                     } else if let Some((_, prepared)) = compiled
                         .as_ref()
                         .filter(|(compiled_revision, _)| *compiled_revision == revision)
@@ -4234,8 +4308,61 @@ fn run_worker(
                         || input.project_generation != project_generation
                         || input.is_cancelled()
                     {
-                        input.cancel();
+                        if !events.resident_publication_enabled()
+                            || !resident_snapshot
+                                .as_ref()
+                                .and_then(|s| s.inputs.audition.as_ref())
+                                .is_some_and(|old| Arc::ptr_eq(old, &input))
+                        {
+                            input.cancel();
+                        }
                         error = Some("tuning audition preparation is stale or unavailable".into());
+                    } else if events.resident_publication_enabled() {
+                        let result = (|| {
+                            let snapshot = resident_snapshot.as_mut().ok_or(
+                                SessionError::Invalid("native audition source unavailable"),
+                            )?;
+                            let mut selected = snapshot.inputs.clone();
+                            selected.audition = Some(Arc::clone(&input));
+                            let metadata = ResidentPublicationMetadata {
+                                context: hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision,
+                                },
+                                device_preview: None,
+                                tuning_preview: None,
+                                seek_request: None,
+                                stopped_restore: false,
+                                computer_keyboard_request: None,
+                                gain_recording_track: snapshot.prepared.gain_recording_track(),
+                                requires_preroll: snapshot
+                                    .prepared
+                                    .arrangement_seek_requires_preroll(),
+                            };
+                            let sink = events.resident_audio().ok_or(SessionError::Invalid(
+                                "native audition output unavailable",
+                            ))?;
+                            session.publish_resident_runtime_inputs(snapshot, sink,
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
+                                metadata, ResidentPublicationPolicy::InheritRuntime, selected, Some(resident_audio::RequiredInput::Audition))
+                        })();
+                        match result {
+                            Ok(hint) => {
+                                keyboard_tuning_hint = hint;
+                                audition_activation = Some(input);
+                                status = Some("tuning audition ready".into());
+                            }
+                            Err(reason) => {
+                                if !resident_snapshot
+                                    .as_ref()
+                                    .and_then(|s| s.inputs.audition.as_ref())
+                                    .is_some_and(|old| Arc::ptr_eq(old, &input))
+                                {
+                                    input.cancel();
+                                }
+                                error = Some(reason.to_string());
+                            }
+                        }
                     } else if let Some((_, canonical)) = compiled
                         .as_ref()
                         .filter(|(candidate, _)| *candidate == revision)
@@ -4326,13 +4453,15 @@ fn run_worker(
                         error = Some("computer keyboard preparation is stale".into());
                     } else if events.resident_publication_enabled() {
                         let result = (|| {
-                            let snapshot = resident_snapshot.as_ref().ok_or(
+                            let snapshot = resident_snapshot.as_mut().ok_or(
                                 SessionError::Invalid("native keyboard source unavailable"),
                             )?;
                             let sink = events.resident_audio().ok_or(SessionError::Invalid(
                                 "native keyboard output unavailable",
                             ))?;
-                            session.publish_resident_runtime_input(snapshot, sink,
+                            let mut selected = snapshot.inputs.clone();
+                            selected.keyboard = Some((track, Arc::clone(&input)));
+                            session.publish_resident_runtime_inputs(snapshot, sink,
                                 export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
                                 ResidentPublicationMetadata {
                                     context: hex_engine::AudioSourceContext { project_generation, editor_revision: revision },
@@ -4340,12 +4469,7 @@ fn run_worker(
                                     stopped_restore: false, computer_keyboard_request: Some(request_id),
                                     gain_recording_track: snapshot.prepared.gain_recording_track(),
                                     requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
-                                }, ResidentPublicationPolicy::InheritRuntime,
-                                hex_engine::computer_keyboard::MAX_COMPUTER_KEYBOARD_STORAGE_BYTES,
-                                |playback| {
-                                    playback.prepare_computer_keyboard(session.project(), track, Arc::clone(&input))?;
-                                    Ok(playback.computer_keyboard_tuning_hint())
-                                })
+                                }, ResidentPublicationPolicy::InheritRuntime, selected, Some(resident_audio::RequiredInput::Keyboard))
                         })();
                         match result {
                             Ok(hint) => {
@@ -4354,7 +4478,13 @@ fn run_worker(
                                 keyboard_tuning_hint = hint;
                             }
                             Err(reason) => {
-                                input.cancel();
+                                if !resident_snapshot
+                                    .as_ref()
+                                    .and_then(|s| s.inputs.keyboard.as_ref())
+                                    .is_some_and(|(_, old)| Arc::ptr_eq(old, &input))
+                                {
+                                    input.cancel();
+                                }
                                 error = Some(reason.to_string());
                             }
                         }
@@ -4428,32 +4558,71 @@ fn run_worker(
                 }
                 Request::RestorePlayback { generation } => {
                     restore_complete = Some(generation);
-                    match compiled.as_ref() {
-                        Some((compiled_revision, prepared)) if *compiled_revision == revision => {
-                            restore_prepared = Some(Arc::clone(prepared));
-                        }
-                        _ => match compile(
-                            &session,
-                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
-                        ) {
-                            Ok(prepared) => {
-                                compiled = Some((revision, Arc::clone(&prepared)));
-                                midi_preview = Arc::clone(prepared.midi_preview());
-                                state = view_state(
-                                    &session,
-                                    Arc::clone(&midi_preview),
-                                    revision,
+                    if events.resident_publication_enabled() {
+                        let result = (|| {
+                            let snapshot = resident_snapshot.as_mut().ok_or(
+                                SessionError::Invalid("native restore source unavailable"),
+                            )?;
+                            let selected = snapshot.inputs.clone();
+                            let metadata = ResidentPublicationMetadata {
+                                context: hex_engine::AudioSourceContext {
                                     project_generation,
-                                    unsaved,
-                                    document.as_ref().map(|handle| handle.path.as_path()),
-                                );
-                                restore_prepared = Some(prepared);
+                                    editor_revision: revision,
+                                },
+                                device_preview: None,
+                                tuning_preview: None,
+                                seek_request: None,
+                                stopped_restore: false,
+                                computer_keyboard_request: None,
+                                gain_recording_track: snapshot.prepared.gain_recording_track(),
+                                requires_preroll: snapshot
+                                    .prepared
+                                    .arrangement_seek_requires_preroll(),
+                            };
+                            let sink = events.resident_audio().ok_or(SessionError::Invalid(
+                                "native restore output unavailable",
+                            ))?;
+                            session.publish_resident_runtime_inputs(snapshot, sink,
+                                export_lane.admission_with_seeks(compiled.as_ref().map(|(_, p)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(p) }), resident_seek.as_ref()),
+                                metadata, ResidentPublicationPolicy::InheritRuntime, selected, None)
+                        })();
+                        match result {
+                            Ok(hint) => {
+                                keyboard_tuning_hint = hint;
+                                status = Some("playback restored".into());
                             }
-                            Err(reason) => {
-                                compiled = None;
-                                error = Some(reason);
+                            Err(reason) => error = Some(reason.to_string()),
+                        }
+                    } else {
+                        match compiled.as_ref() {
+                            Some((compiled_revision, prepared))
+                                if *compiled_revision == revision =>
+                            {
+                                restore_prepared = Some(Arc::clone(prepared));
                             }
-                        },
+                            _ => match compile(
+                                &session,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            ) {
+                                Ok(prepared) => {
+                                    compiled = Some((revision, Arc::clone(&prepared)));
+                                    midi_preview = Arc::clone(prepared.midi_preview());
+                                    state = view_state(
+                                        &session,
+                                        Arc::clone(&midi_preview),
+                                        revision,
+                                        project_generation,
+                                        unsaved,
+                                        document.as_ref().map(|handle| handle.path.as_path()),
+                                    );
+                                    restore_prepared = Some(prepared);
+                                }
+                                Err(reason) => {
+                                    compiled = None;
+                                    error = Some(reason);
+                                }
+                            },
+                        }
                     }
                 }
             }
@@ -4758,7 +4927,7 @@ fn run_worker(
                 if let Some(seek) = resident_seek.as_mut() {
                     seek.drive(
                         &session,
-                        resident_snapshot.as_ref(),
+                        resident_snapshot.as_mut(),
                         audio.as_deref_mut(),
                         export_lane.admission(compiled.as_ref().map(|(_, p)| {
                             hex_engine::native_device_resources::ControlSamplerSelection {

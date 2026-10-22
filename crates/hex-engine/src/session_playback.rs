@@ -840,6 +840,18 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    pub(crate) fn live_expression_supported_on_control(&self, track: TrackId) -> bool {
+        self.revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .position(|candidate| candidate.canonical_track_id() == Some(track))
+            .and_then(|index| self.mutable_instruments.get(index))
+            .and_then(Option::as_ref)
+            .is_some_and(
+                crate::mutable_instrument::MutableInstrumentTrackRuntime::supports_live_expression,
+            )
+    }
     pub fn new(revision: Arc<PreparedRevision>) -> Result<Self, SessionPlaybackError> {
         Self::new_with_policy(revision, false, None)
     }
