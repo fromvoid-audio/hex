@@ -654,6 +654,8 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_marquee: Option<([f32; 2], [f32; 2], bool)>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
+    piano_view_clip: Option<(u64, ClipId)>,
+    piano_zoom_wheel_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
@@ -1242,6 +1244,8 @@ impl EditorView {
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
             midi_hit_cycle: None,
+            piano_view_clip: None,
+            piano_zoom_wheel_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
@@ -1638,6 +1642,7 @@ impl EditorView {
         self.advance_selection_intent();
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {
+            self.piano_view_clip = None;
             self.midi_creation = None;
             self.midi_note_gesture = None;
             self.midi_hit_cycle = None;

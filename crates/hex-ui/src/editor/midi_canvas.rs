@@ -4,8 +4,8 @@ use super::midi_draw::StrokeModifiers;
 use super::{EditorView, midi::NoteField};
 use crate::theme;
 use gpui::{
-    Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window,
-    canvas, div, fill, point, prelude::*, px, relative, rgb, size,
+    Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ScrollWheelEvent, Window, canvas, div, fill, point, prelude::*, px, relative, rgb, size,
 };
 use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
@@ -85,6 +85,23 @@ fn pitch_at_y(y: f32, height: f32, low: u8) -> Option<u8> {
 
 impl EditorView {
     pub(super) fn midi_editor(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+        let selected = self.selected_clip?;
+        let length = self
+            .state
+            .as_ref()?
+            .project
+            .midi_source(selected)?
+            .source_length()
+            .raw();
+        let owner = (self.project_generation, selected);
+        if self.piano_view_clip != Some(owner) {
+            self.cancel_midi_note_gesture();
+            self.piano_view_clip = Some(owner);
+            self.piano_zoom_wheel_accum = 0.0;
+            self.piano_beat_start = BeatTime::ZERO;
+            self.piano_beat_span =
+                BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
+        }
         let state = self.state.as_ref()?;
         let clip_id = self.detail_clip_id()?;
         let source = state.project.midi_source(clip_id)?;
@@ -479,6 +496,26 @@ impl EditorView {
                     pitch_locked: draw_pitch_locked,
                     draw_mode,
                 };
+                let wheel_entity = entity.clone();
+                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
+                    if !phase.capture() || !bounds.contains(&event.position) {
+                        return;
+                    }
+                    let delta = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
+                    if !delta.is_finite() || delta == 0.0 {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    wheel_entity.update(cx, |view, cx| {
+                        if view.zoom_piano_wheel_at(
+                            gesture_bounds_from(bounds),
+                            f32::from(event.position.x),
+                            delta,
+                        ) {
+                            cx.notify();
+                        }
+                    });
+                });
                 let mouse_down_entity = entity.clone();
                 let event_scene = std::sync::Arc::clone(&canvas_scene_events);
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
@@ -1459,6 +1496,46 @@ impl EditorView {
         self.cancel_midi_note_gesture();
     }
 
+    fn zoom_piano_wheel_at(&mut self, bounds: [f32; 4], x: f32, delta: f32) -> bool {
+        if self.context_menu.is_some() || !delta.is_finite() || delta == 0.0 {
+            return false;
+        }
+        let Some(length) = self
+            .midi_clip()
+            .map(|source| source.source_length().raw())
+            .filter(|length| *length > 0)
+        else {
+            return false;
+        };
+        let Some(anchor) = midi_drag::beat_at_point(
+            x,
+            bounds,
+            self.piano_beat_start.raw(),
+            self.piano_beat_span.raw(),
+        ) else {
+            return false;
+        };
+        // Match Arrange's bounded wheel accumulation; keep its state independent.
+        self.piano_zoom_wheel_accum = (self.piano_zoom_wheel_accum + delta).clamp(-320.0, 320.0);
+        let steps = (self.piano_zoom_wheel_accum / 80.0).trunc() as i8;
+        if steps == 0 {
+            return false;
+        }
+        self.piano_zoom_wheel_accum -= f32::from(steps) * 80.0;
+        let current = (self.piano_beat_start.raw(), self.piano_beat_span.raw());
+        let mut next = current;
+        for _ in 0..steps.unsigned_abs() {
+            next = super::midi_scene::wheel_zoom(next.0, next.1, length, anchor, steps < 0);
+        }
+        if next == current {
+            return false;
+        }
+        self.cancel_midi_note_gesture();
+        self.piano_beat_start = BeatTime::from_raw(next.0);
+        self.piano_beat_span = BeatTime::from_raw(next.1);
+        true
+    }
+
     fn zoom_piano(&mut self, inward: bool) {
         self.cancel_midi_note_gesture();
         let clip_length = self
@@ -1727,3 +1804,7 @@ mod tests {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_creation_ui_tests.rs"]
 mod creation_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_zoom_ui_tests.rs"]
+mod zoom_tests;
