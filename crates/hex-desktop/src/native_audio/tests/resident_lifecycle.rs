@@ -1,0 +1,502 @@
+//! Real current-format document swaps retain one admitted graph through actual output teardown.
+use super::resident_preview::ResidentHarness;
+use super::*;
+use hex_project::{BeatTime, Command, Created};
+
+fn finish_replacement(h: &mut ResidentHarness, event: &Event, old_output: u64) -> u64 {
+    assert!(event.project_replaced && event.playback.is_none());
+    assert!(h.submitted.is_none_or(|(_, metadata)| {
+        metadata.context.project_generation
+            != event
+                .state
+                .canonical_audio_source
+                .as_ref()
+                .unwrap()
+                .context()
+                .project_generation
+    }));
+    assert_eq!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(old_output)
+    );
+    // Neither pending acceptance nor closing the old publication is callback retirement. Release
+    // both actual headless carriers and the old Client, then wait for the real exclusive Lease.
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .control
+            .worker_owns_graph_publication()
+    );
+    let (audio_revision, metadata) = h.applied(0);
+    assert_eq!(
+        metadata.context.project_generation,
+        event
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context()
+            .project_generation
+    );
+    assert_eq!(metadata.context.editor_revision, event.state.revision);
+    audio_revision
+}
+
+#[test]
+fn resident_new_saved_open_and_journal_recovery_replay_exact_original_with_atomic_refusal() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::with_frame_limit(32_768);
+    assert!(h.next().error.is_none());
+    let (mut applied, _) = h.applied(0);
+    assert!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .control
+            .worker_owns_graph_publication()
+    );
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    (applied, _) = h.applied(applied);
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: files.wav(48_000, 8192),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    (applied, _) = h.applied(applied);
+    let sampler = loaded
+        .state
+        .project
+        .track(track)
+        .unwrap()
+        .instrument()
+        .unwrap()
+        .clone();
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    (applied, _) = h.applied(applied);
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    (applied, _) = h.applied(applied);
+    let path = files.0.join("normal.hex");
+    let saved = h.run(Request::SaveNew(path.clone()));
+    assert!(saved.save_complete && !saved.state.unsaved);
+    let persisted = hex_storage::load(&path).unwrap();
+    let asset = persisted.assets().next().unwrap();
+    assert!(asset.original_source().is_some());
+    assert_eq!(asset.source_frames(), 8192);
+    assert_eq!(persisted.track(track).unwrap().instrument(), Some(&sampler));
+    let journal = files.0.join("recover.hex-journal");
+    hex_storage::Journal::open(journal.clone())
+        .unwrap()
+        .checkpoint(&persisted)
+        .unwrap();
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .submit(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::Resident,
+            reservation: None,
+        })
+        .unwrap();
+    let refused = h.next();
+    assert!(
+        refused
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("final admission refusal")
+    );
+    assert!(!refused.project_replaced);
+    assert_eq!(refused.state.project, saved.state.project);
+    assert_eq!(refused.state.revision, saved.state.revision);
+    assert_eq!(
+        refused
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context()
+            .project_generation,
+        saved
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context()
+            .project_generation
+    );
+    assert_eq!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(old_output)
+    );
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        applied
+    );
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+
+    let new = h.run(Request::NewWithAudioMode {
+        mode: hex_session::DocumentAudioMode::Resident,
+        reservation: None,
+    });
+    assert_eq!(
+        new.state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context()
+            .project_generation,
+        1
+    );
+    finish_replacement(&mut h, &new, old_output);
+    assert!(new.state.project.tracks().is_empty());
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+
+    let empty_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let opened = h.run(Request::Open(path.clone()));
+    assert!(opened.open_complete && !opened.state.unsaved);
+    assert_eq!(opened.state.project.as_ref(), &persisted);
+    assert_eq!(
+        opened.state.project.track(track).unwrap().instrument(),
+        Some(&sampler)
+    );
+    applied = finish_replacement(&mut h, &opened, empty_output);
+    let reopened_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    h.service
+        .submit(Request::Open(files.0.join("missing.hex")))
+        .unwrap();
+    let missing = h.next();
+    assert!(missing.error.is_some() && !missing.project_replaced);
+    assert_eq!(missing.state.project, opened.state.project);
+    assert_eq!(missing.state.revision, opened.state.revision);
+    assert_eq!(
+        h.audio.as_ref().unwrap().control.output_identity(),
+        Some(reopened_output)
+    );
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service.submit(Request::Open(path)).unwrap();
+    let refused_open = h.next();
+    assert!(
+        refused_open
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("final admission refusal")
+    );
+    assert_eq!(refused_open.state.project, opened.state.project);
+    assert_eq!(refused_open.state.revision, opened.state.revision);
+    assert_eq!(refused_open.state.document_path, opened.state.document_path);
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        applied
+    );
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+
+    let recovered = h.run(Request::OpenWith {
+        source: hex_session::service::ProjectSource::Journal(journal),
+        relinks: Default::default(),
+    });
+    assert!(recovered.state.unsaved);
+    assert_eq!(recovered.state.project.as_ref(), &persisted);
+    finish_replacement(&mut h, &recovered, reopened_output);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.25; 2]; 64]);
+}
+
+#[test]
+fn resident_offline_source_replay_surfaces_refusal_and_restart_keeps_exact_extent() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let gate = Arc::new(AtomicBool::new(false));
+    // Exact original extent: current/captured/retired configuration handles must deduplicate
+    // the same physical bank, rather than charging another 8192 frames during output teardown.
+    let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
+    let initial = h.next();
+    assert!(
+        initial
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("fixture output unavailable")
+    );
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: files.wav(48_000, 8192),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    let placed = h.run(Request::Edit(Command::PlaceMidiClip {
+        track,
+        start: BeatTime::ZERO,
+        length: BeatTime::ONE,
+    }));
+    let Some(Created::Clip(clip)) = placed.created else {
+        panic!("clip")
+    };
+    h.run(Request::Edit(Command::AddMidiNote {
+        clip,
+        start: BeatTime::ZERO,
+        duration: BeatTime::ONE,
+        pitch: 60,
+        channel: 0,
+        velocity: 127,
+    }));
+    let last = h.run(Request::Edit(Command::Gain { track, gain: 0.5 }));
+    assert!(h.audio.is_none() && h.submitted.is_none());
+    assert!(h.pending_present.load(Acquire));
+    assert!(!h.unavailable.is_empty());
+    gate.store(true, std::sync::atomic::Ordering::Release);
+    h.refuse.store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .submit(Request::RestartAudio {
+            project_generation: 0,
+            request_id: 1,
+        })
+        .unwrap();
+    let retry_refused = h.next();
+    assert!(
+        retry_refused
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("final admission refusal")
+    );
+    assert_eq!(retry_refused.state.project, last.state.project);
+    h.wait_fresh_output(0);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while !h
+        .publication_refusals
+        .iter()
+        .any(|reason| reason.contains("final admission refusal"))
+    {
+        h.pump();
+        assert!(
+            Instant::now() < deadline,
+            "retained replay refusal was not surfaced"
+        );
+        std::thread::yield_now();
+    }
+    assert!(h.pending_present.load(Acquire));
+    assert!(h.submitted.is_none());
+    assert_eq!(
+        h.audio
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .applied_revision
+            .load(Acquire),
+        0
+    );
+    h.refuse.store(false, std::sync::atomic::Ordering::Release);
+    let (applied, metadata) = h.applied(0);
+    assert_eq!(metadata.context.editor_revision, last.state.revision);
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(hex_engine::playback::PlaybackCommand::Play)
+        .unwrap();
+    assert_eq!(h.render(), [[0.125; 2]; 64]);
+    let armed = h.run(Request::ArmGainRecording {
+        project_generation: 0,
+        revision: last.state.revision,
+        track,
+    });
+    assert_eq!(armed.state.project, last.state.project);
+    let (_, metadata) = h.applied(applied);
+    assert_eq!(metadata.gain_recording_track, Some(track));
+    for request_id in [2, 3] {
+        let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+        let restarted = h.run(Request::RestartAudio {
+            project_generation: 0,
+            request_id,
+        });
+        assert_eq!(restarted.state.project, last.state.project);
+        assert_eq!(restarted.state.revision, last.state.revision);
+        assert_eq!(restarted.state.can_undo, last.state.can_undo);
+        assert_eq!(
+            restarted.state.project.track(track).unwrap().instrument(),
+            loaded.state.project.track(track).unwrap().instrument()
+        );
+        h.release_relinquished_output();
+        h.wait_fresh_output(old_output);
+        let (_, metadata) = h.applied(0);
+        assert_eq!(metadata.context.editor_revision, last.state.revision);
+        assert_eq!(metadata.context.project_generation, 0);
+        assert_eq!(metadata.gain_recording_track, Some(track));
+        h.audio
+            .as_mut()
+            .unwrap()
+            .control
+            .command(hex_engine::playback::PlaybackCommand::Play)
+            .unwrap();
+        assert_eq!(h.render(), [[0.125; 2]; 64]);
+    }
+}
+
+#[test]
+fn resident_pending_survives_refused_verified_transition_and_retires_on_accepted_mode_change() {
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let gate = Arc::new(AtomicBool::new(false));
+    let mut h = ResidentHarness::with_open_gate(8192, Arc::clone(&gate));
+    assert!(h.next().error.is_some());
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 1,
+        project_generation: 0,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: files.wav(48_000, 8192),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    assert!(h.pending_present.load(Acquire));
+    h.budget_refuse
+        .store(true, std::sync::atomic::Ordering::Release);
+    h.service
+        .submit(Request::NewWithAudioMode {
+            mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+            reservation: Some(AudioPolicy::source_reservation()),
+        })
+        .unwrap();
+    let refused = h.next();
+    assert!(refused.error.is_some() && !refused.project_replaced);
+    assert_eq!(refused.state.project, loaded.state.project);
+    assert_eq!(refused.state.revision, loaded.state.revision);
+    assert!(h.pending_present.load(Acquire));
+    assert!(h.audio.is_none() && h.submitted.is_none());
+    h.budget_refuse
+        .store(false, std::sync::atomic::Ordering::Release);
+    gate.store(true, std::sync::atomic::Ordering::Release);
+    let verified = h.run(Request::NewWithAudioMode {
+        mode: hex_session::DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    assert!(verified.project_replaced);
+    assert!(
+        !h.pending_present.load(Acquire),
+        "only the obsolete unpublished resident owner must be retired"
+    );
+    h.wait_fresh_output(0);
+    assert_eq!(
+        h.audio.as_ref().unwrap().mode,
+        hex_session::DocumentAudioMode::VerifiedStreaming
+    );
+    assert!(
+        !h.audio
+            .as_ref()
+            .unwrap()
+            .control
+            .worker_owns_graph_publication()
+    );
+    let context = verified
+        .state
+        .canonical_audio_source
+        .as_ref()
+        .unwrap()
+        .context();
+    h.wait_constructor_applied(context);
+    assert_eq!(h.render(), [[0.0; 2]; 64]);
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let resident = h.run(Request::NewWithAudioMode {
+        mode: hex_session::DocumentAudioMode::Resident,
+        reservation: None,
+    });
+    let mut applied = finish_replacement(&mut h, &resident, old_output);
+    let added = h.run(Request::Edit(Command::AddMidiTrack {
+        name: "fresh sampler".into(),
+    }));
+    let Some(Created::Track(track)) = added.created else {
+        panic!("track")
+    };
+    (applied, _) = h.applied(applied);
+    let loaded = h.run(Request::LoadFirstSampler {
+        request_id: 2,
+        project_generation: 2,
+        revision: added.state.revision,
+        track,
+        empty_sampler: None,
+        path: files.wav(48_000, 8192),
+        cancel: Arc::new(AtomicBool::new(false)),
+    });
+    let (_, metadata) = h.applied(applied);
+    assert_eq!(metadata.context.project_generation, 2);
+    assert_eq!(metadata.context.editor_revision, loaded.state.revision);
+}

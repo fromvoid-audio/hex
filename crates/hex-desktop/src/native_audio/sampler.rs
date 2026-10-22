@@ -90,7 +90,7 @@ impl NativeAudioSink {
         );
         add(held, self.edit_hold())
     }
-    pub(super) fn opened_output(&mut self, output: WorkerPreparedOutput) {
+    pub(super) fn opened_output(&mut self, mut output: WorkerPreparedOutput) {
         // Both production and headless factories must acquire the existing
         // exclusive Lease. Successful fresh construction proves old retirement;
         // neither a cleared Option nor UI endpoint acknowledgement does so.
@@ -112,6 +112,33 @@ impl NativeAudioSink {
                 ..Hold::default()
             })
         };
+        if self.worker_owned_resident_graphs
+            && self.desired.as_ref().is_none_or(|source| {
+                source.audio_mode() == hex_session::DocumentAudioMode::Resident
+            })
+        {
+            // The actual fresh Lease has already closed the old teardown frontier. Configure
+            // generic graph ownership before either initial publication or Client exposure;
+            // a resource-free initial project must not later require another output mode.
+            let configured = self
+                .policy
+                .as_ref()
+                .map_err(Clone::clone)
+                .and_then(|policy| {
+                    output
+                        .publication
+                        .control()
+                        .ok_or_else(|| "audio publication endpoint is closed".to_owned())?
+                        .configure_device_resource_publication_on_control(
+                            policy.resident_native.storage,
+                        )
+                        .map_err(str::to_owned)
+                });
+            if let Err(error) = configured {
+                self.open_error = Some(error);
+                return;
+            }
+        }
         self.output = Some(output);
     }
     pub(super) fn retain_relinquished_output(&mut self) {

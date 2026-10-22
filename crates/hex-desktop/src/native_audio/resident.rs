@@ -27,6 +27,17 @@ pub(super) struct Resident {
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
 impl Resident {
+    /// A successfully adopted non-resident document supersedes only unpublished old-generation
+    /// custody. Actual callback obligations remain in the active/retired book until teardown.
+    pub(super) fn discard_obsolete_pending(&mut self, context: hex_engine::AudioSourceContext) {
+        if self
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.metadata.context != context)
+        {
+            self.pending = None;
+        }
+    }
     pub(super) fn reap_observations(&mut self) {
         for row in &mut self.observations {
             if row
@@ -175,11 +186,30 @@ impl NativeAudioSink {
                 error: "audio publication observation is waiting for capacity".into(),
             });
         }
+        let replacing_document = matches!(policy, ResidentPublicationPolicy::ReplaceDocument);
+        if replacing_document
+            && !self.desired.as_ref().is_some_and(|source| {
+                source.context().project_generation.checked_add(1)
+                    == Some(metadata.context.project_generation)
+                    && metadata.device_preview.is_none()
+                    && metadata.tuning_preview.is_none()
+                    && metadata.seek_request.is_none()
+                    && !metadata.stopped_restore
+                    && metadata.computer_keyboard_request.is_none()
+                    && metadata.gain_recording_track.is_none()
+            })
+        {
+            return Err(ResidentPublicationRefusal {
+                playback,
+                error: "document replacement context is stale".into(),
+            });
+        }
         // Active-output refusal never enters the offline slot. The prospective view already
         // includes the active book, so it must not also be selected from resident_inventory.
         if let Some(control) = self
             .output
             .as_mut()
+            .filter(|_| !replacing_document)
             .and_then(|output| output.publication.control())
         {
             control.reclaim();
@@ -198,6 +228,12 @@ impl NativeAudioSink {
                 }
                 ResidentPublicationPolicy::InstallFreshRuntime => {
                     hex_audio::prepared::PublicationPolicy::InstallFreshRuntime
+                }
+                ResidentPublicationPolicy::ReplaceDocument => {
+                    return Err(ResidentPublicationRefusal {
+                        playback,
+                        error: "document replacement must retain before output teardown".into(),
+                    });
                 }
                 ResidentPublicationPolicy::FreshIfUnchanged(expected) => {
                     let Some(actual) = control.capture_fresh_runtime_fence().filter(|actual| {
@@ -271,7 +307,7 @@ impl NativeAudioSink {
                 }
             };
         }
-        if self.output.is_some() {
+        if self.output.is_some() && !replacing_document {
             return Err(ResidentPublicationRefusal {
                 playback,
                 error: "active audio publication endpoint is closed".into(),
@@ -283,7 +319,9 @@ impl NativeAudioSink {
                 error: "fresh runtime publication requires its original active output".into(),
             });
         }
-        // Only explicit unavailable/opening output state reaches here. The old pending owner
+        // Only explicit unavailable/opening state or the typed document-replacement transaction
+        // reaches here. The latter retains before its immediate canonical swap starts teardown.
+        // The old pending owner
         // stays selected until the exact new owner has passed full control-union admission.
         let captured = match resources
             .map(|resources| resources.capture_on_control(metadata_limit))
@@ -309,7 +347,11 @@ impl NativeAudioSink {
             resources: captured,
             observation,
             metadata,
-            policy,
+            policy: if replacing_document {
+                ResidentPublicationPolicy::InstallFreshRuntime
+            } else {
+                policy
+            },
         });
         Ok(ResidentPublicationAcceptance::OfflineRetained)
     }
@@ -357,6 +399,18 @@ impl NativeAudioSink {
                 metadata,
                 policy,
             });
+            // Keep the actual owner through both transient backpressure and hard scope/budget
+            // refusal, but expose the reason. Waiting never masquerades as Submitted/Applied.
+            self.output_identity = self
+                .output
+                .as_mut()
+                .and_then(|output| output.publication.control())
+                .and_then(|control| control.output_identity());
+            self.observe(
+                metadata.context,
+                "resident-pending-refused",
+                EditorPublicationState::Refused(refused.error),
+            );
         }
     }
 }

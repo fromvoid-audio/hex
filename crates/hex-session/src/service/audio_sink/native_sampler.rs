@@ -47,7 +47,9 @@ impl NativeSamplerSources<'_> {
         use hex_engine::native_device_resources::{self as resources, DeviceResourcePhase};
         match self {
             Self::Committed(store) => {
-                let stores = [store];
+                let stores = std::iter::once(store)
+                    .chain(phase.stores.iter().copied())
+                    .collect::<Vec<_>>();
                 let actual = DeviceResourcePhase {
                     registered: phase.registered,
                     stores: &stores,

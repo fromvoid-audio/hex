@@ -32,6 +32,10 @@ pub enum ResidentPublicationPolicy {
     InheritRuntime,
     /// Existing explicit fresh installation used after priority Stop restoration.
     InstallFreshRuntime,
+    /// New/Open only: admit one exact pending owner before canonical generation replacement.
+    /// Acceptance is OfflineRetained; existing teardown/open then queues it on the fresh output.
+    /// This never converts ordinary queue pressure into offline acceptance.
+    ReplaceDocument,
     FreshIfUnchanged(ResidentFreshRuntimeFence),
 }
 /// Successful worker acceptance is either an actual queue submission or explicit offline custody.

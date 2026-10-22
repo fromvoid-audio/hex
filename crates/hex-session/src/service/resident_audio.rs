@@ -25,6 +25,7 @@ struct Inputs<'a> {
     cancel: Option<&'a AtomicBool>,
     admission: sampler_export::Admission<'a>,
     current: Option<&'a Snapshot>,
+    predecessor: Option<&'a Session>,
     legacy: Vec<&'a hex_engine::Audio>,
 }
 impl Inputs<'_> {
@@ -73,12 +74,25 @@ impl Inputs<'_> {
             }))
             .collect::<Vec<_>>();
         let outbound = self.admission.outbound.into_iter().collect::<Vec<_>>();
+        let predecessor_store = self.predecessor.map(|old| [&old.native_assets]);
+        let legacy = self
+            .legacy
+            .iter()
+            .copied()
+            .chain(self.predecessor.into_iter().flat_map(|old| {
+                old.media
+                    .values()
+                    .flat_map(|media| [&media.source_audio, &media.audio])
+            }))
+            .collect::<Vec<_>>();
         let phase = DeviceResourcePhase {
-            stores: &[],
+            stores: predecessor_store
+                .as_ref()
+                .map_or(&[], |stores| stores.as_slice()),
             registered: &registered,
             selections: &selections,
             outbound: &outbound,
-            legacy: &self.legacy,
+            legacy: &legacy,
             checked_runtime_bytes: self
                 .admission
                 .runtime_bytes
@@ -173,9 +187,12 @@ impl Inputs<'_> {
         let snapshot = Snapshot {
             resources,
             prepared: Arc::new(prepared),
-            inputs: self
-                .current
-                .map_or_else(RuntimeInputs::default, |current| current.inputs.clone()),
+            inputs: if self.predecessor.is_some() {
+                RuntimeInputs::default()
+            } else {
+                self.current
+                    .map_or_else(RuntimeInputs::default, |current| current.inputs.clone())
+            },
         };
         let runtime = runtime_allowance(&snapshot.prepared, snapshot.inputs.allowance()?)?;
         self.admit(
@@ -215,6 +232,22 @@ impl Inputs<'_> {
         sink: &mut dyn WorkerAudioSink,
         metadata: ResidentPublicationMetadata,
     ) -> Result<ResidentPublicationAcceptance, SessionError> {
+        self.publish_tagged_with_policy(
+            snapshot,
+            project,
+            sink,
+            metadata,
+            ResidentPublicationPolicy::InheritRuntime,
+        )
+    }
+    fn publish_tagged_with_policy(
+        &self,
+        snapshot: &mut Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+    ) -> Result<ResidentPublicationAcceptance, SessionError> {
         let mut playback = Playback::try_from_prepared_with_device_resources(
             Arc::clone(&snapshot.prepared),
             &snapshot.resources,
@@ -229,7 +262,7 @@ impl Inputs<'_> {
             playback,
             sink,
             metadata,
-            ResidentPublicationPolicy::InheritRuntime,
+            policy,
             selected.allowance()?,
         )?;
         selected.cancel_retired_from(&previous);
@@ -368,6 +401,189 @@ pub(super) fn execute_command(
     }
 }
 
+/// Retry accepted offline custody only with a fresh borrow of the canonical/preview/export/seek
+/// union. The pending owner is selected by the sink exactly once while its local capture moves
+/// into the prospective publication. Refusal retains it for the next bounded control poll.
+pub(super) fn poll_pending<'audio>(
+    session: &Session,
+    current: Option<&Snapshot>,
+    audio: Option<&mut (dyn WorkerAudioSink + 'audio)>,
+    admission: sampler_export::Admission<'_>,
+) {
+    let (Some(current), Some(audio)) = (current, audio) else {
+        return;
+    };
+    if session.audio_mode() != DocumentAudioMode::Resident || !audio.resident_publication_enabled()
+    {
+        return;
+    }
+    let inputs = session.resident_seek_inputs(admission, None, None);
+    let runtime = audio.native_sampler_hold().construction_bytes;
+    audio.poll_resident_pending(&mut |views| {
+        inputs
+            .as_ref()
+            .map_err(|error| error.to_string())?
+            .admit(
+                &current.resources,
+                Some(&current.prepared),
+                views,
+                runtime,
+                0,
+            )
+            .map_err(|e| e.to_string())
+    });
+}
+
+pub(super) struct PreparedDocumentReplacement {
+    pub(super) prepared: Arc<PreparedRevision>,
+    pub(super) sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
+    pub(super) resident: Option<Snapshot>,
+}
+/// The candidate Session is complete before final pending acceptance. The caller subsequently
+/// performs only fixed moves into its canonical/document slots, then emits generation replacement.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn prepare_document_replacement(
+    candidate: &Session,
+    old: &Session,
+    context: hex_engine::AudioSourceContext,
+    events: &mut WorkerEvents,
+    current: Option<&Snapshot>,
+    admission: sampler_export::Admission<'_>,
+) -> Result<PreparedDocumentReplacement, String> {
+    let context = hex_engine::AudioSourceContext {
+        project_generation: context
+            .project_generation
+            .checked_add(1)
+            .ok_or("project generation exhausted")?,
+        editor_revision: context
+            .editor_revision
+            .checked_add(1)
+            .ok_or("project revision exhausted")?,
+    };
+    if candidate.audio_mode() == DocumentAudioMode::Resident
+        && let Some(sink) = events.resident_audio()
+    {
+        let resident = candidate
+            .retain_resident_document_replacement(old, context, sink, admission, current)
+            .map_err(|e| e.to_string())?;
+        return Ok(PreparedDocumentReplacement {
+            prepared: Arc::clone(&resident.prepared),
+            sources: None,
+            resident: Some(resident),
+        });
+    }
+    let prepare =
+        |admission: sampler_export::Admission<'_>| -> Result<PreparedDocumentReplacement, String> {
+            let snapshot = if hex_engine::native_device_resources::requires_private_sampler_sources(
+                candidate.project(),
+            ) {
+                candidate
+                    .prepare_service_snapshot_against(old, candidate.project(), admission)
+                    .map_err(|e| e.to_string())?
+            } else {
+                sampler_export::ServiceExportSnapshot {
+                    prepared: compile(candidate, None)?,
+                    sources: None,
+                }
+            };
+            if old.native_reservation.is_some() {
+                admission
+                    .check(old, candidate, snapshot.selection(), 0, None)
+                    .map_err(|e| e.to_string())?;
+            }
+            Ok(PreparedDocumentReplacement {
+                prepared: snapshot.prepared,
+                sources: snapshot.sources,
+                resident: None,
+            })
+        };
+    let Some(sink) = events.resident_audio() else {
+        return prepare(admission);
+    };
+    let native = sink.resident_admission();
+    let sets = current.map(|snapshot| [&snapshot.resources]);
+    let revisions = current.map(|snapshot| [snapshot.prepared.as_ref()]);
+    let current =
+        DeviceResourceAdmission::new(sets.as_ref().map_or(&[], |sets| sets.as_slice()), &[])
+            .with_prepared_revisions(
+                revisions
+                    .as_ref()
+                    .map_or(&[], |revisions| revisions.as_slice()),
+            );
+    let mut registered = admission.registered.to_vec();
+    registered.push(current);
+    registered.extend(native);
+    prepare(sampler_export::Admission {
+        registered: &registered,
+        native: sink.native_sampler_hold(),
+        ..admission
+    })
+}
+
+/// Source decoding/reconstruction borrows the live sink inventory too: cached export-lane
+/// scalars cannot substitute for original banks retained by current/retired/pending outputs.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn open_document(
+    old: &Session,
+    history_capacity: usize,
+    source: &ProjectSource,
+    relinks: &BTreeMap<hex_project::AssetId, PathBuf>,
+    mode: DocumentAudioMode,
+    reservation: Option<SourcePlanReservation>,
+    events: &mut WorkerEvents,
+    current: Option<&Snapshot>,
+    admission: sampler_export::Admission<'_>,
+) -> Result<recovery::OpenCandidate, String> {
+    let open = |admission: sampler_export::Admission<'_>| {
+        let allowance = admission
+            .replacement_frame_allowance(old)
+            .map_err(|e| e.to_string())?;
+        recovery::open_source_with_limits(
+            old,
+            history_capacity,
+            source,
+            relinks,
+            mode,
+            reservation,
+            old.native_reservation,
+            allowance,
+            admission,
+        )
+    };
+    let Some(sink) = events.resident_audio() else {
+        return open(admission);
+    };
+    let native = sink.resident_admission();
+    let current_sets = current.map(|snapshot| [&snapshot.resources]);
+    let revisions = current.map(|snapshot| [snapshot.prepared.as_ref()]);
+    let current = DeviceResourceAdmission::new(
+        current_sets.as_ref().map_or(&[], |sets| sets.as_slice()),
+        &[],
+    )
+    .with_prepared_revisions(
+        revisions
+            .as_ref()
+            .map_or(&[], |revisions| revisions.as_slice()),
+    );
+    let mut registered = admission.registered.to_vec();
+    registered.push(current);
+    registered.extend(native);
+    open(sampler_export::Admission {
+        registered: &registered,
+        native: sink.native_sampler_hold(),
+        ..admission
+    })
+}
+
+/// Retire monitor selections only after actual replacement acceptance. Existing output teardown
+/// owns old DSP/source custody; this control operation cancels shared inputs, never their runtime.
+pub(super) fn adopt_document_snapshot(current: &mut Option<Snapshot>, next: Option<Snapshot>) {
+    if let Some(old) = current.as_ref() {
+        RuntimeInputs::default().cancel_retired_from(&old.inputs);
+    }
+    *current = next;
+}
+
 pub(super) fn prepare_import(
     input: crate::import_batch::Preparation<'_>,
     context: hex_engine::AudioSourceContext,
@@ -377,6 +593,7 @@ pub(super) fn prepare_import(
     admit: &mut dyn FnMut() -> Result<(), SessionError>,
 ) -> Result<Snapshot, SessionError> {
     let inputs = Inputs {
+        predecessor: None,
         native: NativeSamplerSources::Committed(input.native),
         limits: input.limits.ok_or(SessionError::Invalid(
             "resident resource reservation unavailable",
@@ -529,6 +746,7 @@ impl Session {
             destination,
             |project, media, table, transforms, waveforms, stage, _| {
                 let inputs = Inputs {
+                    predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
                     max_frames,
@@ -545,6 +763,7 @@ impl Session {
             },
             |project, snapshot, stage| {
                 let inputs = Inputs {
+                    predecessor: None,
                     native: NativeSamplerSources::Staged(stage),
                     limits,
                     max_frames,
@@ -770,6 +989,7 @@ impl Session {
         cancelled: Option<&'a AtomicBool>,
     ) -> Result<Inputs<'a>, SessionError> {
         Ok(Inputs {
+            predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
                 "resident resource reservation unavailable",
@@ -786,6 +1006,64 @@ impl Session {
                 .collect(),
         })
     }
+    /// Prepare the complete candidate before its reserved Session swap. Every predecessor owner,
+    /// including unused originals/media, remains admitted through final pending acceptance. No
+    /// old monitor client is attached to a new document merely because its TrackId is reused.
+    pub(super) fn retain_resident_document_replacement(
+        &self,
+        old: &Session,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+    ) -> Result<Snapshot, SessionError> {
+        let inputs = Inputs {
+            native: NativeSamplerSources::Committed(&self.native_assets),
+            limits: self.native_reservation.ok_or(SessionError::Invalid(
+                "resident resource reservation unavailable",
+            ))?,
+            max_frames: self.max_resident_frames,
+            shutdown: &self.shutdown,
+            cancel: None,
+            admission,
+            current,
+            predecessor: Some(old),
+            legacy: self
+                .media
+                .values()
+                .flat_map(|media| [&media.source_audio, &media.audio])
+                .collect(),
+        };
+        let mut snapshot = inputs.prepare(
+            self.project(),
+            sink,
+            &self.media_bank(),
+            self.sine_table(),
+            &self.audio_transforms,
+            &self.audio_clip_waveforms,
+        )?;
+        let metadata = ResidentPublicationMetadata {
+            context,
+            device_preview: None,
+            tuning_preview: None,
+            seek_request: None,
+            stopped_restore: false,
+            computer_keyboard_request: None,
+            gain_recording_track: None,
+            requires_preroll: snapshot.prepared.arrangement_seek_requires_preroll(),
+        };
+        inputs.publish_tagged_with_policy(
+            &mut snapshot,
+            self.project(),
+            sink,
+            metadata,
+            ResidentPublicationPolicy::ReplaceDocument,
+        )?;
+        // No cancellation/refusal after the sink accepted the complete pending owner. The caller
+        // performs only fixed canonical/document moves and existing generation teardown next.
+        Ok(snapshot)
+    }
+
     pub(super) fn publish_resident_snapshot(
         &self,
         context: hex_engine::AudioSourceContext,
@@ -794,6 +1072,7 @@ impl Session {
         current: Option<&Snapshot>,
     ) -> Result<Snapshot, SessionError> {
         let inputs = Inputs {
+            predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
                 "resident resource reservation unavailable",
@@ -940,6 +1219,7 @@ impl Session {
             }
         }
         let inputs = Inputs {
+            predecessor: None,
             native: NativeSamplerSources::Committed(&self.native_assets),
             limits: self.native_reservation.ok_or(SessionError::Invalid(
                 "resident resource reservation unavailable",

@@ -14,6 +14,8 @@ use hex_session::service::{
 struct ResidentSink {
     inner: NativeAudioSink,
     refuse: Arc<AtomicBool>,
+    budget_refuse: Arc<AtomicBool>,
+    pending_present: Arc<AtomicBool>,
 }
 impl WorkerAudioSink for ResidentSink {
     fn resident_publication_enabled(&self) -> bool {
@@ -51,6 +53,23 @@ impl WorkerAudioSink for ResidentSink {
             },
         )
     }
+    fn poll_resident_pending(
+        &mut self,
+        admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
+    ) {
+        let refuse = self.refuse.load(Acquire);
+        self.inner.poll_resident_pending(&mut |views| {
+            admit(views)?;
+            if refuse {
+                Err("fixture final admission refusal".into())
+            } else {
+                Ok(())
+            }
+        });
+    }
+    fn restart_audio(&mut self, generation: u64, request_id: u64) -> Result<(), String> {
+        self.inner.restart_audio(generation, request_id)
+    }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
         self.inner.initialize(shutdown)
     }
@@ -58,10 +77,19 @@ impl WorkerAudioSink for ResidentSink {
         self.inner.canonical_changed(source);
     }
     fn native_sampler_hold(&self) -> hex_session::service::NativeSamplerReservationHold {
-        self.inner.native_sampler_hold()
+        let mut hold = self.inner.native_sampler_hold();
+        if self.budget_refuse.load(Acquire) {
+            hold.retained_bytes = usize::MAX;
+            hold.construction_bytes = usize::MAX;
+        }
+        hold
     }
     fn poll(&mut self) {
         self.inner.poll();
+        self.pending_present.store(
+            self.inner.resident.pending.is_some(),
+            std::sync::atomic::Ordering::Release,
+        );
     }
     fn close(&mut self) {
         self.inner.close();
@@ -75,38 +103,46 @@ pub(super) struct ResidentHarness {
     pub(super) audio: Option<EditorAudio>,
     pub(super) submitted: Option<(u64, ResidentPublicationMetadata)>,
     pub(super) refuse: Arc<AtomicBool>,
+    pub(super) budget_refuse: Arc<AtomicBool>,
+    pub(super) pending_present: Arc<AtomicBool>,
+    allow_unavailable: bool,
+    pub(super) unavailable: Vec<String>,
+    pub(super) publication_refusals: Vec<String>,
+    constructor_submitted: Option<(u64, AudioSourceContext)>,
 }
 impl ResidentHarness {
     pub(super) fn new() -> Self {
         Self::with_frame_limit(8192)
     }
     pub(super) fn with_frame_limit(frame_limit: u64) -> Self {
+        Self::with_open_gate(frame_limit, Arc::new(AtomicBool::new(true)))
+    }
+    pub(super) fn with_open_gate(frame_limit: u64, gate: Arc<AtomicBool>) -> Self {
+        let allow_unavailable = !gate.load(Acquire);
         let (sender, events) = mpsc::sync_channel(4);
         let callback = Arc::new(Mutex::new(None));
         let target = Arc::clone(&callback);
         let mut inner = NativeAudioSink::new(sender);
+        inner.worker_owned_resident_graphs = true;
         inner.output_factory = Some(Box::new(move |_| {
+            if !gate.load(Acquire) {
+                return Err("fixture output unavailable".into());
+            }
             // The prior fixture's async native carrier can still own the exclusive Lease
             // after its control owner has returned. Retry exactly as the existing Harness does.
-            let (mut output, backend) = match hex_audio::worker_fixture::open(48_000) {
+            let (output, backend) = match hex_audio::worker_fixture::open(48_000) {
                 Ok(pair) => pair,
                 Err(error) if error == "audio output is open or still shutting down" => {
                     return Ok(None);
                 }
                 Err(error) => return Err(error),
             };
-            output
-                .publication
-                .control()
-                .unwrap()
-                .configure_device_resource_publication_on_control(
-                    AudioPolicy::new()?.resident_native.storage,
-                )
-                .map_err(|e| format!("{e:?}"))?;
             *target.lock().unwrap() = Some(backend);
             Ok(Some(output))
         }));
         let refuse = Arc::new(AtomicBool::new(false));
+        let budget_refuse = Arc::new(AtomicBool::new(false));
+        let pending_present = Arc::new(AtomicBool::new(false));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
             frame_limit,
@@ -114,6 +150,8 @@ impl ResidentHarness {
             Box::new(ResidentSink {
                 inner,
                 refuse: Arc::clone(&refuse),
+                budget_refuse: Arc::clone(&budget_refuse),
+                pending_present: Arc::clone(&pending_present),
             }),
             AudioPolicy::new().unwrap().resident_native,
         )
@@ -125,9 +163,15 @@ impl ResidentHarness {
             audio: None,
             submitted: None,
             refuse,
+            budget_refuse,
+            pending_present,
+            allow_unavailable,
+            unavailable: Vec::new(),
+            publication_refusals: Vec::new(),
+            constructor_submitted: None,
         }
     }
-    fn pump(&mut self) {
+    pub(super) fn pump(&mut self) {
         while let Ok(event) = self.events.try_recv() {
             match event {
                 EditorAudioEvent::Opened { audio, .. } => self.audio = Some(audio),
@@ -140,7 +184,19 @@ impl ResidentHarness {
                         },
                     ..
                 } => self.submitted = Some((audio_revision, metadata)),
-                EditorAudioEvent::Unavailable { error, .. } => panic!("{error}"),
+                EditorAudioEvent::Unavailable { error, .. } => {
+                    assert!(self.allow_unavailable, "{error}");
+                    self.unavailable.push(error);
+                }
+                EditorAudioEvent::Publication {
+                    context,
+                    state: EditorPublicationState::Submitted { audio_revision },
+                    ..
+                } => self.constructor_submitted = Some((audio_revision, context)),
+                EditorAudioEvent::Publication {
+                    state: EditorPublicationState::Refused(error),
+                    ..
+                } => self.publication_refusals.push(error),
                 _ => {}
             }
         }
@@ -165,6 +221,57 @@ impl ResidentHarness {
             "native graph must stay worker-private"
         );
         event
+    }
+    pub(super) fn wait_constructor_applied(&mut self, context: AudioSourceContext) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            self.pump();
+            self.render();
+            if let Some(applied) = self
+                .audio
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .applied_audio_source()
+                && applied.context == context
+                && Some((applied.audio_revision, context)) == self.constructor_submitted
+            {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "verified constructor did not apply its exact context"
+            );
+            std::thread::yield_now();
+        }
+    }
+    pub(super) fn release_relinquished_output(&mut self) {
+        let mut slot = self.callback.lock().unwrap();
+        assert!(slot.as_ref().unwrap().shutdown_requested());
+        slot.take().unwrap().close();
+        self.audio = None;
+        self.submitted = None;
+        self.constructor_submitted = None;
+    }
+    pub(super) fn wait_fresh_output(&mut self, old_output: u64) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            self.pump();
+            if self.audio.as_ref().is_some_and(|audio| {
+                audio
+                    .control
+                    .output_identity()
+                    .is_some_and(|id| id != old_output)
+            }) {
+                return;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "fresh output did not open after actual carrier/client release"
+            );
+            std::thread::yield_now();
+        }
     }
     pub(super) fn render(&self) -> [hex_engine::Frame; 64] {
         let mut pcm = [[0.0; 2]; 64];

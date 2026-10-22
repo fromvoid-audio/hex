@@ -63,6 +63,9 @@ struct Preparation {
 pub(super) struct NativeAudioSink {
     policy: Result<AudioPolicy, String>,
     resident: resident::Resident,
+    // Selected before initialization; applies to every resident graph, including an empty project.
+    // Production cutover remains disabled until all ordinary consumer routes are complete.
+    worker_owned_resident_graphs: bool,
     events: SyncSender<EditorAudioEvent>,
     pending_open_event: Option<EditorAudioEvent>,
     pending_observation: Option<EditorAudioEvent>,
@@ -101,6 +104,7 @@ impl NativeAudioSink {
         Self {
             policy: AudioPolicy::new(),
             resident: resident::Resident::default(),
+            worker_owned_resident_graphs: false,
             events,
             pending_open_event: None,
             pending_observation: None,
@@ -773,6 +777,9 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn resident_publication_enabled(&self) -> bool {
+        self.worker_owned_resident_graphs
+    }
     fn resident_admission(
         &self,
     ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {
@@ -850,6 +857,9 @@ impl WorkerAudioSink for NativeAudioSink {
             .map(|s| s.context().project_generation);
         let generation = source.context().project_generation;
         if previous.is_some_and(|previous| previous != generation) {
+            if source.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                self.resident.discard_obsolete_pending(source.context());
+            }
             self.relinquish_output();
             self.request_open(Some(source.sample_rate()), None);
         }
