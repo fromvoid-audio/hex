@@ -14,7 +14,7 @@ impl EditorView {
     ) {
         if self.edit_pending()
             || self.project_generation != generation
-            || self.selected_clip != Some(clip_id)
+            || self.detail_clip_id() != Some(clip_id)
             || self
                 .state
                 .as_ref()
@@ -79,10 +79,17 @@ impl EditorView {
         self.enqueue(Request::Edit(command));
     }
 
+    /// Whole-clip selection for workspace actions; never infer it from the inspector.
     pub(super) fn selected_midi_clip_data(&self) -> Option<ClipId> {
         let state = self.state.as_ref()?;
         let id = self.selected_clip?;
         state.project.midi_source(id).map(|_| id)
+    }
+
+    /// Current inspector source, including a retained non-selection context.
+    pub(super) fn detail_midi_clip_data(&self) -> Option<ClipId> {
+        let id = self.detail_clip_id()?;
+        self.state.as_ref()?.project.midi_source(id).map(|_| id)
     }
 
     pub(super) fn selected_arrangement_midi_clip_data(&self) -> Option<ClipId> {
@@ -203,7 +210,7 @@ impl EditorView {
         if self.edit_pending() {
             return;
         }
-        let Some(clip) = self.selected_midi_clip_data() else {
+        let Some(clip) = self.detail_midi_clip_data() else {
             return;
         };
         let notes = self.midi_selection.ids().to_vec();
@@ -239,6 +246,53 @@ impl EditorView {
         self.midi_group_gesture = None;
         if let Err(error) = self.midi_selection.select_all(notes) {
             self.error = Some(error.into());
+        } else {
+            self.audition_midi_selection();
+        }
+    }
+
+    /// With a note selection, arrows retain musical nudge behavior. Otherwise they
+    /// move the local insertion cursor, never transport or canonical project time.
+    /// Grid-off navigation uses the existing sixteenth-note movement step.
+    pub(super) fn navigate_piano_cursor(&mut self, right: bool) {
+        if self.midi_step.enabled && right {
+            self.enter_midi_step();
+            return;
+        }
+        if !self.midi_step.enabled && !self.midi_selection.is_empty() {
+            self.nudge_selected_note(right);
+            return;
+        }
+        if self.edit_pending() || self.detail_midi_clip_data().is_none() {
+            return;
+        }
+        self.cancel_midi_note_gesture();
+        let current = self.midi_marker.unwrap_or(self.piano_beat_start.raw());
+        let step = self.midi_snap_grid.movement_step();
+        let next = if right {
+            let Some(next) = current.checked_add(step).filter(|value| *value < u64::MAX) else {
+                return;
+            };
+            next
+        } else {
+            current.saturating_sub(step)
+        };
+        self.midi_marker = Some(next);
+        self.reveal_piano_cursor(next);
+    }
+
+    pub(super) fn reveal_piano_cursor(&mut self, next: u64) {
+        let step = self.midi_snap_grid.movement_step();
+        // Keep the insertion position visible without changing zoom or source extent.
+        let span = self.piano_beat_span.raw().max(1);
+        let start = self.piano_beat_start.raw();
+        if next < start {
+            self.piano_beat_start = BeatTime::from_raw(next);
+        } else if next >= start.saturating_add(span) {
+            self.piano_beat_start = BeatTime::from_raw(
+                next.saturating_sub(span.saturating_sub(step.min(span / 2).max(1))),
+            )
+            .min(BeatTime::from_raw(u64::MAX - span));
         }
     }
 
@@ -295,7 +349,7 @@ impl EditorView {
         &mut self,
         parameter: super::midi_group_drag::GroupParameter,
     ) {
-        let Some(clip) = self.selected_midi_clip_data() else {
+        let Some(clip) = self.detail_midi_clip_data() else {
             return;
         };
         let Some(revision) = self.state.as_ref().map(|state| state.revision) else {
@@ -317,7 +371,7 @@ impl EditorView {
         {
             return;
         }
-        let Some(clip_id) = self.selected_midi_clip_data() else {
+        let Some(clip_id) = self.detail_midi_clip_data() else {
             return;
         };
         let Some(state) = self.state.as_ref() else {
@@ -356,7 +410,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || self.detail_midi_clip_data() != Some(clip_id)
             || self.edit_pending()
         {
             self.error = Some("selected midi notes changed · nudge canceled".into());
@@ -393,7 +447,7 @@ impl EditorView {
         if self.edit_pending()
             || self.midi_selection.len() < 2
             || self.midi_selection.len() > hex_project::MAX_NOTES
-            || self.selected_midi_clip_data() != Some(expected_clip)
+            || self.detail_midi_clip_data() != Some(expected_clip)
             || self.project_generation != expected_generation
             || self.midi_selection.epoch() != expected_selection_epoch
             || self
@@ -442,7 +496,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || self.detail_midi_clip_data() != Some(clip_id)
             || self.midi_selection.epoch() != selection_epoch
             || self.midi_selection.shared_ids().as_ref() != selected.as_ref()
             || self.edit_pending()
@@ -470,7 +524,7 @@ impl EditorView {
                 .state
                 .as_ref()
                 .is_none_or(|latest| latest.revision != revision)
-            || self.selected_midi_clip_data() != Some(clip_id)
+            || self.detail_midi_clip_data() != Some(clip_id)
             || self.midi_selection.epoch() != selection_epoch
             || self.midi_selection.shared_ids().as_ref() != selected.as_ref()
             || self.edit_pending()
@@ -498,7 +552,7 @@ impl EditorView {
         self.state
             .as_ref()?
             .project
-            .midi_source(self.selected_clip?)
+            .midi_source(self.detail_clip_id()?)
     }
 
     pub(super) fn update_note_field(

@@ -1,4 +1,15 @@
-//! GPUI UI service; device output is supplied by the desktop composition root.
+//! # Purpose
+//! Own native GPUI display, focus/selection and validated editor intent; desktop injects device
+//! output.
+//!
+//! # Dependencies
+//! Uses hex-session/project/engine/audio contracts, hex-widgets, GPUI and the bounded library,
+//! preferences, tuning, MIDI, MTS, diagnostics and plugin-catalog services.
+//!
+//! # Does not own
+//! Does not own a second editable project, construct DSP or access files/audio devices from
+//! rendering. Render app-owned text through theme::text with bundled Ioskeley Mono; preserve
+//! original user data and path casing.
 mod mts;
 pub use mts::install_mts_publisher;
 mod app;
@@ -108,7 +119,7 @@ pub fn sampler_keyboard_test_status(
     editor::sampler_keyboard_fixture_status(window, cx)
 }
 
-/// Read-only readiness for the next actual headless composition gesture.
+/// Read-only readiness for the next headless editing/playback gesture, including stopped restore.
 #[cfg(feature = "ui-test-support")]
 pub fn sampler_midi_test_ready(
     window: gpui::AnyWindowHandle,

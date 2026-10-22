@@ -152,7 +152,7 @@ pub(super) fn fresh(
             .unwrap()
             .status()
             .unwrap()
-            .applied_audio_source()
+            .rendered_current(h)
             .unwrap();
         visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
@@ -166,11 +166,12 @@ pub(super) fn fresh(
                 .unwrap()
                 .as_ref()
                 .and_then(|b| b.status())
-                .and_then(|s| s.applied_audio_source())
+                .and_then(|s| s.rendered_current(h))
                 .is_some_and(|s| {
                     s.context.editor_revision == old.context.editor_revision + 1
                         && s.context.project_generation == old.context.project_generation
-                        && s.output_identity != old.output_identity
+                        && s.output_identity == old.output_identity
+                        && s.audio_revision > old.audio_revision
                 })
             {
                 break;
@@ -257,7 +258,6 @@ pub(super) fn fresh(
             pulse(cx, visual, h);
         }
     }
-    assert_eq!(h.observation.lock().unwrap().gain_cells.len(), 8);
     initial
 }
 

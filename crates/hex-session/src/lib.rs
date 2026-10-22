@@ -1,4 +1,15 @@
-//! Control-side owner of canonical editing state and its bounded decoded media.
+//! # Purpose
+//! Own canonical editing state, retained media, bounded workers and prepare-before-commit
+//! coordination.
+//!
+//! # Dependencies
+//! Uses hex-project, hex-engine, hex-media, hex-storage, hex-export, hex-tuning and neutral
+//! hex-lattice-contract.
+//!
+//! # Does not own
+//! Does not own GPUI, CPAL, page endpoints or callback DSP. Typed requests carry captured
+//! identity; successful canonical preparation is distinct from actual native publication and
+//! acknowledgment.
 pub mod gain_recording;
 
 use hex_engine::{Audio, Project as PlaybackProject};
@@ -1338,6 +1349,41 @@ impl Session {
         overwrite: bool,
         bounce: Option<hex_project::ClipId>,
     ) -> Result<(Created, Arc<hex_engine::PreparedRevision>), SessionError> {
+        self.import_prepared_audio_clip_revision_using(
+            prepared,
+            track,
+            start,
+            previous,
+            overwrite,
+            bounce,
+            |input| {
+                prepare_with_waveforms(
+                    input.project,
+                    input.media,
+                    input.table,
+                    input.previous.map(|artifact| artifact.session().as_ref()),
+                    input.transforms,
+                    input.waveforms,
+                )
+                .map(Arc::new)
+                .map_err(SessionError::from)
+            },
+        )
+    }
+
+    /// All media/history capacity is reserved before this final preparation hook. It may
+    /// enqueue only as its last fallible step; success is followed solely by fixed commit moves.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn import_prepared_audio_clip_revision_using<T>(
+        &mut self,
+        prepared: PreparedImport,
+        track: hex_project::TrackId,
+        start: u64,
+        previous: Option<&hex_engine::PreparedRevision>,
+        overwrite: bool,
+        bounce: Option<hex_project::ClipId>,
+        prepare: impl FnOnce(import_batch::Preparation<'_>) -> Result<T, SessionError>,
+    ) -> Result<(Created, T), SessionError> {
         if prepared.audio.sample_rate() != self.project().sample_rate() {
             return Err(SessionError::Invalid(
                 "prepared audio sample rate differs from project",
@@ -1371,10 +1417,17 @@ impl Session {
             .map_err(|_| SessionError::Allocation)?;
         let (new_resident_bins, new_resident_waveform_bytes) =
             self.reserve_waveform_accounting(&prepared.waveform)?;
+        let staged_waveform = Arc::new(prepared.waveform);
         let mut candidate_media = self.media_bank();
         let staged_audio = prepared.audio.clone();
         let staged_asset = prepared.audio.clone();
         let sine_table = self.sine_table();
+        let legacy = self
+            .media
+            .values()
+            .flat_map(|media| [&media.source_audio, &media.audio])
+            .chain([&prepared.source_audio, &prepared.audio])
+            .collect::<Vec<_>>();
         let (created, (asset_id, revision)) = self.editor.execute_prepared(
             if let Some(clip) = bounce {
                 Command::ConvertMidiClipToAudio {
@@ -1417,16 +1470,19 @@ impl Session {
                     ));
                 }
                 candidate_media.insert(asset_id, staged_asset.clone());
-                let revision = prepare_with_waveforms(
-                    candidate,
-                    &candidate_media,
-                    Arc::clone(&sine_table),
-                    previous.map(|artifact| artifact.session().as_ref()),
-                    &self.audio_transforms,
-                    &self.audio_clip_waveforms,
-                )
-                .map(Arc::new)
-                .map_err(SessionError::from)?;
+                let revision = prepare(import_batch::Preparation {
+                    project: candidate,
+                    media: &candidate_media,
+                    native: &self.native_assets,
+                    table: sine_table,
+                    transforms: &self.audio_transforms,
+                    waveforms: &self.audio_clip_waveforms,
+                    legacy: &legacy,
+                    limits: self.native_reservation,
+                    max_frames: self.max_resident_frames,
+                    shutdown: &self.shutdown,
+                    previous,
+                })?;
                 Ok((asset_id, revision))
             },
         )?;
@@ -1435,7 +1491,7 @@ impl Session {
             ResidentAsset {
                 source_audio: prepared.source_audio,
                 audio: staged_audio,
-                waveform: Arc::new(prepared.waveform),
+                waveform: staged_waveform,
                 frames,
             },
         );
@@ -1765,7 +1821,11 @@ impl Session {
     fn media_bank(&self) -> MediaBank {
         MediaBank {
             epoch: self.semantic_source_epoch,
-            device_only: self.native_assets.ids().collect(),
+            device_only: self
+                .native_assets
+                .ids()
+                .filter(|id| !self.media.contains_key(id))
+                .collect(),
             resident: self
                 .media
                 .iter()
@@ -1786,23 +1846,35 @@ fn prepare_with_waveforms(
     transforms: &hex_engine::audio_transform::AudioTransformPreparation,
     retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
 ) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
-    media.validate_clip_sources(project)?;
-    device_comparison::validate_project(project)?;
-    let mut old = retained
-        .try_borrow_mut()
-        .map_err(|_| hex_engine::Invalid("audio waveform state is already borrowed"))?;
-    let (prepared, next) = transforms.transaction(|| {
-        let prepared = if media.verified.is_empty() {
+    prepare_with_waveforms_using(project, media, transforms, retained, || {
+        if media.verified.is_empty() {
             hex_engine::PreparedRevision::prepare_with_audio_transforms(
                 project,
                 &media.resident,
                 table,
                 previous,
                 transforms,
-            )?
+            )
         } else {
-            media.prepare(project, table, previous)?
-        };
+            media.prepare(project, table, previous)
+        }
+    })
+}
+
+fn prepare_with_waveforms_using(
+    project: &Project,
+    media: &MediaBank,
+    transforms: &hex_engine::audio_transform::AudioTransformPreparation,
+    retained: &std::cell::RefCell<BTreeMap<hex_project::ClipId, service::AudioClipWaveform>>,
+    prepare: impl FnOnce() -> Result<hex_engine::PreparedRevision, hex_engine::Invalid>,
+) -> Result<hex_engine::PreparedRevision, hex_engine::Invalid> {
+    media.validate_clip_sources(project)?;
+    device_comparison::validate_project(project)?;
+    let mut old = retained
+        .try_borrow_mut()
+        .map_err(|_| hex_engine::Invalid("audio waveform state is already borrowed"))?;
+    let (prepared, next) = transforms.transaction(|| {
+        let prepared = prepare()?;
         // At most 262144 leaf bins per accepted revision (plus bounded pyramid
         // and per-root metadata). Dense projects receive coarser truthful peaks.
         let requested_bins =

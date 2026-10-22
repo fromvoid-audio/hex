@@ -1,6 +1,21 @@
-//! Bounded ownership handoff for compiled arrangement playback.
-//! Control constructs/drops graphs; callback swaps at most one per block and returns
-//! old ownership through a reserved retirement queue. Used by the native prepared output.
+//! Bounded prepared-playback ownership handoff for native output.
+//!
+//! Control constructs and destroys graphs. Each callback accepts at most one graph and the bounded
+//! command prefix; retirement capacity is checked before ownership moves. A full queue retains
+//! owners in the existing held slots, preserving current audio and priority Stop. Stop's
+//! independent ticket cutoff discards older commands while retaining later admitted FIFO commands.
+//! InheritRuntime preserves compatible transport/route/history. Fresh policies use caller-prepared
+//! runtime state; a conditional fresh fence additionally matches the actual predecessor, route
+//! generation and admitted-command prefix at the final swap. Canonical editor revision and applied
+//! audio revision remain distinct until that acceptance. Queue acceptance, source readiness and
+//! physical disposal are separate facts; callback code must never finally destroy graphs, PCM or
+//! endpoints.
+//!
+//! Ordinary computer keyboard inputs retain only this output's scalar activation clock. Control
+//! Stop revokes its reserved prefix before publishing the priority marker; callback consumption
+//! preserves only an input bound to that exact clock, allowing newer physical epochs without a
+//! graph replacement. Queued explicit Stop, foreign/unbound inputs and lifecycle shutdown remain
+//! terminal. Epoch transitions and note snapshots perform no callback allocation or reclamation.
 use crate::{
     processor_audition, spectrum_target,
     spectrum_worker::{SpectrumCapture, SpectrumStamp},
@@ -32,6 +47,10 @@ pub use endpoints::{Client, WorkerControl};
 pub(crate) use endpoints::{ClientEndpoints, EndpointTerminals};
 pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationToken};
 mod applied_source;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod device_resources_tests;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod keyboard_activation_tests;
 #[cfg(test)]
 mod project_spectrum_tests;
 mod runtime_view;
@@ -187,6 +206,8 @@ pub(crate) struct Publication {
     /// UI/control project context this compiled playback belongs to. This is
     /// audio publication metadata, not project schema or engine state.
     control_context_generation: u64,
+    // A legacy default zero is not proof of a real project generation.
+    explicit_control_context: bool,
     policy: PublicationPolicy,
     fresh_runtime_cancellation: Option<Arc<FreshRuntimeCancellation>>,
     playback: Box<Playback>,
@@ -356,6 +377,7 @@ impl FreshRuntimeFence {
 pub struct Status {
     sampler_edit: sampler_edit::Fence,
     sampler_keyboard: sampler_keyboard::Mailbox,
+    keyboard_activation: Arc<hex_engine::computer_keyboard::KeyboardActivationClock>,
     project_spectrum: crate::spectrum_worker::ProjectSelectionMailbox,
     pending_stop_marker: AtomicU64,
     admitted_ticket: AtomicU64,
@@ -486,11 +508,18 @@ impl Status {
             .len()
             .checked_mul(std::mem::size_of::<AtomicRouteSlot>())
             .and_then(|bytes| bytes.checked_add(std::mem::size_of_val(self)))
+            .and_then(|bytes| {
+                bytes.checked_add(std::mem::size_of::<
+                    hex_engine::computer_keyboard::KeyboardActivationClock,
+                >())
+            })
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
     }
     fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
         Self {
             sampler_edit: Default::default(),
             sampler_keyboard: Default::default(),
+            keyboard_activation: Arc::default(),
             project_spectrum: Default::default(),
             pending_stop_marker: AtomicU64::new(0),
             admitted_ticket: AtomicU64::new(0),
@@ -803,6 +832,21 @@ pub struct PublishError {
     pub playback: Playback,
 }
 
+/// A failed full control-union admission retains the same unpublished graph, independently of
+/// a queue/resource refusal. Neither outcome changes canonical history or acknowledges playback.
+pub enum AdmittedPublishError<E> {
+    Admission { reason: E, playback: Playback },
+    Publication(PublishError),
+}
+impl<E: std::fmt::Debug> std::fmt::Debug for AdmittedPublishError<E> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Admission { reason, .. } => f.debug_tuple("Admission").field(reason).finish(),
+            Self::Publication(error) => std::fmt::Debug::fmt(error, f),
+        }
+    }
+}
+
 impl std::fmt::Debug for PublishError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
@@ -835,6 +879,7 @@ pub struct PublicationControl {
     revision: u64,
     command_storage_bytes: usize,
     legacy_pcm_frames: u64,
+    device_resources: Option<hex_engine::native_device_resources::DeviceResourcePublication>,
     resident_forwarding: Option<Arc<resident_forwarding::ResidentForwarding>>,
     #[cfg(all(test, feature = "allocation-probe"))]
     endpoint_probe: Option<crate::native_callback_owner::DropProbe>,
@@ -946,6 +991,7 @@ pub fn channel_with_spectrum(
                 revision: 0,
                 command_storage_bytes,
                 legacy_pcm_frames: 0,
+                device_resources: None,
                 resident_forwarding: None,
                 #[cfg(all(test, feature = "allocation-probe"))]
                 endpoint_probe: None,
@@ -1122,6 +1168,139 @@ impl PublicationControl {
         capture_runtime_fence(&self.status)
     }
 
+    /// Reserve the ordinary registered-resource subtree before any publication/client exposure.
+    /// Configure this capability even for an initially resource-free project so a later sampler
+    /// does not reopen the output. Limits grant no custody or complete graph provenance. Legacy
+    /// clip PCM remains a separate conservative capacity allowance; its old graph is destroyed on
+    /// control before that allowance is released. Exact runtime leases may migrate into tails and
+    /// retain their source obligations across returns of the publication which introduced them.
+    /// Graph publication for this entire output is permanently worker-owned. Client transport,
+    /// Stop and observation remain available; its legacy raw graph-forwarding bridge refuses.
+    /// Consumers must route every canonical graph edit, including the resource-free initial graph,
+    /// through the worker sink before enabling this capability. Configuring it alone in the current
+    /// app would strand legacy graph delivery; this API is not enabled by existing UI composition.
+    pub fn configure_device_resource_publication_on_control(
+        &mut self,
+        reservation: hex_engine::AudioStorageLedgerReservation,
+    ) -> Result<(), &'static str> {
+        if self.device_resources.is_some()
+            || self.revision != 0
+            || self.status.client_exposed.load(Acquire)
+            || self.status.closing.load(Acquire)
+            || self.status.publication_pending.load(Acquire)
+            || self.candidate_root.domains_configured()
+        {
+            return Err("device resource publication requires a vacant unexposed ordinary output");
+        }
+        // One queue, active, deferred, callback-held, control-held and construction owner, plus
+        // the existing retirement queue. Each Playback's track/tail/keyboard bound is unchanged.
+        let max_obligations = self
+            .publications
+            .buffer()
+            .capacity()
+            .checked_add(RETIRED)
+            .and_then(|n| n.checked_add(5))
+            .and_then(|n| {
+                n.checked_mul(
+                    hex_engine::native_device_resources::MAX_PLAYBACK_DEVICE_RESOURCE_LEASES,
+                )
+            })
+            .ok_or("device resource publication capacity overflow")?;
+        let resources =
+            hex_engine::native_device_resources::DeviceResourcePublication::reserve_on_control(
+                reservation,
+                max_obligations,
+            )
+            .map_err(|_| "device resource publication reservation refused")?;
+        let bridge = self
+            .resident_forwarding
+            .as_ref()
+            .map(Arc::clone)
+            .unwrap_or_else(resident_forwarding::ResidentForwarding::new);
+        bridge.claim_worker_publication_on_control(&self.status)?;
+        self.resident_forwarding = Some(bridge);
+        self.device_resources = Some(resources);
+        Ok(())
+    }
+
+    /// Synchronous worker-side inventory of the active resource book. Select this actual root
+    /// once in a control union; a prospective publication view already includes the same book.
+    pub fn device_resource_admission_on_control(
+        &self,
+    ) -> Option<hex_engine::native_device_resources::DeviceResourceAdmission<'_>> {
+        self.device_resources
+            .as_ref()
+            .map(|book| book.admission_on_control(self.legacy_pcm_frames))
+    }
+
+    /// Freeze all graph publication and move the actual resource book into the caller's one
+    /// retirement hold before dropping its output. Actual runtimes still own their leases.
+    /// Retain this book and the separate legacy allowance until a fresh output acquires the
+    /// existing exclusive native lease; endpoint destruction alone does not prove that frontier.
+    pub fn take_device_resource_publication_on_shutdown(
+        &mut self,
+    ) -> Option<hex_engine::native_device_resources::DeviceResourcePublication> {
+        self.request_shutdown();
+        self.reclaim();
+        self.device_resources.take()
+    }
+
+    /// Admit the actual current/prospective resource union, then enqueue as the final fallible
+    /// prepared-transition step. The caller must reserve canonical commit storage beforehand and
+    /// must not report cancellation/rollback after success. Submitted is not callback-applied.
+    pub fn publish_with_admission_on_control<E>(
+        &mut self,
+        playback: Playback,
+        policy: PublicationPolicy,
+        control_context_generation: u64,
+        admit: impl FnOnce(
+            hex_engine::native_device_resources::DeviceResourceAdmission<'_>,
+        ) -> Result<(), E>,
+    ) -> Result<u64, AdmittedPublishError<E>> {
+        let Some(mut resources) = self.device_resources.take() else {
+            return Err(AdmittedPublishError::Publication(PublishError {
+                reason: "ordinary worker publication is not configured",
+                playback,
+            }));
+        };
+        let legacy_pcm = playback
+            .resident_pcm_capacity_frames()
+            .and_then(|frames| self.legacy_pcm_frames.checked_add(frames));
+        let result = if let Some(legacy_pcm) = legacy_pcm {
+            resources.publish_admitted_on_control(playback, legacy_pcm, |playback, view| {
+                if let Err(reason) = admit(view) {
+                    return Err(AdmittedPublishError::Admission { reason, playback });
+                }
+                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, true, false)
+                    .map_err(AdmittedPublishError::Publication)
+            }).map_err(|error| match error {
+                hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } =>
+                    AdmittedPublishError::Publication(PublishError { reason: "device resource publication storage reservation exceeded", playback }),
+                hex_engine::native_device_resources::DeviceResourcePublishError::Publication(error) => error,
+            })
+        } else {
+            Err(AdmittedPublishError::Publication(PublishError {
+                reason: "resident pcm obligation unavailable or overflowing",
+                playback,
+            }))
+        };
+        self.device_resources = Some(resources);
+        result
+    }
+
+    /// Actual accepted ordinary graph owners still requiring control destruction. Resource-free
+    /// graphs count too; a migrated original-source lease can outlive its introducing graph.
+    pub fn unreturned_resident_graphs_on_control(&self) -> Option<usize> {
+        self.device_resources
+            .as_ref()
+            .map(|book| book.unreturned_graphs_on_control())
+    }
+    pub fn outstanding_device_resource_leases(&self) -> usize {
+        self.device_resources
+            .as_ref()
+            .map_or(0, |resources| resources.outstanding_leases())
+    }
+
     pub fn publish(&mut self, playback: Playback) -> Result<u64, PublishError> {
         self.publish_with_policy(playback, PublicationPolicy::InheritRuntime)
     }
@@ -1131,25 +1310,77 @@ impl PublicationControl {
         playback: Playback,
         policy: PublicationPolicy,
     ) -> Result<u64, PublishError> {
-        self.publish_with_policy_and_context_generation(playback, policy, 0)
+        self.publish_with_pcm_obligation(playback, policy, 0, false, false)
     }
 
     /// Publish a prepared graph tagged with the control-side project context
-    /// that produced it. Existing callers retain generation zero through
-    /// `publish` and `publish_with_policy`.
+    /// that produced it. Legacy `publish`/`publish_with_policy` retain unknown context,
+    /// even though their scalar generation remains zero for existing telemetry.
     pub fn publish_with_policy_and_context_generation(
         &mut self,
         playback: Playback,
         policy: PublicationPolicy,
         control_context_generation: u64,
     ) -> Result<u64, PublishError> {
-        self.publish_with_pcm_obligation(playback, policy, control_context_generation, false)
+        self.publish_with_pcm_obligation(playback, policy, control_context_generation, true, false)
     }
     fn publish_with_pcm_obligation(
         &mut self,
         playback: Playback,
         policy: PublicationPolicy,
         control_context_generation: u64,
+        explicit_control_context: bool,
+        forwarded_pcm: bool,
+    ) -> Result<u64, PublishError> {
+        let Some(mut resources) = self.device_resources.take() else {
+            if playback.contains_device_resource_leases() {
+                return Err(PublishError {
+                    reason: "device resource publication was not reserved for this output",
+                    playback,
+                });
+            }
+            return self.publish_unaccounted_pcm_obligation(
+                playback,
+                policy,
+                control_context_generation,
+                explicit_control_context,
+                forwarded_pcm,
+            );
+        };
+        if forwarded_pcm {
+            self.device_resources = Some(resources);
+            return Err(PublishError {
+                reason: "graph publication belongs to the audio worker for this output",
+                playback,
+            });
+        }
+        let legacy_pcm = playback
+            .resident_pcm_capacity_frames()
+            .and_then(|frames| self.legacy_pcm_frames.checked_add(frames));
+        let result = if let Some(legacy_pcm) = legacy_pcm {
+            resources.publish_on_control(playback, legacy_pcm, |playback| {
+                self.publish_unaccounted_pcm_obligation(playback, policy, control_context_generation, explicit_control_context, forwarded_pcm)
+            }).map_err(|error| match error {
+                hex_engine::native_device_resources::DeviceResourcePublishError::Resources { playback, .. } => PublishError {
+                    reason: "device resource publication storage reservation exceeded", playback,
+                },
+                hex_engine::native_device_resources::DeviceResourcePublishError::Publication(error) => error,
+            })
+        } else {
+            Err(PublishError {
+                reason: "resident pcm obligation unavailable or overflowing",
+                playback,
+            })
+        };
+        self.device_resources = Some(resources);
+        result
+    }
+    fn publish_unaccounted_pcm_obligation(
+        &mut self,
+        playback: Playback,
+        policy: PublicationPolicy,
+        control_context_generation: u64,
+        explicit_control_context: bool,
         forwarded_pcm: bool,
     ) -> Result<u64, PublishError> {
         let reason = if self.candidate_root.domains_configured() {
@@ -1206,6 +1437,7 @@ impl PublicationControl {
             forwarded_pcm,
             revision,
             control_context_generation,
+            explicit_control_context,
             policy,
             fresh_runtime_cancellation: cancellation.as_ref().map(Arc::clone),
             playback: Box::new(playback),
@@ -1268,8 +1500,17 @@ impl PublicationControl {
                     }
                 }
                 ReturnedPublication::Legacy(publication) => {
-                    let (frames, forwarded) = (publication.pcm_frames, publication.forwarded_pcm);
-                    drop(publication); // actual owner destruction precedes obligation release
+                    let Publication {
+                        pcm_frames: frames,
+                        forwarded_pcm: forwarded,
+                        playback,
+                        ..
+                    } = publication;
+                    if let Some(resources) = self.device_resources.as_mut() {
+                        resources.retire_on_control(playback);
+                    } else {
+                        drop(playback);
+                    } // actual owner destruction precedes obligation release
                     if forwarded {
                         if let Some(bridge) = &self.resident_forwarding {
                             bridge.release_pcm_after_drop(frames);
@@ -1307,7 +1548,8 @@ impl PublicationControl {
         &mut self,
         reservation: crate::AudioCandidateDomainReservation,
     ) -> Result<(), &'static str> {
-        if self.status.client_exposed.load(Acquire)
+        if self.device_resources.is_some()
+            || self.status.client_exposed.load(Acquire)
             || !self.native_custody
             || self.revision != 0
             || self.status.closing.load(Acquire)
@@ -1386,6 +1628,7 @@ impl PublicationControl {
         self.candidate_root.report()
     }
     pub fn request_shutdown(&mut self) {
+        self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
         self.status.pending_stop_marker.store(
@@ -1448,7 +1691,16 @@ impl Control {
     pub fn action_with_ticket(&mut self, action: PlaybackAction) -> Result<u64, PlaybackAction> {
         endpoints::legacy_enqueue(self, action)
     }
+    /// Control-only input allocation; retains only the scalar output activation clock.
+    pub fn new_computer_keyboard_input_on_control(
+        &self,
+    ) -> Result<hex_engine::computer_keyboard::ComputerKeyboardInput, hex_engine::Invalid> {
+        hex_engine::computer_keyboard::ComputerKeyboardInput::with_output_activation(Arc::clone(
+            &self.status.keyboard_activation,
+        ))
+    }
     pub fn stop(&self) {
+        self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         // Ticket MAX is refused for ordinary commands, so the supported marker
         // encoding (ticket + 1) is always nonzero and cannot wrap.
@@ -1460,6 +1712,7 @@ impl Control {
     /// Freeze publication, return active/queued graphs over subsequent callbacks.
     /// Control must continue reclaiming until shutdown_complete before stream teardown.
     pub fn request_shutdown(&mut self) {
+        self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
         self.sample_preview.shutdown();
@@ -1934,8 +2187,14 @@ impl Callback {
                     .as_mut()
                     .and_then(ActivePublication::legacy_mut)
                     .map(|previous| {
-                        next.playback
-                            .try_inherit_runtime_from(&mut previous.playback)
+                        next.playback.try_inherit_runtime_in_control_context(
+                            &mut previous.playback,
+                            next.explicit_control_context
+                                .then_some(next.control_context_generation),
+                            previous
+                                .explicit_control_context
+                                .then_some(previous.control_context_generation),
+                        )
                     })
             };
             match handoff {
@@ -2004,6 +2263,14 @@ impl Callback {
                     if let Some(previous) =
                         self.active.as_mut().and_then(ActivePublication::legacy_mut)
                     {
+                        next.playback.detach_rebound_inputs_from(
+                            &mut previous.playback,
+                            next.explicit_control_context
+                                .then_some(next.control_context_generation),
+                            previous
+                                .explicit_control_context
+                                .then_some(previous.control_context_generation),
+                        );
                         previous.playback.cancel_computer_keyboard();
                         previous.playback.cancel_tuning_audition();
                     }
@@ -2204,7 +2471,9 @@ impl Callback {
                 .as_mut()
                 .and_then(ActivePublication::current_mut)
             {
-                active.playback.apply(PlaybackCommand::Stop);
+                active
+                    .playback
+                    .apply_priority_stop(&self.status.keyboard_activation);
             }
             self.invalidate_processor_audition_request();
         }
@@ -5461,6 +5730,7 @@ mod tests {
                 forwarded_pcm: false,
                 revision: 99,
                 control_context_generation: 0,
+                explicit_control_context: false,
                 policy: PublicationPolicy::InstallFreshRuntime,
                 fresh_runtime_cancellation: None,
                 playback: Box::new(graph().0),
@@ -5801,6 +6071,7 @@ mod tests {
                     forwarded_pcm: false,
                     revision,
                     control_context_generation: 0,
+                    explicit_control_context: false,
                     policy: PublicationPolicy::InstallFreshRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(graph().0),
@@ -6315,6 +6586,7 @@ mod tests {
             forwarded_pcm: false,
             revision: 1,
             control_context_generation: 0,
+            explicit_control_context: false,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(playback),
@@ -6430,6 +6702,7 @@ mod tests {
                         forwarded_pcm: false,
                         revision,
                         control_context_generation: 0,
+                        explicit_control_context: false,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
@@ -6505,6 +6778,7 @@ mod tests {
                         forwarded_pcm: false,
                         revision,
                         control_context_generation: 0,
+                        explicit_control_context: false,
                         policy: PublicationPolicy::InheritRuntime,
                         fresh_runtime_cancellation: None,
                         playback: Box::new(playback),
@@ -6519,6 +6793,7 @@ mod tests {
             forwarded_pcm: false,
             revision: 4,
             control_context_generation: 0,
+            explicit_control_context: false,
             policy: PublicationPolicy::InheritRuntime,
             fresh_runtime_cancellation: None,
             playback: Box::new(held),
@@ -6667,6 +6942,7 @@ mod tests {
                     forwarded_pcm: false,
                     revision: 3,
                     control_context_generation: 0,
+                    explicit_control_context: false,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(queued),
@@ -6848,6 +7124,123 @@ mod tests {
         callback.begin_block();
         control.reclaim();
     }
+    #[cfg(feature = "allocation-probe")]
+    #[test]
+    fn contextual_monitor_input_rebind_keeps_keys_across_edits_and_fresh_seek_without_history() {
+        use hex_engine::computer_keyboard::ComputerKeyboardInput;
+        use hex_project::{Command, Created, Editor, Project};
+        // An explicit generation zero is legitimate; the legacy default zero is unknown.
+        for (old_context, next_context, fresh, retained) in [
+            (Some(0), Some(0), false, true),
+            (Some(7), Some(7), true, true),
+            (None, None, false, false),
+            (Some(7), Some(8), false, false),
+        ] {
+            let mut editor = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+            let Created::Track(track) = editor
+                .execute(Command::InsertTrackWithDevice {
+                    name: "keys".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state().unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            let input = Arc::new(ComputerKeyboardInput::default());
+            input.set_key(0, Some((60, 100, 1))).unwrap();
+            let audition = Arc::new(hex_engine::tuning_audition::TuningAuditionInput::new(
+                old_context.unwrap_or(0),
+            ));
+            audition.set_key(0, Some((64, 100, 2))).unwrap();
+            let graph = |project: &Project| {
+                let revision = Arc::new(
+                    hex_engine::PreparedRevision::prepare(
+                        project,
+                        &std::collections::BTreeMap::new(),
+                        Arc::new(hex_engine::SineTable::new()),
+                        None,
+                    )
+                    .unwrap(),
+                );
+                let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
+                playback
+                    .prepare_computer_keyboard(project, track, Arc::clone(&input))
+                    .unwrap();
+                playback
+                    .prepare_tuning_audition(project, Arc::clone(&audition))
+                    .unwrap();
+                playback
+            };
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            let first = graph(editor.project());
+            match old_context {
+                Some(generation) => control
+                    .publish_with_policy_and_context_generation(
+                        first,
+                        PublicationPolicy::InheritRuntime,
+                        generation,
+                    )
+                    .unwrap(),
+                None => control.publish(first).unwrap(),
+            };
+            let mut output = [[0.0; 2]; 64];
+            callback.begin_block();
+            callback.render(&mut output).unwrap();
+            assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
+            editor.execute(Command::Gain { track, gain: 0.7 }).unwrap();
+            let next = graph(editor.project());
+            let policy = if fresh {
+                PublicationPolicy::InstallFreshRuntimeIfUnchanged(
+                    control.capture_fresh_runtime_fence().unwrap(),
+                )
+            } else {
+                PublicationPolicy::InheritRuntime
+            };
+            let revision = match next_context {
+                Some(generation) => control
+                    .publish_with_policy_and_context_generation(next, policy, generation)
+                    .unwrap(),
+                None => control.publish_with_policy(next, policy).unwrap(),
+            };
+            // Queue pressure returns the candidate and cannot detach the audible input.
+            let refused = control.publish(graph(editor.project())).unwrap_err();
+            drop(refused);
+            assert!(!input.is_cancelled());
+            let measured = allocation_counter::measure(|| {
+                callback.begin_block();
+                callback.render(&mut output).unwrap();
+            });
+            assert_eq!(
+                (
+                    measured.count_total,
+                    measured.bytes_total,
+                    measured.count_current,
+                    measured.bytes_current
+                ),
+                (0, 0, 0, 0)
+            );
+            assert_eq!(control.status.applied_revision.load(Acquire), revision);
+            assert_eq!(!input.is_cancelled(), retained);
+            // Normal inheritance retains the existing certified audition continuation. Fresh
+            // runtime installation instead rebinds only its input after the final fence cut.
+            if fresh {
+                assert!(!audition.is_cancelled());
+            }
+            if retained {
+                assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
+            }
+            control.reclaim();
+            control.stop();
+            callback.begin_block();
+            assert!(input.is_cancelled());
+            control.request_shutdown();
+            callback.begin_block();
+            control.reclaim();
+        }
+    }
+
     #[cfg(feature = "allocation-probe")]
     #[test]
     fn computer_keyboard_callback_publication_polyphony_release_pressure_stop_and_retirement_allocate_nothing()

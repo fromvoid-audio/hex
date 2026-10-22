@@ -376,7 +376,7 @@ fn mutable_transport_admission_counts_intro_releases_at_the_first_wrap_seam() {
             id: 100 + index,
             start_raw: 0,
             duration_raw: 2 * Q,
-            pitch: 48 + (index % 12) as u8,
+            pitch: 36 + index as u8,
             channel: 0,
             velocity: 100,
         })
@@ -421,6 +421,8 @@ fn mutable_transport_admission_respects_lower_device_event_and_voice_limits() {
     };
     let mut duplicate = midi_clips[0].notes[0].clone();
     duplicate.id = duplicate_id;
+    // Same simultaneous event/voice pressure on a distinct valid pitch.
+    duplicate.pitch += 1;
     midi_clips[0].notes.push(duplicate);
     let project = legacy_project_from_snapshot(snapshot).expect("valid duplicated loop notes");
     let revision = prepare_mutable(&project);
@@ -545,7 +547,7 @@ fn transport_loop_edge_proof_catches_wrap_edges_after_finite_admission() {
             id: first_note_id + 128 + index,
             start_raw: beat_raw_for_frames(450),
             duration_raw: beat_raw_for_frames(550),
-            pitch: 36 + (index % 48) as u8,
+            pitch: 36 + index as u8,
             channel: 0,
             velocity: 100,
         }))

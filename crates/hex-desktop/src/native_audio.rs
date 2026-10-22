@@ -20,6 +20,7 @@ use std::sync::{
     mpsc::{self, SyncSender, TrySendError},
 };
 
+mod resident;
 mod sampler;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod tests;
@@ -61,9 +62,17 @@ struct Preparation {
 }
 pub(super) struct NativeAudioSink {
     policy: Result<AudioPolicy, String>,
+    resident: resident::Resident,
+    // Selected before initialization; applies to every resident graph, including an empty project.
+    // Production resident publication stays on the canonical worker; VerifiedStreaming
+    // continues to use its separate verified constructor/driver.
+    worker_owned_resident_graphs: bool,
     events: SyncSender<EditorAudioEvent>,
     pending_open_event: Option<EditorAudioEvent>,
     pending_observation: Option<EditorAudioEvent>,
+    // One coalesced status may wait behind an accepted ordinary submission. Status changes
+    // never overwrite the exact tuple needed to complete keyboard/restore/gain/seek tracking.
+    pending_status_observation: Option<EditorAudioEvent>,
     desired: Option<Arc<CanonicalAudioSourceSnapshot>>,
     output: Option<WorkerPreparedOutput>,
     output_generation: Option<u64>,
@@ -78,7 +87,7 @@ pub(super) struct NativeAudioSink {
     preparation: Option<Preparation>,
     submitted: [Option<Submitted>; RUNTIME_CELLS],
     last_context: Option<AudioSourceContext>,
-    last_state: Option<(AudioSourceContext, &'static str)>,
+    last_state: Option<(AudioSourceContext, &'static str, Option<u64>)>,
     blocked: Option<AudioSourceContext>,
     sampler: Option<sampler::Sampler>,
     sampler_parameter: Option<sampler::EditPending>,
@@ -95,9 +104,12 @@ impl NativeAudioSink {
     fn new(events: SyncSender<EditorAudioEvent>) -> Self {
         Self {
             policy: AudioPolicy::new(),
+            resident: resident::Resident::default(),
+            worker_owned_resident_graphs: true,
             events,
             pending_open_event: None,
             pending_observation: None,
+            pending_status_observation: None,
             desired: None,
             output: None,
             output_generation: None,
@@ -135,6 +147,7 @@ impl NativeAudioSink {
         self.open_pending = false;
         self.pending_open_event = None; // Client close only: endpoint Drop is terminal-owned
         self.pending_observation = None;
+        self.pending_status_observation = None;
         self.preparation = None;
         self.domains = std::array::from_fn(|_| None);
         self.submitted = std::array::from_fn(|_| None);
@@ -277,22 +290,46 @@ impl NativeAudioSink {
         tag: &'static str,
         state: EditorPublicationState,
     ) {
-        if self.last_state == Some((context, tag)) {
+        let revision = match &state {
+            EditorPublicationState::Submitted { audio_revision }
+            | EditorPublicationState::ResidentSubmitted { audio_revision, .. } => {
+                Some(*audio_revision)
+            }
+            _ => None,
+        };
+        if self.last_state == Some((context, tag, revision)) {
             return;
         }
         let Some(output_identity) = self.output_identity else {
             return;
         };
-        self.last_state = Some((context, tag));
-        self.pending_observation = Some(EditorAudioEvent::Publication {
+        self.last_state = Some((context, tag, revision));
+        let event = EditorAudioEvent::Publication {
             context,
             output_identity,
             state,
-        });
+        };
+        if matches!(
+            self.pending_observation.as_ref(),
+            Some(EditorAudioEvent::Publication {
+                state: EditorPublicationState::ResidentSubmitted { .. },
+                ..
+            })
+        ) {
+            // Resident enqueue admission refuses while this exact submission is pending, so
+            // only coalescible control status can arrive here. Keep it in the fixed status slot.
+            self.pending_status_observation = Some(event);
+        } else {
+            self.pending_observation = Some(event);
+        }
     }
     fn flush_events(&mut self) {
         let mut disconnected = false;
-        for pending in [&mut self.pending_open_event, &mut self.pending_observation] {
+        for pending in [
+            &mut self.pending_open_event,
+            &mut self.pending_observation,
+            &mut self.pending_status_observation,
+        ] {
             let Some(event) = pending.take() else {
                 continue;
             };
@@ -741,6 +778,48 @@ impl NativeAudioSink {
     }
 }
 impl WorkerAudioSink for NativeAudioSink {
+    fn resident_publication_enabled(&self) -> bool {
+        self.worker_owned_resident_graphs
+    }
+    fn resident_admission(
+        &self,
+    ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {
+        self.resident_inventory()
+    }
+    #[allow(clippy::result_large_err)] // Preserve the exact graph owner on refusal.
+    fn publish_resident(
+        &mut self,
+        playback: hex_engine::playback::Playback,
+        resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+        observation: Arc<hex_engine::PreparedPlaybackObservation>,
+        metadata: hex_session::service::ResidentPublicationMetadata,
+        policy: hex_session::service::ResidentPublicationPolicy,
+        metadata_limit: usize,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> Result<
+        hex_session::service::ResidentPublicationAcceptance,
+        hex_session::service::ResidentPublicationRefusal,
+    > {
+        self.publish_resident_graph(
+            playback,
+            resources,
+            observation,
+            metadata,
+            policy,
+            metadata_limit,
+            admit,
+        )
+    }
+    fn poll_resident_pending(
+        &mut self,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) {
+        self.retry_resident_pending(admit);
+    }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
         self.request_open(None, None);
         loop {
@@ -779,6 +858,9 @@ impl WorkerAudioSink for NativeAudioSink {
             .map(|s| s.context().project_generation);
         let generation = source.context().project_generation;
         if previous.is_some_and(|previous| previous != generation) {
+            if source.audio_mode() == DocumentAudioMode::VerifiedStreaming {
+                self.resident.discard_obsolete_pending(source.context());
+            }
             self.relinquish_output();
             self.request_open(Some(source.sample_rate()), None);
         }
@@ -867,6 +949,7 @@ impl WorkerAudioSink for NativeAudioSink {
         self.sampler_hold()
     }
     fn poll(&mut self) {
+        self.resident.reap_observations();
         self.poll_edit_timeout();
         self.poll_open();
         self.deliver_open();

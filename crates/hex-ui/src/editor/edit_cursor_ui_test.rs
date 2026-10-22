@@ -1300,6 +1300,7 @@ fn pending_time_move_preview_survives_until_worker_failure_then_restores_source(
         playback: None,
         status: None,
         error: Some("test rejection".to_owned()),
+        recovery_failure: None,
         request_complete: true,
         sampler_load_complete: None,
         sampler_edit_complete: None,
@@ -1579,5 +1580,79 @@ fn space_restarts_from_selection_then_edit_cursor_and_respects_focus(cx: &mut Te
             view.last_transport_command.is_none(),
             "midi focus keeps Space"
         );
+    });
+}
+
+#[gpui::test]
+fn sampler_space_preserves_edit_cursor_time_selection_and_pause(cx: &mut TestAppContext) {
+    cx.update(super::bind_editor_keys);
+    let mut model = Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+    let Created::Track(track) = model
+        .execute(Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("midi track")
+    };
+    let (state, source_slot) =
+        hex_engine::native_device_resources::sampler_import_template_on_control(4).unwrap();
+    model
+        .execute(Command::ImportDeviceAssetIntoEmptyInstrument {
+            track,
+            path: "original.wav".into(),
+            sample_rate: 48_000,
+            frames: 4,
+            state,
+            source_slot,
+        })
+        .unwrap();
+    let (handle, editor) = editor_window(cx, model.project().clone(), Arc::default());
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    for selection in [false, true] {
+        visual.update(|window, cx| {
+            editor.update(cx, |view, _| {
+                view.edit_cursor = Some(super::edit_cursor::EditCursor {
+                    track,
+                    frame: 73_000,
+                    generation: view.project_generation,
+                    pulse_color: crate::theme::color(crate::theme::PaletteRole::Text),
+                    pulse_started: Instant::now(),
+                });
+                view.time_selection = selection.then_some(super::time_selection::TimeSelection {
+                    anchor_track: track,
+                    end_track: track,
+                    anchor_frame: 52_000,
+                    end_frame: 28_000,
+                });
+                view.last_transport_command = None;
+                window.focus(&view.focus);
+            })
+        });
+        visual.simulate_keystrokes("space");
+        editor.read_with(cx, |view, _| {
+            assert_eq!(
+                view.last_transport_command,
+                Some(hex_engine::playback::PlaybackCommand::PlayFrom(
+                    if selection { 28_000 } else { 73_000 }
+                )),
+                "sampler uses the ordinary selected start, selection={selection}"
+            );
+        });
+    }
+    editor.update(cx, |view, _| {
+        let token = view.play_intent.reserve_token().unwrap();
+        view.play_intent.admit(token, true);
+        view.last_transport_command = None;
+    });
+    visual.simulate_keystrokes("space");
+    editor.read_with(cx, |view, _| {
+        assert_eq!(
+            view.last_transport_command,
+            Some(hex_engine::playback::PlaybackCommand::Pause),
+            "sampler uses ordinary pause without resetting the cursor"
+        );
+        assert_eq!(view.edit_cursor.unwrap().frame, 73_000);
     });
 }

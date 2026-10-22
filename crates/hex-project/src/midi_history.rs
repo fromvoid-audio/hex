@@ -42,13 +42,50 @@ impl Location {
 }
 #[derive(Clone, Copy, Debug)]
 enum Notes {
-    Update(Option<NoteId>),
+    /// Existing identities only, with the exact collateral retirement count.
+    /// A group may retire selected members after deterministic author priority;
+    /// a single update additionally proves every victim's exact left prefix.
+    OverwriteUpdate {
+        only: Option<NoteId>,
+        removed: usize,
+    },
+    /// One canonical composite authoring edge. Only existing positive prefixes
+    /// and an exact new-ID range survive; counts bind all collateral retirement
+    /// and truncation. Original input footprints can outlive an erased author,
+    /// so a multi-author edge cannot be rederived from final authors alone.
+    AuthorEdit {
+        first: u64,
+        inserted: usize,
+        removed: usize,
+        truncated: usize,
+        single: bool,
+    },
     Edit {
         first: u64,
         inserted: usize,
         removed: usize,
         only_removed: Option<NoteId>,
     },
+}
+impl Notes {
+    fn authoring(first: u64, inserted: usize, removed: usize) -> Self {
+        if inserted == 0 {
+            Self::Edit {
+                first,
+                inserted,
+                removed,
+                only_removed: None,
+            }
+        } else {
+            Self::AuthorEdit {
+                first,
+                inserted,
+                removed: 0,
+                truncated: 0,
+                single: inserted == 1 && removed == 0,
+            }
+        }
+    }
 }
 #[derive(Clone, Copy, Debug)]
 enum Kind {
@@ -81,6 +118,7 @@ enum Kind {
     Notes {
         location: Location,
         edit: Notes,
+        source_length: Option<BeatTime>,
     },
     Source {
         location: Location,
@@ -204,21 +242,25 @@ impl Plan {
             }
             Command::AddMidiNote { clip, .. } => Kind::Notes {
                 location: location(*clip)?,
-                edit: Notes::Edit {
-                    first: source.next_id,
-                    inserted: 1,
-                    removed: 0,
-                    only_removed: None,
-                },
+                source_length: None,
+                edit: Notes::authoring(source.next_id, 1, 0),
             },
             Command::AddMidiNotes { clip, notes } => Kind::Notes {
                 location: location(*clip)?,
-                edit: Notes::Edit {
-                    first: source.next_id,
-                    inserted: notes.len(),
-                    removed: 0,
-                    only_removed: None,
-                },
+                source_length: None,
+                edit: Notes::authoring(source.next_id, notes.len(), 0),
+            },
+            Command::EditMidiNotesWithSourceExtent {
+                clip,
+                remove,
+                insert,
+            } => Kind::Notes {
+                location: location(*clip)?,
+                source_length: Some(crate::midi_batch::extended_source_length(
+                    source.midi_source(*clip).ok_or(MISSING)?.source_length(),
+                    insert,
+                )?),
+                edit: Notes::authoring(source.next_id, insert.len(), remove.len()),
             },
             Command::EditMidiNotes {
                 clip,
@@ -226,32 +268,32 @@ impl Plan {
                 remove,
             } => Kind::Notes {
                 location: location(*clip)?,
-                edit: Notes::Edit {
-                    first: source.next_id,
-                    inserted: insert.len(),
-                    removed: remove.len(),
-                    only_removed: None,
-                },
+                source_length: None,
+                edit: Notes::authoring(source.next_id, insert.len(), remove.len()),
             },
             Command::RemoveMidiNotes { clip, notes } => Kind::Notes {
                 location: location(*clip)?,
-                edit: Notes::Edit {
-                    first: source.next_id,
-                    inserted: 0,
-                    removed: notes.len(),
-                    only_removed: None,
-                },
+                source_length: None,
+                edit: Notes::authoring(source.next_id, 0, notes.len()),
             },
             Command::UpdateMidiNotes { clip, .. } => Kind::Notes {
                 location: location(*clip)?,
-                edit: Notes::Update(None),
+                source_length: None,
+                edit: Notes::OverwriteUpdate {
+                    only: None,
+                    removed: 0,
+                },
             },
             Command::UpdateMidiNote { note, .. } | Command::RemoveMidiNote(note) => {
                 let (clip, _) = crate::midi::find_note_source(source, *note).ok_or(MISSING)?;
                 Kind::Notes {
                     location: location(clip)?,
+                    source_length: None,
                     edit: if matches!(command, Command::UpdateMidiNote { .. }) {
-                        Notes::Update(Some(*note))
+                        Notes::OverwriteUpdate {
+                            only: Some(*note),
+                            removed: 0,
+                        }
                     } else {
                         Notes::Edit {
                             first: source.next_id,
@@ -288,32 +330,68 @@ impl Plan {
         }
         if let Kind::Notes {
             location,
-            edit: Notes::Edit {
-                first, inserted, ..
-            },
-        } = self.kind
+            edit: Notes::OverwriteUpdate { removed, .. },
+            ..
+        } = &mut self.kind
         {
-            let last = u64::try_from(inserted)
-                .ok()
-                .and_then(|n| first.checked_add(n.saturating_sub(1)));
-            let valid = match created {
-                Created::None => inserted == 0,
-                Created::Note(id) => inserted == 1 && id.value() == first,
+            *removed = source
+                .midi_source(location.clip())?
+                .notes
+                .len()
+                .checked_sub(target.midi_source(location.clip())?.notes.len())?;
+        }
+        if let Kind::Notes {
+            location,
+            edit:
+                Notes::Edit {
+                    first, inserted, ..
+                }
+                | Notes::AuthorEdit {
+                    first, inserted, ..
+                },
+            ..
+        } = &mut self.kind
+        {
+            let count = match created {
+                Created::None if *inserted == 0 => 0,
+                Created::Note(id) if *inserted == 1 && id.value() == *first => 1,
                 Created::Notes {
                     clip,
                     first: a,
                     last: b,
-                } => {
-                    inserted > 0
-                        && clip == location.clip()
-                        && a.value() == first
-                        && Some(b.value()) == last
+                } if clip == location.clip() && a.value() == *first => {
+                    usize::try_from(b.value().checked_sub(a.value())?.checked_add(1)?).ok()?
                 }
-                _ => false,
+                _ => return None,
             };
-            if !valid {
+            if count > *inserted || (*inserted > 0 && count == 0) {
                 return None;
             }
+            // Allocate only actual surviving authors; input members erased by
+            // later members consume neither IDs nor capacity.
+            *inserted = count;
+        }
+        if let Kind::Notes {
+            location,
+            edit:
+                Notes::AuthorEdit {
+                    first,
+                    inserted,
+                    removed,
+                    truncated,
+                    ..
+                },
+            ..
+        } = &mut self.kind
+        {
+            let (_, retired, shortened) = author_counts(
+                source.midi_source(location.clip())?,
+                target.midi_source(location.clip())?,
+                *first,
+                *inserted,
+            )?;
+            *removed = retired;
+            *truncated = shortened;
         }
         let effect = MidiHistoryEffect { kind: self.kind };
         effect.validates_forward(source, target).then_some(effect)
@@ -429,12 +507,19 @@ impl MidiHistoryEffect {
                         matches!(source.session_cell(track,scene),Some(SessionCellContent::Midi(c)) if c.id == clip)
                             && target.session_cell(track, scene).is_none()
                     }
-                    Kind::Notes { location, edit } => {
+                    Kind::Notes {
+                        location,
+                        edit,
+                        source_length,
+                    } => {
                         matching_clip_shell(source, target, location, false)
                             && source
                                 .midi_source(location.clip())
                                 .zip(target.midi_source(location.clip()))
-                                .is_some_and(|(a, b)| source_shell(a, b) && notes_match(a, b, edit))
+                                .is_some_and(|(a, b)| {
+                                    source_shell_with_extent(a, b, source_length)
+                                        && notes_match(a, b, edit)
+                                })
                     }
                     Kind::Source { location } => {
                         matching_clip_shell(source, target, location, true)
@@ -446,6 +531,19 @@ impl MidiHistoryEffect {
                     Kind::AppendScene { .. } => false,
                 }
             }
+        }
+    }
+}
+fn source_shell_with_extent(a: &MidiSource, b: &MidiSource, length: Option<BeatTime>) -> bool {
+    match length {
+        None => source_shell(a, b),
+        Some(length) => {
+            a.source_length() <= length
+                && b.source_length() == length
+                && a.source_start() == b.source_start()
+                && a.loop_start() == b.loop_start()
+                && a.loop_end() == b.loop_end()
+                && a.looping() == b.looping()
         }
     }
 }
@@ -474,12 +572,64 @@ fn source_shell(a: &MidiSource, b: &MidiSource) -> bool {
 }
 fn notes_match(a: &MidiSource, b: &MidiSource, edit: Notes) -> bool {
     match edit {
-        Notes::Update(only) => {
-            a.notes.len() == b.notes.len()
-                && a.notes
-                    .iter()
-                    .zip(&b.notes)
-                    .all(|(x, y)| x.id == y.id && (only.is_none_or(|id| x.id == id) || x == y))
+        Notes::AuthorEdit {
+            first,
+            inserted,
+            removed,
+            truncated,
+            single,
+        } => {
+            let Some((split, retired, shortened)) = author_counts(a, b, first, inserted) else {
+                return false;
+            };
+            retired == removed
+                && shortened == truncated
+                && (!single || exact_prefixes(a, &b.notes[..split], &b.notes[split..], 0))
+        }
+        Notes::OverwriteUpdate { only, removed } => {
+            if b.notes.len().checked_add(removed) != Some(a.notes.len()) {
+                return false;
+            }
+            let gates = if let Some(id) = only {
+                let Some(author) = b.notes.iter().find(|note| note.id == id) else {
+                    return false;
+                };
+                let Ok(gates) =
+                    crate::midi_note_overwrite::prefixes(&a.notes, std::slice::from_ref(author))
+                else {
+                    return false;
+                };
+                Some(gates)
+            } else {
+                None
+            };
+            let mut current = b.notes.iter().peekable();
+            for (index, old) in a.notes.iter().enumerate() {
+                if let Some(new) = current.peek().filter(|new| new.id == old.id) {
+                    if let Some(id) = only
+                        && old.id != id
+                        && !prefix_matches(
+                            old,
+                            new,
+                            gates.as_ref().and_then(|g| g.get(index)).copied().flatten(),
+                        )
+                    {
+                        return false;
+                    }
+                    current.next();
+                } else if let Some(id) = only
+                    && (old.id == id
+                        || gates
+                            .as_ref()
+                            .and_then(|g| g.get(index))
+                            .is_some_and(Option::is_some))
+                {
+                    return false;
+                }
+            }
+            // Group authoring can retire selected members, but cannot introduce
+            // identities, reorder survivors or touch any other source/owner.
+            current.next().is_none()
         }
         Notes::Edit {
             first,
@@ -502,7 +652,10 @@ fn notes_match(a: &MidiSource, b: &MidiSource, edit: Notes) -> bool {
             {
                 return false;
             }
-            if a.notes.len().checked_sub(split) != Some(removed)
+            if a.notes
+                .len()
+                .checked_sub(split)
+                .is_none_or(|missing| missing < removed)
                 || only_removed.is_some_and(|id| {
                     removed != 1
                         || !a.notes.iter().any(|n| n.id == id)
@@ -511,19 +664,72 @@ fn notes_match(a: &MidiSource, b: &MidiSource, edit: Notes) -> bool {
             {
                 return false;
             }
-            let mut old = a.notes.iter();
-            for n in &b.notes[..split] {
-                if removed > 0 {
-                    if !old.by_ref().any(|x| x == n) {
-                        return false;
-                    }
-                } else if old.next() != Some(n) {
-                    return false;
-                }
-            }
-            removed > 0 || old.next().is_none()
+            exact_prefixes(a, &b.notes[..split], &b.notes[split..], removed)
         }
     }
+}
+fn author_counts(
+    a: &MidiSource,
+    b: &MidiSource,
+    first: u64,
+    inserted: usize,
+) -> Option<(usize, usize, usize)> {
+    first.checked_add(u64::try_from(inserted).ok()?)?;
+    let split = b.notes.partition_point(|note| note.id.value() < first);
+    if b.notes.len().checked_sub(split)? != inserted
+        || b.notes[split..]
+            .iter()
+            .enumerate()
+            .any(|(index, note)| note.id.value() != first + index as u64)
+    {
+        return None;
+    }
+    let mut old = a.notes.iter();
+    let mut truncated = 0;
+    for note in &b.notes[..split] {
+        let previous = old.find(|previous| previous.id == note.id)?;
+        if note.duration == BeatTime::ZERO
+            || note.duration > previous.duration
+            || !prefix_matches(previous, note, Some(note.duration))
+        {
+            return None;
+        }
+        truncated += usize::from(note.duration != previous.duration);
+    }
+    Some((split, a.notes.len().checked_sub(split)?, truncated))
+}
+
+fn exact_prefixes(
+    a: &MidiSource,
+    retained: &[crate::MidiNote],
+    authored: &[crate::MidiNote],
+    removed: usize,
+) -> bool {
+    let Ok(gates) = crate::midi_note_overwrite::prefixes(&a.notes, authored) else {
+        return false;
+    };
+    let mut kept = retained.iter().peekable();
+    let mut explicit_removals = 0;
+    for (old, gate) in a.notes.iter().zip(gates) {
+        if let Some(new) = kept.peek().filter(|new| new.id == old.id) {
+            if !prefix_matches(old, new, gate) {
+                return false;
+            }
+            kept.next();
+        } else if gate.is_some() {
+            explicit_removals += 1;
+        }
+    }
+    kept.next().is_none() && explicit_removals <= removed
+}
+
+fn prefix_matches(old: &crate::MidiNote, new: &crate::MidiNote, gate: Option<BeatTime>) -> bool {
+    gate == Some(new.duration)
+        && old.id == new.id
+        && old.start == new.start
+        && old.pitch == new.pitch
+        && old.channel == new.channel
+        && old.velocity == new.velocity
 }
 fn birth_source(
     project: &Project,

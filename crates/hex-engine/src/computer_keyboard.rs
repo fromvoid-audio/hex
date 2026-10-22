@@ -35,20 +35,28 @@ pub struct CurrentSamplerKeyboardFrame {
 }
 const VOICES: usize = 64;
 const NOTES: usize = 128 * COMPUTER_KEY_VELOCITIES.len();
-const MAX_STORAGE: usize = 3 * 1024 * 1024;
+/// Existing selected-keyboard runtime ceiling, including its bounded mutable pair/context.
+/// Control consumers reserve this before attachment and still validate actual graph storage.
+pub const MAX_COMPUTER_KEYBOARD_STORAGE_BYTES: usize = 3 * 1024 * 1024;
 
-/// One immutable activation lease. Cancellation bypasses every worker/audio queue.
-/// Control is the sole desired-note writer; each physical key is independent.
-/// Native sampler inputs remain control-only and carry an output/epoch pair;
-/// UI lifecycle cancellation pairs `cancel` with the direct Client epoch revoke.
-/// Create a fresh lease for every activation. Cancellation is terminal, including
-/// after a successful graph replacement; held keys require release and a fresh press.
+mod activation;
+mod note_audition;
+pub use activation::KeyboardActivationClock;
+pub use note_audition::{MAX_NOTE_AUDITION_GATE_FRAMES, MAX_NOTE_AUDITION_NOTES};
+
+/// One transient input root with terminal lifecycle cancellation. An ordinary output-bound
+/// root may reserve fresh scalar epochs after priority Stop; default/unbound inputs and the
+/// legacy native sampler activation retain terminal Stop semantics. Control is the sole
+/// desired-note writer; no source, runtime or admission authority lives here.
 #[derive(Debug)]
 pub struct ComputerKeyboardInput {
     cancelled: AtomicBool,
     notes: [AtomicU64; COMPUTER_KEY_COUNT],
     rejected: AtomicBool,
     native_activation: Option<(u64, u64)>,
+    output_activation: Option<activation::OutputActivation>,
+    sequence: AtomicU64,
+    audition: Option<note_audition::NoteAudition>,
 }
 impl Default for ComputerKeyboardInput {
     fn default() -> Self {
@@ -57,6 +65,9 @@ impl Default for ComputerKeyboardInput {
             notes: std::array::from_fn(|_| AtomicU64::new(0)),
             rejected: AtomicBool::new(false),
             native_activation: None,
+            output_activation: None,
+            sequence: AtomicU64::new(0),
+            audition: None,
         }
     }
 }
@@ -88,6 +99,9 @@ impl ComputerKeyboardInput {
     }
     /// Token must be nonzero and monotonically unique for this activation.
     pub fn set_key(&self, key: usize, note: Option<(u8, u8, u64)>) -> Result<(), Invalid> {
+        if self.is_note_audition() {
+            return Err(Invalid("note audition must be triggered as one chord"));
+        }
         let slot = self
             .notes
             .get(key)
@@ -104,7 +118,10 @@ impl ComputerKeyboardInput {
             }
             Some(_) => return Err(Invalid("computer keyboard note is out of range")),
         };
-        slot.store(word, Release);
+        let after = self.begin_write()?;
+        slot.store(word, std::sync::atomic::Ordering::SeqCst);
+        self.sequence
+            .store(after, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }
@@ -190,6 +207,11 @@ mod current_sampler;
 
 /// Native CURRENT has no UI input owner. Its copied desired words arrive only
 /// through the already-rooted output mailbox; ordinary playback keeps its lease.
+enum NoteSnapshot {
+    Active(u64, [u64; COMPUTER_KEY_COUNT]),
+    Inactive,
+    Deferred(u64),
+}
 enum KeyboardInput {
     Lease(Arc<ComputerKeyboardInput>),
     Current {
@@ -229,10 +251,18 @@ impl KeyboardInput {
             Self::Current { rejected, .. } => *rejected = true,
         }
     }
-    fn word(&self, index: usize) -> u64 {
+    fn snapshot(&self) -> NoteSnapshot {
         match self {
-            Self::Lease(input) => input.notes[index].load(Acquire),
-            Self::Current { words, .. } => words[index],
+            Self::Lease(input) => input.note_snapshot(),
+            Self::Current {
+                words, cancelled, ..
+            } => {
+                if *cancelled {
+                    NoteSnapshot::Inactive
+                } else {
+                    NoteSnapshot::Active(0, *words)
+                }
+            }
         }
     }
 }
@@ -246,6 +276,7 @@ pub(crate) struct ComputerKeyboardRuntime {
     supported: [bool; NOTES],
     context: Option<Box<dyn PreparedSharedAnalyticContext>>,
     mutable: Option<NativeInstrumentRuntimePair>,
+    pub(crate) resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     retarget: Option<Box<dyn hex_lattice::PreparedInstrumentHistoryRetarget>>,
     tuning_family: Option<crate::prepared_revision::TuningContinuationFamily>,
     tuning_preservation: bool,
@@ -254,10 +285,13 @@ pub(crate) struct ComputerKeyboardRuntime {
     primary: [Option<Voice>; VOICES],
     scratch: [Option<Voice>; VOICES],
     desired: [u64; COMPUTER_KEY_COUNT],
+    activation_epoch: Option<u64>,
     next_id: u64,
     scratch_next_id: u64,
     age: u64,
     scratch_age: u64,
+    audition_start: Option<u64>,
+    scratch_audition_start: Option<u64>,
     monitor_anchor: Option<(u64, u64, u32)>,
     scratch_monitor_anchor: Option<(u64, u64, u32)>,
     boundary: bool,
@@ -327,8 +361,44 @@ impl ComputerKeyboardRuntime {
                 .prepare_mutable_runtime()
                 .map_err(|_| Invalid("computer keyboard runtime preparation failed"))?,
         };
+        Self::prepare_from_capabilities(
+            track,
+            input,
+            sample_rate,
+            Some(instrument),
+            factory.as_deref(),
+            None,
+        )
+    }
+    pub(crate) fn prepare_resource_mutable(
+        track: TrackId,
+        input: Arc<ComputerKeyboardInput>,
+        sample_rate: u32,
+        factory: &dyn hex_lattice::PreparedMutableInstrumentRuntime,
+        resources: crate::native_device_resources::PreparedDeviceResourceLease,
+    ) -> Result<Self, Invalid> {
+        Self::prepare_from_capabilities(
+            track,
+            input,
+            sample_rate,
+            None,
+            Some(factory),
+            Some(resources),
+        )
+    }
+    fn prepare_from_capabilities(
+        track: TrackId,
+        input: Arc<ComputerKeyboardInput>,
+        sample_rate: u32,
+        instrument: Option<&dyn hex_lattice::PreparedNativeInstrument>,
+        factory: Option<&dyn hex_lattice::PreparedMutableInstrumentRuntime>,
+        resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
+    ) -> Result<Self, Invalid> {
+        let resource_view = resources.as_ref().map_or(
+            &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+            |lease| lease.resources(),
+        );
         let retarget = factory
-            .as_ref()
             .map(|factory| factory.prepare_history_retarget_target())
             .transpose()
             .map_err(|_| Invalid("computer keyboard retarget preparation failed"))?
@@ -337,10 +407,9 @@ impl ComputerKeyboardRuntime {
                 _ => None,
             });
         let mutable = factory
-            .as_ref()
             .map(|factory| {
                 NativeInstrumentRuntimePair::new(
-                    factory.as_ref(),
+                    factory,
                     NativeInstrumentRuntimeLimits {
                         max_pair_bytes: 2 * 1024 * 1024,
                         max_events_per_block: 259,
@@ -356,6 +425,9 @@ impl ComputerKeyboardRuntime {
             .map_err(|_| Invalid("computer keyboard runtime exceeds its storage budget"))?;
         let context = if mutable.is_none() {
             instrument
+                .ok_or(Invalid(
+                    "computer keyboard analytic capability is unavailable",
+                ))?
                 .prepare_shared_analytic_context()
                 .map_err(|_| Invalid("computer keyboard context preparation failed"))?
         } else {
@@ -371,53 +443,94 @@ impl ComputerKeyboardRuntime {
         let mut samplers = Vec::new();
         if mutable.is_none() {
             samplers
-                .try_reserve_exact(NOTES)
+                .try_reserve_exact(input.template_count())
                 .map_err(|_| Invalid("computer keyboard storage is unavailable"))?;
         }
         let mut supported = [false; NOTES];
         let mut release_frames = mutable
             .as_ref()
             .map_or(0, NativeInstrumentRuntimePair::max_release_tail_frames);
-        for (velocity_index, velocity) in COMPUTER_KEY_VELOCITIES.into_iter().enumerate() {
-            for pitch in 0..128_u8 {
-                let index = velocity_index * 128 + usize::from(pitch);
-                if let Some(runtime) = mutable.as_ref() {
-                    // Validate against the actual native runtime too. A provider's
-                    // optional source validator may not cover every pitch domain.
-                    supported[index] = instrument.validate_event_note(pitch, velocity).is_ok()
-                        && runtime
-                            .preflight_event_batch(
-                                &[NativeInstrumentEvent::NoteOn {
-                                    frame_offset: 0,
-                                    occurrence_id: 1,
-                                    pitch,
-                                    velocity,
-                                }],
-                                1,
-                                &hex_lattice::EMPTY_DEVICE_RESOURCES,
-                            )
-                            .is_ok();
-                    continue;
+        for (index, supported_note) in supported
+            .iter_mut()
+            .enumerate()
+            .take(input.template_count())
+        {
+            let (pitch, velocity) = input
+                .template_note(index)
+                .ok_or(Invalid("keyboard template index is invalid"))?;
+            if let Some(runtime) = mutable.as_ref() {
+                // Validate against the actual native runtime too. A provider's
+                // optional source validator may not cover every pitch domain.
+                *supported_note = instrument.is_none_or(|instrument| {
+                    instrument.validate_event_note(pitch, velocity).is_ok()
+                }) && runtime
+                    .preflight_event_batch(
+                        &[NativeInstrumentEvent::NoteOn {
+                            frame_offset: 0,
+                            occurrence_id: 1,
+                            pitch,
+                            velocity,
+                        }],
+                        1,
+                        resource_view,
+                    )
+                    .is_ok();
+                continue;
+            }
+            let sampler = if let Some(context) = &context {
+                context
+                    .prepare_note(pitch, velocity)
+                    .ok()
+                    .map(Sampler::Shared)
+            } else {
+                instrument
+                    .ok_or(Invalid(
+                        "computer keyboard analytic capability is unavailable",
+                    ))?
+                    .prepare_note(pitch, velocity)
+                    .ok()
+                    .map(Sampler::Inline)
+            };
+            if let Some(sampler) = sampler {
+                release_frames = release_frames.max(match sampler {
+                    Sampler::Inline(note) => note.release_frames(),
+                    Sampler::Shared(note) => note.release_frames(),
+                });
+                *supported_note = true;
+            }
+            samplers.push(sampler);
+        }
+        if input.is_note_audition() {
+            if supported[..input.template_count()]
+                .iter()
+                .any(|valid| !valid)
+            {
+                return Err(Invalid(
+                    "instrument cannot audition the complete selected chord",
+                ));
+            }
+            if let Some(runtime) = &mutable {
+                if input.template_count() > runtime.max_active_occurrences() {
+                    return Err(Invalid("selected chord exceeds instrument voice capacity"));
                 }
-                let sampler = if let Some(context) = &context {
-                    context
-                        .prepare_note(pitch, velocity)
-                        .ok()
-                        .map(Sampler::Shared)
-                } else {
-                    instrument
-                        .prepare_note(pitch, velocity)
-                        .ok()
-                        .map(Sampler::Inline)
-                };
-                if let Some(sampler) = sampler {
-                    release_frames = release_frames.max(match sampler {
-                        Sampler::Inline(note) => note.release_frames(),
-                        Sampler::Shared(note) => note.release_frames(),
-                    });
-                    supported[index] = true;
+                let mut events = [NativeInstrumentEvent::NoteOff {
+                    frame_offset: 0,
+                    occurrence_id: 0,
+                }; COMPUTER_KEY_COUNT];
+                for (index, event) in events.iter_mut().enumerate().take(input.template_count()) {
+                    let (pitch, velocity) = input
+                        .template_note(index)
+                        .ok_or(Invalid("keyboard template index is invalid"))?;
+                    *event = NativeInstrumentEvent::NoteOn {
+                        frame_offset: 0,
+                        occurrence_id: index as u64 + 1,
+                        pitch,
+                        velocity,
+                    };
                 }
-                samplers.push(sampler);
+                runtime
+                    .preflight_event_batch(&events[..input.template_count()], 1, resource_view)
+                    .map_err(|_| Invalid("instrument refused the complete selected chord"))?;
             }
         }
         if !supported.iter().any(|supported| *supported) {
@@ -426,6 +539,7 @@ impl ComputerKeyboardRuntime {
             ));
         }
         let result = Self {
+            resources,
             track,
             instrument_id: None,
             expression: None,
@@ -442,10 +556,13 @@ impl ComputerKeyboardRuntime {
             primary: [None; VOICES],
             scratch: [None; VOICES],
             desired: [0; COMPUTER_KEY_COUNT],
+            activation_epoch: None,
             next_id: 0,
             scratch_next_id: 0,
             age: 0,
             scratch_age: 0,
+            audition_start: None,
+            scratch_audition_start: None,
             monitor_anchor: None,
             scratch_monitor_anchor: None,
             boundary: false,
@@ -455,11 +572,19 @@ impl ComputerKeyboardRuntime {
         };
         if result
             .storage_bytes()
-            .is_none_or(|bytes| bytes > MAX_STORAGE)
+            .is_none_or(|bytes| bytes > MAX_COMPUTER_KEYBOARD_STORAGE_BYTES)
         {
             return Err(Invalid("computer keyboard storage exceeds its budget"));
         }
         Ok(result)
+    }
+    pub(crate) fn set_resource_identity(
+        &mut self,
+        device: hex_project::DeviceId,
+        tuning: hex_lattice::TuningTable,
+    ) {
+        self.instrument_id = Some(device);
+        self.tuning = tuning;
     }
     pub(crate) fn set_tuning_family(
         &mut self,
@@ -537,11 +662,11 @@ impl ComputerKeyboardRuntime {
                     .as_ref()
                     .map_or(0, |proof| proof.declared_fixed_storage_bytes()),
             )?
-            .checked_add(if self.input.lease().is_some() {
-                std::mem::size_of::<ComputerKeyboardInput>() + 2 * std::mem::size_of::<usize>()
-            } else {
-                0
-            })?
+            .checked_add(
+                self.input
+                    .lease()
+                    .map_or(0, |input| input.control_storage_bytes()),
+            )?
             .checked_add(
                 self.samplers
                     .capacity()
@@ -608,6 +733,23 @@ impl ComputerKeyboardRuntime {
     pub(crate) fn requests_preservation_from(&self, previous: &Self) -> bool {
         self.preserves_input_identity(previous) && !self.input.is_cancelled()
     }
+    // Input custody is distinct from voice history. A freshly constructed ordinary monitor
+    // may read the same physical keys against a different source; its old voices never move.
+    pub(crate) fn can_rebind_input_from(&self, previous: &Self) -> bool {
+        self.track == previous.track
+            && self.input.same_lease(&previous.input)
+            && !self.input.is_cancelled()
+            && !self.lease_detached
+            && !self.faulted
+            && self.age == 0
+            && self.primary.iter().all(Option::is_none)
+            && self.scratch.iter().all(Option::is_none)
+            && !previous.lease_detached
+            && !previous.faulted
+    }
+    pub(crate) fn detach_rebound_input(&mut self) {
+        self.lease_detached = true;
+    }
     fn continued_voices(&self, previous: &Self) -> Result<[Option<Voice>; VOICES], Invalid> {
         let mut voices = previous.primary;
         for voice in voices.iter_mut().flatten() {
@@ -661,6 +803,15 @@ impl ComputerKeyboardRuntime {
         Some((notes, len))
     }
     pub(crate) fn can_preserve_from(&self, previous: &Self) -> bool {
+        let resources_match = match (&self.resources, &previous.resources) {
+            (None, None) => true,
+            (Some(current), Some(previous)) => current.compatible(previous),
+            _ => false,
+        };
+        if !resources_match {
+            return false;
+        }
+
         // The requests_preservation_from cut decides whether the input is live.
         // Structural preflight and commit must not re-read asynchronous cancel.
         if !self.preserves_input_identity(previous)
@@ -750,10 +901,13 @@ impl ComputerKeyboardRuntime {
         self.primary = voices;
         self.scratch = voices;
         self.desired = previous.desired;
+        self.activation_epoch = previous.activation_epoch;
         self.next_id = previous.next_id;
         self.scratch_next_id = previous.next_id;
         self.age = previous.age;
         self.scratch_age = previous.age;
+        self.audition_start = previous.audition_start;
+        self.scratch_audition_start = previous.audition_start;
         self.monitor_anchor = previous.monitor_anchor;
         self.scratch_monitor_anchor = previous.monitor_anchor;
         self.boundary = previous.boundary;
@@ -795,24 +949,81 @@ impl ComputerKeyboardRuntime {
             runtime.reset();
         }
     }
+    fn reset_voices(&mut self) {
+        self.primary.fill(None);
+        self.scratch.fill(None);
+        self.desired.fill(0);
+        self.next_id = 0;
+        self.scratch_next_id = 0;
+        self.age = 0;
+        self.scratch_age = 0;
+        self.audition_start = None;
+        self.scratch_audition_start = None;
+        self.monitor_anchor = None;
+        self.scratch_monitor_anchor = None;
+        if let Some(runtime) = &mut self.mutable {
+            runtime.reset();
+        }
+    }
+    /// Callback priority Stop retains only an ordinary output-bound root. Its output clock
+    /// already revoked the old prefix on control; never revoke newer physical input here.
+    pub(crate) fn priority_stop(&mut self, clock: &KeyboardActivationClock) {
+        if !self.lease_detached
+            && self
+                .input
+                .lease()
+                .is_some_and(|i| i.bound_to_clock(clock) && !i.is_note_audition())
+        {
+            self.reset_voices();
+            self.activation_epoch = None;
+        } else {
+            self.cancel();
+        }
+    }
     pub(crate) fn begin_block(&mut self) {
-        if self.lease_detached || self.input.is_cancelled() || self.faulted {
-            self.primary.fill(None);
-            if let Some(runtime) = &mut self.mutable {
-                runtime.reset();
+        let snapshot = if self.lease_detached || self.faulted {
+            NoteSnapshot::Inactive
+        } else {
+            self.input.snapshot()
+        };
+        match snapshot {
+            NoteSnapshot::Active(epoch, words) => {
+                if self.activation_epoch != Some(epoch) {
+                    self.reset_voices();
+                }
+                self.activation_epoch = Some(epoch);
+                self.desired = words;
             }
+            NoteSnapshot::Inactive => {
+                self.reset_voices();
+                self.activation_epoch = None;
+            }
+            NoteSnapshot::Deferred(epoch) => {
+                if self.activation_epoch != Some(epoch) {
+                    self.reset_voices();
+                    self.activation_epoch = None;
+                }
+            }
+        }
+        // Expiration is audio-owned and overrides even a control writer stalled
+        // inside an odd sequence. Deferral must never extend a one-shot gate.
+        // A fresh graph without inherited age also cannot replay a consumed bank.
+        if self
+            .input
+            .lease()
+            .and_then(|input| input.audition.as_ref())
+            .is_some_and(|bank| {
+                bank.finished.load(Acquire)
+                    || (bank.started.load(Acquire) && self.audition_start.is_none())
+            })
+        {
+            self.desired.fill(0);
         }
         self.scratch = self.primary;
         self.scratch_next_id = self.next_id;
         self.scratch_age = self.age;
+        self.scratch_audition_start = self.audition_start;
         self.scratch_monitor_anchor = self.monitor_anchor;
-        self.desired = std::array::from_fn(|index| {
-            if self.lease_detached || self.input.is_cancelled() || self.faulted {
-                0
-            } else {
-                self.input.word(index)
-            }
-        });
         self.boundary = true;
         if let Some(runtime) = &mut self.mutable {
             runtime.begin_block();
@@ -827,6 +1038,19 @@ impl ComputerKeyboardRuntime {
         self.primary = self.scratch;
         self.next_id = self.scratch_next_id;
         self.age = self.scratch_age;
+        self.audition_start = self.scratch_audition_start;
+        if let Some(bank) = self.input.lease().and_then(|input| input.audition.as_ref()) {
+            if let Some(start) = self.audition_start {
+                // Only successful audio transactions consume the trigger or gate.
+                bank.started.store(true, Release);
+                if self.age.saturating_sub(start) >= bank.gate_frames {
+                    bank.finished.store(true, Release);
+                }
+            } else if bank.started.load(Acquire) {
+                // A fresh, non-inherited runtime cannot replay a previously consumed bank.
+                bank.finished.store(true, Release);
+            }
+        }
         self.monitor_anchor = self.scratch_monitor_anchor;
         if let Some(runtime) = &mut self.mutable {
             runtime.commit_block();
@@ -845,6 +1069,10 @@ impl ComputerKeyboardRuntime {
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
         resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), Invalid> {
+        let resources = self
+            .resources
+            .as_ref()
+            .map_or(resources, |lease| lease.resources());
         if output.is_empty() {
             return Ok(());
         }
@@ -867,6 +1095,15 @@ impl ComputerKeyboardRuntime {
             }
         });
         if self.boundary {
+            if self
+                .input
+                .lease()
+                .is_some_and(|input| input.is_note_audition())
+                && self.desired.iter().any(|word| *word != 0)
+                && self.scratch_audition_start.is_none()
+            {
+                self.scratch_audition_start = Some(self.scratch_age);
+            }
             for voice in self.scratch.iter_mut().flatten() {
                 if voice.gate.is_none() && self.desired[voice.key] != voice.token {
                     voice.gate = Some(voice.age);
@@ -889,11 +1126,7 @@ impl ComputerKeyboardRuntime {
                 }
                 let pitch = ((token & 255) as u8).saturating_sub(1);
                 let velocity = ((token >> 8) & 255) as u8;
-                let velocity_index = COMPUTER_KEY_VELOCITIES
-                    .iter()
-                    .position(|value| *value == velocity)
-                    .ok_or(Invalid("computer keyboard velocity is invalid"))?;
-                let sampler = velocity_index * 128 + usize::from(pitch);
+                let sampler = self.input.sampler_index(key, pitch, velocity)?;
                 if !self.supported[sampler] {
                     self.input.reject();
                     continue;
@@ -1025,7 +1258,7 @@ mod tests {
         };
         (editor.project().clone(), track)
     }
-    fn prepared(project: &Project) -> Arc<PreparedRevision> {
+    pub(super) fn prepared(project: &Project) -> Arc<PreparedRevision> {
         Arc::new(
             PreparedRevision::prepare(
                 project,
@@ -1036,7 +1269,11 @@ mod tests {
             .unwrap(),
         )
     }
-    fn playback(project: &Project, track: TrackId, input: &Arc<ComputerKeyboardInput>) -> Playback {
+    pub(super) fn playback(
+        project: &Project,
+        track: TrackId,
+        input: &Arc<ComputerKeyboardInput>,
+    ) -> Playback {
         let mut playback = Playback::from_prepared(prepared(project));
         playback
             .prepare_computer_keyboard(project, track, Arc::clone(input))
@@ -1268,6 +1505,100 @@ mod tests {
         assert_eq!(silent, [[0.0; 2]; 256]);
         assert_eq!(new.position(), 0);
     }
+    #[test]
+    fn output_keyboard_priority_stop_revokes_old_prefix_and_preserves_new_physical_epoch() {
+        let (project, track) = fixture();
+        let clock = Arc::new(KeyboardActivationClock::default());
+        let input =
+            Arc::new(ComputerKeyboardInput::with_output_activation(Arc::clone(&clock)).unwrap());
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        let mut actual = playback(&project, track, &input);
+        let mut output = [[0.0; 2]; 64];
+        actual.render(&mut output).unwrap();
+        assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
+        clock.revoke_reserved_prefix();
+        actual.apply_priority_stop(&clock);
+        actual.render(&mut output).unwrap();
+        assert_eq!(output, [[0.0; 2]; 64]);
+        assert!(!input.is_cancelled());
+
+        // Reserve after Stop on control, then consume that older Stop on the callback.
+        input.reactivate_on_control().unwrap();
+        input.set_key(0, Some((60, 100, 2))).unwrap();
+        actual.apply_priority_stop(&clock);
+        actual.render(&mut output).unwrap();
+        let oracle_input = Arc::new(ComputerKeyboardInput::default());
+        oracle_input.set_key(0, Some((60, 100, 2))).unwrap();
+        let mut oracle = playback(&project, track, &oracle_input);
+        let mut expected = [[0.0; 2]; 64];
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(
+            output, expected,
+            "fresh epoch must begin at its first sample"
+        );
+
+        clock.revoke_reserved_prefix();
+        input.reactivate_on_control().unwrap();
+        input.set_key(0, Some((64, 100, 3))).unwrap();
+        clock.revoke_reserved_prefix();
+        actual.apply_priority_stop(&clock);
+        actual.render(&mut output).unwrap();
+        assert_eq!(
+            output, [[0.0; 2]; 64],
+            "repeated Stop revokes all preceding epochs"
+        );
+        input.reactivate_on_control().unwrap();
+        actual.apply(PlaybackCommand::Stop);
+        assert!(
+            input.is_cancelled(),
+            "direct engine Stop remains terminal even for a bound root"
+        );
+        assert!(input.reactivate_on_control().is_err());
+    }
+
+    #[test]
+    fn output_keyboard_deferred_note_write_preserves_phase_but_new_epoch_cannot_reuse_old_words() {
+        let (project, track) = fixture();
+        let clock = Arc::new(KeyboardActivationClock::default());
+        let input =
+            Arc::new(ComputerKeyboardInput::with_output_activation(Arc::clone(&clock)).unwrap());
+        let oracle_input = Arc::new(ComputerKeyboardInput::default());
+        for input in [&input, &oracle_input] {
+            input.set_key(0, Some((60, 100, 1))).unwrap();
+        }
+        let mut actual = playback(&project, track, &input);
+        let mut oracle = playback(&project, track, &oracle_input);
+        let mut output = [[0.0; 2]; 67];
+        let mut expected = output;
+        actual.render(&mut output).unwrap();
+        oracle.render(&mut expected).unwrap();
+        let after = input.begin_write().unwrap(); // deterministic paused sole control writer
+        actual.render(&mut output).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(
+            output, expected,
+            "deferred note write must not restart a held voice"
+        );
+        input
+            .sequence
+            .store(after, std::sync::atomic::Ordering::SeqCst);
+        clock.revoke_reserved_prefix();
+        input.reactivate_on_control().unwrap();
+        let after = input.begin_write().unwrap();
+        actual.render(&mut output).unwrap();
+        assert_eq!(
+            output, [[0.0; 2]; 67],
+            "incomplete new activation cannot reuse old desired words"
+        );
+        input
+            .sequence
+            .store(after, std::sync::atomic::Ordering::SeqCst);
+        input.cancel();
+        assert!(input.reactivate_on_control().is_err());
+        actual.render(&mut output).unwrap();
+        assert_eq!(output, [[0.0; 2]; 67]);
+    }
+
     #[test]
     fn computer_keyboard_voice_pressure_cancels_only_live_pool_and_does_not_stick() {
         let (project, track) = fixture();

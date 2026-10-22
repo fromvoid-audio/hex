@@ -1136,6 +1136,9 @@ fn device_card_width(class: NativeDeviceClass, type_id: hex_lattice_contract::De
         (NativeDeviceClass::Instrument, Some("hex.instrument.operator")) => {
             operator_panel::OPERATOR_FRAME_WIDTH
         }
+        (NativeDeviceClass::Instrument, Some("hex.instrument.sampler")) => {
+            crate::device_composition::SAMPLER_FRAME_WIDTH
+        }
         (NativeDeviceClass::Effect, Some("hex.utility")) => UTILITY_FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.eq8" | "hex.eq")) => eq8_panel::FRAME_WIDTH,
         (NativeDeviceClass::Effect, Some("hex.saturator")) => saturator_panel::FRAME_WIDTH,
@@ -1978,7 +1981,25 @@ fn render_instrument(
     let is_sampler = device.state().type_id().as_str() == Ok("hex.instrument.sampler");
     let leading = bypass_action(device, NativeDeviceClass::Instrument, selected, cx);
     let header_actions = instrument_actions(view, track, device, selected, device_view.is_ok(), cx);
-    let rendered = if is_sampler {
+    let rendered = if hex_engine::is_empty_sampler_state_on_control(device.state()) {
+        device_frame(
+            device_drag_title(
+                view,
+                cx,
+                device,
+                NativeDeviceClass::Instrument,
+                theme::text("sampler"),
+            ),
+            theme::device_frame_style(selected),
+            leading,
+            header_actions,
+            crate::device_composition::body()
+                .p(px(8.0))
+                .child(theme::text(
+                    "empty sampler · choose a wav in the sample browser and load into sampler",
+                )),
+        )
+    } else if is_sampler {
         let name = view
             .state
             .as_ref()
@@ -1995,7 +2016,7 @@ fn render_instrument(
         let readiness = if view.sampler_parameter_pending() {
             "preparing sampler edit · waiting for audio"
         } else if view.first_sampler_current() {
-            "computer keyboard · play from start · stop"
+            "audio ready"
         } else {
             "audio not ready · offline export supported"
         };
@@ -2054,9 +2075,13 @@ fn render_instrument(
             .flex_shrink_0()
             .debug_selector(|| "sampler-controls".into())
             .children(fields);
-        let details = div().flex_1().min_h_0().overflow_hidden().child(theme::text(format!(
-            "{name} · {readiness} · edits require stopped audio · * release inactive in trigger mode · replacement unavailable"
-        )));
+        let details = div()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .child(theme::text(format!(
+                "{name} · {readiness} · * release inactive in trigger mode"
+            )));
         let overview = sampler_overview::render(view, device, &name);
         let body = crate::device_composition::body()
             .flex()
@@ -2075,10 +2100,16 @@ fn render_instrument(
                     .child(details),
             );
         device_frame(
-            theme::text("sampler"),
+            device_drag_title(
+                view,
+                cx,
+                device,
+                NativeDeviceClass::Instrument,
+                theme::text("sampler"),
+            ),
             theme::device_frame_style(selected),
-            div(),
-            div(),
+            leading,
+            header_actions,
             body,
         )
     } else {

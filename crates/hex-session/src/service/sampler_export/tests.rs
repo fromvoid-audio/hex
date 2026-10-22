@@ -14,6 +14,12 @@ pub(crate) struct Files {
     output: PathBuf,
 }
 impl Files {
+    pub(crate) fn output(&self) -> &Path {
+        &self.output
+    }
+    pub(crate) fn source(&self) -> &Path {
+        &self.source
+    }
     pub(crate) fn new(stereo: bool) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let dir = std::env::temp_dir().join(format!(
@@ -445,6 +451,7 @@ pub(crate) fn job(snapshot: &ServiceExportSnapshot, path: PathBuf) -> ExportJob 
     ExportJob {
         job_id: 0,
         sources: None,
+        resources: None,
         revision: 0,
         path,
         prepared: Arc::clone(&snapshot.prepared),
@@ -468,8 +475,15 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
     });
     let mut lane = ExportLane::new(work_tx, finished_rx, worker);
     let mut first = job(&snapshot, files.output.clone());
-    lane.prepare_job(&mut first, &session, snapshot.sources.as_ref())
-        .unwrap();
+    lane.prepare_job(
+        &mut first,
+        &session,
+        snapshot.sources.as_ref(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     let active = lane.active.as_ref().unwrap();
     let selections = [
         snapshot.selection(),
@@ -480,7 +494,8 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
         },
     ];
     let stores = [&session.native_assets];
-    let phase = ControlSamplerPhase {
+    let phase = DeviceResourcePhase {
+        registered: &[],
         stores: &stores,
         selections: &selections,
         outbound: &[],
@@ -489,7 +504,7 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
         construction_bytes: 0,
     };
     let totals =
-        resources::inspect_control_sampler_union(&phase, &phase, reservation().storage).unwrap();
+        resources::inspect_device_resource_union(&phase, &phase, reservation().storage).unwrap();
     drop(first);
     lane.active = None;
     let exact = hex_engine::AudioStorageLedgerReservation {
@@ -510,16 +525,30 @@ fn export_exact_and_one_under_union_limits_and_failed_queue_are_atomic() {
         session.native_reservation.as_mut().unwrap().storage = limits;
         let mut refused = job(&snapshot, files.output.clone());
         assert!(
-            lane.prepare_job(&mut refused, &session, snapshot.sources.as_ref())
-                .is_err()
+            lane.prepare_job(
+                &mut refused,
+                &session,
+                snapshot.sources.as_ref(),
+                None,
+                None,
+                None,
+            )
+            .is_err()
         );
         assert!(lane.active.is_none());
         assert!(refused.sources.is_none());
     }
     session.native_reservation.as_mut().unwrap().storage = exact;
     let mut accepted = job(&snapshot, files.output.clone());
-    lane.prepare_job(&mut accepted, &session, snapshot.sources.as_ref())
-        .unwrap();
+    lane.prepare_job(
+        &mut accepted,
+        &session,
+        snapshot.sources.as_ref(),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
     assert!(lane.submit(accepted).is_err());
     assert!(lane.active.is_none());
     assert!(!files.output.exists());
@@ -607,9 +636,13 @@ fn captured_export_new_and_media_open_check_complete_union_before_adoption() {
     let source = anchor.sources.as_ref().unwrap();
     let (_dispatched_job_owner, obligation) = source.capture_for_dispatch_on_control(1).unwrap();
     let admission = Admission {
+        registered: &[],
+        seeks: None,
+        preview: None,
         native: NativeSamplerReservationHold::default(),
         current: Some(snapshot.selection()),
         export: Some(anchor.selection()),
+        export_resources: None,
         runtime_bytes: hex_engine::SessionPlayback::control_sampler_export_runtime_allowance(
             &snapshot.prepared,
             source,
@@ -801,9 +834,13 @@ fn legacy_staged_owner_union_has_independent_exact_byte_limits_before_commit() {
         .with_native_reservation(reservation())
         .unwrap();
     let admission = Admission {
+        registered: &[],
+        seeks: None,
+        preview: None,
         native: NativeSamplerReservationHold::default(),
         current: None,
         export: Some(anchor.selection()),
+        export_resources: None,
         outbound: Some(resources::ControlSamplerOutbound {
             anchor: source,
             obligation: &obligation,

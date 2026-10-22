@@ -11,7 +11,8 @@ pub(super) fn exercise(
     track: hex_project::TrackId,
     saved: &std::path::Path,
 ) {
-    let end = Instant::now() + Duration::from_secs(30);
+    let started = Instant::now();
+    let end = started + Duration::from_secs(30);
     let initial = hex_storage::load(saved).unwrap();
     let device = initial.track(track).unwrap().instrument().unwrap().id();
     let other = initial
@@ -51,16 +52,16 @@ pub(super) fn exercise(
             .unwrap()
             .as_ref()
             .and_then(|b| b.status())
-            .and_then(|s| s.applied_audio_source())
+            .and_then(|s| s.rendered_current(h))
     };
-    let wait_next = |visual: &mut VisualTestContext,
-                     old: hex_audio::prepared::AppliedAudioSource| {
+    let wait_next = |visual: &mut VisualTestContext, old: RenderedCurrent| {
         loop {
             pulse(visual);
             if applied().is_some_and(|a| {
                 a.context.project_generation == old.context.project_generation
                     && a.context.editor_revision == old.context.editor_revision + 1
-                    && a.output_identity != old.output_identity
+                    && a.output_identity == old.output_identity
+                    && a.audio_revision > old.audio_revision
             }) {
                 break;
             }
@@ -163,6 +164,9 @@ pub(super) fn exercise(
                 .unwrap()
                 .state()
                 == &states[index]
+                && cx
+                    .update(|cx| hex_ui::sampler_midi_test_ready(window, cx))
+                    .unwrap()
             {
                 break;
             }
@@ -211,6 +215,7 @@ pub(super) fn exercise(
         assert!(Instant::now() < end);
     }
     cx.simulate_paths_selection(Some(vec![saved.to_path_buf()]));
+    let reopen_started = Instant::now();
     loop {
         pulse(visual);
         if applied().is_some_and(|a| {
@@ -220,7 +225,12 @@ pub(super) fn exercise(
         }
         assert!(
             Instant::now() < end,
-            "history saved state did not reopen into native CURRENT"
+            "history saved state did not reopen into native CURRENT: total={:?}, reopen={:?}, before={before_open:?}, current={:?}, ui={:?}, prompt={:?}",
+            started.elapsed(),
+            reopen_started.elapsed(),
+            applied(),
+            cx.update(|cx| hex_ui::sampler_keyboard_test_status(window, cx)),
+            cx.pending_prompt()
         );
     }
     for _ in 0..8 {

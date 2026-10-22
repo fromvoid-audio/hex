@@ -1,14 +1,13 @@
 //! Narrow desktop-to-editor contract for asynchronous native audio ownership.
 //!
-//! The editor receives only a borrowed-control client and scalar/document
-//! metadata. The desktop and Session worker retain publication and stream
-//! ownership; these events report readiness and publication progress without
-//! transferring those owners into GPUI.
+//! The editor receives a borrowed-control client, document metadata and bounded
+//! resource-free meter/MIDI observations. Desktop and Session retain publication,
+//! source and stream ownership; these events never transfer those owners into GPUI.
 
 use hex_audio::prepared::{Client, Status};
 use hex_engine::AudioSourceContext;
 use hex_session::{DocumentAudioMode, SourcePlanReservation, service::Service};
-use std::sync::mpsc::Receiver;
+use std::sync::{Arc, mpsc::Receiver};
 
 /// Non-owning command/status access for one published native output.
 pub struct EditorAudio {
@@ -63,7 +62,16 @@ pub enum EditorAudioEvent {
 pub enum EditorPublicationState {
     Preparing,
     Busy,
-    Submitted { audio_revision: u64 },
+    Submitted {
+        audio_revision: u64,
+    },
+    /// Exact submission correlation and bounded resource-free observation endpoints. Application
+    /// still needs the output/revision callback ACK; no graph or native resource owner crosses.
+    ResidentSubmitted {
+        audio_revision: u64,
+        metadata: hex_session::service::ResidentPublicationMetadata,
+        observation: Arc<hex_engine::PreparedPlaybackObservation>,
+    },
     Refused(String),
     Fault(String),
 }

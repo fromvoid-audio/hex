@@ -28,7 +28,11 @@ fn request(revision: u64, kind: &'static str) -> Request {
 fn browser_enter_worker_selected_defaults_created_track_and_one_undo_redo() {
     let service = Service::new(48_000, 32, 0).unwrap();
     let original = event(&service).state;
-    for kind in ["hex.instrument.fm4", "hex.instrument.sine"] {
+    for kind in [
+        "hex.instrument.fm4",
+        "hex.instrument.sine",
+        "hex.instrument.sampler",
+    ] {
         let before = if kind == "hex.instrument.fm4" {
             Arc::clone(&original)
         } else {

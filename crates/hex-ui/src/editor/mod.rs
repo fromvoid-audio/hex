@@ -1,3 +1,12 @@
+//! Native canonical editor view and bounded UI intent coordination.
+//!
+//! Session owns the editable project and prepare-before-commit workers; this module owns
+//! display/selection/focus and captured typed requests. Render cached summaries and visible
+//! content, never decode or perform filesystem/audio setup in painting. Pending requests preserve
+//! captured generation/revision/target identity. Canonical commit and native applied-source
+//! acknowledgment are separate states; do not claim current playback from a submitted revision
+//! alone. Native keyboard/pointer delivery uses the pinned excluded GPUI dependency boundary, with
+//! no unsafe workspace bridge.
 mod arrangement;
 mod arrangement_audio_panel;
 mod arrangement_device_drop;
@@ -19,11 +28,14 @@ mod clip_content_cache;
 mod clip_drag_ui_test;
 mod clip_name;
 mod clip_selection;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod project_recovery_ui_test;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod workspace_view_ui_test;
 
 mod group_copy;
+mod pending_clip_move;
 #[cfg(test)]
 mod test_environment;
 
@@ -69,15 +81,25 @@ mod loop_region;
 mod loop_selection_ui_test;
 mod menus;
 mod midi;
+mod midi_audition;
 mod midi_canvas;
+mod midi_created_selection;
+mod midi_creation;
 mod midi_drag;
 mod midi_draw;
 mod midi_group_drag;
+mod midi_note_overwrite;
+mod midi_pan;
+mod midi_ruler;
 mod midi_scene;
 mod midi_selection;
 mod midi_source_controls;
+mod midi_step;
 mod midi_stroke;
 mod midi_thumbnail;
+mod midi_velocity;
+mod midi_velocity_randomize;
+mod midi_velocity_ui;
 mod mixer;
 mod musical_audio_controls;
 mod musical_time;
@@ -236,6 +258,8 @@ struct PendingEditorPublicationObservation {
 
 #[derive(Clone)]
 struct PlaybackCandidate {
+    worker_requires_preroll: Option<bool>,
+    observation: Option<Arc<hex_engine::PreparedPlaybackObservation>>,
     audio_revision: u64,
     project_generation: u64,
     state: Arc<ViewState>,
@@ -633,16 +657,32 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_selection: midi_selection::MidiSelection,
     pub(in crate::editor) midi_note_gesture: Option<midi_drag::NoteGesture>,
     pub(in crate::editor) midi_group_gesture: Option<midi_group_drag::GroupGesture>,
+    pub(in crate::editor) midi_creation: Option<midi_creation::Creation>,
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
     pub(in crate::editor) midi_draw_pitch_locked: bool,
+    /// Source-relative insertion beat; reset with the existing piano_view_clip owner.
+    /// Pure view state: never transport position or a canonical project edit.
     pub(in crate::editor) midi_marker: Option<u64>,
-    pub(in crate::editor) midi_marquee: Option<([f32; 2], [f32; 2], bool)>,
+    midi_step: midi_step::StepEntry,
+    midi_velocity: midi_velocity_ui::State,
+    midi_velocity_randomize: midi_velocity_randomize::State,
+    midi_pan: midi_pan::State,
+    midi_ruler: midi_ruler::State,
+    midi_audition: midi_audition::MidiAudition,
+    pending_created_note_selection: Option<midi_created_selection::Pending>,
+    pub(in crate::editor) midi_marquee: Option<midi_selection::Marquee>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
+    // Only suppresses redundant pointer invalidations; paint resolves current geometry.
+    pub(in crate::editor) midi_hover: Option<midi_scene::NoteHover>,
+    piano_view_clip: Option<(u64, ClipId)>,
+    piano_zoom_wheel_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
     pub(in crate::editor) piano_beat_span: hex_project::BeatTime,
     pub(in crate::editor) piano_pitch_low: u8,
+    piano_pitch_rows: u8,
+    piano_pitch_zoom: Option<(f32, u8, u8)>,
     pub(in crate::editor) midi_snap_grid: midi_drag::MidiGrid,
     pending_requests: VecDeque<Request>,
     device_gesture: hex_session::device_gesture::GestureClient,
@@ -664,9 +704,13 @@ pub(super) struct EditorView {
     viewport: Option<Viewport>,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
+    // One existing read-only view per transient protocol, never a prepared graph/resource set.
+    resident_device_preview: Option<hex_session::service::DevicePreview>,
+    resident_tuning_preview: Option<hex_session::service::TuningPreview>,
     audio_admission: AudioAdmissionStatus,
     session_routes: session_route_view::RouteView,
     prepared_seek: Option<arrangement_seek::PendingSeek>,
+    seek_request_serial: u64,
     latched_seek_intent: Option<arrangement_seek::SeekIntent>,
     retired_seek_result: Option<hex_session::arrangement_seek::ArrangementSeekResult>,
     applied_project_revision: Option<u64>,
@@ -684,6 +728,7 @@ pub(super) struct EditorView {
     duplicate_intent: DuplicateIntent,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     pending_group_copy: Option<group_copy::Pending>,
+    pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
     export_control: Option<hex_session::service::ExportControl>,
@@ -694,6 +739,8 @@ pub(super) struct EditorView {
     preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<display_error::DisplayError>,
+    recovery_failure: Option<Arc<hex_session::service::RecoveryFailure>>,
+    recovery_prompt_open: bool,
     computer_keyboard: computer_keyboard::ComputerKeyboard,
     controller_input: controller_input::ControllerInput,
     _computer_keyboard_keys: gpui::Subscription,
@@ -715,6 +762,7 @@ pub(super) struct EditorView {
     clip_view_open: bool,
     device_panel_active: bool,
     clip_detail_body_height: f32,
+    retained_clip_detail: Option<clip_view::RetainedClipDetail>,
     loop_rail_gesture: Option<loop_rail::LoopRailGesture>,
     pending_loop: Option<loop_rail::PendingLoop>,
     loop_rail_cursor: gpui::CursorStyle,
@@ -1094,11 +1142,17 @@ impl EditorView {
                 view.cancel_project_spectrum_resize(cx);
                 if view.cancel_trim_gesture(cx) {
                     cx.stop_active_drag(window);
+                    // Blur runs after paint in GPUI's focus phase. Notify again
+                    // through the normal effect queue so the canceled overlay
+                    // is removed in the next frame, without another input.
+                    cx.defer_in(window, |_, _, cx| cx.notify());
                 }
                 view.cancel_track_resize(cx);
             }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
+            view.midi_step.cancel_pending();
+            view.invalidate_hardware_step();
             if view.cancel_loop_rail_gesture() {
                 cx.defer_in(window, |_, _, cx| cx.notify());
             }
@@ -1112,12 +1166,16 @@ impl EditorView {
             cx.notify();
         });
         let midi_focus = cx.focus_handle();
-        let focus_blur = cx.on_blur(&midi_focus, window, |view, _, cx| {
+        let focus_blur = cx.on_blur(&midi_focus, window, |view, window, cx| {
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
+            view.midi_step.cancel_pending();
+            view.invalidate_hardware_step();
             let midi_cancelled = view.cancel_midi_note_gesture();
             if midi_cancelled {
-                cx.notify();
+                // Focus listeners run after frame swap; invalidate once the
+                // normal effect queue resumes so stationary previews disappear.
+                cx.defer_in(window, |_, _, cx| cx.notify());
             }
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
@@ -1132,6 +1190,8 @@ impl EditorView {
                 view.cancel_track_resize(cx);
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
+                view.midi_step.cancel_pending();
+                view.invalidate_hardware_step();
                 view.audio_event_editor.gesture = None;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
@@ -1210,17 +1270,30 @@ impl EditorView {
             midi_selection: midi_selection::MidiSelection::default(),
             midi_note_gesture: None,
             midi_group_gesture: None,
+            midi_creation: None,
             midi_stroke: None,
             midi_draw_mode: false,
             midi_draw_pitch_locked: true,
             midi_marker: None,
+            midi_step: midi_step::StepEntry::default(),
+            midi_velocity: midi_velocity_ui::State::default(),
+            midi_velocity_randomize: midi_velocity_randomize::State::default(),
+            midi_pan: midi_pan::State::default(),
+            midi_ruler: midi_ruler::State::default(),
+            midi_audition: midi_audition::MidiAudition::default(),
+            pending_created_note_selection: None,
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
             midi_hit_cycle: None,
+            midi_hover: None,
+            piano_view_clip: None,
+            piano_zoom_wheel_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
             piano_beat_span: hex_project::BeatTime::from_quarters(4)
                 .unwrap_or(hex_project::BeatTime::ONE),
             piano_pitch_low: 48,
+            piano_pitch_rows: 24,
+            piano_pitch_zoom: None,
             midi_snap_grid: midi_drag::MidiGrid::default(),
             pending_requests: VecDeque::new(),
             device_gesture: hex_session::device_gesture::GestureClient::default(),
@@ -1242,9 +1315,12 @@ impl EditorView {
             viewport: None,
             playback_candidates: VecDeque::new(),
             audible_playback: None,
+            resident_device_preview: None,
+            resident_tuning_preview: None,
             audio_admission: AudioAdmissionStatus::default(),
             session_routes: session_route_view::RouteView::default(),
             prepared_seek: None,
+            seek_request_serial: 0,
             latched_seek_intent: None,
             retired_seek_result: None,
             applied_project_revision: None,
@@ -1262,6 +1338,7 @@ impl EditorView {
             duplicate_intent: DuplicateIntent::default(),
             pending_scene_duplicate: None,
             pending_group_copy: None,
+            pending_clip_move: None,
             close_prompt_open: false,
             export_pending: false,
             export_control: None,
@@ -1272,6 +1349,8 @@ impl EditorView {
             preset_dialog_open: false,
             status,
             error: None,
+            recovery_failure: None,
+            recovery_prompt_open: false,
             computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
             controller_input: controller_input::ControllerInput::default(),
             _computer_keyboard_keys: computer_keyboard_keys,
@@ -1293,6 +1372,7 @@ impl EditorView {
             clip_view_open: true,
             device_panel_active: false,
             clip_detail_body_height: clip_view::CLIP_DETAIL_BODY_HEIGHT,
+            retained_clip_detail: None,
             loop_rail_gesture: None,
             pending_loop: None,
             loop_rail_cursor: gpui::CursorStyle::Crosshair,
@@ -1604,9 +1684,12 @@ impl EditorView {
         if !self.focus_clip_details(window, cx) {
             return false;
         }
+        self.retained_clip_detail = None;
         self.advance_selection_intent();
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {
+            self.piano_view_clip = None;
+            self.midi_creation = None;
             self.midi_note_gesture = None;
             self.midi_hit_cycle = None;
             self.midi_scene_cache.clear();
@@ -1692,11 +1775,11 @@ pub(crate) fn sampler_keyboard_fixture_status(
 ) -> Result<String, String> {
     window.read(cx, |view: gpui::Entity<EditorView>, cx| {
         let view = view.read(cx);
-        format!("enabled={} suspended={} ready={} target={:?} request={} input={:?} cancelled={} desired={:?} current={} edit_pending={} error={:?} clip={:?} draw={} stroke={} note_count={:?} selected_notes={} worker_pending={}",
+        format!("enabled={} suspended={} target={:?} request={} input={} cancelled={} desired={:?} current={} edit_pending={} error={:?} clip={:?} draw={} stroke={} note_count={:?} selected_notes={} worker_pending={}",
             view.computer_keyboard.enabled, view.computer_keyboard.suspended,
-            view.computer_keyboard.native_ready, view.computer_keyboard.target,
+            view.computer_keyboard.target,
             view.computer_keyboard.request_id,
-            view.computer_keyboard.input.as_ref().and_then(|i| i.native_sampler_activation()),
+            view.computer_keyboard.input.is_some(),
             view.computer_keyboard.input.as_ref().is_some_and(|i| i.is_cancelled()),
             view.computer_keyboard.desired_notes(), view.first_sampler_current(), view.edit_pending(), view.error, view.selected_clip,view.midi_draw_mode,view.midi_stroke.is_some(),view.selected_clip.and_then(|id|view.state.as_ref()?.project.midi_source(id).map(|s|s.notes().len())),view.midi_selection.len(),view.worker_requests_pending)
     }).map_err(|e| e.to_string())
@@ -1710,7 +1793,9 @@ pub(crate) fn sampler_midi_fixture_ready(
     window
         .read(cx, |view: gpui::Entity<EditorView>, cx| {
             let view = view.read(cx);
-            view.first_sampler_current() && !view.edit_pending()
+            view.first_sampler_current()
+                && !view.edit_pending()
+                && view.stopped_playback_restore.is_none()
         })
         .map_err(|e| e.to_string())
 }

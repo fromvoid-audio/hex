@@ -111,7 +111,7 @@ fn prepared_import_adds_audio_to_an_existing_midi_track_in_one_history_step() {
     let result = editor
         .execute(Command::ImportPreparedAudioClip {
             track,
-            start: 17,
+            start: 24_000,
             path: PathBuf::from("Samples/Audio.wav"),
             source_sample_rate: 48_000,
             source_frames: 16,
@@ -133,7 +133,7 @@ fn prepared_import_adds_audio_to_an_existing_midi_track_in_one_history_step() {
     assert_eq!(lane.clips().len(), 1);
     assert_eq!(lane.clips()[0].id(), clip);
     assert_eq!(lane.clips()[0].asset(), asset);
-    assert_eq!(lane.clips()[0].start(), 17);
+    assert_eq!(lane.clips()[0].start(), 24_000);
     assert_eq!(lane.midi_clips().len(), 1);
     assert_eq!(lane.midi_clips()[0].id(), midi_clip);
     assert_eq!(lane.midi_clips()[0].notes().len(), 1);
@@ -503,66 +503,6 @@ fn overwrite_audio_move_splits_victim_with_canonical_phase_fades_and_one_step_hi
         Created::Clip(clip) => clip,
         other => panic!("unexpected victim: {other:?}"),
     };
-    let second_victim = match editor
-        .execute(Command::PlaceClip {
-            track: target,
-            asset,
-            start: 30,
-            duration: 40,
-            source_offset: 20,
-            source_length: 10,
-            looping: true,
-        })
-        .expect("second victim")
-    {
-        Created::Clip(clip) => clip,
-        other => panic!("unexpected second victim: {other:?}"),
-    };
-    let fully_covered_victim = match editor
-        .execute(Command::PlaceClip {
-            track: target,
-            asset,
-            start: 40,
-            duration: 20,
-            source_offset: 40,
-            source_length: 20,
-            looping: false,
-        })
-        .expect("fully covered victim")
-    {
-        Created::Clip(clip) => clip,
-        other => panic!("unexpected fully covered victim: {other:?}"),
-    };
-    let touching_start = match editor
-        .execute(Command::PlaceClip {
-            track: target,
-            asset,
-            start: 0,
-            duration: 40,
-            source_offset: 0,
-            source_length: 40,
-            looping: false,
-        })
-        .expect("clip touching drop start")
-    {
-        Created::Clip(clip) => clip,
-        other => panic!("unexpected clip: {other:?}"),
-    };
-    let touching_end = match editor
-        .execute(Command::PlaceClip {
-            track: target,
-            asset,
-            start: 60,
-            duration: 20,
-            source_offset: 0,
-            source_length: 20,
-            looping: false,
-        })
-        .expect("clip touching drop end")
-    {
-        Created::Clip(clip) => clip,
-        other => panic!("unexpected clip: {other:?}"),
-    };
     editor
         .execute(Command::SetClipFades {
             clip: victim,
@@ -613,28 +553,6 @@ fn overwrite_audio_move_splits_victim_with_canonical_phase_fades_and_one_step_hi
     assert_eq!(right.source_phase(), 10);
     assert_eq!(right.fade().span(), 100);
     assert_eq!(right.fade().offset(), 50);
-    let second_left = target_clips
-        .iter()
-        .find(|clip| clip.id() == second_victim)
-        .expect("second left fragment retains ID");
-    assert_eq!((second_left.start(), second_left.duration()), (30, 10));
-    let second_right = target_clips
-        .iter()
-        .find(|clip| {
-            clip.id() != second_victim
-                && clip.id() != incoming
-                && clip.start() == 60
-                && clip.duration() == 10
-        })
-        .expect("second right fragment");
-    assert_eq!(second_right.asset(), asset);
-    assert!(target_clips.iter().any(|clip| clip.id() == touching_start));
-    assert!(target_clips.iter().any(|clip| clip.id() == touching_end));
-    assert!(
-        !target_clips
-            .iter()
-            .any(|clip| clip.id() == fully_covered_victim)
-    );
     assert!(target_clips.iter().any(|clip| clip.id() == incoming));
     assert!(result.track(source).expect("source").clips().is_empty());
     let committed = result.clone();

@@ -41,6 +41,7 @@ impl ComputerKeyboardRuntime {
             }
         }
         Ok(Box::new(Self {
+            resources: None,
             track,
             instrument_id: Some(device),
             expression: None,
@@ -61,10 +62,13 @@ impl ComputerKeyboardRuntime {
             primary: [None; VOICES],
             scratch: [None; VOICES],
             desired: [0; COMPUTER_KEY_COUNT],
+            activation_epoch: None,
             next_id: 0,
             scratch_next_id: 0,
             age: 0,
             scratch_age: 0,
+            audition_start: None,
+            scratch_audition_start: None,
             monitor_anchor: None,
             scratch_monitor_anchor: None,
             boundary: false,

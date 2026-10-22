@@ -1,4 +1,6 @@
 use super::*;
+use crate::routed_midi_fixture;
+mod authored_history;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
@@ -2730,7 +2732,7 @@ fn with_instrument_bypassed(project: &Project, bypassed: bool) -> Project {
         .as_mut()
         .expect("MIDI fixture has a canonical instrument slot");
     instrument.bypassed = bypassed;
-    legacy_project_from_snapshot(snapshot).unwrap()
+    Project::from_snapshot(snapshot).unwrap()
 }
 
 fn session_only_project(project: &Project) -> Project {
@@ -2852,7 +2854,7 @@ fn with_test_instrument(
         .expect("MIDI fixture has an instrument slot");
     instrument.state =
         hex_lattice_contract::NativeDeviceState::new(type_id, 1, vec![state_value]).unwrap();
-    legacy_project_from_snapshot(snapshot).unwrap()
+    Project::from_snapshot(snapshot).unwrap()
 }
 
 fn revision(project: &Project, table: Arc<hex_devices::SineTable>) -> Arc<PreparedRevision> {
@@ -2874,6 +2876,188 @@ fn revision_with_instrument_registry(
         )
         .unwrap(),
     )
+}
+
+// Exercise the actual ordinary compiler policy with an empty resource set. No descriptor is
+// fabricated and the closed/headless preparation path remains independently conservative.
+fn ordinary_mutable_playback(
+    project: &Project,
+    registry: &hex_lattice::NativeInstrumentRegistry<'_>,
+) -> SessionPlayback {
+    let cancel = AtomicBool::new(false);
+    let resources = crate::native_device_resources::PreparedDeviceResources::prepare_on_control(
+        &crate::native_device_resources::ResidentDeviceAssets::default(),
+        project,
+        1 << 20,
+        &cancel,
+    )
+    .unwrap();
+    let preparation =
+        crate::native_device_resources::CompilerDeviceResources::new(&resources, 0, &cancel);
+    let effects = hex_devices::native_registry().unwrap();
+    let revision = PreparedRevision::prepare_with_registries_and_sampler_sources(
+        project,
+        &BTreeMap::new(),
+        Arc::new(hex_devices::SineTable::new()),
+        None,
+        &effects,
+        registry,
+        &crate::audio_transform::AudioTransformPreparation::default(),
+        Some(&preparation),
+    )
+    .unwrap();
+    assert!(revision.device_handoff_metadata_bytes().unwrap() > 0);
+    SessionPlayback::new_with_device_resources(Arc::new(revision), &resources).unwrap()
+}
+
+#[test]
+fn ordinary_fresh_mutable_install_suppresses_precut_gates_with_atomic_capacity_refusal() {
+    use hex_lattice::NativeInstrumentDefinition;
+    let definition = MutableFeedbackDefinition {
+        metadata: ContinuityInstrumentDefinition {
+            id: hex_lattice_contract::DeviceTypeId::from_static("test.instrument.fresh-install"),
+            levels: [0.2, 0.4],
+            release_frames: 8,
+        },
+    };
+    let definitions: [&dyn NativeInstrumentDefinition; 1] = [&definition];
+    let registry = hex_lattice::NativeInstrumentRegistry::new(&definitions).unwrap();
+    let enabled = with_test_instrument(
+        &with_second_arrangement_note(&project(1.0, 0, 8 << 32)),
+        definition.metadata.id,
+        0,
+    );
+    let track = enabled.tracks()[0].id();
+    let device = enabled.tracks()[0].instrument().unwrap().id();
+    let mut editor = Editor::new(enabled.clone(), 8).unwrap();
+    editor
+        .execute(Command::SetDeviceBypass {
+            device,
+            bypassed: true,
+        })
+        .unwrap();
+    let disabled = editor.project().clone();
+    for session in [false, true] {
+        let mut old = ordinary_mutable_playback(&disabled, &registry);
+        old.apply(SessionPlaybackCommand::Play).unwrap();
+        if session {
+            old.apply(SessionPlaybackCommand::LaunchClip {
+                clip: old.revision.session().midi_clips()[0].id,
+                quantization: LaunchQuantization::Immediate,
+            })
+            .unwrap();
+        }
+        old.render(&mut [[0.0; 2]; 64]).unwrap();
+        let old_owner = old.owner(track);
+        let mut candidate = ordinary_mutable_playback(&enabled, &registry);
+        candidate.release_capacity = 0;
+        assert_eq!(
+            candidate.try_inherit_state_from(&mut old),
+            Err(SessionPlaybackError::ReleaseBankFull)
+        );
+        assert_eq!(old.performance_frame(), 64);
+        assert_eq!(old.owner(track), old_owner);
+        assert!(old.suppressions.is_empty());
+        assert_eq!(candidate.performance_frame(), 0);
+        assert!(candidate.suppressions.is_empty());
+        candidate.release_capacity = SESSION_RELEASE_CAPACITY;
+        candidate.try_inherit_state_from(&mut old).unwrap();
+        assert_eq!(candidate.suppressions.len(), 1);
+        let mut silent = [[1.0; 2]; 64];
+        candidate.render(&mut silent).unwrap();
+        assert_eq!(silent, [[0.0; 2]; 64]);
+        // The one-shot exception is no longer present on an unchanged edit, but its exact
+        // suppression remains until the original occurrence ends.
+        let mut successor = ordinary_mutable_playback(&enabled, &registry);
+        successor.try_inherit_state_from(&mut candidate).unwrap();
+        successor.render(&mut silent).unwrap();
+        assert_eq!(silent, [[0.0; 2]; 64]);
+        if !session {
+            let mut until_next = vec![[0.0; 2]; 24_000 - 192];
+            successor.render(&mut until_next).unwrap();
+            assert!(until_next.iter().all(|frame| *frame == [0.0; 2]));
+            successor.render(&mut silent[..1]).unwrap();
+            assert!(silent[0][0] > 0.0, "exact future onset is dispatched");
+        }
+    }
+    // Complete old evidence also distinguishes a genuinely new canonical track from an
+    // unobserved predecessor. Its pre-cut gate is suppressed without altering old sources.
+    let mut new_track_editor = Editor::new(disabled.clone(), 8).unwrap();
+    let Created::Track(new_track) = new_track_editor
+        .execute(Command::AddMidiTrack { name: "new".into() })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    new_track_editor
+        .execute(Command::InsertInstrument {
+            track: new_track,
+            state: hex_lattice_contract::NativeDeviceState::new(definition.metadata.id, 1, vec![0])
+                .unwrap(),
+        })
+        .unwrap();
+    let Created::Clip(new_clip) = new_track_editor
+        .execute(Command::PlaceMidiClip {
+            track: new_track,
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })
+        .unwrap()
+    else {
+        panic!("clip")
+    };
+    new_track_editor
+        .execute(Command::AddMidiNote {
+            clip: new_clip,
+            start: BeatTime::ZERO,
+            duration: BeatTime::ONE,
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let mut old = ordinary_mutable_playback(&disabled, &registry);
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 64]).unwrap();
+    let mut new_track_candidate = ordinary_mutable_playback(new_track_editor.project(), &registry);
+    new_track_candidate
+        .try_inherit_state_from(&mut old)
+        .unwrap();
+    let mut silent = [[1.0; 2]; 64];
+    new_track_candidate.render(&mut silent).unwrap();
+    assert_eq!(silent, [[0.0; 2]; 64]);
+
+    // A changed active MIDI signature is not an installation proof, even alongside a real
+    // authored device discontinuity. Missing legacy evidence also cannot authorize suppression.
+    let mut old = ordinary_mutable_playback(&disabled, &registry);
+    old.apply(SessionPlaybackCommand::Play).unwrap();
+    old.render(&mut [[0.0; 2]; 64]).unwrap();
+    let mut changed = Editor::new(enabled.clone(), 8).unwrap();
+    changed
+        .execute(Command::TrimMidiClipEdge {
+            clip: enabled.tracks()[0].midi_clips()[0].id(),
+            edge: hex_project::TrimEdge::Right,
+            beat: BeatTime::from_raw(2 << 32),
+        })
+        .unwrap();
+    let mut missing_source_proof = ordinary_mutable_playback(changed.project(), &registry);
+    assert_eq!(
+        missing_source_proof.try_inherit_state_from(&mut old),
+        Err(SessionPlaybackError::MutableInstrumentChase)
+    );
+    assert_eq!(old.performance_frame(), 64);
+    let mut legacy = SessionPlayback::new(revision_with_instrument_registry(
+        &disabled,
+        Arc::new(hex_devices::SineTable::new()),
+        &registry,
+    ))
+    .unwrap();
+    legacy.apply(SessionPlaybackCommand::Play).unwrap();
+    legacy.render(&mut [[0.0; 2]; 64]).unwrap();
+    assert_eq!(
+        ordinary_mutable_playback(&enabled, &registry).try_inherit_state_from(&mut legacy),
+        Err(SessionPlaybackError::MutableInstrumentChase)
+    );
 }
 
 fn mutable_hundred_track_preroll_revision() -> Arc<PreparedRevision> {
@@ -3910,7 +4094,8 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
         state: gain_state,
     }];
     snapshot.tracks[0].instrument_position = Some(0);
-    let project = legacy_project_from_snapshot(snapshot).unwrap();
+    routed_midi_fixture::separate_midi(&mut snapshot, 0);
+    let project = Project::from_snapshot(snapshot).unwrap();
     let asset_id = project.assets().next().unwrap().id();
     let media = BTreeMap::from([(
         asset_id,
@@ -5073,7 +5258,8 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         midi_clips,
     };
     source.tracks[0].instrument_position = Some(1);
-    let old_project = legacy_project_from_snapshot(source).unwrap();
+    routed_midi_fixture::separate_midi(&mut source, 0);
+    let old_project = Project::from_snapshot(source).unwrap();
     let asset_id = old_project.assets().next().unwrap().id();
     let media = BTreeMap::from([(
         asset_id,
@@ -5129,8 +5315,11 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         audio_clips.clear();
         midi_clips.clear();
     }
+    if let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut tail_snapshot.tracks[1].content {
+        midi_clips.clear();
+    }
     tail_snapshot.session.cells.clear();
-    let tail_project = legacy_project_from_snapshot(tail_snapshot).unwrap();
+    let tail_project = Project::from_snapshot(tail_snapshot).unwrap();
     let mut tail_candidate =
         SessionPlayback::new(prepare(&tail_project, Arc::clone(&table))).unwrap();
     tail_candidate
@@ -5143,8 +5332,13 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     {
         midi_clips.clear();
     }
+    if let TrackContentSnapshot::Hybrid { midi_clips, .. } =
+        &mut candidate_snapshot.tracks[1].content
+    {
+        midi_clips.clear();
+    }
     candidate_snapshot.session.cells.clear();
-    let candidate_source = legacy_project_from_snapshot(candidate_snapshot).unwrap();
+    let candidate_source = Project::from_snapshot(candidate_snapshot).unwrap();
     let empty_analytic = with_test_instrument(&candidate_source, analytic_id, 0);
     let empty_revision = prepare(&empty_analytic, Arc::clone(&table));
     let mut candidate = SessionPlayback::new(empty_revision).unwrap();
@@ -10214,7 +10408,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
                 id: snapshot.next_id,
                 start_raw: 0,
                 duration_raw: note_duration,
-                pitch: 60,
+                pitch: 61,
                 channel: 0,
                 velocity: 100,
             });
@@ -10230,7 +10424,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: note_duration,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -10375,7 +10569,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -10388,7 +10582,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });

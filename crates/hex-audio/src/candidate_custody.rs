@@ -1,5 +1,13 @@
-//! Bounded custody only. Queue acceptance, no-install closure and normal physical
-//! disposal are different facts. No state here grants render/admission authority.
+//! Bounded candidate custody with exact root/slot/incarnation/runtime identity.
+//!
+//! Reservation, queue acceptance, installation, source readiness, terminal return and normal
+//! physical disposal are separate transitions. Synchronous refusal preserves the original
+//! owner/container; accepted tickets and scalar acknowledgments grant no cleanup authority. Full
+//! return queues retain the actual owner in persistent held storage. Never-installed and
+//! final-active returns retain distinct physical paths. Control/lifecycle execution records
+//! Pending before destructive takes, retains the first failed payload and remaining owners, and
+//! never reuses occupancy after an incomplete destructor, worker join or page-pool conservation
+//! check.
 use crate::candidate_catalog::{CandidateDomain, CatalogCustody};
 use hex_engine::{
     AudioCandidateDisposed, AudioCandidateIdentity, AudioCandidateOwner, OwnedAudioInputs,
@@ -1169,6 +1177,40 @@ pub struct AudioCandidateCustodyReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn vacant_bank_with_contended_thread_observation_still_requires_a_witness() {
+        let root = CandidateRoot::new(1).unwrap();
+        let worker = root.clone();
+        let worker_thread = std::thread::spawn(move || {
+            worker.advance_on_control();
+            std::thread::current().id()
+        })
+        .join()
+        .unwrap();
+        let execution = lock(&root.0.execution);
+        assert_eq!(execution.last_thread, Some(worker_thread));
+        assert_eq!(root.report().occupied_slots, 0);
+        assert!(root.cleanup_thread().is_none()); // contention, not an absent worker
+        let expired = std::panic::catch_unwind(AssertUnwindSafe(|| {
+            crate::prepared::candidate_tests::wait_for_abandoned_cleanup(
+                &root,
+                std::time::Instant::now(),
+            )
+        }))
+        .expect_err("vacancy alone must not satisfy the thread witness");
+        assert_eq!(
+            expired.downcast_ref::<&str>().copied(),
+            Some("abandoned cleanup required UI polling")
+        );
+        drop(execution);
+        assert_eq!(
+            crate::prepared::candidate_tests::wait_for_abandoned_cleanup(
+                &root,
+                std::time::Instant::now() + std::time::Duration::from_secs(2),
+            ),
+            worker_thread
+        );
+    }
     #[test]
     fn actual_failed_metadata_disposal_closes_new_staging_and_preserves_refused_inputs() {
         let Some(owner) = crate::prepared::candidate_tests::candidate() else {

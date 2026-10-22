@@ -48,7 +48,7 @@ enum Kind {
 impl EditorView {
     fn event_context(&self) -> Option<(ClipId, AudioClipEdit, u64)> {
         let state = self.state.as_ref()?;
-        let clip = self.selected_clip?;
+        let clip = self.detail_clip_id()?;
         let source = state.project.clip(clip)?;
         Some((clip, source.audio_event_root(), state.revision))
     }
@@ -75,7 +75,7 @@ impl EditorView {
             return Some(range);
         }
         let state = self.state.as_ref()?;
-        let clip = state.project.clip(self.selected_clip?)?;
+        let clip = state.project.clip(self.detail_clip_id()?)?;
         let selected = self.audio_event_editor.selected?;
         clip.editable_audio_events()
             .ok()?
@@ -203,7 +203,7 @@ impl EditorView {
             .clamp(end - first)
     }
     fn event_project_viewport(&self, root: &AudioClipEdit) -> Option<Viewport> {
-        let clip = self.state.as_ref()?.project.clip(self.selected_clip?)?;
+        let clip = self.state.as_ref()?.project.clip(self.detail_clip_id()?)?;
         let local = self.event_viewport(root);
         Some(Viewport {
             start: clip.start().checked_add(local.start)?,
@@ -232,7 +232,7 @@ impl EditorView {
     }
     fn event_position_from_project_frame(&self, root: &AudioClipEdit, frame: u64) -> Option<u64> {
         let state = self.state.as_ref()?;
-        let clip = state.project.clip(self.selected_clip?)?;
+        let clip = state.project.clip(self.detail_clip_id()?)?;
         let first = root
             .root_frame_at(root.view_start, state.project.tempo_map())
             .ok()?;
@@ -243,7 +243,7 @@ impl EditorView {
     fn event_snap_position(&self, position: u64, platform: bool) -> Option<u64> {
         let (_, root, _) = self.event_context()?;
         let state = self.state.as_ref()?;
-        let clip = state.project.clip(self.selected_clip?)?;
+        let clip = state.project.clip(self.detail_clip_id()?)?;
         let first = root
             .root_frame_at(root.view_start, state.project.tempo_map())
             .ok()?;

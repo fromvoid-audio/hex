@@ -7,7 +7,7 @@ use hex_lattice::{
 use std::any::Any;
 
 pub const MAX_SAMPLER_RUNTIME_VOICES: usize = 32;
-const MAX_EVENTS: usize = 1024;
+pub(super) const MAX_EVENTS: usize = 1024;
 
 /// Control-prepared key table and original source binding, without PCM/markers.
 /// Not registry admission: the actual owner graph must still qualify separately.
@@ -79,6 +79,9 @@ pub struct SamplerRuntime {
     active: Active,
 }
 impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
+    fn resource_factory_inline_bytes(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
+    }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
     }

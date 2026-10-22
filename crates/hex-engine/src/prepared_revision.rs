@@ -1,10 +1,20 @@
 //! Exact control-side products for one accepted canonical project revision.
+//!
+//! Arrangement, Session inventory and display summaries are prepared together before the canonical
+//! edit/history transaction commits. Preparation failure leaves the previous project, IDs, redo
+//! and accepted audio source intact. Musical compatibility uses authored source/device identity,
+//! not equal filenames or display metadata. A private resource_scope binds source-bearing sampler
+//! coefficients to their sealed ControlSamplerSources sidecar; an ordinary runtime constructor
+//! refuses that private graph. The separate device_resource_scope stores only the exact registered
+//! resource-set identity: ordinary runtime construction must receive that matching set and retain
+//! actual source leases before playback.
 use crate::{
     Invalid, MidiArrangementPreview, PreparedSessionInventory, Project as PlaybackProject,
     compile::PreparedAudioSource,
 };
 use hex_devices::SineTable;
 pub(crate) mod assembly;
+mod authored_midi;
 use hex_project::{
     AssetId, Device, DeviceId, MAX_CLIPS, MAX_DEVICES_PER_TRACK, MAX_TRACKS, MidiSourceIdentity,
     Project, TrackId,
@@ -39,6 +49,7 @@ struct PreparedArrangementMidiSource {
 #[derive(Clone, PartialEq, Eq)]
 struct PreparedMutableTrackRevision {
     id: TrackId,
+    midi_source_track: TrackId,
     instrument: Option<PreparedDeviceIdentity>,
     instrument_position: Option<usize>,
     effects: Vec<PreparedDeviceIdentity>,
@@ -89,11 +100,13 @@ impl TuningContinuationFamily {
 /// runtime route ownership is maintained by the playback kernel.
 pub struct PreparedRevision {
     pub(crate) resource_scope: Option<u64>,
+    pub(crate) device_resource_scope: Option<u64>,
     tuning_family: TuningContinuationFamily,
     arrangement: crate::owned_shared::OwnedShared<PlaybackProject>,
     session: crate::owned_shared::OwnedShared<PreparedSessionInventory>,
     midi_preview: crate::owned_shared::OwnedShared<MidiArrangementPreview>,
     mutable_track_revisions: Vec<PreparedMutableTrackRevision>,
+    authored_midi_sources: Vec<authored_midi::Source>,
     gain_recording_track: Option<TrackId>,
 }
 
@@ -169,8 +182,14 @@ impl PreparedRevision {
                 .timing()
                 .matches_canonical(previous_project.tempo_map())
             || previous_revision.session.meter_map() != previous_project.meter_map()
-            || prepare_mutable_track_revisions(previous_project, &previous_revision.arrangement)?
-                != previous_revision.mutable_track_revisions
+            || prepare_mutable_track_revisions(
+                previous_project,
+                &previous_revision.arrangement,
+                previous_revision.device_resource_scope.is_some(),
+            )? != previous_revision.mutable_track_revisions
+            || (previous_revision.device_resource_scope.is_some()
+                && authored_midi::prepare(previous_project)?
+                    != previous_revision.authored_midi_sources)
             || previous_project
                 .tracks()
                 .iter()
@@ -246,7 +265,10 @@ impl PreparedRevision {
         self.arm_gain_recording(project, track)
     }
 
-    pub(crate) fn arm_gain_recording(
+    /// Consume an unshared actual compiled graph to arm one transient raw fader. The control
+    /// caller supplies its matching canonical project; no source/factory ownership is adopted
+    /// or recompiled, and an already shared arrangement refuses before mutation.
+    pub fn arm_gain_recording(
         mut self,
         project: &Project,
         track: TrackId,
@@ -349,7 +371,7 @@ impl PreparedRevision {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn prepare_with_registries_and_sampler_sources(
+    pub(crate) fn prepare_with_registries_and_sampler_sources(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,
         sine_table: Arc<SineTable>,
@@ -357,7 +379,7 @@ impl PreparedRevision {
         effects: &hex_lattice::NativeDeviceRegistry<'_>,
         instruments: &hex_lattice::NativeInstrumentRegistry<'_>,
         transforms: &crate::audio_transform::AudioTransformPreparation,
-        samplers: Option<&crate::native_device_resources::ControlSamplerSources>,
+        samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
     ) -> Result<Self, Invalid> {
         transforms.compile_transaction(|| {
             crate::gain_envelope::validate_project(project)?;
@@ -399,7 +421,13 @@ impl PreparedRevision {
                 .map_err(|_| {
                     Invalid("active effect and mutable instrument runtime budget exceeded")
                 })?;
-            let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
+            let mutable_track_revisions = prepare_mutable_track_revisions(
+                project,
+                &arrangement,
+                samplers
+                    .and_then(|sources| sources.device_scope())
+                    .is_some(),
+            )?;
             let midi_bank_bytes = arrangement
                 .midi_note_bank_storage_bytes()?
                 .checked_add(session.midi_note_bank_storage_bytes())
@@ -415,16 +443,65 @@ impl PreparedRevision {
                 midi_bank_references,
             )?;
             Ok(Self {
-                resource_scope: samplers
-                    .map(crate::native_device_resources::ControlSamplerSources::id),
+                resource_scope: samplers.and_then(|sources| sources.private_scope()),
+                device_resource_scope: samplers.and_then(|sources| sources.device_scope()),
                 tuning_family: TuningContinuationFamily::fresh()?,
                 arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
                 session: crate::owned_shared::OwnedShared::new_owned(session),
                 midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
                 mutable_track_revisions,
+                authored_midi_sources: if samplers
+                    .and_then(|sources| sources.device_scope())
+                    .is_some()
+                {
+                    authored_midi::prepare(project)?
+                } else {
+                    Vec::new()
+                },
                 gain_recording_track: None,
             })
         })
+    }
+
+    /// Compile through the ordinary registered-instrument path against exact original-source
+    /// configurations. The returned revision owns no PCM; playback construction must supply the
+    /// same set. The caller reserves every factory's two full PCM scans, including repeated
+    /// Arrangement/Session/shared-context preparation, with no hidden precomputed sampler cache.
+    /// This is aggregate compiler frame work, not maximum source extent: an enabled instrument
+    /// currently has three factory invocations, each with two PCM scans (two invocations when
+    /// bypassed). Consumers must reserve this separate bounded work without reducing or increasing
+    /// their original resident import/storage extent limit.
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_with_device_resources(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        transforms: &crate::audio_transform::AudioTransformPreparation,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+        max_scan_frames: u64,
+        cancel: &std::sync::atomic::AtomicBool,
+    ) -> Result<Self, Invalid> {
+        resources.validate_project(project)?;
+        let effects = hex_devices::native_registry()
+            .map_err(|_| Invalid("invalid built-in native device registry"))?;
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        let preparation = crate::native_device_resources::CompilerDeviceResources::new(
+            resources,
+            max_scan_frames,
+            cancel,
+        );
+        Self::prepare_with_registries_and_sampler_sources(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            &effects,
+            &instruments,
+            transforms,
+            Some(&preparation),
+        )
     }
 
     /// Control-only scalar compilation against an exact sealed source sidecar.
@@ -452,6 +529,11 @@ impl PreparedRevision {
             transforms,
             Some(sources),
         )
+    }
+    /// Whether playback/export must receive the exact ordinary resource set used by compilation.
+    /// This scalar grants no source identity, owning handle or publication/admission authority.
+    pub fn requires_device_resources(&self) -> bool {
+        self.device_resource_scope.is_some()
     }
     pub fn requires_control_sampler_sources(&self) -> bool {
         self.resource_scope.is_some()
@@ -539,7 +621,8 @@ impl PreparedRevision {
             )?;
         crate::mutable_instrument::validate_prepared_graph_budget(&arrangement, &session)
             .map_err(|_| Invalid("active effect and mutable instrument runtime budget exceeded"))?;
-        let mutable_track_revisions = prepare_mutable_track_revisions(project, &arrangement)?;
+        let mutable_track_revisions =
+            prepare_mutable_track_revisions(project, &arrangement, false)?;
         let midi_bank_bytes = arrangement
             .midi_note_bank_storage_bytes()?
             .checked_add(session.midi_note_bank_storage_bytes())
@@ -556,11 +639,13 @@ impl PreparedRevision {
         )?;
         Ok(Self {
             resource_scope: None,
+            device_resource_scope: None,
             tuning_family: TuningContinuationFamily::fresh()?,
             arrangement: crate::owned_shared::OwnedShared::new_owned(arrangement),
             session: crate::owned_shared::OwnedShared::new_owned(session),
             midi_preview: crate::owned_shared::OwnedShared::new_owned(midi_preview),
             mutable_track_revisions,
+            authored_midi_sources: Vec::new(),
             gain_recording_track: None,
         })
     }
@@ -664,6 +749,187 @@ impl PreparedRevision {
         old.retarget_topology_matches(new) && old.arrangement_sources_match(new)
     }
 
+    /// Preallocation quote for ordinary compilation's complete predecessor evidence. Counts
+    /// canonical source/state backing conservatively, including shared duplicates. One additional
+    /// same-project descriptor set is reserved for tuning-continuation validation scratch; this
+    /// construction-only allowance does not multiply retained inventory. Actual Vec capacities
+    /// are checked again after construction. Legacy closed compilation is unchanged.
+    pub fn device_handoff_metadata_construction_bytes(project: &Project) -> Result<usize, Invalid> {
+        let bytes = (|| {
+            let mut bytes = project
+                .tracks()
+                .len()
+                .checked_mul(std::mem::size_of::<PreparedMutableTrackRevision>())?;
+            for track in project.tracks() {
+                bytes = bytes.checked_add(
+                    track
+                        .devices()
+                        .len()
+                        .checked_mul(std::mem::size_of::<PreparedDeviceIdentity>())?,
+                )?;
+                for device in track.instrument().into_iter().chain(track.devices()) {
+                    bytes = bytes.checked_add(device.state().retained_control_metadata_bytes()?)?;
+                }
+                let source = project.track(project.midi_source_track(track.id()))?;
+                bytes = bytes.checked_add(
+                    source
+                        .midi_clips()
+                        .len()
+                        .checked_mul(std::mem::size_of::<PreparedArrangementMidiSource>())?,
+                )?;
+                for clip in source.midi_clips() {
+                    bytes = bytes
+                        .checked_add(clip.source_identity().retained_control_metadata_bytes()?)?;
+                }
+            }
+            bytes.checked_add(authored_midi::construction_bytes(project).ok()?)
+        })();
+        let candidate = bytes.ok_or(Invalid("device handoff metadata byte count overflow"))?;
+        // Tuning continuation validates same_except_tuning before rebuilding predecessor
+        // descriptors. It may coexist with the candidate; reserve that finite worst case even
+        // when this generic preparation call does not know whether validation will be requested.
+        let predecessor_validation_scratch = candidate;
+        candidate
+            .checked_add(predecessor_validation_scratch)
+            .ok_or(Invalid("device handoff construction byte count overflow"))
+    }
+
+    /// Actual ordinary predecessor-evidence capacity. This conservative control-metadata
+    /// allowance is retained per immutable graph until control destroys that graph, independently
+    /// of migrating source leases. It is not a closed constructor or shared-allocation proof.
+    pub(crate) fn device_handoff_metadata_bytes(&self) -> Result<usize, crate::AudioStorageError> {
+        if self.device_resource_scope.is_none() {
+            return Ok(0);
+        }
+        let bytes = (|| {
+            let mut bytes = self
+                .mutable_track_revisions
+                .capacity()
+                .checked_mul(std::mem::size_of::<PreparedMutableTrackRevision>())?;
+            for track in &self.mutable_track_revisions {
+                bytes = bytes.checked_add(
+                    track
+                        .effects
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<PreparedDeviceIdentity>())?,
+                )?;
+                bytes = bytes.checked_add(
+                    track
+                        .arrangement_midi_sources
+                        .capacity()
+                        .checked_mul(std::mem::size_of::<PreparedArrangementMidiSource>())?,
+                )?;
+                for device in track.instrument.iter().chain(&track.effects) {
+                    bytes = bytes.checked_add(device.state.retained_control_metadata_bytes()?)?;
+                }
+                for clip in &track.arrangement_midi_sources {
+                    bytes = bytes.checked_add(clip.source.retained_control_metadata_bytes()?)?;
+                }
+            }
+            bytes.checked_add(authored_midi::retained_bytes(&self.authored_midi_sources)?)
+        })();
+        bytes.ok_or(crate::AudioStorageError::Overflow)
+    }
+
+    /// An authored slot discontinuity permits suppression of pre-cut gates, never chasing them.
+    /// Both graphs need ordinary complete evidence; absent legacy evidence grants no exception.
+    pub(crate) fn fresh_mutable_device_install(&self, candidate: &Self, track: TrackId) -> bool {
+        if self.device_resource_scope.is_none()
+            || candidate.device_resource_scope.is_none()
+            || self.arrangement.shared_contexts().tuning_identity()
+                != candidate.arrangement.shared_contexts().tuning_identity()
+        {
+            return false;
+        }
+        let Some(new) = candidate.mutable_track_revision(track) else {
+            return false;
+        };
+        let Some(new_device) = new.instrument.as_ref().filter(|device| !device.bypassed) else {
+            return false;
+        };
+        let Some(old) = self.mutable_track_revision(track) else {
+            // Complete ordinary evidence distinguishes a genuinely new canonical track.
+            return !self
+                .arrangement
+                .tracks()
+                .iter()
+                .any(|old| old.canonical_track_id() == Some(track));
+        };
+        old.instrument.as_ref().is_none_or(|device| {
+            device.bypassed || device.id != new_device.id || device.state != new_device.state
+        })
+    }
+
+    /// Missing DSP history is suppressed only for a genuinely added/restored stable authored
+    /// identity. Complete global evidence prevents a moved clip or an old note outside playback
+    /// markers from being mistaken for a new note. This grants no voice/history continuity.
+    pub(crate) fn newly_authored_mutable_note(
+        &self,
+        candidate: &Self,
+        key: crate::mutable_instrument::MutableOccurrenceKey,
+        session: bool,
+    ) -> bool {
+        if self.device_resource_scope.is_none()
+            || candidate.device_resource_scope.is_none()
+            || !self.mutable_track_topology_matches(candidate, key.track)
+        {
+            return false;
+        }
+        let source = |revision: &Self| {
+            revision
+                .mutable_track_revision(key.track)
+                .map(|track| track.midi_source_track)
+        };
+        let (Some(old_root), Some(new_root)) = (source(self), source(candidate)) else {
+            return false;
+        };
+        old_root == new_root
+            && authored_midi::newly_authored(
+                &self.authored_midi_sources,
+                &candidate.authored_midi_sources,
+                key.clip,
+                key.note,
+                new_root,
+                session,
+            )
+    }
+
+    pub(crate) fn mutable_arrangement_sources_match(
+        &self,
+        candidate: &Self,
+        track: TrackId,
+    ) -> bool {
+        let source_root = |revision: &Self| {
+            revision
+                .arrangement
+                .tracks()
+                .iter()
+                .enumerate()
+                .find(|(_, value)| value.canonical_track_id() == Some(track))
+                .and_then(|(index, value)| {
+                    revision
+                        .arrangement
+                        .tracks()
+                        .get(value.midi_source_index.unwrap_or(index))
+                })
+                .and_then(crate::Track::canonical_track_id)
+        };
+        match (
+            self.mutable_track_revision(track),
+            candidate.mutable_track_revision(track),
+        ) {
+            (Some(old), Some(new)) => {
+                source_root(self) == source_root(candidate) && old.arrangement_sources_match(new)
+            }
+            (None, Some(_)) => !self
+                .arrangement
+                .tracks()
+                .iter()
+                .any(|old| old.canonical_track_id() == Some(track)),
+            _ => false,
+        }
+    }
+
     fn mutable_track_revision(&self, track: TrackId) -> Option<&PreparedMutableTrackRevision> {
         self.mutable_track_revisions
             .binary_search_by_key(&track, |revision| revision.id)
@@ -675,6 +941,7 @@ impl PreparedRevision {
 fn prepare_mutable_track_revisions(
     project: &Project,
     arrangement: &PlaybackProject,
+    complete_source_evidence: bool,
 ) -> Result<Vec<PreparedMutableTrackRevision>, Invalid> {
     if project.tracks().len() > MAX_TRACKS || arrangement.tracks().len() > MAX_TRACKS {
         return Err(Invalid(
@@ -689,7 +956,8 @@ fn prepare_mutable_track_revisions(
     // Keep bounded source/topology evidence for providers that authorize a
     // future analytic import as well as for existing mutable owners.
     let needs_descriptor = |track: &crate::Track| {
-        track.has_mutable_instrument()
+        complete_source_evidence
+            || track.has_mutable_instrument()
             || track
                 .instrument_id
                 .and_then(|device| arrangement.shared_contexts().owner_for_device(device))
@@ -749,6 +1017,7 @@ fn prepare_mutable_track_revisions(
 
         revisions.push(PreparedMutableTrackRevision {
             id: track.id(),
+            midi_source_track: source_id,
             instrument: track.instrument().map(PreparedDeviceIdentity::from),
             instrument_position: track.instrument_position(),
             effects,

@@ -1,5 +1,15 @@
-//! Deterministic, sample-rate-locked stereo arrangement rendering.
-//! This is an original prototype, not a verified Live-compatible engine.
+//! # Purpose
+//! Compile canonical projects into immutable playback revisions and render deterministic stereo
+//! audio with bounded runtime state.
+//!
+//! # Dependencies
+//! Uses hex-project, hex-devices, hex-lattice/hex-lattice-contract, hex-warp and control-side sha2
+//! resource verification; no UI or device-I/O dependency.
+//!
+//! # Does not own
+//! Does not edit canonical projects, open media files/devices, own page-worker queues or infer
+//! physical deadline/Live parity from headless checks. Callback paths borrow prepared data;
+//! control owns preparation and final destruction.
 pub use hex_devices::SineTable;
 pub use hex_devices::auto_pan::{
     AutoPanWaveformPreview, waveform_preview as native_auto_pan_waveform_preview,
@@ -77,7 +87,8 @@ mod pcm_arc;
 pub use midi_preview::persistent::{AudioPreviewCapacity, AudioPreviewMetadata};
 pub use native_device_view::{
     NativeDeviceCatalogEntry, NativeDeviceClass, NativeDeviceParameterView, NativeDeviceView,
-    SamplerParameter, is_sampler_configuration_history_on_control, native_device_catalog,
+    SamplerParameter, is_empty_sampler_state_on_control,
+    is_sampler_configuration_history_on_control, native_device_catalog,
     native_device_catalog_for_class, native_device_descriptors_for_class,
     native_device_parameter_for_class, native_device_view, native_device_view_for_class,
     native_effect_frequency_response, patch_sampler_parameter_on_control,
@@ -3028,47 +3039,17 @@ impl InstrumentTrack {
         start: u64,
         end: u64,
         minimum_start_exclusive: Option<u64>,
-        mut visit: impl FnMut(&midi_compile::CompiledNoteSpan),
+        visit: impl FnMut(&midi_compile::CompiledNoteSpan),
     ) {
-        let Some(root) = self.root else { return };
-        let mut stack = [(0_usize, false); 64];
-        let mut size = 1;
-        stack[0] = (root, false);
-        while size > 0 {
-            size -= 1;
-            let (index, emit) = stack[size];
-            let node = &self.nodes[index];
-            if emit {
-                let span = &self.spans[node.span_index];
-                if span.start < end
-                    && span.end > start
-                    && minimum_start_exclusive.is_none_or(|floor| span.start > floor)
-                {
-                    visit(span);
-                }
-                continue;
-            }
-            // A median onset beyond the query end only rules out this node and
-            // its right subtree. Earlier left-subtree spans may still be active.
-            if node.max_end > start {
-                if let Some(right) = node.right {
-                    if node.span_start < end && self.nodes[right].max_end > start {
-                        stack[size] = (right, false);
-                        size += 1;
-                    }
-                }
-                if node.span_start < end && self.spans[node.span_index].end > start {
-                    stack[size] = (index, true);
-                    size += 1;
-                }
-                if let Some(left) = node.left {
-                    if self.nodes[left].max_end > start {
-                        stack[size] = (left, false);
-                        size += 1;
-                    }
-                }
-            }
-        }
+        midi_activity::visit_arrangement_spans(
+            &self.spans,
+            &self.nodes,
+            self.root,
+            start,
+            end,
+            minimum_start_exclusive,
+            visit,
+        );
     }
 }
 
@@ -3201,6 +3182,8 @@ pub mod computer_keyboard;
 pub mod live;
 pub mod live_expression;
 mod midi_activity;
+mod playback_observation;
+pub use playback_observation::{PreparedMidiActivity, PreparedPlaybackObservation};
 pub mod midi_compile;
 mod midi_note_bank;
 mod midi_preview;
@@ -3250,3 +3233,7 @@ pub use session_playback::{
 
 #[cfg(test)]
 mod main_chain_review_tests;
+
+#[cfg(test)]
+#[path = "../tests/support/routed_midi_fixture.rs"]
+mod routed_midi_fixture;

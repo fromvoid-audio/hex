@@ -1,5 +1,20 @@
-//! Canonical, control-side audio/MIDI arrangement and transactional editing.
-//! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
+//! # Purpose
+//! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
+//! transactional history. Arrangement clips sharing a hybrid TrackId have disjoint
+//! half-open occupancy. Newly placed/extended material replaces older occupancy;
+//! retained fragments preserve their processing/source domains. Group edits resolve
+//! all incoming members together. Current-format loading refuses overlap without
+//! normalizing or rewriting the source document. Source events and DSP tails have
+//! their own owners and are not top-level Arrangement occupancy.
+//!
+//! # Dependencies
+//! Uses hex-tuning and neutral hex-lattice-contract metadata/state; never DSP implementations.
+//!
+//! # Does not own
+//! Does not render DSP, access audio devices or maintain a parallel UI editing model. Audio
+//! placement uses project-rate frames; MIDI uses checked Q32.32 quarter-note beats. Failed
+//! preparation must preserve project, IDs and history.
+mod arrangement_occupancy;
 mod audio_events;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
@@ -55,6 +70,7 @@ pub use gain_touch::{
 };
 mod midi;
 mod midi_batch;
+mod midi_note_overwrite;
 mod midi_playback;
 pub use gain_envelope::{
     AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
@@ -82,6 +98,7 @@ pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot
 pub use history::Editor;
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
 pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
+pub use midi_note_overwrite::{MidiNoteOverwriteChange, MidiNoteOverwritePreview};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
 };

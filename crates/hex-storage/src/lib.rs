@@ -1,9 +1,20 @@
-//! Versioned, bounded persistence of canonical metadata; no media or callback work.
+//! # Purpose
+//! Own strict bounded serialization and recoverable publication of canonical project metadata.
+//!
+//! # Dependencies
+//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json and fs2.
+//!
+//! # Does not own
+//! Does not decode PCM, construct DSP, access callback state or silently convert unsupported alpha
+//! formats. Unsupported/malformed input refuses without rewriting the original file.
 mod files;
 mod journal;
 pub mod preset;
 pub mod tuning_library;
-pub use journal::{Journal, journal_path, load_journal};
+pub use journal::{
+    Journal, JournalRestartOutcome, JournalRestartToken, journal_path, load_journal,
+    restart_journal,
+};
 mod audio_edit;
 mod replacement;
 mod schema;

@@ -430,7 +430,10 @@ impl EditorView {
                                     .left_0()
                                     .right_0()
                                     .top_0()
-                                    .h(px(2.0))
+                                    .h(px(4.0))
+                                    .debug_selector(move || {
+                                        format!("session-track-color-strip-{}", track_id.value())
+                                    })
                                     .bg(rgb(theme::element_colors(track.color()).accent)),
                             )
                             .on_mouse_down(

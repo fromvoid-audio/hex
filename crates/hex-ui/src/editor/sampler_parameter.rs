@@ -1,5 +1,5 @@
 //! Captured final sampler controls. Widgets own local previews; Session owns
-//! authored state and the existing native stopped-edit transaction owns audio.
+//! authored state and the ordinary prepared-device transaction owns audio.
 use super::*;
 use gpui::{Entity, Focusable, div, prelude::*};
 use hex_engine::SamplerParameter;
@@ -35,14 +35,6 @@ struct Pending {
 }
 enum PendingTarget {
     Parameter(Target),
-    Midi {
-        generation: u64,
-        revision: u64,
-    },
-    History {
-        generation: u64,
-        revision: u64,
-    },
     Replacement {
         generation: u64,
         revision: u64,
@@ -67,22 +59,8 @@ impl PendingTarget {
                                 .project
                                 .track(*track)
                                 .and_then(|track| track.instrument())
-                                .is_some_and(|entry| entry.id() == *device && !entry.bypassed())
+                                .is_some_and(|entry| entry.id() == *device)
                     })
-            }
-            Self::Midi {
-                generation,
-                revision,
-            }
-            | Self::History {
-                generation,
-                revision,
-            } => {
-                view.project_generation == *generation
-                    && view
-                        .state
-                        .as_ref()
-                        .is_some_and(|state| state.revision == *revision)
             }
         }
     }
@@ -115,7 +93,6 @@ impl Target {
                         .and_then(|t| t.instrument())
                         .is_some_and(|d| {
                             d.id() == self.device
-                                && !d.bypassed()
                                 && (!self.parameter.is_source_frame()
                                     || view.sampler_source_target_current(d))
                         })
@@ -209,8 +186,8 @@ impl EditorView {
         }
     }
     fn submit_sampler_parameter(&mut self, target: Target, value: f64) {
-        if !target.current(self) || self.edit_pending() || !self.first_sampler_current() {
-            self.error = Some("sampler edit target changed or audio is not ready".into());
+        if !target.current(self) || self.edit_pending() {
+            self.error = Some("sampler edit target changed or another edit is pending".into());
             return;
         }
         let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
@@ -261,88 +238,6 @@ impl EditorView {
         }
         cancelled
     }
-    /// Called after the ordinary gesture barrier, before queuing global history.
-    /// Capture only project context: selecting another device cannot retarget it.
-    pub(super) fn submit_sampler_history(&mut self, redo: bool) -> bool {
-        if self.edit_pending() {
-            self.error = Some("sampler history refused · another edit is applying".into());
-            return false;
-        }
-        let Some(state) = self.state.as_ref() else {
-            return false;
-        };
-        let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
-            self.error = Some("sampler edit request identity exhausted".into());
-            return false;
-        };
-        let generation = self.project_generation;
-        let revision = state.revision;
-        let cancel = Arc::new(AtomicBool::new(false));
-        let request = hex_session::service::SamplerHistoryEdit {
-            request_id: id,
-            project_generation: generation,
-            revision,
-            redo,
-            cancel: Arc::clone(&cancel),
-        };
-        self.sampler_parameter.serial = id;
-        if self.enqueue(Request::SamplerEdit(
-            hex_session::service::SamplerEdit::History(request),
-        )) {
-            self.sampler_parameter.pending = Some(Pending {
-                target: PendingTarget::History {
-                    generation,
-                    revision,
-                },
-                id,
-                cancel,
-            });
-            true
-        } else {
-            false
-        }
-    }
-    pub(super) fn submit_sampler_midi(&mut self, command: hex_project::Command) -> bool {
-        if self.edit_pending() || !self.first_sampler_current() {
-            self.error = Some(
-                "sampler midi edit refused · wait for current audio and the pending edit".into(),
-            );
-            return false;
-        }
-        let Some(state) = self.state.as_ref() else {
-            return false;
-        };
-        let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
-            self.error = Some("sampler edit request identity exhausted".into());
-            return false;
-        };
-        let generation = self.project_generation;
-        let revision = state.revision;
-        let cancel = Arc::new(AtomicBool::new(false));
-        let request = hex_session::service::SamplerMidiEdit {
-            request_id: id,
-            project_generation: generation,
-            revision,
-            command: Box::new(command),
-            cancel: Arc::clone(&cancel),
-        };
-        self.sampler_parameter.serial = id;
-        if self.enqueue(Request::SamplerEdit(
-            hex_session::service::SamplerEdit::Midi(request),
-        )) {
-            self.sampler_parameter.pending = Some(Pending {
-                target: PendingTarget::Midi {
-                    generation,
-                    revision,
-                },
-                id,
-                cancel,
-            });
-            true
-        } else {
-            false
-        }
-    }
     pub(super) fn sampler_replacement_pending_id(&self) -> Option<u64> {
         self.sampler_parameter
             .pending
@@ -370,10 +265,8 @@ impl EditorView {
             self.error = Some("sampler replacement target is unavailable".into());
             return;
         };
-        if self.edit_pending() || !self.first_sampler_current() {
-            self.error = Some(
-                "wait for the pending edit and sampler audio before replacing its sample".into(),
-            );
+        if self.edit_pending() {
+            self.error = Some("wait for the pending edit before replacing its sample".into());
             return;
         }
         let Some(id) = self.sampler_parameter.serial.checked_add(1) else {
@@ -619,14 +512,7 @@ impl EditorView {
         }
         let active = hex_engine::sampler_parameter_active_on_control(parameter, device.state())
             .unwrap_or(false);
-        let enabled = active
-            && !self.edit_pending()
-            && self.first_sampler_current()
-            && self
-                .audio
-                .as_ref()
-                .and_then(|a| a.control.status())
-                .is_some_and(|s| !s.playing.load(Ordering::Acquire));
+        let enabled = active && !self.edit_pending();
         let Some(control) = self.sampler_parameter.controls.get(&parameter) else {
             return div().into_any_element();
         };

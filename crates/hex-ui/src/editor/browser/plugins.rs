@@ -1,4 +1,12 @@
 //! Explicit trusted VST3 discovery. Blocking process/catalog work stays off UI.
+//!
+//! One browser owner selects a trusted bundle or explicitly scans standard user/system
+//! folders through the bounded catalog worker. Cancellation discards pending folder
+//! results; skipped links and per-module failures remain visible. Startup restores
+//! metadata without executing plugin code. Source bytes remain unchanged; display
+//! passes through `theme::text`. Rows retain foreign UID/module identities and support
+//! search/history in vst3/all, but expose no device insertion or playable hosting.
+//! Custom roots and native interaction acceptance remain separate.
 use super::*;
 use hex_plugin_catalog::{Catalog, Row};
 
