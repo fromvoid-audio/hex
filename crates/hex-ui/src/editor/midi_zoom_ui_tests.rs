@@ -71,6 +71,19 @@ fn newly_selected_clip_fits_once_and_worker_ack_keeps_manual_zoom(cx: &mut TestA
             "same clip ACK must preserve manual zoom"
         );
     });
+    // Two explicit changes in one frame still constitute a fresh selection,
+    // even though the final clip ID equals the previously rendered owner.
+    visual.update(|window, cx| {
+        editor.update(cx, |v, cx| {
+            assert!(v.set_selected_clip(v.selected_track.unwrap(), original, window, cx));
+            assert!(v.set_selected_clip(v.selected_track.unwrap(), selected, window, cx));
+            cx.notify();
+        });
+    });
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.piano_beat_span, BeatTime::from_quarters(32).unwrap())
+    });
     visual.update(|window, cx| {
         editor.update(cx, |v, cx| {
             assert!(v.set_selected_clip(v.selected_track.unwrap(), original, window, cx));

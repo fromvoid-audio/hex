@@ -530,9 +530,11 @@ mod tests {
 
     #[test]
     fn wheel_zoom_preserves_anchor_and_bounds_at_small_and_large_coordinates() {
-        let (start, span) = super::wheel_zoom(100, 400, 2000, 400, true);
-        assert_eq!((start, span), (160, 320));
-        assert_eq!((400 - start) * 4, span * 3);
+        let beat = BeatTime::ONE.raw();
+        let (start, span) =
+            super::wheel_zoom(100 * beat, 400 * beat, 2000 * beat, 400 * beat, true);
+        assert_eq!((start, span), (160 * beat, 320 * beat));
+        assert_eq!((400 * beat - start) * 4, span * 3);
         let mut view = (0, 4 * BeatTime::ONE.raw());
         for _ in 0..256 {
             view = super::wheel_zoom(view.0, view.1, 4 * BeatTime::ONE.raw(), 0, true);
@@ -545,7 +547,8 @@ mod tests {
         assert_eq!(super::wheel_zoom(0, 1, 1, 1, true), (0, 1));
         assert_eq!(super::wheel_zoom(0, 0, 0, 0, false), (0, 0));
         let view = super::wheel_zoom(u64::MAX - 400, 400, u64::MAX, u64::MAX - 100, false);
-        assert!(view.1 > 0 && view.0.checked_add(view.1).unwrap() <= u64::MAX);
+        assert!(view.1 > 0);
+        assert!(view.0.checked_add(view.1).is_some());
     }
 
     #[test]

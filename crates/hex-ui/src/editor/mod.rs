@@ -1632,6 +1632,7 @@ impl EditorView {
         self.advance_selection_intent();
         self.duplicate_intent.cancel_chain();
         if self.selected_clip != Some(clip) {
+            self.piano_view_clip = None;
             self.midi_creation = None;
             self.midi_note_gesture = None;
             self.midi_hit_cycle = None;
