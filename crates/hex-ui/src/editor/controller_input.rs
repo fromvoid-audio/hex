@@ -92,6 +92,16 @@ impl Drop for ControllerInput {
     }
 }
 impl EditorView {
+    fn controller_target(&self) -> Option<(u64, hex_project::TrackId, hex_project::DeviceId)> {
+        let state = self.state.as_ref()?;
+        let track = self.selected_track?;
+        let instrument = state
+            .project
+            .track(track)?
+            .instrument()
+            .filter(|instrument| !instrument.bypassed())?;
+        Some((self.project_generation, track, instrument.id()))
+    }
     /// Called for every rendered focus/clip context. Both leaving and entering
     /// establish a floor, excluding keys pressed while the editor was unfocused.
     pub(super) fn sync_hardware_step_context(&mut self, window: &Window) {
@@ -128,6 +138,10 @@ impl EditorView {
         let Some(input) = &self.controller_input.held_notes else {
             return Ok(None);
         };
+        // Refuse an old instrument lease even before the worker's next port tick.
+        if self.controller_input.target != self.controller_target() {
+            return Err("controller target changed · retry after input reconnects");
+        }
         if self.controller_input.step_owner
             != self
                 .selected_track
@@ -316,15 +330,7 @@ impl EditorView {
             self.reset_controller_selector(cx);
             return changed;
         };
-        let target = self.state.as_ref().and_then(|state| {
-            let track = self.selected_track?;
-            let instrument = state
-                .project
-                .track(track)?
-                .instrument()
-                .filter(|instrument| !instrument.bypassed())?;
-            Some((self.project_generation, track, instrument.id()))
-        });
+        let target = self.controller_target();
         if target != self.controller_input.target {
             self.controller_input.cancel();
             let Some((generation, track, instrument)) = target else {
@@ -357,15 +363,7 @@ impl EditorView {
         changed
     }
     pub(super) fn controller_input_matches(&self, input: &Arc<LiveExpressionInput>) -> bool {
-        let current_target = self.state.as_ref().and_then(|state| {
-            let track = self.selected_track?;
-            let instrument = state
-                .project
-                .track(track)?
-                .instrument()
-                .filter(|instrument| !instrument.bypassed())?;
-            Some((self.project_generation, track, instrument.id()))
-        });
+        let current_target = self.controller_target();
         self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self
                 .controller_input
@@ -894,6 +892,7 @@ fn hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history(
         view.midi_step.enabled = true;
         view.controller_input.channel = 2;
         view.controller_input.held_notes = Some(Arc::clone(&input));
+        view.controller_input.target = view.controller_target();
         cx.notify();
     });
     visual.run_until_parked();
@@ -1001,6 +1000,7 @@ fn hardware_step_discontinuity_excludes_old_keys_and_cancel_refuses_false_rest(
     editor.update(&mut visual, |view, cx| {
         view.midi_step.enabled = true;
         view.controller_input.held_notes = Some(Arc::clone(&input));
+        view.controller_input.target = view.controller_target();
         cx.notify();
     });
     visual.run_until_parked();
@@ -1091,6 +1091,7 @@ fn hardware_step_full_pitch_bank_combines_computer_priority_and_grows_once(
         view.midi_step.enabled = true;
         view.controller_input.channel = 2;
         view.controller_input.held_notes = Some(Arc::clone(&input));
+        view.controller_input.target = view.controller_target();
         view.midi_marker = Some(8 * hex_project::BeatTime::ONE.raw());
         cx.notify();
     });
@@ -1168,5 +1169,61 @@ fn hardware_step_full_pitch_bank_combines_computer_priority_and_grows_once(
                 .len(),
             128
         )
+    });
+}
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[gpui::test]
+fn hardware_step_refuses_old_instrument_before_port_reconciliation(cx: &mut gpui::TestAppContext) {
+    use super::midi_canvas::creation_tests::{fixture, pump};
+    let (mut visual, editor, _environment, clip) = fixture(cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::InsertInstrument {
+                track: view.selected_track.unwrap(),
+                state: hex_project::default_instrument_state().unwrap(),
+            }
+        )));
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |view, cx| {
+        view.midi_step.enabled = true;
+        view.controller_input.held_notes = Some(Arc::default());
+        view.controller_input.target = view.controller_target();
+        cx.notify();
+    });
+    visual.run_until_parked();
+    editor.update(&mut visual, |view, _| {
+        assert!(view.hardware_step_notes().is_ok());
+        let device = view.controller_input.target.unwrap().2;
+        assert!(view.enqueue(hex_session::service::Request::Edit(
+            hex_project::Command::SetDeviceBypass {
+                device,
+                bypassed: true
+            }
+        )));
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(
+            view.hardware_step_notes().is_err(),
+            "a stale device lease cannot supply even an empty rest snapshot"
+        );
+    });
+    let marker = editor.read_with(&visual, |view, _| view.midi_marker);
+    visual.simulate_keystrokes("right");
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.midi_marker, marker);
+        assert!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_source(clip)
+                .unwrap()
+                .notes()
+                .is_empty()
+        );
     });
 }
