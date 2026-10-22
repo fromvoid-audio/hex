@@ -42,8 +42,9 @@ impl State {
         if self.open { self.height + 3.0 } else { 18.0 }
     }
     pub(super) fn cancel(&mut self) -> bool {
-        let changed = self.gesture.take().is_some() | self.resize.take().is_some();
-        self.hover = None;
+        let changed = self.gesture.take().is_some()
+            | self.resize.take().is_some()
+            | self.hover.take().is_some();
         self.cycle = None;
         changed
     }

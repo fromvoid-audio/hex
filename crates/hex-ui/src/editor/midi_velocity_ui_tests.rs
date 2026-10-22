@@ -76,7 +76,7 @@ fn velocity_pointer_preview_release_history_and_current_format_playback(cx: &mut
     });
     pump(&editor, &mut visual);
     custody.acknowledged = true;
-    let (before_saved, before_energy) = saved_energy(&path, &mut custody);
+    let (before_saved, before_energy) = saved_energy(&path, &mut custody, None);
     let start = handle(&mut visual, 0.5, 37);
     visual.simulate_mouse_move(start, None, Modifiers::default());
     visual.run_until_parked();
@@ -155,7 +155,7 @@ fn velocity_pointer_preview_release_history_and_current_format_playback(cx: &mut
     });
     pump(&editor, &mut visual);
     custody.acknowledged = true;
-    let (reopened, edited_energy) = saved_energy(&path, &mut custody);
+    let (reopened, edited_energy) = saved_energy(&path, &mut custody, None);
     assert_eq!(reopened, edited);
     assert!(
         before_energy > 0.0 && edited_energy > before_energy * 1.2,
@@ -342,7 +342,11 @@ fn next(service: &Service) -> Event {
         std::thread::yield_now();
     }
 }
-fn saved_energy(path: &Path, custody: &mut FileCustody) -> (hex_project::Snapshot, f64) {
+fn saved_energy(
+    path: &Path,
+    custody: &mut FileCustody,
+    session_clip: Option<ClipId>,
+) -> (hex_project::Snapshot, f64) {
     let service = Service::new(48_000, 32, 8_000_000).unwrap();
     next(&service);
     custody.acknowledged = false;
@@ -359,7 +363,25 @@ fn saved_energy(path: &Path, custody: &mut FileCustody) -> (hex_project::Snapsho
         .playback
         .take()
         .expect("accepted worker-prepared playback");
-    playback.apply(hex_engine::PlaybackCommand::PlayFrom(frame));
+    if let Some(clip) = session_clip {
+        playback
+            .try_apply_action(hex_engine::PlaybackAction::LaunchAndPlay(
+                hex_engine::SessionPlaybackCommand::LaunchClip {
+                    clip,
+                    quantization: hex_engine::LaunchQuantization::Immediate,
+                },
+            ))
+            .unwrap();
+        let mut remaining = frame;
+        let mut preroll = [[0.0; 2]; 128];
+        while remaining > 0 {
+            let count = remaining.min(preroll.len() as u64) as usize;
+            playback.render(&mut preroll[..count]).unwrap();
+            remaining -= count as u64;
+        }
+    } else {
+        playback.apply(hex_engine::PlaybackCommand::PlayFrom(frame));
+    }
     let mut output = [[0.0; 2]; 1024];
     for chunk in output.chunks_mut(128) {
         playback.render(chunk).unwrap();
@@ -383,4 +405,155 @@ impl Drop for FileCustody {
             self.environment.retain_for_unacknowledged_setup_failure();
         }
     }
+}
+
+#[gpui::test]
+fn velocity_session_clip_edit_round_trips_and_changes_launched_audio(cx: &mut TestAppContext) {
+    let (mut visual, editor, environment, arrangement) = setup(cx);
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::Edit(Command::AddScene {
+            name: "velocity scene".into()
+        })))
+    });
+    pump(&editor, &mut visual);
+    let scene = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .scenes()
+            .last()
+            .unwrap()
+            .id()
+    });
+    editor.update(&mut visual, |view, _| {
+        assert!(
+            view.enqueue(Request::Edit(Command::CopyArrangementMidiToSession {
+                source: arrangement,
+                scene
+            }))
+        )
+    });
+    pump(&editor, &mut visual);
+    let clip = editor.update(&mut visual, |view, cx| {
+        let track = view.selected_track.unwrap();
+        let hex_project::SessionCellContent::Midi(cell) = view
+            .state
+            .as_ref()
+            .unwrap()
+            .project
+            .session_cell(track, scene)
+            .unwrap()
+        else {
+            panic!("midi cell")
+        };
+        let clip = cell.id();
+        view.mode = super::super::EditorMode::Session;
+        view.selected_scene = Some(scene);
+        view.selected_cell = Some((track, scene));
+        view.selected_clip = Some(clip);
+        view.piano_view_clip = None;
+        view.midi_selection.clear();
+        cx.notify();
+        clip
+    });
+    visual.run_until_parked();
+    let path = environment.root().join("session-velocity.hex");
+    let mut custody = FileCustody {
+        environment: Arc::clone(&environment),
+        acknowledged: false,
+    };
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::SaveNew(path.clone())))
+    });
+    pump(&editor, &mut visual);
+    custody.acknowledged = true;
+    let (_, before_energy) = saved_energy(&path, &mut custody, Some(clip));
+    let start = handle(&mut visual, 0.5, 37);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(
+        start - point(px(0.0), px(16.0)),
+        MouseButton::Left,
+        Modifiers::default(),
+    );
+    pump(&editor, &mut visual);
+    let edited = editor.read_with(&visual, |view, _| {
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_source(clip)
+                .unwrap()
+                .notes()[0]
+                .velocity(),
+            73
+        );
+        assert_eq!(
+            view.state
+                .as_ref()
+                .unwrap()
+                .project
+                .midi_source(arrangement)
+                .unwrap()
+                .notes()[0]
+                .velocity(),
+            37
+        );
+        view.state.as_ref().unwrap().project.snapshot()
+    });
+    custody.acknowledged = false;
+    editor.update(&mut visual, |view, _| {
+        assert!(view.enqueue(Request::SaveCurrent))
+    });
+    pump(&editor, &mut visual);
+    custody.acknowledged = true;
+    let (reopened, after_energy) = saved_energy(&path, &mut custody, Some(clip));
+    assert_eq!(reopened, edited);
+    assert!(
+        before_energy > 0.0 && after_energy > before_energy * 1.2,
+        "launched saved Session audio: {before_energy} -> {after_energy}"
+    );
+}
+
+#[gpui::test]
+fn velocity_focus_blur_repaints_stationary_preview_without_another_input(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _clip) = setup(cx);
+    let start = handle(&mut visual, 0.5, 37);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    let top = |visual: &mut VisualTestContext| {
+        let scale = gpui::ScaledPixels::from(visual.update(|window, _| window.scale_factor()));
+        let primary: gpui::Background = rgb(theme::color(theme::PaletteRole::Primary)).into();
+        visual
+            .rendered_filled_quads("midi-velocity-lane")
+            .into_iter()
+            .find(|(bounds, color)| {
+                color == &primary
+                    && (bounds.size.height / scale - 4.0).abs() < 0.01
+                    && (bounds.size.width / scale - 6.0).abs() < 0.01
+                    && (bounds.origin.x / scale - f32::from(start.x) + 3.0).abs() < 0.05
+            })
+            .map(|(bounds, _)| bounds.origin.y / scale)
+            .expect("completed selected velocity handle")
+    };
+    let canonical = top(&mut visual);
+    visual.simulate_mouse_move(
+        start - point(px(0.0), px(14.0)),
+        Some(MouseButton::Left),
+        Modifiers::default(),
+    );
+    visual.run_until_parked();
+    assert!(top(&mut visual) < canonical - 10.0);
+    // Focus changes after paint. No motion, mouse-up, manual notify or worker pump
+    // may disguise a missing cancellation repaint.
+    visual.update(|window, cx| editor.read_with(cx, |view, _| view.focus.focus(window)));
+    visual.run_until_parked();
+    editor.read_with(&visual, |view, _| {
+        assert!(view.midi_velocity.gesture.is_none())
+    });
+    assert!(
+        (top(&mut visual) - canonical).abs() < 0.05,
+        "a cancelled preview must disappear from the completed scene without another input"
+    );
 }
