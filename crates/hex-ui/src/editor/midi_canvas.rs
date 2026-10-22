@@ -2,6 +2,7 @@
 //!
 //! Wheel navigation changes horizontal time only; a vertical drag on the key
 //! gutter changes the centered pitch span (1–128 rows). Both are view-only.
+//! Middle-drag or explicit pan mode moves both axes without editing.
 //! Every paint, hit and captured edit context carries the same pitch span.
 //! Passive hover reuses click/resize hits and never changes musical selection.
 use super::midi_drag::{self, NotePreview};
@@ -218,23 +219,31 @@ impl EditorView {
         let draw_pitch_locked = self.midi_draw_pitch_locked;
         let draw_mode = self.midi_draw_mode;
         let draw_hit_cycle = self.midi_hit_cycle;
-        let drag_cursor = self
-            .midi_note_gesture
-            .map(|gesture| match gesture.kind {
-                midi_drag::GestureKind::Move { .. } => gpui::CursorStyle::ClosedHand,
-                midi_drag::GestureKind::ResizeLeading { .. } => gpui::CursorStyle::ResizeLeft,
-                midi_drag::GestureKind::ResizeTrailing { .. } => gpui::CursorStyle::ResizeRight,
-            })
-            .or_else(|| {
-                self.midi_group_gesture
-                    .as_ref()
-                    .map(|_| gpui::CursorStyle::ClosedHand)
-            })
-            .or_else(|| {
-                self.midi_stroke
-                    .as_ref()
-                    .map(|_| gpui::CursorStyle::Crosshair)
-            });
+        let drag_cursor = if self.midi_pan.gesture.is_some() {
+            Some(gpui::CursorStyle::ClosedHand)
+        } else if self.midi_pan.enabled {
+            Some(gpui::CursorStyle::OpenHand)
+        } else {
+            None
+        }
+        .or_else(|| {
+            self.midi_note_gesture
+                .map(|gesture| match gesture.kind {
+                    midi_drag::GestureKind::Move { .. } => gpui::CursorStyle::ClosedHand,
+                    midi_drag::GestureKind::ResizeLeading { .. } => gpui::CursorStyle::ResizeLeft,
+                    midi_drag::GestureKind::ResizeTrailing { .. } => gpui::CursorStyle::ResizeRight,
+                })
+                .or_else(|| {
+                    self.midi_group_gesture
+                        .as_ref()
+                        .map(|_| gpui::CursorStyle::ClosedHand)
+                })
+                .or_else(|| {
+                    self.midi_stroke
+                        .as_ref()
+                        .map(|_| gpui::CursorStyle::Crosshair)
+                })
+        });
         let hover_allowed = self.context_menu.is_none()
             && !self.edit_pending()
             && draw_preview.is_none()
@@ -242,7 +251,9 @@ impl EditorView {
             && draw_stroke.is_none()
             && draw_creation.is_none()
             && draw_marquee.is_none()
-            && self.piano_pitch_zoom.is_none();
+            && self.piano_pitch_zoom.is_none()
+            && !self.midi_pan.enabled
+            && self.midi_pan.gesture.is_none();
         let mut roll = div()
             .id("midi-note-roll")
             .relative()
@@ -705,7 +716,7 @@ impl EditorView {
                 let event_scene = std::sync::Arc::clone(&canvas_scene_events);
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
                     if !phase.bubble()
-                        || event.button != MouseButton::Left
+                        || !matches!(event.button, MouseButton::Left | MouseButton::Middle)
                         || !bounds.contains(&event.position)
                     {
                         return;
@@ -722,6 +733,24 @@ impl EditorView {
                         height,
                     ];
                     mouse_down_entity.update(cx, |view, view_cx| {
+                        if view.project_generation == generation
+                            && view.state.as_ref().is_some_and(|s| s.revision == revision)
+                            && view.detail_clip_id() == Some(clip_id)
+                            && (event.button == MouseButton::Middle || view.midi_pan.enabled)
+                        {
+                            view.midi_focus.focus(window);
+                            if view.begin_piano_pan(
+                                rendered_context.bounds,
+                                [f32::from(event.position.x), f32::from(event.position.y)],
+                                event.button,
+                            ) {
+                                view_cx.notify();
+                            }
+                            return;
+                        }
+                        if event.button != MouseButton::Left {
+                            return;
+                        }
                         if view.project_generation != generation
                             || view.state.as_ref().is_none_or(|s| s.revision != revision)
                             || view.detail_clip_id() != Some(clip_id)
@@ -949,12 +978,19 @@ impl EditorView {
                 let mouse_move_entity = entity.clone();
                 let hover_scene = std::sync::Arc::clone(&canvas_scene_events);
                 window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
-                    if !event.dragging() {
+                    // GPUI's dragging() recognizes only the left button.
+                    if !matches!(
+                        event.pressed_button,
+                        Some(MouseButton::Left | MouseButton::Middle)
+                    ) {
                         // Observe exit before another control consumes bubble-phase motion.
                         if !phase.capture() {
                             return;
                         }
                         mouse_move_entity.update(cx, |view, view_cx| {
+                            if view.midi_pan.gesture.take().is_some() {
+                                view_cx.notify();
+                            }
                             let target = if hover_allowed
                                 && hitbox.is_hovered(window)
                                 && view.project_generation == generation
@@ -983,6 +1019,19 @@ impl EditorView {
                         return;
                     }
                     mouse_move_entity.update(cx, |view, view_cx| {
+                        if view.midi_pan.gesture.is_some() {
+                            if view.update_piano_pan(
+                                rendered_context.bounds,
+                                [f32::from(event.position.x), f32::from(event.position.y)],
+                                event.pressed_button,
+                            ) {
+                                view_cx.notify();
+                            }
+                            return;
+                        }
+                        if event.pressed_button == Some(MouseButton::Middle) {
+                            return;
+                        }
                         if view.midi_creation.is_some() {
                             if view.update_midi_creation(
                                 gesture_bounds_from(bounds),
@@ -1107,10 +1156,21 @@ impl EditorView {
                 });
                 let mouse_up_entity = entity.clone();
                 window.on_mouse_event(move |event: &MouseUpEvent, phase, _, cx| {
-                    if !phase.bubble() || event.button != MouseButton::Left {
+                    if !phase.bubble() {
                         return;
                     }
                     mouse_up_entity.update(cx, |view, view_cx| {
+                        if view.finish_piano_pan(
+                            rendered_context.bounds,
+                            [f32::from(event.position.x), f32::from(event.position.y)],
+                            event.button,
+                        ) {
+                            view_cx.notify();
+                            return;
+                        }
+                        if event.button != MouseButton::Left {
+                            return;
+                        }
                         if view.midi_creation.is_some() {
                             view.finish_midi_creation(
                                 gesture_bounds_from(bounds),
@@ -1503,6 +1563,17 @@ impl EditorView {
                 }),
             )])
             .children([self.midi_button(
+                if self.midi_pan.enabled { "↔+" } else { "↔" },
+                "toggle pan mode · drag to move time and pitch · middle-drag always pans",
+                cx.listener(|v, _, window, cx| {
+                    v.cancel_midi_note_gesture();
+                    v.midi_pan.enabled = !v.midi_pan.enabled;
+                    v.midi_hover = None;
+                    v.midi_focus.focus(window);
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
                 "←",
                 "pan piano roll left",
                 cx.listener(|v, _, _, cx| {
@@ -1864,6 +1935,7 @@ impl EditorView {
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
+        let pan = self.midi_pan.gesture.take().is_some();
         let velocity = self.midi_velocity.cancel();
         let pending_selection = self.pending_created_note_selection.take().is_some();
         let pitch_zoom = self.piano_pitch_zoom.take().is_some();
@@ -1872,7 +1944,7 @@ impl EditorView {
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
         let marquee = self.midi_marquee.take().is_some();
-        velocity
+        pan || velocity
             || pending_selection
             || pitch_zoom
             || creation
@@ -2202,3 +2274,7 @@ mod audition_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_created_selection_ui_tests.rs"]
 mod created_selection_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_pan_ui_tests.rs"]
+mod pan_tests;

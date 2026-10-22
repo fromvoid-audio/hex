@@ -62,7 +62,9 @@ impl StrokeContext {
     fn is_valid(self) -> bool {
         self.view_span > 0
             && self.clip_length > 0
-            && self.view_start < self.clip_length
+            && self.view_span <= super::midi_scene::zoom_limit(self.clip_length)
+            && self.view_start
+                == super::midi_scene::clamp_start(self.view_start, self.clip_length, self.view_span)
             && self.view_start.checked_add(self.view_span).is_some()
             && super::midi_scene::valid_pitch_range(self.pitch_low, self.pitch_rows)
             && self.bounds.is_valid()
@@ -1520,6 +1522,52 @@ mod tests {
             .err(),
             Some(StrokeError::TooManyNotes)
         );
+    }
+
+    #[test]
+    fn blank_view_authoring_is_bounded_and_rejects_overflow_or_malformed_geometry() {
+        let (_, clip) = fixture(beat(1));
+        let base = context(clip, beat(1), MidiGrid::Sixteenth, false);
+        let blank = StrokeContext {
+            view_start: beat(8),
+            view_span: beat(4),
+            ..base
+        };
+        assert!(blank.is_valid());
+        assert_eq!(blank.authoring_length(), Some(beat(12)));
+        for invalid in [
+            StrokeContext {
+                view_start: beat(16),
+                ..blank
+            },
+            StrokeContext {
+                view_start: u64::MAX,
+                view_span: 1,
+                ..blank
+            },
+            StrokeContext {
+                view_span: 0,
+                ..blank
+            },
+            StrokeContext {
+                clip_length: 0,
+                ..blank
+            },
+            StrokeContext {
+                pitch_low: 127,
+                pitch_rows: 2,
+                ..blank
+            },
+            StrokeContext {
+                bounds: CanvasBounds {
+                    width: f32::NAN,
+                    ..blank.bounds
+                },
+                ..blank
+            },
+        ] {
+            assert!(!invalid.is_valid());
+        }
     }
 
     #[test]
