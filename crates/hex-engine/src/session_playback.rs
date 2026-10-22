@@ -1052,12 +1052,35 @@ impl SessionPlayback {
     /// Prepare the shared renderer for finite, linear Arrangement export.
     /// Session route actions are refused, Session-only tempo/loop inventory
     /// does not affect this owner, and the authored Arrangement tempo map is
-    /// used without transport-loop wrapping. Mutable Arrangement source loops
+    /// used without transport-loop wrapping. Mutable Arrangement MIDI source loops
     /// and seek destinations that require note chase remain unsupported.
     pub fn new_linear_arrangement_export(
         revision: Arc<PreparedRevision>,
     ) -> Result<Self, SessionPlaybackError> {
         Self::new_with_policy(revision, true, None)
+    }
+
+    /// Construct finite linear Arrangement export with the exact set used by the ordinary
+    /// registered compiler. Each mutable runtime owns its scoped lease; no live monitor inputs
+    /// are attached. The caller separately admits/pins source/configuration/factory custody.
+    /// Runtime construction and actual retained runtime bytes share the existing export ceiling.
+    /// Invoke on the existing export worker's explicit 8 MiB control stack; stateful construction
+    /// and debug temporaries may exceed a platform-default test/control thread stack.
+    pub fn new_linear_arrangement_export_with_device_resources(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+    ) -> Result<Self, SessionPlaybackError> {
+        let allowance = Self::linear_export_runtime_allowance(&revision)?;
+        let playback = Self::new_with_policy(revision, true, Some(resources))?;
+        if playback
+            .accounted_runtime_storage_bytes()
+            .is_none_or(|bytes| bytes > allowance)
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "device resource export runtime exceeds its checked allowance",
+            ));
+        }
+        Ok(playback)
     }
 
     /// Private-control export capability: the graph contains only scalar sampler

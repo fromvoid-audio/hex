@@ -20,12 +20,77 @@ pub fn render_stems_new(
     stems: &[Stem],
     control: &ExportControl,
 ) -> Result<ExportReport, ExportError> {
-    render_stems_with_hook(path, revision, start, frames, stems, control, || {})
+    render_stems_using(path, revision, None, start, frames, stems, control)
 }
 
+/// One complete ordinary resource graph feeds all pre-Main captures. The caller admits/pins the
+/// exact source set; this synchronous operation retains no live keyboard or Session history.
+pub fn render_stems_new_with_device_resources(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: &PreparedDeviceResources,
+    start: u64,
+    frames: u64,
+    stems: &[Stem],
+    control: &ExportControl,
+) -> Result<ExportReport, ExportError> {
+    render_stems_using(
+        path,
+        revision,
+        Some(resources),
+        start,
+        frames,
+        stems,
+        control,
+    )
+}
+pub(super) fn render_stems_using(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    stems: &[Stem],
+    control: &ExportControl,
+) -> Result<ExportReport, ExportError> {
+    render_stems_with_resources_and_hook(
+        path,
+        revision,
+        resources,
+        start,
+        frames,
+        stems,
+        control,
+        || {},
+    )
+}
+#[cfg(test)]
 fn render_stems_with_hook(
     path: &Path,
     revision: Arc<PreparedRevision>,
+    start: u64,
+    frames: u64,
+    stems: &[Stem],
+    control: &ExportControl,
+    before_publication: impl FnOnce(),
+) -> Result<ExportReport, ExportError> {
+    render_stems_with_resources_and_hook(
+        path,
+        revision,
+        None,
+        start,
+        frames,
+        stems,
+        control,
+        before_publication,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // One shared batch renderer plus borrowed resources and publication test hook.
+fn render_stems_with_resources_and_hook(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
     start: u64,
     frames: u64,
     stems: &[Stem],
@@ -71,7 +136,7 @@ fn render_stems_with_hook(
             });
         }
     }
-    let mut playback = controlled::prepare_runtime(revision, start, frames, control)?;
+    let mut playback = controlled::prepare_runtime(revision, resources, start, frames, control)?;
     let mut ordered = stems.to_vec();
     ordered.sort_by_key(|stem| match stem.id {
         OutputCaptureId::Track(id) => (0, id.value()),

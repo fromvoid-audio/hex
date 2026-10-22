@@ -149,16 +149,89 @@ pub fn render_prepared_with_policy(
     control: &ExportControl,
     publication: &Publication,
 ) -> Result<ExportReport, ExportError> {
+    render_prepared_using(
+        path,
+        revision,
+        None,
+        start,
+        frames,
+        signal,
+        control,
+        publication,
+    )
+}
+
+/// Causal range export through exact ordinary resource scopes. Preroll, selected outputs,
+/// cancellation and publication match the resource-free controlled path. The caller owns and
+/// admits the borrowed source set until this synchronous operation and runtime destruction end.
+pub fn render_prepared_controlled_with_device_resources(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: &PreparedDeviceResources,
+    start: u64,
+    frames: u64,
+    signal: ExportSignal,
+    control: &ExportControl,
+) -> Result<ExportReport, ExportError> {
+    render_prepared_using(
+        path,
+        revision,
+        Some(resources),
+        start,
+        frames,
+        signal,
+        control,
+        &Publication::CreateNew,
+    )
+}
+
+/// The same ordinary resource range with existing explicit overwrite consent semantics.
+#[allow(clippy::too_many_arguments)]
+pub fn render_prepared_with_device_resources_and_policy(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: &PreparedDeviceResources,
+    start: u64,
+    frames: u64,
+    signal: ExportSignal,
+    control: &ExportControl,
+    publication: &Publication,
+) -> Result<ExportReport, ExportError> {
+    render_prepared_using(
+        path,
+        revision,
+        Some(resources),
+        start,
+        frames,
+        signal,
+        control,
+        publication,
+    )
+}
+
+#[allow(clippy::too_many_arguments)] // Same renderer/publication, with one borrowed exact resource scope.
+fn render_prepared_using(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+    start: u64,
+    frames: u64,
+    signal: ExportSignal,
+    control: &ExportControl,
+    publication: &Publication,
+) -> Result<ExportReport, ExportError> {
     if let ExportSignal::Stems(stems) = &signal {
         if !matches!(publication, Publication::CreateNew) {
             return Err(ExportError::Invalid("stem batches require a new directory"));
         }
-        return super::render_stems_new(path, revision, start, frames, stems, control);
+        return super::stems::render_stems_using(
+            path, revision, resources, start, frames, stems, control,
+        );
     }
     control.claim()?;
     let sample_rate = revision.arrangement().sample_rate();
     publish(path, sample_rate, start, frames, publication, || {
-        let playback = prepare_runtime(revision, start, frames, control)?;
+        let playback = prepare_runtime(revision, resources, start, frames, control)?;
         let (plan, buffers) = match signal {
             ExportSignal::Main => (None, Vec::new()),
             ExportSignal::CapturedMix(ids) => {
@@ -231,15 +304,17 @@ pub fn render_control_sampler_with_policy(
 
 pub(super) fn prepare_runtime(
     revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
     start: u64,
     frames: u64,
     control: &ExportControl,
 ) -> Result<SessionPlayback, ExportError> {
-    prepare_runtime_observed(revision, start, frames, control, || {})
+    prepare_runtime_observed(revision, resources, start, frames, control, || {})
 }
 
 fn prepare_runtime_observed(
     revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
     start: u64,
     frames: u64,
     control: &ExportControl,
@@ -258,8 +333,14 @@ fn prepare_runtime_observed(
             .ok_or(ExportError::Invalid("frame range overflows"))?,
         Ordering::Release,
     );
-    let mut playback = SessionPlayback::new_linear_arrangement_export(revision)
-        .map_err(ExportError::SessionRender)?;
+    // Select before constructing one large playback Result; source scope validation remains
+    // in the engine constructor, and ordinary factories mint leases only on this control thread.
+    let constructor = if resources.is_some() {
+        resource_linear_runtime
+    } else {
+        legacy_linear_runtime
+    };
+    let mut playback = constructor(revision, resources).map_err(ExportError::SessionRender)?;
     if !replay && start != 0 {
         playback
             .apply(SessionPlaybackCommand::Seek(start))
@@ -282,6 +363,24 @@ fn prepare_runtime_observed(
     }
     control.check()?;
     Ok(playback)
+}
+
+fn legacy_linear_runtime(
+    revision: Arc<PreparedRevision>,
+    _resources: Option<&PreparedDeviceResources>,
+) -> Result<SessionPlayback, hex_engine::SessionPlaybackError> {
+    SessionPlayback::new_linear_arrangement_export(revision)
+}
+fn resource_linear_runtime(
+    revision: Arc<PreparedRevision>,
+    resources: Option<&PreparedDeviceResources>,
+) -> Result<SessionPlayback, hex_engine::SessionPlaybackError> {
+    let resources = resources.ok_or(
+        hex_engine::SessionPlaybackError::MutableInstrumentDiagnostic(
+            "export device resources unavailable",
+        ),
+    )?;
+    SessionPlayback::new_linear_arrangement_export_with_device_resources(revision, resources)
 }
 
 struct ControlledRenderer {
@@ -375,9 +474,10 @@ mod tests {
         );
         assert!(revision.arrangement_seek_requires_preroll());
         let control = ExportControl::default();
-        let result = prepare_runtime_observed(Arc::clone(&revision), 513, 100, &control, || {
-            control.cancel();
-        });
+        let result =
+            prepare_runtime_observed(Arc::clone(&revision), None, 513, 100, &control, || {
+                control.cancel();
+            });
         assert!(matches!(result, Err(ExportError::Cancelled)));
         assert_eq!(
             control.progress(),
@@ -389,6 +489,7 @@ mod tests {
         assert!(matches!(
             prepare_runtime(
                 revision,
+                None,
                 hex_engine::MAX_ARRANGEMENT_PREROLL_FRAMES + 1,
                 1,
                 &ExportControl::default()

@@ -2,13 +2,14 @@
 //! Render fixed-block linear PCM16 WAV files and publish create-new outputs.
 //!
 //! # Dependencies
-//! Uses hex-engine and the standard library; callers supply the exact prepared revision and any
-//! required private source scope.
+//! Uses hex-engine and the standard library; callers supply the exact prepared revision and
+//! matching ordinary device resources or an explicit private offline source scope.
 //!
 //! # Does not own
 //! Does not edit projects, resolve missing media, normalize musical output or overwrite an
 //! existing destination implicitly.
 
+use hex_engine::native_device_resources::PreparedDeviceResources;
 use hex_engine::{PreparedRevision, Project, Renderer, SessionPlayback, SessionPlaybackCommand};
 use std::{
     error::Error,
@@ -28,15 +29,19 @@ static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 mod bounce;
 mod controlled;
-pub use bounce::render_bounce_new;
+pub use bounce::{render_bounce_new, render_bounce_new_with_device_resources};
 mod publication;
 mod stems;
-pub use controlled::{ExportControl, ExportProgress, ExportSignal, render_prepared_controlled};
+pub use controlled::{
+    ExportControl, ExportProgress, ExportSignal, render_prepared_controlled,
+    render_prepared_controlled_with_device_resources,
+    render_prepared_with_device_resources_and_policy,
+};
 pub use controlled::{
     controlled_frame_count, render_control_sampler_with_policy, render_prepared_with_policy,
 };
 pub use publication::{OverwriteConsent, Publication};
-pub use stems::{Stem, render_stems_new};
+pub use stems::{Stem, render_stems_new, render_stems_new_with_device_resources};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExportReport {
@@ -197,6 +202,46 @@ pub fn render_prepared_new(
         playback
             .apply(SessionPlaybackCommand::Play)
             .map_err(ExportError::SessionRender)?;
+        let mut renderer = PreparedBlockRenderer(playback);
+        discard_latency(&mut renderer, latency)?;
+        Ok(renderer)
+    })
+}
+
+/// Ordinary registered-resource export with the default source-length/startup-latency trimming
+/// policy. Nonzero stateful starts reconstruct bounded history before that same trim. The caller
+/// pins and admits the exact resource set for this synchronous control operation; no live input
+/// or Session route history is captured. Controlled ranges intentionally retain causal startup.
+/// Use the existing export worker's 8 MiB control stack for stateful construction.
+pub fn render_prepared_new_with_device_resources(
+    path: &Path,
+    revision: Arc<PreparedRevision>,
+    resources: &PreparedDeviceResources,
+    start: u64,
+    frames: u64,
+) -> Result<ExportReport, ExportError> {
+    let sample_rate = revision.arrangement().sample_rate();
+    let latency = if frames == 0 {
+        0
+    } else {
+        revision.arrangement().main_latency_frames()
+    };
+    let end = start
+        .checked_add(frames)
+        .ok_or(ExportError::Invalid("frame range overflows"))?;
+    end.checked_add(u64::from(latency))
+        .ok_or(ExportError::Invalid("compensated render range overflows"))?;
+    let rendered_frames = frames
+        .checked_add(u64::from(latency))
+        .ok_or(ExportError::Invalid("compensated render range overflows"))?;
+    publish_new(path, sample_rate, start, frames, || {
+        let playback = controlled::prepare_runtime(
+            revision,
+            Some(resources),
+            start,
+            rendered_frames,
+            &ExportControl::default(),
+        )?;
         let mut renderer = PreparedBlockRenderer(playback);
         discard_latency(&mut renderer, latency)?;
         Ok(renderer)
