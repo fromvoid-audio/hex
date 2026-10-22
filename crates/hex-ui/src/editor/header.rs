@@ -235,6 +235,7 @@ mod ui_tests {
                 comparison_audio: None,
                 project: Arc::clone(&current.project),
                 waveforms: Default::default(),
+                source_overviews: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::clone(&current.midi_preview),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),

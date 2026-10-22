@@ -43,12 +43,23 @@ fn fixture(
     Entity<EditorView>,
     ClipId,
 ) {
+    fixture_at_rate(cx, 48_000)
+}
+fn fixture_at_rate(
+    cx: &mut TestAppContext,
+    sample_rate: u32,
+) -> (
+    super::super::external_audio_drop_ui_test::BatchFiles,
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    ClipId,
+) {
     cx.update(super::super::bind_editor_keys);
     let files = super::super::external_audio_drop_ui_test::BatchFiles::new();
-    let wav = files.wav("stretch-capability.wav", 48_000, 96_000);
+    let wav = files.wav("stretch-capability.wav", sample_rate, sample_rate * 2);
     let directory = wav.parent().unwrap();
     std::fs::create_dir(directory.join("samples")).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    let service = Service::new(sample_rate, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
     let event = next(&service);
@@ -58,7 +69,7 @@ fn fixture(
         .submit(Request::Edit(Command::MoveClip {
             clip,
             track,
-            start: 96_000,
+            start: u64::from(sample_rate) * 2,
         }))
         .unwrap();
     let event = next(&service);
@@ -360,8 +371,11 @@ fn validated_reversal_and_final_mouseup_commit_exact_command_across_pitch_and_mo
 
 #[gpui::test]
 fn large_invalid_expansion_releases_last_validated_frame_both_edges(cx: &mut TestAppContext) {
+    // Keep the two-second source and 8x boundary while bounding debug DSP work.
+    let sample_rate = 8_000;
+    let frames = |at_48k: u64| at_48k * u64::from(sample_rate) / 48_000;
     for edge in [TrimEdge::Left, TrimEdge::Right] {
-        let (_files, handle, editor, clip) = fixture(cx);
+        let (_files, handle, editor, clip) = fixture_at_rate(cx, sample_rate);
         let mut visual = VisualTestContext::from_window(handle, cx);
         visual.update(|window, _| window.activate_window());
         if edge == TrimEdge::Left {
@@ -370,7 +384,7 @@ fn large_invalid_expansion_releases_last_validated_frame_both_edges(cx: &mut Tes
                 assert!(view.enqueue(Request::Edit(Command::MoveClip {
                     clip,
                     track,
-                    start: 1_000_000
+                    start: frames(1_000_000)
                 })));
             });
             pump(&editor, &mut visual);
@@ -387,7 +401,7 @@ fn large_invalid_expansion_releases_last_validated_frame_both_edges(cx: &mut Tes
         editor.update(&mut visual, |view, cx| {
             view.viewport = Some(super::Viewport {
                 start: 0,
-                length: 1_400_000,
+                length: frames(1_400_000),
             });
             cx.notify();
         });
@@ -420,9 +434,9 @@ fn large_invalid_expansion_releases_last_validated_frame_both_edges(cx: &mut Tes
             &editor,
             &visual,
             if edge == TrimEdge::Right {
-                1_000_000
+                frames(1_000_000)
             } else {
-                100_000
+                frames(100_000)
             },
             down.y,
         );
@@ -441,7 +455,7 @@ fn large_invalid_expansion_releases_last_validated_frame_both_edges(cx: &mut Tes
             let drag = view.active_trim_drag.as_ref().unwrap();
             let preview = drag.preview.borrow().as_ref().unwrap().clone();
             assert!(
-                preview.clip.duration() <= 768_000,
+                preview.clip.duration() <= frames(768_000),
                 "unsupported expansion cannot become visible"
             );
             hex_engine::audio_transform::validate_clip_warp_preview(

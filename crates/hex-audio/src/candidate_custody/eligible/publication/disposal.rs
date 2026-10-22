@@ -1,4 +1,11 @@
-//! Persistent control-side execution; no ordinary bank lock spans destruction.
+//! Persistent control-side disposal; no ordinary bank lock spans destruction.
+//!
+//! Installation permission may be revoked without revoking the original physical return owner.
+//! Exact root/runtime/incarnation checks precede closure. Runtime and remaining-origin
+//! destruction, preparation cleanup, catalog release, stream join and page conservation must
+//! actually finish before the original bank and disposal fact become recoverable. Busy leases
+//! retain occupancy; irreversible failure keeps the first payload and remaining owners without
+//! retry or scalar completion.
 use super::*;
 impl Claims {
     pub(super) fn matches(

@@ -5,7 +5,7 @@
 
 use hex_engine::{
     ArrangementPrerollError, MAX_ARRANGEMENT_PREROLL_FRAMES, PreparedRevision, SessionPlayback,
-    playback::Playback,
+    native_device_resources::PreparedDeviceResources, playback::Playback,
 };
 use std::{
     io,
@@ -71,7 +71,16 @@ type Preparer =
 struct Work {
     request_id: u64,
     spec: ArrangementSeekSpec,
+    resident: Option<ResidentWork>,
 }
+struct ResidentWork {
+    job: u64,
+    resources: PreparedDeviceResources,
+    cancelled: Arc<AtomicBool>,
+}
+/// Existing pending/running/ready/retired slots plus the worker's bounded local destruction.
+/// Canonical native dispatch must retain at most this many actual anchored jobs.
+pub(crate) const MAX_RESIDENT_SEEK_JOBS: usize = 5;
 
 struct Running {
     request_id: u64,
@@ -85,6 +94,10 @@ struct Mailbox {
     running: Option<Running>,
     ready: Option<ArrangementSeekResult>,
     retired: Option<ArrangementSeekResult>,
+    ready_job: Option<u64>,
+    retired_job: Option<u64>,
+    completed: [Option<u64>; MAX_RESIDENT_SEEK_JOBS],
+    completion_overflow: bool,
     shutdown: bool,
     #[cfg(test)]
     test_pause_drain: bool,
@@ -104,7 +117,7 @@ struct Shared {
 /// stale result is reclaimed on the worker before pending preparation begins.
 pub struct ArrangementSeekWorker {
     shared: Arc<Shared>,
-    _worker: JoinHandle<()>,
+    worker: Option<JoinHandle<()>>,
 }
 
 impl ArrangementSeekWorker {
@@ -125,6 +138,10 @@ impl ArrangementSeekWorker {
                 running: None,
                 ready: None,
                 retired: None,
+                ready_job: None,
+                retired_job: None,
+                completed: [None; MAX_RESIDENT_SEEK_JOBS],
+                completion_overflow: false,
                 shutdown: false,
                 #[cfg(test)]
                 test_pause_drain: false,
@@ -141,7 +158,7 @@ impl ArrangementSeekWorker {
             .spawn(move || run_worker(thread_shared, preparer))?;
         Ok(Self {
             shared,
-            _worker: worker,
+            worker: Some(worker),
         })
     }
 
@@ -150,8 +167,36 @@ impl ArrangementSeekWorker {
     /// prepared-revision handle are dropped by the submitter after unlocking;
     /// unread runtime results are reclaimed by the worker outside the lock.
     pub fn submit(&self, spec: ArrangementSeekSpec) -> Result<u64, ArrangementSeekSubmitError> {
+        self.submit_work(spec, None)
+    }
+
+    /// Same bounded worker and slots as headless seeks, with an actual same-scope capture.
+    /// Refusal destroys only the unaccepted capture on the caller; accepted jobs retain their
+    /// canonical anchor until a returned owner transfer or genuine post-drop completion.
+    pub(crate) fn submit_resident(
+        &self,
+        spec: ArrangementSeekSpec,
+        job: u64,
+        resources: PreparedDeviceResources,
+        cancelled: Arc<AtomicBool>,
+    ) -> Result<u64, ArrangementSeekSubmitError> {
+        self.submit_work(
+            spec,
+            Some(ResidentWork {
+                job,
+                resources,
+                cancelled,
+            }),
+        )
+    }
+
+    fn submit_work(
+        &self,
+        spec: ArrangementSeekSpec,
+        resident: Option<ResidentWork>,
+    ) -> Result<u64, ArrangementSeekSubmitError> {
         let mut mailbox = lock(&self.shared.mailbox);
-        if mailbox.shutdown {
+        if mailbox.shutdown || mailbox.completion_overflow {
             return Err(ArrangementSeekSubmitError::Closed);
         }
         if mailbox.retired.is_some() {
@@ -165,12 +210,17 @@ impl ArrangementSeekWorker {
         if let Some(running) = mailbox.running.as_ref() {
             running.cancelled.store(true, Ordering::Release);
         }
-        let old_pending = mailbox.pending.replace(Work { request_id, spec });
+        let old_pending = mailbox.pending.replace(Work {
+            request_id,
+            spec,
+            resident,
+        });
         if mailbox.retired.is_none() {
             mailbox.retired = mailbox.ready.take();
+            mailbox.retired_job = mailbox.ready_job.take();
         }
         drop(mailbox);
-        drop(old_pending);
+        drop_work(&self.shared, old_pending);
         self.shared.wake.notify_one();
         Ok(request_id)
     }
@@ -188,24 +238,68 @@ impl ArrangementSeekWorker {
         let pending = mailbox.pending.take();
         if mailbox.retired.is_none() {
             mailbox.retired = mailbox.ready.take();
+            mailbox.retired_job = mailbox.ready_job.take();
         }
         drop(mailbox);
-        drop(pending);
+        drop_work(&self.shared, pending);
         self.shared.wake.notify_one();
     }
 
     /// Consume a completed result without waiting.
     pub fn try_result(&self) -> Option<ArrangementSeekResult> {
         let mut mailbox = lock(&self.shared.mailbox);
-        if mailbox
-            .ready
-            .as_ref()
-            .is_some_and(|result| mailbox.latest_request_id == Some(result.request_id))
+        if mailbox.ready_job.is_none()
+            && mailbox
+                .ready
+                .as_ref()
+                .is_some_and(|result| mailbox.latest_request_id == Some(result.request_id))
         {
             mailbox.ready.take()
         } else {
             None
         }
+    }
+
+    /// Native results never pass through the public UI-owned Playback result endpoint.
+    pub(crate) fn try_resident_result(&self) -> Option<(u64, ArrangementSeekResult)> {
+        let mut mailbox = lock(&self.shared.mailbox);
+        if mailbox
+            .ready
+            .as_ref()
+            .is_none_or(|result| mailbox.latest_request_id != Some(result.request_id))
+        {
+            return None;
+        }
+        let job = mailbox.ready_job?;
+        let result = mailbox.ready.take()?;
+        mailbox.ready_job = None;
+        Some((job, result))
+    }
+    /// Completion is written only after every payload/result owner physically drops. Neither
+    /// cancellation nor running=None is evidence of released resource capacity.
+    pub(crate) fn try_resident_completion(&self) -> Option<u64> {
+        lock(&self.shared.mailbox)
+            .completed
+            .iter_mut()
+            .find_map(Option::take)
+    }
+    /// Only the canonical worker may join this native-owned worker on teardown. The UI-owned
+    /// headless worker keeps its existing nonjoining Drop behavior.
+    pub(crate) fn shutdown_and_join_on_control(mut self) {
+        self.request_shutdown();
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+    fn request_shutdown(&self) {
+        let mut mailbox = lock(&self.shared.mailbox);
+        mailbox.shutdown = true;
+        mailbox.latest_request_id = None;
+        if let Some(running) = mailbox.running.as_ref() {
+            running.cancelled.store(true, Ordering::Release);
+        }
+        drop(mailbox);
+        self.shared.wake.notify_one();
     }
 
     /// Return a UI-stale candidate to the worker's bounded retirement slot.
@@ -253,17 +347,32 @@ impl ArrangementSeekWorker {
 
 impl Drop for ArrangementSeekWorker {
     fn drop(&mut self) {
-        let mut mailbox = lock(&self.shared.mailbox);
-        mailbox.shutdown = true;
-        mailbox.latest_request_id = None;
-        if let Some(running) = mailbox.running.as_ref() {
-            running.cancelled.store(true, Ordering::Release);
-        }
-        drop(mailbox);
-        self.shared.wake.notify_one();
-        // Detach: the UI never joins this thread. The worker drains and drops
-        // pending/ready candidates itself before it exits.
+        self.request_shutdown();
     }
+}
+
+fn finish_drop(shared: &Shared, job: Option<u64>) {
+    if let Some(job) = job {
+        let mut mailbox = lock(&shared.mailbox);
+        if let Some(slot) = mailbox.completed.iter_mut().find(|slot| slot.is_none()) {
+            *slot = Some(job);
+        } else {
+            // Canonical admission bounds live jobs to the fixed completion capacity. A broken
+            // caller contract fails closed; only joining teardown can release remaining anchors.
+            mailbox.completion_overflow = true;
+        }
+    }
+}
+fn drop_work(shared: &Shared, work: Option<Work>) {
+    let job = work
+        .as_ref()
+        .and_then(|work| work.resident.as_ref().map(|r| r.job));
+    drop(work);
+    finish_drop(shared, job);
+}
+fn drop_result(shared: &Shared, result: Option<ArrangementSeekResult>, job: Option<u64>) {
+    drop(result);
+    finish_drop(shared, job);
 }
 
 fn prepare(
@@ -303,14 +412,16 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
                     let pending = mailbox.pending.take();
                     let ready = mailbox.ready.take();
                     let retired = mailbox.retired.take();
+                    let ready_job = mailbox.ready_job.take();
+                    let retired_job = mailbox.retired_job.take();
                     #[cfg(test)]
                     if ready.is_some() || retired.is_some() {
                         mailbox.last_result_drop_thread = Some(thread::current().id());
                     }
                     drop(mailbox);
-                    drop(pending);
-                    drop(ready);
-                    drop(retired);
+                    drop_work(&shared, pending);
+                    drop_result(&shared, ready, ready_job);
+                    drop_result(&shared, retired, retired_job);
                     return;
                 }
                 #[cfg(test)]
@@ -319,12 +430,13 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
                     continue;
                 }
                 if let Some(retired) = mailbox.retired.take() {
+                    let job = mailbox.retired_job.take();
                     #[cfg(test)]
                     {
                         mailbox.last_result_drop_thread = Some(thread::current().id());
                     }
                     drop(mailbox);
-                    drop(retired);
+                    drop_result(&shared, Some(retired), job);
                     continue 'worker;
                 }
                 if mailbox
@@ -333,16 +445,20 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
                     .is_some_and(|ready| mailbox.latest_request_id != Some(ready.request_id))
                 {
                     let stale_ready = mailbox.ready.take();
+                    let job = mailbox.ready_job.take();
                     #[cfg(test)]
                     {
                         mailbox.last_result_drop_thread = Some(thread::current().id());
                     }
                     drop(mailbox);
-                    drop(stale_ready);
+                    drop_result(&shared, stale_ready, job);
                     continue 'worker;
                 }
                 if let Some(work) = mailbox.pending.take() {
-                    let cancelled = Arc::new(AtomicBool::new(false));
+                    let cancelled = work.resident.as_ref().map_or_else(
+                        || Arc::new(AtomicBool::new(false)),
+                        |r| Arc::clone(&r.cancelled),
+                    );
                     mailbox.running = Some(Running {
                         request_id: work.request_id,
                         cancelled: Arc::clone(&cancelled),
@@ -353,8 +469,25 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
             }
         };
 
-        let (work, cancelled) = work;
-        let result = preparer(work.spec.clone(), &cancelled);
+        let (mut work, cancelled) = work;
+        let job = work.resident.as_ref().map(|r| r.job);
+        let result = if let Some(resident) = work.resident.take() {
+            let runtime =
+                SessionPlayback::prepare_interactive_arrangement_preroll_with_device_resources(
+                    Arc::clone(&work.spec.prepared_revision),
+                    &resident.resources,
+                    work.spec.destination_frame,
+                    work.spec.work_budget_frames,
+                    work.spec.start_playing,
+                    &cancelled,
+                );
+            // Keep one large constructor Result live, matching the existing preroll stack contract.
+            let result = runtime.and_then(Playback::from_interactive_arrangement_preroll);
+            drop(resident);
+            result
+        } else {
+            preparer(work.spec.clone(), &cancelled)
+        };
         let result = ArrangementSeekResult {
             request_id: work.request_id,
             mode: work.spec.mode,
@@ -366,24 +499,27 @@ fn run_worker(shared: Arc<Shared>, preparer: Box<Preparer>) {
             start_playing: work.spec.start_playing,
             result,
         };
+        let request_id = work.request_id;
+        drop(work);
         let mut mailbox = lock(&shared.mailbox);
         if mailbox
             .running
             .as_ref()
-            .is_some_and(|running| running.request_id == work.request_id)
+            .is_some_and(|running| running.request_id == request_id)
         {
             mailbox.running = None;
         }
         let accepted = !mailbox.shutdown
-            && mailbox.latest_request_id == Some(work.request_id)
+            && mailbox.latest_request_id == Some(request_id)
             && !cancelled.load(Ordering::Acquire);
         if accepted {
             let superseded = mailbox.ready.replace(result);
+            let superseded_job = std::mem::replace(&mut mailbox.ready_job, job);
             drop(mailbox);
-            drop(superseded);
+            drop_result(&shared, superseded, superseded_job);
         } else {
             drop(mailbox);
-            drop(result);
+            drop_result(&shared, Some(result), job);
         }
     }
 }
@@ -456,6 +592,83 @@ mod tests {
             assert!(Instant::now() < deadline, "worker did not become idle");
             thread::sleep(Duration::from_millis(1));
         }
+    }
+
+    #[test]
+    fn resident_result_stays_private_and_completion_follows_actual_retirement() {
+        let project = hex_project::Project::new(48_000).unwrap();
+        let cancel = AtomicBool::new(false);
+        let resources = PreparedDeviceResources::prepare_on_control(
+            &hex_engine::native_device_resources::ResidentDeviceAssets::default(),
+            &project,
+            10_000,
+            &cancel,
+        )
+        .unwrap();
+        let graph = Arc::new(
+            PreparedRevision::prepare_with_device_resources(
+                &project,
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+                &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                &resources,
+                0,
+                &cancel,
+            )
+            .unwrap(),
+        );
+        let worker = ArrangementSeekWorker::new().unwrap();
+        worker
+            .submit_resident(
+                spec(Arc::clone(&graph), 1),
+                71,
+                resources.capture_on_control(10_000).unwrap(),
+                Arc::new(AtomicBool::new(false)),
+            )
+            .unwrap();
+        wait_for_ready(&worker);
+        assert!(
+            worker.try_result().is_none(),
+            "public headless getter cannot take a native graph"
+        );
+        assert!(
+            worker.try_resident_completion().is_none(),
+            "ready/idle is not source retirement"
+        );
+        {
+            let mut mailbox = lock(&worker.shared.mailbox);
+            mailbox.test_pause_drain = true;
+        }
+        worker.invalidate();
+        assert!(
+            worker.try_resident_completion().is_none(),
+            "cancellation alone releases nothing"
+        );
+        assert!(
+            Arc::strong_count(&graph) > 1,
+            "retired runtime still owns its exact revision"
+        );
+        {
+            let mut mailbox = lock(&worker.shared.mailbox);
+            mailbox.test_pause_drain = false;
+        }
+        worker.shared.wake.notify_one();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if let Some(id) = worker.try_resident_completion() {
+                assert_eq!(id, 71);
+                break;
+            }
+            assert!(Instant::now() < deadline, "post-drop completion missing");
+            thread::sleep(Duration::from_millis(1));
+        }
+        assert_eq!(
+            Arc::strong_count(&graph),
+            1,
+            "completion follows actual runtime/result/revision destruction"
+        );
+        worker.shutdown_and_join_on_control();
     }
 
     #[test]
@@ -747,7 +960,7 @@ mod tests {
         })
         .expect("seek worker");
         worker.submit(spec(graph, 1)).expect("request");
-        let worker_thread = worker._worker.thread().id();
+        let worker_thread = worker.worker.as_ref().unwrap().thread().id();
         let caller_thread = thread::current().id();
         drop(worker);
         let drop_thread = exit_rx

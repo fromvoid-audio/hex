@@ -118,8 +118,8 @@ impl WorkerData {
         ])
     }
 }
-/// Complete only within the explicitly listed DATA contract inherited from
-/// PR177 8d444c06 docs/page-delivery.md. Arc control blocks, mpsc/thread/OS
+/// Complete only for the DATA fields listed by EndpointData, TransportData and
+/// WorkerData. Arc control blocks, mpsc/thread/OS
 /// machinery, allocator rounding/headers and stack/thread locals are excluded
 /// HERE and MUST remain explicit obligations in the aggregate façade.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -897,8 +897,11 @@ fn returned_open_refused_deferred_tuning_save_releases_intent_and_future_actions
     let (handle, editor) = directory.window(cx);
     pump(&editor, cx, settled);
     editor.update(cx, |view, _| {
-        assert!(view.enqueue(Request::Edit(Command::AddMidiTrack {
-            name: "notes".into()
+        assert!(view.enqueue(Request::Edit(Command::InsertTrackWithDevice {
+            name: "notes".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })))
     });
     pump(&editor, cx, |view| {

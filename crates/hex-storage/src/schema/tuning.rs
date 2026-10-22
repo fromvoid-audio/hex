@@ -1,14 +1,16 @@
-//! One current schema32 requires project tuning and the complete device manifest.
+//! One current schema34 requires project tuning and the complete device manifest.
 use super::{Project, StorageError};
 use hex_tuning::{Audition, ProjectTuning, Scale, Waveform};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
-pub(crate) struct DocumentV32<'a> {
+pub(crate) struct DocumentV34<'a> {
     #[serde(flatten)]
     base: super::fade_shapes::DocumentV29<'a>,
     tuning: Tuning,
+    asset_sources: super::original_sources::Manifest,
     device_assets: super::device_assets::Manifest,
+    main_devices: Vec<super::DeviceDtoV14>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -128,13 +130,21 @@ impl Tuning {
         ProjectTuning::new(self.enabled, scale, audition).map_err(|e| StorageError::Invalid(e.0))
     }
 }
-impl<'a> DocumentV32<'a> {
+impl<'a> DocumentV34<'a> {
     pub(crate) fn from_project(project: &'a Project) -> Result<Self, StorageError> {
         let base = super::fade_shapes::DocumentV29::for_current_envelope(project)?;
         Ok(Self {
             base,
             tuning: project.tuning().into(),
+            asset_sources: super::original_sources::Manifest::from_project(project),
             device_assets: super::device_assets::Manifest::from_project(project)?,
+            main_devices: project
+                .main_devices()
+                .iter()
+                .map(|device| {
+                    super::device_to_dto(device.id().value(), device.bypassed(), device.state())
+                })
+                .collect::<Result<_, _>>()?,
         })
     }
 }
@@ -145,7 +155,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid tuning envelope"))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(32) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(34) {
         return Err(StorageError::Invalid("invalid tuning envelope version"));
     }
     let tuning: Tuning = serde_json::from_value(
@@ -159,10 +169,56 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
             .remove("device_assets")
             .ok_or(StorageError::Invalid("device asset manifest is missing"))?,
     )?;
+    let main: BoundedMain = serde_json::from_value(serde_json::json!({
+        "devices": object.remove("main_devices").ok_or(StorageError::Invalid("main device inventory is missing"))?
+    }))?;
+    let original_sources: super::original_sources::Manifest = serde_json::from_value(
+        object
+            .remove("asset_sources")
+            .ok_or(StorageError::Invalid("asset source inventory is missing"))?,
+    )?;
     object.insert("version".into(), 29.into());
     let base = super::fade_shapes::DocumentV29::decode(&serde_json::to_vec(&value)?)?;
     let mut snapshot = base.snapshot();
     snapshot.tuning = tuning;
+    snapshot.main_devices = main
+        .devices
+        .into_iter()
+        .map(super::device_dto_into_snapshot)
+        .collect::<Result<_, _>>()?;
     manifest.apply(&mut snapshot)?;
+    original_sources.apply(&mut snapshot)?;
     Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BoundedMain {
+    #[serde(deserialize_with = "bounded_main")]
+    devices: Vec<super::DeviceDtoV14>,
+}
+fn bounded_main<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Vec<super::DeviceDtoV14>, D::Error> {
+    struct Main;
+    impl<'de> serde::de::Visitor<'de> for Main {
+        type Value = Vec<super::DeviceDtoV14>;
+        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            f.write_str("bounded main device inventory")
+        }
+        fn visit_seq<A: serde::de::SeqAccess<'de>>(
+            self,
+            mut seq: A,
+        ) -> Result<Self::Value, A::Error> {
+            let mut devices = Vec::new();
+            while let Some(device) = seq.next_element()? {
+                if devices.len() == hex_project::MAX_DEVICES_PER_TRACK {
+                    return Err(serde::de::Error::custom("main device limit reached"));
+                }
+                devices.push(device);
+            }
+            Ok(devices)
+        }
+    }
+    d.deserialize_seq(Main)
 }

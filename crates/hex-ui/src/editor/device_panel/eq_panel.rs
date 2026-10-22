@@ -776,6 +776,14 @@ fn audition(view: &mut EditorView, device: DeviceId, id: NodeId) {
                 .find(|track| track.devices().iter().any(|d| d.id() == device))
                 .map(|track| hex_engine::ProcessorChainOwner::Return(track.id().value()))
         });
+    let owner = owner.or_else(|| {
+        state
+            .project
+            .main_devices()
+            .iter()
+            .any(|d| d.id() == device)
+            .then_some(hex_engine::ProcessorChainOwner::Main)
+    });
     let Some(owner) = owner else {
         return;
     };

@@ -1,8 +1,8 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
-    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight,
-    NewProject, NewStreamingProject, NextTrack, OpenProject, OpenRecentProject,
+    ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft,
+    MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject, OpenRecentProject,
     OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft, PanTimelineRight,
     PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave, RecoverSavedProject,
     RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
@@ -33,7 +33,7 @@ impl EditorView {
         let grid = self.snap_grid.with_platform_modifier(platform);
         let state = self.state.as_ref()?;
         let viewport = self.visible_viewport(state.timeline_frames);
-        if grid == super::musical_time::SnapGrid::Off {
+        if grid.is_off() {
             return Some((grid, viewport, 1.0));
         }
         let bounds = self
@@ -55,7 +55,7 @@ impl EditorView {
         let Some((grid, viewport, width)) = self.nudge_grid_context(platform) else {
             return;
         };
-        if grid == super::musical_time::SnapGrid::Off {
+        if grid.is_off() {
             let step = self.step_frames() as i64;
             self.enqueue(SessionRequest::Edit(Command::NudgeClip {
                 clip,
@@ -333,6 +333,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_clip_name(window, cx);
@@ -493,6 +494,9 @@ impl Render for EditorView {
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
                     view.tuning.shift = event.modifiers.shift;
+                    if view.refresh_loop_rail_modifiers(event.modifiers, window) {
+                        cx.notify();
+                    }
                     view.refresh_drag_modifiers(
                         event.modifiers.platform,
                         event.modifiers.alt,
@@ -713,12 +717,14 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
-                if view.cancel_project_spectrum_resize(cx)
+                if view.cancel_loop_rail_gesture()
+                    | view.cancel_project_spectrum_resize(cx)
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
                 {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();
+                    cx.notify();
                     return;
                 }
                 if view.cancel_active_browser_audio_drag() {
@@ -834,14 +840,19 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Undo, _, cx| {
-                if !view.cancel_gain_draft(cx) && super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_sampler_drafts(cx)
+                    && !view.cancel_gain_draft(cx)
+                    && super::device_panel::finalize_controls(view, cx)
+                {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Undo);
                 }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Redo, _, cx| {
-                if super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_sampler_drafts(cx)
+                    && super::device_panel::finalize_controls(view, cx)
+                {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Redo);
                 }
@@ -958,11 +969,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &super::ToggleSnapGrid, _, cx| {
-                view.snap_grid = if view.snap_grid == super::musical_time::SnapGrid::Off {
-                    super::musical_time::SnapGrid::Adaptive
-                } else {
-                    super::musical_time::SnapGrid::Off
-                };
+                view.toggle_snap_grid();
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CopyTimeSelection, window, cx| {
@@ -1102,8 +1109,12 @@ impl Render for EditorView {
                 view.export_dialog(window, cx);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &SetLoopFromClip, _, cx| {
-                view.set_loop_from_clip();
+            .on_action(cx.listener(|view, _: &LoopSelection, window, cx| {
+                view.loop_selection_key(window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &SetLoopFromClip, window, cx| {
+                view.set_loop_from_clip(window);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ToggleLoop, _, cx| {

@@ -219,7 +219,34 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
     visual.simulate_click(oscillator.center(), Modifiers::default());
     visual.run_until_parked();
     let ratio = hex_lattice_contract::ParameterId::from_static(1);
+    let assert_draft = |visual: &mut VisualTestContext, focused, editing, text: &str| {
+        visual.update(|window, cx| {
+            editor.read_with(cx, |view, cx| {
+                let ParameterControl::Float { entity, .. } = &view.device_panel.controls
+                    [&ParameterKey {
+                        device,
+                        parameter: ratio,
+                    }]
+                else {
+                    panic!("ratio control");
+                };
+                let control = entity.read(cx);
+                assert_eq!(
+                    gpui::Focusable::focus_handle(control, cx).is_focused(window),
+                    focused
+                );
+                assert_eq!(control.is_editing(), editing);
+                assert_eq!(control.display_text(), text);
+                assert_eq!(control.value(), f64::from(1.2345_f32));
+                assert_eq!(view.state.as_ref().unwrap().project, original);
+                assert_eq!(view.state.as_ref().unwrap().revision, original_revision);
+                assert_eq!(view.worker_requests_pending, 0);
+                assert!(view.pending_requests.is_empty());
+            });
+        });
+    };
     enter_typed_value(&mut visual, device, ratio, "--");
+    assert_draft(&mut visual, true, true, "--");
     visual.simulate_click(save.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
@@ -232,13 +259,23 @@ fn device_preset_operator_header_saves_complete_native_state(cx: &mut TestAppCon
         assert_eq!(view.worker_requests_pending, 0);
     });
     assert!(!path.exists());
+    assert_draft(&mut visual, false, true, "--");
     visual.simulate_keystrokes("escape");
     visual.run_until_parked();
+    assert_draft(&mut visual, false, true, "--");
     let field = visual
         .debug_bounds(Box::leak(
             format!("device-{}-parameter-1-value", device.value()).into_boxed_str(),
         ))
         .unwrap();
+    // Save moved focus to its card. Reclick must retain the invalid draft;
+    // only Escape delivered to this focused input may cancel it.
+    visual.simulate_click(field.center(), Modifiers::default());
+    visual.run_until_parked();
+    assert_draft(&mut visual, true, true, "--");
+    visual.simulate_keystrokes("escape");
+    visual.run_until_parked();
+    assert_draft(&mut visual, true, false, "1.23");
     visual.simulate_click(field.center(), Modifiers::default());
     visual.run_until_parked();
     editor.read_with(cx, |view, cx| {

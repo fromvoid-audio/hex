@@ -65,6 +65,7 @@ impl EditorView {
         let enabled = !self.edit_pending();
         if self.project_tempo_control.is_none() {
             let spec = NumericSpec::new(1.0, 1000.0, 120.0, NumericScale::Linear, 6, Some("bpm"))
+                .and_then(|spec| spec.with_keyboard_steps(1.0, 0.1))
                 .map(|spec| {
                     spec.with_codec(
                         |value| {
@@ -90,7 +91,9 @@ impl EditorView {
             let entity = cx.new(|cx| {
                 NumericControl::from_config(
                     cx,
-                    config.with_appearance(NumericControlAppearance::InlineValue),
+                    config
+                        .with_command_fine_steps()
+                        .with_appearance(NumericControlAppearance::InlineValue),
                 )
             });
             let subscription =
@@ -174,3 +177,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod keyboard_tests;
