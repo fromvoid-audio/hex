@@ -1,7 +1,8 @@
 //! # Purpose
 //! Own controlled native plugin-discovery records, protocols and helper supervision.
 //! Original macOS helper fixtures also exercise a native-only persistent component/controller
-//! lifecycle; no foreign interface pointer enters this Rust API.
+//! lifecycle and bounded host message/controller-metadata transactions. No foreign interface
+//! pointer enters this Rust API; controller metadata is not canonical/audio application.
 //!
 //! # Dependencies
 //! Uses serde/serde_json and sha2; native factory inspection stays inside the separate supported

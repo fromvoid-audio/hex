@@ -5,6 +5,12 @@
 #include "pluginterfaces/vst/ivsthostapplication.h"
 #include "pluginterfaces/vst/ivstmessage.h"
 #include <pthread.h>
+#include "pluginterfaces/vst/ivstattributes.h"
+#include <array>
+#include <cmath>
+#include <cstdio>
+#include <limits>
+#include <thread>
 
 namespace {
 enum Step { Create=1, Initialize, ProcessorQuery, ControllerCreate, ControllerInitialize,
@@ -25,6 +31,11 @@ bool event(int step, bool valid, bool audio=false) {
 
 class Node;
 Node* active_component=nullptr;
+Node* active_controller=nullptr;
+bool host_testing=false, process_callback=false;
+int metadata_fault=0, received_messages=0, processing_callback_result=kNotImplemented, processing_message_result=kNotImplemented;
+ParamValue metadata_value=0.25;
+IMessage* retained_message=nullptr;
 class Node final : public Processor, public IEditController, public IConnectionPoint {
     std::atomic<uint32> references{1};
     bool controller_only, initialized=false, arranged=false, setup=false;
@@ -35,10 +46,12 @@ class Node final : public Processor, public IEditController, public IConnectionP
     pthread_t audio_thread{};
 public:
     explicit Node(bool controller) : controller_only(controller) {
-        if (controller) ++observation.controllers; else ++observation.created;
+        if (controller) { ++observation.controllers; active_controller=this; }
+        else { ++observation.created; if (observation.mode==2) active_controller=this; }
     }
     ~Node() {
         if (active_component==this) active_component=nullptr;
+        if (active_controller==this) active_controller=nullptr;
         if (initialized || handler || context || connected || active || processing)
             ++observation.violations;
     }
@@ -120,6 +133,17 @@ public:
     }
     tresult PLUGIN_API process(ProcessData& data) override {
         if (!event(Process,processing && pthread_equal(audio_thread,pthread_self()),true)) return kResultFalse;
+        if (host_testing && process_callback && active_controller) {
+            processing_callback_result=active_controller->send_restart(kParamValuesChanged);
+            IHostApplication* app=nullptr;
+            if (active_controller->host_context()->queryInterface(INLINE_UID_OF(IHostApplication),reinterpret_cast<void**>(&app))==kResultOk && app) {
+                TUID id{}; std::memcpy(id,INLINE_UID_OF(IMessage),sizeof(TUID));
+                IMessage* message=nullptr;
+                processing_message_result=app->createInstance(id,id,reinterpret_cast<void**>(&message));
+                if (message) { ++observation.violations; message->release(); }
+                app->release();
+            }
+        }
         const auto result=Processor::process(data);
         if (result==kResultOk) {
             const float persistence=observation.blocks==0?1.0f:0.5f;
@@ -137,7 +161,24 @@ public:
         if (!event(controller_only?ControllerDisconnect:ComponentDisconnect,initialized && connected && peer==other)) return kResultFalse;
         peer->release(); peer=nullptr; connected=false; return kResultOk;
     }
-    tresult PLUGIN_API notify(IMessage*) override { return kNotImplemented; }
+    tresult PLUGIN_API notify(IMessage* message) override {
+        if (!host_testing) return kNotImplemented;
+        if (!pthread_main_np() || !initialized || !connected || !message) return kResultFalse;
+        auto* attributes=message->getAttributes();
+        int64 integer=0; double floating=0; String128 text{}; const void* binary=nullptr; uint32 bytes=0;
+        const char16_t expected[]=u"Mixed-Case";
+        const unsigned char expected_binary[]={0,1,255};
+        const bool valid=message->getMessageID() && std::strcmp(message->getMessageID(),"OriginalCase")==0 && attributes &&
+            attributes->getInt("integer",integer)==kResultOk && integer==7 &&
+            attributes->getFloat("floating",floating)==kResultOk && floating==0.25 &&
+            attributes->getString("text",text,sizeof(text))==kResultOk && std::memcmp(text,expected,sizeof(expected))==0 &&
+            attributes->getBinary("binary",binary,bytes)==kResultOk && bytes==3 && binary && std::memcmp(binary,expected_binary,3)==0;
+        if (!valid) return kResultFalse;
+        ++received_messages; return kResultOk;
+    }
+    tresult send_restart(int32 flags) { return handler?handler->restartComponent(flags):kNotImplemented; }
+    FUnknown* host_context() const { return context; }
+    IConnectionPoint* connected_peer() const { return peer; }
     tresult PLUGIN_API setComponentHandler(IComponentHandler* supplied) override {
         if (!event(supplied?Handler:ClearHandler,initialized && (supplied?!handler:handler!=nullptr))) return kResultFalse;
         if (supplied) supplied->addRef();
@@ -147,15 +188,41 @@ public:
     tresult PLUGIN_API setComponentState(IBStream*) override { return kNotImplemented; }
     tresult PLUGIN_API setState(IBStream*) override { return kNotImplemented; }
     tresult PLUGIN_API getState(IBStream*) override { return kNotImplemented; }
-    int32 PLUGIN_API getParameterCount() override { return 0; }
-    tresult PLUGIN_API getParameterInfo(int32,ParameterInfo&) override { return kInvalidArgument; }
+    int32 PLUGIN_API getParameterCount() override {
+        if (!host_testing) return 0;
+        if (!pthread_main_np() || !initialized) { ++observation.violations; return -1; }
+        return metadata_fault==5?129:2;
+    }
+    tresult PLUGIN_API getParameterInfo(int32 index,ParameterInfo& info) override {
+        if (!host_testing || !pthread_main_np() || !initialized || index<0 || index>1) return kInvalidArgument;
+        info={}; info.id=index?11:7; info.defaultNormalizedValue=0.5;
+        const char16_t title[]=u"Original Parameter"; std::memcpy(info.title,title,sizeof(title));
+        const char16_t short_title[]=u"Original"; std::memcpy(info.shortTitle,short_title,sizeof(short_title));
+        const char16_t units[]=u"units"; std::memcpy(info.units,units,sizeof(units));
+        if (metadata_fault==1 && index) info.id=7;
+        if (metadata_fault==3) for (auto& c:info.title) c=u'x';
+        if (metadata_fault==4) info.stepCount=-1;
+        if (metadata_fault==6) send_restart(kParamValuesChanged);
+        if (metadata_fault==7) info.id=index?12:7;
+        return kResultOk;
+    }
     tresult PLUGIN_API getParamStringByValue(ParamID,ParamValue,String128) override { return kInvalidArgument; }
     tresult PLUGIN_API getParamValueByString(ParamID,TChar*,ParamValue&) override { return kInvalidArgument; }
     ParamValue PLUGIN_API normalizedParamToPlain(ParamID,ParamValue value) override { return value; }
     ParamValue PLUGIN_API plainParamToNormalized(ParamID,ParamValue value) override { return value; }
-    ParamValue PLUGIN_API getParamNormalized(ParamID) override { return 0; }
+    ParamValue PLUGIN_API getParamNormalized(ParamID id) override {
+        if (!host_testing) return 0;
+        if (!pthread_main_np() || !initialized || (id!=7 && id!=11 && id!=12)) { ++observation.violations; return 0; }
+        return metadata_fault==2?std::numeric_limits<double>::quiet_NaN():metadata_value;
+    }
     tresult PLUGIN_API setParamNormalized(ParamID,ParamValue) override { return kNotImplemented; }
-    IPlugView* PLUGIN_API createView(FIDString) override { return nullptr; }
+    IPlugView* PLUGIN_API createView(FIDString) override {
+        if (host_testing) {
+            if (!pthread_main_np() || !initialized) ++observation.violations;
+            else send_restart(kParamTitlesChanged|kParamValuesChanged);
+        }
+        return nullptr;
+    }
 };
 
 class LifecycleFactory final : public IPluginFactory {
@@ -210,4 +277,70 @@ extern "C" __attribute__((visibility("default"))) int HexLifecycleObservation(in
     out[0]=observation.violations; out[1]=observation.created; out[2]=observation.controllers;
     out[3]=observation.blocks; out[4]=static_cast<int>(objects.load()); out[5]=static_cast<int>(factory.count()); out[6]=observation.length;
     std::memcpy(out+7,observation.trace,sizeof(int)*observation.length); return needed;
+}
+
+// Real controller/host ABI actions, private to the original native fixture.
+extern "C" __attribute__((visibility("default"))) bool HexHostConfigure() {
+    if (objects.load() || factory.count()!=1 || retained_message) return false;
+    host_testing=true; process_callback=false; metadata_fault=0; metadata_value=0.25;
+    received_messages=0; processing_callback_result=processing_message_result=kNotImplemented; return true;
+}
+extern "C" __attribute__((visibility("default"))) int HexHostAction(int action,int detail) {
+    if (!host_testing || !active_controller) return kNotImplemented;
+    if (action==0) return active_controller->send_restart(detail);
+    if (action==1) { metadata_value=0.75; return kResultOk; }
+    if (action==2) { metadata_fault=detail; return kResultOk; }
+    if (action==3) { process_callback=true; return kResultOk; }
+    if (action==4) return processing_callback_result;
+    if (action==5) { active_controller->createView("editor"); return kResultOk; }
+    if (action==6) return received_messages;
+    if (action==7) return processing_message_result;
+    return kInvalidArgument;
+}
+extern "C" __attribute__((visibility("default"))) int HexHostMessages(int retain) {
+    if (!host_testing || !active_controller || !pthread_main_np()) return kInvalidArgument;
+    IHostApplication* host=nullptr;
+    if (active_controller->host_context()->queryInterface(INLINE_UID_OF(IHostApplication),reinterpret_cast<void**>(&host))!=kResultOk || !host) return kResultFalse;
+    IMessage* message=nullptr; TUID message_id{}; std::memcpy(message_id,INLINE_UID_OF(IMessage),sizeof(TUID));
+    bool ok=host->createInstance(message_id,message_id,reinterpret_cast<void**>(&message))==kResultOk && message;
+    if (ok && retain) { retained_message=message; host->release(); return kResultOk; }
+    if (ok) {
+        message->setMessageID("OriginalCase"); auto* attributes=message->getAttributes();
+        const char16_t text[]=u"Mixed-Case"; const unsigned char data[]={0,1,255};
+        ok=attributes && attributes->setInt("integer",7)==kResultOk && attributes->setFloat("floating",0.25)==kResultOk &&
+            attributes->setString("text",text)==kResultOk && attributes->setBinary("binary",data,3)==kResultOk;
+        double before=0; int64 unchanged=99; String128 small{}; small[0]=u'!';
+        std::array<TChar,258> oversized{}; oversized.fill(u'x'); oversized.back()=0;
+        ok=ok && attributes->setFloat("floating",std::numeric_limits<double>::infinity())!=kResultOk &&
+            attributes->getFloat("floating",before)==kResultOk && before==0.25 &&
+            attributes->getInt("floating",unchanged)!=kResultOk && unchanged==99 &&
+            attributes->getString("text",small,2)!=kResultOk && small[0]==u'!' &&
+            attributes->setString("text",oversized.data())!=kResultOk &&
+            attributes->setBinary("binary",data,1025)!=kResultOk;
+        const void* borrowed=nullptr; uint32 borrowed_size=0;
+        ok=attributes->getBinary("binary",borrowed,borrowed_size)==kResultOk && borrowed_size==3 && ok;
+        ok=attributes->setBinary("binary",borrowed,borrowed_size)==kResultOk && ok;
+        message->setMessageID(message->getMessageID());
+        for (int n=0;n<12 && ok;++n) { char key[8]{}; std::snprintf(key,sizeof(key),"key%d",n); ok=attributes->setInt(key,n)==kResultOk; }
+        ok=ok && attributes->setInt("overflow",1)!=kResultOk && active_controller->connected_peer() &&
+            active_controller->connected_peer()->notify(message)==kResultOk;
+        message->release();
+    }
+    std::array<IMessage*,16> live{};
+    for (auto& item:live) ok=(host->createInstance(message_id,message_id,reinterpret_cast<void**>(&item))==kResultOk && item) && ok;
+    IMessage* excess=nullptr;
+    ok=host->createInstance(message_id,message_id,reinterpret_cast<void**>(&excess))!=kResultOk && !excess && ok;
+    // Reference release from a worker returns pool slots, never frees Host storage.
+    std::thread release([&] { for (auto* item:live) if (item) item->release(); }); release.join();
+    IMessage* reused=nullptr;
+    ok=(host->createInstance(message_id,message_id,reinterpret_cast<void**>(&reused))==kResultOk && reused) && ok;
+    if (reused) { int64 stale=0; ok=!reused->getMessageID() && reused->getAttributes()->getInt("integer",stale)!=kResultOk && ok; reused->release(); }
+    IAttributeList* list=nullptr; TUID attribute_id{}; std::memcpy(attribute_id,INLINE_UID_OF(IAttributeList),sizeof(TUID));
+    ok=(host->createInstance(attribute_id,attribute_id,reinterpret_cast<void**>(&list))==kResultOk && list) && ok;
+    if (list) { int64 value=0; ok=list->setInt("only",42)==kResultOk && list->getInt("only",value)==kResultOk && value==42 && ok; list->release(); }
+    void* unknown=reinterpret_cast<void*>(1);
+    ok=host->createInstance(message_id,attribute_id,&unknown)==kNoInterface && !unknown && ok;
+    unknown=reinterpret_cast<void*>(1);
+    ok=host->createInstance(nullptr,message_id,&unknown)!=kResultOk && !unknown && ok;
+    host->release(); return ok?kResultOk:kResultFalse;
 }
