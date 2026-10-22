@@ -38,6 +38,12 @@ pub(super) struct ScrubState {
 }
 
 impl EditorView {
+    /// Includes a released final target until its existing admission/refusal
+    /// retires it: switching modes must not silently discard that target.
+    pub(super) fn scrub_active(&self) -> bool {
+        self.scrub.gesture.is_some()
+    }
+
     pub(super) fn update_scrub_geometry(&mut self, bounds: Bounds<Pixels>) {
         if self
             .scrub
@@ -69,6 +75,7 @@ impl EditorView {
             && self.active_browser_audio_drag.is_none()
             && self.active_native_device_drag.is_none()
             && self.active_trim_drag.is_none()
+            && self.active_fade_drag.is_none()
             && self.active_midi_trim_drag.is_none()
             && self.arrangement_pan.is_none()
             && self.loop_rail_gesture.is_none()

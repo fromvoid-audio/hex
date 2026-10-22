@@ -3,6 +3,27 @@ use crate::MidiTiming;
 
 impl SessionPlayback {
     pub fn apply(&mut self, command: SessionPlaybackCommand) -> Result<(), SessionPlaybackError> {
+        if self.current_sampler_console
+            && matches!(
+                command,
+                SessionPlaybackCommand::Pause | SessionPlaybackCommand::Seek(1..)
+            )
+        {
+            return Err(SessionPlaybackError::InvalidCommand);
+        }
+        if self.revision.requires_control_sampler_sources()
+            && !self.current_sampler_console
+            && !matches!(
+                &command,
+                SessionPlaybackCommand::Play
+                    | SessionPlaybackCommand::Stop
+                    | SessionPlaybackCommand::Seek(0)
+            )
+        {
+            return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                "sampler supports frame-zero offline export only",
+            ));
+        }
         self.candidate_admission_open = false;
         if self.linear_arrangement_export
             && matches!(
@@ -63,6 +84,7 @@ impl SessionPlayback {
         self.releases.clear();
         self.suppressions.clear();
         self.release_order = 0;
+        self.main_chain.reset();
         for chain in &mut self.device_chains {
             chain.reset();
         }
@@ -85,6 +107,7 @@ impl SessionPlayback {
             tail.runtime.reset();
         }
         for route in &mut self.routes {
+            route.current_first_frame = false;
             changed |= route.pending.take().is_some();
             if let RouteOwner::Session { clip, launch } = route.owner {
                 changed |= launch != BeatTime::ZERO;
@@ -158,6 +181,7 @@ impl SessionPlayback {
         self.historical_floor = None;
         self.route_historical_floors.fill(None);
         self.release_order = 0;
+        self.main_chain.reset();
         for chain in &mut self.device_chains {
             chain.reset();
         }
@@ -197,7 +221,7 @@ impl SessionPlayback {
         Ok(())
     }
 
-    fn mutable_destination_has_active_occurrence(
+    pub(super) fn mutable_destination_has_active_occurrence(
         &mut self,
         index: usize,
         owner: RouteOwner,
@@ -391,6 +415,23 @@ impl SessionPlayback {
     }
 
     fn commit_route_scratch(&mut self) {
+        // Entire command/scene has passed all fallible planning. Accepted cuts
+        // change only committed deadlines; DSP receives NoteOff next segment.
+        if self.current_sampler_console {
+            for index in 0..self.routes.len() {
+                if self.routes[index].current_incarnation
+                    != self.route_scratch[index].current_incarnation
+                {
+                    if let Some(runtime) = self
+                        .mutable_instruments
+                        .get_mut(index)
+                        .and_then(Option::as_mut)
+                    {
+                        runtime.cut_gate_deadlines_at(self.performance_frame);
+                    }
+                }
+            }
+        }
         let route_changed = self.routes != self.route_scratch;
         std::mem::swap(&mut self.routes, &mut self.route_scratch);
         std::mem::swap(&mut self.releases, &mut self.release_scratch);
@@ -454,6 +495,31 @@ impl SessionPlayback {
             .get(index)
             .ok_or(SessionPlaybackError::UnknownTrack)?
             .owner;
+        let next_owner =
+            self.owner_for_target(target, moment.target_beat, moment.performance_frame)?;
+        let proven_current = self.current_sampler_route_track(index);
+        let current_reservation = if proven_current
+            && (next_owner != owner || matches!(target, RouteTarget::Session(_)))
+        {
+            let delta = moment
+                .target_frame
+                .checked_sub(moment.performance_frame)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            let arrangement_cut = moment
+                .source_frame
+                .checked_add(delta)
+                .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+            Some(self.current_route_reservation(
+                index,
+                next_owner,
+                moment.performance_frame,
+                moment.target_frame,
+                arrangement_cut,
+                false,
+            )?)
+        } else {
+            None
+        };
         for destination in 0..self.route_scratch.len() {
             if self.revision.arrangement().tracks()[destination]
                 .midi_source_index
@@ -462,11 +528,12 @@ impl SessionPlayback {
             {
                 continue;
             }
-            if self
-                .mutable_instruments
-                .get(destination)
-                .and_then(Option::as_ref)
-                .is_some()
+            if !proven_current
+                && self
+                    .mutable_instruments
+                    .get(destination)
+                    .and_then(Option::as_ref)
+                    .is_some()
             {
                 let next_owner =
                     self.owner_for_target(target, moment.target_beat, moment.performance_frame)?;
@@ -493,7 +560,7 @@ impl SessionPlayback {
             }
         }
         if moment.immediate {
-            if transition_captures(owner, target) {
+            if !proven_current && transition_captures(owner, target) {
                 for destination in 0..self.route_scratch.len() {
                     if self.revision.arrangement().tracks()[destination]
                         .midi_source_index
@@ -517,6 +584,10 @@ impl SessionPlayback {
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
             route.pending = None;
             route.owner = next_owner;
+            if let Some(reservation) = current_reservation {
+                route.current_incarnation = reservation.incarnation;
+                route.current_first_frame = true;
+            }
             for destination in 0..self.route_scratch.len() {
                 if self.revision.arrangement().tracks()[destination]
                     .midi_source_index
@@ -536,6 +607,7 @@ impl SessionPlayback {
                 frame: moment.target_frame,
                 beat: moment.target_beat,
                 target,
+                current_reservation,
             });
         }
         Ok(())
@@ -606,6 +678,7 @@ impl SessionPlayback {
                                         self.gain_recording_override,
                                     ),
                                     continuation: None,
+                                    inline_tuning_owned: false,
                                     voice,
                                 },
                             ) {
@@ -711,6 +784,7 @@ impl SessionPlayback {
                                 order: 0,
                                 mix,
                                 continuation: None,
+                                inline_tuning_owned: false,
                                 voice,
                             },
                         )?;
@@ -752,9 +826,10 @@ impl SessionPlayback {
             .enumerate()
             .try_fold(0_usize, |sum, (index, _)| {
                 let route = effective_midi_route(&self.revision, routes, index)?;
-                let pending = if route
-                    .pending
-                    .is_some_and(|pending| transition_captures(route.owner, pending.target))
+                let pending = if !self.current_sampler_route_track(index)
+                    && route
+                        .pending
+                        .is_some_and(|pending| transition_captures(route.owner, pending.target))
                 {
                     self.owner_voice_budget(index, route.owner)
                 } else {

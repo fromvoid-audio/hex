@@ -87,8 +87,11 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
     assert!(shape.effect_tracks <= shape.tracks);
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
     editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "admission proof".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap();
     let mut snapshot = editor.project().snapshot();
@@ -111,6 +114,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         track.instrument_position = Some(48);
         for slot in 0..64 {
             track.devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: if index >= shape.tracks - shape.effect_tracks && slot == 63 {
                     stateful.clone()
@@ -155,6 +159,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         let mut devices = Vec::new();
         for slot in 0..64 {
             devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: if index < shape.returns && slot == 63 {
                     stateful.clone()
@@ -211,12 +216,12 @@ pub(super) fn handoff(shape: &Shape) -> Result<SessionPlayback, crate::SessionPl
             previous
                 .device_chains
                 .iter()
-                .map(|chain| 2 * chain.declared_runtime_bytes())
+                .map(|chain| chain.declared_pair_bytes())
                 .sum::<usize>(),
             previous
                 .return_chains
                 .iter()
-                .map(|chain| 2 * chain.declared_runtime_bytes())
+                .map(|chain| chain.declared_pair_bytes())
                 .sum::<usize>(),
             previous
                 .mutable_instruments
@@ -357,9 +362,7 @@ pub(super) fn ownership(runtime: &SessionPlayback, proposed: bool) -> Ownership 
         .clone()
         .map(|chain| chain.stateful_count())
         .sum();
-    let active_effect_bytes = active_chains
-        .map(|chain| 2 * chain.declared_runtime_bytes())
-        .sum();
+    let active_effect_bytes = active_chains.map(|chain| chain.declared_pair_bytes()).sum();
     let retained_chains = runtime.tail_groups.iter().flatten().chain(
         runtime
             .return_effect_tails
@@ -373,7 +376,7 @@ pub(super) fn ownership(runtime: &SessionPlayback, proposed: bool) -> Ownership 
         .map(|chain| chain.stateful_count())
         .sum();
     let retained_effect_bytes = retained_chains
-        .map(|chain| 2 * chain.declared_runtime_bytes())
+        .map(|chain| chain.declared_pair_bytes())
         .sum();
     let suffixes = runtime
         .tail_groups

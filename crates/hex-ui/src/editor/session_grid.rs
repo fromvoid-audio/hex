@@ -8,7 +8,7 @@ use hex_audio::prepared::{
 };
 use hex_engine::{LaunchQuantization, PlaybackAction, SessionPlaybackCommand};
 use hex_project::{BeatTime, ClipId, Command, Project, SceneId, SessionCellContent, TrackId};
-use hex_session::service::Request;
+use hex_session::{import_batch::ConsoleDestination, service::Request};
 
 const TRACK_COLUMN_WIDTH: f32 = 148.0;
 const SCENE_ROW_HEIGHT: f32 = 34.0;
@@ -205,6 +205,7 @@ impl EditorView {
         match selection {
             Some(super::session_navigation::Selection::Scene(scene)) => {
                 if self.focus_empty_details(window, cx) {
+                    self.advance_selection_intent();
                     self.select_session_scene(scene);
                 }
             }
@@ -221,16 +222,19 @@ impl EditorView {
                 match content {
                     Some(Some(clip)) => {
                         if self.focus_clip_details(window, cx) {
+                            self.advance_selection_intent();
                             self.select_session_midi(track, scene, clip);
                         }
                     }
                     Some(None) => {
                         if self.focus_clip_details(window, cx) {
+                            self.advance_selection_intent();
                             self.select_session_cell(track, scene);
                         }
                     }
                     None => {
                         self.focus_track_details(window);
+                        self.advance_selection_intent();
                         self.select_session_cell(track, scene);
                     }
                 }
@@ -473,7 +477,7 @@ impl EditorView {
 
         let scene_rows = uniform_list(
             "session-scene-rows",
-            scenes.len(),
+            scenes.len().saturating_add(1),
             cx.processor(move |this, range: std::ops::Range<usize>, _, cx| {
                 let mut rows = Vec::with_capacity(range.end.saturating_sub(range.start));
                 for index in range {
@@ -631,7 +635,7 @@ impl EditorView {
             ))
             .child(self.session_icon(
                 "↩",
-                "back to arrangement",
+                "back to arrange view",
                 "session-back-arrangement",
                 cx.listener(move |view, _, _, cx| {
                     if let Some(revision) = revision
@@ -841,7 +845,7 @@ impl EditorView {
             row = row
                 .child(self.session_icon(
                     "⇥",
-                    "copy audio source from arrangement · one-shot source only",
+                    "copy audio source from arrange view · one-shot source only",
                     "session-copy-audio-source",
                     cx.listener(move |view, _, _, cx| {
                         if revision.is_some_and(|revision| {
@@ -854,7 +858,7 @@ impl EditorView {
                 ))
                 .child(self.session_icon(
                     "♪",
-                    "copy selected arrangement midi clip",
+                    "copy selected arrange view midi clip",
                     "session-copy-midi",
                     cx.listener(move |view, _, _, cx| {
                         if revision.is_some_and(|revision| {
@@ -910,9 +914,14 @@ impl EditorView {
             return div().id(("session-scene-row-empty", index));
         };
         let Some(scene) = state.project.scenes().get(index) else {
-            return div().id(("session-scene-row-empty", index));
+            return self.console_append_row(column_start, column_end, cx);
         };
         let scene_id = scene.id();
+        let next_scene = state
+            .project
+            .scenes()
+            .get(index + 1)
+            .map(|scene| scene.id());
         let selected = self.selected_scene == Some(scene_id);
         let mut row = div()
             .id(("session-scene-row", scene_id.value()))
@@ -936,6 +945,10 @@ impl EditorView {
                 .id(ElementId::Name(
                     format!("session-cell-{}-{}", track_id.value(), scene_id.value()).into(),
                 ))
+                .debug_selector(move || {
+                    format!("console-cell-{}-{}", track_id.value(), scene_id.value())
+                })
+                .relative()
                 .w(px(TRACK_COLUMN_WIDTH))
                 .h(px(SCENE_ROW_HEIGHT))
                 .flex_shrink_0()
@@ -1007,6 +1020,7 @@ impl EditorView {
                                         && view.focus_clip_details(window, cx)
                                     {
                                         view.focus.focus(window);
+                                        view.advance_selection_intent();
                                         view.select_session_cell(track_id, scene_id);
                                         view.selected_track = Some(track_id);
                                         view.selected_clip = Some(clip_id);
@@ -1019,7 +1033,10 @@ impl EditorView {
                                     }
                                     cx.notify();
                                 }),
-                            ),
+                            )
+                            .debug_selector(move || {
+                                format!("launch-midi-{}-{}", track_id.value(), scene_id.value())
+                            }),
                         )
                         .children(route_markers.into_iter().flatten().map(|marker| {
                             self.route_marker(
@@ -1039,6 +1056,7 @@ impl EditorView {
                                 && view.focus_clip_details(window, cx)
                             {
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_midi(track_id, scene_id, clip_id);
                             }
                             cx.notify();
@@ -1098,6 +1116,7 @@ impl EditorView {
                                         && view.focus_clip_details(window, cx)
                                     {
                                         view.focus.focus(window);
+                                        view.advance_selection_intent();
                                         view.select_session_cell(track_id, scene_id);
                                         view.launch_clip(
                                             track_id,
@@ -1128,6 +1147,7 @@ impl EditorView {
                                 && view.focus_clip_details(window, cx)
                             {
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_cell(track_id, scene_id);
                             }
                             cx.notify();
@@ -1148,6 +1168,7 @@ impl EditorView {
                             {
                                 view.focus_track_details(window);
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_cell(track_id, scene_id);
                                 view.queue_session_command(
                                     with_quantization(
@@ -1177,16 +1198,42 @@ impl EditorView {
                             {
                                 view.focus_track_details(window);
                                 view.focus.focus(window);
+                                view.advance_selection_intent();
                                 view.select_session_cell(track_id, scene_id);
                             }
                             cx.notify();
                         }));
                 }
             }
+            // Separate narrow edge hit surfaces select insertion, never replace
+            // the cell body. Neighboring edges carry the same stable anchor.
+            let top = self.console_insertion_strip(track_id, Some(scene_id), true, scene_id, cx);
+            let bottom = self.console_insertion_strip(track_id, next_scene, false, scene_id, cx);
+            let cell = cell.children([top, bottom]);
+            let cell = self.console_drop_surface(
+                cell,
+                hex_session::import_batch::ConsoleDestination::Cell {
+                    track: track_id,
+                    scene: scene_id,
+                },
+                cx,
+            );
             row = row.child(cell);
         }
         let scene_column = div()
             .id(("session-scene", scene_id.value()))
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.open_console_scene_context_menu(
+                        event.position,
+                        Some(scene_id),
+                        window,
+                        cx,
+                    );
+                }),
+            )
             .w(px(SCENE_HEADER_WIDTH))
             .flex_shrink_0()
             .px_2()
@@ -1203,6 +1250,7 @@ impl EditorView {
             .child(
                 div()
                     .id(("session-scene-select", scene_id.value()))
+                    .debug_selector(move || format!("console-scene-menu-{}", scene_id.value()))
                     .min_w_0()
                     .flex_1()
                     .truncate()
@@ -1212,6 +1260,7 @@ impl EditorView {
                             && view.focus_empty_details(window, cx)
                         {
                             view.focus.focus(window);
+                            view.advance_selection_intent();
                             view.select_session_scene(scene_id);
                         }
                         cx.notify();
@@ -1226,6 +1275,7 @@ impl EditorView {
                         && view.focus_empty_details(window, cx)
                     {
                         view.focus.focus(window);
+                        view.advance_selection_intent();
                         view.select_session_scene(scene_id);
                         view.launch_scene(scene_id, revision, view.session_quantization);
                     }
@@ -1238,6 +1288,96 @@ impl EditorView {
         row
     }
 
+    fn console_insertion_strip(
+        &self,
+        track: TrackId,
+        before: Option<SceneId>,
+        top: bool,
+        row: SceneId,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let strip = div()
+            .id(ElementId::Name(
+                format!("console-insert-{}-{}-{}", track.value(), row.value(), top).into(),
+            ))
+            .debug_selector(move || {
+                if top {
+                    format!("console-insert-before-{}-{}", track.value(), row.value())
+                } else {
+                    format!("console-insert-after-{}-{}", track.value(), row.value())
+                }
+            })
+            .absolute()
+            .left_0()
+            .right_0()
+            .h(px(4.0))
+            .when(top, |strip| strip.top_0())
+            .when(!top, |strip| strip.bottom_0());
+        self.console_drop_surface(strip, ConsoleDestination::InsertScene { track, before }, cx)
+    }
+
+    fn console_append_row(
+        &self,
+        start: usize,
+        end: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let mut row = div()
+            .id("console-append-row")
+            .debug_selector(|| "console-append-row".into())
+            .w_full()
+            .h(px(SCENE_ROW_HEIGHT))
+            .flex()
+            .flex_shrink_0()
+            .border_b_1()
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    view.open_console_scene_context_menu(event.position, None, window, cx);
+                }),
+            );
+        if let Some(state) = self.state.as_ref() {
+            for track in state.project.tracks().get(start..end).unwrap_or_default() {
+                let id = track.id();
+                let cell = div()
+                    .id(("console-append-track", id.value()))
+                    .debug_selector(move || format!("console-append-track-{}", id.value()))
+                    .w(px(TRACK_COLUMN_WIDTH))
+                    .h(px(SCENE_ROW_HEIGHT))
+                    .flex_shrink_0()
+                    .border_l_1()
+                    .border_color(rgb(theme::color(theme::PaletteRole::Border)))
+                    .flex()
+                    .items_center()
+                    .px_2()
+                    .text_xs()
+                    .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                    .child(theme::text("+"));
+                let cell = self.console_drop_surface(
+                    cell,
+                    ConsoleDestination::InsertScene {
+                        track: id,
+                        before: None,
+                    },
+                    cx,
+                );
+                row = row.child(cell);
+            }
+        }
+        row.child(div().flex_1().min_w_0()).child(
+            div()
+                .w(px(SCENE_HEADER_WIDTH))
+                .px_2()
+                .flex()
+                .items_center()
+                .text_xs()
+                .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
+                .child(theme::text("add scene")),
+        )
+    }
+
     fn session_icon(
         &self,
         glyph: &'static str,
@@ -1245,7 +1385,7 @@ impl EditorView {
         id: impl Into<ElementId>,
         listener: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<Div> {
-        div()
+        let icon = div()
             .id(id)
             .size(px(23.0))
             .flex_shrink_0()
@@ -1263,7 +1403,10 @@ impl EditorView {
                 .into()
             })
             .child(theme::text(glyph))
-            .on_click(listener)
+            .on_click(listener);
+        #[cfg(feature = "ui-test-support")]
+        let icon = icon.debug_selector(move || label.into());
+        icon
     }
 
     fn route_entry_for_track(
@@ -1488,7 +1631,10 @@ impl EditorView {
     pub(super) fn set_mode(&mut self, mode: EditorMode) {
         if self.mode != mode {
             self.cancel_arrangement_pan();
-            self.cancel_time_selection_gesture();
+            self.cancel_active_browser_audio_drag();
+            if self.time_selection_gesture.is_some() || self.time_range_move_gesture.is_some() {
+                self.cancel_time_selection_gesture();
+            }
             self.cancel_scene_duplicate_selection();
         }
         if mode == EditorMode::Session

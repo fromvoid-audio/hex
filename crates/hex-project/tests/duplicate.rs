@@ -174,6 +174,8 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         })
         .collect();
     let full = Project::from_snapshot(Snapshot {
+        main_devices: Vec::new(),
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),
@@ -181,6 +183,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         sample_rate: 48_000,
         next_id: 3 + MAX_CLIPS as u64,
         assets: vec![hex_project::AssetSnapshot {
+            original_source: None,
             id: 1,
             path: "Samples/One.wav".into(),
             source_sample_rate: 48_000,

@@ -26,6 +26,34 @@ pub(super) fn zoom_span(current: u64, clip_length: u64, beat: u64, inward: bool)
     }
 }
 
+/// Bounded wheel step in clip-local beat ticks, anchored at the pointer's beat.
+/// Integer ratios retain precision at large source coordinates.
+pub(super) fn wheel_zoom(
+    start: u64,
+    span: u64,
+    length: u64,
+    anchor: u64,
+    inward: bool,
+) -> (u64, u64) {
+    if length == 0 {
+        return (0, 0);
+    }
+    let minimum = (hex_project::BeatTime::ONE.raw() / 16).max(1).min(length);
+    let span = span.clamp(minimum, length);
+    let start = clamp_start(start, length, span);
+    let anchor = anchor.clamp(start, start + span);
+    let next_span = if inward {
+        ((u128::from(span) * 4 / 5) as u64).max(minimum)
+    } else {
+        (u128::from(span) * 5).div_ceil(4).min(u128::from(length)) as u64
+    };
+    let offset = (u128::from(anchor - start) * u128::from(next_span) / u128::from(span)) as u64;
+    (
+        clamp_start(anchor.saturating_sub(offset), length, next_span),
+        next_span,
+    )
+}
+
 pub(super) fn clamp_start(start: u64, clip_length: u64, span: u64) -> u64 {
     start.min(clip_length.saturating_sub(span))
 }
@@ -498,6 +526,29 @@ mod tests {
             &second,
             &cache.get_or_build(original, notes).0
         ));
+    }
+
+    #[test]
+    fn wheel_zoom_preserves_anchor_and_bounds_at_small_and_large_coordinates() {
+        let beat = BeatTime::ONE.raw();
+        let (start, span) =
+            super::wheel_zoom(100 * beat, 400 * beat, 2000 * beat, 400 * beat, true);
+        assert_eq!((start, span), (160 * beat, 320 * beat));
+        assert_eq!((400 * beat - start) * 4, span * 3);
+        let mut view = (0, 4 * BeatTime::ONE.raw());
+        for _ in 0..256 {
+            view = super::wheel_zoom(view.0, view.1, 4 * BeatTime::ONE.raw(), 0, true);
+        }
+        assert_eq!(view, (0, BeatTime::ONE.raw() / 16));
+        for _ in 0..256 {
+            view = super::wheel_zoom(view.0, view.1, 4 * BeatTime::ONE.raw(), 0, false);
+        }
+        assert_eq!(view, (0, 4 * BeatTime::ONE.raw()));
+        assert_eq!(super::wheel_zoom(0, 1, 1, 1, true), (0, 1));
+        assert_eq!(super::wheel_zoom(0, 0, 0, 0, false), (0, 0));
+        let view = super::wheel_zoom(u64::MAX - 400, 400, u64::MAX, u64::MAX - 100, false);
+        assert!(view.1 > 0);
+        assert!(view.0.checked_add(view.1).is_some());
     }
 
     #[test]

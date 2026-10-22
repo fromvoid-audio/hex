@@ -15,8 +15,10 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
     Event {
         state: Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project,
             waveforms: Default::default(),
+            source_overviews: Default::default(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::new(Default::default()),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -31,7 +33,10 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         status: None,
         error: None,
         request_complete: true,
+        sampler_load_complete: None,
+        sampler_edit_complete: None,
         computer_keyboard_complete: None,
+        tuning_audition_complete: None,
         live_expression_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
@@ -43,6 +48,11 @@ fn event(project: Arc<Project>, revision: u64, replaced: bool) -> Event {
         duplicate_complete: false,
         restore_complete: None,
         device_preview: None,
+        tuning_preview: None,
+        tuning_gesture_ack: None,
+        tuning_gesture_request: false,
+        active_tuning_gesture: None,
+        tuning_library: None,
         gesture_ack: None,
         gesture_protocol_ack: false,
         gesture_request: false,
@@ -54,8 +64,10 @@ fn open_response(mut event: Event, path: Option<std::path::PathBuf>, failed: boo
     let previous = &event.state;
     event.state = Arc::new(ViewState {
         canonical_audio_source: None,
+        comparison_audio: None,
         project: Arc::clone(&previous.project),
         waveforms: Default::default(),
+        source_overviews: Default::default(),
         audio_clip_waveforms: std::collections::BTreeMap::new(),
         midi_preview: Arc::new(Default::default()),
         gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -208,19 +220,22 @@ fn spectrum_target_is_retired_when_detail_context_or_project_changes(cx: &mut Te
             assert!(!view.processor_audition_target_is_visible_and_current(audition_target));
 
             view.device_panel.spectrum_result =
-                Some(hex_audio::spectrum_worker::PublishedSpectrum {
-                    stamp: hex_audio::spectrum_worker::SpectrumStamp {
-                        target: target.token,
-                        generation: target.project_generation,
-                        sample_rate_hz: target.sample_rate_hz,
-                        applied_revision: target.activation_floor,
+                Some(hex_audio::spectrum_worker::PublishedSpectra {
+                    input: None,
+                    output: hex_audio::spectrum_worker::PublishedSpectrum {
+                        stamp: hex_audio::spectrum_worker::SpectrumStamp {
+                            target: target.token,
+                            generation: target.project_generation,
+                            sample_rate_hz: target.sample_rate_hz,
+                            applied_revision: target.activation_floor,
+                        },
+                        frame: hex_audio::spectrum::SpectrumFrame {
+                            sample_rate_hz: target.sample_rate_hz,
+                            bins_dbfs: [-120.0; hex_audio::spectrum::SPECTRUM_BANDS],
+                        },
+                        captured_at: std::time::Instant::now(),
+                        processed_at: std::time::Instant::now(),
                     },
-                    frame: hex_audio::spectrum::SpectrumFrame {
-                        sample_rate_hz: target.sample_rate_hz,
-                        bins_dbfs: [-120.0; hex_audio::spectrum::SPECTRUM_BANDS],
-                    },
-                    captured_at: std::time::Instant::now(),
-                    processed_at: std::time::Instant::now(),
                 });
             // A backend replacement starts without a selected target. Tick's
             // retirement path clears cached data even before a new frame arrives.

@@ -288,8 +288,11 @@ fn failed_prepared_import_preserves_project_ids_and_resident_media() {
         panic!("import result expected")
     };
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("add instrument track")
     else {
@@ -436,8 +439,11 @@ fn offline_export_renders_repeated_midi_from_the_prepared_session_graph() {
     let path = directory.path().join("looped-midi.wav");
     let mut session = Session::new(48_000, 12, 0).expect("session");
     let track = match session
-        .command(Command::AddMidiTrack {
+        .command(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("instrument track")
     {
@@ -768,8 +774,10 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
     )
     .expect("prepare conversion");
     assert_eq!(prepared.waveform().source_frames, 480);
-    let mut session = Session::new(48_000, 8, 480).expect("session");
+    let mut session = Session::new(48_000, 8, 441 + 480).expect("original plus playback budget");
     let (_, asset, clip) = imported_ids(session.import(prepared).expect("import"));
+    assert_eq!(session.source_audio(asset).unwrap().sample_rate(), 44_100);
+    assert_eq!(session.source_audio(asset).unwrap().frames().len(), 441);
     let metadata = session.project().asset(asset).expect("metadata");
     assert_eq!(metadata.path(), path);
     assert_eq!(metadata.source_sample_rate(), 44_100);
@@ -783,7 +791,7 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
         session.project().clip(clip).expect("clip").source_length(),
         480
     );
-    assert_eq!(session.resident_frames(), 480);
+    assert_eq!(session.resident_frames(), 441 + 480);
     let original = session
         .audio(asset)
         .expect("prepared PCM")
@@ -791,7 +799,7 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
         .to_vec();
     assert!(session.undo());
     assert!(session.project().tracks().is_empty());
-    assert_eq!(session.resident_frames(), 480);
+    assert_eq!(session.resident_frames(), 441 + 480);
     assert!(session.redo());
     let playback = session.compile().expect("compile");
     let mut renderer = hex_engine::Renderer::new(&playback);
@@ -815,8 +823,11 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
 fn ordered_instrument_candidate_prepares_and_roundtrips_history() {
     let mut session = Session::new(48_000, 16, 0).expect("session");
     let (track, _) = match session
-        .command(Command::AddTrack {
+        .command(Command::InsertTrackWithDevice {
             name: "chain".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("track")
     {

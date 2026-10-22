@@ -203,6 +203,9 @@ impl SessionPlayback {
         mut groups: Option<crate::audio_candidate::groups::Transfer<'_>>,
         demand: Option<&mut super::stream_demand::HandoffDemand<'_>>,
     ) -> Result<SessionHandoffReport, SessionPlaybackError> {
+        if !self.main_chain.can_inherit_from(&previous.main_chain) {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
         if self.revision.arrangement().sample_rate()
             != previous.revision.arrangement().sample_rate()
         {
@@ -343,18 +346,78 @@ impl SessionPlayback {
             self.capture_epoch = recipient_epoch;
             previous.capture_epoch = donor_epoch;
             self.candidate_admission_open = false;
+            self.main_chain.inherit_from(&previous.main_chain);
             return Ok(SessionHandoffReport {
                 cancelled_pending: [None; MAX_TRACKS],
                 cancelled_pending_len: 0,
             });
         }
-        let swap_compensation = match (&self.compensation, &previous.compensation) {
-            (Some(candidate), Some(old)) if candidate.graph.compatible(&old.graph) => true,
-            (None, None) => false,
+        // 0: existing fresh/no-delay path; 1: copy into the larger fresh
+        // history; 2: carry the actual larger donor plan/rings, explicitly bound
+        // to the candidate's immutable typed pre-Main map.
+        let mapped_main_clock = self
+            .revision
+            .session()
+            .timing()
+            .same_map(previous.revision.session().timing())
+            && self.revision.arrangement().loop_region()
+                == previous.revision.arrangement().loop_region();
+        let donor_epoch_matches = previous.compensation.as_ref().is_none_or(|old| {
+            old.delays.latest_stamp().is_none_or(|stamp| {
+                !stamp.transport_is_running
+                    || stamp.performance_frame.checked_add(1) == Some(previous.performance_frame)
+            })
+        });
+        let clock_transfer = match (&self.compensation, &previous.compensation) {
+            (Some(candidate), Some(old))
+                if (candidate.graph.compatible(&old.graph) || mapped_main_clock)
+                    && donor_epoch_matches
+                    && candidate.can_copy_from(old) =>
+            {
+                1_u8
+            }
+            (_, Some(old))
+                if mapped_main_clock
+                    && donor_epoch_matches
+                    && self
+                        .revision
+                        .arrangement()
+                        .signal_graph
+                        .as_ref()
+                        .is_some_and(|graph| {
+                            old.can_rebind_graph(graph)
+                                && Arc::ptr_eq(
+                                    &old.graph,
+                                    previous
+                                        .revision
+                                        .arrangement()
+                                        .signal_graph
+                                        .as_ref()
+                                        .unwrap_or(graph),
+                                )
+                                && old.storage_bytes_with_graph(graph).is_some_and(|bytes| {
+                                    bytes <= crate::compensation::MAX_COMPENSATION_BYTES
+                                })
+                        }) =>
+            {
+                2
+            }
+            (None, None) => 0,
+            (Some(candidate), None)
+                if mapped_main_clock
+                    && previous
+                        .revision
+                        .arrangement()
+                        .signal_graph
+                        .as_ref()
+                        .is_some_and(|graph| candidate.graph.pre_main_compatible(graph)) =>
+            {
+                0
+            }
             _ if self.revision.arrangement().main_latency_frames() == 0
                 && previous.revision.arrangement().main_latency_frames() == 0 =>
             {
-                false
+                0
             }
             _ if previous.playing
                 || previous.performance_frame != 0
@@ -364,7 +427,7 @@ impl SessionPlayback {
                     "latency layout changed · stop transport before applying this revision",
                 ));
             }
-            _ => false,
+            _ => 0,
         };
         let capture_epoch = self
             .capture_epoch
@@ -973,9 +1036,13 @@ impl SessionPlayback {
             }
         }
 
-        // A mutable candidate may retain only occurrences proven to have been
-        // dispatched under the old law. Missing or changed historical proof
-        // remains a no-chase refusal.
+        // A genuinely fresh authored device suppresses pre-cut gates instead of chasing them.
+        // Complete ordinary predecessor evidence distinguishes installation from a MIDI/history
+        // edit. This one-shot eligibility is not runtime continuity or an occurrence proof.
+        let mut fresh_mutable_install = [false; MAX_TRACKS];
+        let mut newly_authored_notes = [false; MAX_TRACKS];
+        // A mutable candidate may retain only occurrences proven to have been dispatched under
+        // the old law. The fresh-install exception only supplies bounded suppression below.
         for (new_index, runtime) in self.mutable_instruments.iter().enumerate() {
             if runtime.is_none() {
                 continue;
@@ -996,9 +1063,10 @@ impl SessionPlayback {
             }) {
                 continue;
             }
-            let candidate_owner = if let Some(old_index) = old_index {
-                let old_route =
-                    effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+            let old_route = old_index
+                .map(|index| effective_midi_route(&previous.revision, &previous.routes, index))
+                .transpose()?;
+            let candidate_owner = if let Some(old_route) = old_route {
                 if old_route
                     .pending
                     .is_some_and(|pending| pending.frame > previous.performance_frame)
@@ -1039,6 +1107,46 @@ impl SessionPlayback {
                 // because there was no old route to match.
                 new_route.owner
             };
+            let fresh_source_matches = match candidate_owner {
+                RouteOwner::Arrangement => previous
+                    .revision
+                    .mutable_arrangement_sources_match(&self.revision, new_route.id),
+                RouteOwner::Session { clip, .. } => previous
+                    .revision
+                    .session()
+                    .midi_clip_for_track(clip, new_route.id)
+                    .zip(
+                        self.revision
+                            .session()
+                            .midi_clip_for_track(clip, new_route.id),
+                    )
+                    .is_some_and(|(old, new)| {
+                        old.track == new_route.id
+                            && new.track == new_route.id
+                            && old.scene == new.scene
+                            && old.source_content_matches(new)
+                    }),
+                RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
+            };
+            fresh_mutable_install[new_index] = !timing_changed
+                && old_loop == new_loop
+                && !midi_layout_changed
+                && new_route.pending.is_none()
+                && previous
+                    .revision
+                    .fresh_mutable_device_install(&self.revision, new_route.id)
+                && fresh_source_matches;
+            // A new/restored stable authored identity may be suppressed, never chased. Keep
+            // this separate from fresh device installation and from runtime/proof continuity.
+            newly_authored_notes[new_index] = !timing_changed
+                && old_loop == new_loop
+                && !midi_layout_changed
+                && new_route.pending.is_none()
+                && old_route.is_some_and(|route| route.pending.is_none())
+                && matches!(
+                    candidate_owner,
+                    RouteOwner::Arrangement | RouteOwner::Session { .. }
+                );
             let (candidates, candidate_count, source_frame) = Self::mutable_candidates_at_cut(
                 &self.revision,
                 new_index,
@@ -1067,7 +1175,17 @@ impl SessionPlayback {
                                 && entry.until_frame > previous.performance_frame
                                 && entry.mutable_signature().is_some()
                         });
-                if candidate.source_frame < source_frame && exact.is_none() && !carried {
+                if candidate.source_frame < source_frame
+                    && exact.is_none()
+                    && !carried
+                    && !fresh_mutable_install[new_index]
+                    && !(newly_authored_notes[new_index]
+                        && previous.revision.newly_authored_mutable_note(
+                            &self.revision,
+                            candidate.signature.key(),
+                            matches!(candidate_owner, RouteOwner::Session { .. }),
+                        ))
+                {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
                 if same_key && exact.is_none() && !carried {
@@ -1160,6 +1278,7 @@ impl SessionPlayback {
                                                 previous.gain_recording_override,
                                             ),
                                             continuation: None,
+                                            inline_tuning_owned: false,
                                             voice,
                                         },
                                     ) {
@@ -1583,7 +1702,30 @@ impl SessionPlayback {
                                     previous.revision.gain_recording_track(),
                                     previous.gain_recording_override,
                                 ),
-                                continuation: None,
+                                continuation: (matching_candidate
+                                    && matches!(
+                                        sampler,
+                                        crate::midi_note_bank::PreparedMidiNote::Inline(_)
+                                    )
+                                    && inline_tuning_owner_matches(old_track, new_track)
+                                    && previous.revision.arrangement().shared_contexts().tuning()
+                                        != self.revision.arrangement().shared_contexts().tuning())
+                                .then_some(SessionContinuation {
+                                    key,
+                                    onset_beat: span.onset_beat,
+                                    gate_end_beat: span.gate_end_beat,
+                                    pitch: span.pitch,
+                                    channel: span.channel,
+                                    velocity: span.velocity,
+                                }),
+                                inline_tuning_owned: matching_candidate
+                                    && matches!(
+                                        sampler,
+                                        crate::midi_note_bank::PreparedMidiNote::Inline(_)
+                                    )
+                                    && inline_tuning_owner_matches(old_track, new_track)
+                                    && previous.revision.arrangement().shared_contexts().tuning()
+                                        != self.revision.arrangement().shared_contexts().tuning(),
                                 voice,
                             },
                         ) {
@@ -1657,7 +1799,12 @@ impl SessionPlayback {
                 }
             }
         }
-        for new_index in 0..self.routes.len() {
+        for (new_index, fresh_install) in fresh_mutable_install
+            .iter()
+            .copied()
+            .enumerate()
+            .take(self.routes.len())
+        {
             if self
                 .mutable_instruments
                 .get(new_index)
@@ -1670,7 +1817,7 @@ impl SessionPlayback {
                 .get(new_index)
                 .copied()
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
-            let (candidates, candidate_count, _) = Self::mutable_candidates_at_cut(
+            let (candidates, candidate_count, source_frame) = Self::mutable_candidates_at_cut(
                 &self.revision,
                 new_index,
                 route.id,
@@ -1691,7 +1838,20 @@ impl SessionPlayback {
                     })
                     .map(|entry| entry.until_frame)
                     .max();
-                let Some(old_deadline) = proof_deadline.into_iter().chain(carried_deadline).max()
+                let new_note = newly_authored_notes[new_index]
+                    && previous.revision.newly_authored_mutable_note(
+                        &self.revision,
+                        candidate.signature.key(),
+                        matches!(route.owner, RouteOwner::Session { .. }),
+                    );
+                let fresh_deadline = ((fresh_install || new_note)
+                    && candidate.source_frame < source_frame)
+                    .then_some(candidate.end_frame);
+                let Some(old_deadline) = proof_deadline
+                    .into_iter()
+                    .chain(carried_deadline)
+                    .chain(fresh_deadline)
+                    .max()
                 else {
                     continue;
                 };
@@ -1913,6 +2073,21 @@ impl SessionPlayback {
                             order: 0,
                             mix,
                             continuation,
+                            inline_tuning_owned: matches
+                                && matches!(
+                                    voice.sampler(),
+                                    crate::midi_note_bank::PreparedMidiNote::Inline(_)
+                                )
+                                && self
+                                    .revision
+                                    .arrangement()
+                                    .tracks()
+                                    .get(track_index)
+                                    .is_some_and(|target| {
+                                        inline_tuning_owner_matches(old_track, target)
+                                    })
+                                && previous.revision.arrangement().shared_contexts().tuning()
+                                    != self.revision.arrangement().shared_contexts().tuning(),
                             voice,
                         },
                     )?;
@@ -2027,9 +2202,12 @@ impl SessionPlayback {
         let mut old_track_tail_output_active = [false; MAX_TRACKS];
         let mut tail_processor_count = 0_usize;
         let mut tail_runtime_bytes = 0_usize;
+        // The existing retained-tail pool is shared by Track, Return and Main.
+        // Current processors keep their constructor/admission allowance; the
+        // complete current+retained owners are separately charged below.
         let mut suffix_entry_count = 0_usize;
         let sample_rate = self.revision.arrangement().sample_rate();
-        let return_tail_plan = ReturnEffectTailPlan::preflight(
+        let mut return_tail_plan = ReturnEffectTailPlan::preflight(
             previous.revision.arrangement().return_buses(),
             &previous.return_chains,
             &previous.return_effect_tails,
@@ -2040,6 +2218,27 @@ impl SessionPlayback {
             &mut tail_runtime_bytes,
             &mut suffix_entry_count,
         )?;
+        return_tail_plan.preflight_main(
+            &previous.main_chain,
+            &self.main_chain,
+            previous
+                .revision
+                .arrangement()
+                .signal_graph
+                .as_ref()
+                .map_or(0, |graph| graph.main_latency()),
+            sample_rate,
+            &mut tail_processor_count,
+            &mut tail_runtime_bytes,
+            &mut suffix_entry_count,
+        )?;
+        if !self.main_chain.can_inherit_from_excluding_old_range(
+            &previous.main_chain,
+            return_tail_plan.main_excluded(previous.main_chain.len()),
+        ) {
+            return Err(SessionPlaybackError::DeviceRuntime);
+        }
+        return_tail_plan.validate_main(&self.return_effect_tails, &previous.main_chain)?;
         for (slot, active) in active_tail_groups.iter().copied().enumerate() {
             if !active {
                 continue;
@@ -2065,8 +2264,7 @@ impl SessionPlayback {
                 .checked_add(chain.stateful_count())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             tail_runtime_bytes = tail_runtime_bytes
-                .checked_add(chain.declared_runtime_bytes())
-                .and_then(|bytes| bytes.checked_add(chain.declared_runtime_bytes()))
+                .checked_add(chain.declared_pair_bytes())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if let Some(tail) = previous
                 .tail_mutable_instruments
@@ -2155,8 +2353,7 @@ impl SessionPlayback {
                     .checked_add(old_chain.stateful_count())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 tail_runtime_bytes = tail_runtime_bytes
-                    .checked_add(old_chain.declared_runtime_bytes())
-                    .and_then(|bytes| bytes.checked_add(old_chain.declared_runtime_bytes()))
+                    .checked_add(old_chain.declared_pair_bytes())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
                     || tail_runtime_bytes
@@ -2256,8 +2453,7 @@ impl SessionPlayback {
                 .checked_add(old_chain.stateful_count())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             tail_runtime_bytes = tail_runtime_bytes
-                .checked_add(old_chain.declared_runtime_bytes())
-                .and_then(|bytes| bytes.checked_add(old_chain.declared_runtime_bytes()))
+                .checked_add(old_chain.declared_pair_bytes())
                 .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             if tail_processor_count > hex_lattice::MAX_STATEFUL_PROCESSORS
                 || tail_runtime_bytes > crate::mutable_instrument::MAX_STATEFUL_RUNTIME_PAIR_BYTES
@@ -2365,8 +2561,7 @@ impl SessionPlayback {
                     .checked_add(old_chain.stateful_count())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
                 tail_runtime_bytes = tail_runtime_bytes
-                    .checked_add(old_chain.declared_runtime_bytes())
-                    .and_then(|bytes| bytes.checked_add(old_chain.declared_runtime_bytes()))
+                    .checked_add(old_chain.declared_pair_bytes())
                     .ok_or(SessionPlaybackError::ReleaseBankFull)?;
             }
             tail_processor_count = tail_processor_count
@@ -2449,7 +2644,10 @@ impl SessionPlayback {
                     && super::harmonic_import::imports_release(previous, old_index, release)
             })
         });
+        // These copies are private scratch. Every provider refusal precedes any
+        // source/runtime mutation; bank samplers remain immutable and interned.
         for release in &mut self.release_scratch {
+            retune_inline_release(previous, &self.revision, &self.route_scratch, release)?;
             if !release.voice.sampler().is_current() {
                 continue;
             }
@@ -2758,11 +2956,108 @@ impl SessionPlayback {
                     .slots()
                     .iter()
                     .flatten()
-                    .any(|tail| tail.output_active))
+                    .any(|tail| tail.output_active && tail.return_id().is_some()))
         {
             return Err(SessionPlaybackError::Arrangement(
                 "compensated processor tails require stopping transport before changing the chain",
             ));
+        }
+        // Actual retained owners, including unused prefix Vec capacity and both
+        // transactional twins, must fit the existing complete runtime budget.
+        let mut retained_bytes = return_tail_plan
+            .retained_storage_bytes(
+                &previous.return_effect_tails,
+                &previous.return_chains,
+                &previous.main_chain,
+            )
+            .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+        for (slot, active) in active_tail_groups.iter().copied().enumerate() {
+            if active {
+                if let Some(chain) = &previous.tail_groups[slot] {
+                    retained_bytes = retained_bytes
+                        .checked_add(
+                            chain
+                                .accounted_storage_bytes()
+                                .ok_or(SessionPlaybackError::ReleaseBankFull)?,
+                        )
+                        .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                }
+                if let Some(tail) = &previous.tail_mutable_instruments[slot] {
+                    retained_bytes = retained_bytes
+                        .checked_add(
+                            tail.runtime
+                                .accounted_storage_bytes()
+                                .ok_or(SessionPlaybackError::ReleaseBankFull)?,
+                        )
+                        .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+                }
+            }
+        }
+        for (index, slot) in old_track_tail_slots.iter().enumerate() {
+            if slot.is_some() {
+                retained_bytes = retained_bytes
+                    .checked_add(
+                        previous.device_chains[index]
+                            .accounted_storage_bytes()
+                            .ok_or(SessionPlaybackError::ReleaseBankFull)?,
+                    )
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            }
+        }
+        for (index, slot) in old_track_mutable_tail_slots.iter().enumerate() {
+            if slot.is_some()
+                && let Some(runtime) = &previous.mutable_instruments[index]
+            {
+                retained_bytes = retained_bytes
+                    .checked_add(
+                        runtime
+                            .accounted_storage_bytes()
+                            .ok_or(SessionPlaybackError::ReleaseBankFull)?,
+                    )
+                    .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+            }
+        }
+        // A zero-current-latency candidate can acquire the donor's larger
+        // clock owner. Charge the actual post-handoff owner before any moves;
+        // the zero-plan graph was already charged by the candidate inventory.
+        let current_clock_bytes = self
+            .compensation
+            .as_ref()
+            .map_or_else(
+                || {
+                    self.revision
+                        .arrangement()
+                        .signal_graph
+                        .as_ref()
+                        .map_or(Some(0), |graph| graph.table_bytes())
+                },
+                |runtime| runtime.storage_bytes(),
+            )
+            .ok_or(SessionPlaybackError::ReleaseBankFull)?;
+        let adopted_clock_bytes = if clock_transfer == 2 {
+            previous
+                .compensation
+                .as_ref()
+                .and_then(|runtime| {
+                    self.revision
+                        .arrangement()
+                        .signal_graph
+                        .as_ref()
+                        .and_then(|graph| runtime.storage_bytes_with_graph(graph))
+                })
+                .ok_or(SessionPlaybackError::ReleaseBankFull)?
+        } else {
+            current_clock_bytes
+        };
+        if self
+            .accounted_runtime_storage_bytes()
+            .and_then(|bytes| bytes.checked_sub(current_clock_bytes))
+            .and_then(|bytes| bytes.checked_add(adopted_clock_bytes))
+            .and_then(|bytes| bytes.checked_add(retained_bytes))
+            .and_then(|bytes| bytes.checked_add(std::mem::size_of::<ReturnEffectTailPlan>()))
+            .is_none_or(|bytes| bytes > MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+        {
+            return Err(SessionPlaybackError::ReleaseBankFull);
         }
         // Stage shared-context leases before moving any owner. The Return plan
         // validates every destination below; owner moves then use only these
@@ -2782,6 +3077,11 @@ impl SessionPlayback {
             &mut self.return_effect_tails,
             &mut previous.return_chains,
             previous.revision.arrangement().return_buses(),
+        )?;
+        return_tail_plan.capture_main(
+            &mut self.return_effect_tails,
+            &mut self.main_chain,
+            &mut previous.main_chain,
         )?;
         for slot in 0..previous.tail_groups.len() {
             if active_tail_groups.get(slot).copied().unwrap_or(false)
@@ -2933,16 +3233,33 @@ impl SessionPlayback {
         } else {
             previous.route_state_generation
         };
-        if swap_compensation {
-            if let (Some(candidate), Some(old)) =
-                (&mut self.compensation, &mut previous.compensation)
-            {
-                std::mem::swap(&mut candidate.delays, &mut old.delays);
+        if clock_transfer == 1 {
+            if let (Some(candidate), Some(old)) = (&mut self.compensation, &previous.compensation) {
+                candidate
+                    .copy_from(old)
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+            }
+        } else if clock_transfer == 2 {
+            let graph = self
+                .revision
+                .arrangement()
+                .signal_graph
+                .as_ref()
+                .ok_or(SessionPlaybackError::DeviceRuntime)?;
+            std::mem::swap(&mut self.compensation, &mut previous.compensation);
+            if let Some(current) = self.compensation.as_mut() {
+                // Previous still owns its revision's old graph; delay_graph
+                // independently retains the actual ring/plan interpretation.
+                current
+                    .rebind_graph(Arc::clone(graph))
+                    .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
             }
         }
+
         if let Some(groups) = groups {
             groups.commit();
         }
+        self.main_chain.inherit_from(&previous.main_chain);
         Ok(report)
     }
 
@@ -3245,4 +3562,112 @@ fn remap_release_gate(
         .beat_to_frame(occurrence.gate_end)
         .map(Some)
         .map_err(|_| SessionPlaybackError::TempoConversion)
+}
+
+fn inline_tuning_owner_matches(source: &crate::Track, target: &crate::Track) -> bool {
+    source.instrument_id == target.instrument_id
+        && source.instrument_state == target.instrument_state
+        && source.instrument_slot_enabled()
+        && target.instrument_slot_enabled()
+        && source.midi_source_index == target.midi_source_index
+}
+
+/// Retune only still-owned occurrences; unrelated source/device tails retain the
+/// copied source sampler forever. The actual occurrence sampler carries offsets
+/// from earlier applied edits, so rapid revisions and Undo never restart phase.
+fn retune_inline_release(
+    previous: &SessionPlayback,
+    candidate: &PreparedRevision,
+    routes: &[TrackRoute],
+    release: &mut ReleaseEntry,
+) -> Result<(), SessionPlaybackError> {
+    use crate::midi_note_bank::PreparedMidiNote;
+    if !release.inline_tuning_owned {
+        return Ok(());
+    }
+    let Some(owned) = release.continuation else {
+        release.inline_tuning_owned = false;
+        return Ok(());
+    };
+    let Some(old_index) = previous
+        .routes
+        .iter()
+        .position(|route| route.id == release.track_id)
+    else {
+        release.inline_tuning_owned = false;
+        return Ok(());
+    };
+    let Some(new_index) = routes.iter().position(|route| route.id == release.track_id) else {
+        release.inline_tuning_owned = false;
+        return Ok(());
+    };
+    let old_route = effective_midi_route(&previous.revision, &previous.routes, old_index)?;
+    let new_route = effective_midi_route(candidate, routes, new_index)?;
+    let source = &previous.revision.arrangement().tracks()[old_index];
+    let target = &candidate.arrangement().tracks()[new_index];
+    if old_route.owner != new_route.owner
+        || !inline_tuning_owner_matches(source, target)
+        || release.location.tail_group().is_some()
+    {
+        release.inline_tuning_owned = false;
+        return Ok(());
+    }
+    let target_sampler = match new_route.owner {
+        RouteOwner::Arrangement => {
+            let mut sampler = None;
+            target
+                .for_each_active_midi_span(previous.arrangement_frame, |span, prepared| {
+                    if span.clip == owned.key.clip
+                        && span.note == owned.key.note
+                        && span.iteration == owned.key.iteration
+                        && span.onset_beat == owned.onset_beat
+                        && span.gate_end_beat == owned.gate_end_beat
+                        && span.pitch == owned.pitch
+                        && span.channel == owned.channel
+                        && span.velocity == owned.velocity
+                    {
+                        sampler = Some(prepared);
+                    }
+                })
+                .map_err(|e| SessionPlaybackError::Arrangement(e.0))?;
+            sampler
+        }
+        RouteOwner::Session { clip, launch } => candidate
+            .session()
+            .midi_clip_for_track(clip, release.track_id)
+            .and_then(|clip| {
+                let occurrence = clip.occurrence(owned.key.note, owned.key.iteration, launch)?;
+                if clip.id != owned.key.clip
+                    || occurrence.onset != owned.onset_beat
+                    || occurrence.gate_end != owned.gate_end_beat
+                    || occurrence.pitch != owned.pitch
+                    || occurrence.channel != owned.channel
+                    || occurrence.velocity != owned.velocity
+                {
+                    return None;
+                }
+                let bank = clip.instrument_template().note_bank();
+                bank.index(owned.pitch, owned.velocity)
+                    .and_then(|index| bank.sampler(index))
+            }),
+        _ => None,
+    };
+    let Some(PreparedMidiNote::Inline(target)) = target_sampler else {
+        release.inline_tuning_owned = false;
+        return Ok(());
+    };
+    let PreparedMidiNote::Inline(source) = release.voice.sampler() else {
+        return Err(SessionPlaybackError::SharedAnalyticContext);
+    };
+    let age = previous
+        .performance_frame
+        .checked_sub(release.voice.start_frame())
+        .ok_or(SessionPlaybackError::ArithmeticOverflow)?;
+    let continued = target
+        .continue_from(&source, age)
+        .map_err(|_| SessionPlaybackError::Arrangement("inline tuning continuation was refused"))?;
+    release
+        .voice
+        .set_sampler(PreparedMidiNote::Inline(continued));
+    Ok(())
 }

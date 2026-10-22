@@ -208,6 +208,8 @@ fn split_refuses_project_clip_limit_and_note_duplication_limit() {
         })
         .collect();
     let full_project = Project::from_snapshot(Snapshot {
+        main_devices: Vec::new(),
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

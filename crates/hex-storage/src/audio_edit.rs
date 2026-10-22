@@ -1,9 +1,9 @@
 //! Version-21 musical audio metadata adapter; no DSP or PCM persistence.
 use crate::StorageError;
 use hex_project::{
-    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatTime, BeatsPreserve,
-    BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker, WarpMode,
-    WarpSettings,
+    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, AudioViewMode,
+    AudioViewPlacement, BeatTime, BeatsPreserve, BeatsTail, ClipFade, SourceGainPoint, Tempo,
+    TempoMap, TempoPoint, WarpMarker, WarpMode, WarpSettings,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -15,6 +15,26 @@ pub(crate) struct AudioEditDto {
     view_start: u64,
     view_end: u64,
     musical_start_raw: Option<u64>,
+    #[serde(deserialize_with = "required_placement")]
+    placement: Option<Placement>,
+}
+fn required_placement<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<Placement>, D::Error> {
+    Option::deserialize(d)
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Placement {
+    mode: ViewMode,
+    outer_length: Clock,
+    cycle_phase: u64,
+}
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ViewMode {
+    Once,
+    Repeat,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +45,7 @@ struct Domain {
     looping: bool,
     clock: Clock,
     pitch_cents: i16,
+    sample_micro_bpm: Option<u32>,
     warp_enabled: bool,
     warp: Option<Warp>,
     source_gain: Vec<GainPoint>,
@@ -125,6 +146,7 @@ impl From<AudioClipEdit> for AudioEditDto {
                     },
                 },
                 pitch_cents: d.pitch_cents,
+                sample_micro_bpm: d.sample_bpm.map(Tempo::micro_bpm),
                 warp_enabled: d.warp_enabled,
                 warp: d.warp.as_ref().map(|warp| Warp {
                     mode: match warp.mode {
@@ -202,6 +224,19 @@ impl From<AudioClipEdit> for AudioEditDto {
             view_start: edit.view_start,
             view_end: edit.view_end,
             musical_start_raw: edit.musical_start.map(BeatTime::raw),
+            placement: edit.placement.map(|p| Placement {
+                mode: match p.mode {
+                    AudioViewMode::Once => ViewMode::Once,
+                    AudioViewMode::Repeat => ViewMode::Repeat,
+                },
+                outer_length: match p.outer_length {
+                    AudioDomainClock::Frames(length) => Clock::Frames { length },
+                    AudioDomainClock::Beats(length) => Clock::Beats {
+                        length_raw: length.raw(),
+                    },
+                },
+                cycle_phase: p.cycle_phase,
+            }),
         }
     }
 }
@@ -236,7 +271,8 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                     .origin_beat_raw
                     .parse::<i128>()
                     .map_err(|_| StorageError::Invalid("invalid audio fade projection origin"))?;
-                if !(-i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&origin) {
+                // Match audio_projection_frame: consumed Once phase plus root offset.
+                if !(-2 * i128::from(u64::MAX)..=i128::from(u64::MAX)).contains(&origin) {
                     return Err(StorageError::Invalid(
                         "audio fade projection origin exceeds bounded range",
                     ));
@@ -304,6 +340,11 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                     }
                 },
                 pitch_cents: d.pitch_cents,
+                sample_bpm: d
+                    .sample_micro_bpm
+                    .map(Tempo::new)
+                    .transpose()
+                    .map_err(|e| StorageError::Invalid(e.0))?,
                 warp_enabled: d.warp_enabled,
                 warp,
                 source_gain: d
@@ -321,6 +362,19 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
             view_start: dto.view_start,
             view_end: dto.view_end,
             musical_start: dto.musical_start_raw.map(BeatTime::from_raw),
+            placement: dto.placement.map(|p| AudioViewPlacement {
+                mode: match p.mode {
+                    ViewMode::Once => AudioViewMode::Once,
+                    ViewMode::Repeat => AudioViewMode::Repeat,
+                },
+                outer_length: match p.outer_length {
+                    Clock::Frames { length } => AudioDomainClock::Frames(length),
+                    Clock::Beats { length_raw } => {
+                        AudioDomainClock::Beats(BeatTime::from_raw(length_raw))
+                    }
+                },
+                cycle_phase: p.cycle_phase,
+            }),
         })
     }
 }

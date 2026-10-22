@@ -30,8 +30,11 @@ fn inventory_shape(
 ) -> Result<Arc<PreparedRevision>, crate::Invalid> {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
     editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "layout".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap();
     let mut snapshot = editor.project().snapshot();
@@ -71,6 +74,7 @@ fn inventory_shape(
         }
         for effect in 0..effect_count {
             track.devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: if eq && effect + 1 == effect_count {
                     equalizer.clone()
@@ -115,6 +119,7 @@ fn inventory_shape(
         let mut devices = Vec::new();
         for _ in 0..hex_project::MAX_DEVICES_PER_TRACK {
             devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: utility.clone(),
                 bypassed: false,
@@ -183,7 +188,7 @@ fn candidate_pool_charge_with_admitted_track_and_effect_inventory() {
     assert!(preflight + pool <= MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES);
     assert_eq!(
         std::mem::size_of::<crate::midi_note_bank::PreparedMidiNote>(),
-        344
+        352
     );
 }
 

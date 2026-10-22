@@ -317,7 +317,11 @@ impl EditorView {
     pub(super) fn controller_input_is_open(&self) -> bool {
         self.controller_input.menu_focus.is_some()
     }
-    fn close_controller_input_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn close_controller_input_menu(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         self.controller_input.menu_focus = None;
         window.focus(
             self.controller_input
@@ -477,8 +481,11 @@ mod tests {
         let mut editor =
             hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
         let hex_project::Created::Track(track) = editor
-            .execute(hex_project::Command::AddMidiTrack {
+            .execute(hex_project::Command::InsertTrackWithDevice {
                 name: "controller".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         else {
@@ -689,8 +696,11 @@ fn controller_input_streaming_guard_cancels_without_discovery_or_retry(
     let mut project =
         hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 4).unwrap();
     let hex_project::Created::Track(track) = project
-        .execute(hex_project::Command::AddMidiTrack {
+        .execute(hex_project::Command::InsertTrackWithDevice {
             name: "controller".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {

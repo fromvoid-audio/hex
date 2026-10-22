@@ -119,7 +119,7 @@ fn real_ordered_mixed_rate_import_progress_paths_and_undo_redo_without_reopen() 
     assert_eq!(progress.phase, AudioBatchPhase::Completed);
     assert_eq!(progress.completed_members, 2);
     assert_eq!(control.request_cancel(), AudioBatchCancel::TooLate);
-    assert_eq!(s.resident_frames(), 17);
+    assert_eq!(s.resident_frames(), 22);
     for (i, result) in created.iter().enumerate() {
         let id = asset(*result);
         let metadata = s.project().assets().find(|a| a.id() == id).unwrap();
@@ -147,8 +147,29 @@ fn real_ordered_mixed_rate_import_progress_paths_and_undo_redo_without_reopen() 
 fn one_file_matches_existing_worker_decode_and_single_import() {
     let files = Files::new();
     let path = files.wav("Source.wav", 24_000, 6, 1234);
-    let mut old = session();
-    let mut new = session();
+    // Both import routes start from the same authored project. Cyan is the
+    // only unused hue, so creation remains deterministic without replacing
+    // production randomness or discarding colors from the comparison.
+    let mut fixture = hex_project::Editor::new(Project::new(48_000).unwrap(), 32).unwrap();
+    for color in hex_project::ElementColor::TRACK_CHOICES
+        .into_iter()
+        .filter(|color| *color != hex_project::ElementColor::Cyan)
+    {
+        let Created::Track(track) = fixture
+            .execute(hex_project::Command::AddTrack {
+                name: "authored color fixture".into(),
+            })
+            .unwrap()
+        else {
+            panic!("expected track")
+        };
+        fixture
+            .execute(hex_project::Command::SetTrackColor { track, color })
+            .unwrap();
+    }
+    let baseline = fixture.project().clone();
+    let mut old = Session::from_loaded(baseline.clone(), 16, 8_000_000, Vec::new()).unwrap();
+    let mut new = Session::from_loaded(baseline, 16, 8_000_000, Vec::new()).unwrap();
     let decoded = decode_wav_file(&path, Limits::new(FILE_BYTES, SOURCE_FRAMES)).unwrap();
     let prepared = PreparedImport::at_rate(
         decoded,
@@ -164,9 +185,23 @@ fn one_file_matches_existing_worker_decode_and_single_import() {
     capture(&new, vec![path])
         .run(&mut new, None, context)
         .unwrap();
+    assert_eq!(
+        old.project().tracks().last().unwrap().color(),
+        hex_project::ElementColor::Cyan
+    );
     assert_eq!(old.project(), new.project());
     assert_eq!(old.resident_frames(), new.resident_frames());
     assert_eq!(old.resident_waveform_bytes(), new.resident_waveform_bytes());
+    let after = old.project().clone();
+    assert!(old.undo() && new.undo());
+    assert_eq!(
+        old.project(),
+        new.project(),
+        "complete canonical undo states"
+    );
+    assert!(old.redo() && new.redo());
+    assert_eq!(old.project(), &after);
+    assert_eq!(new.project(), &after);
 }
 
 #[test]
@@ -491,3 +526,5 @@ fn cancel_request_is_observed_after_decode_and_conversion_boundaries() {
         assert_eq!(control.progress().phase, AudioBatchPhase::Canceled);
     }
 }
+
+mod console;

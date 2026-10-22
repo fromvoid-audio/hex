@@ -4,11 +4,20 @@ use super::midi_draw::StrokeModifiers;
 use super::{EditorView, midi::NoteField};
 use crate::theme;
 use gpui::{
-    Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, Window,
-    canvas, div, fill, point, prelude::*, px, relative, rgb, size,
+    Bounds, Context, Div, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ScrollWheelEvent, Window, canvas, div, fill, point, prelude::*, px, relative, rgb, size,
 };
 use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
+
+fn gesture_bounds_from(bounds: Bounds<gpui::Pixels>) -> [f32; 4] {
+    [
+        f32::from(bounds.origin.x),
+        f32::from(bounds.origin.y),
+        f32::from(bounds.size.width),
+        f32::from(bounds.size.height),
+    ]
+}
 
 fn beat_at_x(
     x: f32,
@@ -76,8 +85,25 @@ fn pitch_at_y(y: f32, height: f32, low: u8) -> Option<u8> {
 
 impl EditorView {
     pub(super) fn midi_editor(&mut self, cx: &mut Context<Self>) -> Option<Div> {
+        let selected = self.detail_clip_id()?;
+        let length = self
+            .state
+            .as_ref()?
+            .project
+            .midi_source(selected)?
+            .source_length()
+            .raw();
+        let owner = (self.project_generation, selected);
+        if self.piano_view_clip != Some(owner) {
+            self.cancel_midi_note_gesture();
+            self.piano_view_clip = Some(owner);
+            self.piano_zoom_wheel_accum = 0.0;
+            self.piano_beat_start = BeatTime::ZERO;
+            self.piano_beat_span =
+                BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
+        }
         let state = self.state.as_ref()?;
-        let clip_id = self.selected_clip?;
+        let clip_id = self.detail_clip_id()?;
         let source = state.project.midi_source(clip_id)?;
         let arrangement = state.project.midi_clip(clip_id);
         let revision = state.revision;
@@ -156,6 +182,7 @@ impl EditorView {
             .midi_stroke
             .as_ref()
             .map(|stroke| stroke.shared_preview());
+        let draw_creation = self.midi_creation.as_ref().map(|creation| creation.preview);
         let draw_marquee = self.midi_marquee;
         let draw_marker = self.midi_marker;
         let draw_pitch_locked = self.midi_draw_pitch_locked;
@@ -348,19 +375,21 @@ impl EditorView {
                     }
                 }
 
-                if let Some(stroke) = &draw_stroke {
-                    for note in &stroke.inserted {
-                        if let Some(rect) = canvas_scene.insert_geometry(*note) {
-                            let x = rect.x * width;
-                            let right = (rect.x + rect.width) * width;
-                            quad(
-                                x,
-                                rect.y * height + 1.0,
-                                right - x,
-                                (height / 24.0 - 2.0).max(1.0),
-                                theme::color(theme::PaletteRole::Primary),
-                            );
-                        }
+                for note in draw_stroke
+                    .iter()
+                    .flat_map(|stroke| stroke.inserted.iter().copied())
+                    .chain(draw_creation)
+                {
+                    if let Some(rect) = canvas_scene.insert_geometry(note) {
+                        let x = rect.x * width;
+                        let right = (rect.x + rect.width) * width;
+                        quad(
+                            x,
+                            rect.y * height + 1.0,
+                            right - x,
+                            (height / 24.0 - 2.0).max(1.0),
+                            theme::color(theme::PaletteRole::Primary),
+                        );
                     }
                 }
                 if let Some((id, item)) = draw_preview {
@@ -467,6 +496,26 @@ impl EditorView {
                     pitch_locked: draw_pitch_locked,
                     draw_mode,
                 };
+                let wheel_entity = entity.clone();
+                window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
+                    if !phase.capture() || !bounds.contains(&event.position) {
+                        return;
+                    }
+                    let delta = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
+                    if !delta.is_finite() || delta == 0.0 {
+                        return;
+                    }
+                    cx.stop_propagation();
+                    wheel_entity.update(cx, |view, cx| {
+                        if view.zoom_piano_wheel_at(
+                            gesture_bounds_from(bounds),
+                            f32::from(event.position.x),
+                            delta,
+                        ) {
+                            cx.notify();
+                        }
+                    });
+                });
                 let mouse_down_entity = entity.clone();
                 let event_scene = std::sync::Arc::clone(&canvas_scene_events);
                 window.on_mouse_event(move |event: &MouseDownEvent, phase, window, cx| {
@@ -490,7 +539,7 @@ impl EditorView {
                     mouse_down_entity.update(cx, |view, view_cx| {
                         if view.project_generation != generation
                             || view.state.as_ref().is_none_or(|s| s.revision != revision)
-                            || view.selected_clip != Some(clip_id)
+                            || view.detail_clip_id() != Some(clip_id)
                             || view.edit_pending()
                         {
                             return;
@@ -684,14 +733,17 @@ impl EditorView {
                         }
                         view.midi_marquee = None;
                         view.midi_selection.clear();
-                        view.enqueue(Request::Edit(Command::AddMidiNote {
-                            clip: clip_id,
-                            start: local_beat,
-                            duration: BeatTime::from_raw(duration),
-                            pitch,
-                            channel: 0,
-                            velocity: 100,
-                        }));
+                        view.begin_midi_creation(
+                            rendered_context,
+                            f32::from(event.position.x),
+                            hex_project::MidiNoteInsert {
+                                start: local_beat,
+                                duration: BeatTime::from_raw(duration),
+                                pitch,
+                                channel: 0,
+                                velocity: 100,
+                            },
+                        );
                         view_cx.notify();
                     });
                 });
@@ -701,6 +753,16 @@ impl EditorView {
                         return;
                     }
                     mouse_move_entity.update(cx, |view, view_cx| {
+                        if view.midi_creation.is_some() {
+                            if view.update_midi_creation(
+                                gesture_bounds_from(bounds),
+                                f32::from(event.position.x),
+                                StrokeModifiers::from_platform(event.modifiers),
+                            ) {
+                                view_cx.notify();
+                            }
+                            return;
+                        }
                         if let Some((first, _, additive)) = view.midi_marquee {
                             let last = [
                                 f32::from(event.position.x - bounds.origin.x),
@@ -726,12 +788,13 @@ impl EditorView {
                             }
                             return;
                         }
+                        let detail_clip = view.detail_clip_id();
                         if let Some(gesture) = &mut view.midi_group_gesture {
                             let current =
                                 gesture.is_current(super::midi_group_drag::GroupContext {
                                     generation,
                                     revision,
-                                    clip: view.selected_clip,
+                                    clip: detail_clip,
                                     selection_epoch: view.midi_selection.epoch(),
                                     beat_start: beat_start.raw(),
                                     beat_span: beat_span.raw(),
@@ -761,7 +824,7 @@ impl EditorView {
                         let context = midi_drag::GestureContext {
                             generation,
                             revision,
-                            selected_clip: view.selected_clip,
+                            selected_clip: view.detail_clip_id(),
                             selected_note: view.midi_selection.primary(),
                             clip_contains_note: false,
                             pending: false,
@@ -803,6 +866,16 @@ impl EditorView {
                         return;
                     }
                     mouse_up_entity.update(cx, |view, view_cx| {
+                        if view.midi_creation.is_some() {
+                            view.finish_midi_creation(
+                                gesture_bounds_from(bounds),
+                                f32::from(event.position.x),
+                                bounds.contains(&event.position),
+                                StrokeModifiers::from_platform(event.modifiers),
+                            );
+                            view_cx.notify();
+                            return;
+                        }
                         if view.midi_stroke.is_some() {
                             view.finish_midi_draw(
                                 [
@@ -823,7 +896,7 @@ impl EditorView {
                                 .state
                                 .as_ref()
                                 .is_none_or(|state| state.revision != revision)
-                            || view.selected_clip != Some(clip_id)
+                            || view.detail_clip_id() != Some(clip_id)
                             || view.edit_pending()
                         {
                             view.midi_note_gesture = None;
@@ -865,7 +938,7 @@ impl EditorView {
                             let context = super::midi_group_drag::GroupContext {
                                 generation,
                                 revision,
-                                clip: view.selected_clip,
+                                clip: view.detail_clip_id(),
                                 selection_epoch: view.midi_selection.epoch(),
                                 beat_start: beat_start.raw(),
                                 beat_span: beat_span.raw(),
@@ -910,7 +983,7 @@ impl EditorView {
                         let context = midi_drag::GestureContext {
                             generation,
                             revision,
-                            selected_clip: view.selected_clip,
+                            selected_clip: view.detail_clip_id(),
                             selected_note: view.midi_selection.primary(),
                             clip_contains_note: false,
                             pending: false,
@@ -1134,7 +1207,7 @@ impl EditorView {
                 if self.midi_draw_mode {
                     "draw mode on · click or drag to draw · press b for normal mode"
                 } else {
-                    "normal mode · double-click to add or remove · press b for draw mode"
+                    "normal mode · double-click and drag to add/resize · double-click note to remove · b for draw mode"
                 },
                 cx.listener(|v, _, _, cx| {
                     v.midi_draw_mode = !v.midi_draw_mode;
@@ -1423,6 +1496,46 @@ impl EditorView {
         self.cancel_midi_note_gesture();
     }
 
+    fn zoom_piano_wheel_at(&mut self, bounds: [f32; 4], x: f32, delta: f32) -> bool {
+        if self.context_menu.is_some() || !delta.is_finite() || delta == 0.0 {
+            return false;
+        }
+        let Some(length) = self
+            .midi_clip()
+            .map(|source| source.source_length().raw())
+            .filter(|length| *length > 0)
+        else {
+            return false;
+        };
+        let Some(anchor) = midi_drag::beat_at_point(
+            x,
+            bounds,
+            self.piano_beat_start.raw(),
+            self.piano_beat_span.raw(),
+        ) else {
+            return false;
+        };
+        // Match Arrange's bounded wheel accumulation; keep its state independent.
+        self.piano_zoom_wheel_accum = (self.piano_zoom_wheel_accum + delta).clamp(-320.0, 320.0);
+        let steps = (self.piano_zoom_wheel_accum / 80.0).trunc() as i8;
+        if steps == 0 {
+            return false;
+        }
+        self.piano_zoom_wheel_accum -= f32::from(steps) * 80.0;
+        let current = (self.piano_beat_start.raw(), self.piano_beat_span.raw());
+        let mut next = current;
+        for _ in 0..steps.unsigned_abs() {
+            next = super::midi_scene::wheel_zoom(next.0, next.1, length, anchor, steps < 0);
+        }
+        if next == current {
+            return false;
+        }
+        self.cancel_midi_note_gesture();
+        self.piano_beat_start = BeatTime::from_raw(next.0);
+        self.piano_beat_span = BeatTime::from_raw(next.1);
+        true
+    }
+
     fn zoom_piano(&mut self, inward: bool) {
         self.cancel_midi_note_gesture();
         let clip_length = self
@@ -1456,11 +1569,12 @@ impl EditorView {
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
+        let creation = self.midi_creation.take().is_some();
         let note = self.midi_note_gesture.take().is_some();
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
         let marquee = self.midi_marquee.take().is_some();
-        note || group || stroke || marquee
+        creation || note || group || stroke || marquee
     }
 
     fn midi_note_gesture_current(
@@ -1544,7 +1658,7 @@ impl EditorView {
         tooltip: &'static str,
         click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<Div> {
-        div()
+        let button = div()
             .id(id)
             .w(px(25.0))
             .h(px(22.0))
@@ -1563,7 +1677,10 @@ impl EditorView {
                 .into()
             })
             .on_click(click)
-            .child(theme::text(label))
+            .child(theme::text(label));
+        #[cfg(feature = "ui-test-support")]
+        let button = button.debug_selector(move || tooltip.into());
+        button
     }
 }
 
@@ -1683,3 +1800,11 @@ mod tests {
         assert!(source_beat_label(u64::MAX).len() <= 7);
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_creation_ui_tests.rs"]
+mod creation_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_zoom_ui_tests.rs"]
+mod zoom_tests;

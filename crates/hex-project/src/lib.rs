@@ -1,22 +1,44 @@
-//! Canonical, control-side audio/MIDI arrangement and transactional editing.
-//! Audio/source positions are project-rate frames; MIDI clip/note positions are beats.
+//! # Purpose
+//! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
+//! transactional history.
+//!
+//! # Dependencies
+//! Uses hex-tuning and neutral hex-lattice-contract metadata/state; never DSP implementations.
+//!
+//! # Does not own
+//! Does not render DSP, access audio devices or maintain a parallel UI editing model. Audio
+//! placement uses project-rate frames; MIDI uses checked Q32.32 quarter-note beats. Failed
+//! preparation must preserve project, IDs and history.
 mod audio_events;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
+mod clip_fade_trim;
 mod clip_name;
 pub use audio_edit::{
-    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, BeatsPreserve,
-    BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS, MAX_SOURCE_GAIN, ProjectedAudioFade,
-    SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode, WarpSettings, audio_projection_beat,
-    audio_projection_frame, default_audio_warp,
+    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, AudioViewMode,
+    AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
+    AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
+    MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
+    WarpSettings, audio_projection_beat, audio_projection_frame, default_audio_warp,
+    preview_audio_clip_stretch, preview_audio_view_resize, preview_view_resize,
 };
 mod appearance;
 mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
+mod clip_clipboard;
 mod clip_copy;
+mod clip_group;
+mod clip_group_preview;
+pub use clip_clipboard::ClipClipboard;
+pub use clip_group::{ClipGroupContent, ClipGroupPosition, ClipGroupPreview};
+pub use clip_group_preview::ClipGroupMovePreview;
 mod clip_fragment;
 mod conversion;
 mod device;
+mod device_comparison;
+mod main_devices;
+pub use device_comparison::{DeviceComparison, DeviceComparisonAction, DeviceVariant};
+mod device_assets;
 pub use device::{
     DEFAULT_INSTRUMENT_TYPE_ID, Device, MAX_DEVICES, MAX_DEVICES_PER_TRACK,
     default_instrument_state,
@@ -27,6 +49,9 @@ pub use conversion::{
     IDENTITY_CONVERSION, SINC_CONVERSION_V1, converted_frame_count, validate_conversion_metadata,
 };
 mod history;
+mod instrument_history;
+mod midi_history;
+pub use midi_history::MidiHistoryEffect;
 mod provenance;
 pub use provenance::{ImportProvenance, MAX_IMPORT_DOCUMENT_BYTES};
 mod time_range;
@@ -64,6 +89,7 @@ pub use session::{
 pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
 pub use history::Editor;
+pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
 pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
@@ -149,9 +175,37 @@ impl fmt::Display for Invalid {
 }
 impl std::error::Error for Invalid {}
 
+/// Expected normalized original PCM content. Presence marks a device-original
+/// asset, never an ordinary clip derivative. Values grant no native custody.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalSourceFacts {
+    law_version: u32,
+    content_digest: [u8; 32],
+}
+impl OriginalSourceFacts {
+    /// Domain/rate/frame/f32-bit law owned by the native resource catalog.
+    pub const LAW_VERSION: u32 = 1;
+    pub fn new(law_version: u32, content_digest: [u8; 32]) -> Result<Self, Invalid> {
+        if law_version != Self::LAW_VERSION {
+            return Err(Invalid("unsupported original source content law"));
+        }
+        Ok(Self {
+            law_version,
+            content_digest,
+        })
+    }
+    pub fn law_version(self) -> u32 {
+        self.law_version
+    }
+    pub fn content_digest(self) -> [u8; 32] {
+        self.content_digest
+    }
+}
+
 /// Location and validated metadata. Paths/names retain the user's casing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Asset {
+    pub(crate) original_source: Option<OriginalSourceFacts>,
     pub(crate) id: AssetId,
     pub(crate) path: PathBuf,
     pub(crate) source_sample_rate: u32,
@@ -160,6 +214,9 @@ pub struct Asset {
     pub(crate) conversion_version: u32,
 }
 impl Asset {
+    pub fn original_source(&self) -> Option<OriginalSourceFacts> {
+        self.original_source
+    }
     pub fn id(&self) -> AssetId {
         self.id
     }
@@ -187,15 +244,8 @@ impl Asset {
     }
 }
 
-/// Half-open timeline interval. Looping repeats [source_offset, source_offset + source_length).
-/// Linear fade domain is fixed while clips are split; trims reanchor the domain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ClipFade {
-    span: u64,
-    offset: u64,
-    fade_in: u64,
-    fade_out: u64,
-}
+mod clip_fade;
+pub use clip_fade::ClipFade;
 
 /// Edge used by the canonical absolute-frame clip trim command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -205,92 +255,6 @@ pub enum TrimEdge {
     /// Exclusive timeline end frame.
     Right,
 }
-impl ClipFade {
-    pub fn new(span: u64, offset: u64, fade_in: u64, fade_out: u64) -> Result<Self, Invalid> {
-        if span == 0 {
-            return Err(Invalid("fade span must be positive"));
-        }
-        let end = offset
-            .checked_add(1)
-            .ok_or(Invalid("fade offset overflow"))?;
-        if end > span {
-            return Err(Invalid("fade offset must be inside its span"));
-        }
-        if fade_in > span || fade_out > span {
-            return Err(Invalid("fade lengths must not exceed their span"));
-        }
-        Ok(Self {
-            span,
-            offset,
-            fade_in,
-            fade_out,
-        })
-    }
-
-    pub fn neutral(span: u64) -> Result<Self, Invalid> {
-        Self::new(span, 0, 0, 0)
-    }
-
-    pub fn span(self) -> u64 {
-        self.span
-    }
-    pub fn offset(self) -> u64 {
-        self.offset
-    }
-    pub fn fade_in(self) -> u64 {
-        self.fade_in
-    }
-    pub fn fade_out(self) -> u64 {
-        self.fade_out
-    }
-
-    pub fn validate_segment(self, duration: u64) -> Result<(), Invalid> {
-        if duration == 0 {
-            return Err(Invalid("clip fade segment exceeds its domain"));
-        }
-        let end = self
-            .offset
-            .checked_add(duration)
-            .ok_or(Invalid("clip fade segment exceeds its domain"))?;
-        if end > self.span {
-            return Err(Invalid("clip fade segment exceeds its domain"));
-        }
-        Ok(())
-    }
-
-    pub fn with_offset(self, offset: u64, duration: u64) -> Result<Self, Invalid> {
-        let fade = Self::new(self.span, offset, self.fade_in, self.fade_out)?;
-        fade.validate_segment(duration)?;
-        Ok(fade)
-    }
-
-    /// Original Hex linear endpoint law; overlapping fades multiply.
-    pub fn gain_at(self, frame: u64) -> f32 {
-        let Some(position) = self.offset.checked_add(frame) else {
-            return 0.0;
-        };
-        if position >= self.span {
-            return 0.0;
-        }
-        let mut gain = 1.0_f64;
-        if self.fade_in > 0 && position < self.fade_in {
-            gain *= if self.fade_in == 1 {
-                1.0
-            } else {
-                position as f64 / (self.fade_in - 1) as f64
-            };
-        }
-        if self.fade_out > 0 && position >= self.span - self.fade_out {
-            gain *= if self.fade_out == 1 {
-                0.0
-            } else {
-                (self.span - 1 - position) as f64 / (self.fade_out - 1) as f64
-            };
-        }
-        gain as f32
-    }
-}
-
 /// Saved audio-clip gain in integer millidecibels, before track processing.
 /// The finite -60..=24 dB range does not imply normalization or output limiting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -387,6 +351,19 @@ impl Clip {
 
     pub(crate) fn audio_edit_mut(&mut self) -> Option<&mut AudioClipEdit> {
         self.edit.as_mut().map(Arc::make_mut)
+    }
+
+    /// Trim the selected lower fade handle and its clip edge together. `frame`
+    /// is the absolute edge (exclusive for the right edge), with source/domain
+    /// bounds and the authored upper fade endpoint applied by the model.
+    pub fn preview_fade_edge_trim(
+        &self,
+        edge: TrimEdge,
+        frame: u64,
+        asset_playback_frames: u64,
+        tempo: &TempoMap,
+    ) -> Result<Self, Invalid> {
+        crate::clip_fade_trim::preview(self, edge, frame, asset_playback_frames, tempo)
     }
 
     pub fn preview_edge_trim_with_tempo(
@@ -534,6 +511,7 @@ impl<'a> Iterator for OrderedDeviceChain<'a> {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Project {
+    pub(crate) tuning: hex_tuning::ProjectTuning,
     pub(crate) routing: Vec<ReturnFeed>,
     pub(crate) audio_feeds: Vec<AudioFeed>,
     pub(crate) midi_routes: Vec<MidiRoute>,
@@ -546,6 +524,7 @@ pub struct Project {
     pub(crate) session: SessionGrid,
     pub(crate) loop_region: Option<LoopRegion>,
     pub(crate) master_gain: f32,
+    pub(crate) main_devices: Vec<Device>,
     pub(crate) tempo_map: TempoMap,
     pub(crate) meter_map: MeterMap,
 }
@@ -555,6 +534,7 @@ impl Project {
             return Err(Invalid("project sample rate must be 8000..192000 hz"));
         }
         Ok(Self {
+            tuning: hex_tuning::ProjectTuning::default(),
             routing: Vec::new(),
             audio_feeds: Vec::new(),
             midi_routes: Vec::new(),
@@ -567,10 +547,54 @@ impl Project {
             session: SessionGrid::default(),
             loop_region: None,
             master_gain: 1.0,
+            main_devices: Vec::new(),
             tempo_map: TempoMap::constant(sample_rate, Tempo::new(120_000_000)?)?,
             meter_map: MeterMap::common_time(),
         })
     }
+    /// Project-saved tuning and audition settings; no local library identity.
+    pub fn tuning(&self) -> hex_tuning::ProjectTuning {
+        self.tuning
+    }
+
+    /// Compare every canonical field except project tuning without cloning metadata.
+    /// Used by prepared tuning publications; it does not authorize playback itself.
+    pub fn same_except_tuning(&self, other: &Self) -> bool {
+        let Self {
+            tuning: _,
+            routing,
+            audio_feeds,
+            midi_routes,
+            import_provenance,
+            sample_rate,
+            next_id,
+            assets,
+            tracks,
+            returns,
+            session,
+            loop_region,
+            master_gain,
+            main_devices,
+            tempo_map,
+            meter_map,
+        } = self;
+        routing == &other.routing
+            && audio_feeds == &other.audio_feeds
+            && midi_routes == &other.midi_routes
+            && import_provenance == &other.import_provenance
+            && sample_rate == &other.sample_rate
+            && next_id == &other.next_id
+            && assets == &other.assets
+            && tracks == &other.tracks
+            && returns == &other.returns
+            && session == &other.session
+            && loop_region == &other.loop_region
+            && main_devices == &other.main_devices
+            && master_gain == &other.master_gain
+            && tempo_map == &other.tempo_map
+            && meter_map == &other.meter_map
+    }
+
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate
     }
@@ -601,6 +625,7 @@ impl Project {
         for track in &mut self.tracks {
             if track.instrument.is_none() {
                 track.instrument = Some(Device {
+                    comparison: None,
                     id: DeviceId(id),
                     state: state.clone(),
                     bypassed: false,
@@ -663,6 +688,11 @@ impl Project {
     pub fn loop_region(&self) -> Option<LoopRegion> {
         self.loop_region
     }
+    /// Effect-only singleton Main chain; never a regular track or clip destination.
+    pub fn main_devices(&self) -> &[Device] {
+        &self.main_devices
+    }
+
     /// Linear master output gain in the inclusive range 0..=2.
     pub fn master_gain(&self) -> f32 {
         self.master_gain
@@ -754,6 +784,7 @@ impl Project {
             .iter()
             .flat_map(|track| track.devices().iter().chain(track.instrument.iter()))
             .chain(self.returns.iter().flat_map(|track| track.devices.iter()))
+            .chain(self.main_devices.iter())
             .find(|device| device.id() == id)
     }
     pub(crate) fn device_mut(&mut self, id: DeviceId) -> Result<&mut Device, Invalid> {
@@ -771,6 +802,7 @@ impl Project {
                     .iter_mut()
                     .find_map(|track| track.devices.iter_mut().find(|device| device.id == id))
             })
+            .or_else(|| self.main_devices.iter_mut().find(|device| device.id == id))
             .ok_or(Invalid("device no longer exists"))
     }
     pub(crate) fn clip_mut(&mut self, id: ClipId) -> Result<&mut Clip, Invalid> {

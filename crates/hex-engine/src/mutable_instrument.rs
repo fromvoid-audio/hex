@@ -31,6 +31,17 @@ const MAX_MUTABLE_TAIL_SECONDS: u64 = 600;
 pub(crate) fn max_mutable_tail_frames(sample_rate: u32) -> Option<u64> {
     u64::from(sample_rate).checked_mul(MAX_MUTABLE_TAIL_SECONDS)
 }
+pub(crate) fn runtime_limits(
+    sample_rate: u32,
+) -> Result<NativeInstrumentRuntimeLimits, crate::Invalid> {
+    Ok(NativeInstrumentRuntimeLimits {
+        max_pair_bytes: MAX_STATEFUL_RUNTIME_PAIR_BYTES,
+        max_events_per_block: MAX_MUTABLE_EVENTS_PER_QUERY,
+        max_active_occurrences: MAX_SIMULTANEOUS_VOICES_PER_TRACK,
+        max_tail_frames: max_mutable_tail_frames(sample_rate)
+            .ok_or(crate::Invalid("mutable instrument tail budget overflow"))?,
+    })
+}
 pub(crate) const MAX_MUTABLE_CHECKPOINTS: usize = 16;
 pub(crate) const MAX_MUTABLE_CHECKPOINT_STORE_BYTES: usize = 256 * 1024;
 /// Combined declared DSP storage for committed/scratch pairs in one active
@@ -208,6 +219,7 @@ impl MutableOccurrenceKey {
 /// buffers are reserved during control-side construction.
 pub(crate) struct MutableInstrumentTrackRuntime {
     pair: NativeInstrumentRuntimePair,
+    pub(crate) resources: Option<crate::native_device_resources::PreparedDeviceResourceLease>,
     pub(crate) expression_identity: Option<hex_project::DeviceId>,
     pub(crate) expression: Option<crate::live_expression::Snapshot>,
     primary: Vec<MutableOccurrence>,
@@ -224,6 +236,47 @@ pub(crate) struct MutableInstrumentTail {
 }
 
 impl MutableInstrumentTrackRuntime {
+    pub(crate) fn is_concrete_current_sampler(&self) -> bool {
+        self.resources.is_none()
+            && self.expression.is_none()
+            && self
+                .pair
+                .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
+                .is_some()
+    }
+    pub(crate) fn visit_current_sampler_storage<'a>(
+        &'a self,
+        ledger: &mut crate::AudioRootStorageLedger<'a>,
+    ) -> Result<(), crate::AudioStorageError> {
+        let Self {
+            pair,
+            resources,
+            expression_identity: _,
+            expression,
+            primary,
+            scratch,
+            next_id: _,
+            next_id_scratch: _,
+        } = self;
+        if expression.is_some() || resources.is_some() {
+            return Err(crate::AudioStorageError::UnsupportedGraph);
+        }
+        let (first, second) = pair
+            .inline_storage_for_type::<hex_devices::sampler::SamplerRuntime>()
+            .ok_or(crate::AudioStorageError::UnsupportedGraph)?;
+        ledger.vec(primary)?;
+        ledger.vec(scratch)?;
+        ledger.bytes(
+            crate::audio_storage::Owner::exclusive(pair),
+            crate::audio_storage::Location("current-sampler-primary", 0),
+            first,
+        )?;
+        ledger.bytes(
+            crate::audio_storage::Owner::exclusive(pair),
+            crate::audio_storage::Location("current-sampler-scratch", 0),
+            second,
+        )
+    }
     /// Conservative checkpoint charge derived from the prepared declaration
     /// and both fixed occurrence-ledger buffers. Call before `new` so a store
     /// can reject count/aggregate overages before invoking the runtime factory.
@@ -287,6 +340,7 @@ impl MutableInstrumentTrackRuntime {
         }
         Ok(Self {
             pair,
+            resources: None,
             expression_identity: None,
             expression: None,
             primary,
@@ -297,10 +351,18 @@ impl MutableInstrumentTrackRuntime {
     }
 
     pub(crate) fn supports_live_expression(&self) -> bool {
+        let resources = self.resources.as_ref().map_or(
+            &hex_lattice::EMPTY_DEVICE_RESOURCES as &dyn hex_lattice::DeviceResources,
+            crate::native_device_resources::PreparedDeviceResourceLease::resources,
+        );
         self.pair.max_events_per_block() >= MAX_MUTABLE_EVENTS_PER_QUERY
             && self
                 .pair
-                .preflight_event_batch(&crate::live_expression::Snapshot::default().events(), 1)
+                .preflight_event_batch(
+                    &crate::live_expression::Snapshot::default().events(),
+                    1,
+                    resources,
+                )
                 .is_ok()
     }
 
@@ -419,7 +481,8 @@ impl MutableInstrumentTrackRuntime {
     /// owner. The canonical revision descriptor and route checks remain the
     /// caller's responsibility.
     pub(crate) fn can_inherit_from(&self, previous: &Self) -> bool {
-        self.primary.capacity() >= previous.primary.len()
+        self.resource_history_matches(previous)
+            && self.primary.capacity() >= previous.primary.len()
             && self.scratch.capacity() >= previous.primary.len()
             && self.pair.can_inherit_from(&previous.pair)
     }
@@ -431,7 +494,8 @@ impl MutableInstrumentTrackRuntime {
         &mut self,
         previous: &Self,
     ) -> Result<(), MutableInstrumentRuntimeError> {
-        if self.primary.capacity() < previous.primary.len()
+        if !self.resource_history_matches(previous)
+            || self.primary.capacity() < previous.primary.len()
             || self.scratch.capacity() < previous.primary.len()
             || !self.pair.can_inherit_from(&previous.pair)
         {
@@ -454,6 +518,14 @@ impl MutableInstrumentTrackRuntime {
         Ok(())
     }
 
+    /// Runtime history may carry only the same physical original-source bindings.
+    fn resource_history_matches(&self, previous: &Self) -> bool {
+        match (&self.resources, &previous.resources) {
+            (None, None) => true,
+            (Some(current), Some(previous)) => current.compatible(previous),
+            _ => false,
+        }
+    }
     /// Read-only preflight for a prepared instrument-state retarget. The
     /// candidate inventory owns `proof` until control retires this graph.
     pub(crate) fn can_retarget_from(
@@ -461,7 +533,8 @@ impl MutableInstrumentTrackRuntime {
         previous: &Self,
         proof: &dyn hex_lattice::PreparedInstrumentHistoryRetarget,
     ) -> bool {
-        self.primary.capacity() >= previous.primary.len()
+        self.resource_history_matches(previous)
+            && self.primary.capacity() >= previous.primary.len()
             && self.scratch.capacity() >= previous.primary.len()
             && self.pair.can_retarget_from(&previous.pair, proof)
     }
@@ -528,6 +601,28 @@ impl MutableInstrumentTrackRuntime {
             .checked_add(self.pair.fixed_storage_pair_bytes()?)
     }
 
+    pub(crate) fn transition_proofs(&self, speculative: bool) -> &[MutableOccurrence] {
+        if speculative {
+            &self.scratch
+        } else {
+            &self.primary
+        }
+    }
+    pub(crate) fn transition_proof_capacity(&self) -> usize {
+        self.primary.capacity().min(self.scratch.capacity())
+    }
+    pub(crate) fn max_events_per_block(&self) -> usize {
+        self.pair.max_events_per_block()
+    }
+    pub(crate) fn cut_speculative_gate_deadlines_at(&mut self, performance_frame: u64) {
+        let tail = self.max_release_tail_frames();
+        for occurrence in &mut self.scratch {
+            if !occurrence.note_off_sent && occurrence.gate_end_frame > performance_frame {
+                occurrence.gate_end_frame = performance_frame;
+                occurrence.quiet_deadline_frame = performance_frame.saturating_add(tail);
+            }
+        }
+    }
     pub(crate) fn max_active_occurrences(&self) -> usize {
         self.pair.max_active_occurrences()
     }
@@ -591,6 +686,31 @@ impl MutableInstrumentTrackRuntime {
         suppressions: &[MidiOccurrenceSuppression],
         events: &mut Vec<NativeInstrumentEvent>,
         clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+    ) -> Result<(), MutableInstrumentRuntimeError> {
+        self.process_segment_with_resources(
+            track,
+            performance_start,
+            source_start,
+            frames,
+            onsets,
+            suppressions,
+            events,
+            clock,
+            &hex_lattice::EMPTY_DEVICE_RESOURCES,
+        )
+    }
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn process_segment_with_resources(
+        &mut self,
+        track: TrackId,
+        performance_start: u64,
+        source_start: u64,
+        frames: &mut [[f32; 2]],
+        onsets: &mut MutableOnsetBuffer,
+        suppressions: &[MidiOccurrenceSuppression],
+        events: &mut Vec<NativeInstrumentEvent>,
+        clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        resources: &dyn hex_lattice::DeviceResources,
     ) -> Result<(), MutableInstrumentRuntimeError> {
         let width =
             u64::try_from(frames.len()).map_err(|_| MutableInstrumentRuntimeError::Arithmetic)?;
@@ -731,8 +851,12 @@ impl MutableInstrumentTrackRuntime {
             };
             (offset, is_on, occurrence_id)
         });
+        let resources = self
+            .resources
+            .as_ref()
+            .map_or(resources, |lease| lease.resources());
         self.pair
-            .process_block_with_clock(events, frames, clock)
+            .process_block_with_clock(events, frames, clock, resources)
             .map_err(map_runtime_error)
     }
 
@@ -953,23 +1077,25 @@ pub(crate) fn validate_prepared_graph_budget(
             )
             .ok_or(MutableInstrumentRuntimeError::Budget)?;
     }
-    for bus in arrangement.return_buses() {
-        for device in bus.device_chain.iter() {
-            let Some(definition) = &device.definition else {
-                continue;
-            };
-            effect_count = effect_count
-                .checked_add(1)
-                .ok_or(MutableInstrumentRuntimeError::Budget)?;
-            effect_bytes = effect_bytes
-                .checked_add(
-                    definition
-                        .declared_runtime_bytes()
-                        .checked_mul(2)
-                        .ok_or(MutableInstrumentRuntimeError::Budget)?,
-                )
-                .ok_or(MutableInstrumentRuntimeError::Budget)?;
-        }
+    for device in arrangement
+        .return_buses()
+        .iter()
+        .flat_map(|bus| bus.device_chain.iter())
+        .chain(arrangement.main_device_chain.iter())
+    {
+        let Some(definition) = &device.definition else {
+            continue;
+        };
+        effect_count = effect_count
+            .checked_add(1)
+            .ok_or(MutableInstrumentRuntimeError::Budget)?;
+        effect_bytes = effect_bytes
+            .checked_add(
+                definition
+                    .declared_pair_bytes()
+                    .ok_or(MutableInstrumentRuntimeError::Budget)?,
+            )
+            .ok_or(MutableInstrumentRuntimeError::Budget)?;
     }
 
     let mut mutable_count = 0_usize;

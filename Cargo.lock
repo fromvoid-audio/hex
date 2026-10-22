@@ -2574,6 +2574,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "hex-stream",
+ "hex-tuning",
  "rtrb",
 ]
 
@@ -2610,9 +2611,12 @@ dependencies = [
  "hex-engine",
  "hex-media",
  "hex-midi",
+ "hex-mts",
  "hex-project",
  "hex-session",
+ "hex-storage",
  "hex-stream",
+ "hex-tuning",
  "hex-ui",
 ]
 
@@ -2620,12 +2624,17 @@ dependencies = [
 name = "hex-devices"
 version = "0.1.0"
 dependencies = [
+ "hex-dsp",
  "hex-lattice",
  "hex-lattice-contract",
 ]
 
 [[package]]
 name = "hex-diagnostics"
+version = "0.1.0"
+
+[[package]]
+name = "hex-dsp"
 version = "0.1.0"
 
 [[package]]
@@ -2636,7 +2645,9 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
  "hex-project",
+ "hex-tuning",
  "hex-warp",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -2647,6 +2658,7 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
  "hex-project",
+ "hex-tuning",
  "rustix 1.1.5",
 ]
 
@@ -2654,7 +2666,9 @@ dependencies = [
 name = "hex-lattice"
 version = "0.1.0"
 dependencies = [
+ "hex-dsp",
  "hex-lattice-contract",
+ "hex-tuning",
 ]
 
 [[package]]
@@ -2669,7 +2683,10 @@ version = "0.1.0"
 name = "hex-media"
 version = "0.1.0"
 dependencies = [
+ "hex-devices",
  "hex-engine",
+ "hex-lattice",
+ "hex-lattice-contract",
  "hex-project",
  "sha2 0.10.9",
 ]
@@ -2679,6 +2696,24 @@ name = "hex-midi"
 version = "0.1.0"
 dependencies = [
  "coremidi",
+]
+
+[[package]]
+name = "hex-mts"
+version = "0.1.0"
+dependencies = [
+ "hex-tuning",
+ "mts-esp-master-adapter",
+]
+
+[[package]]
+name = "hex-plugin-catalog"
+version = "0.1.0"
+dependencies = [
+ "fs2",
+ "hex-plugin-scan",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2705,6 +2740,7 @@ name = "hex-project"
 version = "0.1.0"
 dependencies = [
  "hex-lattice-contract",
+ "hex-tuning",
 ]
 
 [[package]]
@@ -2717,6 +2753,7 @@ dependencies = [
  "hex-media",
  "hex-project",
  "hex-storage",
+ "hex-tuning",
  "serde_json",
 ]
 
@@ -2727,6 +2764,8 @@ dependencies = [
  "fs2",
  "hex-lattice-contract",
  "hex-project",
+ "hex-tuning",
+ "libc",
  "serde",
  "serde_json",
 ]
@@ -2744,6 +2783,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-tuning"
+version = "0.1.0"
+
+[[package]]
 name = "hex-ui"
 version = "0.1.0"
 dependencies = [
@@ -2753,11 +2796,17 @@ dependencies = [
  "hex-engine",
  "hex-lattice-contract",
  "hex-library",
+ "hex-media",
  "hex-midi",
+ "hex-mts",
+ "hex-plugin-catalog",
  "hex-preferences",
  "hex-project",
  "hex-session",
+ "hex-tuning",
  "hex-widgets",
+ "serde_json",
+ "unicode-segmentation",
 ]
 
 [[package]]
@@ -3625,6 +3674,13 @@ checksum = "ac9557c559cd6fc9867e122e20d2cbefc9ca29d80d027a8e39310920ed2f0a97"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "mts-esp-master-adapter"
+version = "0.1.0"
+dependencies = [
+ "libloading",
 ]
 
 [[package]]

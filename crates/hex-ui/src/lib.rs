@@ -1,4 +1,17 @@
-//! GPUI UI service; device output is supplied by the desktop composition root.
+//! # Purpose
+//! Own native GPUI display, focus/selection and validated editor intent; desktop injects device
+//! output.
+//!
+//! # Dependencies
+//! Uses hex-session/project/engine/audio contracts, hex-widgets, GPUI and the bounded library,
+//! preferences, tuning, MIDI, MTS, diagnostics and plugin-catalog services.
+//!
+//! # Does not own
+//! Does not own a second editable project, construct DSP or access files/audio devices from
+//! rendering. Render app-owned text through theme::text with bundled Ioskeley Mono; preserve
+//! original user data and path casing.
+mod mts;
+pub use mts::install_mts_publisher;
 mod app;
 mod build_info;
 mod context_menu;
@@ -62,4 +75,55 @@ pub fn open_time_selection_profile(
     result: std::sync::mpsc::SyncSender<Result<String, String>>,
 ) -> Result<(), String> {
     editor::time_selection_profile::open(cx, directory, settings, result)
+}
+
+/// Headless-only owning fixture entry. All settings/discovery stay beneath the
+/// caller-owned temporary root; it opens the actual view with the supplied backend.
+#[cfg(feature = "ui-test-support")]
+pub fn open_sampler_load_test_backend(
+    cx: &mut gpui::TestAppContext,
+    backend: EditorBackend,
+    root: std::path::PathBuf,
+    directory: std::path::PathBuf,
+) -> Result<gpui::AnyWindowHandle, String> {
+    editor::sampler_load_fixture(cx, backend, root, directory)
+}
+
+/// Read-only headless source metadata and peak-only table; no native owner.
+#[cfg(feature = "ui-test-support")]
+pub struct SamplerSourceTestView {
+    pub device: hex_project::DeviceId,
+    pub asset: hex_project::AssetId,
+    pub generation: u64,
+    pub revision: u64,
+    pub source_frames: u64,
+    pub playback_frames: u64,
+    pub original_source: Option<hex_project::OriginalSourceFacts>,
+    pub overviews: hex_session::OriginalSourceOverviews,
+}
+#[cfg(feature = "ui-test-support")]
+pub fn sampler_source_test_view(
+    window: gpui::AnyWindowHandle,
+    track: hex_project::TrackId,
+    cx: &gpui::App,
+) -> Result<Option<SamplerSourceTestView>, String> {
+    editor::sampler_source_fixture_view(window, track, cx)
+}
+
+/// Read-only headless fixture diagnostics; no runtime/source/input owner escape.
+#[cfg(feature = "ui-test-support")]
+pub fn sampler_keyboard_test_status(
+    window: gpui::AnyWindowHandle,
+    cx: &gpui::App,
+) -> Result<String, String> {
+    editor::sampler_keyboard_fixture_status(window, cx)
+}
+
+/// Read-only readiness for the next headless editing/playback gesture, including stopped restore.
+#[cfg(feature = "ui-test-support")]
+pub fn sampler_midi_test_ready(
+    window: gpui::AnyWindowHandle,
+    cx: &gpui::App,
+) -> Result<bool, String> {
+    editor::sampler_midi_fixture_ready(window, cx)
 }

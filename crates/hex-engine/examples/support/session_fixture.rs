@@ -51,6 +51,7 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: Vec::new(),
             instrument: Some(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: instrument,
                 bypassed: false,
                 state: hex_project::default_instrument_state()?,
@@ -94,6 +95,8 @@ pub fn project(loop_tempo: bool) -> Result<Project, Box<dyn Error>> {
         }
     }
     let project = Project::from_snapshot(Snapshot {
+        main_devices: Vec::new(),
+        tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

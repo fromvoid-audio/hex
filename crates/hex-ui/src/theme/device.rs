@@ -31,6 +31,7 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
         dial_rail: color(PaletteRole::Border),
         hover: color(PaletteRole::Hover),
         font_size: 9.0,
+        text_case: hex_widgets::TextCase::Lowercase,
     };
     match role {
         DeviceStyleRole::Control => {}
@@ -235,5 +236,13 @@ mod action_tests {
             }
         }
         super::super::apply_preferences(previous);
+    }
+}
+
+/// Input remains subdued; output uses readable foreground behind the EQ curve.
+pub(crate) fn device_analyzer_style() -> hex_widgets::ResponseGraphAnalyzerStyle {
+    hex_widgets::ResponseGraphAnalyzerStyle {
+        input: color(PaletteRole::Muted),
+        output: readable_text(color(PaletteRole::Raised), color(PaletteRole::Text)),
     }
 }

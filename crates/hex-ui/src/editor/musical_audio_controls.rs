@@ -4,6 +4,7 @@ use crate::theme;
 use gpui::{Context, Div, div, prelude::*, px, rgb};
 use hex_project::{BeatTime, BeatsPreserve, BeatsTail, ClipId, WarpMode};
 mod actions;
+pub(crate) mod sample_bpm;
 use actions::{Action, command, mode_name, modes};
 #[cfg(test)]
 use hex_project::Command;
@@ -13,6 +14,90 @@ struct Capture {
     clip: ClipId,
     revision: u64,
     generation: u64,
+}
+/// Selected-clip stretch controls stay above the scrollable source fields.
+pub(super) fn warp_header(
+    view: &mut EditorView,
+    clip_id: ClipId,
+    cx: &mut Context<EditorView>,
+) -> Div {
+    let mut controls = div().flex().flex_col().gap(px(2.0)).flex_shrink_0();
+    let Some(state) = view.state.as_ref() else {
+        return controls;
+    };
+    let Some(clip) = state.project.clip(clip_id) else {
+        return controls;
+    };
+    let capture = Capture {
+        clip: clip_id,
+        revision: state.revision,
+        generation: view.project_generation,
+    };
+    let domain = clip.audio_edit().map(|edit| edit.domain.as_ref());
+    let active = domain.is_some_and(|domain| domain.warp_enabled);
+    let mode = domain
+        .and_then(|domain| domain.warp.as_ref())
+        .map_or(modes()[0], |warp| warp.mode);
+    controls = controls.child(
+        button(
+            capture,
+            if active { "warp · on" } else { "warp · off" },
+            Action::Warp,
+            view.edit_pending(),
+            cx,
+        )
+        .debug_selector(|| "audio-clip-warp-toggle".into()),
+    );
+    controls = controls.child(sample_bpm::field(view, clip_id, cx));
+    if active {
+        if let WarpMode::Beats {
+            preserve,
+            tail,
+            decay,
+        } = mode
+        {
+            controls = controls.child(beats_controls(
+                capture,
+                preserve,
+                tail,
+                decay,
+                view.edit_pending(),
+                cx,
+            ));
+        } else {
+            controls = controls.child(musical_control_label(&format!(
+                "algorithm · {}",
+                mode_name(mode)
+            )));
+        }
+        // Direct choices expose only algorithms backed by the existing worker.
+        for (row_index, choices) in modes().chunks(2).enumerate() {
+            let mut row = div().flex().gap(px(2.0));
+            for (column, choice) in choices.iter().enumerate() {
+                let index = (row_index * 2 + column) as u8;
+                let selected = std::mem::discriminant(choice) == std::mem::discriminant(&mode);
+                row = row.child(
+                    button(
+                        capture,
+                        mode_name(*choice),
+                        Action::SelectMode(index),
+                        view.edit_pending(),
+                        cx,
+                    )
+                    .flex_1()
+                    .border_1()
+                    .border_color(rgb(theme::color(if selected {
+                        theme::PaletteRole::Text
+                    } else {
+                        theme::PaletteRole::Border
+                    })))
+                    .debug_selector(move || format!("audio-clip-warp-mode-{index}")),
+                );
+            }
+            controls = controls.child(row);
+        }
+    }
+    controls
 }
 pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorView>) -> Div {
     let mut controls = div().flex().flex_col().gap(px(2.0));
@@ -54,69 +139,13 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
         view.edit_pending(),
         cx,
     ));
-    controls = controls.child(button(
-        capture,
-        if active { "warp · on" } else { "warp · off" },
-        Action::Warp,
-        view.edit_pending(),
-        cx,
-    ));
     if active {
-        controls = controls.child(musical_control_row(
-            capture,
-            mode_name(mode).into(),
-            Action::Mode(-1),
-            Action::Mode(1),
-            view.edit_pending(),
-            cx,
-        ));
         match mode {
             WarpMode::RePitch => {
                 controls =
                     controls.child(musical_control_label("transpose stored; tempo sets pitch"))
             }
-            WarpMode::Beats {
-                preserve,
-                tail,
-                decay,
-            } => {
-                let preserve = match preserve {
-                    BeatsPreserve::Transients => "transients".into(),
-                    BeatsPreserve::Division(beat) => format!(
-                        "{:.3} beats",
-                        beat.raw() as f64 / BeatTime::ONE.raw() as f64
-                    ),
-                };
-                controls = controls.child(button(
-                    capture,
-                    &format!("preserve · {preserve}"),
-                    Action::Preserve,
-                    view.edit_pending(),
-                    cx,
-                ));
-                controls = controls.child(button(
-                    capture,
-                    &format!(
-                        "tail · {}",
-                        match tail {
-                            BeatsTail::Off => "off",
-                            BeatsTail::Forward => "forward",
-                            BeatsTail::Alternating => "alternate",
-                        }
-                    ),
-                    Action::Tail,
-                    view.edit_pending(),
-                    cx,
-                ));
-                controls = controls.child(musical_control_row(
-                    capture,
-                    format!("decay {decay}%"),
-                    Action::Decay(-10),
-                    Action::Decay(10),
-                    view.edit_pending(),
-                    cx,
-                ));
-            }
+            WarpMode::Beats { .. } => {}
             WarpMode::Tones { grain_ms } => {
                 controls = controls.child(musical_control_row(
                     capture,
@@ -278,6 +307,80 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
     }
     controls
 }
+/// The existing canonical Beats bindings live beside the visible mode picker,
+/// above source/marker fields; no second state or DSP path.
+fn beats_controls(
+    capture: Capture,
+    preserve: BeatsPreserve,
+    selected: BeatsTail,
+    envelope: u8,
+    disabled: bool,
+    cx: &mut Context<EditorView>,
+) -> Div {
+    let preserve = match preserve {
+        BeatsPreserve::Transients => "transients".into(),
+        BeatsPreserve::Division(beat) => format!(
+            "{:.3} beats",
+            beat.raw() as f64 / BeatTime::ONE.raw() as f64
+        ),
+    };
+    let mut choices = div().flex().gap(px(2.0));
+    for (tail, label, selector) in [
+        (BeatsTail::Off, "stop", "audio-clip-beats-stop"),
+        (BeatsTail::Forward, "forward", "audio-clip-beats-forward"),
+        (
+            BeatsTail::Alternating,
+            "back / forth",
+            "audio-clip-beats-alternating",
+        ),
+    ] {
+        choices = choices.child(
+            button(capture, label, Action::SelectTail(tail), disabled, cx)
+                .flex_grow()
+                .flex_shrink_0()
+                .border_1()
+                .border_color(rgb(theme::color(if tail == selected {
+                    theme::PaletteRole::Text
+                } else {
+                    theme::PaletteRole::Border
+                })))
+                .debug_selector(move || selector.into()),
+        );
+    }
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .flex_shrink_0()
+        .child(
+            button(
+                capture,
+                &format!("preserve · {preserve}"),
+                Action::Preserve,
+                disabled,
+                cx,
+            )
+            .debug_selector(|| "audio-clip-beats-preserve".into()),
+        )
+        .child(choices)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .child(
+                    button(capture, "−", Action::Decay(-10), disabled, cx)
+                        .debug_selector(|| "audio-clip-beats-envelope-less".into()),
+                )
+                .child(musical_control_label(&format!("envelope {envelope}")).flex_1())
+                .child(
+                    button(capture, "+", Action::Decay(10), disabled, cx)
+                        .debug_selector(|| "audio-clip-beats-envelope-more".into()),
+                )
+                .debug_selector(|| "audio-clip-beats-envelope".into()),
+        )
+}
+
 fn clamped_page(page: usize, count: usize) -> usize {
     page.min(count.saturating_sub(1) / PAGE)
 }
@@ -327,7 +430,7 @@ fn button(
             if disabled
                 || view.edit_pending()
                 || view.project_generation != capture.generation
-                || view.selected_clip != Some(capture.clip)
+                || view.detail_clip_id() != Some(capture.clip)
             {
                 return;
             }
@@ -379,6 +482,15 @@ fn button(
 }
 fn action_key(action: Action) -> String {
     match action {
+        Action::SelectMode(index) => format!("mode-{index}"),
+        Action::SelectTail(tail) => format!(
+            "tail-{}",
+            match tail {
+                BeatsTail::Off => 0,
+                BeatsTail::Forward => 1,
+                BeatsTail::Alternating => 2,
+            }
+        ),
         Action::MarkerFrame(i, d) => format!("marker-frame-{i}-{d}"),
         Action::MarkerBeat(i, d) => format!("marker-beat-{i}-{d}"),
         Action::MarkerRemove(i) => format!("marker-remove-{i}"),
@@ -396,12 +508,6 @@ fn action_key(action: Action) -> String {
                     },
                 Action::Anchor => 2,
                 Action::Warp => 3,
-                Action::Mode(v) =>
-                    if v < 0 {
-                        4
-                    } else {
-                        5
-                    },
                 Action::Grain(v) =>
                     if v < 0 {
                         6
@@ -416,7 +522,6 @@ fn action_key(action: Action) -> String {
                     },
                 Action::Seed => 10,
                 Action::Preserve => 11,
-                Action::Tail => 12,
                 Action::Decay(v) =>
                     if v < 0 {
                         13
@@ -449,109 +554,6 @@ fn action_key(action: Action) -> String {
     }
 }
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn point_pages_clamp_to_current_clip_and_modes_dispatch_real_typed_commands() {
-        assert_eq!(clamped_page(127, 2), 0);
-        assert_eq!(clamped_page(127, 0), 0);
-        assert_eq!(clamped_page(127, 9), 1);
-        let mut editor =
-            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 32).unwrap();
-        let hex_project::Created::Imported { clip, .. } = editor
-            .execute(Command::ImportAudioTrack {
-                name: "audio".into(),
-                path: "audio.wav".into(),
-                sample_rate: 48_000,
-                frames: 48_000,
-            })
-            .unwrap()
-        else {
-            panic!("import")
-        };
-        editor
-            .execute(command(editor.project(), clip, Action::Warp).unwrap())
-            .unwrap();
-        for expected in modes() {
-            assert_eq!(
-                std::mem::discriminant(
-                    &editor
-                        .project()
-                        .clip(clip)
-                        .unwrap()
-                        .audio_edit()
-                        .unwrap()
-                        .domain
-                        .warp
-                        .as_ref()
-                        .unwrap()
-                        .mode
-                ),
-                std::mem::discriminant(&expected)
-            );
-            editor
-                .execute(command(editor.project(), clip, Action::Mode(1)).unwrap())
-                .unwrap();
-        }
-        editor
-            .execute(command(editor.project(), clip, Action::MarkerAdd).unwrap())
-            .unwrap();
-        assert_eq!(
-            editor
-                .project()
-                .clip(clip)
-                .unwrap()
-                .audio_edit()
-                .unwrap()
-                .domain
-                .warp
-                .as_ref()
-                .unwrap()
-                .markers
-                .len(),
-            3
-        );
-        editor
-            .execute(command(editor.project(), clip, Action::EnvelopeAdd).unwrap())
-            .unwrap();
-        editor
-            .execute(command(editor.project(), clip, Action::EnvelopeGain(0, -1)).unwrap())
-            .unwrap();
-        assert!(
-            editor
-                .project()
-                .clip(clip)
-                .unwrap()
-                .audio_edit()
-                .unwrap()
-                .domain
-                .source_gain[0]
-                .gain_q16
-                < 65_536
-        );
-        editor
-            .execute(command(editor.project(), clip, Action::EnvelopeRemove(1)).unwrap())
-            .unwrap();
-        let retained = editor
-            .project()
-            .clip(clip)
-            .unwrap()
-            .audio_edit()
-            .unwrap()
-            .domain
-            .source_gain[0];
-        editor
-            .execute(command(editor.project(), clip, Action::EnvelopeAdd).unwrap())
-            .unwrap();
-        let points = &editor
-            .project()
-            .clip(clip)
-            .unwrap()
-            .audio_edit()
-            .unwrap()
-            .domain
-            .source_gain;
-        assert_eq!(points.len(), 2);
-        assert!(points.contains(&retained));
-    }
-}
+mod tests;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod ui_tests;

@@ -40,8 +40,10 @@ fn completed_event(state: &ViewState) -> Event {
     Event {
         state: Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::clone(&state.project),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: state.audio_clip_waveforms.clone(),
             midi_preview: Arc::clone(&state.midi_preview),
             gain_preview: state.gain_preview.clone(),
@@ -56,7 +58,10 @@ fn completed_event(state: &ViewState) -> Event {
         status: None,
         error: None,
         request_complete: true,
+        sampler_load_complete: None,
+        sampler_edit_complete: None,
         computer_keyboard_complete: None,
+        tuning_audition_complete: None,
         live_expression_complete: None,
         audio_batch_complete: None,
         audio_batch_failure: None,
@@ -68,6 +73,11 @@ fn completed_event(state: &ViewState) -> Event {
         duplicate_complete: false,
         restore_complete: None,
         device_preview: None,
+        tuning_preview: None,
+        tuning_gesture_ack: None,
+        tuning_gesture_request: false,
+        active_tuning_gesture: None,
+        tuning_library: None,
         gesture_ack: None,
         gesture_protocol_ack: false,
         gesture_request: false,
@@ -161,8 +171,10 @@ fn main_track_stays_pinned_below_regular_tracks_at_minimum_size(cx: &mut TestApp
         editor.update(cx, |view, cx| {
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: Arc::new(project_with_tracks(count)),
                 waveforms: Default::default(),
+                source_overviews: Default::default(),
                 audio_clip_waveforms: std::collections::BTreeMap::new(),
                 midi_preview: Arc::default(),
                 gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -434,6 +446,13 @@ fn moving_an_ordinary_selection_across_all_tracks_does_not_promote_project_scope
             anchor_frame: range.start(),
             end_frame: range.end(),
         });
+        view.edit_cursor = Some(super::edit_cursor::EditCursor {
+            track: track_ids[0],
+            frame: range.start(),
+            generation: view.project_generation,
+            pulse_color: 0,
+            pulse_started: std::time::Instant::now(),
+        });
         view.pending_time_range_move = Some(super::time_selection::PendingTimeRangeMove {
             source: range.clone(),
             range,
@@ -441,6 +460,7 @@ fn moving_an_ordinary_selection_across_all_tracks_does_not_promote_project_scope
             destination_first_index: 0,
             destination_last_index: track_ids.len() - 1,
             source_revision: state.revision,
+            selection_intent_epoch: view.selection_intent_epoch.expect("selection epoch"),
             copy_modifier: false,
         });
         let event = completed_event(state);
@@ -458,6 +478,20 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
     editor.update(cx, |view, _| {
         let state = view.state.as_ref().expect("view state");
         let range = hex_project::TimeRange::new(track_ids.clone(), 48_000, 96_000).expect("range");
+        view.time_selection = Some(super::time_selection::TimeSelection {
+            anchor_track: track_ids[0],
+            end_track: *track_ids.last().expect("tracks"),
+            anchor_frame: range.start(),
+            end_frame: range.end(),
+        });
+        view.time_selection_project_scope = true;
+        view.edit_cursor = Some(super::edit_cursor::EditCursor {
+            track: track_ids[0],
+            frame: range.start(),
+            generation: view.project_generation,
+            pulse_color: 0,
+            pulse_started: std::time::Instant::now(),
+        });
         view.pending_time_range_move = Some(super::time_selection::PendingTimeRangeMove {
             source: range.clone(),
             range,
@@ -465,6 +499,7 @@ fn moving_a_main_selection_preserves_project_scope_explicitly(cx: &mut TestAppCo
             destination_first_index: 0,
             destination_last_index: track_ids.len() - 1,
             source_revision: state.revision,
+            selection_intent_epoch: view.selection_intent_epoch.expect("selection epoch"),
             copy_modifier: false,
         });
         let event = completed_event(state);

@@ -8,14 +8,18 @@ use std::sync::Arc;
 
 mod accessibility_tests;
 mod auto_pan_ui_tests;
+mod bindings_tests;
 mod chain_window_tests;
 mod compressor_ui_tests;
+mod device_comparison_tests;
 mod device_preset_ui_tests;
 mod device_reorder_tests;
 mod device_theme_tests;
 mod eq_ui_tests;
 mod gate_ui_tests;
+mod header_actions_tests;
 mod header_style_tests;
+mod keyboard_delete_tests;
 mod navigation_ui_tests;
 mod operator_algorithm_ui_tests;
 mod operator_enable_ui_tests;
@@ -55,8 +59,11 @@ fn actor_utility_fixture() -> (
     let service = Service::new(48_000, 8, 8_000_000).expect("service");
     let _initial = receive_service_event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "device track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .expect("add track request");
     let track_event = receive_service_event(&service);
@@ -2755,7 +2762,12 @@ fn utility_panel_matches_compact_geometry_and_uses_shared_mode_popup(cx: &mut Te
         ))
         .expect("headphone audition control");
     assert_eq!(audition.size.width, px(14.0));
-    for suffix in ["device-bypass", "device-up", "device-down", "device-remove"] {
+    for suffix in [
+        "device-bypass",
+        "device-preset-load",
+        "device-preset-save",
+        "device-remove",
+    ] {
         let selector = Box::leak(format!("{suffix}-{}", device.value()).into_boxed_str());
         let action = visual.debug_bounds(selector).expect("header action");
         assert!(action.origin.x >= frame.origin.x);
@@ -3580,8 +3592,10 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
         let current = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            source_overviews: current.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -3894,8 +3908,10 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
         let current = view.state.as_ref().expect("state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            source_overviews: current.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -4016,6 +4032,137 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
 }
 
 #[gpui::test]
+fn command_f_preserves_invalid_device_draft_then_finalizes_repaired_value(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, device, _, _) = actor_utility_fixture();
+    let parameter =
+        hex_engine::native_device_view(state.project.track(track).unwrap().devices()[0].state())
+            .unwrap()
+            .parameters
+            .into_iter()
+            .find(|item| item.descriptor.label == "width")
+            .unwrap()
+            .descriptor
+            .id;
+    let initial_revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.browser.open = false;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    enter_typed_value(&mut visual, device, parameter, "invalid");
+    let focus = visual.update(|window, cx| window.focused(cx).unwrap());
+    visual.simulate_keystrokes("cmd-f");
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        assert!(
+            focus.is_focused(window),
+            "invalid device draft must retain focus"
+        );
+        editor.read_with(cx, |view, cx| {
+            assert!(!view.browser.open);
+            assert_eq!(view.state.as_ref().unwrap().revision, initial_revision);
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("finish the device value edit")
+            );
+            let ParameterControl::Float { entity, .. } =
+                &view.device_panel.controls[&ParameterKey { device, parameter }]
+            else {
+                panic!("numeric control")
+            };
+            assert!(entity.read(cx).is_editing());
+        });
+    });
+    visual.simulate_keystrokes("escape");
+    enter_typed_value(&mut visual, device, parameter, "250%");
+    visual.simulate_keystrokes("cmd-f");
+    visual.run_until_parked();
+    visual.simulate_input("utility");
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "utility");
+        let ParameterControl::Float { entity, .. } =
+            &view.device_panel.controls[&ParameterKey { device, parameter }]
+        else {
+            panic!("numeric control")
+        };
+        assert!(!entity.read(cx).is_editing());
+    });
+    pump_until(&editor, cx, |view| {
+        parameter_value(view.state.as_ref().unwrap(), track, device, parameter)
+            == ParameterValue::Float(2.5)
+    });
+}
+
+#[gpui::test]
+fn command_f_preserves_invalid_return_send_draft(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
+    cx.update(hex_widgets::bind_numeric_control_keys);
+    let (service, state, track, return_track, _, _) = actor_return_utility_fixture();
+    let initial_revision = state.revision;
+    let (handle, editor) = actor_editor_window(cx, service, state, track);
+    editor.update(cx, |view, cx| {
+        view.mode = super::super::EditorMode::Arrangement;
+        view.send_menu_track = Some(track);
+        view.browser.open = false;
+        cx.notify();
+    });
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let selector = Box::leak(
+        format!(
+            "return-send-{}-{}-value",
+            track.value(),
+            return_track.value()
+        )
+        .into_boxed_str(),
+    );
+    let value = visual.debug_bounds(selector).unwrap();
+    visual.simulate_mouse_down(value.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(value.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_keystrokes("cmd-a");
+    visual.simulate_input("2.5");
+    let focus = visual.update(|window, cx| window.focused(cx).unwrap());
+    visual.simulate_keystrokes("cmd-f");
+    visual.run_until_parked();
+    visual.update(|window, cx| {
+        assert!(
+            focus.is_focused(window),
+            "invalid return send must retain focus"
+        );
+        editor.read_with(cx, |view, cx| {
+            assert!(!view.browser.open);
+            assert_eq!(view.state.as_ref().unwrap().revision, initial_revision);
+            assert!(
+                view.error
+                    .as_ref()
+                    .unwrap()
+                    .contains("finish the device value edit")
+            );
+            assert!(
+                view.device_panel.send_controls[&SendControlKey {
+                    track,
+                    return_track
+                }]
+                    .entity
+                    .read(cx)
+                    .is_editing()
+            );
+        });
+    });
+    visual.simulate_keystrokes("escape cmd-f");
+    visual.simulate_input("utility");
+    editor.read_with(cx, |view, cx| {
+        assert_eq!(view.browser.search.read(cx).content, "utility")
+    });
+}
+
+#[gpui::test]
 fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
     cx: &mut TestAppContext,
 ) {
@@ -4054,8 +4201,10 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             editor.update(cx, |view, cx| {
                 view.state = Some(Arc::new(ViewState {
                     canonical_audio_source: None,
+                    comparison_audio: None,
                     project: Arc::new(initial_project.clone()),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -4195,8 +4344,10 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
         let current = view.state.as_ref().expect("view state");
         view.state = Some(Arc::new(ViewState {
             canonical_audio_source: None,
+            comparison_audio: None,
             project: Arc::new(next_project.clone()),
             waveforms: current.waveforms.clone(),
+            source_overviews: current.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -4469,7 +4620,7 @@ fn return_send_popup_fits_minimum_window_and_retires_offscreen_or_removed_owner(
     visual.run_until_parked();
     editor.read_with(cx, |view, _| {
         assert_ne!(
-            view.track_scroll.0.borrow().base_handle.offset().y,
+            view.track_scroll.offset().y,
             px(0.0),
             "the source row must actually be outside the current viewport"
         );
@@ -5089,8 +5240,10 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
         .expect("first acknowledged edit");
     let changed_state = Arc::new(ViewState {
         canonical_audio_source: None,
+        comparison_audio: None,
         project: Arc::new(project_editor.project().clone()),
         waveforms: state.waveforms.clone(),
+        source_overviews: state.source_overviews.clone(),
         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
         midi_preview: state.midi_preview.clone(),
         gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -5207,3 +5360,5 @@ fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestA
         }
     }
 }
+
+mod main_chain_ui_tests;

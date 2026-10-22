@@ -14,6 +14,7 @@ use std::{
 /// Transport representation of an editable project, without decoded PCM.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Snapshot {
+    pub tuning: hex_tuning::ProjectTuning,
     pub return_feeds: Vec<crate::ReturnFeedSnapshot>,
     pub audio_feeds: Vec<crate::AudioFeedSnapshot>,
     pub midi_routes: Vec<crate::MidiRouteSnapshot>,
@@ -26,6 +27,7 @@ pub struct Snapshot {
     pub session: SessionSnapshot,
     pub loop_region: Option<LoopRegion>,
     pub master_gain: f32,
+    pub main_devices: Vec<DeviceSnapshot>,
     pub tempo_points: Vec<TempoPoint>,
     pub meter_points: Vec<MeterPoint>,
 }
@@ -81,6 +83,7 @@ pub struct MidiSourceSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssetSnapshot {
+    pub original_source: Option<crate::OriginalSourceFacts>,
     pub id: u64,
     pub path: PathBuf,
     pub source_sample_rate: u32,
@@ -126,6 +129,7 @@ pub struct SendLevelSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeviceSnapshot {
+    pub comparison: Option<crate::DeviceComparison>,
     pub id: u64,
     pub bypassed: bool,
     pub state: hex_lattice_contract::NativeDeviceState,
@@ -210,6 +214,7 @@ impl Project {
     /// Copy editable metadata for a control-side storage or interchange adapter.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
+            tuning: self.tuning,
             audio_feeds: self
                 .audio_feeds
                 .iter()
@@ -246,6 +251,7 @@ impl Project {
                 .assets
                 .values()
                 .map(|asset| AssetSnapshot {
+                    original_source: asset.original_source,
                     id: asset.id.0,
                     path: asset.path.clone(),
                     source_sample_rate: asset.source_sample_rate,
@@ -272,12 +278,14 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            comparison: device.comparison.clone(),
                             id: device.id.value(),
                             bypassed: device.bypassed,
                             state: device.state.clone(),
                         })
                         .collect(),
                     instrument: track.instrument.as_ref().map(|instrument| DeviceSnapshot {
+                        comparison: instrument.comparison.clone(),
                         id: instrument.id.value(),
                         bypassed: instrument.bypassed,
                         state: instrument.state.clone(),
@@ -357,6 +365,7 @@ impl Project {
                         .devices
                         .iter()
                         .map(|device| DeviceSnapshot {
+                            comparison: device.comparison.clone(),
                             id: device.id.value(),
                             bypassed: device.bypassed,
                             state: device.state.clone(),
@@ -426,6 +435,16 @@ impl Project {
                     .collect(),
             },
             loop_region: self.loop_region,
+            main_devices: self
+                .main_devices
+                .iter()
+                .map(|device| DeviceSnapshot {
+                    comparison: device.comparison.clone(),
+                    id: device.id.value(),
+                    bypassed: device.bypassed,
+                    state: device.state.clone(),
+                })
+                .collect(),
             master_gain: self.master_gain,
             tempo_points: self.tempo_map.points().to_vec(),
             meter_points: self.meter_map.points().to_vec(),
@@ -444,6 +463,7 @@ impl Project {
         let audio_feeds = std::mem::take(&mut snapshot.audio_feeds);
         let midi_routes = std::mem::take(&mut snapshot.midi_routes);
         let mut project = Project::new(snapshot.sample_rate)?;
+        project.tuning = snapshot.tuning;
         project.import_provenance = snapshot.import_provenance;
         project.tempo_map = crate::TempoMap::new(snapshot.sample_rate, snapshot.tempo_points)?;
         project.meter_map = crate::MeterMap::new(snapshot.meter_points)?;
@@ -488,6 +508,7 @@ impl Project {
             assets.insert(
                 id,
                 Asset {
+                    original_source: asset.original_source,
                     id,
                     path: asset.path,
                     source_sample_rate: asset.source_sample_rate,
@@ -499,7 +520,20 @@ impl Project {
         }
 
         let mut total_clips = 0_usize;
-        let mut total_devices = 0_usize;
+        if snapshot.main_devices.len() > MAX_DEVICES_PER_TRACK {
+            return Err(Invalid("main device limit reached"));
+        }
+        let mut main_devices = Vec::with_capacity(snapshot.main_devices.len());
+        for device in snapshot.main_devices {
+            insert_id(device.id, &mut ids, &mut max_id)?;
+            main_devices.push(Device {
+                comparison: device.comparison,
+                id: DeviceId(device.id),
+                state: device.state,
+                bypassed: device.bypassed,
+            });
+        }
+        let mut total_devices = main_devices.len();
         let mut total_notes = 0_usize;
         let mut return_ids = BTreeSet::new();
         let mut returns = Vec::with_capacity(snapshot.return_tracks.len());
@@ -523,6 +557,7 @@ impl Project {
                     return Err(Invalid("project device limit reached"));
                 }
                 devices.push(Device {
+                    comparison: device.comparison,
                     id: DeviceId(device.id),
                     state: device.state,
                     bypassed: device.bypassed,
@@ -572,6 +607,7 @@ impl Project {
             for device in track.devices {
                 insert_id(device.id, &mut ids, &mut max_id)?;
                 devices.push(Device {
+                    comparison: device.comparison,
                     id: DeviceId(device.id),
                     state: device.state,
                     bypassed: device.bypassed,
@@ -586,6 +622,7 @@ impl Project {
                 }
                 insert_id(instrument.id, &mut ids, &mut max_id)?;
                 Some(Device {
+                    comparison: instrument.comparison,
                     id: DeviceId(instrument.id),
                     state: instrument.state,
                     bypassed: instrument.bypassed,
@@ -884,9 +921,30 @@ impl Project {
         project.assets = assets;
         project.tracks = tracks;
         project.returns = returns;
+        project.main_devices = main_devices;
         project.session = crate::SessionGrid { scenes, cells };
         project.loop_region = snapshot.loop_region;
         project.master_gain = snapshot.master_gain;
+        for track in project.tracks() {
+            for device in track.devices().iter().chain(track.instrument()) {
+                if let Some(comparison) = device.comparison() {
+                    comparison.validate(device.state())?;
+                }
+            }
+        }
+        for track in project.return_tracks() {
+            for device in track.devices() {
+                if let Some(comparison) = device.comparison() {
+                    comparison.validate(device.state())?;
+                }
+            }
+        }
+        for device in project.main_devices() {
+            if let Some(comparison) = device.comparison() {
+                comparison.validate(device.state())?;
+            }
+        }
+        project.validate_device_asset_references()?;
         for track in &project.tracks {
             for clip in track.clips() {
                 if let Some(edit) = &clip.edit {

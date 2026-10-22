@@ -11,11 +11,15 @@ use hex_lattice_contract::{
 use std::any::Any;
 
 pub const COMPRESSOR_TYPE_ID: DeviceTypeId = DeviceTypeId::from_static("hex.compressor");
-pub const COMPRESSOR_STATE_VERSION: u32 = 1;
-const STATE_BYTES: usize = 24;
+pub const COMPRESSOR_STATE_VERSION: u32 = 3;
+const STATE_BYTES: usize = 32;
 const MIN_SAMPLE_RATE: u32 = 8_000;
 const MAX_SAMPLE_RATE: u32 = 192_000;
 const GAIN_SMOOTH_MS: f64 = 5.0;
+const RMS_INTEGRATION_SECONDS: f64 = 0.010;
+// Power floor: sqrt(1e-30) is -300 dBFS, far below the useful detector
+// range. Retire silent tails before f64 subnormals can persist in warm history.
+const RMS_ENERGY_FLOOR: f64 = 1e-30;
 const SILENCE_FLOOR_DB: f64 = -120.0;
 
 pub mod parameter {
@@ -27,6 +31,8 @@ pub mod parameter {
     pub const RELEASE: ParameterId = ParameterId::from_static(4);
     pub const KNEE: ParameterId = ParameterId::from_static(5);
     pub const MAKEUP: ParameterId = ParameterId::from_static(6);
+    pub const DRY_WET: ParameterId = ParameterId::from_static(7);
+    pub const DETECTOR: ParameterId = ParameterId::from_static(8);
 }
 
 const DESCRIPTORS: &[ParameterDescriptor] = &[
@@ -96,7 +102,43 @@ const DESCRIPTORS: &[ParameterDescriptor] = &[
         default: ParameterValue::Float(0.0),
         presentation: ParameterPresentation::Linear,
     },
+    ParameterDescriptor {
+        id: parameter::DRY_WET,
+        label: "dry/wet",
+        kind: ParameterKind::Float {
+            min: 0.0,
+            max: 1.0,
+            unit: None,
+        },
+        default: ParameterValue::Float(1.0),
+        presentation: ParameterPresentation::Linear,
+    },
+    ParameterDescriptor {
+        id: parameter::DETECTOR,
+        label: "detector",
+        kind: ParameterKind::Choice {
+            labels: &["peak", "rms"],
+        },
+        default: ParameterValue::Choice(0),
+        presentation: ParameterPresentation::Linear,
+    },
 ];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+enum Detector {
+    Peak,
+    Rms,
+}
+impl Detector {
+    fn from_choice(value: u32) -> Result<Self, DeviceContractError> {
+        match value {
+            0 => Ok(Self::Peak),
+            1 => Ok(Self::Rms),
+            _ => Err(DeviceContractError::InvalidParameterValue),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct CompressorSettings {
@@ -106,6 +148,8 @@ struct CompressorSettings {
     release_ms: f32,
     knee_db: f32,
     makeup_db: f32,
+    dry_wet: f32,
+    detector: Detector,
 }
 
 impl Default for CompressorSettings {
@@ -117,6 +161,8 @@ impl Default for CompressorSettings {
             release_ms: 100.0,
             knee_db: 6.0,
             makeup_db: 0.0,
+            dry_wet: 1.0,
+            detector: Detector::Peak,
         }
     }
 }
@@ -147,6 +193,12 @@ fn decode(state: &NativeDeviceState) -> Result<CompressorSettings, DeviceContrac
         release_ms: read(12),
         knee_db: read(16),
         makeup_db: read(20),
+        dry_wet: read(24),
+        detector: Detector::from_choice(u32::from_le_bytes(
+            bytes[28..32]
+                .try_into()
+                .map_err(|_| DeviceContractError::MalformedState)?,
+        ))?,
     };
     validate(settings)?;
     Ok(settings)
@@ -160,6 +212,7 @@ fn validate(settings: CompressorSettings) -> Result<(), DeviceContractError> {
         (parameter::RELEASE, settings.release_ms),
         (parameter::KNEE, settings.knee_db),
         (parameter::MAKEUP, settings.makeup_db),
+        (parameter::DRY_WET, settings.dry_wet),
     ] {
         let descriptor = DESCRIPTORS
             .iter()
@@ -180,9 +233,11 @@ fn encode(settings: CompressorSettings) -> Result<NativeDeviceState, DeviceContr
         settings.release_ms,
         settings.knee_db,
         settings.makeup_db,
+        settings.dry_wet,
     ] {
         payload.extend_from_slice(&value.to_le_bytes());
     }
+    payload.extend_from_slice(&(settings.detector as u32).to_le_bytes());
     NativeDeviceState::new(COMPRESSOR_TYPE_ID, COMPRESSOR_STATE_VERSION, payload)
 }
 
@@ -219,6 +274,9 @@ impl NativeDeviceMetadata for CompressorDefinition {
         id: ParameterId,
     ) -> Result<ParameterValue, DeviceContractError> {
         let settings = decode(state)?;
+        if id == parameter::DETECTOR {
+            return Ok(ParameterValue::Choice(settings.detector as u32));
+        }
         let value = match id {
             parameter::THRESHOLD => settings.threshold_db,
             parameter::RATIO => settings.ratio,
@@ -226,6 +284,7 @@ impl NativeDeviceMetadata for CompressorDefinition {
             parameter::RELEASE => settings.release_ms,
             parameter::KNEE => settings.knee_db,
             parameter::MAKEUP => settings.makeup_db,
+            parameter::DRY_WET => settings.dry_wet,
             _ => return Err(DeviceContractError::UnknownParameter),
         };
         Ok(ParameterValue::Float(value))
@@ -242,6 +301,13 @@ impl NativeDeviceMetadata for CompressorDefinition {
             .find(|descriptor| descriptor.id == id)
             .ok_or(DeviceContractError::UnknownParameter)?;
         descriptor.validate(value)?;
+        if id == parameter::DETECTOR {
+            let ParameterValue::Choice(value) = value else {
+                return Err(DeviceContractError::InvalidParameterValue);
+            };
+            settings.detector = Detector::from_choice(value)?;
+            return encode(settings);
+        }
         let ParameterValue::Float(value) = value else {
             return Err(DeviceContractError::InvalidParameterValue);
         };
@@ -252,6 +318,7 @@ impl NativeDeviceMetadata for CompressorDefinition {
             parameter::RELEASE => settings.release_ms = value,
             parameter::KNEE => settings.knee_db = value,
             parameter::MAKEUP => settings.makeup_db = value,
+            parameter::DRY_WET => settings.dry_wet = value,
             _ => return Err(DeviceContractError::UnknownParameter),
         }
         encode(settings)
@@ -276,8 +343,9 @@ impl NativeDeviceDefinition for CompressorDefinition {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        sample_rate: u32,
+        context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
+        let sample_rate = context.sample_rate;
         if !(MIN_SAMPLE_RATE..=MAX_SAMPLE_RATE).contains(&sample_rate) {
             return Err(DeviceContractError::InvalidParameterValue);
         }
@@ -286,12 +354,14 @@ impl NativeDeviceDefinition for CompressorDefinition {
         let attack_alpha = (-1.0 / (f64::from(settings.attack_ms) * samples_per_ms)).exp();
         let release_alpha = (-1.0 / (f64::from(settings.release_ms) * samples_per_ms)).exp();
         let gain_alpha = (-1.0 / (GAIN_SMOOTH_MS * samples_per_ms)).exp();
+        let rms_alpha = (-1.0 / (RMS_INTEGRATION_SECONDS * f64::from(sample_rate))).exp();
         Ok(Some(Box::new(PreparedCompressor {
             settings,
             sample_rate,
             attack_alpha,
             release_alpha,
             gain_alpha,
+            rms_alpha,
         })))
     }
 }
@@ -302,6 +372,7 @@ struct PreparedCompressor {
     attack_alpha: f64,
     release_alpha: f64,
     gain_alpha: f64,
+    rms_alpha: f64,
 }
 
 impl PreparedNativeProcessor for PreparedCompressor {
@@ -318,8 +389,14 @@ impl PreparedNativeProcessor for PreparedCompressor {
             attack_alpha: self.attack_alpha,
             release_alpha: self.release_alpha,
             gain_alpha: self.gain_alpha,
+            rms_alpha: self.rms_alpha,
+            energy: [0.0; 2],
+            detector_mix: f64::from(self.settings.detector == Detector::Rms),
+            detector_remaining: 0,
             envelope: 0.0,
             gain_db: f64::from(self.settings.makeup_db),
+            mix: f64::from(self.settings.dry_wet),
+            mix_remaining: 0,
         })
     }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
@@ -336,14 +413,25 @@ struct CompressorRuntime {
     attack_alpha: f64,
     release_alpha: f64,
     gain_alpha: f64,
+    rms_alpha: f64,
+    energy: [f64; 2],
+    detector_mix: f64,
+    detector_remaining: u32,
     envelope: f64,
     gain_db: f64,
+    mix: f64,
+    mix_remaining: u32,
 }
 
 impl CompressorRuntime {
     fn reset_history(&mut self) {
+        self.energy = [0.0; 2];
+        self.detector_mix = f64::from(self.settings.detector == Detector::Rms);
+        self.detector_remaining = 0;
         self.envelope = 0.0;
         self.gain_db = f64::from(self.settings.makeup_db);
+        self.mix = f64::from(self.settings.dry_wet);
+        self.mix_remaining = 0;
     }
 
     fn process_frame(&mut self, frame: &mut StereoFrame) {
@@ -353,12 +441,38 @@ impl CompressorRuntime {
             return;
         }
         let peak = left.abs().max(right.abs());
-        let coefficient = if peak > self.envelope {
+        // Independent mean-square histories stay warm even while Peak is selected.
+        for (energy, input) in self.energy.iter_mut().zip([left, right]) {
+            *energy = self.rms_alpha * *energy + (1.0 - self.rms_alpha) * input * input;
+            if *energy < RMS_ENERGY_FLOOR {
+                *energy = 0.0;
+            }
+        }
+        if self.detector_remaining > 0 {
+            let target = f64::from(self.settings.detector == Detector::Rms);
+            self.detector_mix += (target - self.detector_mix) / f64::from(self.detector_remaining);
+            self.detector_remaining -= 1;
+            if self.detector_remaining == 0 {
+                self.detector_mix = target;
+            }
+        }
+        // Exact Peak fast path retains the original amplitude-follower arithmetic.
+        let detector = if self.detector_mix == 0.0 {
+            peak
+        } else {
+            let rms = self.energy[0].max(self.energy[1]).sqrt();
+            if self.detector_mix == 1.0 {
+                rms
+            } else {
+                (1.0 - self.detector_mix) * peak + self.detector_mix * rms
+            }
+        };
+        let coefficient = if detector > self.envelope {
             self.attack_alpha
         } else {
             self.release_alpha
         };
-        self.envelope = coefficient * self.envelope + (1.0 - coefficient) * peak;
+        self.envelope = coefficient * self.envelope + (1.0 - coefficient) * detector;
         let level_db = if self.envelope > 0.0 {
             20.0 * self.envelope.log10()
         } else {
@@ -373,18 +487,42 @@ impl CompressorRuntime {
         let target_gain_db = reduction_db + f64::from(self.settings.makeup_db);
         self.gain_db = self.gain_alpha * self.gain_db + (1.0 - self.gain_alpha) * target_gain_db;
         let gain = 10.0_f64.powf(self.gain_db / 20.0);
-        frame[0] = (left * gain) as f32;
-        frame[1] = (right * gain) as f32;
+        // A finite 5 ms ramp reaches exact endpoints, independently of block
+        // partitions. Detector/gain history advances even at fully dry output.
+        if self.mix_remaining > 0 {
+            self.mix +=
+                (f64::from(self.settings.dry_wet) - self.mix) / f64::from(self.mix_remaining);
+            self.mix_remaining -= 1;
+            if self.mix_remaining == 0 {
+                self.mix = f64::from(self.settings.dry_wet);
+            }
+        }
+        if self.mix == 1.0 {
+            // Preserve the original fully-wet operation order and rounding.
+            frame[0] = (left * gain) as f32;
+            frame[1] = (right * gain) as f32;
+        } else if self.mix != 0.0 {
+            frame[0] = (left * (1.0 - self.mix) + left * gain * self.mix) as f32;
+            frame[1] = (right * (1.0 - self.mix) + right * gain * self.mix) as f32;
+        }
     }
 }
 
 impl NativeProcessorRuntime for CompressorRuntime {
-    fn process_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             self.process_frame(frame);
         }
     }
-    fn process_bypassed_block(&mut self, frames: &mut [StereoFrame]) {
+    fn process_bypassed_block(
+        &mut self,
+        frames: &mut [StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             let input = *frame;
             self.process_frame(frame);
@@ -409,8 +547,27 @@ impl NativeProcessorRuntime for CompressorRuntime {
             .downcast_ref::<Self>()
             .filter(|previous| self.sample_rate == previous.sample_rate)
         {
+            self.energy = previous.energy;
+            self.detector_mix = previous.detector_mix;
+            self.detector_remaining = if self.settings.detector == previous.settings.detector {
+                previous.detector_remaining
+            } else if self.detector_mix != f64::from(self.settings.detector == Detector::Rms) {
+                self.sample_rate.div_ceil(200)
+            } else {
+                0
+            };
             self.envelope = previous.envelope;
             self.gain_db = previous.gain_db;
+            self.mix = previous.mix;
+            self.mix_remaining = if self.settings.dry_wet == previous.settings.dry_wet {
+                // Scratch/rollback twins copy the trajectory without restarting it.
+                previous.mix_remaining
+            } else if self.mix != f64::from(self.settings.dry_wet) {
+                // Same preparation/history handoff as the existing gain smoother.
+                self.sample_rate.div_ceil(200)
+            } else {
+                0
+            };
         }
     }
     fn can_retarget_parameters_from(&self, previous: &dyn NativeProcessorRuntime) -> bool {
@@ -460,14 +617,20 @@ pub fn transfer_curve(
     let points = std::array::from_fn(|index| {
         let x = index as f64 / 128.0;
         let input_db = -60.0 + x * 60.0;
-        let output_db = input_db
-            + gain_reduction_db(
-                input_db,
-                f64::from(settings.threshold_db),
-                f64::from(settings.ratio),
-                f64::from(settings.knee_db),
-            )
-            + f64::from(settings.makeup_db);
+        let wet_gain_db = gain_reduction_db(
+            input_db,
+            f64::from(settings.threshold_db),
+            f64::from(settings.ratio),
+            f64::from(settings.knee_db),
+        ) + f64::from(settings.makeup_db);
+        let mix = f64::from(settings.dry_wet);
+        let output_db = if mix == 1.0 {
+            input_db + wet_gain_db
+        } else if mix == 0.0 {
+            input_db
+        } else {
+            input_db + 20.0 * ((1.0 - mix) + mix * 10.0_f64.powf(wet_gain_db / 20.0)).log10()
+        };
         [x as f32, ((output_db + 66.0) / 90.0) as f32]
     });
     Ok(CompressorTransferCurve { points })

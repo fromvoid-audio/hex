@@ -156,26 +156,7 @@ pub(super) fn reconcile(view: &mut EditorView, cx: &mut Context<EditorView>) {
             .controls
             .iter()
             .filter_map(|(key, control)| {
-                let (old_class, old_type, old_descriptor) = match control {
-                    ParameterControl::Float {
-                        class,
-                        type_id,
-                        descriptor,
-                        ..
-                    }
-                    | ParameterControl::Bool {
-                        class,
-                        type_id,
-                        descriptor,
-                        ..
-                    }
-                    | ParameterControl::Choice {
-                        class,
-                        type_id,
-                        descriptor,
-                        ..
-                    } => (*class, *type_id, *descriptor),
-                };
+                let (old_class, old_type, old_descriptor) = control.metadata();
                 let valid = descriptors.get(key).is_some_and(
                     |(class, type_id, descriptor, compatible, _)| {
                         *class == old_class
@@ -232,7 +213,10 @@ pub(super) fn pinned(view: &EditorView, key: ParameterKey, window: &Window, cx: 
                     second,
                 } => device == key.device && (first == key.parameter || second == key.parameter),
                 GestureTarget::DeviceParameterSnapshot { device } => device == key.device,
-                GestureTarget::ReturnSend { .. } => false,
+                GestureTarget::ReturnSend { .. }
+                | GestureTarget::TrackGain { .. }
+                | GestureTarget::TrackBalance { .. }
+                | GestureTarget::ReturnGain { .. } => false,
             })
         || view
             .device_panel
@@ -389,6 +373,7 @@ pub(super) mod tests {
                 };
                 NativeDeviceParameterView {
                     descriptor,
+                    semantics: None,
                     value: if id == 10 {
                         ParameterValue::Float(0.5)
                     } else {
@@ -469,6 +454,7 @@ pub(super) mod tests {
                     default: ParameterValue::Bool(false),
                     presentation: ParameterPresentation::Linear,
                 },
+                semantics: None,
                 value: ParameterValue::Float(0.5),
                 enabled: false,
             },

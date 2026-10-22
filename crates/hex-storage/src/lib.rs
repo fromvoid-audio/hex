@@ -1,7 +1,16 @@
-//! Versioned, bounded persistence of canonical metadata; no media or callback work.
+//! # Purpose
+//! Own strict bounded serialization and recoverable publication of canonical project metadata.
+//!
+//! # Dependencies
+//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json and fs2.
+//!
+//! # Does not own
+//! Does not decode PCM, construct DSP, access callback state or silently convert unsupported alpha
+//! formats. Unsupported/malformed input refuses without rewriting the original file.
 mod files;
 mod journal;
 pub mod preset;
+pub mod tuning_library;
 pub use journal::{Journal, journal_path, load_journal};
 mod audio_edit;
 mod replacement;
@@ -129,11 +138,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the complete schema28 envelope, preserving nested audio events, appearance, host gains, import
-/// provenance, typed routing and complete gain-lane metadata together.
-/// Historical readers remain explicit.
+/// Encode the single current schema34 envelope with required tuning and complete
+/// device asset manifests, preserving all other active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::audio_events::encode(project)?)
+    encode_document(&schema::tuning::DocumentV34::from_project(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -149,6 +157,25 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if project
+        .assets()
+        .any(|asset| asset.original_source().is_some())
+    {
+        return Err(StorageError::Invalid(
+            "older schema cannot save device-original source identities",
+        ));
+    }
+    if !project.main_devices().is_empty() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save main devices",
+        ));
+    }
+    if project.tuning() != hex_tuning::ProjectTuning::default() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save project tuning",
+        ));
+    }
+    schema::device_assets::refuse_legacy(project)?;
     if project.tracks().iter().any(|t| {
         t.clips().iter().any(|c| c.name() != "clip")
             || t.midi_clips().iter().any(|c| c.name() != "clip")

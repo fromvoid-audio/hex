@@ -128,8 +128,11 @@ fn arrangement_utility_instances_process_audio_in_serial_order_and_honor_bypass_
 fn arrangement_midi_receives_the_same_fused_device_transform() {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
     let track = match editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "midi".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     {
@@ -308,7 +311,7 @@ impl NativeDeviceDefinition for TestDevice {
     fn prepare_processor(
         &self,
         state: &NativeDeviceState,
-        _sample_rate: u32,
+        _context: &hex_lattice::DevicePreparationContext<'_>,
     ) -> Result<Option<Box<dyn PreparedNativeProcessor>>, DeviceContractError> {
         self.migrate_state(state)?;
         let (scale, latency) = match state.payload() {
@@ -351,7 +354,11 @@ struct SquareRuntime {
     scale: f32,
 }
 impl NativeProcessorRuntime for SquareRuntime {
-    fn process_block(&mut self, frames: &mut [hex_lattice::StereoFrame]) {
+    fn process_block(
+        &mut self,
+        frames: &mut [hex_lattice::StereoFrame],
+        _resources: &dyn hex_lattice::DeviceResources,
+    ) {
         for frame in frames {
             let [left, right] = *frame;
             *frame = [
@@ -431,7 +438,14 @@ fn independent_nonlinear_runtimes_keep_order_history_and_partition_exactness() {
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     let instance = |device_id, state: NativeDeviceState, sample_rate| {
         let processor = registry
-            .prepare_processor(&state, sample_rate)
+            .prepare_processor(
+                &state,
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate,
+                    tuning: &hex_lattice::TuningTable::default(),
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+            )
             .unwrap()
             .unwrap();
         PreparedProcessorInstance {
@@ -798,4 +812,72 @@ fn host_trim_is_post_device_and_meters_preserve_serial_signal_boundaries() {
         })
         .unwrap();
     assert_eq!(rendered(editor.project(), asset), [0.125, -0.25]);
+}
+
+#[test]
+fn main_effects_process_once_after_sum_in_order_and_session_matches() {
+    let (mut editor, asset, _) = imported_audio_project();
+    let initial = UTILITY_DEFINITION.default_state().unwrap();
+    let invert_state = utility_patch(
+        &initial,
+        parameter::INVERT_RIGHT,
+        ParameterValue::Bool(true),
+    );
+    let swap_state = utility_patch(&initial, parameter::CHANNEL, ParameterValue::Choice(3));
+    let Created::Device(invert) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: invert_state,
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let Created::Device(swap) = editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: swap_state,
+        })
+        .unwrap()
+    else {
+        panic!("device")
+    };
+    let mut snapshot = editor.project().snapshot();
+    snapshot.master_gain = 0.5;
+    let model = Project::from_snapshot(snapshot).unwrap();
+    // Input .25,-.5 -> invert-right -> swap -> existing master .5 ONCE.
+    assert_eq!(rendered(&model, asset), [0.25, 0.125]);
+    let media = BTreeMap::from([(asset, Audio::new(48_000, vec![[0.25, -0.5]]).unwrap())]);
+    let prepared = Arc::new(
+        PreparedRevision::prepare(
+            &model,
+            &media,
+            Arc::new(hex_devices::SineTable::new()),
+            None,
+        )
+        .unwrap(),
+    );
+    let mut playback = Playback::try_from_prepared_with_session(prepared).unwrap();
+    playback
+        .try_apply_action(PlaybackAction::Transport(PlaybackCommand::Play))
+        .unwrap();
+    let mut actual = [[0.0; 2]; 1];
+    playback.render(&mut actual).unwrap();
+    assert_eq!(actual, [[0.25, 0.125]]);
+    editor
+        .execute(Command::MoveMainDevice {
+            device: swap,
+            before: Some(invert),
+        })
+        .unwrap();
+    assert_eq!(rendered(editor.project(), asset), [-0.5, -0.25]);
+    editor
+        .execute(Command::SetDeviceBypass {
+            device: invert,
+            bypassed: true,
+        })
+        .unwrap();
+    assert_eq!(rendered(editor.project(), asset), [-0.5, 0.25]);
+    editor.execute(Command::RemoveDevice(swap)).unwrap();
+    assert_eq!(rendered(editor.project(), asset), [0.25, -0.5]);
 }

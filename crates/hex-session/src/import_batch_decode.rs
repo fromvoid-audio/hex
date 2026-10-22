@@ -259,6 +259,9 @@ impl AudioBatchImport {
             );
         }
         match destination {
+            AudioBatchDestination::Console(target) => {
+                super::import_batch::console::validate(session.project(), target, count)?
+            }
             AudioBatchDestination::Track { track, .. } => {
                 session
                     .project()
@@ -304,12 +307,40 @@ impl AudioBatchImport {
     /// arbitrated immediately before backend commit. A running decode/resample
     /// finishes before cancellation can be observed; no latency bound is claimed.
     pub fn run(
+        self,
+        session: &mut Session,
+        previous: Option<&hex_engine::PreparedRevision>,
+        current: impl FnMut() -> AudioBatchContext,
+    ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
+        self.run_with_storage_admission(session, previous, current, |_, _| Ok(()))
+    }
+    pub(crate) fn run_with_storage_admission(
+        self,
+        session: &mut Session,
+        previous: Option<&hex_engine::PreparedRevision>,
+        current: impl FnMut() -> AudioBatchContext,
+        storage: impl FnOnce(&Session, &[PreparedImport]) -> Result<(), SessionError>,
+    ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
+        self.run_with_storage_admission_using(
+            session,
+            previous,
+            current,
+            storage,
+            crate::import_batch::prepare_asset_free,
+        )
+    }
+    pub(crate) fn run_with_storage_admission_using(
         mut self,
         session: &mut Session,
         previous: Option<&hex_engine::PreparedRevision>,
         mut current: impl FnMut() -> AudioBatchContext,
+        storage: impl FnOnce(&Session, &[PreparedImport]) -> Result<(), SessionError>,
+        prepare: impl FnOnce(
+            crate::import_batch::Preparation<'_>,
+            &mut dyn FnMut() -> Result<(), SessionError>,
+        ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
-        let result = self.run_inner(session, previous, &mut current);
+        let result = self.run_inner(session, previous, &mut current, storage, prepare);
         match &result {
             Ok(_) => {
                 self.control.publish(0, self.paths.len(), self.paths.len());
@@ -336,6 +367,11 @@ impl AudioBatchImport {
         session: &mut Session,
         previous: Option<&hex_engine::PreparedRevision>,
         current: &mut impl FnMut() -> AudioBatchContext,
+        storage: impl FnOnce(&Session, &[PreparedImport]) -> Result<(), SessionError>,
+        prepare: impl FnOnce(
+            crate::import_batch::Preparation<'_>,
+            &mut dyn FnMut() -> Result<(), SessionError>,
+        ) -> Result<Arc<hex_engine::PreparedRevision>, SessionError>,
     ) -> Result<(Vec<Created>, Arc<hex_engine::PreparedRevision>), AudioBatchError> {
         self.check(current)?;
         if session.project() != &self.project
@@ -404,24 +440,24 @@ impl AudioBatchImport {
             })?;
             self.check(current)?;
             remaining = remaining
-                .checked_sub(u64::try_from(member.waveform.source_frames).map_err(|_| {
-                    SessionError::Invalid("decoded frame count exceeds project range")
-                })?)
+                .checked_sub(member.retained_pcm_frames()?)
                 .ok_or(SessionError::Invalid("resident audio frame limit reached"))?;
             prepared.push(member);
             self.control.publish(3, index + 1, index + 1);
         }
         self.check(current)?;
+        storage(session, &prepared)?;
         self.control.publish(4, self.paths.len(), self.paths.len());
         // The canonical backend admits twice: before candidate construction and
         // after its single compile, immediately before history/media commit.
         let mut admissions = 0;
         let mut admission_error = None;
-        let result = session.import_prepared_batch_revision(
+        let result = session.import_prepared_batch_revision_using(
             prepared,
             self.destination,
             &self.project,
             previous,
+            true,
             || {
                 if let Err(error) = self.check(current) {
                     admission_error = Some(error);
@@ -438,6 +474,7 @@ impl AudioBatchImport {
                 }
                 Ok(())
             },
+            prepare,
         );
         match result {
             Ok(value) => Ok(value),

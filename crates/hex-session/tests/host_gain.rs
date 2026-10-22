@@ -9,8 +9,12 @@ fn instrument_host_trim_is_undoable_and_preserves_synthesis_identity() {
         let mut session = Session::new(48_000, 64, 0).unwrap();
         let (Created::Track(track), graph) = session
             .command_prepared_revision(
-                Command::AddMidiTrack {
+                Command::InsertTrackWithDevice {
                     name: "gain staging".into(),
+                    before_track: None,
+                    slot: hex_project::TrackDeviceSlot::Instrument,
+                    state: hex_project::default_instrument_state()
+                        .expect("fixture instrument state"),
                 },
                 None,
             )

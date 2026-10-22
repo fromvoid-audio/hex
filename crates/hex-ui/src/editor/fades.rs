@@ -89,7 +89,7 @@ impl EditorView {
         state: &ViewState,
         cx: &mut Context<Self>,
     ) -> Option<Div> {
-        let (_, clip_id, _, duration, ..) = self.selected_clip_data()?;
+        let (_, clip_id, _, duration, ..) = self.detail_audio_clip_data()?;
         let clip = state.project.clip(clip_id)?;
         let fade = clip.retained_fade();
         let retained = clip.audio_edit().is_some();
@@ -230,7 +230,7 @@ impl EditorView {
             self.report_fade_edit_blocked();
             return;
         }
-        let Some((_, clip_id, _, duration, ..)) = self.selected_clip_data() else {
+        let Some((_, clip_id, _, duration, ..)) = self.detail_audio_clip_data() else {
             return;
         };
         let Some(state) = self.state.as_ref() else {
@@ -262,6 +262,34 @@ impl EditorView {
         {
             return;
         }
+        if fade.has_shape() {
+            let Ok(local) = fade.reanchor(duration) else {
+                return;
+            };
+            let Ok(next) = ClipFade::new(
+                duration,
+                0,
+                fade_in.min(duration - local.in_start()),
+                fade_out.min(duration - local.out_end_offset()),
+            )
+            .and_then(|next| {
+                next.with_shape(
+                    local.in_start(),
+                    local.out_end_offset(),
+                    local.in_curve(),
+                    local.out_curve(),
+                )
+            }) else {
+                return;
+            };
+            if next != fade {
+                self.enqueue(Request::Edit(Command::SetClipFadeEnvelope {
+                    clip: clip_id,
+                    fade: next,
+                }));
+            }
+            return;
+        }
         self.enqueue(Request::Edit(Command::SetClipFades {
             clip: clip_id,
             fade_in,
@@ -279,7 +307,7 @@ impl EditorView {
             self.report_fade_edit_blocked();
             return;
         }
-        let Some((_, clip_id, _, duration, ..)) = self.selected_clip_data() else {
+        let Some((_, clip_id, _, duration, ..)) = self.detail_audio_clip_data() else {
             return;
         };
         let Some(state) = self.state.as_ref() else {
@@ -291,6 +319,7 @@ impl EditorView {
                 && fade.offset() == 0
                 && fade.fade_in() == 0
                 && fade.fade_out() == 0
+                && !fade.has_shape()
         }) {
             return;
         }
