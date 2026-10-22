@@ -213,6 +213,8 @@ fn physical_keys_defer_the_latest_selection_and_stale_preparation_or_focus_canno
         let event = loop {
             if let Ok(event) = v.service.try_event() {
                 assert_eq!(event.computer_keyboard_complete, Some(request));
+                assert!(event.error.is_none(), "{:?}", event.error);
+                assert!(event.playback.is_some(), "real preparation must succeed");
                 break event;
             }
             assert!(std::time::Instant::now() < until);
