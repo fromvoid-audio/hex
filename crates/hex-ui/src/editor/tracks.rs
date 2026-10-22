@@ -1346,11 +1346,7 @@ impl EditorView {
             .px_1()
             .border_l_2()
             .border_b_1()
-            .border_color(rgb(if selected {
-                theme::color(theme::PaletteRole::Primary)
-            } else {
-                theme::color(theme::PaletteRole::Border)
-            }))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .bg(rgb(if selected {
                 theme::color(theme::PaletteRole::Raised)
             } else {
@@ -1364,10 +1360,33 @@ impl EditorView {
                 div()
                     .absolute()
                     .left_0()
-                    .top_0()
+                    .top(px(1.0))
                     .bottom_0()
-                    .w(px(2.0))
+                    .w(px(4.0))
+                    .debug_selector(move || format!("track-color-strip-{}", track_id.value()))
                     .bg(rgb(theme::element_colors(track.color()).accent)),
+            )
+            // Paint selection after opaque header content and its assigned-color
+            // strip. Keep layout/input bounds unchanged and resize feedback local.
+            .children(
+                (selected
+                    && self.active_trim_drag.is_none()
+                    && self.active_midi_trim_drag.is_none())
+                .then(|| {
+                    div()
+                        .absolute()
+                        // Inset one pixel inside the full header, accounting for
+                        // its existing left/bottom layout borders.
+                        .left(px(-1.0))
+                        .right(px(1.0))
+                        .top(px(1.0))
+                        .bottom_0()
+                        .border_1()
+                        .debug_selector(move || {
+                            format!("track-selection-outline-{}", track_id.value())
+                        })
+                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                }),
             )
             .on_mouse_down(
                 MouseButton::Right,
