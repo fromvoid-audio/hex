@@ -184,12 +184,14 @@ pub(super) fn marquee_hits(
     last: [f32; 2],
     width: f32,
     height: f32,
+    pitch_rows: u8,
 ) -> Result<Vec<NoteId>, &'static str> {
     if !first.into_iter().chain(last).all(f32::is_finite)
         || !width.is_finite()
         || !height.is_finite()
         || width <= 0.0
         || height <= 0.0
+        || pitch_rows == 0
     {
         return Ok(Vec::new());
     }
@@ -206,7 +208,7 @@ pub(super) fn marquee_hits(
         let (left, right) =
             midi_scene::pixel_bounds(*note, width).ok_or("invalid midi scene width")?;
         let top = note.y * height;
-        let bottom = top + height / midi_scene::ROWS as f32;
+        let bottom = top + height / f32::from(pitch_rows);
         if right >= rect[0] && left <= rect[2] && bottom >= rect[1] && top <= rect[3] {
             hits.push(note.id);
         }
@@ -321,7 +323,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            marquee_hits(&notes, [29.0, 4.0], [21.0, 7.0], 100.0, 240.0).unwrap(),
+            marquee_hits(&notes, [29.0, 4.0], [21.0, 7.0], 100.0, 240.0, 24).unwrap(),
             [ids[0]]
         );
     }
