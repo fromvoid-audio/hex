@@ -638,10 +638,15 @@ impl Harness {
             std::thread::sleep(Duration::from_millis(1));
         }
     }
-    fn attach_rendered_setup(&mut self) -> (SyncSender<EditorAudioEvent>, EditorAudioEvent) {
+    fn attach_rendered_setup(&mut self) -> (SyncSender<EditorAudioEvent>, [EditorAudioEvent; 2]) {
         let setup = self.rendered_setup.take().unwrap();
-        setup.sender.try_send(setup.opened.unwrap()).unwrap();
-        (setup.sender, setup.observation.unwrap())
+        // The worker can fill the original capacity-one channel after settle's final drain.
+        // Transfer both actual events to the fixture's bounded handoff; replay only after the
+        // real UI consumer exists. Opened keeps the original endpoint, not a replacement owner.
+        (
+            setup.sender,
+            [setup.opened.unwrap(), setup.observation.unwrap()],
+        )
     }
     fn run(&mut self, request: Request) -> Event {
         self.service.as_ref().unwrap().submit(request).unwrap();

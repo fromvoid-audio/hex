@@ -849,6 +849,16 @@ fn rendered_sampler_save_open(
     };
     // Give the actual view a current worker event after fixture authoring. No
     // browser action/request or source assignment is synthesized by the fixture.
+    // Hold an older real observation so the scalar-controls fixture deterministically
+    // starts handoff under pressure. The refresh below supplies the actual latest Submitted.
+    let handoff_pressure = matches!(controls, Some(ControlsFixture::Scalar)).then(|| {
+        h.rendered_setup
+            .as_mut()
+            .unwrap()
+            .observation
+            .take()
+            .unwrap()
+    });
     let before_refresh = h
         .observation
         .lock()
@@ -863,7 +873,16 @@ fn rendered_sampler_save_open(
         .submit(Request::Edit(Command::Gain { track, gain: 1.0 }))
         .unwrap();
     h.settle_rendered_setup(Some(before_refresh));
-    let (setup_sender, mut setup_observation) = h.attach_rendered_setup();
+    if let Some(pressure) = handoff_pressure {
+        match h.rendered_setup.as_ref().unwrap().sender.try_send(pressure) {
+            Ok(()) | Err(mpsc::TrySendError::Full(_)) => {}
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                panic!("actual audio consumer disconnected before handoff")
+            }
+        }
+        // No receiver drains until the UI is created: attach must tolerate this full row.
+    }
+    let (setup_sender, setup_events) = h.attach_rendered_setup();
     let backend = EditorBackend {
         service: h.service.take().unwrap(),
         audio_events: std::mem::replace(&mut h.events, mpsc::channel().1),
@@ -901,19 +920,21 @@ fn rendered_sampler_save_open(
         drop(slot);
         std::thread::sleep(Duration::from_millis(1));
     };
-    loop {
-        match setup_sender.try_send(setup_observation) {
-            Ok(()) => break,
-            Err(mpsc::TrySendError::Full(event)) => setup_observation = event,
-            Err(mpsc::TrySendError::Disconnected(_)) => {
-                panic!("actual UI audio consumer disconnected")
+    for mut setup_event in setup_events {
+        loop {
+            match setup_sender.try_send(setup_event) {
+                Ok(()) => break,
+                Err(mpsc::TrySendError::Full(event)) => setup_event = event,
+                Err(mpsc::TrySendError::Disconnected(_)) => {
+                    panic!("actual UI audio consumer disconnected")
+                }
             }
+            pulse(&mut visual);
+            assert!(
+                Instant::now() < end,
+                "actual retained event delivery stalled"
+            );
         }
-        pulse(&mut visual);
-        assert!(
-            Instant::now() < end,
-            "actual retained observation delivery stalled"
-        );
     }
     loop {
         pulse(&mut visual);

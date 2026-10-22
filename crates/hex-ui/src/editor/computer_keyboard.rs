@@ -384,13 +384,19 @@ impl super::EditorView {
                 self.toggle_computer_keyboard(window, cx);
             }
         } else {
+            if self.computer_keyboard.suspended && event.is_held {
+                // Stop already revoked this prefix. Autorepeat cannot resume it, but must
+                // not destroy a retained root needed by a newer physical press. Focus/disable
+                // cancellation has already ended its input independently.
+                cx.stop_propagation();
+                return;
+            }
             let worker_owned = self.worker_owns_keyboard_publication();
             let retain_input = self.reusable_worker_keyboard_input(worker_owned);
-            if ((self.device_gesture_pending()
+            if (self.device_gesture_pending()
                 || self.prepared_seek.is_some()
                 || (self.stopped_playback_restore.is_some() && !worker_owned))
-                && !retain_input)
-                || (self.computer_keyboard.suspended && event.is_held)
+                && !retain_input
             {
                 self.cancel_computer_keyboard();
                 self.computer_keyboard.suspended = true;
