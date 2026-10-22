@@ -219,6 +219,7 @@ impl MidiScene {
         width: f32,
         height: f32,
         mut cycle: Option<HitCycle>,
+        selected: &[NoteId],
     ) -> Option<NoteHover> {
         let id = self.hit(x, y, width, height, &mut cycle)?;
         let note = self.note(id)?;
@@ -226,12 +227,13 @@ impl MidiScene {
         Some(NoteHover {
             key: self.key,
             note: id,
-            kind: super::midi_drag::hit_kind(
+            kind: super::midi_drag::selected_hit_kind(
                 x,
                 left,
                 right - left,
                 note.leading_edge_visible,
                 note.trailing_edge_visible,
+                selected.binary_search(&id).is_ok(),
             ),
         })
     }
