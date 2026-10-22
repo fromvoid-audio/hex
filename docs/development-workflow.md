@@ -30,7 +30,7 @@ Use the existing runner when its selection fits the affected boundary:
 python3 scripts/local-ci.py --profile merge --base BASE_SHA --source HEAD_SHA
 ```
 
-The current selector is conservative and cannot express every boundary; see
+The selector covers affected packages and a reviewed compressor boundary; see
 [local-ci.md](local-ci.md). A reviewed change-based command set may qualify under
 AGENTS.md without a runner merge certificate. Record its coverage and unresolved
 limits honestly. Do not rewrite runner reports, weaken assertions or claim a

@@ -21,18 +21,41 @@ the failing step; later `not_run` steps did not pass. Results are in
 must pass on the exact final commit with an unchanged source digest and no stale
 flag. Preserve failed/interrupted logs; do not weaken assertions to obtain green.
 
-## Current selector limits
+## Merge selection
 
-`scripts/ci_plan.py` currently scopes prose, supported UI and tooling inputs;
-other Rust, policy (including AGENTS.md), build/manifest/vendor, mixed or unknown
-inputs select a full audit. This describes existing executable behavior, not a
-requirement to run unrelated suites. This policy change does not implement a new
-selector. Until a boundary is supported, use a reviewed change-based command set
-with exact source/base, affected contracts/consumers/configurations, results and
-reasons for omissions in the PR. Do not call it runner-certified or change a report's
-qualification flag. Explain and resolve unknowns or conservatively check their
-concrete impact; use full when that breadth is justified. Quick/edit alone is
-insufficient. No bootstrap full audit or repeated full run per slice is required.
+`scripts/ci_plan.py` selects checks from both sides of changed Git paths, Cargo
+ownership and transitive normal/dev/build/optional/target dependencies. Rust,
+package manifests and package build scripts select owning packages and consumers,
+including reviewed runtime relationships such as opaque device state in storage.
+Mixed tooling/Rust changes combine comprehensive Python checks with affected Rust
+configurations. Contributor prose, including AGENTS.md, gets link/path checks;
+executable selector/runner policy gets comprehensive tooling tests and guards.
+
+The first narrower device boundary is compressor implementation and owning tests.
+With host interfaces, registration and build inputs unchanged, it selects real
+compressor DSP, session revision, generic device-chain, callback/allocation,
+storage round-trip and UI source tests. All affected Cargo/runtime consumers still
+compile through default and relevant feature Clippy checks. Whole unrelated
+instrument/export and UI/audio behavior suites are omitted with reasons in the
+plan. A new consumer or macro/include input widens to complete affected-package
+tests; missing required consumers/targets refuse. Other device modules currently
+retain affected-package coverage until their runtime relationships are reviewed.
+
+Package plans retain default tests/lints, applicable allocation/UI/export feature
+configurations, gallery and desktop build checks, and independently declared
+additional features. Feature combinations need reviewed contract rules; individual
+feature runs do not prove all combinations. Global manifests/lockfiles, toolchain,
+vendor, unowned resources and unknown inputs conservatively select the comprehensive
+audit with explicit input reasons. Review unknown effects rather than assuming
+an omitted domain is covered. A merge or core path alone does not require full.
+Full/release profiles and native delivery keep their comprehensive configurations.
+
+The existing summary retains changed inputs, exact selected argv, boundary and
+Python exclusions/rationale, source digest, counts, logs and cache identity. Empty
+named targets, zero passing tests, stale source or mismatched reuse evidence cannot
+qualify. Quick/edit/custom probes remain partial. For an unsupported boundary a
+reviewed change-based command set remains available under AGENTS.md; record its
+source/base, contracts/consumers, configurations, results and limitations in the PR.
 
 Reviewed evidence reuse must identify the original tested inputs and assumptions.
 The runner's `--reuse-report SUMMARY.json` is narrower: it accepts an original
@@ -42,7 +65,7 @@ Neither reviewed merge evidence nor a merge certificate replaces the full audit
 required by [qualified native delivery](test-builds.md).
 
 For ordinary app-only Rust merge inputs, reviewed Python shared invariants run
-alongside the unchanged Rust checks and repository guards. Tooling, policy,
+alongside affected Rust checks and repository guards. Tooling, executable policy,
 build/configuration, mixed UI/core or unknown inputs, and new/missing/nested test
 modules retain comprehensive discovery. Full/release profiles always discover all
 modules. The summary records selected and excluded groups and exact selectors.

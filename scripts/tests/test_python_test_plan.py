@@ -223,7 +223,7 @@ assert any(case.id().endswith(".test_actual_native_identity_and_effect_instrumen
             git("config", "user.email", "fixture@invalid")
             git("add", ".");git("commit", "-qm", "base")
             base = git("rev-parse", "HEAD")
-            for name, expected_scope in (("hex-ui", "ui"), ("hex-engine", "full")):
+            for name, expected_scope in (("hex-ui", "ui"), ("hex-engine", "rust")):
                 (root / "crates" / name / "src/lib.rs").write_text("changed")
                 git("add", ".");git("commit", "-qm", name)
                 source = git("rev-parse", "HEAD")
