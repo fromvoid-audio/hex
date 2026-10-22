@@ -145,7 +145,12 @@ impl Inputs<'_> {
             None,
             &sink.resident_admission(),
             held.construction_bytes,
-            resources.compiler_construction_allowance_bytes()?,
+            resources
+                .compiler_construction_allowance_bytes()?
+                .checked_add(PreparedRevision::device_handoff_metadata_construction_bytes(project)?)
+                .ok_or(SessionError::Invalid(
+                    "resident metadata allowance overflow",
+                ))?,
         )?;
         let work = resources.compiler_scan_work_on_control(project)?;
         let prepared =

@@ -791,14 +791,19 @@ impl<'a> DeviceResourceAdmission<'a> {
             revision
                 .session()
                 .visit_device_resource_factories(ledger, set)?;
+            ledger.bytes(
+                crate::audio_storage::Owner::exclusive(revision),
+                crate::audio_storage::Location("ordinary-handoff-evidence-capacity", 0),
+                revision.device_handoff_metadata_bytes()?,
+            )?;
         }
         for book in self.books.iter().copied().chain(self.book) {
             ledger.root(book, crate::AudioStorageRole::Current)?;
             ledger.vec(&book.obligations)?;
             ledger.bytes(
                 crate::audio_storage::Owner::exclusive(book),
-                crate::audio_storage::Location("resource-factory-inline-allowance", 0),
-                book.factory_inline_bytes,
+                crate::audio_storage::Location("resource-graph-control-metadata-allowance", 0),
+                book.graph_control_metadata_bytes,
             )?;
             for obligation in &book.obligations {
                 frames = frames
@@ -821,6 +826,11 @@ impl<'a> DeviceResourceAdmission<'a> {
                 revision
                     .session()
                     .visit_device_resource_factories(ledger, resources)?;
+                ledger.bytes(
+                    crate::audio_storage::Owner::exclusive(revision),
+                    crate::audio_storage::Location("ordinary-handoff-evidence-capacity", 0),
+                    revision.device_handoff_metadata_bytes()?,
+                )?;
             } else if playback
                 .prepared_revision()
                 .is_some_and(|revision| revision.device_resource_scope.is_some())
@@ -853,8 +863,8 @@ impl<'a> DeviceResourceAdmission<'a> {
             ledger.vec(&batch.obligations)?;
             ledger.bytes(
                 crate::audio_storage::Owner::exclusive(batch),
-                crate::audio_storage::Location("resource-factory-inline-allowance", 0),
-                batch.factory_inline_bytes,
+                crate::audio_storage::Location("resource-graph-control-metadata-allowance", 0),
+                batch.graph_control_metadata_bytes,
             )?;
             for obligation in &batch.obligations {
                 frames = frames
@@ -882,21 +892,23 @@ impl<'a> DeviceResourceAdmission<'a> {
 /// Output-owned immutable limits and exact outstanding resource obligations.
 /// This inventories only the resource subtree. Ordinary clip PCM remains a separately charged
 /// conservative capacity allowance, without native constructor provenance. Validated fixed inline
-/// resource factories have a separate conservative allowance per accepted/unreturned graph;
-/// source-tail anchors never retain a whole revision. Runtime/context/DSP buffers retain their existing budgets. No whole-graph DATA or retirement proof is claimed.
+/// resource factories and complete MIDI handoff evidence have a separate conservative
+/// control-metadata allowance per accepted/unreturned graph; source-tail anchors never retain a
+/// whole revision. Runtime/context/DSP buffers retain their existing budgets. No whole-graph DATA
+/// or retirement proof is claimed.
 /// Allocation, capture, source destruction and ledger traversal are control operations only.
 pub struct DeviceResourcePublication {
     reservation: crate::AudioStorageLedgerReservation,
     obligations: Vec<DeviceResourceLeaseObligation>,
     max_obligations: usize,
-    factory_inline_bytes: usize,
+    graph_control_metadata_bytes: usize,
     unreturned_graphs: usize,
 }
 /// Unpublished resource obligations, captured from the actual candidate on control. A refusal
 /// destroys these anchors on control while returning the unchanged candidate owner to its caller.
 struct DeviceResourcePublicationBatch {
     obligations: Vec<DeviceResourceLeaseObligation>,
-    factory_inline_bytes: usize,
+    graph_control_metadata_bytes: usize,
 }
 impl DeviceResourcePublication {
     pub fn reserve_on_control(
@@ -909,7 +921,7 @@ impl DeviceResourcePublication {
             reservation,
             obligations: Vec::new(),
             max_obligations,
-            factory_inline_bytes: 0,
+            graph_control_metadata_bytes: 0,
             unreturned_graphs: 0,
         };
         result
@@ -919,7 +931,7 @@ impl DeviceResourcePublication {
         result.inspect(
             &DeviceResourcePublicationBatch {
                 obligations: Vec::new(),
-                factory_inline_bytes: 0,
+                graph_control_metadata_bytes: 0,
             },
             0,
         )?;
@@ -961,21 +973,21 @@ impl DeviceResourcePublication {
         {
             return Err(ResourcePreparationError::MetadataCapacity);
         }
-        let factory_inline_bytes = playback.resource_factory_inline_bytes_on_control()?;
-        let total_factory_bytes = self
-            .factory_inline_bytes
-            .checked_add(factory_inline_bytes)
+        let graph_control_metadata_bytes = playback.resource_control_metadata_bytes_on_control()?;
+        let total_control_metadata_bytes = self
+            .graph_control_metadata_bytes
+            .checked_add(graph_control_metadata_bytes)
             .ok_or(AudioStorageError::Overflow)?;
         Self::preflight_metadata(
             self.reservation,
             self.obligations.capacity(),
             count,
             legacy_pcm_frames,
-            total_factory_bytes,
+            total_control_metadata_bytes,
         )?;
         let mut batch = DeviceResourcePublicationBatch {
             obligations: Vec::new(),
-            factory_inline_bytes,
+            graph_control_metadata_bytes,
         };
         batch
             .obligations
@@ -999,7 +1011,7 @@ impl DeviceResourcePublication {
         retained_capacity: usize,
         batch_count: usize,
         legacy_pcm_frames: u64,
-        factory_inline_bytes: usize,
+        graph_control_metadata_bytes: usize,
     ) -> Result<(), ResourcePreparationError> {
         let minimum = std::mem::size_of::<Self>()
             .checked_add(std::mem::size_of::<DeviceResourcePublicationBatch>())
@@ -1022,7 +1034,7 @@ impl DeviceResourcePublication {
                         .checked_mul(std::mem::size_of::<crate::Frame>())?,
                 )
             })
-            .and_then(|bytes| bytes.checked_add(factory_inline_bytes))
+            .and_then(|bytes| bytes.checked_add(graph_control_metadata_bytes))
             .ok_or(AudioStorageError::Overflow)?;
         if minimum > reservation.max_retained_bytes
             || minimum > reservation.max_construction_peak_bytes
@@ -1044,13 +1056,13 @@ impl DeviceResourcePublication {
             ledger.vec(&batch.obligations)?;
             ledger.bytes(
                 crate::audio_storage::Owner::exclusive(self),
-                crate::audio_storage::Location("resource-factory-inline-allowance", 0),
-                self.factory_inline_bytes,
+                crate::audio_storage::Location("resource-graph-control-metadata-allowance", 0),
+                self.graph_control_metadata_bytes,
             )?;
             ledger.bytes(
                 crate::audio_storage::Owner::exclusive(batch),
-                crate::audio_storage::Location("resource-factory-inline-allowance", 0),
-                batch.factory_inline_bytes,
+                crate::audio_storage::Location("resource-graph-control-metadata-allowance", 0),
+                batch.graph_control_metadata_bytes,
             )?;
             for obligation in self.obligations.iter().chain(&batch.obligations) {
                 obligation.visit(ledger)?;
@@ -1102,7 +1114,7 @@ impl DeviceResourcePublication {
         let result = publish(playback, view).map_err(DeviceResourcePublishError::Publication)?;
         // The identical sum was checked before the queue move; no fallible commit remains.
         self.unreturned_graphs += 1;
-        self.factory_inline_bytes += batch.factory_inline_bytes;
+        self.graph_control_metadata_bytes += batch.graph_control_metadata_bytes;
         self.obligations.append(&mut batch.obligations);
         Ok(result)
     }
@@ -1111,12 +1123,12 @@ impl DeviceResourcePublication {
     /// Migrated leases absent from that graph retain their original source obligations.
     pub fn retire_on_control(&mut self, playback: Box<crate::playback::Playback>) {
         self.mark_returned_on_control(&playback);
-        let factory_bytes = playback.resource_factory_inline_bytes_on_control();
+        let metadata_bytes = playback.resource_control_metadata_bytes_on_control();
         drop(playback);
         self.unreturned_graphs = self.unreturned_graphs.checked_sub(1).unwrap_or(usize::MAX);
-        self.factory_inline_bytes = factory_bytes
+        self.graph_control_metadata_bytes = metadata_bytes
             .ok()
-            .and_then(|bytes| self.factory_inline_bytes.checked_sub(bytes))
+            .and_then(|bytes| self.graph_control_metadata_bytes.checked_sub(bytes))
             .unwrap_or(usize::MAX);
         self.release_marked_after_drop_on_control();
     }

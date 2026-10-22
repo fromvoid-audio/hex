@@ -4903,6 +4903,16 @@ fn run_worker(
                 }
             }
         }
+        if events.resident_publication_enabled()
+            && !project_replaced
+            && replacement_revision.is_none()
+            && let Some(snapshot) = resident_snapshot.as_ref()
+        {
+            // A no-op can accept a fresh audio revision without changing authored history.
+            // Keep the canonical compiler owner aligned with that actual admitted snapshot;
+            // retaining the superseded factory here would escape its resource inventory.
+            compiled = Some((revision, Arc::clone(&snapshot.prepared)));
+        }
         let canonical_changed = replacement_revision.is_some();
         let canonical_prepared = if let Some(prepared) = replacement_revision {
             if let Some(sources) = replacement_sources {

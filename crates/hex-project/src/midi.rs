@@ -32,6 +32,24 @@ impl MidiSourceIdentity {
     pub(crate) fn of(source: &Arc<MidiSource>) -> Self {
         Self(Arc::clone(source))
     }
+    /// Conservative retained control-metadata backing, including the actual source's note
+    /// capacity and Arc header/alignment. Shared clones may be charged repeatedly. This is not
+    /// PCM, allocation identity, exclusive ownership, or a closed-storage proof.
+    pub fn retained_control_metadata_bytes(&self) -> Option<usize> {
+        std::mem::size_of::<MidiSource>()
+            .checked_add(
+                self.0
+                    .notes
+                    .capacity()
+                    .checked_mul(std::mem::size_of::<MidiNote>())?,
+            )?
+            .checked_add(2usize.checked_mul(std::mem::size_of::<usize>())?)?
+            .checked_add(
+                std::mem::align_of::<usize>()
+                    .max(std::mem::align_of::<MidiSource>())
+                    .checked_sub(1)?,
+            )
+    }
 }
 impl PartialEq for MidiSourceIdentity {
     fn eq(&self, other: &Self) -> bool {
@@ -1403,4 +1421,28 @@ pub(crate) fn find_note_source(project: &Project, note: NoteId) -> Option<(ClipI
                     _ => None,
                 })
         })
+}
+
+#[cfg(test)]
+mod retained_metadata_tests {
+    use super::*;
+    #[test]
+    fn source_quote_keeps_unused_note_capacity_and_shared_clone_backing() {
+        let mut source = MidiSource::defaults(BeatTime::ONE);
+        let empty = MidiSourceIdentity(Arc::new(source.clone()))
+            .retained_control_metadata_bytes()
+            .unwrap();
+        source.notes.reserve_exact(16);
+        assert!(source.notes.is_empty());
+        let expected_extra = source.notes.capacity() * std::mem::size_of::<MidiNote>();
+        let identity = MidiSourceIdentity(Arc::new(source));
+        assert_eq!(
+            identity.retained_control_metadata_bytes().unwrap() - empty,
+            expected_extra
+        );
+        assert_eq!(
+            identity.clone().retained_control_metadata_bytes(),
+            identity.retained_control_metadata_bytes()
+        );
+    }
 }

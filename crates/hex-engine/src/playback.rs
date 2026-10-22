@@ -337,6 +337,19 @@ impl Playback {
             _ => Ok(0),
         }
     }
+    /// Conservative resource-factory plus ordinary handoff-evidence allowance. This follows
+    /// the immutable graph's physical control-side destruction, not migrating runtime leases.
+    pub(crate) fn resource_control_metadata_bytes_on_control(
+        &self,
+    ) -> Result<usize, crate::AudioStorageError> {
+        self.resource_factory_inline_bytes_on_control()?
+            .checked_add(
+                self.prepared_revision
+                    .as_deref()
+                    .map_or(Ok(0), |revision| revision.device_handoff_metadata_bytes())?,
+            )
+            .ok_or(crate::AudioStorageError::Overflow)
+    }
     pub fn contains_device_resource_leases(&self) -> bool {
         self.device_resource_leases().next().is_some()
     }

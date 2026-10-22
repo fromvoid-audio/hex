@@ -1036,9 +1036,12 @@ impl SessionPlayback {
             }
         }
 
-        // A mutable candidate may retain only occurrences proven to have been
-        // dispatched under the old law. Missing or changed historical proof
-        // remains a no-chase refusal.
+        // A genuinely fresh authored device suppresses pre-cut gates instead of chasing them.
+        // Complete ordinary predecessor evidence distinguishes installation from a MIDI/history
+        // edit. This one-shot eligibility is not runtime continuity or an occurrence proof.
+        let mut fresh_mutable_install = [false; MAX_TRACKS];
+        // A mutable candidate may retain only occurrences proven to have been dispatched under
+        // the old law. The fresh-install exception only supplies bounded suppression below.
         for (new_index, runtime) in self.mutable_instruments.iter().enumerate() {
             if runtime.is_none() {
                 continue;
@@ -1102,6 +1105,35 @@ impl SessionPlayback {
                 // because there was no old route to match.
                 new_route.owner
             };
+            let fresh_source_matches = match candidate_owner {
+                RouteOwner::Arrangement => previous
+                    .revision
+                    .mutable_arrangement_sources_match(&self.revision, new_route.id),
+                RouteOwner::Session { clip, .. } => previous
+                    .revision
+                    .session()
+                    .midi_clip_for_track(clip, new_route.id)
+                    .zip(
+                        self.revision
+                            .session()
+                            .midi_clip_for_track(clip, new_route.id),
+                    )
+                    .is_some_and(|(old, new)| {
+                        old.track == new_route.id
+                            && new.track == new_route.id
+                            && old.scene == new.scene
+                            && old.source_content_matches(new)
+                    }),
+                RouteOwner::SessionAudio { .. } | RouteOwner::Silence => false,
+            };
+            fresh_mutable_install[new_index] = !timing_changed
+                && old_loop == new_loop
+                && !midi_layout_changed
+                && new_route.pending.is_none()
+                && previous
+                    .revision
+                    .fresh_mutable_device_install(&self.revision, new_route.id)
+                && fresh_source_matches;
             let (candidates, candidate_count, source_frame) = Self::mutable_candidates_at_cut(
                 &self.revision,
                 new_index,
@@ -1130,7 +1162,11 @@ impl SessionPlayback {
                                 && entry.until_frame > previous.performance_frame
                                 && entry.mutable_signature().is_some()
                         });
-                if candidate.source_frame < source_frame && exact.is_none() && !carried {
+                if candidate.source_frame < source_frame
+                    && exact.is_none()
+                    && !carried
+                    && !fresh_mutable_install[new_index]
+                {
                     return Err(SessionPlaybackError::MutableInstrumentChase);
                 }
                 if same_key && exact.is_none() && !carried {
@@ -1744,7 +1780,12 @@ impl SessionPlayback {
                 }
             }
         }
-        for new_index in 0..self.routes.len() {
+        for (new_index, fresh_install) in fresh_mutable_install
+            .iter()
+            .copied()
+            .enumerate()
+            .take(self.routes.len())
+        {
             if self
                 .mutable_instruments
                 .get(new_index)
@@ -1757,7 +1798,7 @@ impl SessionPlayback {
                 .get(new_index)
                 .copied()
                 .ok_or(SessionPlaybackError::UnknownTrack)?;
-            let (candidates, candidate_count, _) = Self::mutable_candidates_at_cut(
+            let (candidates, candidate_count, source_frame) = Self::mutable_candidates_at_cut(
                 &self.revision,
                 new_index,
                 route.id,
@@ -1778,7 +1819,13 @@ impl SessionPlayback {
                     })
                     .map(|entry| entry.until_frame)
                     .max();
-                let Some(old_deadline) = proof_deadline.into_iter().chain(carried_deadline).max()
+                let fresh_deadline = (fresh_install && candidate.source_frame < source_frame)
+                    .then_some(candidate.end_frame);
+                let Some(old_deadline) = proof_deadline
+                    .into_iter()
+                    .chain(carried_deadline)
+                    .chain(fresh_deadline)
+                    .max()
                 else {
                     continue;
                 };

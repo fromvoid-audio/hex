@@ -68,16 +68,19 @@ impl WorkerAudioSink for ResidentSink {
     }
 }
 
-struct ResidentHarness {
-    service: Service,
+pub(super) struct ResidentHarness {
+    pub(super) service: Service,
     events: mpsc::Receiver<EditorAudioEvent>,
     callback: Arc<Mutex<Option<HeadlessBackend>>>,
-    audio: Option<EditorAudio>,
-    submitted: Option<(u64, ResidentPublicationMetadata)>,
-    refuse: Arc<AtomicBool>,
+    pub(super) audio: Option<EditorAudio>,
+    pub(super) submitted: Option<(u64, ResidentPublicationMetadata)>,
+    pub(super) refuse: Arc<AtomicBool>,
 }
 impl ResidentHarness {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
+        Self::with_frame_limit(8192)
+    }
+    pub(super) fn with_frame_limit(frame_limit: u64) -> Self {
         let (sender, events) = mpsc::sync_channel(4);
         let callback = Arc::new(Mutex::new(None));
         let target = Arc::clone(&callback);
@@ -106,7 +109,7 @@ impl ResidentHarness {
         let refuse = Arc::new(AtomicBool::new(false));
         let service = Service::with_audio_sink_and_native_reservation(
             16,
-            8192,
+            frame_limit,
             None,
             Box::new(ResidentSink {
                 inner,
@@ -142,7 +145,7 @@ impl ResidentHarness {
             }
         }
     }
-    fn next(&mut self) -> Event {
+    pub(super) fn next(&mut self) -> Event {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();
@@ -153,7 +156,7 @@ impl ResidentHarness {
             std::thread::yield_now();
         }
     }
-    fn run(&mut self, request: Request) -> Event {
+    pub(super) fn run(&mut self, request: Request) -> Event {
         self.service.submit(request).unwrap();
         let event = self.next();
         assert!(event.error.is_none(), "{:?}", event.error);
@@ -163,7 +166,7 @@ impl ResidentHarness {
         );
         event
     }
-    fn render(&self) -> [hex_engine::Frame; 64] {
+    pub(super) fn render(&self) -> [hex_engine::Frame; 64] {
         let mut pcm = [[0.0; 2]; 64];
         let mut slot = self.callback.lock().unwrap();
         let callback = slot.as_mut().unwrap();
@@ -179,11 +182,33 @@ impl ResidentHarness {
         );
         pcm
     }
-    fn applied(&mut self, after: u64) -> (u64, ResidentPublicationMetadata) {
+    pub(super) fn applied(&mut self, after: u64) -> (u64, ResidentPublicationMetadata) {
         let end = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();
-            self.render();
+            // Stop advancing once the callback has installed the successor. Scalar UI delivery
+            // may lag independently; spinning extra audio blocks here can exhaust short media
+            // before its literal PCM oracle, without indicating a renderer failure.
+            if self
+                .audio
+                .as_ref()
+                .and_then(EditorAudio::status)
+                .is_none_or(|status| status.applied_revision.load(Acquire) <= after)
+            {
+                self.render();
+            }
+            if let Some((revision, reason)) = self
+                .audio
+                .as_ref()
+                .and_then(EditorAudio::status)
+                .and_then(|status| status.rejected_revision())
+                .filter(|(revision, _)| *revision > after)
+            {
+                panic!(
+                    "native graph rejected after {after}: revision={revision}, reason={reason:?}, submitted={:?}",
+                    self.submitted
+                );
+            }
             if let Some((revision, metadata)) =
                 self.submitted.filter(|(revision, _)| *revision > after)
                 && let Some(audio) = self.audio.as_ref()
@@ -191,7 +216,16 @@ impl ResidentHarness {
             {
                 return (revision, metadata);
             }
-            assert!(Instant::now() < end, "exact native ACK timed out");
+            assert!(
+                Instant::now() < end,
+                "exact native ACK timed out: after={after}, submitted={:?}, actual={:?}",
+                self.submitted,
+                self.audio.as_ref().and_then(EditorAudio::status).map(|s| (
+                    s.applied_revision.load(Acquire),
+                    s.position.load(Acquire),
+                    s.render_fault.load(Acquire)
+                ))
+            );
             std::thread::yield_now();
         }
     }
@@ -382,7 +416,7 @@ fn loaded_resident_preview_refused_commit_keeps_pcm_and_cancel_restores_canonica
 }
 
 impl ResidentHarness {
-    fn seek_intent(
+    pub(super) fn seek_intent(
         &self,
         request_id: u64,
         revision: u64,
@@ -408,7 +442,7 @@ impl ResidentHarness {
             cancelled: Arc::new(AtomicBool::new(false)),
         }
     }
-    fn seek_result(&mut self) -> hex_session::service::ResidentArrangementSeekResult {
+    pub(super) fn seek_result(&mut self) -> hex_session::service::ResidentArrangementSeekResult {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             self.pump();

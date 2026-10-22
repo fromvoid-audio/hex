@@ -499,3 +499,113 @@ fn ordinary_sampler_keyboard_rebind_honors_mute_and_leaves_other_audio_playing()
     control.reclaim();
     assert_eq!(control.outstanding_device_resource_leases(), 0);
 }
+
+#[test]
+fn ordinary_mutable_enable_suppresses_precut_and_dispatches_exact_or_future_onsets() {
+    for cut in [64, 128] {
+        let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+        let mut sources = ResidentDeviceAssets::default();
+        let asset = source(&mut editor, &mut sources, 0.25);
+        let Created::Track(track) = editor
+            .execute(Command::AddMidiTrack {
+                name: "sampler".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        editor.execute(Command::InsertInstrument { track, state:
+            hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(1024, asset, 0.0).unwrap(),
+        }).unwrap();
+        let device = editor
+            .project()
+            .track(track)
+            .unwrap()
+            .instrument()
+            .unwrap()
+            .id();
+        let Created::Clip(clip) = editor
+            .execute(Command::PlaceMidiClip {
+                track,
+                start: BeatTime::ZERO,
+                length: BeatTime::ONE,
+            })
+            .unwrap()
+        else {
+            panic!("clip")
+        };
+        let future = editor.project().tempo_map().frame_to_beat(128).unwrap();
+        assert_eq!(
+            editor.project().tempo_map().beat_to_frame(future).unwrap(),
+            128
+        );
+        for (start, duration) in [
+            (BeatTime::ZERO, BeatTime::ONE),
+            (future, BeatTime::from_raw(BeatTime::ONE.raw() / 4)),
+        ] {
+            editor
+                .execute(Command::AddMidiNote {
+                    clip,
+                    start,
+                    duration,
+                    pitch: 60,
+                    channel: 0,
+                    velocity: 127,
+                })
+                .unwrap();
+        }
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: true,
+            })
+            .unwrap();
+        let disabled = compile(&editor, &sources);
+        let (mut control, mut callback) = channel(8000).unwrap();
+        control
+            .configure_device_resource_publication_on_control(limits())
+            .unwrap();
+        let old_revision = control
+            .publish_with_policy_and_context_generation(
+                disabled,
+                PublicationPolicy::InheritRuntime,
+                9,
+            )
+            .unwrap();
+        control.command(PlaybackCommand::Play).unwrap();
+        for _ in 0..cut / 32 {
+            assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
+        }
+        assert_eq!(control.status.position.load(Acquire), cut);
+        assert_eq!(control.status.applied_revision.load(Acquire), old_revision);
+        editor
+            .execute(Command::SetDeviceBypass {
+                device,
+                bypassed: false,
+            })
+            .unwrap();
+        let enabled_revision = control
+            .publish_with_policy_and_context_generation(
+                compile(&editor, &sources),
+                PublicationPolicy::InheritRuntime,
+                9,
+            )
+            .unwrap();
+        // block() measures begin/install/handoff/render together, including signed frees.
+        for start in (cut..192).step_by(32) {
+            let output = block(&mut callback);
+            assert_eq!(output, [[if start < 128 { 0.0 } else { 0.25 }; 2]; 32]);
+            assert_eq!(
+                control.status.applied_revision.load(Acquire),
+                enabled_revision
+            );
+        }
+        assert!(control.status.rejected_revision().is_none());
+        control.request_shutdown();
+        for _ in 0..3 {
+            block(&mut callback);
+            control.reclaim();
+        }
+        assert_eq!(control.outstanding_device_resource_leases(), 0);
+    }
+}
