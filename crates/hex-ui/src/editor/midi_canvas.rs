@@ -1732,7 +1732,15 @@ impl EditorView {
                 .child(toolbar)
                 .child(roll_area),
         );
-        Some(panel)
+        let velocity = self.velocity_lane(cx);
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .flex_shrink_0()
+                .child(panel)
+                .children(velocity),
+        )
     }
 
     fn pan_piano(&mut self, right: bool) {
@@ -1779,7 +1787,7 @@ impl EditorView {
         self.cancel_midi_note_gesture();
     }
 
-    fn zoom_piano_wheel_at(&mut self, bounds: [f32; 4], x: f32, delta: f32) -> bool {
+    pub(super) fn zoom_piano_wheel_at(&mut self, bounds: [f32; 4], x: f32, delta: f32) -> bool {
         if self.context_menu.is_some() || !delta.is_finite() || delta == 0.0 {
             return false;
         }
@@ -1849,13 +1857,14 @@ impl EditorView {
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
+        let velocity = self.midi_velocity.cancel();
         let pitch_zoom = self.piano_pitch_zoom.take().is_some();
         let creation = self.midi_creation.take().is_some();
         let note = self.midi_note_gesture.take().is_some();
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
         let marquee = self.midi_marquee.take().is_some();
-        pitch_zoom || creation || note || group || stroke || marquee
+        velocity || pitch_zoom || creation || note || group || stroke || marquee
     }
 
     fn midi_note_gesture_current(

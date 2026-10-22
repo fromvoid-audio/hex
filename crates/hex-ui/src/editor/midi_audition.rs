@@ -164,6 +164,7 @@ impl EditorView {
         // Selection dragging must keep its existing gesture/command path responsive.
         if self.edit_pending()
             || self.midi_note_gesture.is_some()
+            || self.midi_velocity.gesture.is_some()
             || self.midi_group_gesture.is_some()
             || self.midi_marquee.is_some()
             || self.midi_creation.is_some()

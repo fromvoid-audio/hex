@@ -94,6 +94,8 @@ mod midi_source_controls;
 mod midi_step;
 mod midi_stroke;
 mod midi_thumbnail;
+mod midi_velocity;
+mod midi_velocity_ui;
 mod mixer;
 mod musical_audio_controls;
 mod musical_time;
@@ -659,6 +661,7 @@ pub(super) struct EditorView {
     /// Pure view state: never transport position or a canonical project edit.
     pub(in crate::editor) midi_marker: Option<u64>,
     midi_step: midi_step::StepEntry,
+    midi_velocity: midi_velocity_ui::State,
     midi_audition: midi_audition::MidiAudition,
     pub(in crate::editor) midi_marquee: Option<midi_selection::Marquee>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
@@ -1263,6 +1266,7 @@ impl EditorView {
             midi_draw_pitch_locked: true,
             midi_marker: None,
             midi_step: midi_step::StepEntry::default(),
+            midi_velocity: midi_velocity_ui::State::default(),
             midi_audition: midi_audition::MidiAudition::default(),
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
