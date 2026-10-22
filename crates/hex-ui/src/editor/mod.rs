@@ -1113,6 +1113,10 @@ impl EditorView {
                 view.cancel_project_spectrum_resize(cx);
                 if view.cancel_trim_gesture(cx) {
                     cx.stop_active_drag(window);
+                    // Blur runs after paint in GPUI's focus phase. Notify again
+                    // through the normal effect queue so the canceled overlay
+                    // is removed in the next frame, without another input.
+                    cx.defer_in(window, |_, _, cx| cx.notify());
                 }
                 view.cancel_track_resize(cx);
             }
