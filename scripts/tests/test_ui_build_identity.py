@@ -23,7 +23,7 @@ DELIVERY_SPEC.loader.exec_module(delivery)
 class UiBuildIdentityTests(unittest.TestCase):
     def test_real_cargo_freshness_source_untracked_changelog_and_raw_fallback(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
+            root = Path(temporary).resolve()
             package = root / "crates/ui"
             (package / "src").mkdir(parents=True)
             (root / "changelog").mkdir()
@@ -49,8 +49,9 @@ class UiBuildIdentityTests(unittest.TestCase):
             command("git", "commit", "-qm", "fixture")
             count = 0
             cleanup = None
+            release_owner = None
             def build(*, raw=False, optimized=False):
-                nonlocal count, cleanup
+                nonlocal count, cleanup, release_owner
                 count += 1
                 argv = ("cargo", "build", "--offline", "--locked", "--message-format=json")
                 if raw:
@@ -62,6 +63,7 @@ class UiBuildIdentityTests(unittest.TestCase):
                         text = Path(ownership["build_log"]).read_text()
                         self.assertEqual(command(str(binary), "--font"), font.read_text())
                     cleanup = ownership["cleanup_status"]
+                    release_owner = Path(ownership["owner_path"])
                 else:
                     runner = ci.LocalCiRunner(root, mode="component", run_id=f"identity-{count}", env=env,
                                               min_free_bytes=0, steps=(ci.Step("build", argv, uses_cargo_target=True),))
@@ -76,10 +78,10 @@ class UiBuildIdentityTests(unittest.TestCase):
                 # The actual optimized receiver requires clean source, so a
                 # same-HEAD dirty baseline must refuse before touching READY or
                 # its compiled artifact, rather than pretend it was rebuilt.
-                runner = delivery.ci.LocalCiRunner(root, env={**env,
-                    "CARGO_TARGET_DIR": str(root / "release-target")}, min_free_bytes=0)
-                _, dev_owner = delivery.ci.target_state_paths(root / "release-target", runner.target_state_dir)
-                owner = dev_owner.with_name(dev_owner.name.replace(".owner.json", ".release-owner.json"))
+                # The successful optimized build identifies its actual marker.
+                # Do not reconstruct a hash from the configured target spelling.
+                owner = release_owner
+                self.assertIsNotNone(owner)
                 owner_before = owner.read_bytes()
                 def artifacts():
                     return {str(p.relative_to(root)): (hashlib.sha256(p.read_bytes()).hexdigest(),

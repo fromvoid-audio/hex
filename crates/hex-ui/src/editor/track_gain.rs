@@ -7,7 +7,7 @@ use hex_project::{ReturnId, ReturnTrack, Track, TrackId};
 use hex_session::device_gesture::GestureTarget;
 use hex_widgets::{
     NumericControl, NumericControlAppearance, NumericControlConfig, NumericControlEvent,
-    NumericControlKind, NumericEventPhase, NumericScale, NumericSpec,
+    NumericControlKind, NumericDragAxis, NumericEventPhase, NumericScale, NumericSpec,
 };
 use std::{cell::Cell, collections::BTreeMap, rc::Rc};
 
@@ -341,12 +341,13 @@ impl EditorView {
             ) else {
                 return div();
             };
-            let entity = cx.new(|cx| {
-                NumericControl::from_config(
-                    cx,
-                    config.with_appearance(NumericControlAppearance::FilledSlider),
-                )
-            });
+            let config = config.with_appearance(NumericControlAppearance::FilledSlider);
+            let config = if matches!(key, MixerKey::Balance(_)) {
+                config.with_drag_axis(NumericDragAxis::Vertical)
+            } else {
+                config
+            };
+            let entity = cx.new(|cx| NumericControl::from_config(cx, config));
             let lease: device_panel::NumericGestureLease = Rc::new(Cell::new(None));
             let captured = lease.clone();
             let subscription = cx.subscribe(

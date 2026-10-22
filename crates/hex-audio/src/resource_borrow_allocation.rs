@@ -43,26 +43,27 @@ fn native_callbacks_consume_borrowed_original_pcm_with_zero_allocations_or_frees
     .with_asset_references(refs)
     .unwrap();
     let resources = BorrowedDeviceResources(&views);
+    verify_callbacks(&state, &resources);
+}
+
+fn verify_callbacks(state: &NativeDeviceState, resources: &dyn hex_lattice::DeviceResources) {
     let tuning = TuningTable::default();
     let context = DevicePreparationContext {
         sample_rate: 48_000,
         tuning: &tuning,
-        resources: &resources,
+        resources,
     };
     let notes = [
-        resource_pcm::prepare_note(&state, &context, 0).unwrap(),
-        resource_pcm::prepare_note(&state, &context, 1).unwrap(),
+        resource_pcm::prepare_note(state, &context, 0).unwrap(),
+        resource_pcm::prepare_note(state, &context, 1).unwrap(),
     ];
     let mut sum = [0.0_f32; 2];
     let measurement = allocation_counter::measure(|| {
         for _ in 0..32 {
             for age in 0..64 {
                 for note in &notes {
-                    let frame = std::hint::black_box(note).sample(
-                        age,
-                        64,
-                        std::hint::black_box(&resources),
-                    );
+                    let frame =
+                        std::hint::black_box(note).sample(age, 64, std::hint::black_box(resources));
                     sum[0] += frame[0];
                     sum[1] += frame[1];
                 }
@@ -82,8 +83,8 @@ fn native_callbacks_consume_borrowed_original_pcm_with_zero_allocations_or_frees
 
     use hex_lattice::NativeProcessorRuntime;
     let mut effects = [
-        resource_pcm::prepare_effect(&state, &context, 0).unwrap(),
-        resource_pcm::prepare_effect(&state, &context, 1).unwrap(),
+        resource_pcm::prepare_effect(state, &context, 0).unwrap(),
+        resource_pcm::prepare_effect(state, &context, 1).unwrap(),
     ];
     let mut output = [[[1.0_f32; 2]; 64]; 2];
     let mut effect_sum = [0.0_f32; 2];
@@ -93,7 +94,7 @@ fn native_callbacks_consume_borrowed_original_pcm_with_zero_allocations_or_frees
                 effect.reset();
                 output[index].fill([1.0; 2]);
                 let callback: &mut dyn NativeProcessorRuntime = std::hint::black_box(effect);
-                callback.process_block(&mut output[index], std::hint::black_box(&resources));
+                callback.process_block(&mut output[index], std::hint::black_box(resources));
                 for frame in &output[index] {
                     effect_sum[0] += frame[0];
                     effect_sum[1] += frame[1];
@@ -119,8 +120,8 @@ fn native_callbacks_consume_borrowed_original_pcm_with_zero_allocations_or_frees
         max_tail_frames: 64,
     };
     let factories = [
-        resource_pcm::mutable::prepare(&state, &context, 0).unwrap(),
-        resource_pcm::mutable::prepare(&state, &context, 1).unwrap(),
+        resource_pcm::mutable::prepare(state, &context, 0).unwrap(),
+        resource_pcm::mutable::prepare(state, &context, 1).unwrap(),
     ];
     let mut pairs = [
         NativeInstrumentRuntimePair::new(&factories[0], limits).unwrap(),
@@ -133,9 +134,9 @@ fn native_callbacks_consume_borrowed_original_pcm_with_zero_allocations_or_frees
                 pair.reset();
                 pair.begin_block();
                 output[index].fill([0.0; 2]);
-                pair.preflight_event_batch(&[], 64, std::hint::black_box(&resources))
+                pair.preflight_event_batch(&[], 64, std::hint::black_box(resources))
                     .unwrap();
-                pair.process_block(&[], &mut output[index], std::hint::black_box(&resources))
+                pair.process_block(&[], &mut output[index], std::hint::black_box(resources))
                     .unwrap();
                 pair.commit_block();
                 for frame in &output[index] {
@@ -155,4 +156,97 @@ fn native_callbacks_consume_borrowed_original_pcm_with_zero_allocations_or_frees
         (0, 0, 0, 0)
     );
     assert_eq!(mutable_sum, [1536.0, -1024.0]);
+}
+
+#[test]
+fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
+    use hex_engine::native_device_resources::{
+        DeviceResourceCatalog, OriginalResourceSource, ResourceCatalogReservation,
+    };
+    use hex_engine::{AudioStorageReservation, OwnedAudioInputs, OwnedAudioSource};
+    use std::sync::atomic::AtomicBool;
+    let first = match OwnedAudioSource::try_resident(44_100, vec![[0.25; 2]; 64]) {
+        Ok(source) => source,
+        Err(refusal) => panic!(
+            "required actual-bank allocation probe needs supported native constructor: {:?}",
+            refusal.reason
+        ),
+    };
+    let second = OwnedAudioSource::try_resident(44_100, vec![[0.5, -0.75]; 64])
+        .ok()
+        .unwrap();
+    let mut editor =
+        hex_project::Editor::new(hex_project::Project::new(44_100).unwrap(), 8).unwrap();
+    let ids: Vec<_> = (0..2)
+        .map(|index| {
+            let hex_project::Created::Asset(id) = editor
+                .execute(hex_project::Command::AddAsset {
+                    path: format!("callback-source-{index}.wav").into(),
+                    sample_rate: 44_100,
+                    frames: 64,
+                })
+                .unwrap()
+            else {
+                panic!("asset")
+            };
+            id
+        })
+        .collect();
+    let bank = OwnedAudioInputs::try_new(
+        vec![(ids[0], first), (ids[1], second)],
+        AudioStorageReservation {
+            allocation_items: 8,
+            handle_obligations: 8,
+            max_prepared_data_bytes: 65_536,
+            max_construction_data_bytes: 65_536,
+            caller_retained_bytes: 0,
+            caller_construction_bytes: 0,
+        },
+    )
+    .ok()
+    .unwrap()
+    .prepare_input_storage_on_control()
+    .ok()
+    .unwrap();
+    let sources: Vec<_> = ids
+        .iter()
+        .map(|&asset| OriginalResourceSource {
+            asset,
+            sample_rate: 44_100,
+            frames: 64,
+        })
+        .collect();
+    let catalog = DeviceResourceCatalog::prepare_on_control(
+        &bank,
+        &sources,
+        ResourceCatalogReservation {
+            metadata_bytes: 65_536,
+            hash_frames: 128,
+        },
+        &AtomicBool::new(false),
+    )
+    .unwrap();
+    let references = ids
+        .iter()
+        .enumerate()
+        .map(|(index, id)| DeviceAssetReference {
+            slot: DeviceAssetSlot::new(index as u32 + 1).unwrap(),
+            asset: DeviceAssetKey::new(id.value()).unwrap(),
+        })
+        .collect();
+    let state = NativeDeviceState::new(
+        DeviceTypeId::from_static("test.actual-bank-allocation"),
+        1,
+        vec![],
+    )
+    .unwrap()
+    .with_asset_references(references)
+    .unwrap();
+    let scope = catalog.prepare_scope_on_control(&state, 4096).unwrap();
+    let before = bank.summary();
+    let resources = catalog.resources(&bank, &scope).unwrap();
+    verify_callbacks(&state, &resources);
+    assert_eq!(bank.summary(), before);
+    bank.validate_unresolved_on_control().unwrap();
+    eprintln!("native bank callback probe: supported-controls=completed");
 }

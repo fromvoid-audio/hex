@@ -24,6 +24,11 @@ pub(super) struct UtilityModeAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    LoadFirstSampler(super::sampler_load::Target),
+    CancelSamplerLoad {
+        request_id: u64,
+    },
+    RemoveBrowserSource(super::browser::BrowserSection),
     AdaptiveGrid {
         generation: u64,
         density: super::musical_time::AdaptiveGridDensity,
@@ -300,6 +305,13 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::LoadFirstSampler(target) => self.load_first_sampler(target, cx),
+            EditorContextAction::CancelSamplerLoad { request_id } => {
+                self.cancel_first_sampler_load(Some(request_id))
+            }
+            EditorContextAction::RemoveBrowserSource(source) => {
+                self.remove_browser_source(source, window, cx);
+            }
             EditorContextAction::AdaptiveGrid {
                 generation,
                 density,
@@ -429,11 +441,20 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::LoadFirstSampler(target) => {
+                    !self.first_sampler_target_current(target)
+                }
+                EditorContextAction::CancelSamplerLoad { request_id } => {
+                    !self.first_sampler_pending_matches(*request_id)
+                }
                 EditorContextAction::DeviceComparison(target) => {
                     !super::device_comparison::current(self, target)
                 }
                 EditorContextAction::PlaceIcon { path, .. } => {
                     !self.browser_place_icon_assignable(path)
+                }
+                EditorContextAction::RemoveBrowserSource(source) => {
+                    !self.browser_source_removable(source)
                 }
                 EditorContextAction::InsertTrack(_) => false,
                 EditorContextAction::AdaptiveGrid { generation, .. } => {
@@ -514,19 +535,24 @@ fn clip_belongs_to_track(project: &hex_project::Project, track: TrackId, clip: C
 }
 
 fn utility_device_exists(project: &hex_project::Project, id: DeviceId) -> bool {
-    project.tracks().iter().any(|track| {
-        track.ordered_device_chain().any(|node| {
-            let device = match node {
-                hex_project::TrackDeviceRef::Instrument(device)
-                | hex_project::TrackDeviceRef::Effect(device) => device,
-            };
-            device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+    project
+        .main_devices()
+        .iter()
+        .any(|device| device.id() == id && device.state().type_id().as_str() == Ok("hex.utility"))
+        || project.tracks().iter().any(|track| {
+            track.ordered_device_chain().any(|node| {
+                let device = match node {
+                    hex_project::TrackDeviceRef::Instrument(device)
+                    | hex_project::TrackDeviceRef::Effect(device) => device,
+                };
+                device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+            })
         })
-    }) || project.return_tracks().iter().any(|track| {
-        track.devices().iter().any(|device| {
-            device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+        || project.return_tracks().iter().any(|track| {
+            track.devices().iter().any(|device| {
+                device.id() == id && device.state().type_id().as_str() == Ok("hex.utility")
+            })
         })
-    })
 }
 
 fn insertion_anchor(state: &ViewState, after_track: Option<TrackId>) -> Option<TrackId> {
@@ -640,6 +666,7 @@ mod tests {
                         comparison_audio: None,
                         project: Arc::new(project),
                         waveforms: Default::default(),
+                        source_overviews: Default::default(),
                         audio_clip_waveforms: Default::default(),
                         midi_preview: Arc::default(),
                         gain_preview: Ok(Arc::default()),

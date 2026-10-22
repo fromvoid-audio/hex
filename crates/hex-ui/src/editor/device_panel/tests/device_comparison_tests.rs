@@ -969,11 +969,13 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
     let mut pending = PendingSeek::from_intent(
         91,
         &SeekIntent {
+            recovery_generation: None,
             destination_frame: 128,
             start_playing: true,
             project_generation: 0,
             project_revision: state.revision,
-            prepared_revision: prepared,
+            prepared_revision: Some(prepared),
+            device_preview_identity: None,
         },
         fence,
     );
@@ -1335,6 +1337,8 @@ fn comparison_callback_fixture(cx: &mut TestAppContext, recovery_error: bool) {
         );
         view.playback_candidates
             .push_back(crate::editor::PlaybackCandidate {
+                worker_requires_preroll: None,
+                observation: None,
                 audio_revision,
                 project_generation: 0,
                 state: state.clone(),

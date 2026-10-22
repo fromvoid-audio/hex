@@ -1,8 +1,8 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
     CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
-    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight,
-    NewProject, NewStreamingProject, NextTrack, OpenProject, OpenRecentProject,
+    ImportAudio, InsertTimeSelection, LoopSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft,
+    MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject, OpenRecentProject,
     OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft, PanTimelineRight,
     PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave, RecoverSavedProject,
     RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
@@ -333,6 +333,7 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_clip_name(window, cx);
@@ -839,14 +840,19 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Undo, _, cx| {
-                if !view.cancel_gain_draft(cx) && super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_sampler_drafts(cx)
+                    && !view.cancel_gain_draft(cx)
+                    && super::device_panel::finalize_controls(view, cx)
+                {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Undo);
                 }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Redo, _, cx| {
-                if super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_sampler_drafts(cx)
+                    && super::device_panel::finalize_controls(view, cx)
+                {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Redo);
                 }
@@ -1103,8 +1109,12 @@ impl Render for EditorView {
                 view.export_dialog(window, cx);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &SetLoopFromClip, _, cx| {
-                view.set_loop_from_clip();
+            .on_action(cx.listener(|view, _: &LoopSelection, window, cx| {
+                view.loop_selection_key(window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &SetLoopFromClip, window, cx| {
+                view.set_loop_from_clip(window);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ToggleLoop, _, cx| {

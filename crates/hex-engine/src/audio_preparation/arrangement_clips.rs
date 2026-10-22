@@ -83,6 +83,27 @@ pub(crate) struct ArrangementClips {
     #[cfg(test)]
     pub(super) probe: Option<DropProbe>,
 }
+pub(crate) fn sampler_compiler_quote(
+    project: &hex_project::Project,
+) -> Result<(usize, usize), AudioStorageError> {
+    project
+        .tracks()
+        .iter()
+        .filter(|t| t.instrument().is_some())
+        .try_fold((0usize, 0usize), |(retained, scratch), track| {
+            let (r, s) = tracks::sampler_compiler_quote(track)?;
+            Ok((
+                retained.checked_add(r).ok_or(AudioStorageError::Overflow)?,
+                scratch.max(s),
+            ))
+        })
+}
+pub(crate) fn sampler_workspace_bound(
+    notes: usize,
+    clips: usize,
+) -> Result<usize, AudioStorageError> {
+    tracks::sampler_workspace_bound(notes, clips)
+}
 impl ArrangementClips {
     pub(super) fn capacity(
         &self,
@@ -159,6 +180,19 @@ impl ArrangementClips {
         inputs: &OwnedAudioInputs,
         project: &hex_project::Project,
         stages: Stages,
+    ) -> Result<(), AudioStorageError> {
+        self.reserve_with_sampler(slots, inputs, project, stages, None)
+    }
+    pub(super) fn reserve_with_sampler(
+        &mut self,
+        slots: &[SourceSlot],
+        inputs: &OwnedAudioInputs,
+        project: &hex_project::Project,
+        stages: Stages,
+        samplers: Option<(
+            &crate::native_device_resources::current_sampler::CurrentSamplerMetadata,
+            &crate::owned_shared::OwnedShared<crate::shared_analytic::SharedAnalyticContextTable>,
+        )>,
     ) -> Result<(), AudioStorageError> {
         let Stages {
             assemble_tracks: tracks,
@@ -252,16 +286,29 @@ impl ArrangementClips {
             }
         }
         if tracks {
-            self.tracks.reserve(project, &self.rows)?;
+            if samplers.is_some() {
+                self.tracks
+                    .reserve_with_sampler(project, &self.rows, samplers)?;
+            } else {
+                self.tracks.reserve(project, &self.rows)?;
+            }
         }
         if returns {
             self.returns.reserve(project)?;
         }
         if preview {
-            self.preview.reserve(project)?;
+            if samplers.is_some() {
+                self.preview.reserve_with_current_sampler(project, true)?;
+            } else {
+                self.preview.reserve(project)?;
+            }
         }
         if root {
-            self.root.reserve(project)?;
+            if samplers.is_some() {
+                self.root.reserve_with_sampler(project, true)?;
+            } else {
+                self.root.reserve(project)?;
+            }
         }
         #[cfg(test)]
         if self.mismatch {
@@ -274,6 +321,23 @@ impl ArrangementClips {
             }
         }
         Ok(())
+    }
+    pub(super) fn compile_current_sampler_tracks(
+        &mut self,
+        project: &hex_project::Project,
+        metadata: &crate::native_device_resources::current_sampler::CurrentSamplerMetadata,
+        contexts: &crate::owned_shared::OwnedShared<
+            crate::shared_analytic::SharedAnalyticContextTable,
+        >,
+    ) -> Result<(), AudioStorageError> {
+        self.tracks
+            .compile_current_sampler_tracks(project, metadata, contexts)
+    }
+    pub(super) fn main_carrier_bytes() -> Result<usize, AudioStorageError> {
+        root::ArrangementRootAssembly::main_carrier_bytes()
+    }
+    pub(super) fn reserve_main_carrier(&mut self) -> Result<(), AudioStorageError> {
+        self.root.reserve_main_carrier()
     }
     pub(super) fn construct(
         &mut self,

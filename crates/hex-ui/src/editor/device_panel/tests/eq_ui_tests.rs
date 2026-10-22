@@ -939,3 +939,6 @@ fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAp
     pump_until(&editor, cx, |v| settled(v) && read(v, device) == after);
     assert!(visual.debug_bounds(selector("eq-auto", device)).is_none());
 }
+
+#[path = "eq_held_pointer_tests.rs"]
+mod held_pointer_tests;

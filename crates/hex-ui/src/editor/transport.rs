@@ -75,7 +75,7 @@ impl EditorView {
             .child(
                 self.control_icon(
                     "↻",
-                    "toggle loop on/off · l · cmd+l sets selected clip",
+                    "toggle loop on/off · l or cmd+l sets selection",
                     |view, _, _| view.toggle_loop(),
                     cx,
                 )

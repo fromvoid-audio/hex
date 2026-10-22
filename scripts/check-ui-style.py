@@ -16,6 +16,7 @@ widgets = (
     'self.clip_name_label(', 'self.clip_name_header(', 'self.track_name_label(', 'edit.input.clone())',
     # Waveform body wrappers contain view elements; preview titles normalize text.
     'clip_waveform_body(', 'self.clip_name_preview_header(',
+    'clip_fade_layer(', 'self.clip_name_drag_header(', 'clip_name_text(',
     'button(', 'waveform_view(', 'clip_area)', 'header)', 'bars)', 'cells)',
     'content)', 'rows);', 'track_name_view)', 'track_controls)',
     # Compact Operator composition components keep labels routed through
@@ -53,6 +54,7 @@ widgets = (
     'self.session_grid(', 'workspace)', 'self.session_toolbar(', 'self.session_icon(',
     'self.browser_view(', 'workspace_content.', 'self.browser_icon(', 'channel_controls)',
     # Split browser components normalize every caption at their boundary.
+    'self.browser_history_arrow(',
     'self.browser_tag_selector(', 'browser_caption(', 'browser_heading(',
     'picker_label(', 'picker_heading(', 'picker_group_heading(',
     # Audition row controls normalize labels; miniature waveform contains no text.

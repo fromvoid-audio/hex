@@ -292,7 +292,11 @@ fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((96_000, 288_000, true)));
 
-    visual.simulate_keystrokes("l");
+    let toggle = visual
+        .debug_bounds("toggle loop on/off · l or cmd+l sets selection")
+        .expect("rendered loop toolbar control");
+    visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((96_000, 288_000, false)));
     assert!(visual.debug_bounds("loop-rail-range").is_some());
@@ -323,6 +327,7 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
             comparison_audio: None,
             project: Arc::new(history.project().clone()),
             waveforms: old.waveforms.clone(),
+            source_overviews: old.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -359,6 +364,7 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
             comparison_audio: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
+            source_overviews: old.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),

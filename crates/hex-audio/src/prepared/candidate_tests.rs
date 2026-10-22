@@ -167,9 +167,14 @@ pub(crate) fn candidate_with_context(
     };
     let token = custody.begin_input_on_control(input).ok().unwrap();
     Some((
-        AudioCandidateOwner::try_new_on_control(custody, token)
-            .ok()
-            .unwrap(),
+        match AudioCandidateOwner::try_new_on_control(custody, token) {
+            Ok(owner) => owner,
+            Err(refusal) => {
+                let reason = format!("{:?}", refusal.reason);
+                drop(refusal);
+                panic!("actual candidate constructor refused: {reason}");
+            }
+        },
         session_clip,
     ))
 }
@@ -288,8 +293,11 @@ fn full_return_queue_holds_actual_candidate_and_shutdown_ack_is_not_disposal() {
             callback
                 .retired
                 .push(ReturnedPublication::Legacy(Publication {
+                    pcm_frames: 0,
+                    forwarded_pcm: false,
                     revision,
                     control_context_generation: 0,
+                    explicit_control_context: false,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(legacy()),
@@ -419,8 +427,11 @@ fn candidate_rejection_held_return_and_guard_release_have_zero_total_and_net_cal
             callback
                 .retired
                 .push(ReturnedPublication::Legacy(Publication {
+                    pcm_frames: 0,
+                    forwarded_pcm: false,
                     revision,
                     control_context_generation: 0,
+                    explicit_control_context: false,
                     policy: PublicationPolicy::InheritRuntime,
                     fresh_runtime_cancellation: None,
                     playback: Box::new(legacy()),

@@ -1,5 +1,11 @@
-//! Bounded output lifecycle worker for stream retirement and recovery opens.
-//! Stream pause/disposal and replacement device creation never run on realtime.
+//! Bounded output lifecycle worker for retirement and recovery opens.
+//!
+//! The exclusive output Lease stays held until its actual retirement path completes. Stream
+//! pause/destruction, source cleanup and replacement device creation never run on realtime. Open,
+//! coalesced cleanup and leased retirement use the existing bounded lane; no UI poll is needed to
+//! finish already accepted cleanup. Persistent custody precedes every destructive take. Missing
+//! releases, panic or incomplete cleanup keep the lane occupied rather than allowing another
+//! output to escape the barrier.
 use crate::device::{Opened, PreparedOutput, WorkerPreparedOutput};
 use crate::spectrum_worker::SpectrumReaper;
 use cpal::traits::StreamTrait;

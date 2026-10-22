@@ -1,9 +1,4 @@
-# Operator enable controls — Pulse2335
-
-Status: documented control inventory and user-provided visual observations;
-audio semantics not measured.
-
-## Provenance
+# Operator enable badge reference
 
 On 11 October 2026 the user supplied four crops, retained privately under
 `research/private/operator-enable-20261011/` in the PR156 worktree. They show
@@ -27,17 +22,3 @@ oscillator-colored, disabled fill dark; focused border white independently.
 Focused-disabled includes a matching oscillator row. High confidence from the
 manual: the badge represents a real musical enable control, not selection alone.
 There is no measured audio parity evidence in this observation.
-
-## Inference and unknowns
-
-Suppressing a disabled oscillator's outgoing signal before both carrier and FM
-routing is a proposed independent Hex contract. Continuing note clocks and using
-the existing bounded level ramp is a quality/safety proposal. Neither is claimed
-as measured Live recurrence or transition behavior. Finite acceptance and shared
-state/runtime gates are in [operator-enable.md](../../docs/operator-enable.md).
-
-If further installed-reference testing is required, first recheck the executable
-identity and coordinate the native lease. Use a disposable original fixture:
-isolated carrier, two-operator modulation, held note and release; toggle only one
-Osc On at a time. Retain actions, settings, rate/block size, export hashes,
-alignment and tolerance. Do not touch the user's production set.
