@@ -165,6 +165,7 @@ impl super::EditorView {
     /// endpoint revokes its active prefix; fresh physical input can reuse the already admitted
     /// graph without waiting for a publication slot. Other lifecycle cancellation stays terminal.
     pub(super) fn stop_computer_keyboard(&mut self) {
+        self.invalidate_hardware_step();
         self.midi_audition.clear();
         if self.reusable_worker_keyboard_input(self.worker_owns_keyboard_publication())
             && self
