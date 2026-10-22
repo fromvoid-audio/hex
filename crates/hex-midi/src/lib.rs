@@ -6,7 +6,13 @@
 //!
 //! # Does not own
 //! Does not schedule musical notes, mutate project state or perform audio callback work. Hardware
-//! note hosting is outside this controller-only boundary.
+//! note hosting is outside this input-capture boundary. Physical held snapshots
+//! support control-side step entry without scheduling or monitoring sound.
+mod held_notes;
+pub use held_notes::{
+    HELD_NOTE_COUNT, HeldNote, HeldNoteFault, HeldNoteInput, HeldNotes, HeldNotesRead,
+};
+
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -48,9 +54,31 @@ pub struct Decoder {
     data: [u8; 2],
     used: usize,
     sysex: bool,
+    held: HeldNotes,
+    held_changed: bool,
+    held_fault: Option<HeldNoteFault>,
 }
 impl Decoder {
+    /// Coalesced note changes from the same decoded stream as controllers.
+    pub fn take_held_notes(&mut self) -> Option<HeldNotes> {
+        if self.held_changed {
+            self.held_changed = false;
+            Some(self.held)
+        } else {
+            None
+        }
+    }
+    pub fn held_note_fault(&self) -> Option<HeldNoteFault> {
+        self.held_fault
+    }
     pub fn byte(&mut self, byte: u8, channel: u8, current: Controllers) -> Option<Controllers> {
+        if byte == 0xff {
+            self.held.clear();
+            self.held_changed = true;
+            self.status = 0;
+            self.used = 0;
+            self.sysex = false;
+        }
         if byte >= 0xf8 {
             return None;
         }
@@ -80,9 +108,58 @@ impl Decoder {
         }
         self.used = 0;
         let message = [self.status, self.data[0], self.data[1]];
+        if self.held_fault.is_none() {
+            match self.held.observe(&message[..width + 1], channel) {
+                Ok(changed) => self.held_changed |= changed,
+                Err(fault) => {
+                    self.held.clear();
+                    self.held_fault = Some(fault);
+                    self.held_changed = true;
+                }
+            }
+        }
         parse(&message[..width + 1], channel, current)
     }
 }
+const CALLBACK_BYTES: usize = 65_536;
+const CALLBACK_PACKETS: usize = 1024;
+
+/// Same bounded packet loop for the native port and deterministic byte fixtures.
+/// Controllers retain their existing per-message delivery; physical notes coalesce
+/// once per invocation. Limit loss terminally invalidates the note activation.
+/// The connection owner must provide one serialized writer and one decoder per
+/// endpoint; never share a decoder/endpoint across concurrent input ports.
+pub fn deliver_packets<'a>(
+    decoder: &mut Decoder,
+    channel: u8,
+    mut current: Controllers,
+    packets: impl IntoIterator<Item = &'a [u8]>,
+    notes: &HeldNoteInput,
+    publish: &dyn Fn(Controllers),
+) -> Controllers {
+    let mut remaining = CALLBACK_BYTES;
+    for (index, bytes) in packets.into_iter().take(CALLBACK_PACKETS).enumerate() {
+        for byte in bytes.iter().take(remaining) {
+            if let Some(next) = decoder.byte(*byte, channel, current) {
+                current = next;
+                publish(current);
+            }
+        }
+        if bytes.len() >= remaining || index == CALLBACK_PACKETS - 1 {
+            notes.fail(HeldNoteFault::PacketLimit);
+            *decoder = Decoder::default();
+            return current;
+        }
+        remaining -= bytes.len();
+    }
+    if let Some(fault) = decoder.held_note_fault() {
+        notes.fail(fault);
+    } else if let Some(snapshot) = decoder.take_held_notes() {
+        notes.publish(snapshot);
+    }
+    current
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Port {
     pub id: u32,
@@ -91,8 +168,15 @@ pub struct Port {
 /// Constructed on control; the native callback only invokes this bounded sink.
 pub struct Sink {
     pub publish: Box<dyn Fn(Controllers) + Send>,
+    pub notes: Arc<HeldNoteInput>,
     pub cancel: Box<dyn Fn() + Send>,
     pub is_cancelled: Box<dyn Fn() -> bool + Send>,
+}
+impl Sink {
+    fn cancel(&self) {
+        self.notes.cancel();
+        (self.cancel)();
+    }
 }
 pub enum Command {
     Discover {
@@ -132,7 +216,7 @@ impl Handle {
                 if let mpsc::TrySendError::Full(Command::Connect { sink, .. })
                 | mpsc::TrySendError::Disconnected(Command::Connect { sink, .. }) = error
                 {
-                    (sink.cancel)();
+                    sink.cancel();
                 }
                 Err("controller input worker is busy or unavailable")
             }
@@ -148,7 +232,7 @@ impl Handle {
 fn cancel_queued(requests: &Receiver<Command>) {
     for _ in 0..4 {
         match requests.try_recv() {
-            Ok(Command::Connect { sink, .. }) => (sink.cancel)(),
+            Ok(Command::Connect { sink, .. }) => sink.cancel(),
             Ok(_) => {}
             Err(_) => break,
         }
@@ -203,9 +287,11 @@ mod native {
         _client: Client,
         source: Source,
         cancel: Box<dyn Fn() + Send>,
+        notes: Arc<HeldNoteInput>,
     }
     impl Drop for Active {
         fn drop(&mut self) {
+            self.notes.cancel();
             (self.cancel)();
         }
     }
@@ -242,7 +328,7 @@ mod native {
     }
     fn connect(activation: u64, port: Port, channel: u8, sink: Sink) -> Result<Active, String> {
         let result = (|| {
-            if (sink.is_cancelled)() {
+            if sink.notes.is_cancelled() || (sink.is_cancelled)() {
                 return Err("controller activation was cancelled".into());
             }
             if channel >= 16 {
@@ -254,26 +340,17 @@ mod native {
             let mut decoder = Decoder::default();
             let mut current = Controllers::default();
             let publish = sink.publish;
+            let notes = Arc::clone(&sink.notes);
             let input = client
                 .input_port("hex controller input", move |packets| {
-                    let mut remaining = 65_536_usize;
-                    for (packet_index, packet) in packets.iter().take(1024).enumerate() {
-                        let bytes = packet.data();
-                        for byte in bytes.iter().take(remaining) {
-                            if let Some(next) = decoder.byte(*byte, channel, current) {
-                                current = next;
-                                publish(current);
-                            }
-                        }
-                        if bytes.len() >= remaining {
-                            decoder = Decoder::default();
-                            break;
-                        }
-                        remaining -= bytes.len();
-                        if packet_index == 1023 {
-                            decoder = Decoder::default();
-                        }
-                    }
+                    current = deliver_packets(
+                        &mut decoder,
+                        channel,
+                        current,
+                        packets.iter().map(|packet| packet.data()),
+                        &notes,
+                        publish.as_ref(),
+                    );
                 })
                 .map_err(|status| format!("controller port creation failed: {status}"))?;
             input
@@ -288,8 +365,11 @@ mod native {
                 _client: client,
                 source,
                 cancel: sink.cancel,
+                notes: sink.notes,
             }),
             Err(error) => {
+                // publish moved into the callback; cancel the remaining owners.
+                sink.notes.cancel();
                 (sink.cancel)();
                 Err(error)
             }
@@ -379,7 +459,7 @@ mod native {
                 Ok(Command::Connect {
                     activation, sink, ..
                 }) => {
-                    (sink.cancel)();
+                    sink.cancel();
                     let _ = events.try_send(Event::Connection {
                         activation,
                         result: Err("controller input currently supports macos only".into()),
@@ -487,6 +567,7 @@ mod tests {
         handle.send(Command::Discover { request_id: 1 }).unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancelled);
+        let notes = Arc::new(HeldNoteInput::default());
         assert!(
             handle
                 .send(Command::Connect {
@@ -497,6 +578,7 @@ mod tests {
                     },
                     channel: 0,
                     sink: Sink {
+                        notes: Arc::clone(&notes),
                         publish: Box::new(|_| {}),
                         cancel: Box::new(move || flag.store(true, Ordering::Release)),
                         is_cancelled: Box::new(|| false),
@@ -505,9 +587,11 @@ mod tests {
                 .is_err()
         );
         assert!(cancelled.load(Ordering::Acquire));
+        assert!(notes.is_cancelled());
         drop(requests);
         cancelled.store(false, Ordering::Release);
         let flag = Arc::clone(&cancelled);
+        let notes = Arc::new(HeldNoteInput::default());
         assert!(
             handle
                 .send(Command::Connect {
@@ -518,6 +602,7 @@ mod tests {
                     },
                     channel: 0,
                     sink: Sink {
+                        notes: Arc::clone(&notes),
                         publish: Box::new(|_| {}),
                         cancel: Box::new(move || flag.store(true, Ordering::Release)),
                         is_cancelled: Box::new(|| false),
@@ -526,12 +611,14 @@ mod tests {
                 .is_err()
         );
         assert!(cancelled.load(Ordering::Acquire));
+        assert!(notes.is_cancelled());
     }
     #[test]
     fn worker_shutdown_cancels_pending_connections_without_native_access() {
         let (sender, receiver) = mpsc::sync_channel(4);
         let cancelled = Arc::new(AtomicBool::new(false));
         let flag = Arc::clone(&cancelled);
+        let notes = Arc::new(HeldNoteInput::default());
         assert!(
             sender
                 .try_send(Command::Connect {
@@ -542,6 +629,7 @@ mod tests {
                     },
                     channel: 0,
                     sink: Sink {
+                        notes: Arc::clone(&notes),
                         publish: Box::new(|_| {}),
                         cancel: Box::new(move || flag.store(true, Ordering::Release)),
                         is_cancelled: Box::new(|| false)
@@ -552,5 +640,6 @@ mod tests {
         let (events, _results) = mpsc::sync_channel(4);
         native::run(receiver, events, Arc::new(AtomicBool::new(true)));
         assert!(cancelled.load(Ordering::Acquire));
+        assert!(notes.is_cancelled());
     }
 }

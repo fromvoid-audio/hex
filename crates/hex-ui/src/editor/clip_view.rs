@@ -219,6 +219,8 @@ impl EditorView {
         if detail.is_some() && !self.device_panel_active {
             self.clip_detail_body_height = if has_session_audio {
                 super::session_audio_panel::DETAIL_HEIGHT
+            } else if selected_midi {
+                CLIP_DETAIL_BODY_HEIGHT + self.midi_velocity.visible_height()
             } else {
                 CLIP_DETAIL_BODY_HEIGHT
             };

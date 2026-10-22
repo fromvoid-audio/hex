@@ -544,9 +544,11 @@ fn mutable_source_loop_admission_keeps_period_and_density_bounds() {
     clip.source.notes = (0..129)
         .map(|index| MidiNoteSnapshot {
             id: 2_000_000 + index,
-            start_raw: 0,
-            duration_raw: Q / 2,
-            pitch: 48 + u8::try_from(index % 36).expect("bounded pitch offset"),
+            // 129 gates per period, with exact adjacency when pitch zero
+            // repeats. Preserve density without invalid same-pitch authoring.
+            start_raw: (index / 128) * (Q / 4),
+            duration_raw: Q / 4,
+            pitch: u8::try_from(index % 128).expect("bounded pitch"),
             channel: 0,
             velocity: 100,
         })

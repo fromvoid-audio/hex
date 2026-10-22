@@ -800,10 +800,10 @@ fn arrangement_to_session_copy_respects_combined_note_limit_atomically() {
         panic!("instrument track")
     };
     let arrangement_notes = &mut arrangement_clips[0].notes;
-    for _ in 0..(hex_project::MAX_NOTES / 2) {
+    for index in 0..(hex_project::MAX_NOTES / 2) {
         arrangement_notes.push(MidiNoteSnapshot {
             id,
-            start_raw: 0,
+            start_raw: index as u64,
             duration_raw: 1,
             pitch: 60,
             channel: 0,
@@ -816,10 +816,10 @@ fn arrangement_to_session_copy_respects_combined_note_limit_atomically() {
     else {
         panic!("session midi")
     };
-    for _ in 0..(hex_project::MAX_NOTES / 2) {
+    for index in 0..(hex_project::MAX_NOTES / 2) {
         session_clip_snapshot.source.notes.push(MidiNoteSnapshot {
             id,
-            start_raw: 0,
+            start_raw: index as u64,
             duration_raw: 1,
             pitch: 61,
             channel: 0,

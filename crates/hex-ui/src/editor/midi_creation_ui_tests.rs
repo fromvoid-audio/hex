@@ -22,7 +22,7 @@ fn next(service: &Service) -> Event {
         std::thread::yield_now();
     }
 }
-pub(super) fn fixture(
+pub(in crate::editor) fn fixture(
     cx: &mut TestAppContext,
 ) -> (
     VisualTestContext,
@@ -80,7 +80,7 @@ pub(super) fn fixture(
     visual.run_until_parked();
     (visual, editor, environment, clip)
 }
-pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(in crate::editor) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let until = Instant::now() + Duration::from_secs(5);
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
