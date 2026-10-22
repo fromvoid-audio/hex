@@ -614,11 +614,14 @@ mod tests {
         let mut state = ControllerInput::default();
         state.activation = 2;
         state.input = Some(Arc::clone(&input));
+        let notes = Arc::new(hex_midi::HeldNoteInput::default());
+        state.held_notes = Some(Arc::clone(&notes));
         assert_eq!(
             state.connection_event(1, Err("delayed a failure".into())),
             None
         );
         assert!(!input.is_cancelled());
+        assert!(!notes.is_cancelled());
         assert_eq!(state.connection_event(1, Ok(true)), None);
         assert!(!state.connected);
         state.connection_event(2, Ok(true));
@@ -631,6 +634,8 @@ mod tests {
             Some("b disconnected".into())
         );
         assert!(input.is_cancelled());
+        assert!(notes.is_cancelled());
+        assert!(state.step_faulted);
         assert!(!state.connected);
     }
 }
@@ -905,6 +910,9 @@ fn hardware_chord_step_uses_native_decoder_velocities_channel_ack_and_history(
     };
     send(&[0x92, 60, 37, 64, 93]);
     for step in 0..2 {
+        editor.update(&mut visual, |view, _| {
+            view.tick_computer_keyboard();
+        });
         visual.simulate_keystrokes("right");
         editor.read_with(&visual, |view, _| {
             assert_eq!(
