@@ -79,12 +79,8 @@ impl EditorView {
         // Only the exact already-reserved terminal may advance this intent's
         // source revision. Nonterminal overlay updates do not change canonical MIDI.
         if event.tuning_gesture_request {
-            let Some(ack) = event.tuning_gesture_ack.as_ref() else {
-                return None;
-            };
-            let Some(pending) = self.pending_created_note_selection.as_ref() else {
-                return None;
-            };
+            let ack = event.tuning_gesture_ack.as_ref()?;
+            let pending = self.pending_created_note_selection.as_ref()?;
             if pending.tuning_barrier != Some(ack.key)
                 || !matches!(
                     ack.phase,
