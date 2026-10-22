@@ -108,6 +108,9 @@ pub enum GesturePhase {
 
 #[derive(Clone, Debug)]
 pub struct GestureAck {
+    /// A refused native terminal kept the worker's last accepted overlay audible. Reconcile
+    /// with the exact active snapshot from the same Event; never infer restoration or retry.
+    pub preview_retained: bool,
     pub key: GestureKey,
     pub phase: GesturePhase,
     pub sequence: u64,
@@ -133,6 +136,7 @@ pub struct GestureClient {
     active: Option<GestureSnapshot>,
     in_flight: Option<GestureRequest>,
     submitted: bool,
+    recovery_pending: bool,
     pending_begin: Option<GestureRequest>,
     latest_change: Option<GestureRequest>,
     terminal: Option<GestureRequest>,
@@ -145,6 +149,12 @@ impl GestureClient {
         target: GestureTarget,
         initial: ParameterValue,
     ) -> Result<GestureKey, &'static str> {
+        if self.recovery_pending {
+            if !self.has_pending_terminal() {
+                self.cancel()?;
+            }
+            return Err("previous device edit is canceling · retry after it finishes");
+        }
         if self.active.is_some() {
             return Err("another device gesture is active");
         }
@@ -173,6 +183,12 @@ impl GestureClient {
         second: ParameterId,
         initial: ParameterPairValue,
     ) -> Result<GestureKey, &'static str> {
+        if self.recovery_pending {
+            if !self.has_pending_terminal() {
+                self.cancel()?;
+            }
+            return Err("previous device edit is canceling · retry after it finishes");
+        }
         if self.active.is_some() {
             return Err("another device gesture is active");
         }
@@ -414,6 +430,7 @@ impl GestureClient {
     }
 
     pub fn reset(&mut self) {
+        self.recovery_pending = false;
         self.active = None;
         self.in_flight = None;
         self.submitted = false;
@@ -425,6 +442,17 @@ impl GestureClient {
     /// A matching acknowledgment releases the protocol slot. Stale or unrelated
     /// responses leave the current gesture and its reserved terminal untouched.
     pub fn acknowledge(&mut self, ack: &GestureAck) -> bool {
+        self.acknowledge_with_snapshot(ack, None)
+    }
+
+    /// Reconcile an exact terminal refusal with the worker's accepted scalar overlay. Missing
+    /// or unrelated snapshots leave the in-flight protocol slot untouched. A retained overlay
+    /// is parked without an automatic Commit; callers may retry or explicitly Cancel it.
+    pub fn acknowledge_with_snapshot(
+        &mut self,
+        ack: &GestureAck,
+        worker_active: Option<GestureSnapshot>,
+    ) -> bool {
         let Some(request) = self.in_flight else {
             return false;
         };
@@ -434,20 +462,50 @@ impl GestureClient {
         {
             return false;
         }
+        let retained = if ack.preview_retained {
+            if ack.accepted || !matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) {
+                return false;
+            }
+            let Some(snapshot) = worker_active.filter(|snapshot| {
+                snapshot.key == ack.key
+                    && self
+                        .active
+                        .is_some_and(|active| active.target == snapshot.target)
+            }) else {
+                return false;
+            };
+            Some(snapshot)
+        } else {
+            None
+        };
         self.in_flight = None;
         self.submitted = false;
+        if let Some(snapshot) = retained {
+            self.active = Some(snapshot);
+            self.pending_begin = None;
+            self.latest_change = None;
+            self.terminal = None;
+            self.recovery_pending = true;
+            return true;
+        }
         if !ack.accepted && ack.phase == GesturePhase::Begin {
             self.active = None;
             self.pending_begin = None;
             self.latest_change = None;
             self.terminal = None;
         } else if matches!(ack.phase, GesturePhase::Commit | GesturePhase::Cancel) {
+            self.recovery_pending = false;
             self.active = None;
             self.latest_change = None;
             self.terminal = None;
             self.pending_begin = None;
         }
         true
+    }
+
+    /// A refused native terminal left an audible overlay which needs retry or Cancel.
+    pub fn is_recovery_pending(&self) -> bool {
+        self.recovery_pending
     }
 
     pub fn snapshot(&self) -> Option<GestureSnapshot> {
@@ -500,11 +558,89 @@ mod client_tests {
 
     fn ack(request: GestureRequest, accepted: bool) -> GestureAck {
         GestureAck {
+            preview_retained: false,
             key: request.key(),
             phase: request.phase(),
             sequence: request.sequence(),
             accepted,
             reason: None,
+        }
+    }
+
+    #[test]
+    fn retained_terminal_uses_worker_snapshot_and_next_begin_only_requests_cancel() {
+        let device = device();
+        let parameter = ParameterId::from_static(1);
+        let target = GestureTarget::DeviceParameter { device, parameter };
+        for next_kind in 0..3 {
+            let mut client = GestureClient::default();
+            client.begin(7, target, ParameterValue::Float(1.0)).unwrap();
+            let begin = client.next_request().unwrap();
+            assert!(client.acknowledge(&ack(begin, true)));
+            client.change(ParameterValue::Float(0.5)).unwrap();
+            let change = client.next_request().unwrap();
+            assert!(client.acknowledge(&ack(change, true)));
+            let accepted = client.snapshot().unwrap();
+            client.finish(ParameterValue::Float(0.9)).unwrap();
+            let terminal = client.next_request().unwrap();
+            client.mark_submitted();
+            let mut refused = ack(terminal, false);
+            refused.preview_retained = true;
+            assert!(!client.acknowledge(&refused));
+            assert!(!client.acknowledge_with_snapshot(&refused, None));
+            let mut foreign = accepted;
+            foreign.key.token += 1;
+            assert!(!client.acknowledge_with_snapshot(&refused, Some(foreign)));
+            assert!(client.has_pending_terminal());
+            assert!(client.acknowledge_with_snapshot(&refused, Some(accepted)));
+            assert_eq!(client.snapshot(), Some(accepted));
+            assert!(client.is_recovery_pending());
+            assert!(
+                client.next_request().is_none(),
+                "permanent refusal cannot spin Commit"
+            );
+            client.change(ParameterValue::Float(0.6)).unwrap();
+            let change = client.next_request().unwrap();
+            assert!(client.acknowledge(&ack(change, true)));
+            assert!(
+                client.is_recovery_pending(),
+                "accepted overlay changes cannot release terminal dependents"
+            );
+            let accepted = client.snapshot().unwrap();
+            let declined = match next_kind {
+                0 => client.begin(7, target, ParameterValue::Float(0.8)),
+                1 => client.begin_pair(
+                    7,
+                    device,
+                    parameter,
+                    ParameterId::from_static(2),
+                    ParameterPairValue {
+                        first: ParameterValue::Float(0.8),
+                        second: ParameterValue::Float(0.9),
+                    },
+                ),
+                _ => client.begin_snapshot(
+                    7,
+                    device,
+                    DeviceParameterSnapshot::new(&[(parameter, ParameterValue::Float(0.8))])
+                        .unwrap(),
+                ),
+            };
+            assert!(declined.unwrap_err().contains("retry after"));
+            assert_eq!(client.snapshot(), Some(accepted));
+            assert!(client.change(ParameterValue::Float(0.8)).is_err());
+            let cancel = client.next_request().unwrap();
+            assert!(matches!(cancel, GestureRequest::Cancel { .. }));
+            let mut cancel_refused = ack(cancel, false);
+            cancel_refused.preview_retained = true;
+            assert!(client.acknowledge_with_snapshot(&cancel_refused, Some(accepted)));
+            assert!(client.next_request().is_none());
+            client.cancel().unwrap();
+            let retry = client.next_request().unwrap();
+            assert!(client.acknowledge(&ack(retry, true)));
+            assert!(client.snapshot().is_none());
+            assert!(!client.is_recovery_pending());
+            assert!(client.begin(7, target, ParameterValue::Float(1.0)).is_ok());
         }
     }
 
@@ -588,6 +724,7 @@ mod client_tests {
         let begin = client.next_request().unwrap();
         assert_eq!(client.next_request(), Some(begin));
         let wrong = GestureAck {
+            preview_retained: false,
             key: GestureKey {
                 generation: 2,
                 token: 99,
@@ -898,6 +1035,7 @@ impl GestureMachine {
     ) -> GestureOutcome {
         let mut outcome = GestureOutcome {
             ack: GestureAck {
+                preview_retained: false,
                 key: request.key(),
                 phase: request.phase(),
                 sequence: request.sequence(),
@@ -1385,6 +1523,7 @@ impl GestureMachine {
         match result {
             Ok((project, prepared)) => Some(GestureOutcome {
                 ack: GestureAck {
+                    preview_retained: false,
                     key: active.key,
                     phase: GesturePhase::Change,
                     sequence: active.sequence,

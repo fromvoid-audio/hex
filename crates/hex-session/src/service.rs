@@ -2127,6 +2127,7 @@ fn run_worker(
                         ) {
                         crate::device_gesture::GestureOutcome {
                             ack: GestureAck {
+                                preview_retained: false,
                                 key: gesture.key(),
                                 phase: gesture.phase(),
                                 sequence: gesture.sequence(),
@@ -2171,6 +2172,7 @@ fn run_worker(
                     {
                         crate::tuning_gesture::TuningGestureOutcome {
                             ack: TuningGestureAck {
+                                preview_retained: false,
                                 key: gesture.key(),
                                 phase: gesture.phase(),
                                 sequence: gesture.sequence(),

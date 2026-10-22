@@ -966,7 +966,7 @@ impl EditorView {
         visible_change |= self.poll_editor_audio_events();
         visible_change |= self.poll_export(cx);
         visible_change |= self.pump_tuning_gesture();
-        if !self.tuning.client.has_pending_requests() {
+        if !self.tuning.client.has_pending_requests() && !self.tuning.client.is_recovery_pending() {
             while let Some(request) = self.pending_requests.pop_front() {
                 let resize_request = self.pending_trim_matches(&request);
                 let loop_request = self.pending_loop_matches(&request);
@@ -2340,7 +2340,10 @@ impl EditorView {
         }
         if let Some(ack) = event.tuning_gesture_ack.as_ref() {
             let key = self.tuning.client.snapshot().map(|s| s.key);
-            let matched = self.tuning.client.acknowledge(ack);
+            let matched = self
+                .tuning
+                .client
+                .acknowledge_with_snapshot(ack, event.active_tuning_gesture);
             let retired = !event.tuning_gesture_request
                 && event.active_tuning_gesture.is_none()
                 && key == Some(ack.key);
@@ -2388,7 +2391,7 @@ impl EditorView {
         if event.gesture_protocol_ack
             && let Some(ack) = event.gesture_ack.as_ref()
         {
-            if self.acknowledge_device_gesture(ack) {
+            if self.acknowledge_device_gesture_with_snapshot(ack, event.active_device_gesture) {
                 matched_scroll_ack = Some(ack);
             }
         } else if let Some(reason) = event

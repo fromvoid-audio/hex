@@ -62,6 +62,9 @@ pub enum TuningGesturePhase {
 
 #[derive(Clone, Debug)]
 pub struct TuningGestureAck {
+    /// A refused native terminal kept the worker's last accepted overlay audible. Reconcile
+    /// with the exact active snapshot from the same Event; never infer restoration or retry.
+    pub preview_retained: bool,
     pub key: TuningGestureKey,
     pub phase: TuningGesturePhase,
     pub sequence: u64,
@@ -85,6 +88,7 @@ pub struct TuningGestureClient {
     active: Option<TuningGestureSnapshot>,
     in_flight: Option<TuningGestureRequest>,
     submitted: bool,
+    recovery_pending: bool,
     pending_begin: Option<TuningGestureRequest>,
     latest_change: Option<TuningGestureRequest>,
     terminal: Option<TuningGestureRequest>,
@@ -96,6 +100,12 @@ impl TuningGestureClient {
         generation: u64,
         initial: ProjectTuning,
     ) -> Result<TuningGestureKey, &'static str> {
+        if self.recovery_pending {
+            if !self.has_pending_terminal() {
+                self.cancel()?;
+            }
+            return Err("previous tuning edit is canceling · retry after it finishes");
+        }
         if self.active.is_some() {
             return Err("another tuning gesture is active");
         }
@@ -184,6 +194,17 @@ impl TuningGestureClient {
     }
 
     pub fn acknowledge(&mut self, ack: &TuningGestureAck) -> bool {
+        self.acknowledge_with_snapshot(ack, None)
+    }
+
+    /// Reconcile an exact terminal refusal with the worker's accepted scalar overlay. Missing
+    /// or unrelated snapshots leave the in-flight protocol slot untouched. A retained overlay
+    /// is parked without an automatic Commit; callers may retry or explicitly Cancel it.
+    pub fn acknowledge_with_snapshot(
+        &mut self,
+        ack: &TuningGestureAck,
+        worker_active: Option<TuningGestureSnapshot>,
+    ) -> bool {
         let Some(request) = self.in_flight else {
             return false;
         };
@@ -193,8 +214,32 @@ impl TuningGestureClient {
         {
             return false;
         }
+        let retained = if ack.preview_retained {
+            if ack.accepted
+                || !matches!(
+                    ack.phase,
+                    TuningGesturePhase::Commit | TuningGesturePhase::Cancel
+                )
+            {
+                return false;
+            }
+            let Some(snapshot) = worker_active.filter(|snapshot| snapshot.key == ack.key) else {
+                return false;
+            };
+            Some(snapshot)
+        } else {
+            None
+        };
         self.in_flight = None;
         self.submitted = false;
+        if let Some(snapshot) = retained {
+            self.active = Some(snapshot);
+            self.pending_begin = None;
+            self.latest_change = None;
+            self.terminal = None;
+            self.recovery_pending = true;
+            return true;
+        }
         if (!ack.accepted && ack.phase == TuningGesturePhase::Begin)
             || matches!(
                 ack.phase,
@@ -207,6 +252,7 @@ impl TuningGestureClient {
     }
 
     fn clear(&mut self) {
+        self.recovery_pending = false;
         self.active = None;
         self.pending_begin = None;
         self.latest_change = None;
@@ -217,6 +263,11 @@ impl TuningGestureClient {
 
     pub fn reset(&mut self) {
         self.clear();
+    }
+
+    /// A refused native terminal left an audible overlay which needs retry or Cancel.
+    pub fn is_recovery_pending(&self) -> bool {
+        self.recovery_pending
     }
 
     pub fn snapshot(&self) -> Option<TuningGestureSnapshot> {
@@ -316,6 +367,7 @@ impl TuningGestureMachine {
     ) -> TuningGestureOutcome {
         let mut outcome = TuningGestureOutcome {
             ack: TuningGestureAck {
+                preview_retained: false,
                 key: request.key(),
                 phase: request.phase(),
                 sequence: request.sequence(),
@@ -463,6 +515,7 @@ impl TuningGestureMachine {
         {
             Ok((project, prepared)) => Some(TuningGestureOutcome {
                 ack: TuningGestureAck {
+                    preview_retained: false,
                     key: active.key,
                     phase: TuningGesturePhase::Change,
                     sequence: active.sequence,
@@ -477,6 +530,7 @@ impl TuningGestureMachine {
                 self.reset();
                 Some(TuningGestureOutcome {
                     ack: TuningGestureAck {
+                        preview_retained: false,
                         key: active.key,
                         phase: TuningGesturePhase::Cancel,
                         sequence: active.sequence,
@@ -517,6 +571,57 @@ impl TuningGestureMachine {
 mod tests {
     use super::*;
 
+    #[test]
+    fn retained_tuning_terminal_parks_actual_snapshot_and_declines_new_begin_until_cancel() {
+        let mut client = TuningGestureClient::default();
+        let tuning = ProjectTuning::default();
+        client.begin(7, tuning).unwrap();
+        let begin = client.next_request().unwrap();
+        let make_ack = |request: TuningGestureRequest, accepted| TuningGestureAck {
+            preview_retained: false,
+            key: request.key(),
+            phase: request.phase(),
+            sequence: request.sequence(),
+            accepted,
+            reason: None,
+        };
+        assert!(client.acknowledge(&make_ack(begin, true)));
+        let accepted = client.snapshot().unwrap();
+        client.finish(custom_disabled_tuning()).unwrap();
+        let terminal = client.next_request().unwrap();
+        let mut refused = make_ack(terminal, false);
+        refused.preview_retained = true;
+        assert!(!client.acknowledge(&refused));
+        let mut foreign = accepted;
+        foreign.key.token += 1;
+        assert!(!client.acknowledge_with_snapshot(&refused, Some(foreign)));
+        assert!(client.acknowledge_with_snapshot(&refused, Some(accepted)));
+        assert_eq!(client.snapshot(), Some(accepted));
+        assert!(client.is_recovery_pending());
+        assert!(client.next_request().is_none());
+        client.change(custom_disabled_tuning()).unwrap();
+        let change = client.next_request().unwrap();
+        assert!(client.acknowledge(&make_ack(change, true)));
+        assert!(
+            client.is_recovery_pending(),
+            "accepted overlay changes cannot release terminal dependents"
+        );
+        let accepted = client.snapshot().unwrap();
+        assert!(client.begin(7, tuning).unwrap_err().contains("retry after"));
+        assert!(client.change(tuning).is_err());
+        let cancel = client.next_request().unwrap();
+        assert!(matches!(cancel, TuningGestureRequest::Cancel { .. }));
+        let mut refused = make_ack(cancel, false);
+        refused.preview_retained = true;
+        assert!(client.acknowledge_with_snapshot(&refused, Some(accepted)));
+        assert!(client.next_request().is_none());
+        client.cancel().unwrap();
+        let retry = client.next_request().unwrap();
+        assert!(client.acknowledge(&make_ack(retry, true)));
+        assert!(!client.is_recovery_pending());
+        assert!(client.begin(7, tuning).is_ok());
+    }
+
     fn custom_disabled_tuning() -> ProjectTuning {
         ProjectTuning::new(
             false,
@@ -533,6 +638,7 @@ mod tests {
         let begin = client.next_request().unwrap();
         assert_eq!(client.next_request(), Some(begin));
         let stale = TuningGestureAck {
+            preview_retained: false,
             key: TuningGestureKey {
                 generation: 4,
                 token: key.token + 1,
@@ -550,6 +656,7 @@ mod tests {
         client.finish(edited).unwrap();
         assert!(client.change(ProjectTuning::default()).is_err());
         let ack = |request: TuningGestureRequest| TuningGestureAck {
+            preview_retained: false,
             key: request.key(),
             phase: request.phase(),
             sequence: request.sequence(),
