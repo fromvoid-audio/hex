@@ -755,7 +755,11 @@ impl EditorView {
             self.pending_time_range_move = Some(pending);
             return;
         }
-        if event.error.is_some() || event.state.revision <= pending.source_revision {
+        // The copy/move is admitted with no other pending edit. Its advanced
+        // canonical revision witnesses the commit; a later recovery checkpoint
+        // can still attach an error to that same completion. Keep that diagnostic,
+        // but settle the committed destination. Refused edits do not advance it.
+        if event.state.revision <= pending.source_revision {
             return;
         }
         // The accepted copy still commits, but its selection intent does not
