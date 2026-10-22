@@ -2131,7 +2131,7 @@ mod tests {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_creation_ui_tests.rs"]
-mod creation_tests;
+pub(super) mod creation_tests;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_zoom_ui_tests.rs"]
