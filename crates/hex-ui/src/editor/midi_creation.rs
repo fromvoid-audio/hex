@@ -1,5 +1,6 @@
-//! Normal-mode held note creation. Preview stays view-owned until one AddMidiNote
-//! on release; existing canvas identity/geometry and grid rules bound the gesture.
+//! Normal-mode held note creation. Preview stays view-owned until one canonical
+//! note edit on release, including source growth if needed. Existing canvas
+//! identity/geometry and grid rules bound the gesture.
 use super::{
     EditorView, midi_drag,
     midi_draw::{self, StrokeModifiers},
@@ -23,16 +24,19 @@ impl EditorView {
         x: f32,
         note: MidiNoteInsert,
     ) {
+        let Some(length) = context.authoring_length() else {
+            return;
+        };
         let current = self.current_stroke_context(context.bounds, StrokeModifiers::default());
         if !context.bounds.is_valid()
             || !x.is_finite()
-            || note.start.raw() >= context.clip_length
+            || note.start.raw() >= length
             || note.duration.raw() == 0
             || note
                 .start
                 .raw()
                 .checked_add(note.duration.raw())
-                .is_none_or(|end| end > context.clip_length)
+                .is_none_or(|end| end > length)
             || self.edit_pending()
             || current.is_none_or(|current| {
                 current.draw_mode || !midi_draw::same_rendered_frame(current, context)
@@ -80,6 +84,9 @@ impl EditorView {
         else {
             return self.midi_creation.take().is_some();
         };
+        let Some(length) = current.authoring_length() else {
+            return self.midi_creation.take().is_some();
+        };
         let pending = self.edit_pending();
         let Some(creation) = self.midi_creation.as_mut() else {
             return false;
@@ -102,14 +109,14 @@ impl EditorView {
             return true;
         };
         let start = creation.preview.start.raw();
-        let remaining = current.clip_length.saturating_sub(start);
+        let remaining = length.saturating_sub(start);
         let minimum = current
             .effective_grid
             .minimum_gate()
             .max(creation.minimum_gate)
             .min(remaining);
         let end = midi_drag::snap_raw(raw, current.effective_grid)
-            .clamp(start.saturating_add(minimum), current.clip_length);
+            .clamp(start.saturating_add(minimum), length);
         let duration = BeatTime::from_raw(end - start);
         let changed = creation.preview.duration != duration;
         creation.preview.duration = duration;
@@ -130,14 +137,25 @@ impl EditorView {
         self.update_midi_creation(bounds, x, modifiers);
         if let Some(creation) = self.midi_creation.take() {
             let note = creation.preview;
-            self.enqueue(Request::Edit(Command::AddMidiNote {
-                clip: creation.context.clip,
-                start: note.start,
-                duration: note.duration,
-                pitch: note.pitch,
-                channel: note.channel,
-                velocity: note.velocity,
-            }));
+            let grows =
+                note.start.raw().saturating_add(note.duration.raw()) > creation.context.clip_length;
+            let command = if grows {
+                Command::EditMidiNotesWithSourceExtent {
+                    clip: creation.context.clip,
+                    remove: Vec::new(),
+                    insert: vec![note],
+                }
+            } else {
+                Command::AddMidiNote {
+                    clip: creation.context.clip,
+                    start: note.start,
+                    duration: note.duration,
+                    pitch: note.pitch,
+                    channel: note.channel,
+                    velocity: note.velocity,
+                }
+            };
+            self.enqueue(Request::Edit(command));
         }
     }
 }

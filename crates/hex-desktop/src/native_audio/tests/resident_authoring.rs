@@ -138,6 +138,56 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
         velocity: 127,
     }));
     (applied, _) = h.applied(applied);
+    // UI authoring past the previous source extent must use ordinary resident
+    // admission and one global Undo edge after a real sampler has loaded.
+    let extended = h.run(Request::Edit(Command::EditMidiNotesWithSourceExtent {
+        clip: midi_clip,
+        remove: Vec::new(),
+        insert: vec![hex_project::MidiNoteInsert {
+            start: BeatTime::ONE,
+            duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
+            pitch: 64,
+            channel: 0,
+            velocity: 100,
+        }],
+    }));
+    (applied, _) = h.applied(applied);
+    assert_eq!(
+        extended
+            .state
+            .project
+            .midi_source(midi_clip)
+            .unwrap()
+            .source_length()
+            .raw(),
+        BeatTime::ONE.raw() * 5 / 4
+    );
+    assert_eq!(
+        extended
+            .state
+            .project
+            .midi_clip(midi_clip)
+            .unwrap()
+            .arrangement_length(),
+        BeatTime::ONE
+    );
+    let undone_extent = h.run(Request::Undo);
+    (applied, _) = h.applied(applied);
+    assert_eq!(
+        undone_extent
+            .state
+            .project
+            .midi_source(midi_clip)
+            .unwrap()
+            .source_length(),
+        BeatTime::ONE
+    );
+    let redone_extent = h.run(Request::Redo);
+    (applied, _) = h.applied(applied);
+    assert_eq!(
+        redone_extent.state.project.midi_source(midi_clip),
+        extended.state.project.midi_source(midi_clip)
+    );
     let resized_midi = h.run(Request::Edit(Command::TrimMidiClipEdge {
         clip: midi_clip,
         edge: TrimEdge::Right,

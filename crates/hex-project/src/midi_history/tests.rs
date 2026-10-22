@@ -301,3 +301,118 @@ fn midi_noop_preflight_is_borrowed_validated_and_preserves_redo() {
     assert_eq!(e.project(), &before);
     assert!(e.can_redo());
 }
+
+#[test]
+fn source_extent_note_edit_has_one_closed_history_edge_for_arrange_and_console() {
+    for console in [false, true] {
+        let (mut editor, track, scene, mut clip) = fixture();
+        if console {
+            let Created::SessionClip(id) = editor
+                .execute(Command::CreateSessionMidiClip {
+                    track,
+                    scene,
+                    name: "extent".into(),
+                    source_length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("console");
+            };
+            clip = id;
+        }
+        let before = editor.project().clone();
+        let mut inserted = note(60);
+        inserted.start = BeatTime::from_quarters(5).unwrap();
+        let command = || Command::EditMidiNotesWithSourceExtent {
+            clip,
+            remove: Vec::new(),
+            insert: vec![inserted],
+        };
+        cycle(&mut editor, command(), true);
+        let changed = editor.project().clone();
+        let source = changed.midi_source(clip).unwrap();
+        assert_eq!(source.source_length(), BeatTime::from_quarters(6).unwrap());
+        assert_eq!(
+            source.loop_end(),
+            before.midi_source(clip).unwrap().loop_end()
+        );
+        assert_eq!(Project::from_snapshot(changed.snapshot()).unwrap(), changed);
+        let effect = editor.next_midi_history_effect(false).unwrap();
+        let mut corrupted = changed.clone();
+        corrupted.midi_source_mut(clip).unwrap().source_length =
+            BeatTime::from_quarters(7).unwrap();
+        assert!(
+            !effect.validates_forward(&before, &corrupted),
+            "extent cannot exceed inserted end"
+        );
+        corrupted = changed.clone();
+        corrupted.midi_source_mut(clip).unwrap().looping = !source.looping();
+        assert!(
+            !effect.validates_forward(&before, &corrupted),
+            "loop edit cannot hide inside note proof"
+        );
+        assert!(editor.undo());
+        assert_eq!(editor.project().midi_source(clip), before.midi_source(clip));
+        assert!(editor.redo());
+        assert_eq!(
+            editor.project().midi_source(clip),
+            changed.midi_source(clip)
+        );
+    }
+}
+
+#[test]
+fn source_extent_note_edit_refusals_preserve_source_ids_history_and_strict_commands() {
+    let (mut editor, _, _, clip) = fixture();
+    let original = editor.project().clone();
+    let mut inserted = note(60);
+    inserted.start = BeatTime::from_quarters(5).unwrap();
+    assert!(
+        editor
+            .execute(Command::AddMidiNotes {
+                clip,
+                notes: vec![inserted]
+            })
+            .is_err()
+    );
+    assert!(
+        editor
+            .execute(Command::EditMidiNotesWithSourceExtent {
+                clip,
+                remove: vec![NoteId(u64::MAX)],
+                insert: vec![inserted],
+            })
+            .is_err()
+    );
+    assert_eq!(editor.project(), &original);
+    for (start, duration, pitch) in [(5 << 32, 0, 60), (u64::MAX, 1, 60), (5 << 32, 1 << 32, 128)] {
+        let mut bad = inserted;
+        bad.start = BeatTime::from_raw(start);
+        bad.duration = BeatTime::from_raw(duration);
+        bad.pitch = pitch;
+        assert!(
+            editor
+                .execute(Command::EditMidiNotesWithSourceExtent {
+                    clip,
+                    remove: Vec::new(),
+                    insert: vec![bad]
+                })
+                .is_err()
+        );
+        assert_eq!(editor.project(), &original);
+    }
+    assert!(
+        editor
+            .execute_validated::<Invalid>(
+                Command::EditMidiNotesWithSourceExtent {
+                    clip,
+                    remove: Vec::new(),
+                    insert: vec![inserted]
+                },
+                |_| Err(Invalid("prepare refused"))
+            )
+            .is_err()
+    );
+    assert_eq!(editor.project(), &original);
+    assert!(editor.next_midi_history_effect(false).is_none());
+}

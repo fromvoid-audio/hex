@@ -4,6 +4,8 @@
 //! extent/start and retained loop markers are independent of a clip's finite Arrangement length.
 //! Notes keep stable distinct IDs even at equal pitch; channel, pitch, velocity and positive
 //! duration are validated before mutation. Source shrink refuses notes it would invalidate.
+//! Strict note edits remain inside the source; the explicit authoring command may grow
+//! extent to inserted note ends in the same transaction, without moving placement or loops.
 //! Copy-on-write identity tokens retain the actual source, preventing address reuse from making
 //! stale prepared artifacts appear current. The project Editor owns atomic history, not this view.
 use crate::edit::{Command, MidiNoteUpdate};
@@ -731,6 +733,11 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         Command::AddMidiNotes { clip, notes } => {
             crate::midi_batch::edit(project, clip, Vec::new(), notes)
         }
+        Command::EditMidiNotesWithSourceExtent {
+            clip,
+            remove,
+            insert,
+        } => crate::midi_batch::edit_with_source_extent(project, clip, remove, insert),
         Command::EditMidiNotes {
             clip,
             remove,

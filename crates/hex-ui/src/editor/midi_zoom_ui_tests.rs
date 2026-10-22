@@ -402,12 +402,16 @@ fn short_source_long_arrangement_notes_visibly_shrink_when_zooming_out(cx: &mut 
         );
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
-    // Blank zoom-out space cannot silently add a note at the source end.
+    // Creation in revealed space must use its actual cell, never alias the
+    // source's final tick. Merely zooming above still left the project unchanged.
     let blank = point(roll.origin.x + roll.size.width * 0.95, roll.center().y);
     double_down(&mut visual, blank, Modifiers::default());
     visual.simulate_mouse_up(blank, MouseButton::Left, Modifiers::default());
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+        let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
+        assert_eq!(source.notes().len(), 3);
+        assert_eq!(source.notes()[2].start(), quarter);
+        assert!(source.source_length() > quarter);
     });
 }

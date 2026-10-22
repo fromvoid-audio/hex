@@ -51,6 +51,14 @@ pub(super) struct StrokeContext {
 }
 
 impl StrokeContext {
+    /// Authoring may reveal time beyond the source. This bounds pointer-derived
+    /// previews only; canonical growth occurs once, through the typed edit.
+    pub(super) fn authoring_length(self) -> Option<u64> {
+        self.view_start
+            .checked_add(self.view_span)
+            .map(|end| end.max(self.clip_length))
+    }
+
     fn is_valid(self) -> bool {
         self.view_span > 0
             && self.clip_length > 0
@@ -123,7 +131,7 @@ enum Action {
 
 pub(super) struct MidiStroke {
     context: StrokeContext,
-    clip_length: u64,
+    authoring_length: u64,
     intervals: Vec<Interval>,
     prefix_max_end: Vec<u64>,
     pitch_ranges: [(usize, usize); 128],
@@ -163,6 +171,9 @@ impl MidiStroke {
         if !context.is_valid() || clip_length == 0 || context.clip_length != clip_length {
             return Err(StrokeError::InvalidContext);
         }
+        let clip_length = context
+            .authoring_length()
+            .ok_or(StrokeError::InvalidContext)?;
         validate_point(down, clip_length)?;
         if baseline.len() > MAX_NOTES {
             return Err(StrokeError::TooManyNotes);
@@ -186,10 +197,10 @@ impl MidiStroke {
             time: 0,
             pitch: down.pitch,
         };
-        let index = build_interval_index(&baseline, clip_length)?;
+        let index = build_interval_index(&baseline, context.clip_length)?;
         let mut stroke = Self {
             context,
-            clip_length,
+            authoring_length: clip_length,
             intervals: index.intervals,
             prefix_max_end: index.prefix_max_end,
             pitch_ranges: index.pitch_ranges,
@@ -237,7 +248,7 @@ impl MidiStroke {
             self.cancelled = true;
             return Err(StrokeError::InvalidContext);
         }
-        if let Err(error) = validate_point(point, self.clip_length) {
+        if let Err(error) = validate_point(point, self.authoring_length) {
             self.cancelled = true;
             return Err(error);
         }
@@ -327,10 +338,21 @@ impl MidiStroke {
         if remove.is_empty() && insert.is_empty() {
             return Ok(None);
         }
-        Ok(Some(Command::EditMidiNotes {
-            clip: self.context.clip,
-            remove,
-            insert,
+        let grows = insert.iter().any(|note| {
+            note.start.raw().saturating_add(note.duration.raw()) > self.context.clip_length
+        });
+        Ok(Some(if grows {
+            Command::EditMidiNotesWithSourceExtent {
+                clip: self.context.clip,
+                remove,
+                insert,
+            }
+        } else {
+            Command::EditMidiNotes {
+                clip: self.context.clip,
+                remove,
+                insert,
+            }
         }))
     }
 
@@ -350,7 +372,7 @@ impl MidiStroke {
         let index = if delta < 0 { -signed } else { signed };
         let min_index = ceil_div(-i128::from(self.anchor), step);
         let max_index =
-            (i128::from(self.clip_length - 1) - i128::from(self.anchor)).div_euclid(step);
+            (i128::from(self.authoring_length - 1) - i128::from(self.anchor)).div_euclid(step);
         let clamped = index.clamp(min_index, max_index);
         let time = i64::try_from(clamped).map_err(|_| StrokeError::TooManyCells)?;
         Ok(Cell {
@@ -441,7 +463,7 @@ impl MidiStroke {
             return Ok(());
         };
         let Some(existing) = self.baseline_hit(cell, onset)? else {
-            let remaining = self.clip_length - onset;
+            let remaining = self.authoring_length - onset;
             let duration = default_gate_raw(remaining, self.context.effective_grid).min(remaining);
             if duration == 0 {
                 return self.cancel_with(StrokeError::InvalidPoint);
@@ -514,7 +536,7 @@ impl MidiStroke {
         {
             return Ok(Some(id));
         }
-        let end = onset.saturating_add(self.step).min(self.clip_length);
+        let end = onset.saturating_add(self.step).min(self.authoring_length);
         let (start, stop) = self.pitch_ranges[usize::from(cell.pitch)];
         let range = &self.intervals[start..stop];
         let before_end = range.partition_point(|item| item.start < end) + start;
@@ -547,7 +569,7 @@ impl MidiStroke {
     fn cell_onset(&self, time: i64) -> Option<u64> {
         let raw = i128::from(self.anchor) + i128::from(time) * i128::from(self.step);
         let onset = u64::try_from(raw).ok()?;
-        (onset < self.clip_length).then_some(onset)
+        (onset < self.authoring_length).then_some(onset)
     }
 
     fn add_traversal(&mut self, count: usize) -> Result<(), StrokeError> {
