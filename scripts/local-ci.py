@@ -140,13 +140,48 @@ FULL_STEPS = (
 )
 
 
+def edit_selection(inventory: list[dict], *, package: str, test_filter: str,
+                   features: str = "", lib: bool = False, test: str | None = None) -> dict:
+    """Validate an explicit edit target; omissions keep Cargo's package-wide behavior."""
+    packages = [item for item in inventory if item["name"] == package]
+    if len(packages) != 1 or not test_filter.strip():
+        raise ValueError("edit feedback requires one known workspace package and a nonempty test filter")
+    owner = packages[0]
+    requested_features = {name for name in features.split(",") if name}
+    if requested_features - owner["features"].keys():
+        raise ValueError("unknown workspace package feature")
+    selection = {"package": package, "filter": test_filter, "features": features}
+    if lib or test is not None:
+        if lib and test is not None:
+            raise ValueError("select either a library or a named integration test")
+        library_kinds = {"lib", "rlib", "dylib", "cdylib", "staticlib", "proc-macro"}
+        targets = [target for target in owner["targets"]
+                   if (bool(library_kinds.intersection(target["kind"])) if lib else
+                       "test" in target["kind"] and target["name"] == test)]
+        if len(targets) != 1:
+            raise ValueError("unknown or ambiguous edit test target")
+        enabled = requested_features | ({"default"} if "default" in owner["features"] else set())
+        pending = list(enabled)
+        while pending:
+            for feature in owner["features"].get(pending.pop(), []):
+                if feature not in enabled:
+                    enabled.add(feature)
+                    pending.append(feature)
+        if set(targets[0].get("required-features", [])) - enabled:
+            raise ValueError("edit test target requires features that are not enabled")
+        selection["target"] = {"kind": "lib" if lib else "test", "name": targets[0]["name"]}
+    return selection
+
+
 def planned_steps(plan: dict) -> tuple[Step, ...]:
     """Select complete configurations, never deduplicate by test-name overlap."""
     scope = plan["scope"]
     if plan.get("edit"):
         edit = plan["edit"]
         feature = ("--features", edit["features"]) if edit["features"] else ()
-        return (Step("edit-tests", ("cargo", "test", "-p", edit["package"], *feature, "--locked", edit["filter"], "--", "--nocapture"),
+        selected = edit.get("target")
+        target = () if selected is None else (("--lib",) if selected["kind"] == "lib" else ("--test", selected["name"]))
+        return (Step("edit-tests", ("cargo", "test", "-p", edit["package"], *feature, *target, "--locked", edit["filter"], "--", "--nocapture"),
                      requires_tests=True),
                 Step("edit-clippy", ("cargo", "clippy", "-p", edit["package"], *feature, "--all-targets", "--locked", "--", "-D", "warnings")),
                 QUICK_STEPS[-1])
@@ -1639,6 +1674,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--package", help="explicit workspace package for partial edit feedback")
     parser.add_argument("--test-filter", help="explicit nonempty Rust test filter for partial edit feedback")
     parser.add_argument("--features", default="", help="explicit package features for partial edit feedback")
+    target = parser.add_mutually_exclusive_group()
+    target.add_argument("--lib", action="store_true", help="test only the package library in an explicit edit plan")
+    target.add_argument("--test", metavar="NAME", help="test only this named integration target in an explicit edit plan")
     parser.add_argument(
         "--min-free-gib", type=int,
         help="read-only free-space floor in GiB; default 2 for full and 0 for quick; never deletes files",
@@ -1674,13 +1712,12 @@ def main(argv: list[str] | None = None) -> int:
                                    source=arguments.source, metadata=metadata)
             if arguments.reuse_report:
                 plan = reusable_plan(ROOT, plan, arguments.reuse_report)
-            if arguments.package or arguments.test_filter or arguments.features:
+            if arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
                 if arguments.profile != "edit" or not arguments.package or not arguments.test_filter:
                     raise ValueError("package/filter/features require --profile edit with a nonempty package and test filter")
-                package = next((p for p in plan["cargo_inventory"] if p["name"] == arguments.package), None)
-                if package is None or any(f not in package["features"] for f in arguments.features.split(",") if f):
-                    raise ValueError("unknown workspace package or feature")
-                plan["edit"] = {"package": arguments.package, "filter": arguments.test_filter, "features": arguments.features}
+                plan["edit"] = edit_selection(plan["cargo_inventory"], package=arguments.package,
+                                              test_filter=arguments.test_filter, features=arguments.features,
+                                              lib=arguments.lib, test=arguments.test)
                 plan.pop("plan_sha256")
                 plan["plan_sha256"] = hashlib.sha256(json.dumps(plan, sort_keys=True).encode()).hexdigest()
         except (ValueError, KeyError, OSError, subprocess.CalledProcessError) as error:
@@ -1690,7 +1727,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--profile cannot be combined with --quick")
     elif arguments.reuse_report:
         parser.error("--reuse-report requires an explicit merge plan")
-    elif arguments.package or arguments.test_filter or arguments.features:
+    elif arguments.package or arguments.test_filter or arguments.features or arguments.lib or arguments.test is not None:
         parser.error("package/filter/features require an explicit edit plan")
     runner = LocalCiRunner(
         mode=mode,

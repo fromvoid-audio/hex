@@ -55,6 +55,22 @@ ownership markers to claim a successful check.
 
 ## Focused commands
 
+For partial edit feedback, optionally select the owning library or named
+integration test from the package's Cargo metadata:
+
+```sh
+python3 scripts/local-ci.py --profile edit --base BASE_SHA --source HEAD_SHA \
+  --package hex-storage --test-filter injected_precommit_failure --lib
+python3 scripts/local-ci.py --profile edit --base BASE_SHA --source HEAD_SHA \
+  --package hex-storage --test-filter TEST_NAME --test INTEGRATION_TARGET
+```
+
+Omit `--lib`/`--test` to retain package-wide test selection. They are mutually
+exclusive and require an explicit edit package/filter; unknown targets, disabled
+required features and zero passing matches refuse qualification. Edit still runs
+package Clippy and formatting and remains partial. Merge/full/release plans are
+unchanged.
+
 ```sh
 python3 scripts/check-architecture.py
 python3 scripts/check-gpui-patch.py
