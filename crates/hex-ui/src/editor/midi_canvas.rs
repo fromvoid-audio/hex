@@ -85,7 +85,7 @@ fn pitch_at_y(y: f32, height: f32, low: u8) -> Option<u8> {
 
 impl EditorView {
     pub(super) fn midi_editor(&mut self, cx: &mut Context<Self>) -> Option<Div> {
-        let selected = self.selected_clip?;
+        let selected = self.detail_clip_id()?;
         let length = self
             .state
             .as_ref()?
@@ -103,7 +103,7 @@ impl EditorView {
                 BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
         }
         let state = self.state.as_ref()?;
-        let clip_id = self.selected_clip?;
+        let clip_id = self.detail_clip_id()?;
         let source = state.project.midi_source(clip_id)?;
         let arrangement = state.project.midi_clip(clip_id);
         let revision = state.revision;
@@ -539,7 +539,7 @@ impl EditorView {
                     mouse_down_entity.update(cx, |view, view_cx| {
                         if view.project_generation != generation
                             || view.state.as_ref().is_none_or(|s| s.revision != revision)
-                            || view.selected_clip != Some(clip_id)
+                            || view.detail_clip_id() != Some(clip_id)
                             || view.edit_pending()
                         {
                             return;
@@ -788,12 +788,13 @@ impl EditorView {
                             }
                             return;
                         }
+                        let detail_clip = view.detail_clip_id();
                         if let Some(gesture) = &mut view.midi_group_gesture {
                             let current =
                                 gesture.is_current(super::midi_group_drag::GroupContext {
                                     generation,
                                     revision,
-                                    clip: view.selected_clip,
+                                    clip: detail_clip,
                                     selection_epoch: view.midi_selection.epoch(),
                                     beat_start: beat_start.raw(),
                                     beat_span: beat_span.raw(),
@@ -823,7 +824,7 @@ impl EditorView {
                         let context = midi_drag::GestureContext {
                             generation,
                             revision,
-                            selected_clip: view.selected_clip,
+                            selected_clip: view.detail_clip_id(),
                             selected_note: view.midi_selection.primary(),
                             clip_contains_note: false,
                             pending: false,
@@ -895,7 +896,7 @@ impl EditorView {
                                 .state
                                 .as_ref()
                                 .is_none_or(|state| state.revision != revision)
-                            || view.selected_clip != Some(clip_id)
+                            || view.detail_clip_id() != Some(clip_id)
                             || view.edit_pending()
                         {
                             view.midi_note_gesture = None;
@@ -937,7 +938,7 @@ impl EditorView {
                             let context = super::midi_group_drag::GroupContext {
                                 generation,
                                 revision,
-                                clip: view.selected_clip,
+                                clip: view.detail_clip_id(),
                                 selection_epoch: view.midi_selection.epoch(),
                                 beat_start: beat_start.raw(),
                                 beat_span: beat_span.raw(),
@@ -982,7 +983,7 @@ impl EditorView {
                         let context = midi_drag::GestureContext {
                             generation,
                             revision,
-                            selected_clip: view.selected_clip,
+                            selected_clip: view.detail_clip_id(),
                             selected_note: view.midi_selection.primary(),
                             clip_contains_note: false,
                             pending: false,

@@ -967,7 +967,7 @@ fn upper_rail_next(service: &Service) -> hex_session::service::Event {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn upper_rail_owned_fixture(
+pub(super) fn upper_rail_owned_fixture(
     cx: &mut TestAppContext,
 ) -> (
     Arc<super::test_environment::Environment>,
@@ -2557,7 +2557,7 @@ fn upper_rail_fixture_pre_ack_real_import_refusal_preserves_disk_without_arc_lea
 
 /// The test executor leaves the UI poll timer parked: the real worker may finish,
 /// but its ACK is not installed until pump_move explicitly ticks the controller.
-fn pump_move(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(super) fn pump_move(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let done = editor.update(&mut *visual, |view, cx| {

@@ -14,7 +14,7 @@ pub(crate) struct Binding {
 impl EditorView {
     pub(crate) fn sample_bpm_editing(&self, cx: &Context<Self>) -> bool {
         self.sample_bpm_control.as_ref().is_some_and(|binding| {
-            self.selected_clip_data()
+            self.detail_audio_clip_data()
                 .is_some_and(|selection| selection.1 == binding.key.0)
                 && self.project_generation == binding.key.1
                 && self
@@ -99,7 +99,7 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                         .as_ref()
                         .is_none_or(|state| state.revision != key.2)
                     || view
-                        .selected_clip_data()
+                        .detail_audio_clip_data()
                         .is_none_or(|selection| selection.1 != id)
                 {
                     return;

@@ -188,6 +188,7 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
+        self.retain_clip_detail_for_time_selection();
         self.selected_clip = None;
         true
     }
@@ -324,10 +325,10 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
+        self.retain_clip_detail_for_time_selection();
         self.selected_track = Some(track);
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
-        self.device_panel_active = true;
         true
     }
 
