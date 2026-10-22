@@ -90,8 +90,16 @@ impl EditorView {
                 return None;
             }
             let current = self.state.as_ref();
+            let revision_matches = match ack.phase {
+                TuningGesturePhase::Commit => {
+                    event.state.revision == pending.revision
+                        || pending.revision.checked_add(1) == Some(event.state.revision)
+                }
+                TuningGesturePhase::Cancel => event.state.revision == pending.revision,
+                _ => false,
+            };
             let valid = ack.accepted
-                && ack.phase == TuningGesturePhase::Commit
+                && revision_matches
                 && event.error.is_none()
                 && self.project_generation == pending.generation
                 && self.detail_clip_id() == Some(pending.clip)
@@ -101,9 +109,7 @@ impl EditorView {
                         && source_identity(&s.project, pending.clip) == Some(pending.source.clone())
                         && source_identity(&event.state.project, pending.clip)
                             == Some(pending.source.clone())
-                })
-                && (event.state.revision == pending.revision
-                    || pending.revision.checked_add(1) == Some(event.state.revision));
+                });
             if valid {
                 if let Some(pending) = self.pending_created_note_selection.as_mut() {
                     pending.revision = event.state.revision;

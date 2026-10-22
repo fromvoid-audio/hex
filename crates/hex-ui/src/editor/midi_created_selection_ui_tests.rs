@@ -185,12 +185,25 @@ fn changed_selection_before_actual_ack_cannot_be_replaced_by_created_note(cx: &m
 fn tuning_terminal_rebases_only_the_known_unchanged_source_before_creation_ack(
     cx: &mut TestAppContext,
 ) {
+    tuning_before_creation(cx, false);
+}
+#[gpui::test]
+fn accepted_tuning_cancel_preserves_queued_creation_selection_without_advancing_revision(
+    cx: &mut TestAppContext,
+) {
+    tuning_before_creation(cx, true);
+}
+fn tuning_before_creation(cx: &mut TestAppContext, cancel: bool) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
     editor.update(&mut visual, |v, _| {
         let tuning = v.state.as_ref().unwrap().project.tuning();
         v.tuning.client.begin(v.project_generation, tuning).unwrap();
         v.tuning.client.change(tuning.with_enabled(true)).unwrap();
-        v.tuning.client.finish(tuning.with_enabled(true)).unwrap();
+        if cancel {
+            v.tuning.client.cancel().unwrap();
+        } else {
+            v.tuning.client.finish(tuning.with_enabled(true)).unwrap();
+        }
         assert!(v.enqueue(Request::Edit(Command::AddMidiNote {
             clip,
             start: BeatTime::ONE,
@@ -208,7 +221,10 @@ fn tuning_terminal_rebases_only_the_known_unchanged_source_before_creation_ack(
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(v.error.is_none(), "{:?}", v.error);
-        assert!(v.state.as_ref().unwrap().project.tuning().enabled());
+        assert_eq!(
+            v.state.as_ref().unwrap().project.tuning().enabled(),
+            !cancel
+        );
         let notes = v
             .state
             .as_ref()
