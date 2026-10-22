@@ -981,6 +981,7 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_pending_clip_move();
@@ -989,6 +990,9 @@ impl EditorView {
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
+        }
+        if !self.edit_pending() {
+            self.midi_step.cancel_pending();
         }
         visible_change |= self.poll_editor_audio_events();
         visible_change |= self.poll_export(cx);
@@ -1813,6 +1817,7 @@ impl EditorView {
         let retired_trim = self.trim_request_complete(&event);
         let loop_complete = self.loop_request_complete(&event);
         let group_copy_intent = self.group_copy_request_complete(&event);
+        let midi_step_complete = self.take_completed_midi_step(&event);
         if event.project_replaced {
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
@@ -2651,6 +2656,7 @@ impl EditorView {
         // Canonical state, generation, gain/loop display extent and selection
         // have now been installed. Normalize only the locally retired owner.
         self.normalize_completed_trim_viewport(retired_trim);
+        self.apply_completed_midi_step(midi_step_complete);
         successfully_opened_path
     }
 
@@ -3438,6 +3444,7 @@ impl EditorView {
     }
 
     pub(super) fn stop(&mut self) {
+        self.midi_step.cancel_pending();
         // Stop explicitly discards voice histories. A previously refused edit
         // or restoration can now install the canonical sound without inheriting
         // an incompatible preview's history. Keep construction on the worker.

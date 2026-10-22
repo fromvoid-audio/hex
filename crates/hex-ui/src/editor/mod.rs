@@ -90,6 +90,7 @@ mod midi_note_overwrite;
 mod midi_scene;
 mod midi_selection;
 mod midi_source_controls;
+mod midi_step;
 mod midi_stroke;
 mod midi_thumbnail;
 mod mixer;
@@ -656,6 +657,7 @@ pub(super) struct EditorView {
     /// Source-relative insertion beat; reset with the existing piano_view_clip owner.
     /// Pure view state: never transport position or a canonical project edit.
     pub(in crate::editor) midi_marker: Option<u64>,
+    midi_step: midi_step::StepEntry,
     pub(in crate::editor) midi_marquee: Option<midi_selection::Marquee>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
@@ -1136,6 +1138,7 @@ impl EditorView {
             }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
+            view.midi_step.cancel_pending();
             if view.cancel_loop_rail_gesture() {
                 cx.defer_in(window, |_, _, cx| cx.notify());
             }
@@ -1152,6 +1155,7 @@ impl EditorView {
         let focus_blur = cx.on_blur(&midi_focus, window, |view, _, cx| {
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
+            view.midi_step.cancel_pending();
             let midi_cancelled = view.cancel_midi_note_gesture();
             if midi_cancelled {
                 cx.notify();
@@ -1169,6 +1173,7 @@ impl EditorView {
                 view.cancel_track_resize(cx);
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
+                view.midi_step.cancel_pending();
                 view.audio_event_editor.gesture = None;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
@@ -1252,6 +1257,7 @@ impl EditorView {
             midi_draw_mode: false,
             midi_draw_pitch_locked: true,
             midi_marker: None,
+            midi_step: midi_step::StepEntry::default(),
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
             midi_hit_cycle: None,
