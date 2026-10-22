@@ -95,6 +95,8 @@ mod midi_source_controls;
 mod midi_step;
 mod midi_stroke;
 mod midi_thumbnail;
+mod midi_velocity;
+mod midi_velocity_ui;
 mod mixer;
 mod musical_audio_controls;
 mod musical_time;
@@ -660,6 +662,7 @@ pub(super) struct EditorView {
     /// Pure view state: never transport position or a canonical project edit.
     pub(in crate::editor) midi_marker: Option<u64>,
     midi_step: midi_step::StepEntry,
+    midi_velocity: midi_velocity_ui::State,
     midi_audition: midi_audition::MidiAudition,
     pending_created_note_selection: Option<midi_created_selection::Pending>,
     pub(in crate::editor) midi_marquee: Option<midi_selection::Marquee>,
@@ -1157,14 +1160,16 @@ impl EditorView {
             cx.notify();
         });
         let midi_focus = cx.focus_handle();
-        let focus_blur = cx.on_blur(&midi_focus, window, |view, _, cx| {
+        let focus_blur = cx.on_blur(&midi_focus, window, |view, window, cx| {
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
             view.midi_step.cancel_pending();
             view.invalidate_hardware_step();
             let midi_cancelled = view.cancel_midi_note_gesture();
             if midi_cancelled {
-                cx.notify();
+                // Focus listeners run after frame swap; invalidate once the
+                // normal effect queue resumes so stationary previews disappear.
+                cx.defer_in(window, |_, _, cx| cx.notify());
             }
         });
         let window_activation = cx.observe_window_activation(window, |view, window, cx| {
@@ -1265,6 +1270,7 @@ impl EditorView {
             midi_draw_pitch_locked: true,
             midi_marker: None,
             midi_step: midi_step::StepEntry::default(),
+            midi_velocity: midi_velocity_ui::State::default(),
             midi_audition: midi_audition::MidiAudition::default(),
             pending_created_note_selection: None,
             midi_marquee: None,
