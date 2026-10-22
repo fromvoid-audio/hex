@@ -112,6 +112,9 @@ fn tiny_note_hover_and_hits_follow_time_pitch_zoom_and_draw_mode(cx: &mut TestAp
         )
     });
     editor.update(&mut visual, |v, cx| {
+        // The unselected halo must still select/move. Explicitly selected
+        // tiny-edge resizing is exercised separately by resize_tests.
+        v.midi_selection.clear();
         v.piano_beat_span = BeatTime::from_quarters(16).unwrap();
         cx.notify();
     });
