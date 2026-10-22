@@ -38,9 +38,13 @@ impl Default for State {
     }
 }
 impl State {
+    pub(super) fn visible_height(&self) -> f32 {
+        if self.open { self.height + 3.0 } else { 18.0 }
+    }
     pub(super) fn cancel(&mut self) -> bool {
         let changed = self.gesture.take().is_some() | self.resize.take().is_some();
         self.hover = None;
+        self.cycle = None;
         changed
     }
 }
@@ -505,3 +509,7 @@ impl EditorView {
         )
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_velocity_ui_tests.rs"]
+mod tests;
