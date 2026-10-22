@@ -47,6 +47,9 @@ impl NativeDeviceMetadata for SamplerDefinition {
     }
 }
 impl NativeInstrumentDefinition for SamplerDefinition {
+    fn resource_factory_inline_bound(&self) -> Option<usize> {
+        Some(std::mem::size_of::<super::PreparedSamplerRuntime>())
+    }
     fn supports_asset_resources(&self) -> bool {
         true
     }

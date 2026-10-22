@@ -11,7 +11,7 @@ use density::{DensityEnvelope, DensityEvent, admit_density};
 use hex_project::{
     BeatTime, ClipId, MidiClip, MidiNote, MidiSource, MidiSourcePlayback, NoteId, TrackId,
 };
-pub(crate) use spans::MidiOccurrenceSuppression;
+pub(crate) use spans::{MidiOccurrenceSuppression, PreparedMidiGateTemplate};
 
 /// Maximum frame width accepted by one ongoing MIDI edge query.
 pub const MIDI_TEMPLATE_QUERY_FRAMES: u64 = 256;

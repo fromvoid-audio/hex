@@ -13,6 +13,7 @@ pub(super) struct AudioPolicy {
     pub(super) resident_publication: AudioCandidatePublicationReservation,
     pub(super) control_backing_quote: usize,
     pub(super) legacy_hold_bytes: usize,
+    pub(super) ordinary_graph_metadata_bytes: usize,
 }
 pub(super) const RUNTIME_CELLS: usize = 3;
 pub(super) const MAX_RESIDENT_FRAMES: u64 = 8_000_000;
@@ -230,6 +231,7 @@ impl AudioPolicy {
             resident_publication,
             control_backing_quote,
             legacy_hold_bytes,
+            ordinary_graph_metadata_bytes: native_quote.metadata_data_bytes,
         })
     }
     pub(super) fn configure(

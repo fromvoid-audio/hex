@@ -129,7 +129,6 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
             || Ok::<_, ResourcePreparationError>(()),
         )
         .unwrap();
-    let source_weak = Arc::downgrade(store.assets[0].1.owner.arc());
     let resources =
         PreparedDeviceResources::prepare_on_control(&store, editor.project(), 20_000_000, &cancel)
             .unwrap();
@@ -162,6 +161,12 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
         prepare(&resources, 23).is_err(),
         "three actual two-scan factories require 24 source frames"
     );
+    assert_eq!(
+        resources
+            .compiler_scan_work_on_control(editor.project())
+            .unwrap(),
+        24
+    );
     let revision = Arc::new(prepare(&resources, 24).unwrap());
     assert!(
         SessionPlayback::new(Arc::clone(&revision)).is_err(),
@@ -180,6 +185,122 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
         )
         .is_err()
     );
+    {
+        // Current/staged configuration handles, active runtime anchors and prospective anchors
+        // share one actual original bank. Separate clip PCM remains a conservative allowance.
+        let track = editor.project().tracks()[0].id();
+        let factory = revision
+            .session()
+            .mutable_instrument_factory(track)
+            .unwrap();
+        let bound = resources.factory_inline_bound(track).unwrap();
+        assert_eq!(
+            inline_resource_factory_bytes(factory, bound).unwrap(),
+            std::mem::size_of_val(factory)
+        );
+        for declared in [
+            None,
+            Some(std::mem::size_of::<FactoryDeclaration<'_>>() + 1),
+        ] {
+            let bad = FactoryDeclaration {
+                original: factory,
+                declared,
+            };
+            assert_eq!(
+                inline_resource_factory_bytes(&bad, usize::MAX),
+                Err(AudioStorageError::UnknownStorage)
+            );
+        }
+        assert!(inline_resource_factory_bytes(factory, bound - 1).is_err());
+        let mut book = DeviceResourcePublication::reserve_on_control(limits, 8).unwrap();
+        let first = crate::playback::Playback::try_from_prepared_with_device_resources(
+            Arc::clone(&revision),
+            &resources,
+        )
+        .unwrap();
+        let first = match book.publish_on_control(first, 8, Ok::<_, ()>) {
+            Ok(first) => first,
+            Err(DeviceResourcePublishError::Resources { reason, .. }) => {
+                panic!("initial publication: {reason:?}")
+            }
+            Err(DeviceResourcePublishError::Publication(())) => panic!("unexpected queue refusal"),
+        };
+        let next_revision = Arc::new(prepare(&foreign, 24).unwrap());
+        let next = crate::playback::Playback::try_from_prepared_with_device_resources(
+            Arc::clone(&next_revision),
+            &foreign,
+        )
+        .unwrap();
+        let refused = book.publish_admitted_on_control(next, 16, |candidate, prospective| {
+            let sets = [&resources, &foreign];
+            let revisions = [revision.as_ref(), next_revision.as_ref()];
+            let registered = [
+                DeviceResourceAdmission::new(&sets, &[]).with_prepared_revisions(&revisions),
+                prospective,
+            ];
+            let stores = [&store];
+            let phase = DeviceResourcePhase {
+                registered: &registered,
+                stores: &stores,
+                selections: &[],
+                outbound: &[],
+                legacy: &[],
+                checked_runtime_bytes: 0,
+                construction_bytes: 0,
+            };
+            let inventory = inspect_device_resource_union(&phase, &phase, limits).unwrap();
+            assert_eq!(inventory.retained_frames, 4 + 16);
+            assert_eq!(inventory.construction_frames, 4 + 16);
+            let too_small = AudioStorageLedgerReservation {
+                max_retained_bytes: inventory.retained.retained_bytes - 1,
+                ..limits
+            };
+            assert!(inspect_device_resource_union(&phase, &phase, too_small).is_err());
+            Err::<(), _>(candidate)
+        });
+        let DeviceResourcePublishError::Publication(next) = refused.err().unwrap() else {
+            panic!("resource preparation failed before full union admission")
+        };
+        assert!(Arc::ptr_eq(
+            next.prepared_revision().unwrap(),
+            &next_revision
+        ));
+        assert_eq!(
+            book.outstanding_leases(),
+            1,
+            "refusal issues no prospective obligation"
+        );
+        // An unavailable-output/seek worker owns its exact unpublished candidate and a captured
+        // resource set, until replacement/publication or actual worker-side retirement.
+        let captured = foreign.capture_on_control(20_000_000).unwrap();
+        let sets = [&resources, &foreign];
+        let revisions = [revision.as_ref()];
+        let registered = [
+            DeviceResourceAdmission::new(&sets, &[]).with_prepared_revisions(&revisions),
+            book.admission_on_control(8),
+            DeviceResourceAdmission::unpublished_on_control(&next, Some(&captured)),
+        ];
+        let stores = [&store];
+        let phase = DeviceResourcePhase {
+            registered: &registered,
+            stores: &stores,
+            selections: &[],
+            outbound: &[],
+            legacy: &[],
+            checked_runtime_bytes: 0,
+            construction_bytes: 0,
+        };
+        assert_eq!(
+            inspect_device_resource_union(&phase, &phase, limits)
+                .unwrap()
+                .retained_frames,
+            4 + 16
+        );
+        drop(next);
+        book.retire_on_control(Box::new(first));
+        assert_eq!(book.outstanding_leases(), 0);
+    }
+    let source_weak = Arc::downgrade(store.assets[0].1.owner.arc());
     drop(foreign);
     {
         let runtime =
@@ -296,4 +417,37 @@ fn registered_sampler_mixes_original_pcm_with_vector_and_same_asset_project_rate
         )
         .is_err()
     );
+}
+
+/// Preserve a real registered factory's runtime law while injecting an unknown/mismatched
+/// immutable-storage declaration at the actual resource-admission validation boundary.
+struct FactoryDeclaration<'a> {
+    original: &'a dyn hex_lattice::PreparedMutableInstrumentRuntime,
+    declared: Option<usize>,
+}
+impl hex_lattice::PreparedMutableInstrumentRuntime for FactoryDeclaration<'_> {
+    fn resource_factory_inline_bytes(&self) -> Option<usize> {
+        self.declared
+    }
+    fn runtime_version(&self) -> u32 {
+        self.original.runtime_version()
+    }
+    fn declared_twin_bytes(&self) -> usize {
+        self.original.declared_twin_bytes()
+    }
+    fn max_events_per_block(&self) -> usize {
+        self.original.max_events_per_block()
+    }
+    fn max_active_occurrences(&self) -> usize {
+        self.original.max_active_occurrences()
+    }
+    fn max_release_tail_frames(&self) -> u64 {
+        self.original.max_release_tail_frames()
+    }
+    fn create_runtime(&self) -> Box<dyn hex_lattice::MutableInstrumentRuntime> {
+        self.original.create_runtime()
+    }
+    fn as_any(&self) -> &dyn std::any::Any {
+        self.original.as_any()
+    }
 }

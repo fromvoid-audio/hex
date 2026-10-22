@@ -62,6 +62,7 @@ impl ComputerKeyboardRuntime {
             primary: [None; VOICES],
             scratch: [None; VOICES],
             desired: [0; COMPUTER_KEY_COUNT],
+            activation_epoch: None,
             next_id: 0,
             scratch_next_id: 0,
             age: 0,

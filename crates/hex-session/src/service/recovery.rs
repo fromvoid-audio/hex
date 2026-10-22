@@ -18,7 +18,7 @@ pub fn untitled_recovery_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join("Library/Application Support/hex/recovery/untitled.hex-journal"))
 }
 
-type OpenCandidate = (Session, PathBuf, Option<DocumentHandle>, bool);
+pub(super) type OpenCandidate = (Session, PathBuf, Option<DocumentHandle>, bool);
 
 fn read_source(
     source: &ProjectSource,

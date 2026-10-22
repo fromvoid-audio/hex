@@ -3,8 +3,8 @@
 use super::audio_sink::native_sampler::NativeSamplerSources;
 use super::*;
 use hex_engine::native_device_resources::{
-    self as resources, ControlSamplerInventory, ControlSamplerPhase, ControlSamplerSelection,
-    ControlSamplerSources, StagedNativeAssetView,
+    self as resources, ControlSamplerSelection, ControlSamplerSources, DeviceResourceInventory,
+    DeviceResourcePhase, StagedNativeAssetView,
 };
 
 enum SnapshotAction {
@@ -27,9 +27,13 @@ impl ServiceExportSnapshot {
 }
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Admission<'a> {
+    pub(crate) registered: &'a [resources::DeviceResourceAdmission<'a>],
+    pub(crate) seeks: Option<&'a super::resident_seek::Lane>,
+    pub(crate) preview: Option<&'a super::resident_preview::Preview>,
     pub(crate) current: Option<ControlSamplerSelection<'a>>,
     pub(crate) native: NativeSamplerReservationHold,
     pub(crate) export: Option<ControlSamplerSelection<'a>>,
+    pub(crate) export_resources: Option<resources::DeviceResourceAdmission<'a>>,
     pub(crate) runtime_bytes: usize,
     pub(crate) outbound: Option<resources::ControlSamplerOutbound<'a>>,
 }
@@ -50,6 +54,22 @@ pub(crate) struct RecoverySourceStage<'a> {
     pub(crate) additional_frames: u64,
 }
 impl Admission<'_> {
+    pub(crate) fn registered_views(&self) -> Vec<resources::DeviceResourceAdmission<'_>> {
+        self.registered
+            .iter()
+            .copied()
+            .chain(self.export_resources)
+            .chain(
+                self.preview
+                    .map(super::resident_preview::Preview::admission),
+            )
+            .chain(
+                self.seeks
+                    .into_iter()
+                    .flat_map(super::resident_seek::Lane::views),
+            )
+            .collect()
+    }
     pub(crate) fn check_recovery_sources(
         &self,
         current: &Session,
@@ -83,7 +103,8 @@ impl Admission<'_> {
             .ok()
             .and_then(|n| n.checked_mul(std::mem::size_of::<hex_engine::Frame>()))
             .ok_or(SessionError::Invalid("recovery source allowance overflow"))?;
-        let phase = ControlSamplerPhase {
+        let phase = DeviceResourcePhase {
+            registered: &self.registered_views(),
             stores: &stores,
             selections: &selections,
             outbound: &outbound,
@@ -96,7 +117,7 @@ impl Admission<'_> {
         };
         let inventory = match source.staged {
             Some(stage) => stage.inspect(&phase, &phase, limits.storage),
-            None => resources::inspect_control_sampler_union(&phase, &phase, limits.storage),
+            None => resources::inspect_device_resource_union(&phase, &phase, limits.storage),
         }?;
         for frames in [inventory.retained_frames, inventory.construction_frames] {
             if frames
@@ -125,7 +146,7 @@ impl Admission<'_> {
         &self,
         session: &Session,
         staged: &[PreparedImport],
-    ) -> Result<Option<ControlSamplerInventory>, SessionError> {
+    ) -> Result<Option<DeviceResourceInventory>, SessionError> {
         let legacy = session
             .media
             .values()
@@ -147,7 +168,7 @@ impl Admission<'_> {
         limits: Option<crate::ResidentNativeReservation>,
         max_frames: u64,
         candidate: Option<ControlSamplerSelection<'_>>,
-    ) -> Result<Option<ControlSamplerInventory>, SessionError> {
+    ) -> Result<Option<DeviceResourceInventory>, SessionError> {
         self.check_native_originals(
             NativeSamplerSources::Committed(native),
             legacy,
@@ -163,7 +184,25 @@ impl Admission<'_> {
         limits: Option<crate::ResidentNativeReservation>,
         max_frames: u64,
         candidate: Option<ControlSamplerSelection<'_>>,
-    ) -> Result<Option<ControlSamplerInventory>, SessionError> {
+    ) -> Result<Option<DeviceResourceInventory>, SessionError> {
+        self.check_native_originals_registered(
+            originals,
+            legacy,
+            limits,
+            max_frames,
+            candidate,
+            &[],
+        )
+    }
+    pub(in crate::service) fn check_native_originals_registered(
+        &self,
+        originals: NativeSamplerSources<'_>,
+        legacy: &[&hex_engine::Audio],
+        limits: Option<crate::ResidentNativeReservation>,
+        max_frames: u64,
+        candidate: Option<ControlSamplerSelection<'_>>,
+        registered: &[resources::DeviceResourceAdmission<'_>],
+    ) -> Result<Option<DeviceResourceInventory>, SessionError> {
         let Some(limits) = limits else {
             return Ok(None);
         };
@@ -174,7 +213,13 @@ impl Admission<'_> {
             .chain(candidate)
             .collect::<Vec<_>>();
         let outbound = self.outbound.into_iter().collect::<Vec<_>>();
-        let phase = ControlSamplerPhase {
+        let selected = self
+            .registered_views()
+            .into_iter()
+            .chain(registered.iter().copied())
+            .collect::<Vec<_>>();
+        let phase = DeviceResourcePhase {
+            registered: &selected,
             stores: &[],
             selections: &selections,
             outbound: &outbound,
@@ -203,7 +248,7 @@ impl Admission<'_> {
         candidate: ControlSamplerSelection<'_>,
         compiler_bytes: usize,
         stage: Option<&StagedNativeAssetView<'_>>,
-    ) -> Result<ControlSamplerInventory, SessionError> {
+    ) -> Result<DeviceResourceInventory, SessionError> {
         let reservation =
             future
                 .native_reservation
@@ -232,7 +277,8 @@ impl Admission<'_> {
             .chain(legacy(old))
             .collect::<Vec<_>>();
         let outbound = self.outbound.into_iter().collect::<Vec<_>>();
-        let kept = ControlSamplerPhase {
+        let kept = DeviceResourcePhase {
+            registered: &self.registered_views(),
             stores: &kept_stores,
             selections: &kept_selections,
             outbound: &outbound,
@@ -243,7 +289,8 @@ impl Admission<'_> {
                 .ok_or(SessionError::Invalid("native reservation overflow"))?,
             construction_bytes: 0,
         };
-        let peak = ControlSamplerPhase {
+        let peak = DeviceResourcePhase {
+            registered: &self.registered_views(),
             stores: &peak_stores,
             selections: &peak_selections,
             outbound: &outbound,
@@ -256,7 +303,7 @@ impl Admission<'_> {
         };
         let inventory = match stage {
             Some(stage) => stage.inspect(&kept, &peak, reservation.storage),
-            None => resources::inspect_control_sampler_union(&kept, &peak, reservation.storage),
+            None => resources::inspect_device_resource_union(&kept, &peak, reservation.storage),
         }
         .map_err(SessionError::from)?;
         if inventory
@@ -477,7 +524,8 @@ impl Session {
                     let construction = retained.iter().copied().chain(current).collect::<Vec<_>>();
                     let stores = [native];
                     let outbound = admission.outbound.into_iter().collect::<Vec<_>>();
-                    let kept = ControlSamplerPhase {
+                    let kept = DeviceResourcePhase {
+                        registered: &admission.registered_views(),
                         stores: &stores,
                         selections: &retained,
                         outbound: &outbound,
@@ -488,7 +536,8 @@ impl Session {
                             .ok_or(SessionError::Invalid("native reservation overflow"))?,
                         construction_bytes: 0,
                     };
-                    let peak = ControlSamplerPhase {
+                    let peak = DeviceResourcePhase {
+                        registered: &admission.registered_views(),
                         stores: &stores,
                         selections: &construction,
                         outbound: &outbound,
@@ -500,7 +549,7 @@ impl Session {
                         construction_bytes: extra,
                     };
                     let inventory =
-                        resources::inspect_control_sampler_union(&kept, &peak, limits.storage)?;
+                        resources::inspect_device_resource_union(&kept, &peak, limits.storage)?;
                     if inventory
                         .retained_frames
                         .checked_add(admission.native.frames)
@@ -748,7 +797,8 @@ impl Session {
                         .chain(admission.current)
                         .collect::<Vec<_>>();
                     let outbound = admission.outbound.into_iter().collect::<Vec<_>>();
-                    let retained = ControlSamplerPhase {
+                    let retained = DeviceResourcePhase {
+                        registered: &admission.registered_views(),
                         stores: &[],
                         selections: &kept,
                         outbound: &outbound,
@@ -759,7 +809,8 @@ impl Session {
                             .ok_or(SessionError::Invalid("native reservation overflow"))?,
                         construction_bytes: 0,
                     };
-                    let construction = ControlSamplerPhase {
+                    let construction = DeviceResourcePhase {
+                        registered: &admission.registered_views(),
                         stores: &[],
                         selections: &peak,
                         outbound: &outbound,
@@ -838,6 +889,7 @@ impl Session {
                 }
                 Ok(ServiceExportSnapshot { prepared, sources })
             },
+            |_, _, _| Ok(()),
         )
     }
 }
@@ -889,7 +941,7 @@ impl Admission<'_> {
         &self,
         session: &Session,
         decoded: Option<&hex_engine::Audio>,
-    ) -> Result<ControlSamplerInventory, SessionError> {
+    ) -> Result<DeviceResourceInventory, SessionError> {
         let legacy = session
             .media
             .values()

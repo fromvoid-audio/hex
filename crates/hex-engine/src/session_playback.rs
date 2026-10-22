@@ -840,6 +840,18 @@ impl SessionPlayback {
         }
         Ok(())
     }
+    pub(crate) fn live_expression_supported_on_control(&self, track: TrackId) -> bool {
+        self.revision
+            .arrangement()
+            .tracks()
+            .iter()
+            .position(|candidate| candidate.canonical_track_id() == Some(track))
+            .and_then(|index| self.mutable_instruments.get(index))
+            .and_then(Option::as_ref)
+            .is_some_and(
+                crate::mutable_instrument::MutableInstrumentTrackRuntime::supports_live_expression,
+            )
+    }
     pub fn new(revision: Arc<PreparedRevision>) -> Result<Self, SessionPlaybackError> {
         Self::new_with_policy(revision, false, None)
     }
@@ -1040,12 +1052,25 @@ impl SessionPlayback {
     /// Prepare the shared renderer for finite, linear Arrangement export.
     /// Session route actions are refused, Session-only tempo/loop inventory
     /// does not affect this owner, and the authored Arrangement tempo map is
-    /// used without transport-loop wrapping. Mutable Arrangement source loops
+    /// used without transport-loop wrapping. Mutable Arrangement MIDI source loops
     /// and seek destinations that require note chase remain unsupported.
     pub fn new_linear_arrangement_export(
         revision: Arc<PreparedRevision>,
     ) -> Result<Self, SessionPlaybackError> {
         Self::new_with_policy(revision, true, None)
+    }
+
+    /// Construct finite linear Arrangement export with the exact set used by the ordinary
+    /// registered compiler. Each mutable runtime owns its scoped lease; no live monitor inputs
+    /// are attached. The caller separately admits/pins source/configuration/factory custody.
+    /// Runtime construction and actual retained runtime bytes share the existing export ceiling.
+    /// This is a thin entry: the owning constructor performs both checks around its single
+    /// construction, avoiding additional large debug Result temporaries for synchronous callers.
+    pub fn new_linear_arrangement_export_with_device_resources(
+        revision: Arc<PreparedRevision>,
+        resources: &crate::native_device_resources::PreparedDeviceResources,
+    ) -> Result<Self, SessionPlaybackError> {
+        Self::new_with_policy(revision, true, Some(resources))
     }
 
     /// Private-control export capability: the graph contains only scalar sampler
@@ -1128,6 +1153,13 @@ impl SessionPlayback {
                 "device resource set differs from prepared revision",
             ));
         }
+        // Ordinary linear construction reserves before allocation, then checks the actual
+        // assembled runtime below. Other existing constructor policies retain their budgets.
+        let linear_resource_allowance = if linear_arrangement_export && resources.is_some() {
+            Some(Self::linear_export_runtime_allowance(&revision)?)
+        } else {
+            None
+        };
         let arrangement_tracks = revision.arrangement().tracks();
         let session_tracks = revision.session().tracks();
         if arrangement_tracks.len() != session_tracks.len()
@@ -1375,10 +1407,52 @@ impl SessionPlayback {
             .map(|graph| crate::signal_graph::SignalRuntime::new(Arc::clone(graph)))
             .transpose()
             .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
+        let analytic_import = analytic_import::ImportPlan::new()?;
+        let current_sampler_keyboards = Vec::new();
+        let current_route_cut_scratch = Vec::new();
+        if let Some(allowance) = linear_resource_allowance {
+            let actual = preroll::RuntimeStorage {
+                live_expression: false,
+                computer_keyboard: None,
+                compensation: compensation.as_ref(),
+                main_chain: &main_chain,
+                current_sampler_keyboards: &current_sampler_keyboards,
+                revision: &revision,
+                analytic_import: &analytic_import,
+                device_chains: &device_chains,
+                return_chains: &return_chains,
+                return_effect_tails: &return_effect_tails,
+                mutable_instruments: &mutable_instruments,
+                tail_groups: &tail_groups,
+                tail_mutable_instruments: &tail_mutable_instruments,
+                routes: routes.capacity(),
+                route_scratch: route_scratch.capacity(),
+                current_route_cut_scratch: current_route_cut_scratch.capacity(),
+                return_scratch: return_scratch.capacity(),
+                mutable_events: mutable_events.capacity(),
+                tail_mixes: tail_mixes.capacity(),
+                tail_suffix_starts: tail_suffix_starts.capacity(),
+                tail_suffix_matrices: tail_suffix_matrices.capacity(),
+                releases: releases.capacity(),
+                release_scratch: release_scratch.capacity(),
+                retained_contexts: retained_contexts.capacity(),
+                context_lease_plan: context_lease_plan.capacity(),
+                analytic_continuations: analytic_continuations.capacity(),
+                analytic_continuation_scratch: analytic_continuation_scratch.capacity(),
+                suppressions: suppressions.capacity(),
+                suppression_scratch: suppression_scratch.capacity(),
+            }
+            .bytes();
+            if actual.is_none_or(|bytes| bytes > allowance) {
+                return Err(SessionPlaybackError::MutableInstrumentDiagnostic(
+                    "device resource export runtime exceeds its checked allowance",
+                ));
+            }
+        }
         Ok(Self {
             live_expression: None,
             computer_keyboard: None,
-            current_sampler_keyboards: Vec::new(),
+            current_sampler_keyboards,
             current_sampler_keyboard_epoch: 0,
             current_sampler_keyboard_revoked: 0,
             capture_runtime: capture::next_runtime()?,
@@ -1401,7 +1475,7 @@ impl SessionPlayback {
             mutable_instruments,
             mutable_onsets: MutableOnsetBuffer::default(),
             mutable_events,
-            current_route_cut_scratch: Vec::new(),
+            current_route_cut_scratch,
             tail_groups,
             tail_track_ids: [None; SESSION_TAIL_GROUP_CAPACITY],
             tail_mutable_instruments,
@@ -1422,7 +1496,7 @@ impl SessionPlayback {
             suppressions,
             suppression_scratch,
             spans: MidiSpanBuffer::default(),
-            analytic_import: analytic_import::ImportPlan::new()?,
+            analytic_import,
             performance_frame: 0,
             arrangement_frame: 0,
             arrangement_loop_pass: 0,

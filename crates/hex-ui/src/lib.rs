@@ -119,7 +119,7 @@ pub fn sampler_keyboard_test_status(
     editor::sampler_keyboard_fixture_status(window, cx)
 }
 
-/// Read-only readiness for the next actual headless composition gesture.
+/// Read-only readiness for the next headless editing/playback gesture, including stopped restore.
 #[cfg(feature = "ui-test-support")]
 pub fn sampler_midi_test_ready(
     window: gpui::AnyWindowHandle,

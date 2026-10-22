@@ -35,20 +35,25 @@ pub struct CurrentSamplerKeyboardFrame {
 }
 const VOICES: usize = 64;
 const NOTES: usize = 128 * COMPUTER_KEY_VELOCITIES.len();
-const MAX_STORAGE: usize = 3 * 1024 * 1024;
+/// Existing selected-keyboard runtime ceiling, including its bounded mutable pair/context.
+/// Control consumers reserve this before attachment and still validate actual graph storage.
+pub const MAX_COMPUTER_KEYBOARD_STORAGE_BYTES: usize = 3 * 1024 * 1024;
 
-/// One immutable activation lease. Cancellation bypasses every worker/audio queue.
-/// Control is the sole desired-note writer; each physical key is independent.
-/// Native sampler inputs remain control-only and carry an output/epoch pair;
-/// UI lifecycle cancellation pairs `cancel` with the direct Client epoch revoke.
-/// Create a fresh lease for every activation. Cancellation is terminal, including
-/// after a successful graph replacement; held keys require release and a fresh press.
+mod activation;
+pub use activation::KeyboardActivationClock;
+
+/// One transient input root with terminal lifecycle cancellation. An ordinary output-bound
+/// root may reserve fresh scalar epochs after priority Stop; default/unbound inputs and the
+/// legacy native sampler activation retain terminal Stop semantics. Control is the sole
+/// desired-note writer; no source, runtime or admission authority lives here.
 #[derive(Debug)]
 pub struct ComputerKeyboardInput {
     cancelled: AtomicBool,
     notes: [AtomicU64; COMPUTER_KEY_COUNT],
     rejected: AtomicBool,
     native_activation: Option<(u64, u64)>,
+    output_activation: Option<activation::OutputActivation>,
+    sequence: AtomicU64,
 }
 impl Default for ComputerKeyboardInput {
     fn default() -> Self {
@@ -57,6 +62,8 @@ impl Default for ComputerKeyboardInput {
             notes: std::array::from_fn(|_| AtomicU64::new(0)),
             rejected: AtomicBool::new(false),
             native_activation: None,
+            output_activation: None,
+            sequence: AtomicU64::new(0),
         }
     }
 }
@@ -104,7 +111,10 @@ impl ComputerKeyboardInput {
             }
             Some(_) => return Err(Invalid("computer keyboard note is out of range")),
         };
-        slot.store(word, Release);
+        let after = self.begin_write()?;
+        slot.store(word, std::sync::atomic::Ordering::SeqCst);
+        self.sequence
+            .store(after, std::sync::atomic::Ordering::SeqCst);
         Ok(())
     }
 }
@@ -190,6 +200,11 @@ mod current_sampler;
 
 /// Native CURRENT has no UI input owner. Its copied desired words arrive only
 /// through the already-rooted output mailbox; ordinary playback keeps its lease.
+enum NoteSnapshot {
+    Active(u64, [u64; COMPUTER_KEY_COUNT]),
+    Inactive,
+    Deferred(u64),
+}
 enum KeyboardInput {
     Lease(Arc<ComputerKeyboardInput>),
     Current {
@@ -229,10 +244,18 @@ impl KeyboardInput {
             Self::Current { rejected, .. } => *rejected = true,
         }
     }
-    fn word(&self, index: usize) -> u64 {
+    fn snapshot(&self) -> NoteSnapshot {
         match self {
-            Self::Lease(input) => input.notes[index].load(Acquire),
-            Self::Current { words, .. } => words[index],
+            Self::Lease(input) => input.note_snapshot(),
+            Self::Current {
+                words, cancelled, ..
+            } => {
+                if *cancelled {
+                    NoteSnapshot::Inactive
+                } else {
+                    NoteSnapshot::Active(0, *words)
+                }
+            }
         }
     }
 }
@@ -255,6 +278,7 @@ pub(crate) struct ComputerKeyboardRuntime {
     primary: [Option<Voice>; VOICES],
     scratch: [Option<Voice>; VOICES],
     desired: [u64; COMPUTER_KEY_COUNT],
+    activation_epoch: Option<u64>,
     next_id: u64,
     scratch_next_id: u64,
     age: u64,
@@ -486,6 +510,7 @@ impl ComputerKeyboardRuntime {
             primary: [None; VOICES],
             scratch: [None; VOICES],
             desired: [0; COMPUTER_KEY_COUNT],
+            activation_epoch: None,
             next_id: 0,
             scratch_next_id: 0,
             age: 0,
@@ -499,7 +524,7 @@ impl ComputerKeyboardRuntime {
         };
         if result
             .storage_bytes()
-            .is_none_or(|bytes| bytes > MAX_STORAGE)
+            .is_none_or(|bytes| bytes > MAX_COMPUTER_KEYBOARD_STORAGE_BYTES)
         {
             return Err(Invalid("computer keyboard storage exceeds its budget"));
         }
@@ -589,11 +614,11 @@ impl ComputerKeyboardRuntime {
                     .as_ref()
                     .map_or(0, |proof| proof.declared_fixed_storage_bytes()),
             )?
-            .checked_add(if self.input.lease().is_some() {
-                std::mem::size_of::<ComputerKeyboardInput>() + 2 * std::mem::size_of::<usize>()
-            } else {
-                0
-            })?
+            .checked_add(
+                self.input
+                    .lease()
+                    .map_or(0, |input| input.control_storage_bytes()),
+            )?
             .checked_add(
                 self.samplers
                     .capacity()
@@ -659,6 +684,23 @@ impl ComputerKeyboardRuntime {
     }
     pub(crate) fn requests_preservation_from(&self, previous: &Self) -> bool {
         self.preserves_input_identity(previous) && !self.input.is_cancelled()
+    }
+    // Input custody is distinct from voice history. A freshly constructed ordinary monitor
+    // may read the same physical keys against a different source; its old voices never move.
+    pub(crate) fn can_rebind_input_from(&self, previous: &Self) -> bool {
+        self.track == previous.track
+            && self.input.same_lease(&previous.input)
+            && !self.input.is_cancelled()
+            && !self.lease_detached
+            && !self.faulted
+            && self.age == 0
+            && self.primary.iter().all(Option::is_none)
+            && self.scratch.iter().all(Option::is_none)
+            && !previous.lease_detached
+            && !previous.faulted
+    }
+    pub(crate) fn detach_rebound_input(&mut self) {
+        self.lease_detached = true;
     }
     fn continued_voices(&self, previous: &Self) -> Result<[Option<Voice>; VOICES], Invalid> {
         let mut voices = previous.primary;
@@ -811,6 +853,7 @@ impl ComputerKeyboardRuntime {
         self.primary = voices;
         self.scratch = voices;
         self.desired = previous.desired;
+        self.activation_epoch = previous.activation_epoch;
         self.next_id = previous.next_id;
         self.scratch_next_id = previous.next_id;
         self.age = previous.age;
@@ -856,24 +899,59 @@ impl ComputerKeyboardRuntime {
             runtime.reset();
         }
     }
+    fn reset_voices(&mut self) {
+        self.primary.fill(None);
+        self.scratch.fill(None);
+        self.desired.fill(0);
+        self.next_id = 0;
+        self.scratch_next_id = 0;
+        self.age = 0;
+        self.scratch_age = 0;
+        self.monitor_anchor = None;
+        self.scratch_monitor_anchor = None;
+        if let Some(runtime) = &mut self.mutable {
+            runtime.reset();
+        }
+    }
+    /// Callback priority Stop retains only an ordinary output-bound root. Its output clock
+    /// already revoked the old prefix on control; never revoke newer physical input here.
+    pub(crate) fn priority_stop(&mut self, clock: &KeyboardActivationClock) {
+        if !self.lease_detached && self.input.lease().is_some_and(|i| i.bound_to_clock(clock)) {
+            self.reset_voices();
+            self.activation_epoch = None;
+        } else {
+            self.cancel();
+        }
+    }
     pub(crate) fn begin_block(&mut self) {
-        if self.lease_detached || self.input.is_cancelled() || self.faulted {
-            self.primary.fill(None);
-            if let Some(runtime) = &mut self.mutable {
-                runtime.reset();
+        let snapshot = if self.lease_detached || self.faulted {
+            NoteSnapshot::Inactive
+        } else {
+            self.input.snapshot()
+        };
+        match snapshot {
+            NoteSnapshot::Active(epoch, words) => {
+                if self.activation_epoch != Some(epoch) {
+                    self.reset_voices();
+                }
+                self.activation_epoch = Some(epoch);
+                self.desired = words;
+            }
+            NoteSnapshot::Inactive => {
+                self.reset_voices();
+                self.activation_epoch = None;
+            }
+            NoteSnapshot::Deferred(epoch) => {
+                if self.activation_epoch != Some(epoch) {
+                    self.reset_voices();
+                    self.activation_epoch = None;
+                }
             }
         }
         self.scratch = self.primary;
         self.scratch_next_id = self.next_id;
         self.scratch_age = self.age;
         self.scratch_monitor_anchor = self.monitor_anchor;
-        self.desired = std::array::from_fn(|index| {
-            if self.lease_detached || self.input.is_cancelled() || self.faulted {
-                0
-            } else {
-                self.input.word(index)
-            }
-        });
         self.boundary = true;
         if let Some(runtime) = &mut self.mutable {
             runtime.begin_block();
@@ -1333,6 +1411,100 @@ mod tests {
         assert_eq!(silent, [[0.0; 2]; 256]);
         assert_eq!(new.position(), 0);
     }
+    #[test]
+    fn output_keyboard_priority_stop_revokes_old_prefix_and_preserves_new_physical_epoch() {
+        let (project, track) = fixture();
+        let clock = Arc::new(KeyboardActivationClock::default());
+        let input =
+            Arc::new(ComputerKeyboardInput::with_output_activation(Arc::clone(&clock)).unwrap());
+        input.set_key(0, Some((60, 100, 1))).unwrap();
+        let mut actual = playback(&project, track, &input);
+        let mut output = [[0.0; 2]; 64];
+        actual.render(&mut output).unwrap();
+        assert!(output.iter().flatten().any(|sample| sample.abs() > 1e-6));
+        clock.revoke_reserved_prefix();
+        actual.apply_priority_stop(&clock);
+        actual.render(&mut output).unwrap();
+        assert_eq!(output, [[0.0; 2]; 64]);
+        assert!(!input.is_cancelled());
+
+        // Reserve after Stop on control, then consume that older Stop on the callback.
+        input.reactivate_on_control().unwrap();
+        input.set_key(0, Some((60, 100, 2))).unwrap();
+        actual.apply_priority_stop(&clock);
+        actual.render(&mut output).unwrap();
+        let oracle_input = Arc::new(ComputerKeyboardInput::default());
+        oracle_input.set_key(0, Some((60, 100, 2))).unwrap();
+        let mut oracle = playback(&project, track, &oracle_input);
+        let mut expected = [[0.0; 2]; 64];
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(
+            output, expected,
+            "fresh epoch must begin at its first sample"
+        );
+
+        clock.revoke_reserved_prefix();
+        input.reactivate_on_control().unwrap();
+        input.set_key(0, Some((64, 100, 3))).unwrap();
+        clock.revoke_reserved_prefix();
+        actual.apply_priority_stop(&clock);
+        actual.render(&mut output).unwrap();
+        assert_eq!(
+            output, [[0.0; 2]; 64],
+            "repeated Stop revokes all preceding epochs"
+        );
+        input.reactivate_on_control().unwrap();
+        actual.apply(PlaybackCommand::Stop);
+        assert!(
+            input.is_cancelled(),
+            "direct engine Stop remains terminal even for a bound root"
+        );
+        assert!(input.reactivate_on_control().is_err());
+    }
+
+    #[test]
+    fn output_keyboard_deferred_note_write_preserves_phase_but_new_epoch_cannot_reuse_old_words() {
+        let (project, track) = fixture();
+        let clock = Arc::new(KeyboardActivationClock::default());
+        let input =
+            Arc::new(ComputerKeyboardInput::with_output_activation(Arc::clone(&clock)).unwrap());
+        let oracle_input = Arc::new(ComputerKeyboardInput::default());
+        for input in [&input, &oracle_input] {
+            input.set_key(0, Some((60, 100, 1))).unwrap();
+        }
+        let mut actual = playback(&project, track, &input);
+        let mut oracle = playback(&project, track, &oracle_input);
+        let mut output = [[0.0; 2]; 67];
+        let mut expected = output;
+        actual.render(&mut output).unwrap();
+        oracle.render(&mut expected).unwrap();
+        let after = input.begin_write().unwrap(); // deterministic paused sole control writer
+        actual.render(&mut output).unwrap();
+        oracle.render(&mut expected).unwrap();
+        assert_eq!(
+            output, expected,
+            "deferred note write must not restart a held voice"
+        );
+        input
+            .sequence
+            .store(after, std::sync::atomic::Ordering::SeqCst);
+        clock.revoke_reserved_prefix();
+        input.reactivate_on_control().unwrap();
+        let after = input.begin_write().unwrap();
+        actual.render(&mut output).unwrap();
+        assert_eq!(
+            output, [[0.0; 2]; 67],
+            "incomplete new activation cannot reuse old desired words"
+        );
+        input
+            .sequence
+            .store(after, std::sync::atomic::Ordering::SeqCst);
+        input.cancel();
+        assert!(input.reactivate_on_control().is_err());
+        actual.render(&mut output).unwrap();
+        assert_eq!(output, [[0.0; 2]; 67]);
+    }
+
     #[test]
     fn computer_keyboard_voice_pressure_cancels_only_live_pool_and_does_not_stick() {
         let (project, track) = fixture();

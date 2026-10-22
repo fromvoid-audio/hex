@@ -218,6 +218,7 @@ impl RevisionAssembly {
             session,
             midi_preview,
             mutable_track_revisions,
+            authored_midi_sources,
             gain_recording_track,
         }) = revision
         {
@@ -232,6 +233,7 @@ impl RevisionAssembly {
                 || self.preview_value.is_some()
                 || gain_recording_track.is_some()
                 || mutable_track_revisions.capacity() != 0
+                || authored_midi_sources.capacity() != 0
                 || self.mutable_descriptors.capacity() != 0
             {
                 return Err(Error::UnknownStorage);
@@ -380,6 +382,7 @@ impl RevisionAssembly {
                     session,
                     midi_preview,
                     mutable_track_revisions: Vec::new(),
+                    authored_midi_sources: Vec::new(),
                     gain_recording_track: None,
                 });
             }
@@ -438,6 +441,7 @@ impl RevisionAssembly {
             session,
             midi_preview,
             mutable_track_revisions,
+            authored_midi_sources: _,
             gain_recording_track: _,
         }) = self.revision_value.take()
         {
@@ -558,9 +562,14 @@ impl RevisionAssembly {
                 session,
                 midi_preview,
                 mutable_track_revisions,
+                authored_midi_sources,
                 gain_recording_track: _,
             } = revision;
             l.vec(mutable_track_revisions)?;
+            // This constructor class never admits ordinary authored-evidence children.
+            if authored_midi_sources.capacity() != 0 {
+                return Err(Error::UnknownStorage);
+            }
             l.shared(
                 arrangement.arc(),
                 arrangement.parts(),

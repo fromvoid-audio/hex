@@ -245,6 +245,8 @@ struct PendingEditorPublicationObservation {
 
 #[derive(Clone)]
 struct PlaybackCandidate {
+    worker_requires_preroll: Option<bool>,
+    observation: Option<Arc<hex_engine::PreparedPlaybackObservation>>,
     audio_revision: u64,
     project_generation: u64,
     state: Arc<ViewState>,
@@ -673,9 +675,13 @@ pub(super) struct EditorView {
     viewport: Option<Viewport>,
     playback_candidates: VecDeque<PlaybackCandidate>,
     audible_playback: Option<PlaybackCandidate>,
+    // One existing read-only view per transient protocol, never a prepared graph/resource set.
+    resident_device_preview: Option<hex_session::service::DevicePreview>,
+    resident_tuning_preview: Option<hex_session::service::TuningPreview>,
     audio_admission: AudioAdmissionStatus,
     session_routes: session_route_view::RouteView,
     prepared_seek: Option<arrangement_seek::PendingSeek>,
+    seek_request_serial: u64,
     latched_seek_intent: Option<arrangement_seek::SeekIntent>,
     retired_seek_result: Option<hex_session::arrangement_seek::ArrangementSeekResult>,
     applied_project_revision: Option<u64>,
@@ -1251,9 +1257,12 @@ impl EditorView {
             viewport: None,
             playback_candidates: VecDeque::new(),
             audible_playback: None,
+            resident_device_preview: None,
+            resident_tuning_preview: None,
             audio_admission: AudioAdmissionStatus::default(),
             session_routes: session_route_view::RouteView::default(),
             prepared_seek: None,
+            seek_request_serial: 0,
             latched_seek_intent: None,
             retired_seek_result: None,
             applied_project_revision: None,
@@ -1701,11 +1710,11 @@ pub(crate) fn sampler_keyboard_fixture_status(
 ) -> Result<String, String> {
     window.read(cx, |view: gpui::Entity<EditorView>, cx| {
         let view = view.read(cx);
-        format!("enabled={} suspended={} ready={} target={:?} request={} input={:?} cancelled={} desired={:?} current={} edit_pending={} error={:?} clip={:?} draw={} stroke={} note_count={:?} selected_notes={} worker_pending={}",
+        format!("enabled={} suspended={} target={:?} request={} input={} cancelled={} desired={:?} current={} edit_pending={} error={:?} clip={:?} draw={} stroke={} note_count={:?} selected_notes={} worker_pending={}",
             view.computer_keyboard.enabled, view.computer_keyboard.suspended,
-            view.computer_keyboard.native_ready, view.computer_keyboard.target,
+            view.computer_keyboard.target,
             view.computer_keyboard.request_id,
-            view.computer_keyboard.input.as_ref().and_then(|i| i.native_sampler_activation()),
+            view.computer_keyboard.input.is_some(),
             view.computer_keyboard.input.as_ref().is_some_and(|i| i.is_cancelled()),
             view.computer_keyboard.desired_notes(), view.first_sampler_current(), view.edit_pending(), view.error, view.selected_clip,view.midi_draw_mode,view.midi_stroke.is_some(),view.selected_clip.and_then(|id|view.state.as_ref()?.project.midi_source(id).map(|s|s.notes().len())),view.midi_selection.len(),view.worker_requests_pending)
     }).map_err(|e| e.to_string())
@@ -1719,7 +1728,9 @@ pub(crate) fn sampler_midi_fixture_ready(
     window
         .read(cx, |view: gpui::Entity<EditorView>, cx| {
             let view = view.read(cx);
-            view.first_sampler_current() && !view.edit_pending()
+            view.first_sampler_current()
+                && !view.edit_pending()
+                && view.stopped_playback_restore.is_none()
         })
         .map_err(|e| e.to_string())
 }

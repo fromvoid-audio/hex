@@ -144,7 +144,7 @@ pub(super) fn exercise_blocked_sampler_keyboard(
     // not yet published activation. The UI already knows this reserved epoch.
     let (entered_tx, entered) = mpsc::sync_channel(1);
     let (release, wait) = mpsc::sync_channel(1);
-    h.observation.lock().unwrap().pause_keyboard_activation = Some((entered_tx, wait));
+    h.observation.lock().unwrap().pause_resident_publication = Some((entered_tx, wait));
     let toggle = visual.debug_bounds("computer midi keyboard").unwrap();
     visual.simulate_click(toggle.center(), gpui::Modifiers::default());
     // Focus-loss leaves the toggle enabled; first turn it off, then on.
@@ -238,18 +238,54 @@ pub(super) fn exercise_blocked_sampler_keyboard(
         render(h, true).iter().all(|f| *f == [0.0; 2]),
         "old held autorepeat restarted a stopped voice"
     );
-    // A fresh press after Stop must survive even when worker activation wins
-    // before the callback consumes that Stop. Stop revokes its prior prefix,
-    // not an activation that was reserved later by a new physical press.
+    // Start a genuine new ordinary activation while leaving its graph queued. Stop must
+    // revoke its old physical epoch without discarding the already admitted input root.
+    visual.simulate_click(toggle.center(), gpui::Modifiers::default());
+    visual.simulate_click(toggle.center(), gpui::Modifiers::default());
     key(visual, "a", false);
     key(visual, "a", true);
-    for _ in 0..16 {
+    loop {
         cx.background_executor
             .advance_clock(Duration::from_millis(16));
         visual.run_until_parked();
+        let applied = h
+            .backend
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rendered_current(h)
+            .unwrap();
+        let submitted = h
+            .observation
+            .lock()
+            .unwrap()
+            .resident_submitted
+            .last()
+            .copied()
+            .unwrap();
+        if submitted.output_identity == applied.output_identity
+            && submitted.context == applied.context
+            && submitted.audio_revision > applied.audio_revision
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < end,
+            "actual ordinary keyboard activation was not queued"
+        );
         std::thread::sleep(Duration::from_millis(1));
     }
     visual.simulate_keystrokes("escape");
+    // The previous activation graph is still queued: held autorepeat after this Stop must
+    // leave its revoked root available for the next fresh physical epoch, without a callback.
+    visual.simulate_event(gpui::KeyDownEvent {
+        keystroke: gpui::Keystroke::parse("a").unwrap(),
+        is_held: true,
+    });
+    visual.run_until_parked();
     key(visual, "a", false);
     key(visual, "a", true);
     for _ in 0..16 {
@@ -289,16 +325,11 @@ pub(super) fn exercise_blocked_sampler_keyboard(
             .advance_clock(Duration::from_millis(16));
         visual.run_until_parked();
         let output = render(h, true);
-        let rejected = h
-            .backend
-            .lock()
+        let rejected = cx
+            .update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
             .unwrap()
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .sampler_keyboard_rejected_epoch();
-        if rejected != 0 {
+            .contains("computer keyboard note refused");
+        if rejected {
             assert!(output.iter().all(|f| *f == [0.0; 2]));
             break;
         }

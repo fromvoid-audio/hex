@@ -295,6 +295,12 @@ pub trait PreparedNativeInstrument: Send + Sync {
 /// registry from effects because they prepare authored notes rather than a
 /// stereo effect matrix.
 pub trait NativeInstrumentDefinition: NativeDeviceMetadata {
+    /// Pre-allocation bound for one inline-only resource factory/prepared module payload.
+    /// Default unknown; resource-aware hosts cross-check the actual factory's declaration after
+    /// compilation. This quote grants neither source custody nor heap/graph provenance.
+    fn resource_factory_inline_bound(&self) -> Option<usize> {
+        None
+    }
     /// Opt into immutable, host-retained resource inventories. The default
     /// refuses asset bindings before migration or provider execution.
     fn supports_asset_resources(&self) -> bool {

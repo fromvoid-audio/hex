@@ -353,3 +353,271 @@ fn impossible_resource_row_budget_refuses_before_allocating() {
         (0, 0, 0, 0)
     );
 }
+
+#[test]
+fn ordinary_sampler_keyboard_rebind_honors_mute_and_leaves_other_audio_playing() {
+    let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+    let mut sources = ResidentDeviceAssets::default();
+    let a = source(&mut editor, &mut sources, 0.25);
+    let Created::Track(track) = editor
+        .execute(Command::AddMidiTrack {
+            name: "sampler".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    editor
+        .execute(Command::InsertInstrument {
+            track,
+            state:
+                hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(
+                    1024, a, 0.05,
+                )
+                .unwrap(),
+        })
+        .unwrap();
+    let Created::Track(audio_track) = editor
+        .execute(Command::AddTrack {
+            name: "audio".into(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Asset(audio) = editor
+        .execute(Command::AddAsset {
+            path: "clip.wav".into(),
+            sample_rate: 8000,
+            frames: 1024,
+        })
+        .unwrap()
+    else {
+        panic!("asset")
+    };
+    editor
+        .execute(Command::PlaceClip {
+            track: audio_track,
+            asset: audio,
+            start: 0,
+            duration: 1024,
+            source_offset: 0,
+            source_length: 1024,
+            looping: false,
+        })
+        .unwrap();
+    let media = BTreeMap::from([(
+        audio,
+        hex_engine::Audio::new(8000, vec![[0.125; 2]; 1024]).unwrap(),
+    )]);
+    let keys = Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+    keys.set_key(0, Some((60, 127, 1))).unwrap();
+    let graph = |project: &Project, attach: bool| {
+        let cancel = AtomicBool::new(false);
+        let resources =
+            PreparedDeviceResources::prepare_on_control(&sources, project, 1_000_000, &cancel)
+                .unwrap();
+        let revision = Arc::new(
+            PreparedRevision::prepare_with_device_resources(
+                project,
+                &media,
+                Arc::new(SineTable::new()),
+                None,
+                &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                &resources,
+                100_000,
+                &cancel,
+            )
+            .unwrap(),
+        );
+        let mut playback =
+            Playback::try_from_prepared_with_device_resources(revision, &resources).unwrap();
+        if attach {
+            playback
+                .prepare_computer_keyboard(project, track, Arc::clone(&keys))
+                .unwrap();
+        }
+        playback
+    };
+    let (mut control, mut callback) = channel(8000).unwrap();
+    control
+        .configure_device_resource_publication_on_control(limits())
+        .unwrap();
+    control
+        .publish_with_policy_and_context_generation(
+            graph(editor.project(), true),
+            PublicationPolicy::InheritRuntime,
+            7,
+        )
+        .unwrap();
+    control.command(PlaybackCommand::Play).unwrap();
+    assert!(
+        block(&mut callback)
+            .iter()
+            .flatten()
+            .any(|sample| *sample > 0.125)
+    );
+    for muted in [true, false] {
+        editor.execute(Command::Mute { track, muted }).unwrap();
+        let revision = control
+            .publish_with_policy_and_context_generation(
+                graph(editor.project(), true),
+                PublicationPolicy::InheritRuntime,
+                7,
+            )
+            .unwrap();
+        let pcm = block(&mut callback);
+        assert!(!keys.is_cancelled());
+        assert_eq!(control.status.applied_revision.load(Acquire), revision);
+        let expected = if muted { 0.125 } else { 0.375 };
+        assert!(
+            pcm.iter()
+                .flatten()
+                .all(|sample| (*sample - expected).abs() < 1e-6),
+            "mute={muted}: {pcm:?}"
+        );
+        control.reclaim();
+    }
+    editor.execute(Command::RemoveInstrument { track }).unwrap();
+    control
+        .publish_with_policy_and_context_generation(
+            graph(editor.project(), false),
+            PublicationPolicy::InheritRuntime,
+            7,
+        )
+        .unwrap();
+    assert!(
+        block(&mut callback)
+            .iter()
+            .flatten()
+            .all(|sample| (*sample - 0.125).abs() < 1e-6)
+    );
+    assert!(keys.is_cancelled());
+    control.reclaim();
+    control.request_shutdown();
+    callback.begin_block();
+    control.reclaim();
+    assert_eq!(control.outstanding_device_resource_leases(), 0);
+}
+
+#[test]
+fn ordinary_mutable_enable_or_restored_note_suppresses_precut_and_dispatches_exact_or_future_onsets()
+ {
+    for restored_note in [false, true] {
+        for cut in [64, 128] {
+            let mut editor = Editor::new(Project::new(8000).unwrap(), 16).unwrap();
+            let mut sources = ResidentDeviceAssets::default();
+            let asset = source(&mut editor, &mut sources, 0.25);
+            let Created::Track(track) = editor
+                .execute(Command::AddMidiTrack {
+                    name: "sampler".into(),
+                })
+                .unwrap()
+            else {
+                panic!("track")
+            };
+            editor.execute(Command::InsertInstrument { track, state:
+            hex_engine::native_device_resources::current_sampler_fixture::classic_loop_state(1024, asset, 0.0).unwrap(),
+        }).unwrap();
+            let device = editor
+                .project()
+                .track(track)
+                .unwrap()
+                .instrument()
+                .unwrap()
+                .id();
+            let Created::Clip(clip) = editor
+                .execute(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: BeatTime::ONE,
+                })
+                .unwrap()
+            else {
+                panic!("clip")
+            };
+            let future = editor.project().tempo_map().frame_to_beat(128).unwrap();
+            assert_eq!(
+                editor.project().tempo_map().beat_to_frame(future).unwrap(),
+                128
+            );
+            for (start, duration) in [
+                (BeatTime::ZERO, BeatTime::ONE),
+                (future, BeatTime::from_raw(BeatTime::ONE.raw() / 4)),
+            ] {
+                editor
+                    .execute(Command::AddMidiNote {
+                        clip,
+                        start,
+                        duration,
+                        pitch: 60,
+                        channel: 0,
+                        velocity: 127,
+                    })
+                    .unwrap();
+            }
+            if restored_note {
+                let note = editor.project().track(track).unwrap().midi_clips()[0].notes()[0].id();
+                editor.execute(Command::RemoveMidiNote(note)).unwrap();
+            } else {
+                editor
+                    .execute(Command::SetDeviceBypass {
+                        device,
+                        bypassed: true,
+                    })
+                    .unwrap();
+            }
+            let disabled = compile(&editor, &sources);
+            let (mut control, mut callback) = channel(8000).unwrap();
+            control
+                .configure_device_resource_publication_on_control(limits())
+                .unwrap();
+            let old_revision = control
+                .publish_with_policy_and_context_generation(
+                    disabled,
+                    PublicationPolicy::InheritRuntime,
+                    9,
+                )
+                .unwrap();
+            control.command(PlaybackCommand::Play).unwrap();
+            for _ in 0..cut / 32 {
+                assert_eq!(block(&mut callback), [[0.0; 2]; 32]);
+            }
+            assert_eq!(control.status.position.load(Acquire), cut);
+            assert_eq!(control.status.applied_revision.load(Acquire), old_revision);
+            if restored_note {
+                assert!(editor.undo());
+            } else {
+                editor
+                    .execute(Command::SetDeviceBypass {
+                        device,
+                        bypassed: false,
+                    })
+                    .unwrap();
+            }
+            let enabled_revision = control
+                .publish_with_policy_and_context_generation(
+                    compile(&editor, &sources),
+                    PublicationPolicy::InheritRuntime,
+                    9,
+                )
+                .unwrap();
+            // block() measures begin/install/handoff/render together, including signed frees.
+            for start in (cut..192).step_by(32) {
+                let output = block(&mut callback);
+                assert_eq!(output, [[if start < 128 { 0.0 } else { 0.25 }; 2]; 32]);
+                assert_eq!(
+                    control.status.applied_revision.load(Acquire),
+                    enabled_revision
+                );
+            }
+            assert!(control.status.rejected_revision().is_none());
+            control.request_shutdown();
+            for _ in 0..3 {
+                block(&mut callback);
+                control.reclaim();
+            }
+            assert_eq!(control.outstanding_device_resource_leases(), 0);
+        }
+    }
+}

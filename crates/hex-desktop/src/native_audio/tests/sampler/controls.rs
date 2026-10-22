@@ -84,6 +84,7 @@ pub(super) fn exercise(
         drop(slot);
         std::thread::sleep(Duration::from_millis(1));
     };
+    let initial_submissions = h.observation.lock().unwrap().resident_submitted.len();
     let initial = h
         .backend
         .lock()
@@ -92,7 +93,8 @@ pub(super) fn exercise(
         .unwrap()
         .status()
         .unwrap()
-        .applied_audio_source();
+        .rendered_current(h)
+        .unwrap();
     for (selector, draft) in [
         (gain_selector as &str, "2.5"),
         (gain_selector, "nan"),
@@ -122,11 +124,14 @@ pub(super) fn exercise(
                 .unwrap()
                 .status()
                 .unwrap()
-                .applied_audio_source(),
-            initial,
+                .rendered_current(h),
+            Some(initial),
             "unconfirmed or invalid local numeric preview must not publish/edit"
         );
-        assert!(h.observation.lock().unwrap().gain_cells.is_empty());
+        assert_eq!(
+            h.observation.lock().unwrap().resident_submitted.len(),
+            initial_submissions
+        );
         visual.simulate_keystrokes("escape");
         visual.run_until_parked();
     }
@@ -191,7 +196,7 @@ pub(super) fn exercise(
             .unwrap()
             .status()
             .unwrap()
-            .applied_audio_source()
+            .rendered_current(h)
             .unwrap();
         let bounds = visual
             .debug_bounds(selector)
@@ -236,11 +241,12 @@ pub(super) fn exercise(
                 .unwrap()
                 .as_ref()
                 .and_then(|b| b.status())
-                .and_then(|s| s.applied_audio_source())
+                .and_then(|s| s.rendered_current(h))
                 .is_some_and(|s| {
                     s.context.project_generation == old.context.project_generation
                         && s.context.editor_revision == old.context.editor_revision + 1
-                        && s.output_identity != old.output_identity
+                        && s.output_identity == old.output_identity
+                        && s.audio_revision > old.audio_revision
                 })
             {
                 break;
@@ -333,7 +339,7 @@ pub(super) fn exercise(
                 .unwrap()
                 .status()
                 .unwrap()
-                .applied_audio_source()
+                .rendered_current(h)
                 .unwrap();
             visual.simulate_keystrokes("cmd-n");
             visual.run_until_parked();
@@ -358,7 +364,7 @@ pub(super) fn exercise(
                     .unwrap()
                     .as_ref()
                     .and_then(|b| b.status())
-                    .and_then(|s| s.applied_audio_source())
+                    .and_then(|s| s.rendered_current(h))
                     .is_some_and(|a| {
                         a.context.project_generation == before.context.project_generation + 2
                             && a.output_identity != before.output_identity
@@ -393,8 +399,8 @@ pub(super) fn exercise(
                 .unwrap()
                 .status()
                 .unwrap()
-                .applied_audio_source();
-            let cells = h.observation.lock().unwrap().gain_cells.len();
+                .rendered_current(h);
+            let submissions = h.observation.lock().unwrap().resident_submitted.len();
             let bounds = visual.debug_bounds(selector).unwrap();
             visual.simulate_mouse_down(bounds.center(), MouseButton::Left, Modifiers::default());
             visual.simulate_mouse_up(bounds.center(), MouseButton::Left, Modifiers::default());
@@ -426,12 +432,25 @@ pub(super) fn exercise(
                     .unwrap()
                     .status()
                     .unwrap()
-                    .applied_audio_source(),
+                    .rendered_current(h),
                 before
             );
-            assert_eq!(h.observation.lock().unwrap().gain_cells.len(), cells);
+            assert_eq!(
+                h.observation.lock().unwrap().resident_submitted.len(),
+                submissions
+            );
         }
         // Capture first key render without pumping away this short source.
+        let before_keyboard = h
+            .backend
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rendered_current(h)
+            .unwrap();
         let toggle = visual.debug_bounds("computer midi keyboard").unwrap();
         visual.simulate_click(toggle.center(), Modifiers::default());
         visual.simulate_keystrokes("v v");
@@ -439,36 +458,29 @@ pub(super) fn exercise(
             keystroke: gpui::Keystroke::parse("a").unwrap(),
             is_held: false,
         });
+        let mut output = [[0.0; 2]; 64];
         loop {
             cx.background_executor
                 .advance_clock(Duration::from_millis(16));
             visual.run_until_parked();
-            if cx
-                .update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
+            let mut slot = h.backend.lock().unwrap();
+            let backend = slot.as_mut().unwrap();
+            super::envelope::render(backend, &mut output);
+            if backend
+                .status()
                 .unwrap()
-                .contains("ready=true")
+                .rendered_current(h)
+                .is_some_and(|current| {
+                    current.output_identity == before_keyboard.output_identity
+                        && current.audio_revision > before_keyboard.audio_revision
+                })
             {
                 break;
             }
-            assert!(
-                Instant::now() < end,
-                "gain keyboard activation did not complete"
-            );
+            drop(slot);
+            assert!(Instant::now() < end, "actual keyboard graph did not apply");
             std::thread::sleep(Duration::from_millis(1));
         }
-        let mut output = [[0.0; 2]; 64];
-        let mut slot = h.backend.lock().unwrap();
-        let backend = slot.as_mut().unwrap();
-        let measured = allocation_counter::measure(|| backend.render(&mut output).unwrap());
-        assert_eq!(
-            (
-                measured.count_total,
-                measured.bytes_total,
-                measured.count_current,
-                measured.bytes_current
-            ),
-            (0, 0, 0, 0)
-        );
         // Independent literal source/interpolation oracles. A880 contributes
         // exactly x2 and 8k->16k contributes x0.5; authored pitch remains once.
         let expected: &[[f32; 2]] = if region_start == 2.0 {
@@ -525,7 +537,6 @@ pub(super) fn exercise(
                 );
             }
         }
-        drop(slot);
         visual.simulate_event(gpui::KeyUpEvent {
             keystroke: gpui::Keystroke::parse("a").unwrap(),
         });
@@ -588,16 +599,6 @@ pub(super) fn exercise(
         visual.simulate_keystrokes("escape");
         for _ in 0..4 {
             pulse(visual);
-        }
-        {
-            let observation = h.observation.lock().unwrap();
-            assert!(
-                observation
-                    .gain_cells
-                    .iter()
-                    .all(|(before, after)| before == after)
-            );
-            assert_eq!(observation.gain_cells.len(), index + 1);
         }
         let slot = h.backend.lock().unwrap();
         let status = slot.as_ref().unwrap().status().unwrap();

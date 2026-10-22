@@ -29,14 +29,14 @@ pub use resident::sampler_import_template_on_control;
 mod prepared;
 mod snapshot;
 pub use admission::{
-    ControlSamplerInventory, ControlSamplerOutbound, ControlSamplerPhase, ControlSamplerSelection,
-    inspect_control_sampler_union,
+    ControlSamplerOutbound, ControlSamplerSelection, DeviceResourceInventory, DeviceResourcePhase,
+    inspect_device_resource_union,
 };
 pub use ingress::ResidentAudioIngressRefusal;
-pub(crate) use prepared::CompilerDeviceResources;
+pub(crate) use prepared::{CompilerDeviceResources, inline_resource_factory_bytes};
 pub use prepared::{
-    DeviceResourcePublication, DeviceResourcePublishError, MAX_PLAYBACK_DEVICE_RESOURCE_LEASES,
-    PreparedDeviceResourceLease, PreparedDeviceResources,
+    DeviceResourceAdmission, DeviceResourcePublication, DeviceResourcePublishError,
+    MAX_PLAYBACK_DEVICE_RESOURCE_LEASES, PreparedDeviceResourceLease, PreparedDeviceResources,
 };
 pub use resident::{ResidentDeviceAssets, StagedNativeAssetView};
 pub use snapshot::{ControlSamplerSources, DispatchedSourceObligation};

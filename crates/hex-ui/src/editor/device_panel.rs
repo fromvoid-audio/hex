@@ -2016,7 +2016,7 @@ fn render_instrument(
         let readiness = if view.sampler_parameter_pending() {
             "preparing sampler edit · waiting for audio"
         } else if view.first_sampler_current() {
-            "computer keyboard · play from start · stop"
+            "audio ready"
         } else {
             "audio not ready · offline export supported"
         };
@@ -2075,9 +2075,13 @@ fn render_instrument(
             .flex_shrink_0()
             .debug_selector(|| "sampler-controls".into())
             .children(fields);
-        let details = div().flex_1().min_h_0().overflow_hidden().child(theme::text(format!(
-            "{name} · {readiness} · edits require stopped audio · * release inactive in trigger mode · replacement unavailable"
-        )));
+        let details = div()
+            .flex_1()
+            .min_h_0()
+            .overflow_hidden()
+            .child(theme::text(format!(
+                "{name} · {readiness} · * release inactive in trigger mode"
+            )));
         let overview = sampler_overview::render(view, device, &name);
         let body = crate::device_composition::body()
             .flex()
@@ -2096,10 +2100,16 @@ fn render_instrument(
                     .child(details),
             );
         device_frame(
-            theme::text("sampler"),
+            device_drag_title(
+                view,
+                cx,
+                device,
+                NativeDeviceClass::Instrument,
+                theme::text("sampler"),
+            ),
             theme::device_frame_style(selected),
-            div(),
-            div(),
+            leading,
+            header_actions,
             body,
         )
     } else {

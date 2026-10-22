@@ -6,6 +6,7 @@ use crate::native_callback_owner::{Guard, Terminal, reserve};
 
 pub struct Client {
     endpoints: Guard<ClientEndpoints>,
+    worker_owned_publication: bool,
 }
 pub struct WorkerControl {
     endpoint: Guard<PublicationControl>,
@@ -67,7 +68,10 @@ impl Control {
         });
         let (endpoint, publication) = reserve(publication);
         (
-            Client { endpoints },
+            Client {
+                endpoints,
+                worker_owned_publication: false,
+            },
             WorkerControl { endpoint },
             EndpointTerminals {
                 client,
@@ -87,6 +91,20 @@ impl WorkerControl {
     /// Worker-side access only. The UI receives Client, never this endpoint.
     pub fn control(&mut self) -> Option<&mut PublicationControl> {
         self.endpoint.owner_mut()
+    }
+    /// Borrow active ordinary resource obligations without projecting the output, source owners
+    /// or publication endpoint into a consumer. Used synchronously on its owning worker only.
+    pub fn device_resource_admission_on_control(
+        &self,
+    ) -> Option<hex_engine::native_device_resources::DeviceResourceAdmission<'_>> {
+        self.endpoint
+            .owner_ref()?
+            .device_resource_admission_on_control()
+    }
+    pub fn unreturned_resident_graphs_on_control(&self) -> Option<usize> {
+        self.endpoint
+            .owner_ref()?
+            .unreturned_resident_graphs_on_control()
     }
     pub fn close(&mut self) {
         if let Some(control) = self.endpoint.owner_mut() {
@@ -116,10 +134,16 @@ impl Client {
 
     pub(crate) fn activate(&mut self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
-            endpoints
+            self.worker_owned_publication = endpoints
                 .resident_forwarding
                 .expose_client_on_control(&endpoints.status);
         }
+    }
+    /// Immutable publication policy captured under the existing exposure lock. Every graph on
+    /// this output belongs to its control worker; transport and shared input clients remain
+    /// ordinary. Reading this snapshot never locks or grants graph/resource ownership.
+    pub fn worker_owns_graph_publication(&self) -> bool {
+        self.worker_owned_publication
     }
     pub(crate) fn guard(&self) -> &Guard<ClientEndpoints> {
         &self.endpoints
@@ -144,6 +168,31 @@ impl Client {
             endpoints.stop();
         }
         self.endpoints.close();
+    }
+    /// Exact scalar activation-clock correlation for retained UI input after output recovery.
+    pub fn computer_keyboard_input_matches_output(
+        &self,
+        input: &hex_engine::computer_keyboard::ComputerKeyboardInput,
+    ) -> bool {
+        self.endpoints
+            .owner_ref()
+            .is_some_and(|endpoints| input.bound_to_clock(&endpoints.status.keyboard_activation))
+    }
+    /// Control-only keyboard allocation. The returned input retains a scalar epoch clock,
+    /// never this client, Status, graph, resources or callback ownership.
+    pub fn new_computer_keyboard_input_on_control(
+        &self,
+    ) -> Result<hex_engine::computer_keyboard::ComputerKeyboardInput, hex_engine::Invalid> {
+        let endpoints = self
+            .endpoints
+            .owner_ref()
+            .ok_or(hex_engine::Invalid("audio output is closed"))?;
+        if endpoints.status.closing.load(Acquire) {
+            return Err(hex_engine::Invalid("audio output is closing"));
+        }
+        hex_engine::computer_keyboard::ComputerKeyboardInput::with_output_activation(Arc::clone(
+            &endpoints.status.keyboard_activation,
+        ))
     }
     pub fn stop(&self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
@@ -438,6 +487,7 @@ impl Drop for Client {
 }
 impl ClientEndpoints {
     fn stop(&self) {
+        self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         self.status
             .pending_stop_marker

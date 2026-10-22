@@ -316,6 +316,40 @@ impl Playback {
             .iter()
             .flat_map(|runtime| runtime.device_resource_leases())
     }
+    /// Existing Session runtime-buffer accounting on control, excluding immutable prepared graph,
+    /// source PCM and factory backing. This is the same bounded host/DSP inventory used by preroll;
+    /// it is not whole-graph DATA identity or native constructor provenance.
+    pub fn accounted_session_runtime_bytes_on_control(&self) -> Option<usize> {
+        self.session_runtime
+            .as_ref()?
+            .accounted_runtime_storage_bytes()
+    }
+    /// Validated immutable inline resource-factory bytes retained by this graph. Publication may
+    /// conservatively charge this per owner until its actual control-side destruction, separately
+    /// from migrated source obligations. No revision owner is added to a source-tail anchor.
+    pub fn resource_factory_inline_bytes_on_control(
+        &self,
+    ) -> Result<usize, crate::AudioStorageError> {
+        match self.prepared_revision.as_deref() {
+            Some(revision) if revision.device_resource_scope.is_some() => {
+                revision.session().resource_factory_inline_bytes()
+            }
+            _ => Ok(0),
+        }
+    }
+    /// Conservative resource-factory plus ordinary handoff-evidence allowance. This follows
+    /// the immutable graph's physical control-side destruction, not migrating runtime leases.
+    pub(crate) fn resource_control_metadata_bytes_on_control(
+        &self,
+    ) -> Result<usize, crate::AudioStorageError> {
+        self.resource_factory_inline_bytes_on_control()?
+            .checked_add(
+                self.prepared_revision
+                    .as_deref()
+                    .map_or(Ok(0), |revision| revision.device_handoff_metadata_bytes())?,
+            )
+            .ok_or(crate::AudioStorageError::Overflow)
+    }
     pub fn contains_device_resource_leases(&self) -> bool {
         self.device_resource_leases().next().is_some()
     }
@@ -340,6 +374,18 @@ impl Playback {
             }
             n.checked_add(u64::try_from(source.pcm_capacity_frames()).ok()?)
         })
+    }
+    /// Control-side attachment validated against the exact compiled instrument instance.
+    pub fn live_expression_supported_on_control(&self, track: hex_project::TrackId) -> bool {
+        self.session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.live_expression_supported_on_control(track))
+    }
+    /// Existing monitor-latency capability of this actual constructed graph.
+    pub fn computer_keyboard_latency_supported_on_control(&self) -> bool {
+        self.session_runtime
+            .as_ref()
+            .is_some_and(|runtime| runtime.computer_keyboard_latency_supported())
     }
     /// Control-side attachment validated against the exact compiled instrument instance.
     pub fn prepare_live_expression(
@@ -1081,7 +1127,7 @@ impl Playback {
     }
 
     pub fn try_apply_action(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
-        let result = self.apply_action_inner(action);
+        let result = self.apply_action_inner(action, None);
         if result.is_ok()
             && matches!(
                 action,
@@ -1102,7 +1148,30 @@ impl Playback {
         result
     }
 
-    fn apply_action_inner(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+    /// Consume the output's independent priority Stop after its control endpoint revoked the
+    /// activation prefix. Transport and voice history reset; only an ordinary output-bound
+    /// keyboard root survives, so a newer physical epoch needs no graph publication. Direct
+    /// `apply(Stop)`, queued Stop, seeks and lifecycle cancellation remain terminal.
+    pub fn apply_priority_stop(
+        &mut self,
+        clock: &crate::computer_keyboard::KeyboardActivationClock,
+    ) {
+        if self
+            .apply_action_inner(
+                PlaybackAction::Transport(PlaybackCommand::Stop),
+                Some(clock),
+            )
+            .is_ok()
+        {
+            self.reset_metronome();
+        }
+    }
+
+    fn apply_action_inner(
+        &mut self,
+        action: PlaybackAction,
+        priority_stop: Option<&crate::computer_keyboard::KeyboardActivationClock>,
+    ) -> Result<(), PlaybackActionError> {
         if matches!(
             action,
             PlaybackAction::Transport(
@@ -1111,7 +1180,16 @@ impl Playback {
                 crate::SessionPlaybackCommand::Stop | crate::SessionPlaybackCommand::Seek(_)
             )
         ) {
-            self.cancel_computer_keyboard();
+            if let Some(clock) = priority_stop {
+                if let Some(runtime) = self.session_runtime.as_mut() {
+                    runtime.cancel_current_sampler_keyboard();
+                    if let Some(keyboard) = runtime.computer_keyboard.as_mut() {
+                        keyboard.priority_stop(clock);
+                    }
+                }
+            } else {
+                self.cancel_computer_keyboard();
+            }
             self.cancel_tuning_audition();
         }
         match action {
@@ -1266,6 +1344,31 @@ impl Playback {
         &mut self,
         previous: &mut Self,
     ) -> Result<(), PlaybackHandoffError> {
+        self.try_inherit_runtime_impl(previous, false)
+    }
+
+    /// Ordinary publication may rebind a fresh monitor to the same physical input client in
+    /// the same explicitly known project generation. This carries no voice/DSP history or
+    /// source compatibility. Unknown generations (including legacy defaults) authorize nothing.
+    /// Selection precedes graph inheritance; old input custody changes only after it succeeds.
+    pub fn try_inherit_runtime_in_control_context(
+        &mut self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+    ) -> Result<(), PlaybackHandoffError> {
+        self.try_inherit_runtime_impl(
+            previous,
+            generation.is_some() && generation == previous_generation,
+        )
+    }
+
+    fn try_inherit_runtime_impl(
+        &mut self,
+        previous: &mut Self,
+        same_control_context: bool,
+    ) -> Result<(), PlaybackHandoffError> {
+        let rebind_keyboard = same_control_context && self.can_rebind_keyboard_input(previous);
         let continued_audition = match (&self.tuning_audition, &previous.tuning_audition) {
             (Some(next), Some(old)) if next.shares_live_lease(old) => {
                 Some(next.continued_synth(old).map_err(|_| {
@@ -1388,9 +1491,56 @@ impl Playback {
                 })?;
             }
         } else {
+            if rebind_keyboard {
+                previous.detach_rebound_keyboard_input();
+            }
             previous.cancel_computer_keyboard();
         }
         Ok(())
+    }
+
+    fn can_rebind_keyboard_input(&self, previous: &Self) -> bool {
+        self.session_runtime
+            .as_ref()
+            .and_then(|runtime| runtime.computer_keyboard.as_ref())
+            .zip(
+                previous
+                    .session_runtime
+                    .as_ref()
+                    .and_then(|runtime| runtime.computer_keyboard.as_ref()),
+            )
+            .is_some_and(|(next, old)| next.can_rebind_input_from(old))
+    }
+    fn detach_rebound_keyboard_input(&mut self) {
+        if let Some(keyboard) = self
+            .session_runtime
+            .as_mut()
+            .and_then(|runtime| runtime.computer_keyboard.as_mut())
+        {
+            keyboard.detach_rebound_input();
+        }
+    }
+
+    /// Infallible input-only retirement at the callback's final accepted-install cut. Fresh
+    /// seeks retain their reconstructed history and read held keys with fresh monitor voices.
+    /// Call only after all fence/cancellation/refusal decisions, before canceling the old graph.
+    pub fn detach_rebound_inputs_from(
+        &self,
+        previous: &mut Self,
+        generation: Option<u64>,
+        previous_generation: Option<u64>,
+    ) {
+        if generation.is_none() || generation != previous_generation {
+            return;
+        }
+        if self.can_rebind_keyboard_input(previous) {
+            previous.detach_rebound_keyboard_input();
+        }
+        if let (Some(next), Some(old)) = (&self.tuning_audition, &mut previous.tuning_audition)
+            && next.can_rebind_input_from(old)
+        {
+            old.detach_rebound_input();
+        }
     }
 
     /// Render either the selected mixed source or the legacy finite Arrangement.
