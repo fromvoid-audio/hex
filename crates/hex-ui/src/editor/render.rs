@@ -786,7 +786,7 @@ impl Render for EditorView {
                     view.cancel_time_selection_gesture() | view.cancel_clip_paint();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
                     view.midi_marquee = None;
-                    view.midi_selection.clear()
+                    view.midi_selection.clear() | view.clear_midi_time_selection()
                 } else {
                     false
                 };
@@ -1100,7 +1100,9 @@ impl Render for EditorView {
                     return;
                 }
                 if view.midi_focus.is_focused(window) {
-                    view.duplicate_piano_notes();
+                    if !view.duplicate_midi_time_selection() {
+                        view.duplicate_piano_notes();
+                    }
                     cx.notify();
                     return;
                 }

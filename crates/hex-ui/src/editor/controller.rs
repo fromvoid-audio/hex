@@ -981,6 +981,7 @@ impl EditorView {
                     visible_change = true;
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.pending_created_note_selection = None;
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
                     visible_change |= self.pending_group_copy.take().is_some();
@@ -1003,10 +1004,14 @@ impl EditorView {
                 let loop_request = self.pending_loop_matches(&request);
                 let group_copy_request = self.pending_group_copy_matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
+                let time_copy_request = self.pending_time_copy_matches(&request);
                 match self.service.submit(request) {
                     Ok(()) => {
                         self.worker_requests_pending =
                             self.worker_requests_pending.saturating_add(1);
+                        if time_copy_request {
+                            self.time_copy_submitted();
+                        }
                         if resize_request {
                             self.trim_request_submitted();
                         }
@@ -1041,10 +1046,16 @@ impl EditorView {
                         if clip_move_request {
                             self.retire_pending_clip_move();
                         }
+                        if time_copy_request {
+                            self.pending_created_note_selection = None;
+                        }
                         visible_change |=
                             replace_error(&mut self.error, "an export is already pending");
                     }
                     Err(SubmitError::Closed(request)) => {
+                        if time_copy_request {
+                            self.pending_created_note_selection = None;
+                        }
                         if resize_request {
                             self.retire_pending_trim();
                         }
@@ -2651,9 +2662,22 @@ impl EditorView {
 
     pub(super) fn enqueue(&mut self, request: Request) -> bool {
         let selection = self.created_note_selection_intent(&request);
+        let pending_before = self.worker_requests_pending;
         let accepted = self.enqueue_request(request, false);
-        if accepted && let Some(selection) = selection {
+        if accepted && let Some(mut selection) = selection {
+            self.bind_created_selection_terminal(&mut selection);
             self.pending_created_note_selection = Some(selection);
+            // Immediate submission happens inside enqueue_request, before this
+            // intent is installed. Queued/tuning-barrier requests are stamped
+            // only when their actual Service submission succeeds in tick.
+            let queued = self
+                .pending_requests
+                .iter()
+                .chain(self.device_gesture_barriers.iter())
+                .any(|request| self.pending_time_copy_matches(request));
+            if !queued && self.worker_requests_pending > pending_before {
+                self.time_copy_submitted();
+            }
         }
         accepted
     }

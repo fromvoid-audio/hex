@@ -198,6 +198,14 @@ fn prepared(event: &Event) -> Arc<PreparedRevision> {
         .clone()
 }
 fn render(revision: Arc<PreparedRevision>, scene: Option<SceneId>, block: usize) -> Vec<[f32; 2]> {
+    render_frames(revision, scene, block, 24_000)
+}
+fn render_frames(
+    revision: Arc<PreparedRevision>,
+    scene: Option<SceneId>,
+    block: usize,
+    frames: usize,
+) -> Vec<[f32; 2]> {
     let mut playback = Playback::try_from_prepared_with_session(revision).unwrap();
     if let Some(scene) = scene {
         playback
@@ -211,7 +219,7 @@ fn render(revision: Arc<PreparedRevision>, scene: Option<SceneId>, block: usize)
     } else {
         playback.apply(PlaybackCommand::Play);
     }
-    let mut output = vec![[0.0; 2]; 24_000];
+    let mut output = vec![[0.0; 2]; frames];
     for chunk in output.chunks_mut(block) {
         playback.render(chunk).unwrap();
     }
@@ -353,5 +361,231 @@ fn invalid_current_saved_source_refuses_without_rewrite_or_working_history_loss(
         );
         assert_eq!(fs::read(bad_path).unwrap(), invalid);
         assert_eq!(fs::read(path).unwrap(), original);
+    }
+}
+
+#[test]
+fn source_range_worker_prepares_literal_pcm_history_and_saved_extent_in_both_contexts() {
+    for console in [false, true] {
+        let f = Fixture::new(console);
+        let track = f.before.state.project.tracks()[0].id();
+        // The other clip context shares the hybrid track but must retain its own source.
+        let other = if console {
+            let Some(Created::Clip(other)) = edit(
+                &f.service,
+                Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: beat(4),
+                },
+            )
+            .created
+            else {
+                panic!("arrangement counterpart")
+            };
+            other
+        } else {
+            let Some(Created::Scene(scene)) = edit(
+                &f.service,
+                Command::AddScene {
+                    name: "counterpart".into(),
+                },
+            )
+            .created
+            else {
+                panic!("counterpart scene")
+            };
+            let Some(Created::SessionClip(other)) = edit(
+                &f.service,
+                Command::CreateSessionMidiClip {
+                    track,
+                    scene,
+                    name: "counterpart".into(),
+                    source_length: beat(4),
+                },
+            )
+            .created
+            else {
+                panic!("console counterpart")
+            };
+            other
+        };
+        edit(
+            &f.service,
+            Command::AddMidiNotes {
+                clip: other,
+                notes: vec![MidiNoteInsert {
+                    start: fraction(1, 2),
+                    duration: fraction(1, 4),
+                    pitch: 72,
+                    channel: 0,
+                    velocity: 53,
+                }],
+            },
+        );
+        let source_command = if console {
+            Command::SetSessionMidiClipSource {
+                clip: f.clip,
+                source_length: beat(4),
+                source_start: fraction(1, 2),
+                loop_start: beat(1),
+                loop_end: fraction(15, 4),
+                looping: false,
+            }
+        } else {
+            Command::SetMidiClipSource {
+                clip: f.clip,
+                source_length: beat(4),
+                source_start: fraction(1, 2),
+                loop_start: beat(1),
+                loop_end: fraction(15, 4),
+                looping: false,
+                length: beat(10),
+            }
+        };
+        edit(&f.service, source_command);
+        edit(&f.service, Command::MasterGain { gain: 0.5 });
+        f.service.submit(Request::Undo).unwrap();
+        let before = success(&f.service);
+        assert!(before.state.can_redo);
+        for (start, end) in [
+            (beat(2), beat(2)),
+            (BeatTime::ZERO, BeatTime::from_raw(u64::MAX)),
+            // Canonical geometry is positive, but the copied one-tick gate
+            // collapses at8kHz. No planned prefix or identity may be published.
+            (BeatTime::ONE, BeatTime::from_raw(BeatTime::ONE.raw() + 1)),
+        ] {
+            f.service
+                .submit(Request::Edit(Command::DuplicateMidiSourceRange {
+                    clip: f.clip,
+                    start,
+                    end,
+                }))
+                .unwrap();
+            let refused = receive(&f.service);
+            assert!(refused.error.is_some());
+            assert_eq!(refused.state.project, before.state.project);
+            assert_eq!(refused.state.revision, before.state.revision);
+            assert_eq!(
+                (refused.state.can_undo, refused.state.can_redo),
+                (before.state.can_undo, before.state.can_redo)
+            );
+            assert!(refused.playback.is_none());
+        }
+        let accepted = edit(
+            &f.service,
+            Command::DuplicateMidiSourceRange {
+                clip: f.clip,
+                start: beat(1),
+                end: beat(4),
+            },
+        );
+        assert_eq!(accepted.state.revision, before.state.revision + 1);
+        assert!(!accepted.state.can_redo);
+        let first = before.state.project.next_identity();
+        assert_eq!(
+            accepted.created,
+            Some(Created::Notes {
+                clip: f.clip,
+                first: accepted.state.project.midi_source(f.clip).unwrap().notes()[3].id(),
+                last: accepted.state.project.midi_source(f.clip).unwrap().notes()[5].id(),
+            })
+        );
+        let mut literal = before.state.project.snapshot();
+        let old = notes(&mut literal, console).clone();
+        // Literal expected intersections for [1,4), translated by3 beats.
+        // Preserve the final quarter beat of copied silence through source end7.
+        for (index, start, duration) in [
+            (0, beat(4), beat(2)),
+            (1, fraction(13, 2), fraction(1, 4)),
+            (2, beat(5), fraction(1, 4)),
+        ] {
+            notes(&mut literal, console).push(MidiNoteSnapshot {
+                id: first + index as u64,
+                start_raw: start.raw(),
+                duration_raw: duration.raw(),
+                pitch: old[index].pitch,
+                channel: old[index].channel,
+                velocity: old[index].velocity,
+            });
+        }
+        if console {
+            let SessionCellContentSnapshot::Midi(clip) = &mut literal.session.cells[0].content
+            else {
+                panic!("midi cell")
+            };
+            clip.source.source_length_raw = beat(7).raw();
+        } else {
+            let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut literal.tracks[0].content
+            else {
+                panic!("hybrid")
+            };
+            midi_clips[0].source_length_raw = beat(7).raw();
+        }
+        literal.next_id = first + 3;
+        let literal = Project::from_snapshot(literal).unwrap();
+        assert_eq!(&*accepted.state.project, &literal);
+        assert_eq!(
+            accepted.state.project.midi_source(other),
+            before.state.project.midi_source(other)
+        );
+        let independent = Arc::new(
+            PreparedRevision::prepare(&literal, &BTreeMap::new(), Arc::new(SineTable::new()), None)
+                .unwrap(),
+        );
+        let actual = render_frames(prepared(&accepted), f.scene, 257, 40_000);
+        let expected = render_frames(independent, f.scene, 73, 40_000);
+        assert!(
+            actual[16_000..28_000]
+                .iter()
+                .flatten()
+                .any(|sample| sample.abs() > 1.0e-4)
+        );
+        same_pcm(&actual, &expected);
+        f.service.submit(Request::Undo).unwrap();
+        let undo = success(&f.service);
+        let mut expected_undo = before.state.project.snapshot();
+        expected_undo.next_id = first + 3;
+        assert_eq!(undo.state.project.snapshot(), expected_undo);
+        same_pcm(
+            &render_frames(prepared(&undo), f.scene, 61, 40_000),
+            &render_frames(prepared(&before), f.scene, 127, 40_000),
+        );
+        f.service.submit(Request::Redo).unwrap();
+        let redo = success(&f.service);
+        assert_eq!(redo.state.project, accepted.state.project);
+        same_pcm(
+            &render_frames(prepared(&redo), f.scene, 137, 40_000),
+            &actual,
+        );
+        edit(&f.service, Command::MasterGain { gain: 0.5 });
+        f.service.submit(Request::Undo).unwrap();
+        let before_noop = success(&f.service);
+        let noop = edit(
+            &f.service,
+            Command::DuplicateMidiSourceRange {
+                clip: f.clip,
+                start: beat(6),
+                end: fraction(13, 2),
+            },
+        );
+        assert_eq!(noop.state.project, before_noop.state.project);
+        assert_eq!(noop.state.revision, before_noop.state.revision);
+        assert!(noop.state.can_redo);
+        assert!(noop.playback.is_none());
+        let path = f.directory.0.join("range-current.hex");
+        f.service.submit(Request::SaveNew(path.clone())).unwrap();
+        let saved = success(&f.service);
+        assert!(saved.save_complete && !saved.state.unsaved);
+        assert_eq!(hex_storage::load(&path).unwrap(), literal);
+        edit(&f.service, Command::MasterGain { gain: 0.5 });
+        f.service.submit(Request::Open(path)).unwrap();
+        let opened = success(&f.service);
+        assert!(opened.project_replaced && opened.open_complete);
+        assert_eq!(opened.state.project, accepted.state.project);
+        same_pcm(
+            &render_frames(prepared(&opened), f.scene, 89, 40_000),
+            &actual,
+        );
     }
 }

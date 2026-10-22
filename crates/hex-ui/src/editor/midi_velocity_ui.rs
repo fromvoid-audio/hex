@@ -425,6 +425,7 @@ impl EditorView {
                                 } else if !view.midi_selection.contains(id) {
                                     view.midi_selection.set_single(id);
                                 }
+                                view.clear_midi_time_selection();
                                 view.audition_midi_selection();
                                 if view.midi_selection.contains(id) {
                                     let Some(context) = view.velocity_context(captured.bounds)

@@ -271,6 +271,18 @@ impl Plan {
                 source_length: None,
                 edit: Notes::authoring(source.next_id, insert.len(), remove.len()),
             },
+            Command::DuplicateMidiSourceRange { clip, start, end } => {
+                let range = crate::midi_source_range::Range::capture(
+                    source.midi_source(*clip).ok_or(MISSING)?,
+                    *start,
+                    *end,
+                )?;
+                Kind::Notes {
+                    location: location(*clip)?,
+                    source_length: Some(range.source_length),
+                    edit: Notes::authoring(source.next_id, range.count, 0),
+                }
+            }
             Command::RemoveMidiNotes { clip, notes } => Kind::Notes {
                 location: location(*clip)?,
                 source_length: None,
