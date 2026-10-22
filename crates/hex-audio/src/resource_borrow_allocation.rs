@@ -250,3 +250,109 @@ fn callbacks_borrow_actual_native_bank_scopes_without_allocations_or_frees() {
     bank.validate_unresolved_on_control().unwrap();
     eprintln!("native bank callback probe: supported-controls=completed");
 }
+
+#[test]
+fn resident_sampler_occurrence_gains_allocate_and_free_nothing_in_the_actual_pair() {
+    use hex_devices::sampler::{
+        GateMode, Mode, PreparedSamplerPlan, Region, SampleChannels, SampleShape, Settings,
+    };
+    use hex_lattice::{
+        NativeInstrumentEvent, NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeLimits,
+        NativeInstrumentRuntimePair,
+    };
+    let pcm = [1.0; 32];
+    let views = [DeviceResourceView {
+        slot: DeviceAssetSlot::new(1).unwrap(),
+        identity: DeviceResourceIdentity {
+            asset: DeviceAssetKey::new(1).unwrap(),
+            content: [2; 32],
+            derivation_version: 1,
+            derivation: [3; 32],
+        },
+        sample_rate: 8_000,
+        pcm: DeviceResourcePcm::Mono(&pcm),
+    }];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = Settings::new(Region { start: 0, end: 32 });
+    settings.mode = Mode::OneShot {
+        gate: GateMode::Trigger,
+    };
+    let prepared = PreparedSamplerPlan::new(
+        SampleShape::new(32, 8_000, SampleChannels::Mono).unwrap(),
+        8_000,
+        settings,
+    )
+    .unwrap()
+    .bind_source_on_control(views[0])
+    .unwrap()
+    .prepare_runtime_on_control(4, 16, &TuningTable::default())
+    .unwrap();
+    let mut runtime = NativeInstrumentRuntimePair::new(
+        &prepared,
+        NativeInstrumentRuntimeLimits {
+            max_pair_bytes: 2 * 1024 * 1024,
+            max_events_per_block: 16,
+            max_active_occurrences: 4,
+            max_tail_frames: 8_000 * 600,
+        },
+    )
+    .unwrap();
+    let events = [
+        NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 2,
+            pitch: 60,
+            velocity: 127,
+        },
+        NativeInstrumentEvent::NoteOn {
+            frame_offset: 2,
+            occurrence_id: 1,
+            pitch: 60,
+            velocity: 127,
+        },
+    ];
+    let gains =
+        [
+            NativeInstrumentOccurrenceGain::new(1, 0, hex_lattice::INSTRUMENT_GAIN_UNITY, 7, 0)
+                .unwrap(),
+        ];
+    let mut frames = [[0.0; 2]; 7];
+    let mut failure = None;
+    // Construction, resource binding, output oracle and destruction stay out.
+    let measurement = allocation_counter::measure(|| {
+        for _ in 0..32 {
+            runtime.reset();
+            runtime.begin_block();
+            frames.fill([0.0; 2]);
+            if let Err(error) = runtime.process_block_with_clock_and_occurrence_gains(
+                std::hint::black_box(&events),
+                &mut frames,
+                None,
+                std::hint::black_box(&gains),
+                std::hint::black_box(&resources),
+            ) {
+                failure = Some(error);
+                break;
+            }
+            runtime.commit_block();
+        }
+    });
+    assert_eq!(failure, None);
+    assert_eq!(
+        (
+            measurement.count_total,
+            measurement.bytes_total,
+            measurement.count_current,
+            measurement.bytes_current
+        ),
+        (0, 0, 0, 0)
+    );
+    for (index, actual) in frames.iter().enumerate() {
+        let expected = if index < 2 {
+            1.0
+        } else {
+            (1.0 + index as f64 / 7.0) as f32
+        };
+        assert_eq!(*actual, [expected; 2]);
+    }
+}

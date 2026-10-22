@@ -150,6 +150,12 @@ pub struct NativeInstrumentRuntimeLimits {
 /// envelope release and internal feedback/output state; the runtime must
 /// become quiescent by that bound.
 pub trait PreparedMutableInstrumentRuntime: Send + Sync {
+    /// Immutable opt-in for borrowed per-occurrence output gain. The pair checks
+    /// this against both actual twins before admission; default providers refuse
+    /// nonempty gain batches while retaining their ordinary unity path.
+    fn supports_occurrence_gain(&self) -> bool {
+        false
+    }
     /// Opt-in declaration that the immutable factory owns only its inline Box payload, with no
     /// owned heap backing. The host cross-checks this against dynamic `size_of_val` for resource
     /// admission. Default unknown; twin-runtime storage never proves factory storage ownership.
@@ -241,6 +247,37 @@ pub struct AnalyticInstrumentHistory<'a> {
 /// reset must be infallible,
 /// allocation-free and bounded by the declared event and occurrence limits.
 pub trait MutableInstrumentRuntime: Any + Send {
+    /// Must agree with the prepared factory and remain invariant for this runtime.
+    fn supports_occurrence_gain(&self) -> bool {
+        false
+    }
+    /// Read-only preflight against the current speculative voice/event state.
+    /// Generic sorted-ID, gain range and complete segment bounds are already
+    /// checked by the pair. Providers must reject unknown occurrence identities.
+    fn preflight_occurrence_gains(
+        &self,
+        _events: &[NativeInstrumentEvent],
+        gains: &[crate::NativeInstrumentOccurrenceGain],
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if gains.is_empty() {
+            Ok(())
+        } else {
+            Err(NativeInstrumentRuntimeError::UnsupportedOccurrenceGain)
+        }
+    }
+    /// Process only after complete event/clock/gain preflight. Empty gain batches
+    /// use the ordinary clock path. Nonempty support must be explicitly declared
+    /// and implemented; gain is applied per occurrence before shared summing.
+    fn process_block_with_clock_and_occurrence_gains(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        _gains: &[crate::NativeInstrumentOccurrenceGain],
+        resources: &dyn crate::DeviceResources,
+    ) {
+        self.process_block_with_clock(events, frames, clock, resources);
+    }
     fn can_import_analytic_history(&self, _history: &AnalyticInstrumentHistory<'_>) -> bool {
         false
     }
@@ -330,6 +367,8 @@ pub trait MutableInstrumentRuntime: Any + Send {
 /// Errors found before mutable runtime state or caller PCM is changed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeInstrumentRuntimeError {
+    InvalidOccurrenceGain,
+    UnsupportedOccurrenceGain,
     RuntimeBudgetExceeded,
     InvalidEventBatch,
     EventCapacityExceeded,
@@ -343,6 +382,8 @@ impl NativeInstrumentRuntimeError {
     /// Allocation-free cause for callback diagnostics.
     pub fn diagnostic_message(self) -> &'static str {
         match self {
+            Self::InvalidOccurrenceGain => "native instrument occurrence gain is invalid",
+            Self::UnsupportedOccurrenceGain => "native instrument occurrence gain is unsupported",
             Self::RuntimeBudgetExceeded => "native instrument runtime exceeds caller limits",
             Self::InvalidEventBatch => "native instrument event batch is invalid",
             Self::EventCapacityExceeded => "native instrument event or voice capacity is exceeded",
@@ -367,6 +408,7 @@ impl std::error::Error for NativeInstrumentRuntimeError {}
 /// belong on the control side; processing only borrows caller-owned event/PCM
 /// slices and performs no allocation or final drop.
 pub struct NativeInstrumentRuntimePair {
+    occurrence_gain: bool,
     runtime_version: u32,
     declared_pair_bytes: usize,
     max_events_per_block: usize,
@@ -389,6 +431,7 @@ impl NativeInstrumentRuntimePair {
         let max_events_per_block = prepared.max_events_per_block();
         let max_active_occurrences = prepared.max_active_occurrences();
         let max_release_tail_frames = prepared.max_release_tail_frames();
+        let occurrence_gain = prepared.supports_occurrence_gain();
         let declared_pair_bytes = declared_twin_bytes
             .checked_mul(2)
             .ok_or(NativeInstrumentRuntimeError::RuntimeBudgetExceeded)?;
@@ -400,6 +443,9 @@ impl NativeInstrumentRuntimePair {
             || max_active_occurrences == 0
             || max_active_occurrences > limits.max_active_occurrences
             || max_release_tail_frames > limits.max_tail_frames
+            || max_active_occurrences
+                .checked_add(max_events_per_block)
+                .is_none()
         {
             return Err(NativeInstrumentRuntimeError::RuntimeBudgetExceeded);
         }
@@ -408,6 +454,8 @@ impl NativeInstrumentRuntimePair {
         let scratch = prepared.create_runtime();
         if !primary.can_copy_history_from(scratch.as_ref())
             || !scratch.can_copy_history_from(primary.as_ref())
+            || primary.supports_occurrence_gain() != occurrence_gain
+            || scratch.supports_occurrence_gain() != occurrence_gain
         {
             return Err(NativeInstrumentRuntimeError::IncompatibleTwins);
         }
@@ -418,6 +466,7 @@ impl NativeInstrumentRuntimePair {
         }
 
         Ok(Self {
+            occurrence_gain,
             runtime_version,
             declared_pair_bytes,
             max_events_per_block,
@@ -431,6 +480,10 @@ impl NativeInstrumentRuntimePair {
 
     pub const fn runtime_version(&self) -> u32 {
         self.runtime_version
+    }
+
+    pub const fn supports_occurrence_gain(&self) -> bool {
+        self.occurrence_gain
     }
 
     /// Checked combined declaration for both fixed runtime twins.
@@ -548,6 +601,44 @@ impl NativeInstrumentRuntimePair {
             .preflight_clock(clock, frames.len(), _resources)?;
         self.scratch
             .process_block_with_clock(events, frames, clock, _resources);
+        Ok(())
+    }
+
+    /// Transactional per-occurrence gain segment. The original ramp span and
+    /// slice offset preserve arbitrary block partitions. Work is bounded by the
+    /// declared active occurrences plus block events (including new onsets).
+    /// The primary remains the block's committed baseline; all segment preflight
+    /// uses current scratch history, as with ordinary clock/event processing.
+    pub fn process_block_with_clock_and_occurrence_gains(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        clock: Option<&dyn NativeInstrumentClock>,
+        gains: &[crate::NativeInstrumentOccurrenceGain],
+        resources: &dyn crate::DeviceResources,
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        if gains.is_empty() {
+            return self.process_block_with_clock(events, frames, clock, resources);
+        }
+        if !self.block_started {
+            return Err(NativeInstrumentRuntimeError::BlockNotStarted);
+        }
+        if !self.occurrence_gain {
+            return Err(NativeInstrumentRuntimeError::UnsupportedOccurrenceGain);
+        }
+        let maximum = self
+            .max_active_occurrences
+            .checked_add(self.max_events_per_block)
+            .ok_or(NativeInstrumentRuntimeError::RuntimeBudgetExceeded)?;
+        crate::instrument_gain::validate_occurrence_gains(gains, frames.len(), maximum)?;
+        validate_event_batch(events, frames.len(), self.max_events_per_block)?;
+        self.scratch
+            .preflight_events(events, frames.len(), resources)?;
+        self.scratch
+            .preflight_clock(clock, frames.len(), resources)?;
+        self.scratch.preflight_occurrence_gains(events, gains)?;
+        self.scratch
+            .process_block_with_clock_and_occurrence_gains(events, frames, clock, gains, resources);
         Ok(())
     }
 
@@ -1823,5 +1914,85 @@ mod tests {
             Some(NativeInstrumentRuntimeError::RuntimeBudgetExceeded)
         );
         assert_eq!(creations.load(Ordering::Relaxed), 2);
+    }
+    #[test]
+    fn unsupported_occurrence_gain_refuses_before_output_or_speculative_history_changes() {
+        let mut runtime = new_pair(1, 2);
+        assert!(!runtime.supports_occurrence_gain());
+        let gain =
+            crate::NativeInstrumentOccurrenceGain::new(1, 0, crate::INSTRUMENT_GAIN_UNITY, 4, 0)
+                .unwrap();
+        let events = [NativeInstrumentEvent::NoteOn {
+            frame_offset: 0,
+            occurrence_id: 1,
+            pitch: 60,
+            velocity: 127,
+        }];
+        let mut output = [[9.0; 2]; 4];
+        runtime.begin_block();
+        assert_eq!(
+            runtime.process_block_with_clock_and_occurrence_gains(
+                &events,
+                &mut output,
+                None,
+                &[gain],
+                &crate::EMPTY_DEVICE_RESOURCES
+            ),
+            Err(NativeInstrumentRuntimeError::UnsupportedOccurrenceGain)
+        );
+        assert_eq!(output, [[9.0; 2]; 4]);
+        runtime.rollback_block();
+        assert!(runtime.committed_is_quiescent());
+        // Empty context is the existing processing law, even for providers
+        // that cannot apply independent occurrence gains.
+        runtime.begin_block();
+        let mut actual = [[0.0; 2]; 4];
+        runtime
+            .process_block_with_clock_and_occurrence_gains(
+                &events,
+                &mut actual,
+                None,
+                &[],
+                &crate::EMPTY_DEVICE_RESOURCES,
+            )
+            .unwrap();
+        runtime.commit_block();
+        assert_eq!(actual.as_slice(), render(&mut new_pair(1, 2), &events, 4));
+    }
+
+    #[test]
+    fn gain_capability_declaration_must_match_actual_twins() {
+        struct ClaimedGain(FeedbackPrepared);
+        impl PreparedMutableInstrumentRuntime for ClaimedGain {
+            fn supports_occurrence_gain(&self) -> bool {
+                true
+            }
+            fn runtime_version(&self) -> u32 {
+                self.0.runtime_version()
+            }
+            fn declared_twin_bytes(&self) -> usize {
+                self.0.declared_twin_bytes()
+            }
+            fn max_events_per_block(&self) -> usize {
+                self.0.max_events_per_block()
+            }
+            fn max_active_occurrences(&self) -> usize {
+                self.0.max_active_occurrences()
+            }
+            fn max_release_tail_frames(&self) -> u64 {
+                self.0.max_release_tail_frames()
+            }
+            fn create_runtime(&self) -> Box<dyn MutableInstrumentRuntime> {
+                self.0.create_runtime()
+            }
+            fn as_any(&self) -> &dyn Any {
+                self
+            }
+        }
+        let factory = ClaimedGain(prepared(1, 2, Arc::new(AtomicUsize::new(0))));
+        assert!(matches!(
+            NativeInstrumentRuntimePair::new(&factory, TEST_LIMITS),
+            Err(NativeInstrumentRuntimeError::IncompatibleTwins)
+        ));
     }
 }
