@@ -2252,10 +2252,13 @@ impl EditorView {
                 .and_then(|clip| state.project.midi_source(clip))
             {
                 // Source markers and Arrangement duration may change independently.
-                // Keep the editor inside the authored source even for the same clip.
+                // Preserve zoom-out space across ACKs; only the start follows source bounds.
                 let source_length = clip.source_length().raw();
                 self.piano_beat_span = hex_project::BeatTime::from_raw(
-                    self.piano_beat_span.raw().min(source_length).max(1),
+                    self.piano_beat_span
+                        .raw()
+                        .min(super::midi_scene::zoom_limit(source_length))
+                        .max(1),
                 );
                 self.piano_beat_start =
                     hex_project::BeatTime::from_raw(super::midi_scene::clamp_start(
