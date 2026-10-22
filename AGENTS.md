@@ -82,6 +82,22 @@ dependencies and what it does not own; scripts/check-architecture.py checks this
 alongside the dependency boundaries. Do not recreate feature Markdown specs,
 per-crate README copies, progress journals or local backlogs.
 
+Before substantial work, name each affected crate/module owner, its responsibility,
+permitted dependencies, and public typed command/query/resource contract in the
+PR or Pulse scope. Read the actual APIs and their consumers. Keep technical
+contracts beside their source owners; do not invent a parallel architecture spec.
+Enforce boundaries through Rust visibility, types, dependency checks and contract
+tests. The architecture guard checks declared crate edges and doc headings; it
+does not prove module isolation or runtime correctness.
+
+Internal devices use existing host APIs. A missing capability requires an explicit,
+bounded host-contract change with checks for affected consumers; do not reach into
+host internals or create a competing resource/lifecycle path. Transition one verified
+boundary per PR, including the owners and consumers needed for complete behavior
+and required current-format persistence/history changes.
+Host admission, publication, workers and reclamation retain their existing owners;
+a borrowed resource view does not transfer custody.
+
 Use Pulse for requirements, priorities, acceptance, dependencies and progress;
 canonical PRs and artifacts retain delivery evidence. docs/ contains practical
 contributor instructions only. research/ contains recorded reference observations,
@@ -131,11 +147,12 @@ full disks with a useful error and a defined recovery path.
   data-loss, scheduling, or lifecycle fixes. Do not claim panic/fuzz enforcement
   exists until its tests and lint configuration actually exist.
 
-1. **Behavior lives in the engine.** New musical or project behavior should be
-   represented by a typed command with validation and tests. UI controls dispatch
-   it; they do not implement a competing scheduler or DSP path. The current demo
-   uses `hex_engine::live::Command`; a general editor command registry is future
-   work. Pure view/window state may remain in GPUI.
+1. **Behavior follows its canonical owner.** `hex-project` owns validated typed
+   edits, snapshots and Undo/Redo; `hex-session` coordinates canonical state and
+   prepare-before-commit; `hex-engine` compiles and renders prepared playback.
+   UI controls dispatch their public commands/requests and display queries rather
+   than implementing a competing model, scheduler or DSP path. Pure view/window
+   state may remain in GPUI. Read each owner's source contracts before extending it.
 2. **Use explicit audio units.** Distinguish frames, samples, bytes, seconds,
    quarter-note beats, bars, linear gain, and dB. Sample rate, channel layout, and
    precision are runtime properties. No assumption that all files/devices are
@@ -208,34 +225,32 @@ Do not mark an unchecked milestone complete because its starter code builds.
 
 ## 5. Before you finish a task
 
-For Rust changes, run the checks that cover the affected behavior:
+Choose merge verification from changed behavior and enforceable ownership
+boundaries: owning regressions, affected public contracts and consumers, relevant
+feature/platform configurations, and proportionate formatting, lint and build
+checks. Record the scope, exact source/base, commands, results and omissions with
+reasons in the canonical PR. A small diff or passing mock alone does not establish
+isolation; tests do not mathematically guarantee unrelated code.
 
-```sh
-python3 scripts/local-ci.py              # full audit; still the no-flag default
-python3 scripts/local-ci.py --profile merge --base BASE_SHA --source HEAD_SHA
-python3 scripts/local-ci.py --quick      # guards/format preflight only
-python3 scripts/check-architecture.py
-python3 scripts/check-gpui-patch.py
-python3 scripts/check-ui-style.py
-cargo fmt --all --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
-cargo build -p hex-desktop                 # desktop/backend changes
-cargo run --release -p hex-engine --example profile  # demo-render hot path
-sh scripts/bundle-macos.sh --help         # exact CI/revisions/checklist required; docs/test-builds.md
-```
+Broaden only for a documented concrete impact or unresolved risk. Explain unknown
+selection, then resolve it by inspecting owners/consumers or conservatively check
+the uncertain area. Never silently count an unknown omission as covered. Neither
+a merge, a core path, a policy edit nor the next module alone requires a full suite.
+Keep deterministic fixtures lean and independent; preserve relevant lifecycle,
+malformed-input, realtime/allocation, current-format persistence and Undo/Redo
+coverage. A comprehensive audit remains available when its breadth is justified;
+native release qualification retains its separate delivery requirements.
 
-Use the repository-resolved merge plan for the exact current integration base and
-candidate. Unknown/core/build/manifest/vendor/policy changes fall back to the full
-audit. Known UI, tooling and prose scopes retain their required configurations;
-do not choose omissions by hand or deduplicate tests by name. Full remains
-required for beta/stable/native release qualification. Quick, edit and custom
-component reports never qualify a merge. See `docs/local-ci.md` and
-`docs/development-workflow.md` for scope, input certificates and retained logs.
-
-Use targeted crate checks when appropriate; broaden only for a concrete dependency,
-new failure, or unresolved risk. Re-run checks after a material repair. Docs-only
-changes need link/path/claim review, not a full native rebuild.
+Use the commands and current runner limitations in `docs/local-ci.md`. Until the
+selector supports a boundary, a reviewed change-based check set with recorded
+reasoning qualifies a merge under this policy; do not label it a runner-certified
+plan or edit a report to make it qualify. Quick/edit output alone is insufficient.
+For prose-only changes, review links, paths, examples and rule consistency; no
+native rebuild is needed. Re-run affected checks after material repairs. Preserve
+prior evidence when its relevant source, contracts, configuration, dependencies
+and toolchain inputs remain unchanged; identify exactly what is reused and why.
+Do not repeat a full audit for each boundary slice. Qualify selector changes once
+against selection risks, not by repeatedly running unrelated product suites.
 
 For prepared callback rendering, command consumption or graph-retirement changes,
 run `cargo test -p hex-audio --features allocation-probe` for the affected paths.
@@ -288,25 +303,16 @@ never bypass this workflow without an explicit user instruction.
   remaining limitations. Record native UI/listening acceptance separately from
   automated checks.
 - Review the final PR diff and resolve meaningful findings before merging.
-  As requested on 10 October 2026, the user gives standing authorization to merge
-  focused, completed PRs immediately when the resolved required merge plan (or
-  full audit) passes on the exact final commit and unchanged source digest.
-  This scoped policy supersedes the earlier full-for-every-edit rule after its
-  own full-audit bootstrap. Do not wait for another approval or for
-  native UI/listening tests. A quick, stale, partial, failed or interrupted run
-  does not qualify. Merge dependencies first and revalidate after executable changes
-  or conflict resolution; verify that integration preserves the tested behavior.
-  A prose-only continuation may explicitly reuse a complete runtime certificate
-  with identical executable inputs and guarded toolchain/dependencies, while
-  checking the changed prose separately; it is never relabeled a fresh full run.
-  Keep one persistent integration checkout/target per executor. Run one meaningful
-  owning regression and one final required merger plan; repeat focused checks
-  only for material integration, a failure or an unresolved concern. Canonical
-  Git plus one raw summary/log archive and immutable references is sufficient:
-  do not recursively repack source/history archives or create a Pulse permit gate.
-  Known unresolved correctness bugs must be repaired before merging, even if an
-  incomplete test suite is green. Never force-push `main`, skip required checks
-  or weaken branch protection.
+  Standing authorization applies to focused, completed PRs when the change-based
+  verification above passes on the exact final candidate. Use the current
+  integration base; merge dependencies first and check affected behavior after
+  executable changes or conflict resolution. Do not wait for another approval or
+  native UI/listening tests. A stale, failed, interrupted or incomplete check set
+  does not qualify. Retain unchanged-input evidence explicitly, without relabeling
+  it as a fresh full run. Keep one persistent integration checkout/target per
+  executor and one raw summary/log archive with immutable source references.
+  Known unresolved correctness bugs must be repaired even if tests are green.
+  Never force-push `main`, weaken branch protection or create a Pulse permit gate.
 - Native UI/listening acceptance remains separate evidence and may happen after
   merge. Keep unverified behavior visible in Pulse; merging does not establish
   feature parity, physical deadlines or manual acceptance. When later testing
