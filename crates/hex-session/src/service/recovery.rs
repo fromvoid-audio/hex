@@ -1,5 +1,6 @@
 //! Explicit recovery and media relinking, prepared before canonical adoption.
 use super::*;
+use std::mem;
 
 /// Explicit source selection. Recovery never adopts an overwrite association.
 #[derive(Clone, Debug)]
@@ -17,7 +18,7 @@ pub fn untitled_recovery_path() -> Result<PathBuf, String> {
     Ok(PathBuf::from(home).join("Library/Application Support/hex/recovery/untitled.hex-journal"))
 }
 
-type OpenCandidate = (Session, PathBuf, Option<DocumentHandle>, bool);
+pub(super) type OpenCandidate = (Session, PathBuf, Option<DocumentHandle>, bool);
 
 fn read_source(
     source: &ProjectSource,
@@ -85,15 +86,45 @@ pub fn missing_assets(
     Ok(missing)
 }
 
-pub(super) fn open_source_with_mode(
+#[allow(clippy::too_many_arguments)]
+pub(super) fn open_source_with_limits(
     current: &Session,
     history_capacity: usize,
     source: &ProjectSource,
     relinks: &BTreeMap<hex_project::AssetId, PathBuf>,
     mode: DocumentAudioMode,
     reservation: Option<SourcePlanReservation>,
+    native: Option<crate::ResidentNativeReservation>,
+    frame_allowance: u64,
+    admission: sampler_export::Admission<'_>,
 ) -> Result<OpenCandidate, String> {
     let (mut project, project_dir, document) = read_source(source)?;
+    let private_sampler =
+        hex_engine::native_device_resources::requires_private_sampler_sources(&project);
+    if private_sampler
+        && project
+            .tracks()
+            .iter()
+            .filter_map(|t| t.instrument())
+            .filter(|d| d.state().type_id().as_str() == Ok("hex.instrument.sampler"))
+            .flat_map(|d| d.state().asset_references())
+            .any(|reference| {
+                !project.assets().any(|a| {
+                    a.id().value() == reference.asset.value() && a.original_source().is_some()
+                })
+            })
+    {
+        return Err("sampler reopening requires qualified original source reconstruction and saved content identity".into());
+    }
+    let has_originals = project.assets().any(|a| a.original_source().is_some());
+    if (has_originals || private_sampler)
+        && (mode != DocumentAudioMode::Resident || native.is_none())
+    {
+        return Err("device-original reopening requires resident native limits".into());
+    }
+    if current.shutdown.load(Ordering::Acquire) {
+        return Err("project open cancelled".into());
+    }
     let dirty = document.is_none() || !relinks.is_empty();
     if !relinks.is_empty() {
         if relinks.keys().any(|id| project.asset(*id).is_none()) {
@@ -121,13 +152,18 @@ pub(super) fn open_source_with_mode(
             .ok_or("verified source reservation is required")?
             .validate()
             .map_err(|e| e.to_string())?;
-        let mut candidate = Session::new_with_audio_mode(
+        let mut candidate = Session::new_with_audio_mode_in_overview_domain(
             project.sample_rate(),
             history_capacity,
             current.max_resident_frames(),
             mode,
             Some(reservation),
+            current.overview_budget.clone(),
         )
+        .and_then(|candidate| match native {
+            Some(limits) => candidate.with_native_reservation(limits),
+            None => Ok(candidate),
+        })
         .map_err(|e| e.to_string())?
         .with_shutdown(Arc::clone(&current.shutdown));
         // Verify every retained asset, including unused records, without decoding PCM.
@@ -152,7 +188,8 @@ pub(super) fn open_source_with_mode(
     prepared_assets
         .try_reserve_exact(project.assets().count())
         .map_err(|_| "could not reserve decoded media table".to_owned())?;
-    let mut remaining_frames = current.max_resident_frames();
+    let mut originals = hex_engine::native_device_resources::ResidentDeviceAssets::default();
+    let mut remaining_frames = frame_allowance;
     // Load unreferenced assets too: the editor can place them later, so missing
     // media in any asset record rejects the candidate instead of dropping it.
     for asset in project.assets() {
@@ -161,14 +198,40 @@ pub(super) fn open_source_with_mode(
         } else {
             project_dir.join(asset.path())
         };
-        if asset.playback_frames() > remaining_frames {
+        if current.shutdown.load(Ordering::Acquire) {
+            return Err("project open cancelled".into());
+        }
+        let required_frames = if asset.original_source().is_some() {
+            asset.source_frames()
+        } else {
+            asset.playback_frames()
+        };
+        if required_frames > remaining_frames {
             return Err("project media exceeds resident audio frame limit".into());
         }
-        let decoded = decode_wav_file(
-            media_path,
-            Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
-        )
-        .map_err(|error| error.to_string().to_lowercase())?;
+        if has_originals {
+            admission
+                .check_recovery_sources(
+                    current,
+                    sampler_export::RecoverySourceStage {
+                        originals: Some(&originals),
+                        staged: None,
+                        prepared: &prepared_assets,
+                        decoded: None,
+                        additional_frames: asset.source_frames(),
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        let source_limit = if has_originals {
+            usize::try_from(asset.source_frames().min(remaining_frames))
+                .map_err(|_| "saved source frame count exceeds platform limit")?
+                .min(IMPORT_FRAME_LIMIT)
+        } else {
+            IMPORT_FRAME_LIMIT
+        };
+        let decoded = decode_wav_file(media_path, Limits::new(IMPORT_FILE_LIMIT, source_limit))
+            .map_err(|error| error.to_string().to_lowercase())?;
         if decoded.sample_rate() != asset.source_sample_rate()
             || u64::try_from(decoded.frames()).ok() != Some(asset.source_frames())
         {
@@ -177,12 +240,97 @@ pub(super) fn open_source_with_mode(
                 asset.path().display()
             ));
         }
+        if let Some(expected) = asset.original_source() {
+            let limits =
+                native.ok_or("device-original reopening requires resident native limits")?;
+            let frames = u64::try_from(decoded.audio().pcm_capacity_frames())
+                .map_err(|_| "original source capacity exceeds frame range")?;
+            if frames > remaining_frames {
+                return Err("project original media exceeds resident frame limit".into());
+            }
+            let source = hex_engine::OwnedAudioSource::try_from_decoded_audio_on_control(
+                decoded.into_audio(),
+                limits.max_scan_frames,
+                &current.shutdown,
+            )
+            .map_err(|r| SessionError::from(r.reason).to_string())?;
+            let legacy_frames = prepared_assets
+                .iter()
+                .try_fold(0_u64, |n, (_, m)| {
+                    n.checked_add(m.retained_pcm_frames()?)
+                        .ok_or(SessionError::Invalid("recovery legacy frame overflow"))
+                })
+                .map_err(|e| e.to_string())?;
+            let legacy_bytes = usize::try_from(legacy_frames)
+                .ok()
+                .and_then(|n| n.checked_mul(mem::size_of::<hex_engine::Frame>()))
+                .ok_or("recovery legacy byte count overflow")?;
+            originals
+                .insert_checked_on_control(
+                    (asset.id(), source),
+                    legacy_bytes,
+                    limits.storage,
+                    limits.max_scan_frames,
+                    &current.shutdown,
+                    |stage| -> Result<(), SessionError> {
+                        if stage.original_source_facts_on_control(asset.id())? != expected {
+                            return Err(SessionError::Invalid(
+                                "original media content differs from saved source identity",
+                            ));
+                        }
+                        admission.check_recovery_sources(
+                            current,
+                            sampler_export::RecoverySourceStage {
+                                originals: None,
+                                staged: Some(stage),
+                                prepared: &prepared_assets,
+                                decoded: None,
+                                additional_frames: 0,
+                            },
+                        )
+                    },
+                )
+                .map_err(|e| format!("could not reopen {}: {e}", asset.path().display()))?;
+            remaining_frames = remaining_frames
+                .checked_sub(frames)
+                .ok_or("resident original frame allowance overflow")?;
+            continue;
+        }
+        if has_originals {
+            admission
+                .check_recovery_sources(
+                    current,
+                    sampler_export::RecoverySourceStage {
+                        originals: Some(&originals),
+                        staged: None,
+                        prepared: &prepared_assets,
+                        decoded: Some(decoded.audio()),
+                        additional_frames: if decoded.sample_rate() != project.sample_rate() {
+                            asset.playback_frames()
+                        } else {
+                            0
+                        },
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        let output_allowance = if native.is_some() && decoded.sample_rate() != project.sample_rate()
+        {
+            let original = u64::try_from(decoded.audio().pcm_capacity_frames())
+                .map_err(|_| "source capacity exceeds frame range")?;
+            remaining_frames
+                .checked_sub(original)
+                .filter(|n| *n >= asset.playback_frames())
+                .ok_or("project source and derivative exceed resident reservation")?
+        } else {
+            remaining_frames
+        };
         let prepared = PreparedImport::at_rate(
             decoded,
             project.sample_rate(),
             ResampleLimits {
                 max_source_frames: IMPORT_FRAME_LIMIT,
-                max_output_frames: usize::try_from(remaining_frames)
+                max_output_frames: usize::try_from(output_allowance)
                     .map_err(|_| "resident frame limit exceeds addressable range".to_owned())?,
             },
         )
@@ -195,14 +343,49 @@ pub(super) fn open_source_with_mode(
             )
             .ok_or_else(|| "project media exceeds resident audio frame limit".to_owned())?;
         prepared_assets.push((asset.id(), prepared));
+        if has_originals {
+            admission
+                .check_recovery_sources(
+                    current,
+                    sampler_export::RecoverySourceStage {
+                        originals: Some(&originals),
+                        staged: None,
+                        prepared: &prepared_assets,
+                        decoded: None,
+                        additional_frames: 0,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
+        }
     }
-    let session = Session::from_prepared_with_sine_table(
-        project,
-        history_capacity,
-        current.max_resident_frames(),
-        prepared_assets,
-        current.sine_table(),
-    )
+    if current.shutdown.load(Ordering::Acquire) {
+        return Err("project open cancelled".into());
+    }
+    let session = if has_originals {
+        Session::from_prepared_with_original_sources(
+            project,
+            history_capacity,
+            current.max_resident_frames(),
+            prepared_assets,
+            current.sine_table(),
+            native,
+            crate::native_assets::ReconstructedOriginalSources {
+                assets: originals,
+                overview_budget: current.overview_budget.clone(),
+                cancel: &current.shutdown,
+            },
+        )
+    } else {
+        Session::from_prepared_with_native_limits_in_overview_domain(
+            project,
+            history_capacity,
+            current.max_resident_frames(),
+            prepared_assets,
+            current.sine_table(),
+            native,
+            current.overview_budget.clone(),
+        )
+    }
     .map_err(|error| error.to_string().to_lowercase())?;
     Ok((
         session.with_shutdown(Arc::clone(&current.shutdown)),
@@ -284,7 +467,36 @@ pub(super) fn project_for_save(
     document_base: Option<&Path>,
 ) -> Result<hex_project::Project, String> {
     let mut snapshot = session.project().snapshot();
-    for asset in &mut snapshot.assets {
+    for (metadata, asset) in session.project().assets().zip(&mut snapshot.assets) {
+        if metadata.id().value() != asset.id {
+            return Err("save source inventory differs from canonical project".into());
+        }
+        if session.native_assets.contains(metadata.id()) {
+            let source = session
+                .native_source(metadata.id())
+                .ok_or("native original source is unavailable for saving")?;
+            if source.sample_rate() != asset.source_sample_rate
+                || source
+                    .resident_frames()
+                    .and_then(|pcm| u64::try_from(pcm.len()).ok())
+                    != Some(asset.source_frames)
+            {
+                return Err("native original source differs from canonical media metadata".into());
+            }
+            let facts = session
+                .native_assets
+                .original_source_facts_on_control(metadata.id())
+                .map_err(|e| SessionError::from(e).to_string())?;
+            if asset
+                .original_source
+                .is_some_and(|expected| expected != facts)
+            {
+                return Err("native original content differs from saved source identity".into());
+            }
+            asset.original_source = Some(facts);
+        } else if asset.original_source.is_some() {
+            return Err("saved device-original media has no admitted native source".into());
+        }
         if !asset.path.is_absolute() {
             let base = document_base.ok_or_else(|| {
                 "relative media path has no project directory; refusing ambiguous save".to_owned()

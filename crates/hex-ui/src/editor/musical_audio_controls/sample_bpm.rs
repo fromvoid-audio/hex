@@ -55,8 +55,9 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
         view.sample_bpm_control = None;
     }
     if view.sample_bpm_control.is_none() {
-        let spec = NumericSpec::new(1.0, 1000.0, value, NumericScale::Linear, 6, Some("bpm")).map(
-            |spec| {
+        let spec = NumericSpec::new(1.0, 1000.0, value, NumericScale::Linear, 6, Some("bpm"))
+            .and_then(|spec| spec.with_keyboard_steps(1.0, 0.1))
+            .map(|spec| {
                 spec.with_codec(
                     |v| {
                         format!("{v:.6}")
@@ -66,8 +67,7 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                     },
                     |s| s.trim().trim_end_matches("bpm").trim().parse::<f64>().ok(),
                 )
-            },
-        );
+            });
         let config = spec.and_then(|spec| {
             NumericControlConfig::new(
                 "audio-sample-bpm",
@@ -82,7 +82,9 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
         let entity = cx.new(|cx| {
             NumericControl::from_config(
                 cx,
-                config.with_appearance(NumericControlAppearance::InlineValue),
+                config
+                    .with_command_fine_steps()
+                    .with_appearance(NumericControlAppearance::InlineValue),
             )
         });
         let subscription =
@@ -184,6 +186,7 @@ mod ui_tests {
                 comparison_audio: None,
                 project: Arc::new(model.project().clone()),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: old.gain_preview.clone(),

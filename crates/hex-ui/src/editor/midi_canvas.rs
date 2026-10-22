@@ -10,6 +10,15 @@ use gpui::{
 use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 
+fn gesture_bounds_from(bounds: Bounds<gpui::Pixels>) -> [f32; 4] {
+    [
+        f32::from(bounds.origin.x),
+        f32::from(bounds.origin.y),
+        f32::from(bounds.size.width),
+        f32::from(bounds.size.height),
+    ]
+}
+
 fn beat_at_x(
     x: f32,
     width: f32,
@@ -156,6 +165,7 @@ impl EditorView {
             .midi_stroke
             .as_ref()
             .map(|stroke| stroke.shared_preview());
+        let draw_creation = self.midi_creation.as_ref().map(|creation| creation.preview);
         let draw_marquee = self.midi_marquee;
         let draw_marker = self.midi_marker;
         let draw_pitch_locked = self.midi_draw_pitch_locked;
@@ -348,19 +358,21 @@ impl EditorView {
                     }
                 }
 
-                if let Some(stroke) = &draw_stroke {
-                    for note in &stroke.inserted {
-                        if let Some(rect) = canvas_scene.insert_geometry(*note) {
-                            let x = rect.x * width;
-                            let right = (rect.x + rect.width) * width;
-                            quad(
-                                x,
-                                rect.y * height + 1.0,
-                                right - x,
-                                (height / 24.0 - 2.0).max(1.0),
-                                theme::color(theme::PaletteRole::Primary),
-                            );
-                        }
+                for note in draw_stroke
+                    .iter()
+                    .flat_map(|stroke| stroke.inserted.iter().copied())
+                    .chain(draw_creation)
+                {
+                    if let Some(rect) = canvas_scene.insert_geometry(note) {
+                        let x = rect.x * width;
+                        let right = (rect.x + rect.width) * width;
+                        quad(
+                            x,
+                            rect.y * height + 1.0,
+                            right - x,
+                            (height / 24.0 - 2.0).max(1.0),
+                            theme::color(theme::PaletteRole::Primary),
+                        );
                     }
                 }
                 if let Some((id, item)) = draw_preview {
@@ -684,14 +696,17 @@ impl EditorView {
                         }
                         view.midi_marquee = None;
                         view.midi_selection.clear();
-                        view.enqueue(Request::Edit(Command::AddMidiNote {
-                            clip: clip_id,
-                            start: local_beat,
-                            duration: BeatTime::from_raw(duration),
-                            pitch,
-                            channel: 0,
-                            velocity: 100,
-                        }));
+                        view.begin_midi_creation(
+                            rendered_context,
+                            f32::from(event.position.x),
+                            hex_project::MidiNoteInsert {
+                                start: local_beat,
+                                duration: BeatTime::from_raw(duration),
+                                pitch,
+                                channel: 0,
+                                velocity: 100,
+                            },
+                        );
                         view_cx.notify();
                     });
                 });
@@ -701,6 +716,16 @@ impl EditorView {
                         return;
                     }
                     mouse_move_entity.update(cx, |view, view_cx| {
+                        if view.midi_creation.is_some() {
+                            if view.update_midi_creation(
+                                gesture_bounds_from(bounds),
+                                f32::from(event.position.x),
+                                StrokeModifiers::from_platform(event.modifiers),
+                            ) {
+                                view_cx.notify();
+                            }
+                            return;
+                        }
                         if let Some((first, _, additive)) = view.midi_marquee {
                             let last = [
                                 f32::from(event.position.x - bounds.origin.x),
@@ -803,6 +828,16 @@ impl EditorView {
                         return;
                     }
                     mouse_up_entity.update(cx, |view, view_cx| {
+                        if view.midi_creation.is_some() {
+                            view.finish_midi_creation(
+                                gesture_bounds_from(bounds),
+                                f32::from(event.position.x),
+                                bounds.contains(&event.position),
+                                StrokeModifiers::from_platform(event.modifiers),
+                            );
+                            view_cx.notify();
+                            return;
+                        }
                         if view.midi_stroke.is_some() {
                             view.finish_midi_draw(
                                 [
@@ -1134,7 +1169,7 @@ impl EditorView {
                 if self.midi_draw_mode {
                     "draw mode on · click or drag to draw · press b for normal mode"
                 } else {
-                    "normal mode · double-click to add or remove · press b for draw mode"
+                    "normal mode · double-click and drag to add/resize · double-click note to remove · b for draw mode"
                 },
                 cx.listener(|v, _, _, cx| {
                     v.midi_draw_mode = !v.midi_draw_mode;
@@ -1456,11 +1491,12 @@ impl EditorView {
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
+        let creation = self.midi_creation.take().is_some();
         let note = self.midi_note_gesture.take().is_some();
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
         let marquee = self.midi_marquee.take().is_some();
-        note || group || stroke || marquee
+        creation || note || group || stroke || marquee
     }
 
     fn midi_note_gesture_current(
@@ -1544,7 +1580,7 @@ impl EditorView {
         tooltip: &'static str,
         click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<Div> {
-        div()
+        let button = div()
             .id(id)
             .w(px(25.0))
             .h(px(22.0))
@@ -1563,7 +1599,10 @@ impl EditorView {
                 .into()
             })
             .on_click(click)
-            .child(theme::text(label))
+            .child(theme::text(label));
+        #[cfg(feature = "ui-test-support")]
+        let button = button.debug_selector(move || tooltip.into());
+        button
     }
 }
 
@@ -1683,3 +1722,7 @@ mod tests {
         assert!(source_beat_label(u64::MAX).len() <= 7);
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_creation_ui_tests.rs"]
+mod creation_tests;
