@@ -330,7 +330,7 @@ fn hex_export_control() -> hex_session::service::ExportControl {
     Default::default()
 }
 
-fn tuning(reference_hz: f64) -> hex_tuning::ProjectTuning {
+pub(super) fn tuning(reference_hz: f64) -> hex_tuning::ProjectTuning {
     let base = hex_tuning::ProjectTuning::default();
     let mut scale = base.scale();
     scale

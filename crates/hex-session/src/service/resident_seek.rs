@@ -26,6 +26,30 @@ pub struct ResidentArrangementSeekResult {
     pub project_revision: u64,
     pub result: Result<ResidentPublicationAcceptance, String>,
 }
+fn selected_source<'a>(
+    intent: &ResidentArrangementSeekIntent,
+    canonical: &'a resident_audio::Snapshot,
+    preview: Option<&'a resident_preview::Preview>,
+) -> Result<&'a resident_audio::Snapshot, String> {
+    match (intent.device_preview, intent.tuning_preview, preview) {
+        (None, None, None) => Ok(canonical),
+        (Some(device), None, Some(preview))
+            if preview.device_identity() == Some(device)
+                && device.project_generation == intent.project_generation
+                && device.canonical_revision == intent.project_revision =>
+        {
+            Ok(&preview.snapshot)
+        }
+        (None, Some(tuning), Some(preview))
+            if preview.tuning_identity() == Some(tuning)
+                && tuning.project_generation == intent.project_generation
+                && tuning.canonical_revision == intent.project_revision =>
+        {
+            Ok(&preview.snapshot)
+        }
+        _ => Err("seek preview changed".into()),
+    }
+}
 struct Active {
     job: u64,
     intent: ResidentArrangementSeekIntent,
@@ -96,11 +120,10 @@ impl Lane {
             || intent.project_generation != context.project_generation
             || intent.project_revision != context.editor_revision
             || intent.cancelled.load(Ordering::Acquire)
-            || intent.device_preview.is_some()
-            || intent.tuning_preview.is_some()
         {
             return Err("seek target changed or was cancelled".into());
         }
+        let selected = selected_source(&intent, current, admission.preview)?;
         let index = self
             .active
             .iter()
@@ -110,10 +133,10 @@ impl Lane {
             .native_reservation
             .ok_or("resident resource reservation unavailable")?;
         let runtime =
-            hex_engine::SessionPlayback::linear_export_runtime_allowance(&current.prepared)
+            hex_engine::SessionPlayback::linear_export_runtime_allowance(&selected.prepared)
                 .map_err(|e| e.to_string())?;
-        let input_capture = current.inputs.capture_bytes().map_err(|e| e.to_string())?;
-        let capture_quote = current
+        let input_capture = selected.inputs.capture_bytes().map_err(|e| e.to_string())?;
+        let capture_quote = selected
             .resources
             .metadata_bytes()
             .map_err(|e| format!("seek metadata: {e:?}"))?
@@ -142,7 +165,7 @@ impl Lane {
             )
             .map_err(|e| e.to_string())?;
         drop(registered);
-        let anchor = current
+        let anchor = selected
             .resources
             .capture_on_control(limits.storage.max_retained_bytes)
             .map_err(|e| format!("seek preparation: {e:?}"))?;
@@ -155,13 +178,13 @@ impl Lane {
             .metadata_bytes()
             .map_err(|e| format!("seek preparation: {e:?}"))?
             .checked_add(
-                hex_engine::SessionPlayback::linear_export_runtime_allowance(&current.prepared)
+                hex_engine::SessionPlayback::linear_export_runtime_allowance(&selected.prepared)
                     .map_err(|e| format!("seek preparation: {e:?}"))?,
             )
             .and_then(|bytes| bytes.checked_add(input_capture))
             .ok_or("seek storage allowance overflow")?;
         let views = self.views().chain(std::iter::once(
-            DeviceResourceAdmission::prepared_on_control(&anchor, &current.prepared),
+            DeviceResourceAdmission::prepared_on_control(&anchor, &selected.prepared),
         ));
         let registered = admission
             .registered
@@ -193,7 +216,7 @@ impl Lane {
                     mode: ArrangementSeekMode::Interactive,
                     generation: intent.project_generation,
                     revision: intent.project_revision,
-                    prepared_revision: Arc::clone(&current.prepared),
+                    prepared_revision: Arc::clone(&selected.prepared),
                     destination_frame: intent.destination_frame,
                     work_budget_frames: crate::arrangement_seek::MAX_SEEK_WORK_FRAMES,
                     start_playing: intent.start_playing,
@@ -209,9 +232,9 @@ impl Lane {
             job,
             intent,
             snapshot: resident_audio::Snapshot {
-                prepared: Arc::clone(&current.prepared),
+                prepared: Arc::clone(&selected.prepared),
                 resources: anchor,
-                inputs: current.inputs.clone(),
+                inputs: selected.inputs.clone(),
             },
             allowance,
             completion: None,
@@ -260,7 +283,10 @@ impl Lane {
                         .prepared_revision()
                         .is_some_and(|r| Arc::ptr_eq(r, &job.snapshot.prepared))
                     || current.as_ref().is_none_or(|current| {
-                        !Arc::ptr_eq(&current.prepared, &job.snapshot.prepared)
+                        selected_source(&job.intent, current, admission.preview)
+                            .map_or(true, |selected| {
+                                !Arc::ptr_eq(&selected.prepared, &job.snapshot.prepared)
+                            })
                             || current.inputs.version != job.snapshot.inputs.version
                     })
                 {
@@ -284,6 +310,9 @@ impl Lane {
                 session
                     .publish_resident_seek(
                         &job.snapshot,
+                        admission
+                            .preview
+                            .map_or(session.project(), |preview| preview.project.as_ref()),
                         current.ok_or("seek source unavailable")?,
                         playback,
                         sink,

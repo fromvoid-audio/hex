@@ -7,6 +7,7 @@ use hex_engine::native_device_resources::DeviceResourceAdmission;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Identity {
     Device(DevicePreviewIdentity),
+    Tuning(TuningPreviewIdentity),
 }
 pub(crate) struct Preview {
     pub(super) project: Arc<Project>,
@@ -14,6 +15,18 @@ pub(crate) struct Preview {
     pub(super) identity: Identity,
 }
 impl Preview {
+    pub(super) fn device_identity(&self) -> Option<DevicePreviewIdentity> {
+        match self.identity {
+            Identity::Device(id) => Some(id),
+            _ => None,
+        }
+    }
+    pub(super) fn tuning_identity(&self) -> Option<TuningPreviewIdentity> {
+        match self.identity {
+            Identity::Tuning(id) => Some(id),
+            _ => None,
+        }
+    }
     pub(super) fn admission(&self) -> DeviceResourceAdmission<'_> {
         DeviceResourceAdmission::prepared_on_control(
             &self.snapshot.resources,
@@ -39,11 +52,14 @@ fn metadata(
 ) -> ResidentPublicationMetadata {
     ResidentPublicationMetadata {
         context,
-        device_preview: identity.map(|id| {
-            let Identity::Device(id) = id;
-            id
+        device_preview: identity.and_then(|id| match id {
+            Identity::Device(id) => Some(id),
+            Identity::Tuning(_) => None,
         }),
-        tuning_preview: None,
+        tuning_preview: identity.and_then(|id| match id {
+            Identity::Tuning(id) => Some(id),
+            Identity::Device(_) => None,
+        }),
         seek_request: None,
         stopped_restore: false,
         computer_keyboard_request: None,
@@ -80,29 +96,15 @@ pub(super) fn device_operation(
                 admission,
             )
         }
-        GesturePreparation::Commit(draft) => {
-            let next = context
-                .editor_revision
-                .checked_add(1)
-                .ok_or(SessionError::Invalid("preview revision exhausted"))?;
-            let admission = with_preview(admission, preview.as_ref());
-            let (_, snapshot) = session.command_resident_snapshot(
-                command_for_snapshot(session, draft)?,
-                hex_engine::AudioSourceContext {
-                    editor_revision: next,
-                    ..context
-                },
-                sink,
-                admission,
-                current.as_ref(),
-            )?;
-            let prepared = Arc::clone(&snapshot.prepared);
-            *current = Some(snapshot);
-            *preview = None;
-            // Read-only model projection follows the already-reserved canonical commit. No
-            // fallible work or cancellation after acceptance can claim publication rolled back.
-            Ok(Some((Arc::new(session.project().clone()), prepared)))
-        }
+        GesturePreparation::Commit(draft) => commit_preview(
+            session,
+            command_for_snapshot(session, draft)?,
+            context,
+            current,
+            preview,
+            sink,
+            admission,
+        ),
         GesturePreparation::Restore => {
             let snapshot = current
                 .as_mut()
@@ -123,6 +125,82 @@ pub(super) fn device_operation(
             Ok(Some((Arc::new(session.project().clone()), prepared)))
         }
     }
+}
+#[allow(clippy::too_many_arguments)] // Same owner/admission boundary as ordinary device gestures.
+pub(super) fn tuning_operation(
+    session: &mut Session,
+    operation: crate::tuning_gesture::TuningPreparation,
+    context: hex_engine::AudioSourceContext,
+    current: &mut Option<resident_audio::Snapshot>,
+    preview: &mut Option<Preview>,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+) -> crate::device_gesture::PreparedGesture {
+    use crate::tuning_gesture::TuningPreparation;
+    match operation {
+        TuningPreparation::Preview(draft) => prepare_preview(
+            session,
+            Command::SetTuning(draft.tuning),
+            Identity::Tuning(TuningPreviewIdentity {
+                project_generation: context.project_generation,
+                canonical_revision: context.editor_revision,
+                key: draft.key,
+                sequence: draft.sequence,
+            }),
+            context,
+            current,
+            preview,
+            sink,
+            admission,
+        ),
+        TuningPreparation::Commit(draft) => commit_preview(
+            session,
+            Command::SetTuning(draft.tuning),
+            context,
+            current,
+            preview,
+            sink,
+            admission,
+        ),
+        TuningPreparation::Restore => device_operation(
+            session,
+            GesturePreparation::Restore,
+            context,
+            current,
+            preview,
+            sink,
+            admission,
+        ),
+    }
+}
+#[allow(clippy::too_many_arguments)] // Last fallible publication remains inside the reserved canonical transaction.
+fn commit_preview(
+    session: &mut Session,
+    command: Command,
+    context: hex_engine::AudioSourceContext,
+    current: &mut Option<resident_audio::Snapshot>,
+    preview: &mut Option<Preview>,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+) -> crate::device_gesture::PreparedGesture {
+    let next = context
+        .editor_revision
+        .checked_add(1)
+        .ok_or(SessionError::Invalid("preview revision exhausted"))?;
+    let (_, snapshot) = session.command_resident_snapshot(
+        command,
+        hex_engine::AudioSourceContext {
+            editor_revision: next,
+            ..context
+        },
+        sink,
+        with_preview(admission, preview.as_ref()),
+        current.as_ref(),
+    )?;
+    let prepared = Arc::clone(&snapshot.prepared);
+    *current = Some(snapshot);
+    *preview = None;
+    Ok(Some((Arc::new(session.project().clone()), prepared)))
 }
 #[allow(clippy::too_many_arguments)] // One finite overlay editor and the actual publication/source union.
 fn prepare_preview(
@@ -159,6 +237,69 @@ fn prepare_preview(
         identity,
     });
     Ok(Some((project, prepared)))
+}
+/// Attach monitor inputs to the actual audible overlay, keeping canonical selection/version
+/// synchronized only after acceptance. The selected target is visited as the candidate exactly
+/// once; the canonical set is an additional real owner while an overlay is active.
+#[allow(clippy::too_many_arguments)] // Exact current/preview owners and final publication are borrowed together.
+pub(super) fn publish_inputs(
+    session: &Session,
+    current: &mut Option<resident_audio::Snapshot>,
+    preview: &mut Option<Preview>,
+    sink: &mut dyn WorkerAudioSink,
+    admission: sampler_export::Admission<'_>,
+    mut metadata: ResidentPublicationMetadata,
+    policy: ResidentPublicationPolicy,
+    selected: resident_audio::RuntimeInputs,
+    required: Option<resident_audio::RequiredInput>,
+) -> Result<Option<hex_engine::computer_keyboard::ComputerKeyboardTuningHint>, SessionError> {
+    let canonical = current
+        .as_mut()
+        .ok_or(SessionError::Invalid("native input source unavailable"))?;
+    let Some(overlay) = preview.as_mut() else {
+        return session.publish_resident_runtime_inputs(
+            canonical, sink, admission, metadata, policy, selected, required,
+        );
+    };
+    let registered = admission
+        .registered
+        .iter()
+        .copied()
+        .chain(std::iter::once(
+            DeviceResourceAdmission::prepared_on_control(&canonical.resources, &canonical.prepared),
+        ))
+        .collect::<Vec<_>>();
+    let runtime_bytes = admission
+        .runtime_bytes
+        .checked_add(overlay.control_bytes().map_err(SessionError::NativeAudio)?)
+        .and_then(|bytes| bytes.checked_add(selected.capture_bytes().ok()?))
+        .ok_or(SessionError::Invalid("preview input metadata overflow"))?;
+    metadata.device_preview = overlay.device_identity();
+    metadata.tuning_preview = overlay.tuning_identity();
+    metadata.requires_preroll = overlay
+        .snapshot
+        .prepared
+        .arrangement_seek_requires_preroll();
+    metadata.gain_recording_track = overlay.snapshot.prepared.gain_recording_track();
+    let (hint, accepted) = session.prepare_resident_runtime_inputs(
+        &overlay.snapshot,
+        &overlay.project,
+        sink,
+        sampler_export::Admission {
+            registered: &registered,
+            runtime_bytes,
+            ..admission
+        },
+        metadata,
+        policy,
+        selected,
+        required,
+    )?;
+    drop(registered);
+    accepted.cancel_retired_from(&canonical.inputs);
+    canonical.inputs = accepted.clone();
+    overlay.snapshot.inputs = accepted;
+    Ok(hint)
 }
 fn with_preview<'a>(
     admission: sampler_export::Admission<'a>,

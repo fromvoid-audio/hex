@@ -659,6 +659,7 @@ impl Session {
     pub(super) fn publish_resident_seek(
         &self,
         snapshot: &Snapshot,
+        project: &Project,
         current: &mut Snapshot,
         mut playback: Playback,
         sink: &mut dyn WorkerAudioSink,
@@ -670,7 +671,7 @@ impl Session {
         let mut selected = snapshot.inputs.clone();
         let extra = selected.allowance()?;
         self.admit_resident_seek(current, sink, admission, extra)?;
-        selected.attach(self.project(), &mut playback)?;
+        selected.attach(project, &mut playback)?;
         selected.selected_after(&current.inputs)?;
         let accepted = self
             .resident_seek_inputs(admission, Some(current), Some(cancelled))?
@@ -687,10 +688,42 @@ impl Session {
         admission: sampler_export::Admission<'_>,
         metadata: ResidentPublicationMetadata,
         policy: ResidentPublicationPolicy,
-        mut selected: RuntimeInputs,
+        selected: RuntimeInputs,
         required: Option<RequiredInput>,
     ) -> Result<Option<hex_engine::computer_keyboard::ComputerKeyboardTuningHint>, SessionError>
     {
+        let (hint, accepted) = self.prepare_resident_runtime_inputs(
+            snapshot,
+            self.project(),
+            sink,
+            admission,
+            metadata,
+            policy,
+            selected,
+            required,
+        )?;
+        accepted.cancel_retired_from(&snapshot.inputs);
+        snapshot.inputs = accepted;
+        Ok(hint)
+    }
+    #[allow(clippy::too_many_arguments)] // Borrow exact source owners until final enqueue; caller updates bindings only after success.
+    pub(super) fn prepare_resident_runtime_inputs(
+        &self,
+        snapshot: &Snapshot,
+        project: &Project,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        metadata: ResidentPublicationMetadata,
+        policy: ResidentPublicationPolicy,
+        mut selected: RuntimeInputs,
+        required: Option<RequiredInput>,
+    ) -> Result<
+        (
+            Option<hex_engine::computer_keyboard::ComputerKeyboardTuningHint>,
+            RuntimeInputs,
+        ),
+        SessionError,
+    > {
         let inputs = self.resident_seek_inputs(admission, None, None)?;
         let quote = runtime_allowance(&snapshot.prepared, selected.allowance()?)?;
         inputs.admit(
@@ -709,7 +742,7 @@ impl Session {
         )
         .map_err(|error| SessionError::NativeAudio(error.to_string()))?;
         let requested = selected.clone();
-        selected.attach(self.project(), &mut playback)?;
+        selected.attach(project, &mut playback)?;
         if required.is_some_and(|required| !selected.satisfies(&requested, required)) {
             return Err(SessionError::Invalid("runtime input source is unavailable"));
         }
@@ -723,9 +756,7 @@ impl Session {
             policy,
             selected.allowance()?,
         )?;
-        selected.cancel_retired_from(&snapshot.inputs);
-        snapshot.inputs = selected;
-        Ok(hint)
+        Ok((hint, selected))
     }
     fn resident_seek_inputs<'a>(
         &'a self,
@@ -807,10 +838,14 @@ impl Session {
             let project = Arc::new(candidate.clone());
             let metadata = ResidentPublicationMetadata {
                 context,
-                device_preview: Some(match identity {
-                    resident_preview::Identity::Device(identity) => identity,
-                }),
-                tuning_preview: None,
+                device_preview: match identity {
+                    resident_preview::Identity::Device(id) => Some(id),
+                    _ => None,
+                },
+                tuning_preview: match identity {
+                    resident_preview::Identity::Tuning(id) => Some(id),
+                    _ => None,
+                },
                 seek_request: None,
                 stopped_restore: false,
                 computer_keyboard_request: None,
@@ -1779,6 +1814,110 @@ mod tests {
         );
         assert!(!input.is_cancelled());
         assert_eq!(current.inputs.version, 1);
+        // Likewise a worker result from a previously accepted preview cannot replace a newer
+        // accepted preview, even while canonical project revision and physical input are equal.
+        let mut current = Some(current);
+        let mut preview = None;
+        let draft = crate::device_gesture::GestureSnapshot {
+            key: crate::device_gesture::GestureKey {
+                generation: 0,
+                token: 1,
+            },
+            target: crate::device_gesture::GestureTarget::TrackGain { track },
+            sequence: 1,
+            value: crate::device_gesture::ParameterValue::Float(0.5),
+            secondary_value: None,
+            parameters: None,
+        };
+        resident_preview::device_operation(
+            &mut session,
+            crate::device_gesture::GesturePreparation::Preview(draft),
+            context,
+            &mut current,
+            &mut preview,
+            &mut sink,
+            sampler_export::Admission::default(),
+        )
+        .unwrap();
+        let identity = preview.as_ref().unwrap().device_identity().unwrap();
+        let intent = ResidentArrangementSeekIntent {
+            request_id: 2,
+            project_generation: 0,
+            project_revision: 1,
+            destination_frame: 129,
+            start_playing: true,
+            fence: ResidentFreshRuntimeFence {
+                output_identity: 1,
+                active_audio_revision: 1,
+                route_generation: 0,
+                admitted_command_ticket: 0,
+            },
+            device_preview: Some(identity),
+            tuning_preview: None,
+            cancelled: Arc::new(AtomicBool::new(false)),
+        };
+        lane.submit(
+            intent,
+            &session,
+            current.as_ref().unwrap(),
+            &sink,
+            sampler_export::Admission {
+                preview: preview.as_ref(),
+                ..Default::default()
+            },
+            context,
+        )
+        .unwrap();
+        resident_preview::device_operation(
+            &mut session,
+            crate::device_gesture::GesturePreparation::Preview(
+                crate::device_gesture::GestureSnapshot {
+                    sequence: 2,
+                    value: crate::device_gesture::ParameterValue::Float(0.25),
+                    ..draft
+                },
+            ),
+            context,
+            &mut current,
+            &mut preview,
+            &mut sink,
+            sampler_export::Admission {
+                seeks: Some(&lane),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        let result = loop {
+            lane.drive(
+                &session,
+                current.as_mut(),
+                Some(&mut sink),
+                sampler_export::Admission {
+                    preview: preview.as_ref(),
+                    ..Default::default()
+                },
+                context,
+            );
+            if let Ok(result) = receiver.try_recv() {
+                break result;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            thread::yield_now();
+        };
+        assert!(result.result.unwrap_err().contains("seek target changed"));
+        assert_eq!(observed.seek_attempts.load(Ordering::Acquire), 0);
+        assert_eq!(
+            preview
+                .as_ref()
+                .unwrap()
+                .device_identity()
+                .unwrap()
+                .sequence,
+            2
+        );
+        assert_eq!(current.as_ref().unwrap().inputs.version, 1);
+        assert!(!input.is_cancelled());
         drop(lane); // The existing worker joins before its exact captured anchors retire.
     }
 
