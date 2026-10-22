@@ -33,6 +33,7 @@ mod workspace_view;
 mod workspace_view_ui_test;
 
 mod group_copy;
+mod pending_clip_move;
 #[cfg(test)]
 mod test_environment;
 
@@ -699,6 +700,7 @@ pub(super) struct EditorView {
     duplicate_intent: DuplicateIntent,
     pending_scene_duplicate: Option<PendingSceneDuplicate>,
     pending_group_copy: Option<group_copy::Pending>,
+    pending_clip_move: Option<pending_clip_move::Pending>,
     close_prompt_open: bool,
     export_pending: bool,
     export_control: Option<hex_session::service::ExportControl>,
@@ -1280,6 +1282,7 @@ impl EditorView {
             duplicate_intent: DuplicateIntent::default(),
             pending_scene_duplicate: None,
             pending_group_copy: None,
+            pending_clip_move: None,
             close_prompt_open: false,
             export_pending: false,
             export_control: None,
