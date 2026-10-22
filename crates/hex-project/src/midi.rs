@@ -700,6 +700,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             remove,
             insert,
         } => crate::midi_batch::edit(project, clip, remove, insert),
+        Command::DuplicateMidiSourceRange { clip, start, end } => {
+            crate::midi_source_range::duplicate(project, clip, start, end)
+        }
         Command::UpdateMidiNote {
             note,
             start,

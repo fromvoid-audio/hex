@@ -247,6 +247,7 @@ impl EditorView {
         if let Err(error) = self.midi_selection.select_all(notes) {
             self.error = Some(error.into());
         } else {
+            self.clear_midi_time_selection();
             self.audition_midi_selection();
         }
     }
@@ -266,6 +267,7 @@ impl EditorView {
         if self.edit_pending() || self.detail_midi_clip_data().is_none() {
             return;
         }
+        self.clear_midi_time_selection();
         self.cancel_midi_note_gesture();
         let current = self.midi_marker.unwrap_or(self.piano_beat_start.raw());
         let step = self.midi_snap_grid.movement_step();

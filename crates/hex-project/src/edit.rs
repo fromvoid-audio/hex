@@ -715,6 +715,17 @@ pub enum Command {
         remove: Vec<NoteId>,
         insert: Vec<MidiNoteInsert>,
     },
+    /// Duplicate positive intersections with a source-local half-open time range
+    /// immediately after that range. Stored note order determines fresh-ID order;
+    /// canonical same-pitch overwrite applies at the destination. Source length
+    /// grows through the complete destination range, including trailing silence.
+    /// Playback start, loop markers and Arrangement placement remain unchanged.
+    /// Empty content with no required growth is a canonical no-op.
+    DuplicateMidiSourceRange {
+        clip: ClipId,
+        start: crate::BeatTime,
+        end: crate::BeatTime,
+    },
     /// Move/resize one stable note, overwriting older same-pitch intersections.
     UpdateMidiNote {
         note: NoteId,
@@ -1549,6 +1560,7 @@ impl Project {
             | Command::AddMidiNotes { .. }
             | Command::EditMidiNotes { .. }
             | Command::EditMidiNotesWithSourceExtent { .. }
+            | Command::DuplicateMidiSourceRange { .. }
             | Command::UpdateMidiNote { .. }
             | Command::UpdateMidiNotes { .. }
             | Command::RemoveMidiNote(_)
