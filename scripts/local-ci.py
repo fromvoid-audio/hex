@@ -94,6 +94,13 @@ def terminal_progress(label: str, *, announce: bool = True):
 
 @dataclass(frozen=True)
 class Step:
+    """A check with a 1–100 character ASCII ID starting with a letter or digit.
+
+    Remaining characters may be letters, digits, underscores or hyphens.
+    The runner validates the entire plan before executing any command. IDs are
+    used verbatim in numbered log basenames; the index keeps repeated IDs distinct.
+    """
+
     step_id: str
     argv: tuple[str, ...]
     uses_cargo_target: bool = False
@@ -765,8 +772,9 @@ class LocalCiRunner:
                 if cleanup_argv is None:
                     cleanup_argv = self._workspace_clean_argv(target)[:8]
                 for spec in invalidated:
-                    if spec not in cleanup_argv:
-                        cleanup_argv.extend(("--package", spec))
+                    name = self._clean_package_name(spec)
+                    if name not in cleanup_argv:
+                        cleanup_argv.extend(("--package", name))
             if cleanup_argv is not None:
                 current = {p["name"]: p for p in dependency_inputs["packages"]}
                 previous = owner_record.get("dependency_inputs", {}) if owner_record else {}
@@ -776,7 +784,7 @@ class LocalCiRunner:
                 old_by_name = {p["name"]: p for p in (previous or {}).get("packages", [])}
                 for package in dependency_inputs["packages"]:
                     if not self._invalidate_dependency_profile and old_by_name.get(package["name"]) != package:
-                        cleanup_argv.extend(("--package", package["spec"]))
+                        cleanup_argv.extend(("--package", self._clean_package_name(package["spec"])))
 
             self.summary["target_cache"] = {
                 "action": ownership_action,
@@ -832,8 +840,28 @@ class LocalCiRunner:
         for package in packages:
             if not isinstance(package, dict) or not isinstance(package.get("spec"), str):
                 raise TargetCacheError("workspace package metadata is malformed")
-            argv.extend(("--package", package["spec"]))
+            argv.extend(("--package", self._clean_package_name(package["spec"])))
         return argv
+
+    def _clean_package_name(self, spec: str) -> str:
+        """Cargo 1.94 clean matches names, ignoring ID URL/version qualifiers.
+
+        Keep full IDs in provenance, but only clean a name when current complete
+        metadata proves it identifies exactly one workspace or path package.
+        Never use a qualifier to imply a narrower cleanup than Cargo performs.
+        """
+        if not isinstance(self._release_metadata, dict):
+            raise TargetCacheError("complete cleanup package metadata is unavailable")
+        packages = self._release_metadata["packages"]
+        matches = [p for p in packages if p["id"] == spec]
+        if len(matches) != 1:
+            raise TargetCacheError("cleanup package is absent or ambiguous in current metadata")
+        name = matches[0]["name"]
+        if (not isinstance(name, str) or not name
+                or sum(p["name"] == name for p in packages) != 1
+                or matches[0].get("source") is not None):
+            raise TargetCacheError("cleanup requires a unique workspace/path package name")
+        return name
 
     def _release_scope(self) -> list[dict[str, str]]:
         """Cargo clean ignores URL/version qualifiers: reject external name collisions."""
@@ -1246,8 +1274,9 @@ class LocalCiRunner:
                 argv = self._workspace_clean_argv(target) if not reuse and not self._invalidate_dependency_profile else self._workspace_clean_argv(target)[:8]
                 argv[3] = "release"
                 for spec in invalidated:
-                    if spec not in argv:
-                        argv.extend(("--package", spec))
+                    name = self._clean_package_name(spec)
+                    if name not in argv:
+                        argv.extend(("--package", name))
                 report["cleanup_argv"] = argv
                 report["cleanup_status"] = "pending"
                 # Keep release and dev cleanup evidence independent.
@@ -1458,7 +1487,14 @@ class LocalCiRunner:
 
         failed = False
         try:
-            if not self._capture_repository_state("start_tree"):
+            invalid_ids = [step.step_id for step in self.steps
+                           if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", step.step_id) is None]
+            if invalid_ids:
+                self.summary.update(status="failed", verification_status="failed", exit_code=2,
+                                    step_id_error=f"invalid step IDs: {invalid_ids!r}; expected 1–100 ASCII characters: "
+                                                  "alphanumeric first, then alphanumeric, underscore or hyphen")
+                print(self.summary["step_id_error"], file=sys.stderr, flush=True)
+            elif not self._capture_repository_state("start_tree"):
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not capture exact commit and dirty state"
