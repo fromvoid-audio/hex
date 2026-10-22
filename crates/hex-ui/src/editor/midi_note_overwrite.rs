@@ -41,7 +41,9 @@ impl EditorView {
                 let note = gesture
                     .preview(original.id)
                     .ok_or(Invalid("midi preview target changed"))?;
-                removed.push(original.id);
+                if !gesture.is_copy() {
+                    removed.push(original.id);
+                }
                 authored.push(MidiNoteInsert {
                     start: BeatTime::from_raw(note.start),
                     duration: BeatTime::from_raw(note.duration),

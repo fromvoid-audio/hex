@@ -1099,6 +1099,11 @@ impl Render for EditorView {
                 {
                     return;
                 }
+                if view.midi_focus.is_focused(window) {
+                    view.duplicate_piano_notes();
+                    cx.notify();
+                    return;
+                }
                 if view.duplicate_time_selection(window) {
                     cx.notify();
                     return;
