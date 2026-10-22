@@ -366,7 +366,7 @@ impl EditorView {
         div().h(px(18.0)).flex_shrink_0().flex()
             .child(div().id("midi-source-ruler-label").w(px(38.0)).flex_shrink_0().text_size(px(8.0)).child(theme::text("start"))
                 .tooltip(|_,cx|cx.new(|_|super::transport::MiniTooltip { description:"drag clip playback start · grid snapping · hold cmd/control to invert · no seek".into() }).into()))
-            .child(ruler)
+            .children([ruler])
     }
 }
 

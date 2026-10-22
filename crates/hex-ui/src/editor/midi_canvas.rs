@@ -1812,7 +1812,7 @@ impl EditorView {
                 .flex()
                 .flex_col()
                 .child(toolbar)
-                .child(source_ruler)
+                .children([source_ruler])
                 .child(roll_area),
         );
         let velocity = self.velocity_lane(cx);
