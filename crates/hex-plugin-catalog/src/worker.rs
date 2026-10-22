@@ -144,7 +144,24 @@ fn poll_and_drain<T>(
     Ok((received, error))
 }
 
-fn discover(app: &Path, path: &Path, token: &Token) -> Result<(Report, String), String> {
+struct DiscoveryOutcome {
+    result: Result<(Report, String), String>,
+    chain_retired: bool,
+}
+fn discover(app: &Path, path: &Path, token: &Token) -> DiscoveryOutcome {
+    let mut chain_retired = true; // No child has been started yet.
+    let result = discover_inner(app, path, token, &mut chain_retired);
+    DiscoveryOutcome {
+        result,
+        chain_retired,
+    }
+}
+fn discover_inner(
+    app: &Path,
+    path: &Path,
+    token: &Token,
+    chain_retired: &mut bool,
+) -> Result<(Report, String), String> {
     if token.cancelled() {
         return Err("scan cancelled".into());
     }
@@ -170,6 +187,7 @@ fn discover(app: &Path, path: &Path, token: &Token) -> Result<(Report, String), 
         .stderr(Stdio::from(OwnedFd::from(child_diagnostic)))
         .spawn()
         .map_err(|e| format!("scanner start failed: {e}"))?;
+    *chain_retired = false;
     let started = Instant::now();
     let mut out = Vec::new();
     let mut err = Vec::new();
@@ -214,6 +232,13 @@ fn discover(app: &Path, path: &Path, token: &Token) -> Result<(Report, String), 
         }
         std::thread::sleep(Duration::from_millis(10));
     }
+    let decoded = serde_json::from_slice::<Report>(&out);
+    *chain_retired = decoded.as_ref().is_ok_and(|report| {
+        report.cleanup.direct_reaped
+            && !report.cleanup.pending
+            && !report.cleanup.custody_lost
+            && !report.cleanup.cleanup_unconfirmed
+    });
     if token.cancelled() {
         cause.get_or_insert_with(|| "scan cancelled".into());
     }
@@ -221,7 +246,7 @@ fn discover(app: &Path, path: &Path, token: &Token) -> Result<(Report, String), 
         return Err(error);
     }
     if !exit.is_some_and(|s| s.success()) {
-        let detail = serde_json::from_slice::<Report>(&out)
+        let detail = decoded
             .ok()
             .and_then(|r| r.error)
             .unwrap_or_else(|| String::from_utf8_lossy(&err).into_owned());
@@ -236,8 +261,7 @@ fn discover(app: &Path, path: &Path, token: &Token) -> Result<(Report, String), 
             format!("scan failed · {detail}")
         });
     }
-    let report: Report = serde_json::from_slice(&out)
-        .map_err(|_| "scanner returned malformed or incomplete metadata")?;
+    let report = decoded.map_err(|_| "scanner returned malformed or incomplete metadata")?;
     validate_report(&report)?;
     if report.bundle != initial
         || report.receipt_sha256 != package.build.receipt_sha256
@@ -288,7 +312,7 @@ pub fn scan(catalog_path: &Path, app: &Path, path: PathBuf, token: Token) -> Upd
             };
         }
     }
-    let result = discover(app, &path, &token);
+    let result = discover(app, &path, &token).result;
     // The atomic transition is the cancellation/publication linearization point.
     let result = match token.begin_publication() {
         Ok(true) => result,
@@ -312,6 +336,126 @@ pub fn scan(catalog_path: &Path, app: &Path, path: PathBuf, token: Token) -> Upd
         Err(error) => Update {
             catalog: None,
             status: format!("{status} · catalog update failed: {error}"),
+        },
+    }
+}
+
+/// Explicit trusted standard folders. Resolution and enumeration stay on control.
+pub fn scan_standard(catalog_path: &Path, app: &Path, token: Token) -> Update {
+    match crate::roots::macos_standard_paths() {
+        Ok(roots) => scan_folders(catalog_path, app, &roots, token),
+        Err(status) => Update {
+            catalog: None,
+            status,
+        },
+    }
+}
+
+/// One bounded batch; each native chain retires before the next can start.
+/// Cancelled batches never promote their pending metadata. The short final
+/// writer transaction merges fresh state, preserving other windows' records.
+pub fn scan_folders(catalog_path: &Path, app: &Path, roots: &[PathBuf], token: Token) -> Update {
+    let run = || -> Result<(Vec<_>, String), String> {
+        let mut staged = Catalog::load(catalog_path)?;
+        let enumeration = crate::roots::enumerate(roots, || token.cancelled())?;
+        let mut paths: std::collections::BTreeSet<_> = staged
+            .entries
+            .iter()
+            .map(|entry| entry.path.clone())
+            .collect();
+        paths.extend(enumeration.bundles.iter().cloned());
+        if paths.len() > crate::MAX_MODULES {
+            return Err("plugin catalog module capacity reached before scanning".into());
+        }
+        Package::inspect(app)?;
+        let mut results = Vec::new();
+        let mut successful = 0;
+        let mut failed = 0;
+        for path in enumeration.bundles {
+            if token.cancelled() {
+                return Err("folder scan cancelled · catalog unchanged".into());
+            }
+            let outcome = discover(app, &path, &token);
+            if !outcome.chain_retired {
+                return Err(format!(
+                    "folder scan stopped · native cleanup unconfirmed · {}",
+                    outcome
+                        .result
+                        .err()
+                        .unwrap_or_else(|| "scanner retirement not established".into())
+                ));
+            }
+            if token.cancelled() {
+                return Err("folder scan cancelled · catalog unchanged".into());
+            }
+            let result = outcome
+                .result
+                .map(|(mut report, source)| {
+                    report.stdout.clear();
+                    report.stderr.clear();
+                    (report, source)
+                })
+                .map_err(|error| error.chars().take(128).collect::<String>());
+            if result.is_ok() {
+                successful += 1;
+            } else {
+                failed += 1;
+            }
+            staged.record(path.clone(), result.clone())?;
+            if serde_json::to_vec(&staged)
+                .map_err(|e| format!("catalog staging failed: {e}"))?
+                .len()
+                > crate::MAX_CATALOG_BYTES
+            {
+                return Err("folder scan catalog byte bound exceeded · catalog unchanged".into());
+            }
+            results.push((path, result));
+        }
+        Ok((
+            results,
+            format!(
+                "vst3 scan complete · {successful} discovered · {failed} failed · {} linked entries skipped · hosting unavailable",
+                enumeration.skipped_links
+            ),
+        ))
+    };
+    let (results, status) = match run() {
+        Ok(value) => value,
+        Err(status) => {
+            return Update {
+                catalog: None,
+                status,
+            };
+        }
+    };
+    match token.begin_publication() {
+        Ok(true) => {}
+        Ok(false) => {
+            return Update {
+                catalog: None,
+                status: "folder scan cancelled · catalog unchanged".into(),
+            };
+        }
+        Err(status) => {
+            return Update {
+                catalog: None,
+                status,
+            };
+        }
+    }
+    match crate::storage::update(catalog_path, |catalog| {
+        for (path, result) in results {
+            catalog.record(path, result)?;
+        }
+        Ok(())
+    }) {
+        Ok(publication) => Update {
+            catalog: Some(publication.catalog),
+            status: publication.warning.unwrap_or(status),
+        },
+        Err(error) => Update {
+            catalog: None,
+            status: format!("folder scan catalog update failed: {error}"),
         },
     }
 }

@@ -424,7 +424,7 @@ fn clip_limit_refuses_split_insert_without_mutating_project() {
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             id,
-            start_raw: quarter(10).raw(),
+            start_raw: quarter(10 + id - 6).raw(),
             length_raw: quarter(1).raw(),
             source_length_raw: quarter(1).raw(),
             source_start_raw: 0,

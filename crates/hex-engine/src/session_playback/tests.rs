@@ -1,4 +1,5 @@
 use super::*;
+use crate::routed_midi_fixture;
 mod authored_history;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
@@ -2731,7 +2732,7 @@ fn with_instrument_bypassed(project: &Project, bypassed: bool) -> Project {
         .as_mut()
         .expect("MIDI fixture has a canonical instrument slot");
     instrument.bypassed = bypassed;
-    legacy_project_from_snapshot(snapshot).unwrap()
+    Project::from_snapshot(snapshot).unwrap()
 }
 
 fn session_only_project(project: &Project) -> Project {
@@ -2853,7 +2854,7 @@ fn with_test_instrument(
         .expect("MIDI fixture has an instrument slot");
     instrument.state =
         hex_lattice_contract::NativeDeviceState::new(type_id, 1, vec![state_value]).unwrap();
-    legacy_project_from_snapshot(snapshot).unwrap()
+    Project::from_snapshot(snapshot).unwrap()
 }
 
 fn revision(project: &Project, table: Arc<hex_devices::SineTable>) -> Arc<PreparedRevision> {
@@ -4093,7 +4094,8 @@ fn mutable_instrument_adds_to_hybrid_audio_before_ordered_suffix_effects() {
         state: gain_state,
     }];
     snapshot.tracks[0].instrument_position = Some(0);
-    let project = legacy_project_from_snapshot(snapshot).unwrap();
+    routed_midi_fixture::separate_midi(&mut snapshot, 0);
+    let project = Project::from_snapshot(snapshot).unwrap();
     let asset_id = project.assets().next().unwrap().id();
     let media = BTreeMap::from([(
         asset_id,
@@ -5256,7 +5258,8 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         midi_clips,
     };
     source.tracks[0].instrument_position = Some(1);
-    let old_project = legacy_project_from_snapshot(source).unwrap();
+    routed_midi_fixture::separate_midi(&mut source, 0);
+    let old_project = Project::from_snapshot(source).unwrap();
     let asset_id = old_project.assets().next().unwrap().id();
     let media = BTreeMap::from([(
         asset_id,
@@ -5312,8 +5315,11 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
         audio_clips.clear();
         midi_clips.clear();
     }
+    if let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut tail_snapshot.tracks[1].content {
+        midi_clips.clear();
+    }
     tail_snapshot.session.cells.clear();
-    let tail_project = legacy_project_from_snapshot(tail_snapshot).unwrap();
+    let tail_project = Project::from_snapshot(tail_snapshot).unwrap();
     let mut tail_candidate =
         SessionPlayback::new(prepare(&tail_project, Arc::clone(&table))).unwrap();
     tail_candidate
@@ -5326,8 +5332,13 @@ fn mutable_to_analytic_handoff_refuses_active_chase_then_preserves_old_gate_and_
     {
         midi_clips.clear();
     }
+    if let TrackContentSnapshot::Hybrid { midi_clips, .. } =
+        &mut candidate_snapshot.tracks[1].content
+    {
+        midi_clips.clear();
+    }
     candidate_snapshot.session.cells.clear();
-    let candidate_source = legacy_project_from_snapshot(candidate_snapshot).unwrap();
+    let candidate_source = Project::from_snapshot(candidate_snapshot).unwrap();
     let empty_analytic = with_test_instrument(&candidate_source, analytic_id, 0);
     let empty_revision = prepare(&empty_analytic, Arc::clone(&table));
     let mut candidate = SessionPlayback::new(empty_revision).unwrap();
@@ -10397,7 +10408,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
                 id: snapshot.next_id,
                 start_raw: 0,
                 duration_raw: note_duration,
-                pitch: 60,
+                pitch: 61,
                 channel: 0,
                 velocity: 100,
             });
@@ -10413,7 +10424,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: note_duration,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -10558,7 +10569,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -10571,7 +10582,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });

@@ -174,6 +174,8 @@ impl EditorView {
         window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        self.reconcile_piano_pan();
+        self.reconcile_midi_ruler();
         let open = self.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
             self.detail_clip_id()
@@ -219,6 +221,8 @@ impl EditorView {
         if detail.is_some() && !self.device_panel_active {
             self.clip_detail_body_height = if has_session_audio {
                 super::session_audio_panel::DETAIL_HEIGHT
+            } else if selected_midi {
+                CLIP_DETAIL_BODY_HEIGHT + self.midi_velocity.visible_height()
             } else {
                 CLIP_DETAIL_BODY_HEIGHT
             };
