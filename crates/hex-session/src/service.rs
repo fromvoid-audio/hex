@@ -50,8 +50,10 @@ pub use canonical_audio_source::CanonicalAudioSourceSnapshot;
 #[cfg(test)]
 mod stopped_playback_tests;
 use hex_storage::FileToken;
-pub use recovery::{ProjectSource, missing_assets, untitled_recovery_path};
-use recovery::{absolute_document_path, checkpoint_project, project_for_save};
+pub use recovery::{
+    ProjectSource, RecoveryFailure, RecoveryRestart, missing_assets, untitled_recovery_path,
+};
+use recovery::{absolute_document_path, project_for_save};
 use std::{
     collections::BTreeMap,
     fmt, io,
@@ -171,6 +173,8 @@ pub struct Event {
     pub playback: Option<Playback>,
     pub status: Option<String>,
     pub error: Option<String>,
+    /// Persistent automatic-recovery failure; successful edits need not clear it.
+    pub recovery_failure: Option<Arc<RecoveryFailure>>,
     /// Original failing batch member, kept separate from app-owned explanation.
     pub audio_batch_failure: Option<AudioBatchMemberFailure>,
     pub request_complete: bool,
@@ -346,6 +350,8 @@ impl GainLaneEdit {
 // (25,600 payload bytes). Boxing would hide storage and add control allocations.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    /// Explicitly confirmed recovery storage action, scoped to one observed failure.
+    RestartRecovery(RecoveryRestart),
     /// Scalar native seek; all candidate/source owners remain on control workers.
     ResidentArrangementSeek(ResidentArrangementSeekIntent),
     /// Dedicated reference tone, independent of selected-track instruments.
@@ -1550,6 +1556,7 @@ fn run_worker(
     let mut media_base: Option<PathBuf> = None;
     let mut document: Option<DocumentHandle> = None;
     let mut journal: Option<hex_storage::Journal> = None;
+    let mut recovery_tracker = recovery::RecoveryTracker::default();
     let mut midi_preview = Arc::new(hex_engine::MidiArrangementPreview::default());
     let mut project_generation = 0_u64;
     let mut state = view_state(
@@ -1634,6 +1641,7 @@ fn run_worker(
                     .then(|| native_playback(prepared)),
                 status: Some("project ready".into()),
                 error: None,
+                recovery_failure: None,
                 audio_batch_failure: None,
                 request_complete: false,
                 sampler_load_complete: None,
@@ -1666,6 +1674,7 @@ fn run_worker(
             playback: None,
             status: None,
             error: Some(error),
+            recovery_failure: None,
             audio_batch_failure: None,
             request_complete: false,
             sampler_load_complete: None,
@@ -2194,6 +2203,7 @@ fn run_worker(
             && !matches!(
                 &request,
                 Request::RestartAudio { .. }
+                    | Request::RestartRecovery(_)
                     | Request::SamplerEdit(_)
                     | Request::ContinueSamplerEdit
                     | Request::PrepareComputerKeyboard { .. }
@@ -2256,6 +2266,36 @@ fn run_worker(
             error = Some(reason);
         } else {
             match request {
+                Request::RestartRecovery(intent) => {
+                    let result = if device_gesture.snapshot().is_some()
+                        || tuning_gesture.snapshot().is_some()
+                    {
+                        Err("finish the active value edit before restarting recovery".into())
+                    } else if let Some(untitled) = recovery.as_deref() {
+                        recovery_tracker.restart(
+                            recovery::RecoveryContext {
+                                session: &session,
+                                base: media_base.as_deref(),
+                                document: document.as_ref(),
+                                untitled,
+                                journal: &mut journal,
+                                generation: project_generation,
+                            },
+                            revision,
+                            intent,
+                        )
+                    } else {
+                        Err("automatic recovery is not enabled".into())
+                    };
+                    match result {
+                        Ok(()) => {
+                            status = Some(
+                                "automatic recovery restarted · previous journal preserved".into(),
+                            )
+                        }
+                        Err(reason) => error = Some(reason),
+                    }
+                }
                 Request::RestartAudio {
                     project_generation: expected,
                     request_id,
@@ -5347,26 +5387,18 @@ fn run_worker(
             }
         }
         if let Some(untitled_path) = recovery.as_deref() {
-            let journal_result = if !unsaved {
-                let result = match journal.as_mut() {
-                    Some(current) => current.clear(),
-                    None => Ok(()),
-                };
-                if result.is_ok() {
-                    journal = None;
-                }
-                result.map_err(|reason| reason.to_string())
-            } else if revision != revision_before_request {
-                checkpoint_project(
-                    &session,
-                    media_base.as_deref(),
-                    document.as_ref(),
-                    untitled_path,
-                    &mut journal,
-                )
-            } else {
-                Ok(())
-            };
+            let journal_result = recovery_tracker.maintain(
+                recovery::RecoveryContext {
+                    session: &session,
+                    base: media_base.as_deref(),
+                    document: document.as_ref(),
+                    untitled: untitled_path,
+                    journal: &mut journal,
+                    generation: project_generation,
+                },
+                unsaved,
+                revision != revision_before_request,
+            );
             if let Err(reason) = journal_result {
                 let message = format!("automatic recovery: {reason}");
                 error = Some(match error {
@@ -5529,6 +5561,7 @@ fn run_worker(
                 playback,
                 status,
                 error,
+                recovery_failure: recovery_tracker.failure(),
                 request_complete,
                 sampler_load_complete,
                 sampler_edit_complete,

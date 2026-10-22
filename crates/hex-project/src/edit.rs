@@ -682,6 +682,7 @@ pub enum Command {
         looping: bool,
         length: crate::BeatTime,
     },
+    /// Author one note using the same source/pitch overwrite rule as `AddMidiNotes`.
     AddMidiNote {
         clip: ClipId,
         start: crate::BeatTime,
@@ -690,13 +691,15 @@ pub enum Command {
         channel: u8,
         velocity: u8,
     },
-    /// Atomically append several notes to one MIDI clip as one history step.
-    /// Identical musical values remain distinct notes, as with `AddMidiNote`.
+    /// Atomically author several notes in one MIDI source as one history step.
+    /// Later input wins on the same pitch across channels, retaining only an
+    /// older positive left prefix. Only surviving authors receive new IDs.
     AddMidiNotes {
         clip: ClipId,
         notes: Vec<MidiNoteInsert>,
     },
-    /// Atomically remove and insert notes in one MIDI clip as one history step.
+    /// Atomically remove and author notes in one MIDI source as one history step.
+    /// Insertions use the same destructive same-pitch rule as `AddMidiNotes`.
     EditMidiNotes {
         clip: ClipId,
         remove: Vec<NoteId>,
@@ -711,6 +714,7 @@ pub enum Command {
         remove: Vec<NoteId>,
         insert: Vec<MidiNoteInsert>,
     },
+    /// Move/resize one stable note, overwriting older same-pitch intersections.
     UpdateMidiNote {
         note: NoteId,
         start: crate::BeatTime,
@@ -720,6 +724,9 @@ pub enum Command {
         velocity: u8,
     },
     /// Atomically update several notes in one MIDI clip as one history step.
+    /// Exclude all selected originals together, then resolve authored geometry
+    /// in input order using the same overwrite rule as `AddMidiNotes`.
+    /// Surviving notes keep their original IDs and source order.
     UpdateMidiNotes {
         clip: ClipId,
         notes: Vec<MidiNoteUpdate>,
@@ -805,7 +812,8 @@ pub enum Created {
     Scene(crate::SceneId),
     SessionClip(ClipId),
     /// Inclusive contiguous note-ID range created in `clip`; select IDs in the
-    /// current clip whose values fall within this range.
+    /// current clip whose values fall within this range. Only authored members
+    /// surviving this atomic edit consume IDs, in their original input order.
     Notes {
         clip: ClipId,
         first: NoteId,

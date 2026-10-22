@@ -17,6 +17,8 @@ pub(super) struct ComputerKeyboard {
     pub base_pitch: u8,
     pub velocity: u8,
     held: [Option<HeldKey>; NOTE_KEYS.len()],
+    /// Physical ownership for editor consumers; audio lease retirement is separate.
+    physical: [Option<HeldKey>; NOTE_KEYS.len()],
     tokens: [u64; NOTE_KEYS.len()],
     next_token: u64,
     pub input: Option<std::sync::Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>>,
@@ -32,6 +34,7 @@ impl Default for ComputerKeyboard {
             base_pitch: 60,
             velocity: 100,
             held: [None; NOTE_KEYS.len()],
+            physical: [None; NOTE_KEYS.len()],
             tokens: [0; NOTE_KEYS.len()],
             next_token: 0,
             input: None,
@@ -54,6 +57,11 @@ impl ComputerKeyboard {
     /// Disable and lifecycle cancellation forget physical ownership together.
     pub fn release_all(&mut self) {
         self.held.fill(None);
+        self.physical.fill(None);
+    }
+
+    pub(super) fn physical_notes(&self) -> impl Iterator<Item = HeldKey> + '_ {
+        self.physical.iter().copied().flatten()
     }
 
     pub fn toggle(&mut self) {
@@ -70,7 +78,7 @@ impl ComputerKeyboard {
             return false;
         }
         if let Some(index) = NOTE_KEYS.iter().position(|candidate| *candidate == key) {
-            if !is_held && self.held[index].is_none() {
+            if !is_held && self.physical[index].is_none() {
                 if let Some(pitch) = self
                     .base_pitch
                     .checked_add(index as u8)
@@ -85,10 +93,12 @@ impl ComputerKeyboard {
                     };
                     self.next_token = token;
                     self.tokens[index] = token;
-                    self.held[index] = Some(HeldKey {
+                    let held = HeldKey {
                         pitch,
                         velocity: self.velocity,
-                    });
+                    };
+                    self.held[index] = Some(held);
+                    self.physical[index] = Some(held);
                 }
             }
             return true;
@@ -126,7 +136,8 @@ impl ComputerKeyboard {
         let Some(index) = NOTE_KEYS.iter().position(|candidate| *candidate == key) else {
             return false;
         };
-        self.held[index].take().is_some()
+        let active = self.held[index].take().is_some();
+        self.physical[index].take().is_some() || active
     }
 
     #[cfg(test)]
@@ -136,18 +147,26 @@ impl ComputerKeyboard {
 }
 
 impl super::EditorView {
-    pub(super) fn cancel_computer_keyboard(&mut self) {
+    pub(super) fn retire_computer_keyboard_audio(&mut self) {
         if let Some(input) = self.computer_keyboard.input.take() {
             input.cancel();
         }
-        self.computer_keyboard.release_all();
+        self.computer_keyboard.held.fill(None);
         self.computer_keyboard.target = None;
+    }
+
+    pub(super) fn cancel_computer_keyboard(&mut self) {
+        self.midi_audition.clear();
+        self.retire_computer_keyboard_audio();
+        self.computer_keyboard.release_all();
     }
 
     /// Priority Stop retains only a still-valid ordinary output-bound input root. The output
     /// endpoint revokes its active prefix; fresh physical input can reuse the already admitted
     /// graph without waiting for a publication slot. Other lifecycle cancellation stays terminal.
     pub(super) fn stop_computer_keyboard(&mut self) {
+        self.invalidate_hardware_step();
+        self.midi_audition.clear();
         if self.reusable_worker_keyboard_input(self.worker_owns_keyboard_publication())
             && self
                 .computer_keyboard
@@ -179,12 +198,14 @@ impl super::EditorView {
         self.cancel_computer_keyboard();
         self.computer_keyboard.toggle();
         self.computer_keyboard.suspended = false;
-        self.focus.focus(window);
+        if !self.midi_step.enabled || !self.midi_focus.is_focused(window) {
+            self.focus.focus(window);
+        }
         self.tick_computer_keyboard();
         cx.notify();
     }
 
-    fn worker_owns_keyboard_publication(&self) -> bool {
+    pub(super) fn worker_owns_keyboard_publication(&self) -> bool {
         self.document_audio_mode == hex_session::DocumentAudioMode::Resident
             && self
                 .audio
@@ -198,6 +219,7 @@ impl super::EditorView {
         worker_owned
             && self.computer_keyboard.input.as_ref().is_some_and(|input| {
                 !input.is_cancelled()
+                    && !input.is_note_audition()
                     && (!input.is_output_bound()
                         || self.audio.as_ref().is_some_and(|audio| {
                             audio.control.computer_keyboard_input_matches_output(input)
@@ -218,6 +240,9 @@ impl super::EditorView {
     }
 
     pub(super) fn tick_computer_keyboard(&mut self) -> bool {
+        if let Some(changed) = self.tick_midi_audition() {
+            return changed;
+        }
         self.tick_computer_keyboard_with_policy(self.worker_owns_keyboard_publication())
     }
 
@@ -297,7 +322,15 @@ impl super::EditorView {
             }
             return changed;
         }
-        self.cancel_computer_keyboard();
+        let same_physical_target = self.midi_step.enabled
+            && target
+                .zip(self.computer_keyboard.target)
+                .is_some_and(|(new, old)| new.0 == old.0 && new.2 == old.2);
+        if same_physical_target {
+            self.retire_computer_keyboard_audio();
+        } else {
+            self.cancel_computer_keyboard();
+        }
         let Some((generation, revision, track)) = target else {
             return false;
         };
@@ -391,6 +424,11 @@ impl super::EditorView {
                 cx.stop_propagation();
                 return;
             }
+            let deferred_audition = if !event.is_held && NOTE_KEYS.contains(&key) {
+                self.pause_midi_audition_for_keyboard()
+            } else {
+                None
+            };
             let worker_owned = self.worker_owns_keyboard_publication();
             let retain_input = self.reusable_worker_keyboard_input(worker_owned);
             if (self.device_gesture_pending()
@@ -424,6 +462,7 @@ impl super::EditorView {
             if self.computer_keyboard.key_down(key, event.is_held) {
                 self.publish_computer_keyboard();
             }
+            self.defer_paused_midi_audition(deferred_audition);
             cx.notify();
         }
         cx.stop_propagation();
@@ -441,6 +480,9 @@ impl super::EditorView {
         let Some(input) = &self.computer_keyboard.input else {
             return;
         };
+        if input.is_note_audition() {
+            return;
+        }
         for (key, held) in self.computer_keyboard.held.iter().enumerate() {
             if let Err(error) = input.set_key(
                 key,
