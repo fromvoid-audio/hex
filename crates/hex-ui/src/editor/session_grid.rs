@@ -1510,6 +1510,9 @@ impl EditorView {
     }
 
     pub(super) fn select_session_midi(&mut self, track: TrackId, scene: SceneId, clip: ClipId) {
+        if self.detail_clip_id() != Some(clip) {
+            self.zoom_fit.clear_clip();
+        }
         self.cancel_scene_duplicate_selection();
         if let Some(selected) = self.selected_clip
             && self.state.as_ref().is_some_and(|state| {
@@ -1538,6 +1541,7 @@ impl EditorView {
     }
 
     pub(super) fn select_session_scene(&mut self, scene: SceneId) {
+        self.zoom_fit.clear_clip();
         self.cancel_scene_duplicate_selection();
         if let Some(selected) = self.selected_clip
             && self.state.as_ref().is_some_and(|state| {
@@ -1565,6 +1569,9 @@ impl EditorView {
     }
 
     pub(super) fn select_session_cell(&mut self, track: TrackId, scene: SceneId) {
+        if self.selected_cell != Some((track, scene)) {
+            self.zoom_fit.clear_clip();
+        }
         self.cancel_scene_duplicate_selection();
         if let Some(selected) = self.selected_clip
             && self.state.as_ref().is_some_and(|state| {

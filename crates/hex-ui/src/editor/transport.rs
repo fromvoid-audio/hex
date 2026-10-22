@@ -20,15 +20,12 @@ impl EditorView {
         let field = self.project_tempo_input(cx);
         let mut row = header::toolbar_row()
             .child(field)
-            .child(
-                self.control_icon(
-                    "tuning",
-                    "project tuning · cmd+alt+t",
-                    |view, window, cx| view.open_tuning(window, cx),
-                    cx,
-                )
-                .w(px(58.0)),
-            )
+            .child(self.control_icon(
+                "♯",
+                "project tuning · cmd+alt+t",
+                |view, window, cx| view.open_tuning(window, cx),
+                cx,
+            ))
             .child(self.icon("↓", "import audio · cmd+i", ImportAudio, cx))
             .child(self.icon("▤", "toggle browser · cmd+alt+b", ToggleBrowser, cx))
             .child(self.control_icon(
@@ -140,12 +137,8 @@ impl EditorView {
                 cx,
             ))
             .children([self.snap_control(cx)])
-            .child(self.control_icon(
-                "fit",
-                "fit timeline · cmd+0",
-                |view, _, _| view.fit_timeline(),
-                cx,
-            ))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, false, cx))
+            .child(self.zoom_fit_button(super::zoom_fit::Target::Arrange, true, cx))
             .child(
                 self.control_icon(
                     "▤",
