@@ -21,6 +21,22 @@ the failing step; later `not_run` steps did not pass. Results are in
 must pass on the exact final commit with an unchanged source digest and no stale
 flag. Preserve failed/interrupted logs; do not weaken assertions to obtain green.
 
+Failed, interrupted, stale and incomplete runs print a final diagnostic after
+cleanup and source checks: profile, owning step, command, workspace, summary and
+direct numbered-log path. Recognized compiler/test failures get at most 20 lines
+and 4000 characters from the last 64 KiB of the log. Earlier or unrecognized
+diagnostics remain in the complete log; unreadable logs have a controlled fallback.
+Console text removes terminal controls and redacts known sensitive environment
+values and credential-like assignments/options; retained logs and argv stay intact.
+Commands over 2000 characters are explicitly truncated and refer to the summary.
+
+The printed rerun is diagnostic only and partial, even when its original step was
+part of a merge plan. It does not acquire the runner's target lock or reproduce
+the complete verification context. Use the same toolchain/configuration/target
+and normal repository runner for guarded checks. A stale result requires freezing
+the intended candidate and rerunning its required plan. Diagnostic presentation
+does not change exit codes, qualification, skipped steps or ownership cleanup.
+
 ## Merge selection
 
 `scripts/ci_plan.py` selects checks from both sides of changed Git paths, Cargo
