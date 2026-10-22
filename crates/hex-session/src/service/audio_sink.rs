@@ -67,6 +67,8 @@ impl std::fmt::Debug for ResidentPublicationRefusal {
 pub trait WorkerAudioSink: Send {
     /// Output ownership policy, independent of device presence or availability. A native consumer
     /// opts in only after routing every resident graph through this worker-private boundary.
+    /// This capability survives document mode changes: protocol dispatch must also require
+    /// Resident mode, while cross-mode admission still borrows actual resident/retired owners.
     fn resident_publication_enabled(&self) -> bool {
         false
     }

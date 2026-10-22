@@ -500,3 +500,228 @@ fn resident_pending_survives_refused_verified_transition_and_retires_on_accepted
     assert_eq!(metadata.context.project_generation, 2);
     assert_eq!(metadata.context.editor_revision, loaded.state.revision);
 }
+
+#[test]
+fn production_default_verified_gestures_rebase_barriers_and_restore_use_verified_protocol() {
+    use hex_session::device_gesture::{GestureKey, GestureRequest, GestureTarget, ParameterValue};
+    use hex_session::tuning_gesture::{TuningGestureKey, TuningGestureRequest};
+    let _native = NATIVE_FIXTURE.lock().unwrap();
+    let files = Files::new();
+    let mut h = ResidentHarness::new();
+    assert!(h.next().error.is_none());
+    h.applied(0);
+    let old_output = h.audio.as_ref().unwrap().control.output_identity().unwrap();
+    let empty = h.run(Request::NewWithAudioMode {
+        mode: DocumentAudioMode::VerifiedStreaming,
+        reservation: Some(AudioPolicy::source_reservation()),
+    });
+    h.release_relinquished_output();
+    h.wait_fresh_output(old_output);
+    assert!(
+        !h.audio
+            .as_ref()
+            .unwrap()
+            .control
+            .worker_owns_graph_publication()
+    );
+    h.wait_constructor_applied(
+        empty
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context(),
+    );
+    let imported = h.run(Request::Import(files.wav(48_000, 240_000)));
+    let track = imported.state.project.tracks()[0].id();
+    let context = |event: &Event| {
+        event
+            .state
+            .canonical_audio_source
+            .as_ref()
+            .unwrap()
+            .context()
+    };
+    let generation = context(&imported).project_generation;
+    h.wait_constructor_applied(context(&imported));
+    let class = hex_engine::NativeDeviceClass::Effect;
+    let utility = hex_engine::native_device_catalog_for_class(class)
+        .unwrap()
+        .into_iter()
+        .find(|entry| entry.type_id.as_str() == Ok("hex.utility"))
+        .unwrap()
+        .type_id;
+    let added = h.run(Request::Edit(Command::InsertDevice {
+        track,
+        before: None,
+        state: hex_engine::default_native_device_state_for_class(class, utility).unwrap(),
+    }));
+    h.wait_constructor_applied(context(&added));
+    let device = added.state.project.track(track).unwrap().devices()[0].id();
+    let parameter = hex_engine::native_device_view_for_class(
+        class,
+        added.state.project.device(device).unwrap().state(),
+    )
+    .unwrap()
+    .parameters
+    .into_iter()
+    .find(|parameter| {
+        parameter.descriptor.label == "gain"
+            && parameter.descriptor.id != hex_engine::DEVICE_OUTPUT_GAIN.id
+            && parameter.descriptor.id != hex_engine::DEVICE_INPUT_GAIN.id
+    })
+    .unwrap()
+    .descriptor
+    .id;
+    h.audio
+        .as_mut()
+        .unwrap()
+        .control
+        .command(PlaybackCommand::Play)
+        .unwrap();
+    let assert_pcm = |h: &mut ResidentHarness, sample: f32| {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let pcm = h.render();
+            if pcm.iter().flatten().any(|value| *value != 0.0) {
+                assert_eq!(pcm, [[sample; 2]; 64]);
+                return;
+            }
+            // Verified source identity/admission ACK precedes asynchronous page readiness.
+            assert!(
+                Instant::now() < deadline,
+                "verified source pages did not become audible"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    };
+    assert_pcm(&mut h, 0.25);
+
+    let key = GestureKey {
+        generation,
+        token: 1,
+    };
+    let begin = h.run(Request::DeviceGesture(GestureRequest::Begin {
+        key,
+        target: GestureTarget::DeviceParameter { device, parameter },
+    }));
+    assert!(
+        begin.gesture_ack.as_ref().unwrap().accepted,
+        "{:?}",
+        begin.gesture_ack
+    );
+    let preview = h.run(Request::DeviceGesture(GestureRequest::Change {
+        key,
+        sequence: 1,
+        value: ParameterValue::Float(0.5),
+    }));
+    assert!(preview.gesture_ack.unwrap().accepted);
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            class,
+            preview
+                .device_preview
+                .unwrap()
+                .state
+                .project
+                .device(device)
+                .unwrap()
+                .state(),
+            parameter,
+        )
+        .unwrap(),
+        ParameterValue::Float(0.5)
+    );
+    // Independent canonical edits rebase using the existing Verified preview protocol.
+    let rebased = h.run(Request::Edit(Command::MasterGain { gain: 0.5 }));
+    assert!(rebased.active_device_gesture.is_some());
+    assert!(rebased.gesture_ack.as_ref().unwrap().accepted);
+    assert_eq!(
+        rebased
+            .device_preview
+            .as_ref()
+            .unwrap()
+            .state
+            .project
+            .master_gain(),
+        0.5
+    );
+    h.wait_constructor_applied(context(&rebased));
+    let path = files.0.join("verified-gestures.hex");
+    let committed = h.run(Request::SaveNew(path));
+    assert!(committed.gesture_ack.as_ref().unwrap().accepted);
+    assert!(committed.active_device_gesture.is_none() && committed.save_complete);
+    assert_eq!(
+        hex_engine::native_device_parameter_for_class(
+            class,
+            committed.state.project.device(device).unwrap().state(),
+            parameter,
+        )
+        .unwrap(),
+        ParameterValue::Float(0.5)
+    );
+    h.wait_constructor_applied(context(&committed));
+    assert_pcm(&mut h, 0.0625);
+
+    let key = TuningGestureKey {
+        generation,
+        token: 1,
+    };
+    let tuning = super::sampler::tuning(880.0);
+    let begin = h.run(Request::TuningGesture(TuningGestureRequest::Begin { key }));
+    assert!(begin.tuning_gesture_ack.unwrap().accepted);
+    let preview = h.run(Request::TuningGesture(TuningGestureRequest::Change {
+        key,
+        sequence: 1,
+        tuning,
+    }));
+    assert!(preview.tuning_gesture_ack.unwrap().accepted);
+    assert_eq!(
+        preview.tuning_preview.unwrap().state.project.tuning(),
+        tuning
+    );
+    let rebased = h.run(Request::Edit(Command::MasterGain { gain: 0.25 }));
+    assert!(rebased.active_tuning_gesture.is_some());
+    assert!(rebased.tuning_gesture_ack.as_ref().unwrap().accepted);
+    assert_eq!(
+        rebased
+            .tuning_preview
+            .as_ref()
+            .unwrap()
+            .state
+            .project
+            .master_gain(),
+        0.25
+    );
+    h.wait_constructor_applied(context(&rebased));
+    let committed = h.run(Request::SaveCurrent);
+    assert!(committed.tuning_gesture_ack.as_ref().unwrap().accepted);
+    assert!(committed.active_tuning_gesture.is_none() && committed.save_complete);
+    assert_eq!(committed.state.project.tuning(), tuning);
+    h.wait_constructor_applied(context(&committed));
+    assert_pcm(&mut h, 0.03125);
+    for request in [
+        Request::RestoreStoppedPlayback,
+        Request::RestorePlayback { generation: 9 },
+    ] {
+        let restored = h.run(request);
+        assert_eq!(restored.state.project, committed.state.project);
+        assert_eq!(restored.state.revision, committed.state.revision);
+    }
+    h.service
+        .submit(Request::ArmGainRecording {
+            project_generation: generation,
+            revision: committed.state.revision,
+            track,
+        })
+        .unwrap();
+    let refused = h.next();
+    assert!(
+        refused
+            .error
+            .unwrap()
+            .contains("gain recording is unavailable for verified streaming")
+    );
+    assert_eq!(refused.state.project, committed.state.project);
+    assert_pcm(&mut h, 0.03125);
+}

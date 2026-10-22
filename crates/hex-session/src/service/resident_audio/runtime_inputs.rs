@@ -25,9 +25,9 @@ impl RuntimeInputs {
     pub(in crate::service) fn capture_bytes(&self) -> Result<usize, SessionError> {
         let mut bytes = std::mem::size_of::<Self>();
         for extra in [
-            self.keyboard.as_ref().map_or(0, |_| {
-                std::mem::size_of::<ComputerKeyboardInput>() + 2 * std::mem::size_of::<usize>()
-            }),
+            self.keyboard
+                .as_ref()
+                .map_or(0, |(_, input)| input.control_storage_bytes()),
             self.audition.as_ref().map_or(0, |_| {
                 std::mem::size_of::<TuningAuditionInput>() + 2 * std::mem::size_of::<usize>()
             }),

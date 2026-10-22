@@ -51,16 +51,16 @@ pub(super) fn exercise(
             .unwrap()
             .as_ref()
             .and_then(|b| b.status())
-            .and_then(|s| s.applied_audio_source())
+            .and_then(|s| s.rendered_current(h))
     };
-    let wait_next = |visual: &mut VisualTestContext,
-                     old: hex_audio::prepared::AppliedAudioSource| {
+    let wait_next = |visual: &mut VisualTestContext, old: RenderedCurrent| {
         loop {
             pulse(visual);
             if applied().is_some_and(|a| {
                 a.context.project_generation == old.context.project_generation
                     && a.context.editor_revision == old.context.editor_revision + 1
-                    && a.output_identity != old.output_identity
+                    && a.output_identity == old.output_identity
+                    && a.audio_revision > old.audio_revision
             }) {
                 break;
             }

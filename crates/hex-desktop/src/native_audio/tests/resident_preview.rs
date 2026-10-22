@@ -1,4 +1,4 @@
-//! Exercise the opt-in consumer before production cutover, with only native output creation
+//! Exercise the production-default consumer, with only native output creation
 //! substituted. Session transactions, prospective admission, publication and callback stay real.
 use super::*;
 use hex_engine::{
@@ -19,7 +19,7 @@ struct ResidentSink {
 }
 impl WorkerAudioSink for ResidentSink {
     fn resident_publication_enabled(&self) -> bool {
-        true
+        self.inner.resident_publication_enabled()
     }
     fn resident_admission(&self) -> [DeviceResourceAdmission<'_>; 3] {
         self.inner.resident_admission()
@@ -123,7 +123,10 @@ impl ResidentHarness {
         let callback = Arc::new(Mutex::new(None));
         let target = Arc::clone(&callback);
         let mut inner = NativeAudioSink::new(sender);
-        inner.worker_owned_resident_graphs = true;
+        assert!(
+            inner.worker_owned_resident_graphs,
+            "production resident publication default"
+        );
         inner.output_factory = Some(Box::new(move |_| {
             if !gate.load(Acquire) {
                 return Err("fixture output unavailable".into());

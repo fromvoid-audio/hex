@@ -1728,7 +1728,9 @@ pub(crate) fn sampler_midi_fixture_ready(
     window
         .read(cx, |view: gpui::Entity<EditorView>, cx| {
             let view = view.read(cx);
-            view.first_sampler_current() && !view.edit_pending()
+            view.first_sampler_current()
+                && !view.edit_pending()
+                && view.stopped_playback_restore.is_none()
         })
         .map_err(|e| e.to_string())
 }

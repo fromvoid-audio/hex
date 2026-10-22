@@ -169,6 +169,31 @@ impl Client {
         }
         self.endpoints.close();
     }
+    /// Exact scalar activation-clock correlation for retained UI input after output recovery.
+    pub fn computer_keyboard_input_matches_output(
+        &self,
+        input: &hex_engine::computer_keyboard::ComputerKeyboardInput,
+    ) -> bool {
+        self.endpoints
+            .owner_ref()
+            .is_some_and(|endpoints| input.bound_to_clock(&endpoints.status.keyboard_activation))
+    }
+    /// Control-only keyboard allocation. The returned input retains a scalar epoch clock,
+    /// never this client, Status, graph, resources or callback ownership.
+    pub fn new_computer_keyboard_input_on_control(
+        &self,
+    ) -> Result<hex_engine::computer_keyboard::ComputerKeyboardInput, hex_engine::Invalid> {
+        let endpoints = self
+            .endpoints
+            .owner_ref()
+            .ok_or(hex_engine::Invalid("audio output is closed"))?;
+        if endpoints.status.closing.load(Acquire) {
+            return Err(hex_engine::Invalid("audio output is closing"));
+        }
+        hex_engine::computer_keyboard::ComputerKeyboardInput::with_output_activation(Arc::clone(
+            &endpoints.status.keyboard_activation,
+        ))
+    }
     pub fn stop(&self) {
         if let Some(endpoints) = self.endpoints.owner_ref() {
             endpoints.stop();
@@ -462,6 +487,7 @@ impl Drop for Client {
 }
 impl ClientEndpoints {
     fn stop(&self) {
+        self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         self.status
             .pending_stop_marker

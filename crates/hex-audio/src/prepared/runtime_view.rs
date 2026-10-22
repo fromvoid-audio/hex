@@ -179,6 +179,17 @@ impl RuntimeMut<'_> {
             Self::Eligible(p) => p.apply_action(action),
         }
     }
+    pub(super) fn apply_priority_stop(
+        &mut self,
+        clock: &hex_engine::computer_keyboard::KeyboardActivationClock,
+    ) {
+        match self {
+            Self::Legacy(p) => p.apply_priority_stop(clock),
+            Self::Eligible(p) => {
+                let _ = p.apply_priority_stop(clock);
+            }
+        }
+    }
     pub(super) fn apply(&mut self, command: PlaybackCommand) {
         match self {
             Self::Legacy(p) => p.apply(command),

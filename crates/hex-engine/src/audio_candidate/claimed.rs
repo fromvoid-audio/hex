@@ -330,6 +330,29 @@ impl ClaimedAudioCandidateRuntime {
         runtime.playback.apply_current_sampler_keyboard(frame)?;
         Ok(true)
     }
+    /// Priority output Stop with the host's exact scalar clock. Ordinary playback may retain
+    /// only its matching output-bound input; legacy native CURRENT keeps terminal Stop.
+    pub fn apply_priority_stop(
+        &mut self,
+        clock: &crate::computer_keyboard::KeyboardActivationClock,
+    ) -> Result<(), crate::PlaybackActionError> {
+        if self.inner.phase != ClaimedPhase::Current {
+            return Err(crate::PlaybackActionError::SessionNotPrepared);
+        }
+        let runtime = self
+            .inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::PlaybackActionError::SessionNotPrepared)?;
+        if runtime.sampler_sources.is_some() {
+            runtime.apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Stop,
+            ))
+        } else {
+            runtime.playback.apply_priority_stop(clock);
+            Ok(())
+        }
+    }
     pub fn apply_action(
         &mut self,
         action: crate::PlaybackAction,

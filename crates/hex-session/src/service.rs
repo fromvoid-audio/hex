@@ -1966,7 +1966,9 @@ fn run_worker(
                     Some("finish or cancel the active gesture before sampler history".into())
                 } else {
                     let mut edit = SamplerEdit::History(edit.clone());
-                    if events.resident_publication_enabled() {
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                    {
                         edit.validate_resident(&session, project_generation, revision)
                             .err()
                     } else {
@@ -1987,7 +1989,9 @@ fn run_worker(
             _ => None,
         });
         if barrier && barrier_failure.is_none() {
-            let device_finished = if events.resident_publication_enabled() {
+            let device_finished = if events.resident_publication_enabled()
+                && session.audio_mode() == DocumentAudioMode::Resident
+            {
                 let admission = export_lane.admission_with_resident_owners(
                     compiled.as_ref().map(|(_, prepared)| {
                         hex_engine::native_device_resources::ControlSamplerSelection {
@@ -2032,7 +2036,10 @@ fn run_worker(
                 gesture_protocol_ack = true;
                 if outcome.ack.accepted {
                     if let Some(prepared) = outcome.playback {
-                        if events.resident_publication_enabled() && !outcome.canonical_changed {
+                        if events.resident_publication_enabled()
+                            && session.audio_mode() == DocumentAudioMode::Resident
+                            && !outcome.canonical_changed
+                        {
                             compiled = Some((revision, Arc::clone(&prepared)));
                         }
                         if outcome.canonical_changed {
@@ -2055,7 +2062,9 @@ fn run_worker(
                     barrier_failure = outcome.ack.reason;
                     restore_prepared = outcome.playback;
                 }
-            } else if let Some(outcome) = if events.resident_publication_enabled() {
+            } else if let Some(outcome) = if events.resident_publication_enabled()
+                && session.audio_mode() == DocumentAudioMode::Resident
+            {
                 let admission = export_lane.admission_with_resident_owners(
                     compiled.as_ref().map(|(_, prepared)| {
                         hex_engine::native_device_resources::ControlSamplerSelection {
@@ -2113,7 +2122,10 @@ fn run_worker(
                 gesture_protocol_ack = true;
                 if outcome.ack.accepted {
                     if let Some(prepared) = outcome.playback {
-                        if events.resident_publication_enabled() && !outcome.canonical_changed {
+                        if events.resident_publication_enabled()
+                            && session.audio_mode() == DocumentAudioMode::Resident
+                            && !outcome.canonical_changed
+                        {
                             compiled = Some((revision, Arc::clone(&prepared)));
                         }
                         if outcome.canonical_changed {
@@ -2327,7 +2339,9 @@ fn run_worker(
                             preview_project: None,
                             canonical_changed: false,
                         }
-                    } else if events.resident_publication_enabled() {
+                    } else if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                    {
                         let admission = export_lane.admission_with_resident_owners(
                             compiled.as_ref().map(|(_, prepared)| {
                                 hex_engine::native_device_resources::ControlSamplerSelection {
@@ -2370,6 +2384,7 @@ fn run_worker(
                         )
                     };
                     let native_terminal_accepted = events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
                         && outcome.ack.accepted
                         && matches!(
                             gesture.phase(),
@@ -2416,7 +2431,9 @@ fn run_worker(
                             preview_project: None,
                             canonical_changed: false,
                         }
-                    } else if events.resident_publication_enabled() {
+                    } else if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                    {
                         let admission = export_lane.admission_with_resident_owners(
                             compiled.as_ref().map(|(_, prepared)| {
                                 hex_engine::native_device_resources::ControlSamplerSelection {
@@ -2473,6 +2490,7 @@ fn run_worker(
                         )
                     };
                     let native_terminal_accepted = events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
                         && outcome.ack.accepted
                         && matches!(
                             gesture.phase(),
@@ -4085,7 +4103,9 @@ fn run_worker(
                         error = Some(
                             "gain recording arm refused · device edit is still applying".into(),
                         );
-                    } else if events.resident_publication_enabled() {
+                    } else if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                    {
                         let result = (|| {
                             let current = resident_snapshot
                                 .as_ref()
@@ -4593,7 +4613,9 @@ fn run_worker(
                         error = Some(
                             "finish the device gesture before restoring stopped playback".into(),
                         );
-                    } else if events.resident_publication_enabled() {
+                    } else if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                    {
                         let result = (|| {
                             let snapshot = resident_snapshot.as_mut().ok_or(
                                 SessionError::Invalid("current playback revision is unavailable"),
@@ -4913,7 +4935,9 @@ fn run_worker(
                         || input.is_cancelled()
                     {
                         error = Some("computer keyboard preparation is stale".into());
-                    } else if events.resident_publication_enabled() {
+                    } else if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                    {
                         let result = (|| {
                             let snapshot = resident_snapshot.as_mut().ok_or(
                                 SessionError::Invalid("native keyboard source unavailable"),
@@ -5027,7 +5051,9 @@ fn run_worker(
                 }
                 Request::RestorePlayback { generation } => {
                     restore_complete = Some(generation);
-                    if events.resident_publication_enabled() {
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                    {
                         let result = (|| {
                             let snapshot = resident_snapshot.as_mut().ok_or(
                                 SessionError::Invalid("native restore source unavailable"),
@@ -5184,7 +5210,9 @@ fn run_worker(
             keyboard_tuning_hint = None;
         }
         if canonical_changed && !project_replaced && device_gesture.snapshot().is_some() {
-            let outcome = if events.resident_publication_enabled() {
+            let outcome = if events.resident_publication_enabled()
+                && session.audio_mode() == DocumentAudioMode::Resident
+            {
                 // This path is permitted to retire a failed rebase only after the actual
                 // canonical snapshot accepted publication, never merely after a model edit.
                 let accepted = resident_snapshot
@@ -5252,7 +5280,9 @@ fn run_worker(
                     .flatten();
             }
         } else if canonical_changed && !project_replaced && tuning_gesture.snapshot().is_some() {
-            let outcome = if events.resident_publication_enabled() {
+            let outcome = if events.resident_publication_enabled()
+                && session.audio_mode() == DocumentAudioMode::Resident
+            {
                 // This path is permitted to retire a failed rebase only after the actual
                 // canonical snapshot accepted publication, never merely after a model edit.
                 let accepted = resident_snapshot

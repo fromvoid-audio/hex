@@ -144,7 +144,7 @@ pub(super) fn exercise_blocked_sampler_keyboard(
     // not yet published activation. The UI already knows this reserved epoch.
     let (entered_tx, entered) = mpsc::sync_channel(1);
     let (release, wait) = mpsc::sync_channel(1);
-    h.observation.lock().unwrap().pause_keyboard_activation = Some((entered_tx, wait));
+    h.observation.lock().unwrap().pause_resident_publication = Some((entered_tx, wait));
     let toggle = visual.debug_bounds("computer midi keyboard").unwrap();
     visual.simulate_click(toggle.center(), gpui::Modifiers::default());
     // Focus-loss leaves the toggle enabled; first turn it off, then on.
@@ -289,16 +289,11 @@ pub(super) fn exercise_blocked_sampler_keyboard(
             .advance_clock(Duration::from_millis(16));
         visual.run_until_parked();
         let output = render(h, true);
-        let rejected = h
-            .backend
-            .lock()
+        let rejected = cx
+            .update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
             .unwrap()
-            .as_ref()
-            .unwrap()
-            .status()
-            .unwrap()
-            .sampler_keyboard_rejected_epoch();
-        if rejected != 0 {
+            .contains("computer keyboard note refused");
+        if rejected {
             assert!(output.iter().all(|f| *f == [0.0; 2]));
             break;
         }

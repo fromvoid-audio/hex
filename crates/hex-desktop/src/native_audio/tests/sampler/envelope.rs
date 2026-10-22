@@ -14,6 +14,7 @@ pub(super) fn exercise(
     track: hex_project::TrackId,
     saved: &std::path::Path,
 ) {
+    let initial_submissions = h.observation.lock().unwrap().resident_submitted.len();
     let initial = hex_storage::load(saved).unwrap();
     let original = initial.track(track).unwrap().instrument().unwrap();
     let device = original.id();
@@ -83,7 +84,8 @@ pub(super) fn exercise(
         .unwrap()
         .status()
         .unwrap()
-        .applied_audio_source();
+        .rendered_current(h)
+        .unwrap();
     for (parameter, draft) in [
         (AttackMs, "nan"),
         (DecayMs, "60000.1"),
@@ -102,12 +104,15 @@ pub(super) fn exercise(
                 .unwrap()
                 .status()
                 .unwrap()
-                .applied_audio_source(),
-            before
+                .rendered_current(h),
+            Some(before)
         );
         visual.simulate_keystrokes("escape");
     }
-    assert!(h.observation.lock().unwrap().gain_cells.is_empty());
+    assert_eq!(
+        h.observation.lock().unwrap().resident_submitted.len(),
+        initial_submissions
+    );
     let mut expected = original.state().clone();
     let mut attack = false;
     let mut decay = false;
@@ -130,7 +135,7 @@ pub(super) fn exercise(
             .unwrap()
             .status()
             .unwrap()
-            .applied_audio_source()
+            .rendered_current(h)
             .unwrap();
         input(visual, parameter, &value.to_string());
         loop {
@@ -140,11 +145,12 @@ pub(super) fn exercise(
                 .unwrap()
                 .as_ref()
                 .and_then(|b| b.status())
-                .and_then(|s| s.applied_audio_source())
+                .and_then(|s| s.rendered_current(h))
                 .is_some_and(|a| {
                     a.context.project_generation == old.context.project_generation
                         && a.context.editor_revision == old.context.editor_revision + 1
-                        && a.output_identity != old.output_identity
+                        && a.output_identity == old.output_identity
+                        && a.audio_revision > old.audio_revision
                 })
             {
                 break;
@@ -199,7 +205,7 @@ pub(super) fn exercise(
             .unwrap()
             .status()
             .unwrap()
-            .applied_audio_source()
+            .rendered_current(h)
             .unwrap();
         visual.simulate_keystrokes("cmd-n");
         visual.run_until_parked();
@@ -224,7 +230,7 @@ pub(super) fn exercise(
                 .unwrap()
                 .as_ref()
                 .and_then(|b| b.status())
-                .and_then(|s| s.applied_audio_source())
+                .and_then(|s| s.rendered_current(h))
                 .is_some_and(|a| {
                     a.context.project_generation == before.context.project_generation + 2
                         && a.output_identity != before.output_identity
@@ -262,6 +268,16 @@ pub(super) fn exercise(
             };
             [raw[0] * 0.5 * envelope, raw[1] * 0.5 * envelope]
         };
+        let before_keyboard = h
+            .backend
+            .lock()
+            .unwrap()
+            .as_ref()
+            .unwrap()
+            .status()
+            .unwrap()
+            .rendered_current(h)
+            .unwrap();
         let toggle = visual.debug_bounds("computer midi keyboard").unwrap();
         visual.simulate_click(toggle.center(), Modifiers::default());
         visual.simulate_keystrokes("v v");
@@ -269,22 +285,29 @@ pub(super) fn exercise(
             keystroke: gpui::Keystroke::parse("a").unwrap(),
             is_held: false,
         });
+        let mut output = [[0.0; 2]; 64];
         loop {
             cx.background_executor
                 .advance_clock(Duration::from_millis(16));
             visual.run_until_parked();
-            if cx
-                .update(|cx| hex_ui::sampler_keyboard_test_status(window, cx))
+            let mut slot = h.backend.lock().unwrap();
+            let backend = slot.as_mut().unwrap();
+            super::envelope::render(backend, &mut output);
+            if backend
+                .status()
                 .unwrap()
-                .contains("ready=true")
+                .rendered_current(h)
+                .is_some_and(|current| {
+                    current.output_identity == before_keyboard.output_identity
+                        && current.audio_revision > before_keyboard.audio_revision
+                })
             {
                 break;
             }
-            assert!(Instant::now() < end);
+            drop(slot);
+            assert!(Instant::now() < end, "actual keyboard graph did not apply");
             std::thread::sleep(Duration::from_millis(1));
         }
-        let mut output = [[0.0; 2]; 64];
-        render(h.backend.lock().unwrap().as_mut().unwrap(), &mut output);
         for (i, sample) in output.iter().enumerate() {
             assert_eq!(*sample, expected_at(i), "keyboard {parameter:?} frame{i}");
         }
@@ -323,15 +346,6 @@ pub(super) fn exercise(
             pulse(visual);
         }
     }
-    assert_eq!(h.observation.lock().unwrap().gain_cells.len(), 7);
-    assert!(
-        h.observation
-            .lock()
-            .unwrap()
-            .gain_cells
-            .iter()
-            .all(|(before, after)| before == after)
-    );
 }
 
 pub(super) fn render(
@@ -357,6 +371,7 @@ pub(super) fn trigger_release(
     track: hex_project::TrackId,
     saved: &std::path::Path,
 ) {
+    let initial_submissions = h.observation.lock().unwrap().resident_submitted.len();
     let stored = hex_storage::load(saved).unwrap();
     let device = stored.track(track).unwrap().instrument().unwrap();
     assert_eq!(
@@ -382,7 +397,8 @@ pub(super) fn trigger_release(
         .unwrap()
         .status()
         .unwrap()
-        .applied_audio_source();
+        .rendered_current(h)
+        .unwrap();
     visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
     visual.simulate_mouse_move(
         gpui::point(center.x, center.y - gpui::px(10.0)),
@@ -408,10 +424,13 @@ pub(super) fn trigger_release(
             .unwrap()
             .status()
             .unwrap()
-            .applied_audio_source(),
-        before
+            .rendered_current(h),
+        Some(before)
     );
-    assert!(h.observation.lock().unwrap().gain_cells.is_empty());
+    assert_eq!(
+        h.observation.lock().unwrap().resident_submitted.len(),
+        initial_submissions
+    );
     visual.simulate_keystrokes("cmd-s");
     for _ in 0..12 {
         cx.background_executor

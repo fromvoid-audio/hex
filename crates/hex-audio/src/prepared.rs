@@ -10,6 +10,12 @@
 //! audio revision remain distinct until that acceptance. Queue acceptance, source readiness and
 //! physical disposal are separate facts; callback code must never finally destroy graphs, PCM or
 //! endpoints.
+//!
+//! Ordinary computer keyboard inputs retain only this output's scalar activation clock. Control
+//! Stop revokes its reserved prefix before publishing the priority marker; callback consumption
+//! preserves only an input bound to that exact clock, allowing newer physical epochs without a
+//! graph replacement. Queued explicit Stop, foreign/unbound inputs and lifecycle shutdown remain
+//! terminal. Epoch transitions and note snapshots perform no callback allocation or reclamation.
 use crate::{
     processor_audition, spectrum_target,
     spectrum_worker::{SpectrumCapture, SpectrumStamp},
@@ -43,6 +49,8 @@ pub use resident_forwarding::{ResidentPublicationResponse, ResidentPublicationTo
 mod applied_source;
 #[cfg(all(test, feature = "allocation-probe"))]
 mod device_resources_tests;
+#[cfg(all(test, feature = "allocation-probe"))]
+mod keyboard_activation_tests;
 #[cfg(test)]
 mod project_spectrum_tests;
 mod runtime_view;
@@ -369,6 +377,7 @@ impl FreshRuntimeFence {
 pub struct Status {
     sampler_edit: sampler_edit::Fence,
     sampler_keyboard: sampler_keyboard::Mailbox,
+    keyboard_activation: Arc<hex_engine::computer_keyboard::KeyboardActivationClock>,
     project_spectrum: crate::spectrum_worker::ProjectSelectionMailbox,
     pending_stop_marker: AtomicU64,
     admitted_ticket: AtomicU64,
@@ -499,11 +508,18 @@ impl Status {
             .len()
             .checked_mul(std::mem::size_of::<AtomicRouteSlot>())
             .and_then(|bytes| bytes.checked_add(std::mem::size_of_val(self)))
+            .and_then(|bytes| {
+                bytes.checked_add(std::mem::size_of::<
+                    hex_engine::computer_keyboard::KeyboardActivationClock,
+                >())
+            })
+            .and_then(|bytes| bytes.checked_add(2 * std::mem::size_of::<usize>()))
     }
     fn with_route_slots(route_slots: Box<[AtomicRouteSlot]>) -> Self {
         Self {
             sampler_edit: Default::default(),
             sampler_keyboard: Default::default(),
+            keyboard_activation: Arc::default(),
             project_spectrum: Default::default(),
             pending_stop_marker: AtomicU64::new(0),
             admitted_ticket: AtomicU64::new(0),
@@ -1612,6 +1628,7 @@ impl PublicationControl {
         self.candidate_root.report()
     }
     pub fn request_shutdown(&mut self) {
+        self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
         self.status.pending_stop_marker.store(
@@ -1674,7 +1691,16 @@ impl Control {
     pub fn action_with_ticket(&mut self, action: PlaybackAction) -> Result<u64, PlaybackAction> {
         endpoints::legacy_enqueue(self, action)
     }
+    /// Control-only input allocation; retains only the scalar output activation clock.
+    pub fn new_computer_keyboard_input_on_control(
+        &self,
+    ) -> Result<hex_engine::computer_keyboard::ComputerKeyboardInput, hex_engine::Invalid> {
+        hex_engine::computer_keyboard::ComputerKeyboardInput::with_output_activation(Arc::clone(
+            &self.status.keyboard_activation,
+        ))
+    }
     pub fn stop(&self) {
+        self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         // Ticket MAX is refused for ordinary commands, so the supported marker
         // encoding (ticket + 1) is always nonzero and cannot wrap.
@@ -1686,6 +1712,7 @@ impl Control {
     /// Freeze publication, return active/queued graphs over subsequent callbacks.
     /// Control must continue reclaiming until shutdown_complete before stream teardown.
     pub fn request_shutdown(&mut self) {
+        self.status.keyboard_activation.revoke_reserved_prefix();
         self.status.sampler_keyboard.revoke_all();
         self.status.closing.store(true, Release);
         self.sample_preview.shutdown();
@@ -2444,7 +2471,9 @@ impl Callback {
                 .as_mut()
                 .and_then(ActivePublication::current_mut)
             {
-                active.playback.apply(PlaybackCommand::Stop);
+                active
+                    .playback
+                    .apply_priority_stop(&self.status.keyboard_activation);
             }
             self.invalidate_processor_audition_request();
         }

@@ -144,6 +144,27 @@ impl super::EditorView {
         self.computer_keyboard.target = None;
     }
 
+    /// Priority Stop retains only a still-valid ordinary output-bound input root. The output
+    /// endpoint revokes its active prefix; fresh physical input can reuse the already admitted
+    /// graph without waiting for a publication slot. Other lifecycle cancellation stays terminal.
+    pub(super) fn stop_computer_keyboard(&mut self) {
+        if self.reusable_worker_keyboard_input(self.worker_owns_keyboard_publication())
+            && self
+                .computer_keyboard
+                .input
+                .as_ref()
+                .is_some_and(|input| input.is_output_bound())
+        {
+            if let Some(input) = &self.computer_keyboard.input {
+                input.clear_keys_on_control();
+            }
+            self.computer_keyboard.release_all();
+        } else {
+            self.cancel_computer_keyboard();
+        }
+        self.computer_keyboard.suspended = true;
+    }
+
     pub(super) fn toggle_computer_keyboard(
         &mut self,
         window: &mut gpui::Window,
@@ -175,11 +196,13 @@ impl super::EditorView {
     // A model revision is not an input identity; selected track, generation and cancellation are.
     fn reusable_worker_keyboard_input(&self, worker_owned: bool) -> bool {
         worker_owned
-            && self
-                .computer_keyboard
-                .input
-                .as_ref()
-                .is_some_and(|input| !input.is_cancelled())
+            && self.computer_keyboard.input.as_ref().is_some_and(|input| {
+                !input.is_cancelled()
+                    && (!input.is_output_bound()
+                        || self.audio.as_ref().is_some_and(|audio| {
+                            audio.control.computer_keyboard_input_matches_output(input)
+                        }))
+            })
             && self.state.as_ref().is_some_and(|state| {
                 self.computer_keyboard
                     .target
@@ -202,10 +225,38 @@ impl super::EditorView {
         if !self.computer_keyboard.enabled || self.computer_keyboard.suspended {
             return false;
         }
+        if self
+            .computer_keyboard
+            .input
+            .as_ref()
+            .is_some_and(|input| input.rejected() && input.is_cancelled())
+        {
+            // Voice-pressure refusal terminally cancels the runtime input. Preserve its actual
+            // callback rejection before releasing that root; cancellation alone is silent.
+            self.error = Some("computer keyboard note refused · unsupported pitch or voice capacity · release keys and toggle keyboard to retry".into());
+            self.cancel_computer_keyboard();
+            self.computer_keyboard.suspended = true;
+            return true;
+        }
         let retain_input = self.reusable_worker_keyboard_input(worker_owned);
+        if worker_owned
+            && self.computer_keyboard.input.as_ref().is_some_and(|input| {
+                input.is_output_bound()
+                    && !self.audio.as_ref().is_some_and(|audio| {
+                        audio.control.computer_keyboard_input_matches_output(input)
+                    })
+            })
+        {
+            // Recovery installs a new endpoint clock. End the old physical root before
+            // preparing against that output, even when the canonical track/revision is equal.
+            self.cancel_computer_keyboard();
+        }
+        // The resident worker orders a fresh physical activation after Stop restoration.
+        // Waiting for its callback here would discard the newer press; legacy UI-owned
+        // publication still requires restoration to apply before preparing another graph.
         if (self.device_gesture_pending()
             || self.prepared_seek.is_some()
-            || self.stopped_playback_restore.is_some())
+            || (self.stopped_playback_restore.is_some() && !worker_owned))
             && !retain_input
         {
             self.cancel_computer_keyboard();
@@ -266,8 +317,25 @@ impl super::EditorView {
             return true;
         };
         self.computer_keyboard.request_id = request_id;
-        let input =
-            std::sync::Arc::new(hex_engine::computer_keyboard::ComputerKeyboardInput::default());
+        let input = if worker_owned {
+            match self
+                .audio
+                .as_ref()
+                .ok_or(hex_engine::Invalid("audio output is unavailable"))
+                .and_then(|audio| audio.control.new_computer_keyboard_input_on_control())
+            {
+                Ok(input) => input,
+                Err(error) => {
+                    self.error = Some(error.to_string().into());
+                    self.cancel_computer_keyboard();
+                    self.computer_keyboard.suspended = true;
+                    return true;
+                }
+            }
+        } else {
+            hex_engine::computer_keyboard::ComputerKeyboardInput::default()
+        };
+        let input = std::sync::Arc::new(input);
         self.computer_keyboard.input = Some(std::sync::Arc::clone(&input));
         if !self.enqueue(hex_session::service::Request::PrepareComputerKeyboard {
             project_generation: generation,
@@ -316,11 +384,11 @@ impl super::EditorView {
                 self.toggle_computer_keyboard(window, cx);
             }
         } else {
-            let retain_input =
-                self.reusable_worker_keyboard_input(self.worker_owns_keyboard_publication());
+            let worker_owned = self.worker_owns_keyboard_publication();
+            let retain_input = self.reusable_worker_keyboard_input(worker_owned);
             if ((self.device_gesture_pending()
                 || self.prepared_seek.is_some()
-                || self.stopped_playback_restore.is_some())
+                || (self.stopped_playback_restore.is_some() && !worker_owned))
                 && !retain_input)
                 || (self.computer_keyboard.suspended && event.is_held)
             {
@@ -328,6 +396,22 @@ impl super::EditorView {
                 self.computer_keyboard.suspended = true;
                 cx.stop_propagation();
                 return;
+            }
+            if self.computer_keyboard.suspended && !event.is_held && retain_input {
+                if let Some(input) = self
+                    .computer_keyboard
+                    .input
+                    .as_ref()
+                    .filter(|input| input.is_output_bound())
+                {
+                    if let Err(error) = input.reactivate_on_control() {
+                        self.error = Some(error.to_string().into());
+                        self.cancel_computer_keyboard();
+                        self.computer_keyboard.suspended = true;
+                        cx.stop_propagation();
+                        return;
+                    }
+                }
             }
             self.computer_keyboard.suspended = false;
             self.tick_computer_keyboard();
@@ -526,6 +610,136 @@ mod tests {
                 view.cancel_computer_keyboard();
             }
         });
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn replaced_output_clock_cancels_same_target_input_and_prepares_new_root(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use hex_project::{Command, Created, Editor, Project};
+        use std::{
+            sync::Arc,
+            time::{Duration, Instant},
+        };
+        fn open() -> (
+            hex_audio::WorkerPreparedOutput,
+            hex_audio::worker_fixture::HeadlessBackend,
+        ) {
+            let end = Instant::now() + Duration::from_secs(5);
+            loop {
+                match hex_audio::worker_fixture::open(48_000) {
+                    Ok((mut output, backend)) => {
+                        output
+                            .publication
+                            .control()
+                            .unwrap()
+                            .configure_device_resource_publication_on_control(
+                                hex_engine::AudioStorageLedgerReservation {
+                                    data_rows: 512,
+                                    handle_rows: 256,
+                                    root_rows: 128,
+                                    max_retained_bytes: 20_000_000,
+                                    max_construction_peak_bytes: 20_000_000,
+                                },
+                            )
+                            .unwrap();
+                        return (output, backend);
+                    }
+                    Err(error)
+                        if error == "audio output is open or still shutting down"
+                            && Instant::now() < end =>
+                    {
+                        std::thread::yield_now()
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            }
+        }
+        let mut authored = Editor::new(Project::new(48_000).unwrap(), 8).unwrap();
+        let Created::Track(track) = authored
+            .execute(Command::InsertTrackWithDevice {
+                name: "keys".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let (_, editor) = crate::editor::clip_drag_ui_test::editor_window(
+            cx,
+            authored.project().clone(),
+            Arc::default(),
+        );
+        let (mut old_output, old_backend) = open();
+        let old_client = old_output.take_client().unwrap();
+        assert!(old_client.worker_owns_graph_publication());
+        let input = Arc::new(old_client.new_computer_keyboard_input_on_control().unwrap());
+        editor.update(cx, |view, _| {
+            view.audio = Some(crate::editor_backend::EditorAudio {
+                control: old_client,
+                sample_rate: 48_000,
+                label: "headless".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+            view.project_generation = 7;
+            view.selected_track = Some(track);
+            let revision = view.state.as_ref().unwrap().revision;
+            view.computer_keyboard.enabled = true;
+            view.computer_keyboard.target = Some((7, revision, track));
+            view.computer_keyboard.request_id = 51;
+            view.computer_keyboard.input = Some(Arc::clone(&input));
+            assert!(view.computer_keyboard.key_down("a", false));
+            view.publish_computer_keyboard();
+            assert_ne!(input.key_word(0), Some(0));
+            // Same document/target survive recovery while the actual native output closes.
+            view.audio = None;
+        });
+        drop(old_output);
+        drop(old_backend);
+        let (mut new_output, new_backend) = open();
+        let new_client = new_output.take_client().unwrap();
+        assert!(new_client.worker_owns_graph_publication());
+        assert!(!new_client.computer_keyboard_input_matches_output(&input));
+        editor.update(cx, |view, _| {
+            let target = view.computer_keyboard.target;
+            view.audio = Some(crate::editor_backend::EditorAudio {
+                control: new_client,
+                sample_rate: 48_000,
+                label: "headless".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            assert!(view.tick_computer_keyboard());
+            assert!(input.is_cancelled());
+            let next = view.computer_keyboard.input.as_ref().unwrap();
+            assert!(!Arc::ptr_eq(next, &input));
+            assert!(
+                view.audio
+                    .as_ref()
+                    .unwrap()
+                    .control
+                    .computer_keyboard_input_matches_output(next)
+            );
+            assert_eq!(next.key_word(0), Some(0));
+            assert_eq!(
+                view.computer_keyboard.target, target,
+                "canonical target/revision did not change"
+            );
+            assert_eq!(
+                view.computer_keyboard.request_id, 52,
+                "new output needs fresh ordinary preparation"
+            );
+            assert!(view.computer_keyboard.held().iter().all(Option::is_none));
+            view.cancel_computer_keyboard();
+            view.audio = None;
+        });
+        drop(new_output);
+        drop(new_backend);
     }
 
     #[test]

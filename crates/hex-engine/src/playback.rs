@@ -1127,7 +1127,7 @@ impl Playback {
     }
 
     pub fn try_apply_action(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
-        let result = self.apply_action_inner(action);
+        let result = self.apply_action_inner(action, None);
         if result.is_ok()
             && matches!(
                 action,
@@ -1148,7 +1148,30 @@ impl Playback {
         result
     }
 
-    fn apply_action_inner(&mut self, action: PlaybackAction) -> Result<(), PlaybackActionError> {
+    /// Consume the output's independent priority Stop after its control endpoint revoked the
+    /// activation prefix. Transport and voice history reset; only an ordinary output-bound
+    /// keyboard root survives, so a newer physical epoch needs no graph publication. Direct
+    /// `apply(Stop)`, queued Stop, seeks and lifecycle cancellation remain terminal.
+    pub fn apply_priority_stop(
+        &mut self,
+        clock: &crate::computer_keyboard::KeyboardActivationClock,
+    ) {
+        if self
+            .apply_action_inner(
+                PlaybackAction::Transport(PlaybackCommand::Stop),
+                Some(clock),
+            )
+            .is_ok()
+        {
+            self.reset_metronome();
+        }
+    }
+
+    fn apply_action_inner(
+        &mut self,
+        action: PlaybackAction,
+        priority_stop: Option<&crate::computer_keyboard::KeyboardActivationClock>,
+    ) -> Result<(), PlaybackActionError> {
         if matches!(
             action,
             PlaybackAction::Transport(
@@ -1157,7 +1180,16 @@ impl Playback {
                 crate::SessionPlaybackCommand::Stop | crate::SessionPlaybackCommand::Seek(_)
             )
         ) {
-            self.cancel_computer_keyboard();
+            if let Some(clock) = priority_stop {
+                if let Some(runtime) = self.session_runtime.as_mut() {
+                    runtime.cancel_current_sampler_keyboard();
+                    if let Some(keyboard) = runtime.computer_keyboard.as_mut() {
+                        keyboard.priority_stop(clock);
+                    }
+                }
+            } else {
+                self.cancel_computer_keyboard();
+            }
             self.cancel_tuning_audition();
         }
         match action {

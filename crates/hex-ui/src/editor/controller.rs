@@ -3431,8 +3431,7 @@ impl EditorView {
                 })
             });
         self.cancel_tuning_audition();
-        self.cancel_computer_keyboard();
-        self.computer_keyboard.suspended = true;
+        self.stop_computer_keyboard();
         self.cancel_scrub();
         self.invalidate_prepared_seek();
         self.offline_cursor = 0;

@@ -15,9 +15,16 @@ use hex_project::{BeatTime, Command, Created};
 
 impl Harness {
     fn resident_sampler(frame_limit: u64) -> Self {
+        Self::sampler_fixture(frame_limit, false)
+    }
+    fn rendered_resident_sampler(frame_limit: u64) -> Self {
+        Self::sampler_fixture(frame_limit, true)
+    }
+    fn sampler_fixture(frame_limit: u64, rendered: bool) -> Self {
         let backend = Arc::new(Mutex::new(None));
         let factory_backend = Arc::clone(&backend);
         let (events, receiver) = mpsc::sync_channel(1);
+        let setup_sender = rendered.then(|| events.clone());
         let mut sink = NativeAudioSink::new(events);
         sink.output_factory = Some(Box::new(move |rate| {
             let mut slot = factory_backend.lock().unwrap();
@@ -38,14 +45,20 @@ impl Harness {
             16,
             frame_limit,
             None,
-            Box::new(ObservedSink {
-                inner: sink,
-                observation: Arc::clone(&observation),
+            Box::new(if rendered {
+                ObservedSink::rendered(sink, Arc::clone(&observation))
+            } else {
+                ObservedSink::legacy(sink, Arc::clone(&observation))
             }),
             AudioPolicy::new().unwrap().resident_native,
         )
         .unwrap();
         Self {
+            rendered_setup: setup_sender.map(|sender| RenderedSetup {
+                sender,
+                opened: None,
+                observation: None,
+            }),
             service: Some(service),
             events: receiver,
             backend,
@@ -452,14 +465,12 @@ fn sampler_fresh_output_failure_cleans_unpublished_copy_and_allows_new_context_r
         16,
         8,
         None,
-        Box::new(ObservedSink {
-            inner: sink,
-            observation: observation.clone(),
-        }),
+        Box::new(ObservedSink::legacy(sink, observation.clone())),
         AudioPolicy::new().unwrap().resident_native,
     )
     .unwrap();
     let mut h = Harness {
+        rendered_setup: None,
         service: Some(service),
         events: receiver,
         backend,
@@ -741,14 +752,15 @@ fn rendered_sampler_save_open(
         let incoming = replacement::incoming(&files);
         fs::rename(incoming, samples.join("replacement.wav")).unwrap();
     }
-    let mut h =
-        Harness::resident_sampler(if matches!(controls, Some(ControlsFixture::Replacement)) {
+    let mut h = Harness::rendered_resident_sampler(
+        if matches!(controls, Some(ControlsFixture::Replacement)) {
             24
         } else if gain {
             12
         } else {
             8
-        });
+        },
+    );
     h.next();
     let Some(Created::Track(track)) = h
         .run(Request::Edit(Command::AddMidiTrack {
@@ -837,11 +849,21 @@ fn rendered_sampler_save_open(
     };
     // Give the actual view a current worker event after fixture authoring. No
     // browser action/request or source assignment is synthesized by the fixture.
+    let before_refresh = h
+        .observation
+        .lock()
+        .unwrap()
+        .resident_submitted
+        .last()
+        .unwrap()
+        .audio_revision;
     h.service
         .as_ref()
         .unwrap()
         .submit(Request::Edit(Command::Gain { track, gain: 1.0 }))
         .unwrap();
+    h.settle_rendered_setup(Some(before_refresh));
+    let (setup_sender, mut setup_observation) = h.attach_rendered_setup();
     let backend = EditorBackend {
         service: h.service.take().unwrap(),
         audio_events: std::mem::replace(&mut h.events, mpsc::channel().1),
@@ -880,6 +902,20 @@ fn rendered_sampler_save_open(
         std::thread::sleep(Duration::from_millis(1));
     };
     loop {
+        match setup_sender.try_send(setup_observation) {
+            Ok(()) => break,
+            Err(mpsc::TrySendError::Full(event)) => setup_observation = event,
+            Err(mpsc::TrySendError::Disconnected(_)) => {
+                panic!("actual UI audio consumer disconnected")
+            }
+        }
+        pulse(&mut visual);
+        assert!(
+            Instant::now() < end,
+            "actual retained observation delivery stalled"
+        );
+    }
+    loop {
         pulse(&mut visual);
         if visual.debug_bounds(target_selector).is_some()
             && visual.debug_bounds("browser-entry-0").is_some()
@@ -907,7 +943,7 @@ fn rendered_sampler_save_open(
         pulse(&mut visual);
         if h.backend.lock().unwrap().as_ref().is_some_and(|b| {
             b.status()
-                .and_then(|s| s.applied_audio_source())
+                .and_then(|s| s.rendered_current(&h))
                 .is_some_and(|applied| {
                     applied.context.project_generation == 0
                         && applied.context.editor_revision == loaded_revision
@@ -921,7 +957,7 @@ fn rendered_sampler_save_open(
             let applied = slot
                 .as_ref()
                 .and_then(|b| b.status())
-                .and_then(|s| s.applied_audio_source());
+                .and_then(|s| s.rendered_current(&h));
             let shutdown = slot.as_ref().and_then(|b| b.status()).map(|s| {
                 s.shutdown_complete
                     .load(std::sync::atomic::Ordering::Acquire)
@@ -952,7 +988,7 @@ fn rendered_sampler_save_open(
         .unwrap()
         .status()
         .unwrap()
-        .applied_audio_source()
+        .rendered_current(&h)
         .unwrap()
         .output_identity;
     // The real Open picker cancellation must leave the actual current output
@@ -977,7 +1013,7 @@ fn rendered_sampler_save_open(
         .unwrap()
         .status()
         .unwrap()
-        .applied_audio_source()
+        .rendered_current(&h)
         .unwrap();
     assert_eq!(after_cancel.output_identity, before_output);
     assert_eq!(after_cancel.context.project_generation, 0);
@@ -1123,7 +1159,7 @@ fn rendered_sampler_save_open(
             .unwrap()
             .as_ref()
             .and_then(|b| b.status())
-            .and_then(|s| s.applied_audio_source())
+            .and_then(|s| s.rendered_current(&h))
             .is_some_and(|applied| {
                 applied.context.project_generation == 2
                     && applied.context.editor_revision == loaded_revision + 2
@@ -1327,7 +1363,11 @@ fn rendered_sampler_save_open(
                     && s.position.load(std::sync::atomic::Ordering::Acquire) == 0
             })
         });
-        if stopped {
+        if stopped
+            && cx
+                .update(|cx| hex_ui::sampler_midi_test_ready(window, cx))
+                .unwrap()
+        {
             break;
         }
         assert!(

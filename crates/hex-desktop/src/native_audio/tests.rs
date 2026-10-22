@@ -14,15 +14,33 @@ use hex_session::service::{Event, Request};
 use std::{
     fs,
     path::PathBuf,
-    sync::{Mutex, atomic::AtomicU64},
+    sync::{Mutex, Weak, atomic::AtomicU64},
     time::{Duration, Instant},
 };
 
 static NEXT: AtomicU64 = AtomicU64::new(0);
 // The actual native constructor retains the process-wide output lease.
 static NATIVE_FIXTURE: Mutex<()> = Mutex::new(());
+/// Test-only scalar correlation, never the closed candidate's source/provenance identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RenderedCurrent {
+    output_identity: u64,
+    context: AudioSourceContext,
+    audio_revision: u64,
+}
+trait RenderedCurrentStatus {
+    fn rendered_current(&self, harness: &Harness) -> Option<RenderedCurrent>;
+}
+impl RenderedCurrentStatus for hex_audio::prepared::Status {
+    fn rendered_current(&self, harness: &Harness) -> Option<RenderedCurrent> {
+        harness.observation.lock().unwrap().rendered_current(self)
+    }
+}
 #[derive(Default)]
 struct Observation {
+    resident_submitted: Vec<RenderedCurrent>,
+    resident_endpoints: Vec<(u64, Weak<hex_audio::prepared::Status>)>,
+    resident_observation_pending: bool,
     gain_prepared: Option<hex_engine::AudioCandidateIdentity>,
     sampler_cancel_count: u64,
     sampler_begin_count: u64,
@@ -36,6 +54,7 @@ struct Observation {
     native_hold: hex_session::service::NativeSamplerReservationHold,
     pause_poll: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     pause_keyboard_activation: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
+    pause_resident_publication: Option<(SyncSender<()>, mpsc::Receiver<()>)>,
     blocked: Option<AudioSourceContext>,
     fresh_before_input: Option<(EditorAudio, Arc<Mutex<Option<HeadlessBackend>>>)>,
     fresh_before_input_checked: bool,
@@ -43,13 +62,209 @@ struct Observation {
     command_ready: Option<(AudioSourceContext, u64)>,
     change_source_after_capture: Option<PathBuf>,
 }
+impl Observation {
+    fn rendered_current(&self, status: &hex_audio::prepared::Status) -> Option<RenderedCurrent> {
+        let output = self.resident_submitted.last()?.output_identity;
+        // Revisions restart on a new output. An old callback may therefore report the
+        // same revision; only the actual publication endpoint can bind that number.
+        let (_, endpoint) = self
+            .resident_endpoints
+            .iter()
+            .find(|(id, _)| *id == output)?;
+        if !std::ptr::eq(endpoint.as_ptr(), status) {
+            return None;
+        }
+        let applied = status.applied_revision.load(Acquire);
+        self.resident_submitted
+            .iter()
+            .rev()
+            .copied()
+            .find(|submission| {
+                submission.output_identity == output && submission.audio_revision == applied
+            })
+    }
+}
+
+#[test]
+fn rendered_current_rejects_old_endpoint_with_reused_applied_revision() {
+    let (mut old, mut old_callback) = hex_audio::prepared::channel(48_000).unwrap();
+    let (mut current, mut current_callback) = hex_audio::prepared::channel(48_000).unwrap();
+    let mut observation = Observation::default();
+    for (control, callback, generation) in [
+        (&mut old, &mut old_callback, 0),
+        (&mut current, &mut current_callback, 1),
+    ] {
+        let prepared = Arc::new(
+            hex_engine::PreparedRevision::prepare(
+                &hex_project::Project::new(48_000).unwrap(),
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+            )
+            .unwrap(),
+        );
+        let graph =
+            hex_engine::playback::Playback::try_from_prepared_with_session(prepared).unwrap();
+        let audio_revision = control.publish(graph).unwrap();
+        callback.begin_block();
+        callback.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert_eq!(
+            control.status.applied_revision.load(Acquire),
+            audio_revision
+        );
+        let output_identity = control.output_identity().unwrap();
+        observation
+            .resident_endpoints
+            .push((output_identity, Arc::downgrade(&control.status)));
+        observation.resident_submitted.push(RenderedCurrent {
+            output_identity,
+            context: AudioSourceContext {
+                project_generation: generation,
+                editor_revision: 0,
+            },
+            audio_revision,
+        });
+    }
+    assert_eq!(
+        old.status.applied_revision.load(Acquire),
+        current.status.applied_revision.load(Acquire)
+    );
+    assert!(observation.rendered_current(&old.status).is_none());
+    assert_eq!(
+        observation.rendered_current(&current.status),
+        observation.resident_submitted.last().copied()
+    );
+}
+
 // A read-only test observer around the actual sink, not an alternate source,
 // graph, publication or ownership path.
 struct ObservedSink {
     inner: NativeAudioSink,
     observation: Arc<Mutex<Observation>>,
 }
+impl ObservedSink {
+    /// These fixtures exercise the legacy Client bridge and closed sampler candidate lifecycle.
+    /// The wrapper deliberately exposes only that old WorkerAudioSink contract; real resident
+    /// production-default coverage uses ResidentHarness and rendered fixtures unchanged.
+    fn legacy(mut inner: NativeAudioSink, observation: Arc<Mutex<Observation>>) -> Self {
+        inner.worker_owned_resident_graphs = false;
+        Self { inner, observation }
+    }
+    fn rendered(inner: NativeAudioSink, observation: Arc<Mutex<Observation>>) -> Self {
+        assert!(
+            inner.resident_publication_enabled(),
+            "actual production default"
+        );
+        Self { inner, observation }
+    }
+    fn record_resident_submission(&mut self) {
+        self.observation
+            .lock()
+            .unwrap()
+            .resident_observation_pending = matches!(
+            self.inner.pending_observation.as_ref(),
+            Some(EditorAudioEvent::Publication {
+                state: EditorPublicationState::ResidentSubmitted { .. },
+                ..
+            })
+        );
+        if !self.inner.resident_publication_enabled() {
+            return;
+        }
+        let Some((context, "submitted", Some(audio_revision))) = self.inner.last_state else {
+            return;
+        };
+        let Some(output_identity) = self.inner.output_identity else {
+            return;
+        };
+        let current = RenderedCurrent {
+            context,
+            output_identity,
+            audio_revision,
+        };
+        let Some(endpoint) = self
+            .inner
+            .output
+            .as_mut()
+            .and_then(|output| output.publication.control())
+            .map(|control| Arc::downgrade(&control.status))
+        else {
+            return;
+        };
+        let mut observed = self.observation.lock().unwrap();
+        if !observed
+            .resident_endpoints
+            .iter()
+            .any(|(id, _)| *id == output_identity)
+        {
+            assert!(observed.resident_endpoints.len() < 256);
+            observed
+                .resident_endpoints
+                .push((output_identity, endpoint));
+        }
+        if observed.resident_submitted.last() != Some(&current) {
+            // Finite authored sequence; rows retain only scalars and weak endpoint references.
+            assert!(observed.resident_submitted.len() < 256);
+            observed.resident_submitted.push(current);
+        }
+    }
+}
 impl WorkerAudioSink for ObservedSink {
+    fn resident_publication_enabled(&self) -> bool {
+        self.inner.resident_publication_enabled()
+    }
+    fn resident_admission(
+        &self,
+    ) -> [hex_engine::native_device_resources::DeviceResourceAdmission<'_>; 3] {
+        self.inner.resident_admission()
+    }
+    #[allow(clippy::too_many_arguments, clippy::result_large_err)]
+    fn publish_resident(
+        &mut self,
+        playback: hex_engine::playback::Playback,
+        resources: Option<&hex_engine::native_device_resources::PreparedDeviceResources>,
+        observation: Arc<hex_engine::PreparedPlaybackObservation>,
+        metadata: hex_session::service::ResidentPublicationMetadata,
+        policy: hex_session::service::ResidentPublicationPolicy,
+        limit: usize,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) -> Result<
+        hex_session::service::ResidentPublicationAcceptance,
+        hex_session::service::ResidentPublicationRefusal,
+    > {
+        let hook = self
+            .observation
+            .lock()
+            .unwrap()
+            .pause_resident_publication
+            .take();
+        if let Some((entered, release)) = hook {
+            entered.send(()).unwrap();
+            release.recv_timeout(Duration::from_secs(10)).unwrap();
+        }
+        let result = self.inner.publish_resident(
+            playback,
+            resources,
+            observation,
+            metadata,
+            policy,
+            limit,
+            admit,
+        );
+        self.record_resident_submission();
+        result
+    }
+    fn poll_resident_pending(
+        &mut self,
+        admit: &mut dyn FnMut(
+            &[hex_engine::native_device_resources::DeviceResourceAdmission<'_>],
+        ) -> Result<(), String>,
+    ) {
+        self.inner.poll_resident_pending(admit);
+        self.record_resident_submission();
+    }
     fn initialize(&mut self, shutdown: &AtomicBool) -> Result<u32, String> {
         self.inner.initialize(shutdown)
     }
@@ -215,6 +430,7 @@ impl WorkerAudioSink for ObservedSink {
             );
         }
         self.inner.poll();
+        self.record_resident_submission();
         if let Some(context) = self.inner.last_context
             && let Some(domain) = self
                 .inner
@@ -279,7 +495,15 @@ impl Drop for Files {
     }
 }
 
+/// Pre-window consumer with one actual endpoint and one latest read-only observation.
+/// Superseded projection destruction is control-only; neither row owns a native resource set.
+struct RenderedSetup {
+    sender: SyncSender<EditorAudioEvent>,
+    opened: Option<EditorAudioEvent>,
+    observation: Option<EditorAudioEvent>,
+}
 struct Harness {
+    rendered_setup: Option<RenderedSetup>,
     service: Option<Service>,
     events: mpsc::Receiver<EditorAudioEvent>,
     backend: Arc<Mutex<Option<HeadlessBackend>>>,
@@ -323,13 +547,11 @@ impl Harness {
             16,
             0,
             None,
-            Box::new(ObservedSink {
-                inner: sink,
-                observation: Arc::clone(&observation),
-            }),
+            Box::new(ObservedSink::legacy(sink, Arc::clone(&observation))),
         )
         .unwrap();
         Self {
+            rendered_setup: None,
             service: Some(service),
             events: receiver,
             backend,
@@ -361,6 +583,9 @@ impl Harness {
                     }
                 }
                 self.context = Some(context);
+                if self.rendered_setup.is_some() {
+                    self.settle_rendered_setup(None);
+                }
                 return event;
             }
             assert!(
@@ -369,6 +594,54 @@ impl Harness {
             );
             std::thread::sleep(Duration::from_millis(1));
         }
+    }
+    fn settle_rendered_setup(&mut self, after: Option<u64>) {
+        let deadline = Instant::now() + self.wait;
+        loop {
+            while let Ok(event) = self.events.try_recv() {
+                let setup = self.rendered_setup.as_mut().unwrap();
+                match event {
+                    event @ EditorAudioEvent::Opened { .. } => setup.opened = Some(event),
+                    event @ EditorAudioEvent::Publication {
+                        state: EditorPublicationState::ResidentSubmitted { .. },
+                        ..
+                    } => setup.observation = Some(event),
+                    EditorAudioEvent::Unavailable { error, .. } => panic!("{error}"),
+                    _ => {}
+                }
+            }
+            self.render();
+            let current = self
+                .backend
+                .lock()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .status()
+                .unwrap()
+                .rendered_current(self);
+            let observed = self.observation.lock().unwrap();
+            if current.is_some_and(|current| {
+                Some(current.context) == self.context
+                    && observed.resident_submitted.last() == Some(&current)
+                    && after.is_none_or(|before| current.audio_revision > before)
+            }) && !observed.resident_observation_pending
+                && self.rendered_setup.as_ref().unwrap().observation.is_some()
+            {
+                return;
+            }
+            drop(observed);
+            assert!(
+                Instant::now() < deadline,
+                "pre-window actual publication did not settle"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    fn attach_rendered_setup(&mut self) -> (SyncSender<EditorAudioEvent>, EditorAudioEvent) {
+        let setup = self.rendered_setup.take().unwrap();
+        setup.sender.try_send(setup.opened.unwrap()).unwrap();
+        (setup.sender, setup.observation.unwrap())
     }
     fn run(&mut self, request: Request) -> Event {
         self.service.as_ref().unwrap().submit(request).unwrap();
@@ -498,7 +771,14 @@ fn failed_output_setup_keeps_canonical_editing_and_saving_available() {
     let mut sink = NativeAudioSink::new(events);
     sink.output_factory = Some(Box::new(|_| Err("fixture device unavailable".into())));
     let recovery = files.0.join("untitled.hex-journal");
-    let service = Service::with_audio_sink(32, 0, Some(recovery.clone()), Box::new(sink)).unwrap();
+    let service = Service::with_audio_sink_and_native_reservation(
+        32,
+        0,
+        Some(recovery.clone()),
+        Box::new(sink),
+        AudioPolicy::new().unwrap().resident_native,
+    )
+    .unwrap();
     let next = || {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {

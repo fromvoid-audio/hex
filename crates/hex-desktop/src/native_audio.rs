@@ -64,7 +64,8 @@ pub(super) struct NativeAudioSink {
     policy: Result<AudioPolicy, String>,
     resident: resident::Resident,
     // Selected before initialization; applies to every resident graph, including an empty project.
-    // Production cutover remains disabled until all ordinary consumer routes are complete.
+    // Production resident publication stays on the canonical worker; VerifiedStreaming
+    // continues to use its separate verified constructor/driver.
     worker_owned_resident_graphs: bool,
     events: SyncSender<EditorAudioEvent>,
     pending_open_event: Option<EditorAudioEvent>,
@@ -104,7 +105,7 @@ impl NativeAudioSink {
         Self {
             policy: AudioPolicy::new(),
             resident: resident::Resident::default(),
-            worker_owned_resident_graphs: false,
+            worker_owned_resident_graphs: true,
             events,
             pending_open_event: None,
             pending_observation: None,

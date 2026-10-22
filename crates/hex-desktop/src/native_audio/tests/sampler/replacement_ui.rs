@@ -46,21 +46,21 @@ pub(super) fn exercise(
             .unwrap()
             .as_ref()
             .and_then(|b| b.status())
-            .and_then(|s| s.applied_audio_source())
+            .and_then(|s| s.rendered_current(h))
     };
     let view = || {
         cx.update(|cx| hex_ui::sampler_source_test_view(window, track, cx))
             .unwrap()
             .unwrap()
     };
-    let wait_next = |visual: &mut VisualTestContext,
-                     old: hex_audio::prepared::AppliedAudioSource| {
+    let wait_next = |visual: &mut VisualTestContext, old: RenderedCurrent| {
         loop {
             pulse(visual);
             if applied().is_some_and(|a| {
                 a.context.project_generation == old.context.project_generation
                     && a.context.editor_revision == old.context.editor_revision + 1
-                    && a.output_identity != old.output_identity
+                    && a.output_identity == old.output_identity
+                    && a.audio_revision > old.audio_revision
             }) {
                 break;
             }
@@ -104,38 +104,49 @@ pub(super) fn exercise(
     };
     let old = applied().unwrap();
     let before = view();
-    let cells = h.observation.lock().unwrap().gain_cells.len();
-    let cancels = h.observation.lock().unwrap().sampler_cancel_count;
-    // No callback pulse between dispatch and the second context action: the
-    // real stopped fence cannot finish before this actual cancel menu action.
-    let begins = h.observation.lock().unwrap().sampler_begin_count;
+    let submissions = h.observation.lock().unwrap().resident_submitted.len();
+    // Hold the actual ordinary publication before admission. Cancel from the
+    // rendered context menu while its worker operation is genuinely pending.
+    let (entered, waiting) = mpsc::sync_channel(1);
+    let (release, resume) = mpsc::sync_channel(1);
+    h.observation.lock().unwrap().pause_resident_publication = Some((entered, resume));
     dispatch(visual);
-    // Observe the real begin before cancelling, without rendering its callback.
-    while h.observation.lock().unwrap().sampler_begin_count == begins {
+    loop {
+        if waiting.try_recv().is_ok() {
+            break;
+        }
         cx.background_executor
             .advance_clock(Duration::from_millis(16));
         visual.run_until_parked();
         std::thread::sleep(Duration::from_millis(1));
-        assert!(Instant::now() < end);
-    }
-    dispatch(visual);
-    loop {
-        pulse(visual);
-        if h.observation.lock().unwrap().sampler_cancel_count > cancels {
-            break;
-        }
         assert!(
             Instant::now() < end,
-            "source cancel did not reach native sink"
+            "replacement did not reach ordinary publication"
         );
+    }
+    dispatch(visual);
+    release.send(()).unwrap();
+    loop {
+        pulse(visual);
+        if cx
+            .update(|cx| hex_ui::sampler_midi_test_ready(window, cx))
+            .unwrap()
+        {
+            break;
+        }
+        assert!(Instant::now() < end, "source cancellation did not settle");
     }
     for _ in 0..12 {
         pulse(visual);
     }
     assert_eq!(applied(), Some(old));
+    assert_eq!(view().revision, before.revision);
     assert_eq!(view().asset, before.asset);
     assert!(view().overviews.shares_storage_with(&before.overviews));
-    assert_eq!(h.observation.lock().unwrap().gain_cells.len(), cells);
+    assert_eq!(
+        h.observation.lock().unwrap().resident_submitted.len(),
+        submissions
+    );
     dispatch(visual);
     let other_center = visual.debug_bounds(other_selector).unwrap().center();
     visual.simulate_click(other_center, Modifiers::default());
@@ -197,7 +208,8 @@ pub(super) fn exercise(
             pulse(visual);
             if applied().is_some_and(|a| {
                 a.context.editor_revision == old.context.editor_revision + 1
-                    && a.output_identity != old.output_identity
+                    && a.output_identity == old.output_identity
+                    && a.audio_revision > old.audio_revision
             }) {
                 break;
             }
