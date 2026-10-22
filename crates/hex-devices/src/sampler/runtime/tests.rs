@@ -384,3 +384,264 @@ fn absolute_project_retune_moves_authored_root_but_not_slice_selection() {
         assert!(runtime.committed_is_quiescent());
     }
 }
+
+#[test]
+fn occurrence_ramp_preserves_midway_onset_release_other_voice_and_arbitrary_partitions() {
+    let pcm = [1.0; 32];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(
+        views[0],
+        Mode::OneShot {
+            gate: GateMode::Trigger,
+        },
+        4,
+    );
+    let ramp =
+        NativeInstrumentOccurrenceGain::new(1, 1.0 / 3.0, hex_lattice::INSTRUMENT_GAIN_UNITY, 7, 0)
+            .unwrap();
+    let mut whole = pair(&prepared);
+    assert!(whole.supports_occurrence_gain());
+    let mut output = [[0.125; 2]; 7];
+    whole.begin_block();
+    whole
+        .process_block_with_clock_and_occurrence_gains(
+            &[on(0, 2, 60), on(2, 1, 60), off(3, 1)],
+            &mut output,
+            None,
+            &[ramp],
+            &resources,
+        )
+        .unwrap();
+    whole.commit_block();
+    // Independent constant-source oracle. The unlisted voice and caller's
+    // existing PCM remain untouched; a NoteOn at frame2 uses ramp phase2/7.
+    let expected = [
+        1.125,
+        1.125,
+        1.125 + 11.0 / 21.0,
+        1.125 + 13.0 / 21.0,
+        1.125 + 15.0 / 21.0,
+        1.125 + 17.0 / 21.0,
+        1.125 + 19.0 / 21.0,
+    ];
+    for (actual, expected) in output.iter().zip(expected) {
+        for channel in actual {
+            assert!((f64::from(*channel) - expected).abs() < 0.000001);
+        }
+    }
+    // The prepared boundary gain 1/3 and split position 3/7 are not Q16.16
+    // values. Retain original f64 endpoints and require identical split PCM.
+    let mut split = pair(&prepared);
+    let mut partitioned = [[0.125; 2]; 7];
+    split.begin_block();
+    split
+        .process_block_with_clock_and_occurrence_gains(
+            &[on(0, 2, 60), on(2, 1, 60)],
+            &mut partitioned[..3],
+            None,
+            &[ramp],
+            &resources,
+        )
+        .unwrap();
+    split.commit_block();
+    split.begin_block();
+    split
+        .process_block_with_clock_and_occurrence_gains(
+            &[off(0, 1)],
+            &mut partitioned[3..],
+            None,
+            &[ramp.with_offset_frames(3).unwrap()],
+            &resources,
+        )
+        .unwrap();
+    split.commit_block();
+    assert_eq!(partitioned, output);
+    // Gain is borrowed for this call only. Neither voice's velocity/history was
+    // rewritten; ordinary continuation is unity even for the released trigger.
+    let mut continuing = [[0.0; 2]; 2];
+    process(&mut whole, &[], &mut continuing, &resources);
+    assert_eq!(continuing, [[2.0; 2]; 2]);
+    let mut inherited = pair(&prepared);
+    inherited.inherit_from(&whole).unwrap();
+    let mut next = [[0.0; 2]; 2];
+    let mut copied = next;
+    process(&mut whole, &[], &mut next, &resources);
+    process(&mut inherited, &[], &mut copied, &resources);
+    assert_eq!(next, copied);
+}
+
+#[test]
+fn occurrence_gain_refusal_after_a_successful_segment_preserves_scratch_and_pcm() {
+    let pcm = [1.0; 32];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(
+        views[0],
+        Mode::OneShot {
+            gate: GateMode::Trigger,
+        },
+        4,
+    );
+    let gain = |id| {
+        NativeInstrumentOccurrenceGain::new(id, 0.0, hex_lattice::INSTRUMENT_GAIN_UNITY, 7, 0)
+            .unwrap()
+    };
+    let mut runtime = pair(&prepared);
+    runtime.begin_block();
+    let mut first = [[0.0; 2]; 3];
+    runtime
+        .process_block_with_clock_and_occurrence_gains(
+            &[on(0, 1, 60)],
+            &mut first,
+            None,
+            &[gain(1)],
+            &resources,
+        )
+        .unwrap();
+    let mut refused = [[9.0; 2]; 4];
+    for gains in [
+        vec![gain(9)],
+        vec![gain(1), gain(1)],
+        vec![gain(2), gain(1)],
+        vec![gain(1).with_offset_frames(6).unwrap()],
+    ] {
+        assert_eq!(
+            runtime.process_block_with_clock_and_occurrence_gains(
+                &[],
+                &mut refused,
+                None,
+                &gains,
+                &resources
+            ),
+            Err(Error::InvalidOccurrenceGain)
+        );
+        assert_eq!(refused, [[9.0; 2]; 4]);
+    }
+    let too_many: Vec<_> = (1..=264).map(gain).collect();
+    assert_eq!(
+        runtime.process_block_with_clock_and_occurrence_gains(
+            &[],
+            &mut refused,
+            None,
+            &too_many,
+            &resources
+        ),
+        Err(Error::EventCapacityExceeded)
+    );
+    assert_eq!(refused, [[9.0; 2]; 4]);
+    let mut second = [[0.0; 2]; 4];
+    runtime
+        .process_block_with_clock_and_occurrence_gains(
+            &[],
+            &mut second,
+            None,
+            &[gain(1).with_offset_frames(3).unwrap()],
+            &resources,
+        )
+        .unwrap();
+    for (index, sample) in second.iter().enumerate() {
+        assert_eq!(*sample, [((index + 3) as f64 / 7.0) as f32; 2]);
+    }
+    runtime.rollback_block();
+    assert!(runtime.committed_is_quiescent());
+    let mut after = [[0.0; 2]; 2];
+    process(&mut runtime, &[], &mut after, &resources);
+    assert_eq!(after, [[0.0; 2]; 2]);
+}
+
+#[test]
+fn occurrence_gain_scales_actual_gated_release_without_touching_the_other_voice() {
+    let pcm = [1.0; 32];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let mut settings = Settings::new(Region { start: 0, end: 32 });
+    settings.mode = Mode::Classic {
+        loop_region: Some(Region { start: 0, end: 32 }),
+    };
+    settings.envelope.release_seconds = 4.0 / 8_000.0;
+    let prepared = PreparedSamplerPlan::new(
+        SampleShape::new(32, 8_000, SampleChannels::Mono).unwrap(),
+        8_000,
+        settings,
+    )
+    .unwrap()
+    .bind_source_on_control(views[0])
+    .unwrap()
+    .prepare_runtime_on_control(4, 259, &hex_lattice::TuningTable::default())
+    .unwrap();
+    let mut runtime = pair(&prepared);
+    let gain = NativeInstrumentOccurrenceGain::new(
+        1,
+        hex_lattice::INSTRUMENT_GAIN_UNITY / 2.0,
+        hex_lattice::INSTRUMENT_GAIN_UNITY / 2.0,
+        7,
+        0,
+    )
+    .unwrap();
+    let mut output = [[0.0; 2]; 7];
+    runtime.begin_block();
+    runtime
+        .process_block_with_clock_and_occurrence_gains(
+            &[on(0, 1, 60), on(0, 2, 60), off(2, 1)],
+            &mut output,
+            None,
+            &[gain],
+            &resources,
+        )
+        .unwrap();
+    runtime.commit_block();
+    assert_eq!(
+        output,
+        [
+            [1.5; 2], [1.5; 2], [1.5; 2], [1.375; 2], [1.25; 2], [1.125; 2], [1.0; 2]
+        ]
+    );
+    let mut other_release = [[0.0; 2]; 5];
+    process(&mut runtime, &[off(0, 2)], &mut other_release, &resources);
+    assert_eq!(
+        other_release,
+        [[1.0; 2], [0.75; 2], [0.5; 2], [0.25; 2], [0.0; 2]]
+    );
+    assert!(runtime.committed_is_quiescent());
+}
+
+#[test]
+fn gain_batch_can_cover_more_incoming_identities_than_simultaneously_active_voices() {
+    let pcm = [1.0; 32];
+    let views = [view(&pcm)];
+    let resources = BorrowedDeviceResources(&views);
+    let prepared = prepare(views[0], Mode::Classic { loop_region: None }, 4);
+    let mut runtime = pair(&prepared);
+    let mut events = Vec::new();
+    let mut gains = Vec::new();
+    for id in 1..=64 {
+        events.push(on(0, id, 60));
+        if id < 64 {
+            events.push(off(0, id));
+        }
+        gains.push(
+            NativeInstrumentOccurrenceGain::new(
+                id,
+                hex_lattice::INSTRUMENT_GAIN_UNITY / 2.0,
+                hex_lattice::INSTRUMENT_GAIN_UNITY / 2.0,
+                7,
+                0,
+            )
+            .unwrap(),
+        );
+    }
+    let mut output = [[0.0; 2]; 7];
+    runtime.begin_block();
+    runtime
+        .process_block_with_clock_and_occurrence_gains(
+            &events,
+            &mut output,
+            None,
+            &gains,
+            &resources,
+        )
+        .unwrap();
+    runtime.commit_block();
+    assert_eq!(output, [[0.5; 2]; 7]);
+}
