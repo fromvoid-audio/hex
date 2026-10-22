@@ -1182,6 +1182,72 @@ impl Session {
             "resident command produced no transition",
         ))
     }
+    /// A same-audio A/B edge retains its proved compiler owner and existing correlation binding.
+    /// An audible edge constructs/admit/enqueues before the Editor's reserved canonical commit.
+    pub(super) fn comparison_resident_snapshot(
+        &mut self,
+        command: Command,
+        context: hex_engine::AudioSourceContext,
+        sink: &mut dyn WorkerAudioSink,
+        admission: sampler_export::Admission<'_>,
+        current: Option<&Snapshot>,
+        reuse: bool,
+    ) -> Result<
+        (
+            Created,
+            crate::comparison_transition::ComparisonTransition<Snapshot>,
+        ),
+        SessionError,
+    > {
+        if !matches!(command, Command::CompareDevice { .. }) {
+            return Err(SessionError::Invalid("comparison command required"));
+        }
+        let inputs = Inputs {
+            predecessor: None,
+            native: NativeSamplerSources::Committed(&self.native_assets),
+            limits: self.native_reservation.ok_or(SessionError::Invalid(
+                "resident resource reservation unavailable",
+            ))?,
+            max_frames: self.max_resident_frames,
+            shutdown: &self.shutdown,
+            cancel: None,
+            admission,
+            current,
+            legacy: self
+                .media
+                .values()
+                .flat_map(|media| [&media.source_audio, &media.audio])
+                .collect(),
+        };
+        let media = self.media_bank();
+        let table = self.sine_table();
+        let transforms = &self.audio_transforms;
+        let waveforms = &self.audio_clip_waveforms;
+        self.editor
+            .execute_prepared_transition(command, |source, target| {
+                crate::comparison_transition::prepare_comparison(
+                    source,
+                    target,
+                    current.filter(|_| reuse).map(|snapshot| &snapshot.prepared),
+                    || {
+                        let mut snapshot =
+                            inputs.prepare(target, sink, &media, table, transforms, waveforms)?;
+                        // Unknown previous audio correlation cannot justify reusing a no-op compiler
+                        // owner, but it still must publish at the unchanged authored revision.
+                        let context = if source == target {
+                            hex_engine::AudioSourceContext {
+                                editor_revision: context.editor_revision.saturating_sub(1),
+                                ..context
+                            }
+                        } else {
+                            context
+                        };
+                        inputs.publish(&mut snapshot, target, sink, context)?;
+                        Ok((Arc::clone(&snapshot.prepared), snapshot))
+                    },
+                )
+            })
+    }
     pub(super) fn history_resident_snapshot(
         &mut self,
         redo: bool,
@@ -1394,6 +1460,116 @@ mod tests {
         fn close(&mut self) {
             self.pending = None;
             self.observed.closed.fetch_add(1, Ordering::Release);
+        }
+    }
+
+    #[test]
+    fn library_load_uses_admitted_source_transaction_and_preserves_owner_on_refusal() {
+        let files = sampler_export::tests::Files::new(false);
+        let directory = files.source().parent().unwrap().join("library");
+        let observed = Arc::new(Observed::default());
+        let mut sink = OfflineSink {
+            observed: Arc::clone(&observed),
+            pending: None,
+        };
+        let retained = hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES
+            .checked_mul(2)
+            .unwrap();
+        let mut session = Session::new(8000, 16, 8192)
+            .unwrap()
+            .with_native_reservation(crate::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 64,
+                    root_rows: 64,
+                    max_retained_bytes: retained,
+                    max_construction_peak_bytes: retained
+                        .checked_add(hex_engine::MAX_ARRANGEMENT_PREROLL_STORAGE_BYTES)
+                        .unwrap(),
+                },
+                max_scan_frames: 8192,
+            })
+            .unwrap();
+        let Created::Track(track) = session
+            .command(Command::AddMidiTrack {
+                name: "sampler".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let decoded = decode_wav_file(files.source(), Limits::new(1024, 1024)).unwrap();
+        let (state, source_slot) =
+            hex_engine::native_device_resources::sampler_import_template_on_control(
+                decoded.audio().frames().len(),
+            )
+            .unwrap();
+        let (_, mut snapshot) = session
+            .import_resident_sampler(
+                decoded,
+                &AtomicBool::new(false),
+                crate::native_assets::NativeAssetDestination::EmptyInstrument {
+                    track,
+                    state,
+                    source_slot,
+                },
+                hex_engine::AudioSourceContext {
+                    project_generation: 0,
+                    editor_revision: 1,
+                },
+                &mut sink,
+                sampler_export::Admission::default(),
+                None,
+            )
+            .unwrap();
+        let mut tuned = session.project().tuning().scale();
+        tuned.set_reference(69, 880.0, 0).unwrap();
+        hex_storage::tuning_library::save(&directory, 1, "double", tuned).unwrap();
+        let before = session.project().clone();
+        let accepted = observed.accepted.lock().unwrap().len();
+        for refused in [true, false] {
+            observed.refuse.store(refused, Ordering::Release);
+            let (result, prepared) = super::super::run_tuning_library_operation_in_using(
+                &mut session,
+                TuningLibraryContext {
+                    request_generation: 0,
+                    request_revision: 1,
+                    current_generation: 0,
+                    current_revision: 1,
+                    operation_id: 1,
+                },
+                TuningLibraryOperation::Load { slot: 1 },
+                &directory,
+                |session, command| {
+                    let (_, next) = session.command_resident_snapshot(
+                        command,
+                        hex_engine::AudioSourceContext {
+                            project_generation: 0,
+                            editor_revision: 2,
+                        },
+                        &mut sink,
+                        sampler_export::Admission::default(),
+                        Some(&snapshot),
+                    )?;
+                    let prepared = Arc::clone(&next.prepared);
+                    snapshot = next;
+                    Ok(prepared)
+                },
+            );
+            assert_eq!(result.error.is_some(), refused);
+            assert_eq!(prepared.is_none(), refused);
+            if refused {
+                assert_eq!(session.project(), &before);
+                assert_eq!(observed.accepted.lock().unwrap().len(), accepted);
+            } else {
+                assert_eq!(session.project().tuning().scale(), tuned);
+                assert_eq!(
+                    session.project().track(track).unwrap().instrument(),
+                    before.track(track).unwrap().instrument()
+                );
+                assert_eq!(observed.accepted.lock().unwrap().len(), accepted + 1);
+                assert!(session.can_undo());
+            }
         }
     }
 

@@ -4,6 +4,7 @@ use super::*;
 mod resident_authoring;
 mod resident_lifecycle;
 mod resident_preview;
+mod resident_routes;
 mod sampler;
 use hex_audio::worker_fixture::HeadlessBackend;
 use hex_engine::PlaybackCommand;

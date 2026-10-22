@@ -476,7 +476,7 @@ pub enum Request {
         path: PathBuf,
         cancel: Arc<AtomicBool>,
     },
-    /// Canonical assignment for private frame-zero offline sampler export.
+    /// Assign an existing admitted original source through the selected consumer transaction.
     AssignSampler {
         track: hex_project::TrackId,
         asset: hex_project::AssetId,
@@ -1212,13 +1212,9 @@ fn view_state_bound(
             .unwrap_or(0),
     );
     Arc::new(ViewState {
-        comparison_audio: if hex_engine::native_device_resources::requires_private_sampler_sources(
-            &project,
-        ) {
-            None
-        } else {
-            binding.as_ref().and_then(|(_, proof)| proof.clone())
-        },
+        // This sealed same-audio authoring alias owns no native resources and grants no
+        // publication authority. Source-bearing devices use the identical exact-context proof.
+        comparison_audio: binding.as_ref().and_then(|(_, proof)| proof.clone()),
         // This existing projection contains legacy audio bindings and exact
         // context only. It never contains native_assets/Sampler PCM owners; the
         // private worker borrow is the sole sampler native construction input.
@@ -1374,11 +1370,11 @@ fn run_tuning_library_operation(
     session: &mut Session,
     context: TuningLibraryContext,
     operation: TuningLibraryOperation,
-    previous: Option<&Arc<PreparedRevision>>,
+    apply: impl FnMut(&mut Session, Command) -> Result<Arc<PreparedRevision>, SessionError>,
 ) -> (TuningLibraryResult, Option<Arc<PreparedRevision>>) {
     match tuning_library_directory() {
         Ok(directory) => {
-            run_tuning_library_operation_in(session, context, operation, previous, &directory)
+            run_tuning_library_operation_in_using(session, context, operation, &directory, apply)
         }
         Err(reason) => (
             TuningLibraryResult {
@@ -1393,12 +1389,34 @@ fn run_tuning_library_operation(
     }
 }
 
+#[cfg(test)]
 fn run_tuning_library_operation_in(
     session: &mut Session,
     context: TuningLibraryContext,
     operation: TuningLibraryOperation,
     previous: Option<&Arc<PreparedRevision>>,
     directory: &Path,
+) -> (TuningLibraryResult, Option<Arc<PreparedRevision>>) {
+    run_tuning_library_operation_in_using(
+        session,
+        context,
+        operation,
+        directory,
+        |session, command| {
+            session
+                .command_prepared_revision(command, previous.map(Arc::as_ref))
+                .map(|(_, prepared)| prepared)
+        },
+    )
+}
+
+/// Library I/O selects a validated tuning; the caller owns its existing reserved graph transaction.
+fn run_tuning_library_operation_in_using(
+    session: &mut Session,
+    context: TuningLibraryContext,
+    operation: TuningLibraryOperation,
+    directory: &Path,
+    mut apply: impl FnMut(&mut Session, Command) -> Result<Arc<PreparedRevision>, SessionError>,
 ) -> (TuningLibraryResult, Option<Arc<PreparedRevision>>) {
     let mut result = TuningLibraryResult {
         operation_id: context.operation_id,
@@ -1441,11 +1459,8 @@ fn run_tuning_library_operation_in(
                             session.project().tuning().audition(),
                         ) {
                             Ok(tuning) if tuning == session.project().tuning() => Ok(()),
-                            Ok(tuning) => match session.command_prepared_revision(
-                                hex_project::Command::SetTuning(tuning),
-                                previous.map(Arc::as_ref),
-                            ) {
-                                Ok((_, artifact)) => {
+                            Ok(tuning) => match apply(session, Command::SetTuning(tuning)) {
+                                Ok(artifact) => {
                                     prepared = Some(artifact);
                                     Ok(())
                                 }
@@ -1486,11 +1501,8 @@ fn run_tuning_library_operation_in(
                             session.project().tuning().audition(),
                         ) {
                             Ok(tuning) if tuning == session.project().tuning() => Ok(()),
-                            Ok(tuning) => match session.command_prepared_revision(
-                                hex_project::Command::SetTuning(tuning),
-                                previous.map(Arc::as_ref),
-                            ) {
-                                Ok((_, artifact)) => {
+                            Ok(tuning) => match apply(session, Command::SetTuning(tuning)) {
+                                Ok(artifact) => {
                                     prepared = Some(artifact);
                                     Ok(())
                                 }
@@ -2507,7 +2519,25 @@ fn run_worker(
                             current_revision: revision,
                         },
                         operation,
-                        compiled.as_ref().map(|(_, artifact)| artifact),
+                        |session, command| {
+                            resident_audio::execute_command(
+                                session,
+                                command,
+                                compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision.saturating_add(1),
+                                },
+                                &mut events,
+                                &mut resident_snapshot,
+                                export_lane.admission_with_resident_owners(
+                                    compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(), prepared: Some(prepared),
+                                    }),
+                                    resident_seek.as_ref(), resident_preview.as_ref(),
+                                ),
+                            ).map(|(_, prepared)| prepared)
+                        },
                     );
                     tuning_library = Some(result);
                     if let Some(prepared) = prepared {
@@ -2957,16 +2987,46 @@ fn run_worker(
                                 state,
                             },
                         );
-                        session.command_service_snapshot(command, admission)
+                        if events.resident_publication_enabled()
+                            && session.audio_mode() == DocumentAudioMode::Resident
+                        {
+                            resident_audio::execute_command(
+                                &mut session,
+                                command,
+                                compiled.as_ref().map(|(_, prepared)| prepared.as_ref()),
+                                hex_engine::AudioSourceContext {
+                                    project_generation,
+                                    editor_revision: revision.saturating_add(1),
+                                },
+                                &mut events,
+                                &mut resident_snapshot,
+                                admission,
+                            )
+                            .map(|(new, prepared)| {
+                                (
+                                    new,
+                                    sampler_export::ServiceExportSnapshot {
+                                        prepared,
+                                        sources: None,
+                                    },
+                                )
+                            })
+                        } else {
+                            session.command_service_snapshot(command, admission)
+                        }
                     });
                     match result {
                         Ok((new, snapshot)) => {
                             created = Some(new);
-                            unsaved = true;
-                            replacement_revision = Some(snapshot.prepared);
-                            replacement_sources = Some(snapshot.sources);
+                            if session.project() != state.project.as_ref() {
+                                unsaved = true;
+                                replacement_revision = Some(snapshot.prepared);
+                                replacement_sources = Some(snapshot.sources);
+                            }
                             status = Some(
-                                if events.native_audio_requested() {
+                                if events.resident_publication_enabled() {
+                                    "sampler assigned · waiting for audio"
+                                } else if events.native_audio_requested() {
                                     "sampler assigned · preparing frame-zero native arrangement"
                                 } else {
                                     "sampler offline export supported · native playback unavailable"
@@ -3050,6 +3110,55 @@ fn run_worker(
                                 }
                                 .into(),
                             );
+                        }
+                        Err(reason) => error = Some(reason.to_string()),
+                    }
+                }
+                Request::ImportDeviceAsset { path, cancel }
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident =>
+                {
+                    let result = (|| {
+                        if cancel.load(Ordering::Acquire) {
+                            return Err(SessionError::Invalid("native source import canceled"));
+                        }
+                        let decoded = decode_wav_file(
+                            path,
+                            Limits::new(IMPORT_FILE_LIMIT, IMPORT_FRAME_LIMIT),
+                        )?;
+                        let sink = events
+                            .resident_audio()
+                            .ok_or(SessionError::Invalid("native worker unavailable"))?;
+                        session.import_resident_sampler(
+                            decoded,
+                            &cancel,
+                            crate::native_assets::NativeAssetDestination::Unassigned,
+                            hex_engine::AudioSourceContext {
+                                project_generation,
+                                editor_revision: revision.saturating_add(1),
+                            },
+                            sink,
+                            export_lane.admission_with_resident_owners(
+                                compiled.as_ref().map(|(_, prepared)| {
+                                    hex_engine::native_device_resources::ControlSamplerSelection {
+                                        sources: current_sources.as_ref(),
+                                        prepared: Some(prepared),
+                                    }
+                                }),
+                                resident_seek.as_ref(),
+                                resident_preview.as_ref(),
+                            ),
+                            resident_snapshot.as_ref(),
+                        )
+                    })();
+                    match result {
+                        Ok((asset, snapshot)) => {
+                            created = Some(asset);
+                            unsaved = true;
+                            replacement_revision = Some(Arc::clone(&snapshot.prepared));
+                            replacement_sources = Some(None);
+                            resident_snapshot = Some(snapshot);
+                            status = Some("native device source imported".into());
                         }
                         Err(reason) => error = Some(reason.to_string()),
                     }
@@ -3736,13 +3845,37 @@ fn run_worker(
                     match command {
                         Ok(command) => {
                             let before = session.project().clone();
-                            match session.comparison_command(
-                                command,
-                                compiled
-                                    .as_ref()
-                                    .filter(|_| comparison_binding.is_some())
-                                    .map(|(_, artifact)| artifact),
-                            ) {
+                            let outcome = if events.resident_publication_enabled()
+                                && session.audio_mode() == DocumentAudioMode::Resident
+                            {
+                                events.resident_audio().ok_or(SessionError::Invalid("native worker unavailable"))
+                                    .and_then(|sink| session.comparison_resident_snapshot(
+                                        command,
+                                        hex_engine::AudioSourceContext { project_generation, editor_revision: revision.saturating_add(1) },
+                                        sink,
+                                        export_lane.admission_with_resident_owners(
+                                            compiled.as_ref().map(|(_, prepared)| hex_engine::native_device_resources::ControlSamplerSelection { sources: current_sources.as_ref(), prepared: Some(prepared) }),
+                                            resident_seek.as_ref(), resident_preview.as_ref(),
+                                        ),
+                                        resident_snapshot.as_ref(), comparison_binding.is_some(),
+                                    )).map(|(created, outcome)| {
+                                        let completed = outcome.completed.map(|snapshot| {
+                                            resident_snapshot = Some(snapshot);
+                                        });
+                                        (created, crate::comparison_transition::ComparisonTransition {
+                                            prepared: outcome.prepared, completed, metadata_only: outcome.metadata_only,
+                                        })
+                                    })
+                            } else {
+                                session.comparison_command(
+                                    command,
+                                    compiled
+                                        .as_ref()
+                                        .filter(|_| comparison_binding.is_some())
+                                        .map(|(_, artifact)| artifact),
+                                )
+                            };
+                            match outcome {
                                 Ok((_, outcome)) if session.project() != &before => {
                                     unsaved = true;
                                     if outcome.metadata_only {

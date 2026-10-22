@@ -128,6 +128,41 @@ fn publication_observation_disposition(
     }
 }
 
+// A comparison may retain its exact source context while authoring advances. Normalize only
+// contexts accepted by the sealed comparison binding; intermediate revisions remain stale.
+fn publication_observation_for_view(
+    generation: u64,
+    view: Option<&ViewState>,
+    output: Option<u64>,
+    observed: hex_engine::AudioSourceContext,
+    observed_output: u64,
+) -> PublicationObservationDisposition {
+    let authored = view.map(|view| hex_engine::AudioSourceContext {
+        project_generation: generation,
+        editor_revision: view.revision,
+    });
+    let current = view.and_then(|view| {
+        let source = view.canonical_audio_source.as_ref()?.context();
+        Some(
+            authored
+                .filter(|context| view.audio_authoring_revision(*context) == Some(view.revision))
+                .unwrap_or(source),
+        )
+    });
+    let observed = view
+        .filter(|view| view.audio_authoring_revision(observed) == Some(view.revision))
+        .and(authored)
+        .unwrap_or(observed);
+    publication_observation_disposition(
+        generation,
+        view.map(|view| view.revision),
+        current,
+        output,
+        observed,
+        observed_output,
+    )
+}
+
 fn relinquish_client_matches(
     generation: u64,
     revision: Option<u64>,
@@ -327,15 +362,9 @@ impl EditorView {
         output_identity: u64,
         state: crate::EditorPublicationState,
     ) {
-        let current_context = self
-            .state
-            .as_ref()
-            .and_then(|state| state.canonical_audio_source.as_ref())
-            .map(|snapshot| snapshot.context());
-        if publication_observation_disposition(
+        if publication_observation_for_view(
             self.project_generation,
-            current_context.map(|context| context.editor_revision),
-            current_context,
+            self.state.as_deref(),
             self.audio
                 .as_ref()
                 .and_then(|audio| audio.control.output_identity()),
@@ -364,15 +393,9 @@ impl EditorView {
         let Some(pending) = self.pending_publication_observation.as_ref() else {
             return false;
         };
-        let current_context = self
-            .state
-            .as_ref()
-            .and_then(|state| state.canonical_audio_source.as_ref())
-            .map(|snapshot| snapshot.context());
-        let disposition = publication_observation_disposition(
+        let disposition = publication_observation_for_view(
             self.project_generation,
-            current_context.map(|context| context.editor_revision),
-            current_context,
+            self.state.as_deref(),
             self.audio
                 .as_ref()
                 .and_then(|audio| audio.control.output_identity()),
@@ -4926,6 +4949,424 @@ mod comparison_source_binding_tests {
 #[cfg(test)]
 mod sampler_native_ui_protocol_tests {
     use super::*;
+    #[cfg(feature = "ui-test-support")]
+    #[gpui::test]
+    fn worker_preview_ack_waits_for_exact_submission_metadata(cx: &mut gpui::TestAppContext) {
+        worker_preview_ack_case(cx, false);
+        worker_preview_ack_case(cx, true);
+    }
+
+    #[cfg(feature = "ui-test-support")]
+    fn worker_preview_ack_case(cx: &mut gpui::TestAppContext, loaded_sampler: bool) {
+        use hex_audio::prepared::PublicationPolicy;
+        use hex_engine::native_device_resources::{PreparedDeviceResources, ResidentDeviceAssets};
+        let service = hex_session::service::Service::with_native_reservation(
+            48_000,
+            8,
+            8_000_000,
+            hex_session::ResidentNativeReservation {
+                storage: hex_engine::AudioStorageLedgerReservation {
+                    data_rows: 512,
+                    handle_rows: 256,
+                    root_rows: 128,
+                    max_retained_bytes: 20_000_000,
+                    max_construction_peak_bytes: 20_000_000,
+                },
+                max_scan_frames: 100_000,
+            },
+        )
+        .unwrap();
+        let receive = || {
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                match service.try_event() {
+                    Ok(event) => break event,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        assert!(Instant::now() < deadline);
+                        std::thread::yield_now();
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            }
+        };
+        receive();
+        let command = if loaded_sampler {
+            hex_project::Command::AddMidiTrack {
+                name: "ack sampler".into(),
+            }
+        } else {
+            hex_project::Command::InsertTrackWithDevice {
+                name: "ack fixture".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            }
+        };
+        service.submit(Request::Edit(command)).unwrap();
+        let mut event = receive();
+        let limits = hex_engine::AudioStorageLedgerReservation {
+            data_rows: 512,
+            handle_rows: 256,
+            root_rows: 128,
+            max_retained_bytes: 20_000_000,
+            max_construction_peak_bytes: 20_000_000,
+        };
+        let cancel = std::sync::atomic::AtomicBool::new(false);
+        let mut sources = ResidentDeviceAssets::default();
+        let sample_path = loaded_sampler.then(|| {
+            std::env::temp_dir().join(format!(
+                "hex-preview-ack-{}-{}.wav",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+            ))
+        });
+        if let Some(path) = &sample_path {
+            let mut wav = Vec::new();
+            wav.extend_from_slice(b"RIFF");
+            wav.extend_from_slice(&52_u32.to_le_bytes());
+            wav.extend_from_slice(b"WAVEfmt ");
+            wav.extend_from_slice(&16_u32.to_le_bytes());
+            wav.extend_from_slice(&1_u16.to_le_bytes());
+            wav.extend_from_slice(&2_u16.to_le_bytes());
+            wav.extend_from_slice(&48_000_u32.to_le_bytes());
+            wav.extend_from_slice(&192_000_u32.to_le_bytes());
+            wav.extend_from_slice(&4_u16.to_le_bytes());
+            wav.extend_from_slice(&16_u16.to_le_bytes());
+            wav.extend_from_slice(b"data");
+            wav.extend_from_slice(&16_u32.to_le_bytes());
+            for _ in 0..8 {
+                wav.extend_from_slice(&8192_i16.to_le_bytes());
+            }
+            std::fs::write(path, wav).unwrap();
+            let track = event.state.project.tracks()[0].id();
+            service
+                .submit(Request::LoadFirstSampler {
+                    request_id: 1,
+                    project_generation: 0,
+                    track,
+                    path: path.clone(),
+                    revision: event.state.revision,
+                    empty_sampler: None,
+                    cancel: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                })
+                .unwrap();
+            event = receive();
+            assert!(event.error.is_none(), "{:?}", event.error);
+            let hex_project::Created::Asset(asset) = event.created.unwrap() else {
+                panic!("asset")
+            };
+            sources
+                .insert_on_control(
+                    (
+                        asset,
+                        hex_engine::OwnedAudioSource::try_resident(48_000, vec![[0.25; 2]; 4])
+                            .ok()
+                            .unwrap(),
+                    ),
+                    0,
+                    limits,
+                    4,
+                    &cancel,
+                    || Ok::<_, hex_engine::native_device_resources::ResourcePreparationError>(()),
+                )
+                .unwrap();
+        }
+        let resources = PreparedDeviceResources::prepare_on_control(
+            &sources,
+            &event.state.project,
+            1_000_000,
+            &cancel,
+        )
+        .unwrap();
+        let prepared = Arc::new(
+            hex_engine::PreparedRevision::prepare_with_device_resources(
+                &event.state.project,
+                &std::collections::BTreeMap::new(),
+                Arc::new(hex_engine::SineTable::new()),
+                None,
+                &hex_engine::audio_transform::AudioTransformPreparation::default(),
+                &resources,
+                100_000,
+                &cancel,
+            )
+            .unwrap(),
+        );
+        let observation = Arc::new(
+            hex_engine::PreparedPlaybackObservation::prepare_on_control(&prepared).unwrap(),
+        );
+        let canonical = event.state;
+        let context = canonical.canonical_audio_source.as_ref().unwrap().context();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        let (mut output, mut backend) = loop {
+            match hex_audio::worker_fixture::open(48_000) {
+                Ok(output) => break output,
+                Err(error)
+                    if error == "audio output is open or still shutting down"
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::yield_now()
+                }
+                Err(error) => panic!("{error}"),
+            }
+        };
+        output
+            .publication
+            .control()
+            .unwrap()
+            .configure_device_resource_publication_on_control(limits)
+            .unwrap();
+        let client = output.take_client().unwrap();
+        assert!(client.worker_owns_graph_publication());
+        let publish = |output: &mut hex_audio::WorkerPreparedOutput| {
+            output
+                .publication
+                .control()
+                .unwrap()
+                .publish_with_policy_and_context_generation(
+                    hex_engine::playback::Playback::try_from_prepared_with_device_resources(
+                        Arc::clone(&prepared),
+                        &resources,
+                    )
+                    .unwrap(),
+                    PublicationPolicy::InheritRuntime,
+                    context.project_generation,
+                )
+                .unwrap()
+        };
+        let preview_revision = publish(&mut output);
+        backend.render(&mut [[0.0; 2]; 64]).unwrap();
+        assert_eq!(
+            backend.status().unwrap().applied_revision.load(Acquire),
+            preview_revision
+        );
+        assert!(
+            backend.status().unwrap().applied_audio_source().is_none(),
+            "ordinary publication uses protected metadata, not eligible-constructor source ACKs"
+        );
+        let (_, editor) = super::super::clip_drag_ui_test::editor_window(
+            cx,
+            canonical.project.as_ref().clone(),
+            Arc::clone(&canonical.midi_preview),
+        );
+        editor.update(cx, |view, cx| {
+            view.service = service;
+            view.state = Some(Arc::clone(&canonical));
+            view.project_generation = context.project_generation;
+            view.document_audio_mode = hex_session::DocumentAudioMode::Resident;
+            view.audio = Some(crate::editor_backend::EditorAudio {
+                control: client,
+                sample_rate: 48_000,
+                label: "private control".into(),
+                spectrum_error: None,
+                mode: hex_session::DocumentAudioMode::Resident,
+            });
+            view.pending_playback = None;
+            view.playback_candidates.clear();
+            view.applied_project_revision = None;
+            let key = view
+                .device_gesture
+                .begin(
+                    context.project_generation,
+                    hex_session::device_gesture::GestureTarget::TrackGain {
+                        track: canonical.project.tracks()[0].id(),
+                    },
+                    hex_session::device_gesture::ParameterValue::Float(1.0),
+                )
+                .unwrap();
+            view.device_gesture.next_request().unwrap();
+            assert!(
+                view.device_gesture
+                    .acknowledge(&hex_session::device_gesture::GestureAck {
+                        preview_retained: false,
+                        key,
+                        phase: hex_session::device_gesture::GesturePhase::Begin,
+                        sequence: 0,
+                        accepted: true,
+                        reason: None,
+                    })
+            );
+            let identity = hex_session::service::DevicePreviewIdentity {
+                project_generation: context.project_generation,
+                key,
+                sequence: 0,
+                canonical_revision: canonical.revision,
+            };
+            view.resident_device_preview = Some(hex_session::service::DevicePreview {
+                identity,
+                state: Arc::clone(&canonical),
+            });
+            let before = view.audio_admission;
+            view.tick(cx);
+            assert!(
+                view.audible_playback.is_none(),
+                "context-only preview ACK fabricated canonical audio"
+            );
+            assert!(view.applied_project_revision.is_none());
+            assert_eq!(view.audio_admission, before);
+            let mut metadata = hex_session::service::ResidentPublicationMetadata {
+                context,
+                device_preview: Some(identity),
+                tuning_preview: None,
+                seek_request: None,
+                stopped_restore: false,
+                computer_keyboard_request: None,
+                gain_recording_track: None,
+                requires_preroll: false,
+            };
+            let output_identity = view
+                .audio
+                .as_ref()
+                .unwrap()
+                .control
+                .output_identity()
+                .unwrap();
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: preview_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            let audible = view.audible_playback.as_ref().unwrap();
+            assert_eq!(audible.device_preview_identity, Some(identity));
+            assert!(Arc::ptr_eq(
+                audible.observation.as_ref().unwrap(),
+                &observation
+            ));
+            // A subsequent canonical graph still waits for its own protected metadata.
+            let canonical_revision = publish(&mut output);
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                preview_revision
+            );
+            metadata.device_preview = None;
+            view.retain_publication_observation(
+                context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: canonical_revision,
+                    observation: Arc::clone(&observation),
+                    metadata,
+                },
+            );
+            view.tick(cx);
+            let audible = view.audible_playback.as_ref().unwrap();
+            assert_eq!(audible.audio_revision, canonical_revision);
+            assert!(audible.device_preview_identity.is_none());
+            if loaded_sampler {
+                view.audio = None;
+                return;
+            }
+
+            // A real metadata-only comparison retains the old source context. A subsequent
+            // runtime publication uses the current authored revision and must not wait forever.
+            view.device_gesture.reset();
+            view.resident_device_preview = None;
+            let device = canonical.project.tracks()[0].instrument().unwrap();
+            view.service
+                .submit(Request::CompareDevice {
+                    owner: hex_session::service::preset::Owner {
+                        project_generation: context.project_generation,
+                        revision: canonical.revision,
+                        device: device.id(),
+                        class: hex_engine::NativeDeviceClass::Instrument,
+                        type_id: device.state().type_id(),
+                    },
+                    expected: hex_project::DeviceVariant::A,
+                    action: hex_project::DeviceComparisonAction::Switch,
+                })
+                .unwrap();
+            let deadline = Instant::now() + std::time::Duration::from_secs(5);
+            let event = loop {
+                match view.service.try_event() {
+                    Ok(event) => break event,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => {
+                        assert!(Instant::now() < deadline);
+                        std::thread::yield_now();
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            };
+            assert!(event.error.is_none(), "{:?}", event.error);
+            view.receive(event);
+            let authored = Arc::clone(view.state.as_ref().unwrap());
+            assert!(authored.comparison_audio.is_some());
+            assert!(authored.revision > context.editor_revision);
+            assert_eq!(
+                authored.canonical_audio_source.as_ref().unwrap().context(),
+                context
+            );
+            let runtime_context = hex_engine::AudioSourceContext {
+                editor_revision: authored.revision,
+                ..context
+            };
+            let runtime_prepared = Arc::new(
+                hex_engine::PreparedRevision::prepare(
+                    &authored.project,
+                    &std::collections::BTreeMap::new(),
+                    Arc::new(hex_engine::SineTable::new()),
+                    None,
+                )
+                .unwrap(),
+            );
+            let runtime_observation = Arc::new(
+                hex_engine::PreparedPlaybackObservation::prepare_on_control(&runtime_prepared)
+                    .unwrap(),
+            );
+            let runtime_revision = output
+                .publication
+                .control()
+                .unwrap()
+                .publish_with_policy_and_context_generation(
+                    hex_engine::playback::Playback::try_from_prepared_with_session(
+                        runtime_prepared,
+                    )
+                    .unwrap(),
+                    PublicationPolicy::InheritRuntime,
+                    context.project_generation,
+                )
+                .unwrap();
+            metadata.context = runtime_context;
+            view.retain_publication_observation(
+                runtime_context,
+                output_identity,
+                crate::EditorPublicationState::ResidentSubmitted {
+                    audio_revision: runtime_revision,
+                    observation: runtime_observation,
+                    metadata,
+                },
+            );
+            assert!(
+                view.pending_publication_observation.is_none(),
+                "current authored publication waited on retained source context"
+            );
+            assert_eq!(
+                view.playback_candidates.back().unwrap().audio_revision,
+                runtime_revision
+            );
+            backend.render(&mut [[0.0; 2]; 64]).unwrap();
+            view.tick(cx);
+            assert_eq!(
+                view.audible_playback.as_ref().unwrap().audio_revision,
+                runtime_revision
+            );
+            assert_eq!(view.applied_project_revision, Some(authored.revision));
+            view.audio = None;
+        });
+        backend.close();
+        drop(output);
+        if let Some(path) = sample_path {
+            std::fs::remove_file(path).unwrap();
+        }
+    }
     #[cfg(feature = "ui-test-support")]
     #[gpui::test]
     fn resident_publication_correlates_preview_restart_and_stopped_restore(
