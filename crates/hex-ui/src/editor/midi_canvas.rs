@@ -85,7 +85,7 @@ fn pitch_at_y(y: f32, height: f32, low: u8) -> Option<u8> {
 
 impl EditorView {
     pub(super) fn midi_editor(&mut self, cx: &mut Context<Self>) -> Option<Div> {
-        let selected = self.selected_clip?;
+        let selected = self.detail_clip_id()?;
         let length = self
             .state
             .as_ref()?

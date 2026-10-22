@@ -950,7 +950,7 @@ fn time_range_keeps_audio_detail_through_real_worker_updates(cx: &mut TestAppCon
         );
         assert!(v.normalized_time_selection().is_some());
     });
-    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    // Install a real unrelated worker revision while the pointer is held.
     editor.update(&mut visual, |v, _| {
         assert!(v.enqueue(Request::Edit(Command::RenameClip {
             clip,
@@ -959,6 +959,11 @@ fn time_range_keeps_audio_detail_through_real_worker_updates(cx: &mut TestAppCon
     });
     pump(&editor, &mut visual);
     assert!(visual.debug_bounds("arrangement-audio-clip-view").is_some());
+    editor.read_with(&visual, |v, _| {
+        assert!(v.selected_clip_ids().is_empty());
+        assert_eq!(v.detail_clip_id(), Some(clip));
+    });
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     visual.simulate_keystrokes("cmd-z");
     pump(&editor, &mut visual);
     assert!(visual.debug_bounds("arrangement-audio-clip-view").is_some());
@@ -1021,12 +1026,22 @@ fn time_range_detail_context_preserves_pane_modes_and_edit_targets(cx: &mut Test
             } else {
                 "arrangement-audio-clip-view"
             };
+            let detail_check = std::cell::Cell::new(0);
             let assert_detail = |visual: &mut VisualTestContext| {
+                detail_check.set(detail_check.get() + 1);
                 editor.read_with(visual, |v, _| {
                     assert_eq!(v.device_panel_active, mode == 1);
                     assert_eq!(v.clip_view_open, mode != 2);
                     if mode != 1 {
-                        assert_eq!(v.detail_clip_id(), Some(clip));
+                        assert_eq!(
+                            v.detail_clip_id(),
+                            Some(clip),
+                            "midi={midi} mode={mode} phase={} retained={} canonical_exists={}",
+                            detail_check.get(),
+                            v.retained_clip_detail.is_some(),
+                            v.state.as_ref().unwrap().project.clip(clip).is_some()
+                                || v.state.as_ref().unwrap().project.midi_clip(clip).is_some()
+                        );
                     }
                     assert!(
                         v.selected_clip_ids().is_empty(),
@@ -1134,7 +1149,11 @@ fn time_range_detail_context_preserves_pane_modes_and_edit_targets(cx: &mut Test
                     visual.simulate_keystrokes("cmd-z");
                     pump(&editor, &mut visual);
                     editor.read_with(&visual, |v, _| {
-                        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before)
+                        // Undo restores content while the canonical ID high-water
+                        // mark deliberately keeps the single new note allocated.
+                        let mut expected = before.clone();
+                        expected.next_id += 1;
+                        assert_eq!(v.state.as_ref().unwrap().project.snapshot(), expected);
                     });
                 }
                 editor.update(&mut visual, |v, _| {
@@ -1152,6 +1171,9 @@ fn time_range_detail_context_preserves_pane_modes_and_edit_targets(cx: &mut Test
                         "removed source cannot remain an editor owner"
                     )
                 });
+                // The worker deliberately removed the focused editor. Deliver
+                // Undo through the still-mounted workspace after actual focus input.
+                visual.simulate_click(down, Modifiers::default());
                 visual.simulate_keystrokes("cmd-z");
                 pump(&editor, &mut visual);
                 assert_detail(&mut visual);
@@ -1162,6 +1184,27 @@ fn time_range_detail_context_preserves_pane_modes_and_edit_targets(cx: &mut Test
             visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
             pump(&editor, &mut visual);
             assert_detail(&mut visual);
+            if mode == 0 {
+                editor.update(&mut visual, |v, _| {
+                    assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+                        track: target,
+                        start: hex_project::BeatTime::ZERO,
+                        length: hex_project::BeatTime::ONE
+                    })))
+                });
+                pump(&editor, &mut visual);
+                editor.read_with(&visual, |v, _| {
+                    assert_ne!(v.selected_clip, Some(clip));
+                    assert!(v.selected_clip.is_some());
+                    assert_eq!(v.detail_clip_id(), v.selected_clip);
+                    assert!(
+                        v.retained_clip_detail.is_none(),
+                        "actual new clip focus supersedes retained range context"
+                    );
+                });
+                visual.simulate_keystrokes("cmd-z");
+                pump(&editor, &mut visual);
+            }
             let target_header = visual
                 .debug_bounds(Box::leak(
                     format!("track-name-{}", target.value()).into_boxed_str(),

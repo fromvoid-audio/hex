@@ -2305,6 +2305,7 @@ impl EditorView {
                 });
                 if let Some(track) = track {
                     self.selected_track = Some(track);
+                    self.retained_clip_detail = None;
                     self.selected_clip = Some(clip);
                     self.piano_beat_start = hex_project::BeatTime::ZERO;
                     self.midi_hit_cycle = None;
@@ -2343,6 +2344,7 @@ impl EditorView {
             self.midi_note_gesture = None;
             self.midi_group_gesture = None;
             self.selected_track = Some(track);
+            self.retained_clip_detail = None;
             self.selected_clip = None;
             self.midi_selection.clear();
         } else if let Some(hex_project::Created::Note(note)) = event.created {
@@ -2385,6 +2387,7 @@ impl EditorView {
                 self.midi_note_gesture = None;
                 self.midi_group_gesture = None;
                 self.selected_track = Some(track);
+                self.retained_clip_detail = None;
                 self.selected_clip = Some(clip);
                 self.piano_beat_start = hex_project::BeatTime::ZERO;
                 self.midi_hit_cycle = None;

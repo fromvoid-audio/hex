@@ -60,6 +60,9 @@ impl EditorView {
         u64,
         u64,
     )> {
+        if self.selected_clip.is_some() {
+            return self.selected_clip_data();
+        }
         let id = self.detail_clip_id()?;
         let state = self.state.as_ref()?;
         let track = state
@@ -178,7 +181,7 @@ impl EditorView {
         // that MIDI viewport too, even when no new MIDI editor is rendered.
         if self.piano_view_clip.is_some_and(|(generation, clip)| {
             generation != self.project_generation
-                || self.selected_clip != Some(clip)
+                || self.detail_clip_id() != Some(clip)
                 || !selected_midi
         }) {
             self.piano_view_clip = None;
