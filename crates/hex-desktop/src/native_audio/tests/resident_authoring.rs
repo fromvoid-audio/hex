@@ -113,7 +113,7 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
         panic!("midi clip")
     };
     (applied, _) = h.applied(applied);
-    h.run(Request::Edit(Command::AddMidiNote {
+    let original_note = h.run(Request::Edit(Command::AddMidiNote {
         clip: midi_clip,
         start: BeatTime::ZERO,
         duration: BeatTime::ONE,
@@ -129,7 +129,7 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
         .tempo_map()
         .beat_to_frame(future_beat)
         .unwrap();
-    h.run(Request::Edit(Command::AddMidiNote {
+    let overwritten = h.run(Request::Edit(Command::AddMidiNote {
         clip: midi_clip,
         start: future_beat,
         duration: BeatTime::from_raw(BeatTime::ONE.raw() / 4),
@@ -138,6 +138,29 @@ fn loaded_resident_normal_authoring_history_and_noops_keep_exact_native_context(
         velocity: 127,
     }));
     (applied, _) = h.applied(applied);
+    // A real resident source must accept the collateral prefix edit through the
+    // same closed authoring receipt, publication, and global history path.
+    let Some(Created::Note(original_id)) = original_note.created else {
+        panic!("original note")
+    };
+    assert_eq!(
+        overwritten
+            .state
+            .project
+            .midi_note(original_id)
+            .unwrap()
+            .duration(),
+        future_beat
+    );
+    let undo_overwrite = h.run(Request::Undo);
+    (applied, _) = h.applied(applied);
+    assert_eq!(
+        undo_overwrite.state.project.midi_source(midi_clip),
+        original_note.state.project.midi_source(midi_clip)
+    );
+    let redo_overwrite = h.run(Request::Redo);
+    (applied, _) = h.applied(applied);
+    assert_eq!(redo_overwrite.state.project, overwritten.state.project);
     // UI authoring past the previous source extent must use ordinary resident
     // admission and one global Undo edge after a real sampler has loaded.
     let extended = h.run(Request::Edit(Command::EditMidiNotesWithSourceExtent {
