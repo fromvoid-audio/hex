@@ -1195,6 +1195,9 @@ pub(crate) fn retained_audio_fragment(
             "retained audio interval is outside its source clip",
         ));
     }
+    // A raw one-shot can outlive its audible source. Its silent suffix cannot
+    // be represented by advancing a raw source offset past that interval; crop
+    // the existing retained domain instead, preserving silence and root fades.
     let captured;
     let victim =
         if victim.edit.is_none() && !victim.looping && victim.duration > victim.source_length {

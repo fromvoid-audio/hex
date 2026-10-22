@@ -1194,9 +1194,31 @@ fn copied_mixed_group_selects_actual_worker_births_then_next_drag_moves_only_cop
         );
         assert!(ids.iter().all(|id| !originals.contains(id)));
         let p = &v.state.as_ref().unwrap().project;
-        assert_eq!(p.clip(audio), before.clip(audio));
-        assert_eq!(p.midi_clip(midi), before.midi_clip(midi));
+        // This short copy overlaps its old selected members. Incoming copies
+        // win; old prefixes keep their IDs and source content, rather than
+        // leaving an invalid overlapping full original behind.
+        let new_audio = ids.iter().find_map(|id| p.clip(*id)).unwrap();
+        let old_audio = before.clip(audio).unwrap();
+        let prefix = p.clip(audio).unwrap();
+        assert_eq!(prefix.start(), old_audio.start());
+        assert_eq!(prefix.duration(), new_audio.start() - old_audio.start());
+        assert_eq!(prefix.source_length(), prefix.duration());
+        assert_eq!(prefix.source_offset(), old_audio.source_offset());
+        assert_eq!(prefix.asset(), old_audio.asset());
+        assert_eq!(prefix.fade(), old_audio.fade());
         let new_midi = ids.iter().find_map(|id| p.midi_clip(*id)).unwrap();
+        let old_midi = before.midi_clip(midi).unwrap();
+        let prefix = p.midi_clip(midi).unwrap();
+        assert_eq!(prefix.start(), old_midi.start());
+        assert_eq!(
+            prefix.length().raw(),
+            new_midi.start().raw() - old_midi.start().raw()
+        );
+        assert_eq!(prefix.source(), old_midi.source());
+        assert_eq!(
+            hex_project::Project::from_snapshot(p.snapshot()).unwrap(),
+            **p
+        );
         assert_eq!(new_midi.notes().len(), 1);
         assert_eq!(
             (new_midi.notes()[0].pitch(), new_midi.notes()[0].velocity()),
@@ -1221,8 +1243,8 @@ fn copied_mixed_group_selects_actual_worker_births_then_next_drag_moves_only_cop
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         let p = &v.state.as_ref().unwrap().project;
-        assert_eq!(p.clip(audio), before.clip(audio));
-        assert_eq!(p.midi_clip(midi), before.midi_clip(midi));
+        assert_eq!(p.clip(audio), after.clip(audio));
+        assert_eq!(p.midi_clip(midi), after.midi_clip(midi));
         let copy_audio = copies.iter().find_map(|id| p.clip(*id)).unwrap();
         assert_ne!(
             copy_audio.start(),
