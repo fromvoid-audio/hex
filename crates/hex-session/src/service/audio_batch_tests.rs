@@ -267,8 +267,11 @@ fn additive_batch_preserves_target_identity_and_cancels_the_old_keyboard_lease_o
     let files = Files::new();
     let audio = files.wav("audio.wav", 48_000, &[1; 8]);
     let (s, _) = service();
-    s.submit(Request::Edit(Command::AddMidiTrack {
+    s.submit(Request::Edit(Command::InsertTrackWithDevice {
         name: "typing".into(),
+        before_track: None,
+        slot: hex_project::TrackDeviceSlot::Instrument,
+        state: hex_project::default_instrument_state().expect("fixture instrument state"),
     }))
     .unwrap();
     let added = event(&s);

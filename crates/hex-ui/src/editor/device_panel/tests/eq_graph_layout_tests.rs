@@ -8,13 +8,13 @@ impl Drop for BrowserRoot {
 }
 // Match the existing exclusive output lease for these private headless fixtures.
 // No global environment/settings mutation, backend redesign or lease bypass.
-fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
+pub(super) fn status_fixture_guard() -> std::sync::MutexGuard<'static, ()> {
     static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
     SERIAL
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
-fn headless_status_output() -> (
+pub(super) fn headless_status_output() -> (
     hex_audio::WorkerPreparedOutput,
     hex_audio::worker_fixture::HeadlessBackend,
 ) {

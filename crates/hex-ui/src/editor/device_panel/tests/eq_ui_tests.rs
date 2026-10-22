@@ -4,8 +4,11 @@ fn fixture(legacy: bool) -> (Service, Arc<ViewState>, TrackId, DeviceId) {
     let service = Service::new(48000, 16, 8000000).unwrap();
     let _ = receive_service_event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "eq source".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .unwrap();
     let event = receive_service_event(&service);
@@ -936,3 +939,6 @@ fn eq_node_controls_stay_bound_without_a_local_automation_editor(cx: &mut TestAp
     pump_until(&editor, cx, |v| settled(v) && read(v, device) == after);
     assert!(visual.debug_bounds(selector("eq-auto", device)).is_none());
 }
+
+#[path = "eq_held_pointer_tests.rs"]
+mod held_pointer_tests;

@@ -73,6 +73,28 @@ pub struct PreparedTempoMap {
 }
 
 impl PreparedTempoMap {
+    pub(crate) fn observation_copy(&self) -> Result<Self, crate::Invalid> {
+        let mut copy = hex_project::TempoMapCopyCustody::new();
+        copy.prepare_from(&self.canonical)
+            .map_err(|_| crate::Invalid("could not copy activity timing"))?;
+        let mut map = None;
+        copy.transfer_into(&mut map)
+            .map_err(|_| crate::Invalid("could not retain activity timing"))?;
+        Ok(Self {
+            canonical: map.ok_or(crate::Invalid("activity timing is unavailable"))?,
+            max_micro_bpm: self.max_micro_bpm,
+        })
+    }
+    pub(crate) fn observation_heap_bytes(&self) -> Option<usize> {
+        self.canonical
+            .owned_allocation_layout()
+            .checked_backing_bytes()
+    }
+    pub(crate) fn observation_copy_quote(&self) -> Option<usize> {
+        self.canonical.points().len().checked_mul(
+            std::mem::size_of::<hex_project::TempoPoint>() + std::mem::size_of::<u128>(),
+        )
+    }
     /// Move a validated canonical map into playback-owned prepared state.
     pub fn prepare(
         canonical: TempoMap,
