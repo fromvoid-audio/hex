@@ -1,11 +1,12 @@
 //! Browser composition and transient visual review state. Tag storage stays outside the UI.
 use super::*;
 
-const SECTIONS: [(BrowserSection, &str); 4] = [
+const SECTIONS: [(BrowserSection, &str); 5] = [
     (BrowserSection::Samples, "samples"),
     (BrowserSection::Instruments, "devices"),
     (BrowserSection::Projects, "projects"),
     (BrowserSection::All, "all"),
+    (BrowserSection::Plugins, "vst3"),
 ];
 // Match existing browser buttons: a 22px hit/centering slot plus the
 // sidebar's existing 1px right border. Glyph padding lives inside the slot.
@@ -39,8 +40,8 @@ pub(super) struct BrowserLayout {
     editor_visible: bool,
     settings_visible: bool,
     group_open: [bool; 6],
-    visible: [bool; 4],
-    icons: [usize; 4],
+    visible: [bool; 5],
+    icons: [usize; 5],
 }
 
 impl Default for BrowserLayout {
@@ -52,8 +53,8 @@ impl Default for BrowserLayout {
             editor_visible: false,
             settings_visible: false,
             group_open: [true, true, false, false, false, false],
-            visible: [true; 4],
-            icons: [0, 1, 2, 6],
+            visible: [true; 5],
+            icons: [0, 1, 2, 6, 3],
         }
     }
 }
@@ -914,17 +915,27 @@ impl EditorView {
     }
 
     pub(super) fn browser_selected_label(&self, cx: &App) -> String {
-        let files = self.browser_visible_entries(cx);
-        let index = self.browser.selected_index;
-        if let Some(entry) = files.get(index) {
-            entry.name.clone()
-        } else {
-            self.browser_visible_devices(cx)
-                .get(index.saturating_sub(files.len()))
+        match self.browser_item_at(self.browser.selected_index, cx) {
+            Some(BrowserItemKey::Plugin(path, id)) => self
+                .browser_visible_plugins(cx)
+                .iter()
+                .find(|row| row.module == path && row.cid == id)
+                .map_or_else(|| "no item selected".into(), |row| row.name.clone()),
+            Some(BrowserItemKey::File(path)) => path.file_name().map_or_else(
+                || "no item selected".into(),
+                |name| name.to_string_lossy().into_owned(),
+            ),
+            _ => self
+                .browser_visible_devices(cx)
+                .get(
+                    self.browser
+                        .selected_index
+                        .saturating_sub(self.browser_visible_entries(cx).len()),
+                )
                 .map_or_else(
                     || "no item selected".into(),
                     |(_, entry)| entry.name.to_string(),
-                )
+                ),
         }
     }
 

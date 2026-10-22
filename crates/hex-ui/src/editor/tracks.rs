@@ -600,11 +600,7 @@ impl EditorView {
         }
         // Group metadata is projected once per pointer/modifier/timer update.
         // Render only the members owned by this row; no project/PCM rebuild.
-        if let Some(drag) = self
-            .active_clip_drag
-            .as_ref()
-            .filter(|d| self.drag_start_is_current(d))
-        {
+        if let Some(drag) = self.displayed_clip_drag() {
             let group = drag.group.borrow();
             if group.ids.len() > 1 {
                 let mut shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
@@ -676,7 +672,7 @@ impl EditorView {
                     }
                     clip_area = clip_area.children([overlay]);
                 }
-                if !overlap_events.is_empty() {
+                if self.active_clip_drag.is_some() && !overlap_events.is_empty() {
                     // Captured member IDs are sorted by the existing selection
                     // owner. Originals are protected in BOTH copy/move modes.
                     let occupied = track
@@ -725,9 +721,7 @@ impl EditorView {
             }
         }
         let clip_preview = self
-            .active_clip_drag
-            .as_ref()
-            .filter(|drag| self.drag_start_is_current(drag))
+            .displayed_clip_drag()
             .filter(|drag| drag.group.borrow().ids.len() <= 1)
             .and_then(|drag| drag.preview.get())
             .filter(|preview| preview.target_track == track_id);
@@ -761,8 +755,7 @@ impl EditorView {
                     }))
                     .bg(rgb(theme::clip_fill(
                         track.color(),
-                        self.active_clip_drag
-                            .as_ref()
+                        self.displayed_clip_drag()
                             .and_then(|d| state.project.clip_flavor(d.clip))
                             .unwrap_or_default(),
                         false,
@@ -770,8 +763,7 @@ impl EditorView {
                     .opacity(if clip_preview.is_some() { 1.0 } else { 0.88 })
                     .children([clip_grid_layer(grid, visible_start, visible_end)]);
                 if let Some(drag) = self
-                    .active_clip_drag
-                    .as_ref()
+                    .displayed_clip_drag()
                     .filter(|_| clip_preview.is_some())
                 {
                     let source = state
@@ -822,13 +814,13 @@ impl EditorView {
                 }
                 clip_area = clip_area.children([drop_preview]);
                 let excluded_clip = self
-                    .active_clip_drag
-                    .as_ref()
+                    .displayed_clip_drag()
                     .filter(|drag| clip_preview.is_some() && !drag.copy_modifier.get())
                     .map(|drag| drag.clip);
                 for (index, (start, end)) in
                     drop_overlap_spans(state, track, (visible_start, visible_end), excluded_clip)
                         .into_iter()
+                        .filter(|_| clip_preview.is_none() || self.active_clip_drag.is_some())
                         .enumerate()
                 {
                     clip_area = clip_area.child(
@@ -1354,11 +1346,7 @@ impl EditorView {
             .px_1()
             .border_l_2()
             .border_b_1()
-            .border_color(rgb(if selected {
-                theme::color(theme::PaletteRole::Primary)
-            } else {
-                theme::color(theme::PaletteRole::Border)
-            }))
+            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .bg(rgb(if selected {
                 theme::color(theme::PaletteRole::Raised)
             } else {
@@ -1372,10 +1360,33 @@ impl EditorView {
                 div()
                     .absolute()
                     .left_0()
-                    .top_0()
+                    .top(px(1.0))
                     .bottom_0()
-                    .w(px(2.0))
+                    .w(px(4.0))
+                    .debug_selector(move || format!("track-color-strip-{}", track_id.value()))
                     .bg(rgb(theme::element_colors(track.color()).accent)),
+            )
+            // Paint selection after opaque header content and its assigned-color
+            // strip. Keep layout/input bounds unchanged and resize feedback local.
+            .children(
+                (selected
+                    && self.active_trim_drag.is_none()
+                    && self.active_midi_trim_drag.is_none())
+                .then(|| {
+                    div()
+                        .absolute()
+                        // Inset one pixel inside the full header, accounting for
+                        // its existing left/bottom layout borders.
+                        .left(px(-1.0))
+                        .right(px(1.0))
+                        .top(px(1.0))
+                        .bottom_0()
+                        .border_1()
+                        .debug_selector(move || {
+                            format!("track-selection-outline-{}", track_id.value())
+                        })
+                        .border_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                }),
             )
             .on_mouse_down(
                 MouseButton::Right,
@@ -1421,13 +1432,13 @@ impl EditorView {
         let move_display = self.time_range_move_display();
         let exclusions = move_exclusions(move_display.as_ref(), track_id, track_index);
         let group_owner = self
-            .active_clip_drag
-            .as_ref()
-            .filter(|d| !d.copy_modifier.get() && self.drag_start_is_current(d));
+            .displayed_clip_drag()
+            .filter(|d| !d.copy_modifier.get());
         let group = group_owner.map(|d| d.group.borrow());
         let hides_group_member = |id| {
             group.as_ref().is_some_and(|g| {
-                g.ids.len() > 1 && !g.previews().is_empty() && g.ids.binary_search(&id).is_ok()
+                ((g.ids.len() > 1 && !g.previews().is_empty()) || self.pending_clip_move.is_some())
+                    && g.ids.binary_search(&id).is_ok()
             })
         };
         for clip in track.clips() {
@@ -2028,10 +2039,7 @@ impl EditorView {
     }
 
     pub(super) fn floating_clip_drag_ghost(&self) -> Option<Div> {
-        let payload = self
-            .active_clip_drag
-            .as_ref()
-            .filter(|drag| self.drag_start_is_current(drag))?;
+        let payload = self.displayed_clip_drag()?;
         if let Some(drag::ClipDropDestination::NewTrack {
             before_track: None,
             position,

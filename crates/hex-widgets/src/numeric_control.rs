@@ -157,6 +157,7 @@ pub struct NumericControlConfig {
     dial_layout: DialLayout,
     drag_axis: Option<NumericDragAxis>,
     command_fine_steps: bool,
+    value_drag_steps: bool,
 }
 
 impl NumericControlConfig {
@@ -183,7 +184,19 @@ impl NumericControlConfig {
             dial_layout: DialLayout::ReadoutGap,
             drag_axis: None,
             command_fine_steps: false,
+            value_drag_steps: false,
         })
+    }
+
+    /// Opt into continuous value-readout scrubbing in explicit units per pixel.
+    /// Keyboard uses the same steps; rails and default controls are unchanged.
+    pub fn with_value_drag_steps(mut self, coarse: f64, fine: f64) -> Result<Self, NumericError> {
+        if self.spec.integer_values() {
+            return Err(NumericError::InvalidScale);
+        }
+        self.spec = self.spec.with_keyboard_steps(coarse, fine)?;
+        self.value_drag_steps = true;
+        Ok(self)
     }
 
     /// Opt into Command-fine arrow steps and stepping a valid local text draft.
@@ -223,6 +236,10 @@ struct Press {
     origin: Point<Pixels>,
     last_position: Point<Pixels>,
     start_value: f64,
+    // Pointer position, not an authored/draft value. Retains sub-frame motion
+    // between integer grid crossings without emitting a fractional value.
+    integer_pointer_position: Option<f64>,
+    unit_pointer_value: f64,
     target: PressTarget,
     dragging: bool,
 }
@@ -267,6 +284,7 @@ pub struct NumericControl {
     drag_axis: Option<NumericDragAxis>,
     tab_navigation: bool,
     command_fine_steps: bool,
+    value_drag_steps: bool,
     pub(crate) focus: FocusHandle,
     focus_blur: Option<gpui::Subscription>,
     window_activation: Option<gpui::Subscription>,
@@ -333,6 +351,7 @@ impl NumericControl {
             dial_layout,
             drag_axis,
             command_fine_steps,
+            value_drag_steps,
         } = config;
         Self {
             accessibility_binding: None,
@@ -366,6 +385,7 @@ impl NumericControl {
             inline_value_width: None,
             tab_navigation: false,
             command_fine_steps,
+            value_drag_steps,
             focus: cx.focus_handle(),
             focus_blur: None,
             window_activation: None,
@@ -516,6 +536,8 @@ impl NumericControl {
             origin: event.position,
             last_position: event.position,
             start_value: self.draft,
+            integer_pointer_position: None,
+            unit_pointer_value: self.draft,
             target,
             dragging: false,
         });
@@ -789,10 +811,37 @@ impl NumericControl {
             return (true, false);
         }
         let sensitivity = if shift { 1200.0 } else { 120.0 };
-        let next = match self
-            .spec
-            .adjust(self.draft, f64::from(primary_delta) / sensitivity)
-        {
+        let delta = f64::from(primary_delta) / sensitivity;
+        let adjusted = if self.value_drag_steps && matches!(press.target, PressTarget::Value) {
+            // Accumulate each movement with its current modifier, preserving
+            // fractional motion. Clamping here prevents overshoot debt.
+            match self
+                .spec
+                .step(press.unit_pointer_value, f64::from(primary_delta), shift)
+            {
+                Ok(value) => {
+                    press.unit_pointer_value = value;
+                    self.press = Some(press);
+                    Ok(value)
+                }
+                Err(error) => Err(error),
+            }
+        } else if self.spec.integer_values() {
+            let position = match press.integer_pointer_position {
+                Some(position) => position,
+                None => match self.spec.to_normalized(press.start_value) {
+                    Ok(position) => position,
+                    Err(_) => return (true, false),
+                },
+            };
+            let position = (position + delta).clamp(0.0, 1.0);
+            press.integer_pointer_position = Some(position);
+            self.press = Some(press);
+            self.spec.from_normalized(position)
+        } else {
+            self.spec.adjust(self.draft, delta)
+        };
+        let next = match adjusted {
             Ok(value) => value,
             Err(_) => return (true, false),
         };

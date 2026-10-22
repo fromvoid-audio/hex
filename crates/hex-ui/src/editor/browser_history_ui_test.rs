@@ -626,6 +626,7 @@ fn builtin_history_fixture(
                         Default::default(),
                         Default::default(),
                     ),
+                    None,
                     crate::editor::test_environment::Inputs {
                         existing_environment: Some(std::sync::Arc::clone(&directory.1)),
                         home: Some(home.clone()),

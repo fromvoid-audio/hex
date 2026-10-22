@@ -732,13 +732,14 @@ fn eq_held_node_busy_seek_returns_exact_candidate_before_new_preview_replaces_it
         let pending = view.pending_playback.as_ref().unwrap();
         let seek = view.prepared_seek.as_ref().unwrap();
         let id = seek.request_id;
-        let root = Arc::as_ptr(&seek.prepared_revision) as usize;
+        let root = Arc::as_ptr(seek.prepared_revision.as_ref().unwrap()) as usize;
         let identity = seek.device_preview_identity.unwrap();
         assert_eq!(pending.seek_request_id, Some(id));
         // Occupy the REAL forwarding cell, without polling its worker. A second
         // publication must return the exact seek Playback with actual Busy.
-        let blocker =
-            hex_engine::playback::Playback::from_prepared(Arc::clone(&seek.prepared_revision));
+        let blocker = hex_engine::playback::Playback::from_prepared(Arc::clone(
+            seek.prepared_revision.as_ref().unwrap(),
+        ));
         let token = view
             .audio
             .as_mut()
@@ -901,13 +902,13 @@ fn eq_held_node_retirement_fallback_blocks_admission_and_retries_exact_runtime(
         let playback = view.pending_playback.take().unwrap();
         assert_eq!(playback.seek_request_id, Some(seek.request_id));
         let id = seek.request_id;
-        let root = Arc::as_ptr(&seek.prepared_revision) as usize;
+        let root = Arc::as_ptr(seek.prepared_revision.as_ref().unwrap()) as usize;
         view.retired_seek_result = Some(hex_session::arrangement_seek::ArrangementSeekResult {
             request_id: id,
             mode: seek.mode,
             generation: seek.project_generation,
             revision: seek.project_revision,
-            prepared_revision: seek.prepared_revision,
+            prepared_revision: seek.prepared_revision.unwrap(),
             destination_frame: seek.destination_frame,
             work_budget_frames: seek.work_budget_frames,
             start_playing: seek.start_playing,
