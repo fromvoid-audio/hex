@@ -166,6 +166,7 @@ impl EditorView {
         };
         let group_selected = self.midi_selection.len() > 1;
         let selected_ids = self.midi_selection.shared_ids();
+        let draw_primary = self.midi_selection.primary();
         let selection_epoch = self.midi_selection.epoch();
         let preview = self.midi_note_gesture.map(|gesture| gesture.preview);
         let selected_note_data = selected.and_then(|id| state.project.midi_note(id));
@@ -450,6 +451,13 @@ impl EditorView {
                         (height / f32::from(pitch_rows) - 2.0).max(1.0),
                         theme::color(theme::PaletteRole::Primary),
                     );
+                    if draw_primary == Some(id) {
+                        let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
+                        let accent = 2.0_f32.min(note_height);
+                        let color = theme::color(theme::PaletteRole::Text);
+                        quad(x, y + 1.0, w, accent, color);
+                        quad(x, y + 1.0 + note_height - accent, w, accent, color);
+                    }
                     if w >= 6.0 && note.leading_edge_visible {
                         quad(
                             x,
@@ -924,7 +932,6 @@ impl EditorView {
                             return;
                         }
                         view.midi_marquee = None;
-                        view.midi_selection.clear();
                         view.begin_midi_creation(
                             rendered_context,
                             f32::from(event.position.x),
@@ -1849,13 +1856,14 @@ impl EditorView {
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
+        let pending_selection = self.pending_created_note_selection.take().is_some();
         let pitch_zoom = self.piano_pitch_zoom.take().is_some();
         let creation = self.midi_creation.take().is_some();
         let note = self.midi_note_gesture.take().is_some();
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
         let marquee = self.midi_marquee.take().is_some();
-        pitch_zoom || creation || note || group || stroke || marquee
+        pending_selection || pitch_zoom || creation || note || group || stroke || marquee
     }
 
     fn midi_note_gesture_current(
@@ -2174,3 +2182,7 @@ mod step_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_audition_ui_tests.rs"]
 mod audition_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_created_selection_ui_tests.rs"]
+mod created_selection_tests;

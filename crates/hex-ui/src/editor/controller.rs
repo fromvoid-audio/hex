@@ -1818,6 +1818,7 @@ impl EditorView {
         let loop_complete = self.loop_request_complete(&event);
         let group_copy_intent = self.group_copy_request_complete(&event);
         let midi_step_complete = self.take_completed_midi_step(&event);
+        let created_note_selection = self.take_created_note_selection(&event);
         if event.project_replaced {
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
@@ -2070,7 +2071,7 @@ impl EditorView {
             .as_ref()
             .is_some_and(|state| state.revision != revision)
         {
-            self.cancel_midi_note_gesture();
+            self.cancel_stale_midi_creation_gestures(revision);
         }
         self.drag_lanes
             .retain(|track, _| event.state.project.track(*track).is_some());
@@ -2367,30 +2368,6 @@ impl EditorView {
             self.retained_clip_detail = None;
             self.selected_clip = None;
             self.midi_selection.clear();
-        } else if let Some(hex_project::Created::Note(note)) = event.created {
-            self.midi_selection.set_single(note);
-        } else if let Some(hex_project::Created::Notes { clip, first, last }) = event.created {
-            if let Some(current) = self
-                .state
-                .as_ref()
-                .and_then(|state| state.project.midi_source(clip))
-            {
-                match super::midi_draw::created_range_ids(
-                    self.detail_clip_id(),
-                    clip,
-                    current.notes(),
-                    first,
-                    last,
-                ) {
-                    Ok(Some(created)) => {
-                        if let Err(error) = self.midi_selection.select_all(created) {
-                            self.error = Some(error.into());
-                        }
-                    }
-                    Ok(None) => {}
-                    Err(error) => self.error = Some(error.into()),
-                }
-            }
         } else if let Some(hex_project::Created::Clip(clip)) = event.created {
             let track = self.state.as_ref().and_then(|state| {
                 state
@@ -2667,12 +2644,18 @@ impl EditorView {
         // Canonical state, generation, gain/loop display extent and selection
         // have now been installed. Normalize only the locally retired owner.
         self.normalize_completed_trim_viewport(retired_trim);
+        self.apply_created_note_selection(created_note_selection);
         self.apply_completed_midi_step(midi_step_complete);
         successfully_opened_path
     }
 
     pub(super) fn enqueue(&mut self, request: Request) -> bool {
-        self.enqueue_request(request, false)
+        let selection = self.created_note_selection_intent(&request);
+        let accepted = self.enqueue_request(request, false);
+        if accepted && let Some(selection) = selection {
+            self.pending_created_note_selection = Some(selection);
+        }
+        accepted
     }
 
     fn enqueue_duplicate_continuation(&mut self, clip: hex_project::ClipId) -> bool {

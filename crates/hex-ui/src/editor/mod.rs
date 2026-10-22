@@ -83,6 +83,7 @@ mod menus;
 mod midi;
 mod midi_audition;
 mod midi_canvas;
+mod midi_created_selection;
 mod midi_creation;
 mod midi_drag;
 mod midi_draw;
@@ -660,6 +661,7 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_marker: Option<u64>,
     midi_step: midi_step::StepEntry,
     midi_audition: midi_audition::MidiAudition,
+    pending_created_note_selection: Option<midi_created_selection::Pending>,
     pub(in crate::editor) midi_marquee: Option<midi_selection::Marquee>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
@@ -1261,6 +1263,7 @@ impl EditorView {
             midi_marker: None,
             midi_step: midi_step::StepEntry::default(),
             midi_audition: midi_audition::MidiAudition::default(),
+            pending_created_note_selection: None,
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
             midi_hit_cycle: None,

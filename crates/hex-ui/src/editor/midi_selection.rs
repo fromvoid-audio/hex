@@ -262,6 +262,20 @@ impl MidiSelection {
         self.replace(next, primary)
     }
 
+    /// Canonical creation selects its complete authored set, with the returned last ID primary.
+    pub(super) fn select_created(
+        &mut self,
+        mut ids: Vec<NoteId>,
+        primary: NoteId,
+    ) -> Result<bool, &'static str> {
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.binary_search(&primary).is_err() {
+            return Err("created midi primary is missing");
+        }
+        self.replace(ids, Some(primary))
+    }
+
     pub(super) fn retain_valid(
         &mut self,
         valid_ids: impl IntoIterator<Item = NoteId>,
