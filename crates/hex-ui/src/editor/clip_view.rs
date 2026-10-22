@@ -98,6 +98,14 @@ impl EditorView {
         window: &gpui::Window,
         cx: &mut Context<Self>,
     ) -> Div {
+        // Observe selection changes even while a non-MIDI detail (or no clip)
+        // is displayed, so returning to the same MIDI ID fits its source again.
+        if self.piano_view_clip.is_some_and(|(generation, clip)| {
+            generation != self.project_generation || self.selected_clip != Some(clip)
+        }) {
+            self.piano_view_clip = None;
+            self.piano_zoom_wheel_accum = 0.0;
+        }
         let open = self.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
             self.selected_clip
