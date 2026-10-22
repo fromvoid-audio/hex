@@ -386,9 +386,20 @@ fn looped_and_mutable_bounces_chase_history_and_isolate_other_clips() {
         let before = session.compile_prepared_revision(None).unwrap();
         let (start, frames) = session.project().midi_bounce_range(clip).unwrap();
         let expected = pcm(before, (start + frames) as usize);
+        let Created::Track(other_track) = session
+            .command(Command::InsertTrackWithDevice {
+                name: "independent voice".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("other track")
+        };
         let Created::Clip(other) = session
             .command(Command::PlaceMidiClip {
-                track,
+                track: other_track,
                 start: beat(1),
                 length: beat(3),
             })

@@ -121,6 +121,8 @@ impl Editor {
         }
         let mut candidate = self.project.clone();
         let result = candidate.apply(command)?;
+        candidate.validate_changed_midi_occupancy(&self.project)?;
+        candidate.validate_changed_arrangement_occupancy(&self.project)?;
         candidate.validate_device_asset_references()?;
         candidate.validate_playable_routes()?;
         let effect = plan.and_then(|p| p.finish(result, &self.project, &candidate));
@@ -159,6 +161,35 @@ impl Editor {
         commands: Vec<Command>,
         prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
     ) -> Result<(Vec<Created>, T), E> {
+        self.execute_batch_prepared(commands, false, prepare)
+    }
+
+    /// Import an Arrangement audio batch as one replacement plan. Console imports
+    /// retain their ordered cell commands. Only the final candidate is prepared;
+    /// intermediate split capacity cannot reject an otherwise admissible batch.
+    pub fn execute_audio_imports_prepared<T, E: From<Invalid>>(
+        &mut self,
+        commands: Vec<Command>,
+        prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
+    ) -> Result<(Vec<Created>, T), E> {
+        let arrangement = !commands.is_empty()
+            && commands.iter().all(|command| {
+                matches!(
+                    command,
+                    Command::ImportPreparedAudioTrackAt { .. }
+                        | Command::ImportPreparedAudioClip { .. }
+                        | Command::ImportPreparedAudioClipWithOverwrite { .. }
+                )
+            });
+        self.execute_batch_prepared(commands, arrangement, prepare)
+    }
+
+    fn execute_batch_prepared<T, E: From<Invalid>>(
+        &mut self,
+        commands: Vec<Command>,
+        arrangement_import: bool,
+        prepare: impl FnOnce(&Project, &[Created]) -> Result<T, E>,
+    ) -> Result<(Vec<Created>, T), E> {
         if commands.len() > crate::MAX_CLIPS {
             return Err(E::from(Invalid("batch command limit reached")));
         }
@@ -167,9 +198,15 @@ impl Editor {
             .try_reserve_exact(commands.len())
             .map_err(|_| E::from(Invalid("could not reserve batch results")))?;
         let mut candidate = self.project.clone();
-        for command in commands {
-            results.push(candidate.apply(command)?);
+        if arrangement_import {
+            results = candidate.apply_audio_imports(commands)?;
+        } else {
+            for command in commands {
+                results.push(candidate.apply(command)?);
+            }
         }
+        candidate.validate_changed_midi_occupancy(&self.project)?;
+        candidate.validate_changed_arrangement_occupancy(&self.project)?;
         candidate.validate_device_asset_references()?;
         candidate.validate_playable_routes()?;
         // Reserve before preparation/commit. No history allocation follows it.

@@ -723,6 +723,7 @@ impl Project {
                         velocity: note.velocity,
                     });
                 }
+                crate::midi_note_overwrite::validate_occupancy(&notes)?;
                 compiled_midi.push(MidiClip {
                     name: clip.name.clone(),
                     flavor: clip.flavor,
@@ -862,6 +863,7 @@ impl Project {
                             velocity: note.velocity,
                         });
                     }
+                    crate::midi_note_overwrite::validate_occupancy(&notes)?;
                     crate::SessionCellContent::Midi(crate::SessionMidiClip {
                         flavor: clip.flavor,
                         id: ClipId(clip.id),
@@ -964,6 +966,7 @@ impl Project {
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
             project.adopt_playable_snapshot(&candidate)?;
         }
+        project.validate_arrangement_occupancy()?;
         Ok(project)
     }
 }
