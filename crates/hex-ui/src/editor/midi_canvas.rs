@@ -110,6 +110,7 @@ impl EditorView {
         let owner = (self.project_generation, selected);
         if self.piano_view_clip != Some(owner) {
             self.cancel_midi_note_gesture();
+            self.clear_midi_time_selection();
             self.piano_view_clip = Some(owner);
             self.midi_marker = Some(BeatTime::ZERO.raw());
             self.cancel_midi_audition();
@@ -171,7 +172,13 @@ impl EditorView {
         let selection_epoch = self.midi_selection.epoch();
         let preview = self.midi_note_gesture.map(|gesture| gesture.preview);
         let selected_note_data = selected.and_then(|id| state.project.midi_note(id));
-        let status = if self.midi_selection.len() > 1 {
+        let status = if let Some((first, last)) = self.midi_time_selection_bounds() {
+            format!(
+                "time {}–{}b · cmd+d duplicate",
+                beat_label(first),
+                beat_label(last)
+            )
+        } else if self.midi_selection.len() > 1 {
             format!(
                 "{} notes selected · drag to move · option-drag/cmd+d copy · backspace to delete · cmd+a select all",
                 self.midi_selection.len()
@@ -216,6 +223,7 @@ impl EditorView {
         let draw_creation = self.midi_creation.as_ref().map(|creation| creation.preview);
         let draw_marquee = self.midi_marquee.clone();
         let draw_marker = self.midi_marker;
+        let draw_time = self.midi_time_selection_bounds();
         let draw_pitch_locked = self.midi_draw_pitch_locked;
         let draw_mode = self.midi_draw_mode;
         let draw_hit_cycle = self.midi_hit_cycle;
@@ -381,6 +389,24 @@ impl EditorView {
                             theme::color(theme::PaletteRole::Grid)
                         },
                     );
+                }
+                if let Some((first, last)) = draw_time {
+                    let end = beat_start.raw().saturating_add(beat_span.raw());
+                    let first = first.max(beat_start.raw());
+                    let last = last.min(end);
+                    if first < last {
+                        let left = ((first - beat_start.raw()) as f64 / beat_span.raw() as f64)
+                            as f32
+                            * width;
+                        let right = ((last - beat_start.raw()) as f64 / beat_span.raw() as f64)
+                            as f32
+                            * width;
+                        let color = theme::color(theme::PaletteRole::Primary);
+                        quad(left, 0.0, 1.0, height, color);
+                        quad(right - 1.0, 0.0, 1.0, height, color);
+                        quad(left, 0.0, right - left, 2.0, color);
+                        quad(left, height - 2.0, right - left, 2.0, color);
+                    }
                 }
                 for note in canvas_scene.notes() {
                     if draw_selected.binary_search(&note.id).is_ok()
@@ -769,6 +795,7 @@ impl EditorView {
                             return;
                         }
                         view.midi_focus.focus(window);
+                        view.clear_midi_time_selection();
                         let mut hit_cycle = view.midi_hit_cycle;
                         let hit = event_scene
                             .hit(x, y, width, height, &mut hit_cycle)
@@ -1962,7 +1989,7 @@ impl EditorView {
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
-        let ruler = self.midi_ruler.cancel();
+        let ruler = self.midi_ruler.cancel() | self.midi_time_selection.cancel();
         let pan = self.midi_pan.gesture.take().is_some();
         let velocity = self.midi_velocity.cancel();
         let pending_selection = self.pending_created_note_selection.take().is_some();

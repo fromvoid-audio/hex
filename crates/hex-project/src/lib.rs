@@ -72,6 +72,7 @@ mod midi;
 mod midi_batch;
 mod midi_note_overwrite;
 mod midi_playback;
+mod midi_source_range;
 pub use gain_envelope::{
     AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
     MAX_GAIN_POINTS_PER_TRACK, validate_gain_envelope,

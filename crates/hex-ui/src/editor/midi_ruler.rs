@@ -17,6 +17,9 @@ use hex_session::service::Request;
 
 #[path = "midi_loop.rs"]
 mod loop_brace;
+#[path = "midi_time_selection.rs"]
+mod time_selection;
+pub(super) use time_selection::State as TimeSelection;
 
 #[derive(Default)]
 pub(super) struct State {
@@ -267,6 +270,7 @@ impl EditorView {
             .midi_ruler
             .gesture
             .is_some_and(|gesture| gesture.handle == Handle::Start);
+        let time_selection = self.midi_time_selection_bounds();
         let entity = cx.entity();
         let mut ruler = div()
             .id("midi-source-ruler")
@@ -325,6 +329,24 @@ impl EditorView {
                     if !b.is_valid() {
                         return;
                     }
+                    if let Some((first, last)) = time_selection {
+                        let end = start.saturating_add(span);
+                        let first = first.max(start);
+                        let last = last.min(end);
+                        if first < last {
+                            let left =
+                                b.x + ((first - start) as f64 / span as f64) as f32 * b.width;
+                            let right =
+                                b.x + ((last - start) as f64 / span as f64) as f32 * b.width;
+                            window.paint_quad(fill(
+                                Bounds::new(
+                                    point(px(left), bounds.origin.y),
+                                    size(px(right - left), px(b.height)),
+                                ),
+                                gpui::rgba((theme::color(theme::PaletteRole::Primary) << 8) | 0x44),
+                            ));
+                        }
+                    }
                     if let Some(marker) = marker
                         .and_then(|marker| marker.checked_sub(start))
                         .filter(|offset| *offset <= span)
@@ -363,7 +385,12 @@ impl EditorView {
                             if let Some(context) = rendered.map(|context| Context {
                                 bounds: b,
                                 ..context
-                            }) && view.begin_midi_start(context, f32::from(event.position.x))
+                            }) && (view.begin_midi_start(context, f32::from(event.position.x))
+                                || view.begin_midi_time_selection(
+                                    context,
+                                    f32::from(event.position.x),
+                                    event.modifiers.platform,
+                                ))
                             {
                                 view.midi_focus.focus(window);
                                 cx.notify();
@@ -377,6 +404,20 @@ impl EditorView {
                             return;
                         }
                         move_entity.update(cx, |view, cx| {
+                            if view.midi_time_selection.gesture.is_some() {
+                                if event.pressed_button == Some(MouseButton::Left) {
+                                    view.update_midi_time_selection(
+                                        b,
+                                        f32::from(event.position.x),
+                                        event.modifiers.platform,
+                                    );
+                                } else {
+                                    view.midi_time_selection.cancel();
+                                }
+                                cx.notify();
+                                cx.stop_propagation();
+                                return;
+                            }
                             if view
                                 .midi_ruler
                                 .gesture
@@ -405,6 +446,16 @@ impl EditorView {
                             return;
                         }
                         up_entity.update(cx, |view, cx| {
+                            if view.midi_time_selection.gesture.is_some() {
+                                view.finish_midi_time_selection(
+                                    b,
+                                    f32::from(event.position.x),
+                                    event.modifiers.platform,
+                                );
+                                cx.notify();
+                                cx.stop_propagation();
+                                return;
+                            }
                             if view
                                 .midi_ruler
                                 .gesture
@@ -443,7 +494,7 @@ impl EditorView {
         );
         let source_row=div().h(px(18.0)).flex_shrink_0().flex()
             .child(div().id("midi-source-ruler-label").w(px(38.0)).flex_shrink_0().text_size(px(8.0)).child(theme::text("start"))
-                .tooltip(|_,cx|cx.new(|_|super::transport::MiniTooltip { description:"drag clip playback start · grid snapping · hold cmd/control to invert · no seek".into() }).into()))
+                .tooltip(|_,cx|cx.new(|_|super::transport::MiniTooltip { description:"drag start marker · drag blank ruler to select time · cmd+d duplicate · hold cmd/control to invert snap · no seek".into() }).into()))
             .children([ruler]);
         div()
             .flex_shrink_0()
@@ -785,3 +836,7 @@ mod geometry_tests {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_loop_ui_tests.rs"]
 mod loop_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_time_selection_ui_tests.rs"]
+mod time_tests;

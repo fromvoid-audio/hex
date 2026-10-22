@@ -18,6 +18,7 @@ impl Command {
                 | Self::AddMidiNote { .. }
                 | Self::AddMidiNotes { .. }
                 | Self::EditMidiNotes { .. }
+                | Self::DuplicateMidiSourceRange { .. }
                 | Self::UpdateMidiNote { .. }
                 | Self::UpdateMidiNotes { .. }
                 | Self::RemoveMidiNote(_)
@@ -40,6 +41,11 @@ impl Command {
                     return Err(MISSING);
                 }
                 return Ok(false);
+            }
+            Self::DuplicateMidiSourceRange { clip, start, end } => {
+                let source = project.midi_source(*clip).ok_or(MISSING)?;
+                let range = crate::midi_source_range::Range::capture(source, *start, *end)?;
+                return Ok(range.count > 0 || range.source_length != source.source_length());
             }
             Self::UpdateMidiNote {
                 note,
