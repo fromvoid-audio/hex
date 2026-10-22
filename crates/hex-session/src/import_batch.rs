@@ -277,7 +277,7 @@ impl Session {
         let shutdown = &self.shutdown;
         let (_, (created, revision)) =
             self.editor
-                .execute_many_prepared(commands, |candidate, results| {
+                .execute_audio_imports_prepared(commands, |candidate, results| {
                     let created =
                         console::normalize(candidate, results, console_cell, residents.len())?;
                     for (result, resident) in created.iter().zip(&residents) {

@@ -164,7 +164,7 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
             gain: hex_project::ClipGain::UNITY,
             id,
             asset: 1,
-            start: 0,
+            start: id - 3,
             duration: 1,
             source_offset: 0,
             source_length: 1,
@@ -222,7 +222,11 @@ fn duplicate_overflow_and_clip_limit_refuse_atomically() {
         return_tracks: Vec::new(),
     })
     .expect("valid clip-limit fixture");
-    let full_clip = full.tracks()[0].clips()[0].id();
+    let full_clip = full.tracks()[0]
+        .clips()
+        .last()
+        .expect("last full clip")
+        .id();
     let mut full_editor = Editor::new(full, 8).expect("full editor");
     let before = full_editor.project().clone();
     assert!(

@@ -107,6 +107,11 @@ draws another frame nor injects pointer input, so tests can distinguish actual
 paint from focus state that has not reached the screen. Test-support only; no
 production rendering or native graphics behavior changes.
 
+`rendered_filled_quads` also exposes filled canvas fragments within a debug
+element, clipped to the completed scene's content/replay masks. It supports
+pointer/worker tests of primitives without inventing per-primitive UI elements.
+It remains test-support only and is not native framebuffer readback.
+
 14 October accessibility extension (ticket29/PR188): safe bounded semantic
 snapshots/actions and cached prepaint integration. The first native AppKit
 candidate is quarantined for an off-UI final-owner hazard; no native AX backend
