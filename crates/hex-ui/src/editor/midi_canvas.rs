@@ -111,6 +111,8 @@ impl EditorView {
             self.cancel_midi_note_gesture();
             self.piano_view_clip = Some(owner);
             self.midi_marker = Some(BeatTime::ZERO.raw());
+            self.midi_step.cancel_pending();
+            self.cancel_computer_keyboard();
             self.piano_zoom_wheel_accum = 0.0;
             self.piano_beat_start = BeatTime::ZERO;
             self.piano_beat_span =
@@ -1418,6 +1420,18 @@ impl EditorView {
                 }),
             )])
             .children([self.midi_button(
+                if self.midi_step.enabled { "st" } else { "s" },
+                "toggle step entry · enable computer keyboard with m · hold notes and press right · no notes inserts a rest",
+                cx.listener(|v, _, window, cx| {
+                    v.midi_step.enabled = !v.midi_step.enabled;
+                    v.midi_step.cancel_pending();
+                    v.cancel_midi_note_gesture();
+                    v.cancel_computer_keyboard();
+                    v.midi_focus.focus(window);
+                    cx.notify();
+                }),
+            )])
+            .children([self.midi_button(
                 "←",
                 "pan piano roll left",
                 cx.listener(|v, _, _, cx| {
@@ -2084,3 +2098,7 @@ mod marquee_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_cursor_ui_tests.rs"]
 mod cursor_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_step_ui_tests.rs"]
+mod step_tests;

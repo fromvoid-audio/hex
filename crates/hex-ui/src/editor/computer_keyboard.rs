@@ -17,6 +17,8 @@ pub(super) struct ComputerKeyboard {
     pub base_pitch: u8,
     pub velocity: u8,
     held: [Option<HeldKey>; NOTE_KEYS.len()],
+    /// Physical ownership for editor consumers; audio lease retirement is separate.
+    physical: [Option<HeldKey>; NOTE_KEYS.len()],
     tokens: [u64; NOTE_KEYS.len()],
     next_token: u64,
     pub input: Option<std::sync::Arc<hex_engine::computer_keyboard::ComputerKeyboardInput>>,
@@ -32,6 +34,7 @@ impl Default for ComputerKeyboard {
             base_pitch: 60,
             velocity: 100,
             held: [None; NOTE_KEYS.len()],
+            physical: [None; NOTE_KEYS.len()],
             tokens: [0; NOTE_KEYS.len()],
             next_token: 0,
             input: None,
@@ -54,6 +57,11 @@ impl ComputerKeyboard {
     /// Disable and lifecycle cancellation forget physical ownership together.
     pub fn release_all(&mut self) {
         self.held.fill(None);
+        self.physical.fill(None);
+    }
+
+    pub(super) fn physical_notes(&self) -> impl Iterator<Item = HeldKey> + '_ {
+        self.physical.iter().copied().flatten()
     }
 
     pub fn toggle(&mut self) {
@@ -70,7 +78,7 @@ impl ComputerKeyboard {
             return false;
         }
         if let Some(index) = NOTE_KEYS.iter().position(|candidate| *candidate == key) {
-            if !is_held && self.held[index].is_none() {
+            if !is_held && self.physical[index].is_none() {
                 if let Some(pitch) = self
                     .base_pitch
                     .checked_add(index as u8)
@@ -85,10 +93,12 @@ impl ComputerKeyboard {
                     };
                     self.next_token = token;
                     self.tokens[index] = token;
-                    self.held[index] = Some(HeldKey {
+                    let held = HeldKey {
                         pitch,
                         velocity: self.velocity,
-                    });
+                    };
+                    self.held[index] = Some(held);
+                    self.physical[index] = Some(held);
                 }
             }
             return true;
@@ -126,7 +136,8 @@ impl ComputerKeyboard {
         let Some(index) = NOTE_KEYS.iter().position(|candidate| *candidate == key) else {
             return false;
         };
-        self.held[index].take().is_some()
+        let active = self.held[index].take().is_some();
+        self.physical[index].take().is_some() || active
     }
 
     #[cfg(test)]
@@ -136,12 +147,17 @@ impl ComputerKeyboard {
 }
 
 impl super::EditorView {
-    pub(super) fn cancel_computer_keyboard(&mut self) {
+    fn retire_computer_keyboard_audio(&mut self) {
         if let Some(input) = self.computer_keyboard.input.take() {
             input.cancel();
         }
-        self.computer_keyboard.release_all();
+        self.computer_keyboard.held.fill(None);
         self.computer_keyboard.target = None;
+    }
+
+    pub(super) fn cancel_computer_keyboard(&mut self) {
+        self.retire_computer_keyboard_audio();
+        self.computer_keyboard.release_all();
     }
 
     /// Priority Stop retains only a still-valid ordinary output-bound input root. The output
@@ -297,7 +313,15 @@ impl super::EditorView {
             }
             return changed;
         }
-        self.cancel_computer_keyboard();
+        let same_physical_target = self.midi_step.enabled
+            && target
+                .zip(self.computer_keyboard.target)
+                .is_some_and(|(new, old)| new.0 == old.0 && new.2 == old.2);
+        if same_physical_target {
+            self.retire_computer_keyboard_audio();
+        } else {
+            self.cancel_computer_keyboard();
+        }
         let Some((generation, revision, track)) = target else {
             return false;
         };
