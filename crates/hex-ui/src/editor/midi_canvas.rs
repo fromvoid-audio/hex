@@ -236,7 +236,11 @@ impl EditorView {
                 .or_else(|| {
                     self.midi_group_gesture
                         .as_ref()
-                        .map(|_| gpui::CursorStyle::ClosedHand)
+                        .map(|gesture| match gesture.kind() {
+                            midi_drag::HitKind::Move => gpui::CursorStyle::ClosedHand,
+                            midi_drag::HitKind::ResizeLeading => gpui::CursorStyle::ResizeLeft,
+                            midi_drag::HitKind::ResizeTrailing => gpui::CursorStyle::ResizeRight,
+                        })
                 })
                 .or_else(|| {
                     self.midi_stroke
@@ -300,6 +304,7 @@ impl EditorView {
                         width,
                         height,
                         draw_hit_cycle,
+                        &draw_selected,
                     )
                 } else {
                     None
@@ -469,7 +474,7 @@ impl EditorView {
                         quad(x, y + 1.0, w, accent, color);
                         quad(x, y + 1.0 + note_height - accent, w, accent, color);
                     }
-                    if w >= 6.0 && note.leading_edge_visible {
+                    if w >= 3.0 && note.leading_edge_visible {
                         quad(
                             x,
                             y + 1.0,
@@ -478,7 +483,7 @@ impl EditorView {
                             theme::color(theme::PaletteRole::Text),
                         );
                     }
-                    if w >= 6.0 && note.trailing_edge_visible {
+                    if w >= 3.0 && note.trailing_edge_visible {
                         quad(
                             x + w - 1.0,
                             y + 1.0,
@@ -802,7 +807,8 @@ impl EditorView {
                                 view_cx.notify();
                                 return;
                             }
-                            if !view.midi_selection.contains(note.id) {
+                            let was_selected = view.midi_selection.contains(note.id);
+                            if !was_selected {
                                 view.midi_selection.set_single(note.id);
                                 view.midi_note_gesture = None;
                                 view.midi_group_gesture = None;
@@ -813,20 +819,15 @@ impl EditorView {
                                 return;
                             };
                             let note_width = right - left;
-                            let kind = midi_drag::hit_kind(
+                            let kind = midi_drag::selected_hit_kind(
                                 x,
                                 left,
                                 note_width,
                                 note.leading_edge_visible,
                                 note.trailing_edge_visible,
+                                was_selected,
                             );
                             if view.midi_selection.len() > 1 {
-                                if kind != midi_drag::HitKind::Move {
-                                    view.midi_note_gesture = None;
-                                    view.midi_group_gesture = None;
-                                    view_cx.notify();
-                                    return;
-                                }
                                 let Some(project_clip) = view
                                     .state
                                     .as_ref()
@@ -864,6 +865,7 @@ impl EditorView {
                                 view.midi_group_gesture =
                                     super::midi_group_drag::GroupGesture::begin(
                                         super::midi_group_drag::GroupStart {
+                                            kind,
                                             generation,
                                             revision,
                                             clip: clip_id,
@@ -1007,6 +1009,7 @@ impl EditorView {
                                     width,
                                     height,
                                     view.midi_hit_cycle,
+                                    view.midi_selection.ids(),
                                 )
                             } else {
                                 None
@@ -2286,3 +2289,7 @@ mod created_selection_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_pan_ui_tests.rs"]
 mod pan_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_resize_ui_tests.rs"]
+mod resize_tests;
