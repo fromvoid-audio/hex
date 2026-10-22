@@ -21,7 +21,32 @@ fn midi_clip_view_toggle_preserves_selection_and_moves_focus_out_of_hidden_roll(
             view.selected_track = Some(track);
             view.selected_clip = Some(clip);
             view.midi_selection.set_single(note);
-            view.midi_marquee = Some(([1.0, 1.0], [2.0, 2.0], false));
+            view.midi_marquee = Some(
+                super::midi_selection::Marquee::begin(
+                    super::midi_selection::MarqueeContext {
+                        scene: super::midi_scene::SceneKey {
+                            generation: view.project_generation,
+                            revision: view.state.as_ref().unwrap().revision,
+                            clip,
+                            beat_start: view.piano_beat_start.raw(),
+                            beat_span: view.piano_beat_span.raw(),
+                            pitch_low: view.piano_pitch_low,
+                            pitch_rows: view.piano_pitch_rows,
+                        },
+                        bounds: super::midi_stroke::CanvasBounds {
+                            x: 0.0,
+                            y: 0.0,
+                            width: 10.0,
+                            height: 10.0,
+                        },
+                        selection_epoch: view.midi_selection.epoch(),
+                    },
+                    [1.0, 1.0],
+                    false,
+                    &view.midi_selection,
+                )
+                .expect("valid fixture marquee"),
+            );
             view.midi_focus.focus(window);
             view.clip_view_open = true;
             cx.notify();

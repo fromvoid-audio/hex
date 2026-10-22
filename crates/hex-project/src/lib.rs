@@ -64,6 +64,7 @@ pub use gain_touch::{
 };
 mod midi;
 mod midi_batch;
+mod midi_note_overwrite;
 mod midi_playback;
 pub use gain_envelope::{
     AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
@@ -91,6 +92,7 @@ pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot
 pub use history::Editor;
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
 pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
+pub use midi_note_overwrite::{MidiNoteOverwriteChange, MidiNoteOverwritePreview};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,
 };

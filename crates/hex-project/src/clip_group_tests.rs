@@ -1255,9 +1255,11 @@ fn group_final_note_capacity_includes_session_and_real_preparation_refusal_keeps
             _ => panic!("session"),
         };
         let mut notes = Vec::new();
-        for _ in 0..MAX_NOTES - 2 + usize::from(excess) {
+        for index in 0..MAX_NOTES - 2 + usize::from(excess) {
             let mut n = template.clone();
             n.id = NoteId(p.allocate_id().unwrap());
+            n.start = BeatTime::from_raw(index as u64);
+            n.duration = BeatTime::from_raw(1);
             notes.push(n);
         }
         let crate::SessionCellContent::Midi(c) = &mut p.session.cells[0].content else {
