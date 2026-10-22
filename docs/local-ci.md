@@ -19,6 +19,18 @@ the failing step; later `not_run` steps did not pass. Results are in
 must pass on the exact final commit with an unchanged source digest and no stale
 flag. Preserve failed/interrupted logs; do not weaken assertions to obtain green.
 
+For ordinary app-only Rust merge inputs, reviewed Python shared invariants run
+alongside the unchanged Rust checks and repository guards. Tooling, policy,
+build/configuration, mixed UI/core or unknown inputs, and new/missing/nested test
+modules retain comprehensive discovery. Full/release profiles always discover all
+modules. The summary records selected and excluded groups and exact selectors.
+
+Explicit native acceptance inputs (`HEX_VST3_MACOS_RECEIPT`,
+`HEX_VST3_DISCOVERY_RECEIPT`, `HEX_VST3_PACKAGE_SCANNER`,
+`HEX_VST3_PACKAGE_FIXTURES`, or `HEX_TEST_SIGNING_IDENTITY`) keep comprehensive
+Python discovery for app-only merges too. Native suites retain their own opt-in
+requirements; a skipped fixture is not native acceptance.
+
 ## Target ownership
 
 Use one persistent Cargo target per executor, with no concurrent raw Cargo writer.
