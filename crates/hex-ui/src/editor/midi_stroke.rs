@@ -44,6 +44,7 @@ pub(super) struct StrokeContext {
     pub(super) view_start: u64,
     pub(super) view_span: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
     pub(super) bounds: CanvasBounds,
     pub(super) pitch_locked: bool,
     pub(super) draw_mode: bool,
@@ -54,11 +55,8 @@ impl StrokeContext {
         self.view_span > 0
             && self.clip_length > 0
             && self.view_start < self.clip_length
-            && self
-                .view_start
-                .checked_add(self.view_span)
-                .is_some_and(|view_end| view_end <= self.clip_length)
-            && self.pitch_low <= 104
+            && self.view_start.checked_add(self.view_span).is_some()
+            && super::midi_scene::valid_pitch_range(self.pitch_low, self.pitch_rows)
             && self.bounds.is_valid()
             && self.draw_mode
     }
@@ -685,6 +683,7 @@ mod tests {
             view_start: 0,
             view_span: length,
             pitch_low: 48,
+            pitch_rows: 24,
             bounds: CanvasBounds {
                 x: 0.0,
                 y: 0.0,

@@ -469,6 +469,9 @@ impl Render for EditorView {
                 super::device_panel::capture_navigation_pointer_down(view, event, cx);
             }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
+                if event.button == MouseButton::Left {
+                    view.piano_pitch_zoom = None;
+                }
                 if event.button == MouseButton::Left
                     && let Some(drag) = view.active_browser_audio_drag.clone()
                 {

@@ -1,8 +1,20 @@
-//! Revision-keyed complete piano-roll geometry and deterministic overlap hits.
+//! Revision/viewport-keyed piano-roll geometry and deterministic overlap hits.
+//! Time zoom may reveal blank space beyond the source; that space never extends
+//! the authored source or clips notes. Pitch rows are part of cache identity and
+//! shared by paint, preview and hit geometry.
 use hex_project::{ClipId, MidiNote, MidiNoteInsert, NoteId};
 use std::{collections::HashMap, sync::Arc};
 
-pub(super) const ROWS: usize = 24;
+/// Horizontal navigation may reveal space beyond short sources without editing them.
+pub(super) fn zoom_limit(length: u64) -> u64 {
+    length
+        .saturating_mul(4)
+        .max(hex_project::BeatTime::ONE.raw() * 16)
+}
+
+pub(super) fn valid_pitch_range(low: u8, rows: u8) -> bool {
+    rows > 0 && u16::from(low) + u16::from(rows) <= 128
+}
 pub(super) const MIN_HIT_WIDTH_PX: f32 = 4.0;
 pub(super) fn fit_span(clip_length: u64, beat: u64) -> u64 {
     if clip_length > 0 {
@@ -13,11 +25,8 @@ pub(super) fn fit_span(clip_length: u64, beat: u64) -> u64 {
 }
 
 pub(super) fn zoom_span(current: u64, clip_length: u64, beat: u64, inward: bool) -> u64 {
-    let minimum = (beat / 16).max(1);
-    if clip_length > 0 && clip_length < minimum {
-        return clip_length;
-    }
-    let bound = clip_length.max(minimum);
+    let minimum = (beat / 16).max(1).min(clip_length.max(1));
+    let bound = zoom_limit(clip_length).max(minimum);
     let current = current.max(minimum).min(bound);
     if inward {
         (current / 2).max(minimum)
@@ -39,13 +48,15 @@ pub(super) fn wheel_zoom(
         return (0, 0);
     }
     let minimum = (hex_project::BeatTime::ONE.raw() / 16).max(1).min(length);
-    let span = span.clamp(minimum, length);
+    let span = span.clamp(minimum, zoom_limit(length));
     let start = clamp_start(start, length, span);
     let anchor = anchor.clamp(start, start + span);
     let next_span = if inward {
         ((u128::from(span) * 4 / 5) as u64).max(minimum)
     } else {
-        (u128::from(span) * 5).div_ceil(4).min(u128::from(length)) as u64
+        (u128::from(span) * 5)
+            .div_ceil(4)
+            .min(u128::from(zoom_limit(length))) as u64
     };
     let offset = (u128::from(anchor - start) * u128::from(next_span) / u128::from(span)) as u64;
     (
@@ -76,6 +87,7 @@ pub(super) struct SceneKey {
     pub(super) beat_start: u64,
     pub(super) beat_span: u64,
     pub(super) pitch_low: u8,
+    pub(super) pitch_rows: u8,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -111,7 +123,7 @@ pub(super) struct HitCycle {
 pub(super) struct MidiScene {
     key: SceneKey,
     notes: Box<[NoteGeometry]>,
-    rows: [Box<[usize]>; ROWS],
+    rows: Box<[Box<[usize]>]>,
     by_id: HashMap<NoteId, usize>,
 }
 
@@ -123,12 +135,12 @@ pub(super) struct MidiSceneCache {
 impl MidiScene {
     pub(super) fn build(key: SceneKey, notes: &[MidiNote]) -> Self {
         let mut visible = Vec::with_capacity(notes.len());
-        let mut rows: [Vec<usize>; ROWS] = std::array::from_fn(|_| Vec::new());
+        let mut rows = vec![Vec::new(); usize::from(key.pitch_rows)];
         let mut by_id = HashMap::with_capacity(notes.len());
         let view_end = key.beat_start.checked_add(key.beat_span);
 
         if key.beat_span > 0
-            && key.pitch_low <= 104
+            && valid_pitch_range(key.pitch_low, key.pitch_rows)
             && let Some(view_end) = view_end
         {
             for note in notes {
@@ -140,11 +152,11 @@ impl MidiScene {
                 if end <= key.beat_start
                     || start >= view_end
                     || note.pitch() < key.pitch_low
-                    || note.pitch() >= key.pitch_low.saturating_add(ROWS as u8)
+                    || note.pitch() >= key.pitch_low.saturating_add(key.pitch_rows)
                 {
                     continue;
                 }
-                let row = usize::from(key.pitch_low + 23 - note.pitch());
+                let row = usize::from(key.pitch_low + (key.pitch_rows - 1) - note.pitch());
                 let visible_start = start.max(key.beat_start);
                 let visible_end = end.min(view_end);
                 let x = (visible_start - key.beat_start) as f64 / key.beat_span as f64;
@@ -157,7 +169,7 @@ impl MidiScene {
                     channel: note.channel(),
                     velocity: note.velocity(),
                     x: x as f32,
-                    y: row as f32 / ROWS as f32,
+                    y: row as f32 / f32::from(key.pitch_rows),
                     width: width as f32,
                     leading_edge_visible: start >= key.beat_start,
                     trailing_edge_visible: end <= view_end,
@@ -172,7 +184,7 @@ impl MidiScene {
         Self {
             key,
             notes: visible.into_boxed_slice(),
-            rows: rows.map(Vec::into_boxed_slice),
+            rows: rows.into_iter().map(Vec::into_boxed_slice).collect(),
             by_id,
         }
     }
@@ -229,7 +241,8 @@ impl MidiScene {
         {
             return None;
         }
-        let row = ((y / height * ROWS as f32).floor() as usize).min(ROWS - 1);
+        let row = ((y / height * f32::from(self.key.pitch_rows)).floor() as usize)
+            .min(self.rows.len().saturating_sub(1));
         let local_x = x;
         let previous = cycle.filter(|last| {
             last.key == self.key && last.row as usize == row && last.x_cell == x.floor() as u32
@@ -239,7 +252,7 @@ impl MidiScene {
         let mut previous_found = false;
         let mut passed_previous = false;
         let mut hit_count = 0usize;
-        for index in self.rows[row].iter().rev() {
+        for index in self.rows.get(row)?.iter().rev() {
             let Some(note) = self.notes.get(*index) else {
                 continue;
             };
@@ -331,21 +344,21 @@ fn insert_geometry(key: SceneKey, start: u64, duration: u64, pitch: u8) -> Optio
     let view_end = key.beat_start.checked_add(key.beat_span)?;
     let end = start.checked_add(duration)?;
     if key.beat_span == 0
-        || key.pitch_low > 104
+        || !valid_pitch_range(key.pitch_low, key.pitch_rows)
         || duration == 0
         || pitch < key.pitch_low
-        || pitch >= key.pitch_low.saturating_add(ROWS as u8)
+        || pitch >= key.pitch_low.saturating_add(key.pitch_rows)
         || end <= key.beat_start
         || start >= view_end
     {
         return None;
     }
-    let row = usize::from(key.pitch_low + 23 - pitch);
+    let row = usize::from(key.pitch_low + (key.pitch_rows - 1) - pitch);
     let visible_start = start.max(key.beat_start);
     let visible_end = end.min(view_end);
     Some(InsertGeometry {
         x: ((visible_start - key.beat_start) as f64 / key.beat_span as f64) as f32,
-        y: row as f32 / ROWS as f32,
+        y: row as f32 / f32::from(key.pitch_rows),
         width: ((visible_end - visible_start) as f64 / key.beat_span as f64) as f32,
     })
 }
@@ -437,6 +450,7 @@ mod tests {
             beat_start: 0,
             beat_span: SPAN,
             pitch_low: 48,
+            pitch_rows: 24,
         }
     }
 
@@ -518,6 +532,10 @@ mod tests {
                 pitch_low: 49,
                 ..original
             },
+            SceneKey {
+                pitch_rows: 12,
+                ..original
+            },
         ] {
             let (_, reused) = cache.get_or_build(changed, notes);
             assert!(!reused);
@@ -543,12 +561,65 @@ mod tests {
         for _ in 0..256 {
             view = super::wheel_zoom(view.0, view.1, 4 * BeatTime::ONE.raw(), 0, false);
         }
-        assert_eq!(view, (0, 4 * BeatTime::ONE.raw()));
+        assert_eq!(view, (0, super::zoom_limit(4 * BeatTime::ONE.raw())));
         assert_eq!(super::wheel_zoom(0, 1, 1, 1, true), (0, 1));
         assert_eq!(super::wheel_zoom(0, 0, 0, 0, false), (0, 0));
         let view = super::wheel_zoom(u64::MAX - 400, 400, u64::MAX, u64::MAX - 100, false);
         assert!(view.1 > 0);
         assert!(view.0.checked_add(view.1).is_some());
+    }
+
+    #[test]
+    fn pitch_span_geometry_and_hits_agree_at_one_and_all_midi_rows() {
+        let (project, clip) = fixture(24, false);
+        let notes = project.midi_source(clip).unwrap().notes();
+        for (low, rows) in [(48, 1), (48, 12), (0, 128)] {
+            let scene = MidiScene::build(
+                SceneKey {
+                    pitch_low: low,
+                    pitch_rows: rows,
+                    ..key(clip)
+                },
+                notes,
+            );
+            for note in scene.notes() {
+                let (left, right) = pixel_bounds(*note, 1000.0).unwrap();
+                let y = (note.y + 0.5 / f32::from(rows)) * 240.0;
+                assert_eq!(
+                    super::super::midi_drag::pitch_at_point(
+                        y,
+                        [0.0, 0.0, 1000.0, 240.0],
+                        low,
+                        rows
+                    ),
+                    Some(note.pitch)
+                );
+                assert_eq!(
+                    scene.hit((left + right) / 2.0, y, 1000.0, 240.0, &mut None),
+                    Some(note.id)
+                );
+            }
+        }
+        assert_eq!(
+            super::super::midi_drag::pitch_at_point(f32::MIN, [0.0, 0.0, 100.0, 1.0], 0, 128),
+            Some(127)
+        );
+        assert_eq!(
+            super::super::midi_drag::pitch_at_point(f32::MAX, [0.0, 0.0, 100.0, 1.0], 0, 128),
+            Some(0)
+        );
+        for (low, rows) in [(0, 0), (127, 2), (128, 1)] {
+            let scene = MidiScene::build(
+                SceneKey {
+                    pitch_low: low,
+                    pitch_rows: rows,
+                    ..key(clip)
+                },
+                notes,
+            );
+            assert!(scene.notes().is_empty());
+            assert!(scene.hit(0.0, 0.0, 1000.0, 240.0, &mut None).is_none());
+        }
     }
 
     #[test]
@@ -558,7 +629,7 @@ mod tests {
         assert_eq!(fit_span(length, beat), 96 * beat);
         assert_eq!(zoom_span(4 * beat, length, beat, true), 2 * beat);
         assert_eq!(zoom_span(32 * beat, length, beat, false), 64 * beat);
-        assert_eq!(zoom_span(128 * beat, length, beat, false), 96 * beat);
+        assert_eq!(zoom_span(128 * beat, length, beat, false), 256 * beat);
         assert_eq!(fit_span(256 * beat, beat), 256 * beat);
         assert_eq!(zoom_span(beat, length, beat, true), beat / 2);
         assert_eq!(zoom_span(beat / 8, length, beat, true), beat / 16);

@@ -1,4 +1,8 @@
 //! Compact piano-roll Canvas rendering and pointer interaction.
+//!
+//! Wheel navigation changes horizontal time only; a vertical drag on the key
+//! gutter changes the centered pitch span (1–128 rows). Both are view-only.
+//! Every paint, hit and captured edit context carries the same pitch span.
 use super::midi_drag::{self, NotePreview};
 use super::midi_draw::StrokeModifiers;
 use super::{EditorView, midi::NoteField};
@@ -38,6 +42,9 @@ fn beat_at_x(
     }
     let offset = (f64::from(x / width) * beat_span.raw() as f64) as u64;
     let raw = view_start.raw().saturating_add(offset);
+    if raw >= clip_length.raw() {
+        return None;
+    }
     let start = if let Some(step) = grid.step_raw() {
         let last_grid = clip_length.raw().saturating_sub(1) / step * step;
         midi_drag::snap_raw(raw, grid).min(last_grid)
@@ -72,14 +79,19 @@ fn source_beat_label(raw: u64) -> String {
     }
 }
 
-fn pitch_at_y(y: f32, height: f32, low: u8) -> Option<u8> {
-    if !y.is_finite() || !height.is_finite() || height <= 0.0 || y < 0.0 || y >= height || low > 104
+fn pitch_at_y(y: f32, height: f32, low: u8, rows: u8) -> Option<u8> {
+    if !y.is_finite()
+        || !height.is_finite()
+        || height <= 0.0
+        || y < 0.0
+        || y >= height
+        || !super::midi_scene::valid_pitch_range(low, rows)
     {
         return None;
     }
     Some(
-        low.saturating_add(23)
-            .saturating_sub(((y / height * 24.0).floor() as u8).min(23)),
+        low.saturating_add(rows - 1)
+            .saturating_sub(((y / height * f32::from(rows)).floor() as u8).min(rows - 1)),
     )
 }
 
@@ -119,6 +131,7 @@ impl EditorView {
         let beat_start = self.piano_beat_start;
         let beat_span = self.piano_beat_span;
         let pitch_low = self.piano_pitch_low;
+        let pitch_rows = self.piano_pitch_rows;
         let grid = self.midi_snap_grid;
         let notes = source.notes();
         let key = super::midi_scene::SceneKey {
@@ -128,6 +141,7 @@ impl EditorView {
             beat_start: beat_start.raw(),
             beat_span: beat_span.raw(),
             pitch_low,
+            pitch_rows,
         };
         let scene = self.midi_scene_cache.get_or_build(key, notes).0;
         let selected = if self.midi_selection.len() == 1 {
@@ -225,8 +239,8 @@ impl EditorView {
                         ));
                     }
                 };
-                for row in 0..=super::midi_scene::ROWS {
-                    let y = row as f32 * height / super::midi_scene::ROWS as f32;
+                for row in 0..=usize::from(pitch_rows) {
+                    let y = row as f32 * height / usize::from(pitch_rows) as f32;
                     quad(
                         0.0,
                         y,
@@ -307,7 +321,7 @@ impl EditorView {
                         x,
                         y + 1.0,
                         w,
-                        (height / 24.0 - 2.0).max(1.0),
+                        (height / f32::from(pitch_rows) - 2.0).max(1.0),
                         theme::color(theme::PaletteRole::Secondary),
                     );
                     if w >= 6.0 && note.leading_edge_visible {
@@ -315,7 +329,7 @@ impl EditorView {
                             x,
                             y + 1.0,
                             1.0,
-                            (height / 24.0 - 2.0).max(1.0),
+                            (height / f32::from(pitch_rows) - 2.0).max(1.0),
                             theme::color(theme::PaletteRole::Text),
                         );
                     }
@@ -324,7 +338,7 @@ impl EditorView {
                             x + w - 1.0,
                             y + 1.0,
                             1.0,
-                            (height / 24.0 - 2.0).max(1.0),
+                            (height / f32::from(pitch_rows) - 2.0).max(1.0),
                             theme::color(theme::PaletteRole::Text),
                         );
                     }
@@ -352,7 +366,7 @@ impl EditorView {
                         x,
                         y + 1.0,
                         w,
-                        (height / 24.0 - 2.0).max(1.0),
+                        (height / f32::from(pitch_rows) - 2.0).max(1.0),
                         theme::color(theme::PaletteRole::Primary),
                     );
                     if w >= 6.0 && note.leading_edge_visible {
@@ -360,7 +374,7 @@ impl EditorView {
                             x,
                             y + 1.0,
                             1.0,
-                            (height / 24.0 - 2.0).max(1.0),
+                            (height / f32::from(pitch_rows) - 2.0).max(1.0),
                             theme::color(theme::PaletteRole::Text),
                         );
                     }
@@ -369,7 +383,7 @@ impl EditorView {
                             x + w - 1.0,
                             y + 1.0,
                             1.0,
-                            (height / 24.0 - 2.0).max(1.0),
+                            (height / f32::from(pitch_rows) - 2.0).max(1.0),
                             theme::color(theme::PaletteRole::Text),
                         );
                     }
@@ -387,7 +401,7 @@ impl EditorView {
                             x,
                             rect.y * height + 1.0,
                             right - x,
-                            (height / 24.0 - 2.0).max(1.0),
+                            (height / f32::from(pitch_rows) - 2.0).max(1.0),
                             theme::color(theme::PaletteRole::Primary),
                         );
                     }
@@ -406,7 +420,7 @@ impl EditorView {
                                 x,
                                 note.y * height + 1.0,
                                 right - x,
-                                (height / 24.0 - 2.0).max(1.0),
+                                (height / f32::from(pitch_rows) - 2.0).max(1.0),
                                 theme::color(theme::PaletteRole::Primary),
                             );
                         }
@@ -433,7 +447,7 @@ impl EditorView {
                                 x,
                                 note.y * height + 1.0,
                                 right - x,
-                                (height / 24.0 - 2.0).max(1.0),
+                                (height / f32::from(pitch_rows) - 2.0).max(1.0),
                                 theme::color(theme::PaletteRole::Primary),
                             );
                         }
@@ -487,6 +501,7 @@ impl EditorView {
                     view_start: beat_start.raw(),
                     view_span: beat_span.raw(),
                     pitch_low,
+                    pitch_rows,
                     bounds: super::midi_stroke::CanvasBounds {
                         x: f32::from(bounds.origin.x),
                         y: f32::from(bounds.origin.y),
@@ -658,6 +673,7 @@ impl EditorView {
                                             beat_start: beat_start.raw(),
                                             beat_span: beat_span.raw(),
                                             pitch_low,
+                                            pitch_rows,
                                             clip_length: clip_len.raw(),
                                             grid,
                                         },
@@ -684,6 +700,7 @@ impl EditorView {
                                 beat_span: beat_span.raw(),
                                 clip_length: clip_len.raw(),
                                 pitch_low,
+                                pitch_rows,
                                 grid,
                             })
                             .and_then(midi_drag::begin);
@@ -720,7 +737,7 @@ impl EditorView {
                         else {
                             return;
                         };
-                        let Some(pitch) = pitch_at_y(y, height, pitch_low) else {
+                        let Some(pitch) = pitch_at_y(y, height, pitch_low, pitch_rows) else {
                             return;
                         };
                         let local = local_beat.raw();
@@ -799,6 +816,7 @@ impl EditorView {
                                     beat_start: beat_start.raw(),
                                     beat_span: beat_span.raw(),
                                     pitch_low,
+                                    pitch_rows,
                                     grid,
                                     bounds: [
                                         f32::from(bounds.origin.x),
@@ -831,6 +849,7 @@ impl EditorView {
                             beat_start: beat_start.raw(),
                             beat_span: beat_span.raw(),
                             pitch_low,
+                            pitch_rows,
                             grid,
                             bounds: [
                                 f32::from(bounds.origin.x),
@@ -915,6 +934,7 @@ impl EditorView {
                                     last,
                                     f32::from(bounds.size.width),
                                     f32::from(bounds.size.height),
+                                    pitch_rows,
                                 );
                                 match hits {
                                     Ok(ids) => {
@@ -943,6 +963,7 @@ impl EditorView {
                                 beat_start: beat_start.raw(),
                                 beat_span: beat_span.raw(),
                                 pitch_low,
+                                pitch_rows,
                                 grid,
                                 bounds: [
                                     f32::from(bounds.origin.x),
@@ -990,6 +1011,7 @@ impl EditorView {
                             beat_start: beat_start.raw(),
                             beat_span: beat_span.raw(),
                             pitch_low,
+                            pitch_rows,
                             grid,
                             bounds: [
                                 f32::from(bounds.origin.x),
@@ -1279,7 +1301,7 @@ impl EditorView {
                 "lower piano roll pitch range",
                 cx.listener(|v, _, _, cx| {
                     v.cancel_midi_note_gesture();
-                    v.piano_pitch_low = v.piano_pitch_low.saturating_sub(12).min(104);
+                    v.piano_pitch_low = v.piano_pitch_low.saturating_sub(12).min(128 - v.piano_pitch_rows);
                     cx.notify();
                 }),
             )])
@@ -1288,7 +1310,7 @@ impl EditorView {
                 "raise piano roll pitch range",
                 cx.listener(|v, _, _, cx| {
                     v.cancel_midi_note_gesture();
-                    v.piano_pitch_low = v.piano_pitch_low.saturating_add(12).min(104);
+                    v.piano_pitch_low = v.piano_pitch_low.saturating_add(12).min(128 - v.piano_pitch_rows);
                     cx.notify();
                 }),
             )])
@@ -1459,7 +1481,7 @@ impl EditorView {
             .flex_1()
             .min_h_0()
             .flex()
-            .children([self.piano_keys(pitch_low)])
+            .children([self.piano_keys(pitch_low, cx)])
             .children([roll]);
         panel = panel.child(source_column).child(
             div()
@@ -1541,10 +1563,7 @@ impl EditorView {
         let clip_length = self
             .midi_clip()
             .map_or(BeatTime::ONE.raw(), |clip| clip.source_length().raw());
-        let current = self
-            .piano_beat_span
-            .raw()
-            .max((BeatTime::ONE.raw() / 16).max(1));
+        let current = self.piano_beat_span.raw();
         self.piano_beat_span = BeatTime::from_raw(super::midi_scene::zoom_span(
             current,
             clip_length,
@@ -1569,12 +1588,13 @@ impl EditorView {
     }
 
     pub(super) fn cancel_midi_note_gesture(&mut self) -> bool {
+        let pitch_zoom = self.piano_pitch_zoom.take().is_some();
         let creation = self.midi_creation.take().is_some();
         let note = self.midi_note_gesture.take().is_some();
         let group = self.midi_group_gesture.take().is_some();
         let stroke = self.cancel_midi_stroke();
         let marquee = self.midi_marquee.take().is_some();
-        creation || note || group || stroke || marquee
+        pitch_zoom || creation || note || group || stroke || marquee
     }
 
     fn midi_note_gesture_current(
@@ -1597,15 +1617,17 @@ impl EditorView {
         context.generation == self.project_generation && midi_drag::is_current(gesture, context)
     }
 
-    fn piano_keys(&self, low: u8) -> Div {
+    fn piano_keys(&self, low: u8, cx: &mut Context<Self>) -> Div {
+        let rows = self.piano_pitch_rows;
+        let entity = cx.entity();
         let mut keys = div()
             .relative()
             .w(px(38.0))
             .h_full()
             .flex_shrink_0()
             .bg(rgb(theme::color(theme::PaletteRole::Surface)));
-        for row in 0..24_u8 {
-            let pitch = low.saturating_add(23).saturating_sub(row);
+        for row in 0..rows {
+            let pitch = low.saturating_add(rows - 1).saturating_sub(row);
             let black = matches!(pitch % 12, 1 | 3 | 6 | 8 | 10);
             let is_c = pitch % 12 == 0;
             let label = if is_c {
@@ -1618,8 +1640,8 @@ impl EditorView {
                     .absolute()
                     .left_0()
                     .right_0()
-                    .top(relative(f32::from(row) / 24.0))
-                    .h(relative(1.0 / 24.0))
+                    .top(relative(f32::from(row) / f32::from(rows)))
+                    .h(relative(1.0 / f32::from(rows)))
                     .flex()
                     .items_center()
                     .pl(px(2.0))
@@ -1639,7 +1661,66 @@ impl EditorView {
                     .child(theme::text(label)),
             );
         }
-        keys
+        keys.cursor(gpui::CursorStyle::ResizeUpDown)
+            .debug_selector(|| "midi-piano-keys".into())
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|v, event: &MouseDownEvent, window, cx| {
+                    if v.context_menu.is_some() || !f32::from(event.position.y).is_finite() {
+                        return;
+                    }
+                    v.cancel_midi_note_gesture();
+                    v.midi_focus.focus(window);
+                    v.piano_pitch_zoom = Some((
+                        f32::from(event.position.y),
+                        v.piano_pitch_low,
+                        v.piano_pitch_rows,
+                    ));
+                    cx.notify();
+                    cx.stop_propagation();
+                }),
+            )
+            .child(
+                canvas(
+                    |_, _, _| (),
+                    move |_, _, window, _| {
+                        let entity = entity.clone();
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                            if !phase.capture() {
+                                return;
+                            }
+                            entity.update(cx, |v, cx| {
+                                let Some((down, low, rows)) = v.piano_pitch_zoom else {
+                                    return;
+                                };
+                                if event.pressed_button != Some(MouseButton::Left) {
+                                    v.piano_pitch_zoom = None;
+                                    return;
+                                }
+                                let delta = f32::from(event.position.y) - down;
+                                if !delta.is_finite() {
+                                    return;
+                                }
+                                let next = (f32::from(rows)
+                                    * (delta / 120.0).clamp(-8.0, 8.0).exp2())
+                                .round()
+                                .clamp(1.0, 128.0) as u8;
+                                let next_low = (i16::from(low)
+                                    + (i16::from(rows) - i16::from(next)) / 2)
+                                    .clamp(0, 128 - i16::from(next))
+                                    as u8;
+                                if (v.piano_pitch_low, v.piano_pitch_rows) != (next_low, next) {
+                                    v.piano_pitch_low = next_low;
+                                    v.piano_pitch_rows = next;
+                                    cx.notify();
+                                }
+                            });
+                        });
+                    },
+                )
+                .absolute()
+                .size_full(),
+            )
     }
 
     fn midi_button(
@@ -1724,14 +1805,14 @@ mod tests {
             ),
             None
         );
-        assert_eq!(pitch_at_y(0.0, 120.0, 48), Some(71));
+        assert_eq!(pitch_at_y(0.0, 120.0, 48, 24), Some(71));
         for (pitch, low) in [(48_u8, 48_u8), (71, 48), (104, 104), (127, 104)] {
             let row = low + 23 - pitch;
             let y = (f32::from(row) + 0.5) / 24.0 * 120.0;
-            assert_eq!(pitch_at_y(y, 120.0, low), Some(pitch));
+            assert_eq!(pitch_at_y(y, 120.0, low, 24), Some(pitch));
         }
-        assert_eq!(pitch_at_y(120.0, 120.0, 48), None);
-        assert_eq!(pitch_at_y(f32::INFINITY, 120.0, 48), None);
+        assert_eq!(pitch_at_y(120.0, 120.0, 48, 24), None);
+        assert_eq!(pitch_at_y(f32::INFINITY, 120.0, 48, 24), None);
         assert_eq!((i16::from(0_u8) - 1).clamp(0, 127), 0);
         assert_eq!((i16::from(127_u8) + 1).clamp(0, 127), 127);
         assert_eq!(4 * BeatTime::ONE.raw(), 4 * 4 * BeatTime::ONE.raw() / 4);
