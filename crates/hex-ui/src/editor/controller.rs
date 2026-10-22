@@ -2270,7 +2270,7 @@ impl EditorView {
                 .and_then(|clip| state.project.midi_source(clip))
             {
                 // Source markers and Arrangement duration may change independently.
-                // Preserve zoom-out space across ACKs; only the start follows source bounds.
+                // Preserve manual navigation across ACKs within the bounded authoring domain.
                 let source_length = clip.source_length().raw();
                 self.piano_beat_span = hex_project::BeatTime::from_raw(
                     self.piano_beat_span
