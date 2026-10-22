@@ -28,6 +28,8 @@ mod clip_content_cache;
 mod clip_drag_ui_test;
 mod clip_name;
 mod clip_selection;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod project_recovery_ui_test;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod workspace_view_ui_test;
@@ -654,6 +656,8 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_marquee: Option<([f32; 2], [f32; 2], bool)>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
+    // Only suppresses redundant pointer invalidations; paint resolves current geometry.
+    pub(in crate::editor) midi_hover: Option<midi_scene::NoteHover>,
     piano_view_clip: Option<(u64, ClipId)>,
     piano_zoom_wheel_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
@@ -717,6 +721,8 @@ pub(super) struct EditorView {
     preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<display_error::DisplayError>,
+    recovery_failure: Option<Arc<hex_session::service::RecoveryFailure>>,
+    recovery_prompt_open: bool,
     computer_keyboard: computer_keyboard::ComputerKeyboard,
     controller_input: controller_input::ControllerInput,
     _computer_keyboard_keys: gpui::Subscription,
@@ -1246,6 +1252,7 @@ impl EditorView {
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
             midi_hit_cycle: None,
+            midi_hover: None,
             piano_view_clip: None,
             piano_zoom_wheel_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
@@ -1309,6 +1316,8 @@ impl EditorView {
             preset_dialog_open: false,
             status,
             error: None,
+            recovery_failure: None,
+            recovery_prompt_open: false,
             computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
             controller_input: controller_input::ControllerInput::default(),
             _computer_keyboard_keys: computer_keyboard_keys,

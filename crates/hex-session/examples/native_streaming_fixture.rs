@@ -95,7 +95,6 @@ fn project(sources: &[Source], rate: u32) -> Result<Project> {
         else {
             return Err("import returned an unexpected identity".into());
         };
-        editor.execute(Command::RemoveInstrument { track })?;
         editor.execute(Command::Gain {
             track,
             gain: TRACK_GAIN,
