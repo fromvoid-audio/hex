@@ -194,7 +194,7 @@ impl EditorView {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(test, feature = "ui-test-support"))]
     pub(super) fn acknowledge_device_gesture(
         &mut self,
         ack: &hex_session::device_gesture::GestureAck,
