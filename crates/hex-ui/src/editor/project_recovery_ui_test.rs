@@ -168,7 +168,7 @@ fn unavailable_recovery_cancel_preserves_old_journal_and_confirm_starts_current_
         assert!(view.error.is_some());
         let failure = view.recovery_failure.as_ref().unwrap();
         assert_ne!(failure.path, path);
-        let details = super::project_recovery::RecoveryTooltip {
+        let details = super::display_error::RecoveryTooltip {
             failure: Arc::clone(failure),
         }
         .display_text();

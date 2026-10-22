@@ -195,14 +195,14 @@ impl EditorView {
                 if !accepted {
                     view.status = "automatic recovery restart cancelled".into();
                 } else if view.project_generation != intent.project_generation
-                    || !view
+                    || view
                         .state
                         .as_ref()
-                        .is_some_and(|state| state.revision == intent.revision)
-                    || !view
+                        .is_none_or(|state| state.revision != intent.revision)
+                    || view
                         .recovery_failure
                         .as_ref()
-                        .is_some_and(|failure| failure.id == intent.failure_id)
+                        .is_none_or(|failure| failure.id != intent.failure_id)
                 {
                     view.error = Some(
                         "recovery restart cancelled because the working project changed".into(),
@@ -215,45 +215,5 @@ impl EditorView {
         })
         .detach();
         cx.notify();
-    }
-}
-
-pub(super) struct RecoveryTooltip {
-    pub(super) failure: std::sync::Arc<hex_session::service::RecoveryFailure>,
-}
-impl RecoveryTooltip {
-    pub(super) fn display_text(&self) -> gpui::SharedString {
-        use crate::theme;
-        // Storage supplies lowercase app wording. Keep its diagnostic as source
-        // data: it can include an earlier slot path or OS-owned error spelling.
-        let mut detail = format!(
-            "{}{}",
-            theme::text("automatic recovery: "),
-            self.failure.explanation
-        );
-        if let Some(preserved) = &self.failure.preserved_path {
-            detail.push_str(&format!(
-                "{}{}",
-                theme::text(" · previous journal preserved at "),
-                preserved.display()
-            ));
-        }
-        detail.into()
-    }
-}
-impl gpui::Render for RecoveryTooltip {
-    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl gpui::IntoElement {
-        use crate::theme;
-        use gpui::{div, prelude::*, rgb};
-        div()
-            .px_2()
-            .py_1()
-            .border_1()
-            .border_color(rgb(theme::color(theme::PaletteRole::Border)))
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .font_family(theme::FONT_FAMILY)
-            .text_xs()
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(self.display_text())
     }
 }

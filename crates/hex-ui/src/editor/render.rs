@@ -148,22 +148,23 @@ impl EditorView {
         }
         if let Some(failure) = self.recovery_failure.as_ref().cloned() {
             let can_restart = failure.can_restart();
-            let indicator = div()
-                .id("automatic-recovery-unavailable")
-                .debug_selector(|| "automatic-recovery-unavailable".into())
-                .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
-                .child(theme::text(if can_restart {
-                    "recovery unavailable"
-                } else {
-                    "recovery needs attention"
-                }))
-                .tooltip(move |_, cx| {
-                    cx.new(|_| super::project_recovery::RecoveryTooltip {
-                        failure: std::sync::Arc::clone(&failure),
-                    })
-                    .into()
-                });
-            bar = bar.child(indicator);
+            bar = bar.child(
+                div()
+                    .id("automatic-recovery-unavailable")
+                    .debug_selector(|| "automatic-recovery-unavailable".into())
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .child(theme::text(if can_restart {
+                        "recovery unavailable"
+                    } else {
+                        "recovery needs attention"
+                    }))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::display_error::RecoveryTooltip {
+                            failure: std::sync::Arc::clone(&failure),
+                        })
+                        .into()
+                    }),
+            );
             if can_restart {
                 bar = bar.child(
                     div()
