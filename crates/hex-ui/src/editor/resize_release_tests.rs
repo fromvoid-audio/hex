@@ -1609,6 +1609,13 @@ fn check_resize_lane_paint(cx: &mut TestAppContext, midi: bool, stretch: bool, c
             let target = point(down.x + px(42.0 * direction), down.y);
             visual.simulate_mouse_move(target, MouseButton::Left, modifiers);
             visual.run_until_parked();
+            let outline = Box::leak(
+                format!("track-selection-outline-{}", clicked_track.value()).into_boxed_str(),
+            );
+            assert!(
+                visual.debug_bounds(outline).is_none(),
+                "held resizing keeps selection styling local to clips"
+            );
             let painted = visual
                 .rendered_border(lane)
                 .expect("actual held lane border");
