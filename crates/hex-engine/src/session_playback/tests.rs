@@ -10397,7 +10397,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
                 id: snapshot.next_id,
                 start_raw: 0,
                 duration_raw: note_duration,
-                pitch: 60,
+                pitch: 61,
                 channel: 0,
                 velocity: 100,
             });
@@ -10413,7 +10413,7 @@ fn unsupported_operator_state_edit_waits_for_committed_quiescence() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: note_duration,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -10558,7 +10558,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });
@@ -10571,7 +10571,7 @@ fn skipped_unsupported_operator_edit_uses_actual_source_law() {
             id: snapshot.next_id,
             start_raw: 0,
             duration_raw: 1 << 32,
-            pitch: 60,
+            pitch: 61,
             channel: 0,
             velocity: 100,
         });

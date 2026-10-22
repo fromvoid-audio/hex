@@ -116,7 +116,7 @@ impl EditorView {
             self.piano_beat_span =
                 BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
         }
-        let state = self.state.as_ref()?;
+        let state = std::sync::Arc::clone(self.state.as_ref()?);
         let clip_id = self.detail_clip_id()?;
         let source = state.project.midi_source(clip_id)?;
         let arrangement = state.project.midi_clip(clip_id);
@@ -146,6 +146,14 @@ impl EditorView {
             pitch_rows,
         };
         let scene = self.midi_scene_cache.get_or_build(key, notes).0;
+        let draw_overwrite = match self.midi_overwrite_preview(source) {
+            Ok(preview) => preview,
+            Err(error) => {
+                self.error = Some(error.to_string().into());
+                self.cancel_midi_note_gesture();
+                None
+            }
+        };
         let selected = if self.midi_selection.len() == 1 {
             self.midi_selection.primary()
         } else {
@@ -366,7 +374,14 @@ impl EditorView {
                     {
                         continue;
                     }
-                    let Some((x, right)) = super::midi_scene::pixel_bounds(*note, width) else {
+                    let Some(note) = super::midi_note_overwrite::retained_geometry(
+                        &canvas_scene,
+                        *note,
+                        draw_overwrite.as_ref(),
+                    ) else {
+                        continue;
+                    };
+                    let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) else {
                         continue;
                     };
                     let y = note.y * height;
@@ -411,6 +426,13 @@ impl EditorView {
                     let Some(note) = canvas_scene.note(id) else {
                         continue;
                     };
+                    let Some(note) = super::midi_note_overwrite::retained_geometry(
+                        &canvas_scene,
+                        note,
+                        draw_overwrite.as_ref(),
+                    ) else {
+                        continue;
+                    };
                     let Some((x, right)) = super::midi_scene::pixel_bounds(note, width) else {
                         continue;
                     };
@@ -443,11 +465,21 @@ impl EditorView {
                     }
                 }
 
-                for note in draw_stroke
+                for (index, mut note) in draw_stroke
                     .iter()
                     .flat_map(|stroke| stroke.inserted.iter().copied())
                     .chain(draw_creation)
+                    .enumerate()
                 {
+                    let Some(duration) = draw_overwrite
+                        .as_ref()
+                        .map_or(Some(note.duration), |preview| {
+                            preview.authored_duration(index)
+                        })
+                    else {
+                        continue;
+                    };
+                    note.duration = duration;
                     if let Some(rect) = canvas_scene.insert_geometry(note) {
                         let x = rect.x * width;
                         let right = (rect.x + rect.width) * width;
@@ -460,7 +492,14 @@ impl EditorView {
                         );
                     }
                 }
-                if let Some((id, item)) = draw_preview {
+                if let Some((id, mut item)) = draw_preview
+                    && let Some(duration) = draw_overwrite
+                        .as_ref()
+                        .map_or(Some(BeatTime::from_raw(item.duration)), |preview| {
+                            preview.authored_duration(0)
+                        })
+                {
+                    item.duration = duration.raw();
                     if let Some(note) = canvas_scene.preview_geometry(
                         id,
                         item.start,
@@ -482,10 +521,19 @@ impl EditorView {
                 }
 
                 if let Some((originals, gesture)) = &draw_group {
-                    for original in originals.iter() {
-                        let Some(preview) = gesture.preview(original.id) else {
+                    for (index, original) in originals.iter().enumerate() {
+                        let Some(mut preview) = gesture.preview(original.id) else {
                             continue;
                         };
+                        let Some(duration) = draw_overwrite
+                            .as_ref()
+                            .map_or(Some(BeatTime::from_raw(preview.duration)), |plan| {
+                                plan.authored_duration(index)
+                            })
+                        else {
+                            continue;
+                        };
+                        preview.duration = duration.raw();
                         let Some(note) = canvas_scene.preview_geometry(
                             original.id,
                             preview.start,
@@ -2072,6 +2120,10 @@ mod creation_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_zoom_ui_tests.rs"]
 mod zoom_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_note_overwrite_ui_tests.rs"]
+mod overwrite_tests;
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_hover_ui_tests.rs"]
