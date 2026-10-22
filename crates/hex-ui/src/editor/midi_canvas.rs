@@ -3,6 +3,7 @@
 //! Wheel navigation changes horizontal time only; a vertical drag on the key
 //! gutter changes the centered pitch span (1–128 rows). Both are view-only.
 //! Every paint, hit and captured edit context carries the same pitch span.
+//! Passive hover reuses click/resize hits and never changes musical selection.
 use super::midi_drag::{self, NotePreview};
 use super::midi_draw::StrokeModifiers;
 use super::{EditorView, midi::NoteField};
@@ -201,6 +202,32 @@ impl EditorView {
         let draw_marker = self.midi_marker;
         let draw_pitch_locked = self.midi_draw_pitch_locked;
         let draw_mode = self.midi_draw_mode;
+        let draw_hit_cycle = self.midi_hit_cycle;
+        let drag_cursor = self
+            .midi_note_gesture
+            .map(|gesture| match gesture.kind {
+                midi_drag::GestureKind::Move { .. } => gpui::CursorStyle::ClosedHand,
+                midi_drag::GestureKind::ResizeLeading { .. } => gpui::CursorStyle::ResizeLeft,
+                midi_drag::GestureKind::ResizeTrailing { .. } => gpui::CursorStyle::ResizeRight,
+            })
+            .or_else(|| {
+                self.midi_group_gesture
+                    .as_ref()
+                    .map(|_| gpui::CursorStyle::ClosedHand)
+            })
+            .or_else(|| {
+                self.midi_stroke
+                    .as_ref()
+                    .map(|_| gpui::CursorStyle::Crosshair)
+            });
+        let hover_allowed = self.context_menu.is_none()
+            && !self.edit_pending()
+            && draw_preview.is_none()
+            && draw_group.is_none()
+            && draw_stroke.is_none()
+            && draw_creation.is_none()
+            && draw_marquee.is_none()
+            && self.piano_pitch_zoom.is_none();
         let mut roll = div()
             .id("midi-note-roll")
             .relative()
@@ -217,12 +244,38 @@ impl EditorView {
         let entity = cx.entity();
         let canvas_scene_events = std::sync::Arc::clone(&scene);
         roll = roll.children([canvas(
-            |_, _, _| (),
-            move |bounds, _, window, _| {
+            |bounds, window, _| window.insert_hitbox(bounds, gpui::HitboxBehavior::Normal),
+            move |bounds, hitbox, window, _| {
                 let width = f32::from(bounds.size.width);
                 let height = f32::from(bounds.size.height);
                 if width <= 0.0 || height <= 0.0 {
                     return;
+                }
+                let pointer = window.mouse_position();
+                let hovered = if hover_allowed && hitbox.is_hovered(window) {
+                    canvas_scene.hover(
+                        f32::from(pointer.x - bounds.origin.x),
+                        f32::from(pointer.y - bounds.origin.y),
+                        width,
+                        height,
+                        draw_hit_cycle,
+                    )
+                } else {
+                    None
+                };
+                if let Some(target) = hovered {
+                    let cursor = if draw_mode {
+                        gpui::CursorStyle::Crosshair
+                    } else {
+                        match target.kind {
+                            midi_drag::HitKind::Move => gpui::CursorStyle::OpenHand,
+                            midi_drag::HitKind::ResizeLeading => gpui::CursorStyle::ResizeLeft,
+                            midi_drag::HitKind::ResizeTrailing => gpui::CursorStyle::ResizeRight,
+                        }
+                    };
+                    window.set_cursor_style(cursor, &hitbox);
+                } else if let Some(cursor) = drag_cursor {
+                    window.set_cursor_style(cursor, &hitbox);
                 }
                 let mut quad = |x: f32, y: f32, w: f32, h: f32, color: u32| {
                     let left = x.max(0.0);
@@ -454,6 +507,38 @@ impl EditorView {
                     }
                 }
 
+                if let Some(target) = hovered
+                    && let Some(note) = canvas_scene.note(target.note)
+                    && let Some((left, right)) = super::midi_scene::pixel_bounds(note, width)
+                {
+                    let top = note.y * height + 1.0;
+                    let note_height = (height / f32::from(pitch_rows) - 2.0).max(1.0);
+                    let color = theme::color(theme::PaletteRole::Text);
+                    quad(left, top, right - left, 1.0, color);
+                    quad(left, top + note_height - 1.0, right - left, 1.0, color);
+                    quad(left, top, 1.0, note_height, color);
+                    quad(right - 1.0, top, 1.0, note_height, color);
+                    let edge = match target.kind {
+                        midi_drag::HitKind::Move => None,
+                        midi_drag::HitKind::ResizeLeading => Some(left),
+                        midi_drag::HitKind::ResizeTrailing => {
+                            Some(right - 3.0_f32.min(right - left))
+                        }
+                    };
+                    if let Some(edge) = edge {
+                        quad(
+                            edge,
+                            top,
+                            3.0_f32.min(right - left),
+                            note_height,
+                            theme::color(if draw_selected.binary_search(&target.note).is_ok() {
+                                theme::PaletteRole::Text
+                            } else {
+                                theme::PaletteRole::Primary
+                            }),
+                        );
+                    }
+                }
                 if let Some((first, last, _)) = draw_marquee {
                     let left = first[0].min(last[0]);
                     let top = first[1].min(last[1]);
@@ -774,8 +859,39 @@ impl EditorView {
                     });
                 });
                 let mouse_move_entity = entity.clone();
-                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
-                    if !phase.bubble() || !event.dragging() {
+                let hover_scene = std::sync::Arc::clone(&canvas_scene_events);
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                    if !event.dragging() {
+                        // Observe exit before another control consumes bubble-phase motion.
+                        if !phase.capture() {
+                            return;
+                        }
+                        mouse_move_entity.update(cx, |view, view_cx| {
+                            let target = if hover_allowed
+                                && hitbox.is_hovered(window)
+                                && view.project_generation == generation
+                                && view.state.as_ref().is_some_and(|s| s.revision == revision)
+                                && view.detail_clip_id() == Some(clip_id)
+                                && !view.edit_pending()
+                            {
+                                hover_scene.hover(
+                                    f32::from(event.position.x - bounds.origin.x),
+                                    f32::from(event.position.y - bounds.origin.y),
+                                    width,
+                                    height,
+                                    view.midi_hit_cycle,
+                                )
+                            } else {
+                                None
+                            };
+                            if view.midi_hover != target {
+                                view.midi_hover = target;
+                                view_cx.notify();
+                            }
+                        });
+                        return;
+                    }
+                    if !phase.bubble() {
                         return;
                     }
                     mouse_move_entity.update(cx, |view, view_cx| {
@@ -1898,3 +2014,7 @@ mod creation_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_zoom_ui_tests.rs"]
 mod zoom_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_hover_ui_tests.rs"]
+mod hover_tests;
