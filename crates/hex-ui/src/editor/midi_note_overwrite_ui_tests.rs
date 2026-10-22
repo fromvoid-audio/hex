@@ -105,8 +105,11 @@ fn bodies(visual: &mut VisualTestContext, y: Pixels) -> Vec<Bounds<Pixels>> {
             )
         })
         .filter(|bounds| {
+            // These fixtures' note bodies exceed three pixels. Passive hover
+            // paints a separate 1/3 px edge accent, not another note body.
             bounds.origin.y <= y
                 && bounds.bottom() > y
+                && bounds.size.width > px(3.0)
                 && bounds.size.height > px(1.5)
                 && bounds.size.height < roll.size.height / 4.0
         })
