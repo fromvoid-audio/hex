@@ -583,6 +583,9 @@ impl EditorView {
                         super::audio_admission::StoppedPlaybackRestore::Published(audio_revision),
                     );
                 }
+                if let Some(request_id) = metadata.and_then(|metadata| metadata.seek_request) {
+                    self.recovery.prepared_published(request_id, audio_revision);
+                }
                 if let Some(request_id) = metadata.and_then(|metadata| metadata.seek_request)
                     && let Some(pending) = self.prepared_seek.as_mut().filter(|pending| {
                         pending.prepared_revision.is_none()
@@ -1114,10 +1117,23 @@ impl EditorView {
         // client. This does not admit publication: promotion below still needs
         // actual applied/rejected telemetry, including cancellation losing CAS.
         // No UI event can change this owner during this synchronous tick.
-        let current_seek_source = self.prepared_seek.as_ref().and_then(|seek| {
-            self.seek_publication_is_current(seek.request_id, seek.device_preview_identity)
-                .then_some((seek.request_id, seek.device_preview_identity))
-        });
+        let applied_seek_source = self
+            .prepared_seek
+            .as_ref()
+            .and_then(|pending| self.native_seek_applied_source(pending));
+        let current_seek_source = self
+            .prepared_seek
+            .as_ref()
+            .and_then(|seek| {
+                self.seek_publication_is_current(seek.request_id, seek.device_preview_identity)
+                    .then_some((seek.request_id, seek.device_preview_identity))
+            })
+            .or_else(|| {
+                self.recovery
+                    .prepared_request()
+                    .filter(|request| self.seek_publication_is_current(*request, None))
+                    .map(|request| (request, None))
+            });
         let Some(audio) = self.audio.as_mut() else {
             let pending_after = self
                 .worker_requests_pending
@@ -1329,6 +1345,12 @@ impl EditorView {
             applied,
             rejected_revision.map(|(revision, _)| revision),
         );
+        let seek_metadata_consumed = audible.as_ref().is_some_and(|candidate| {
+            applied_seek_source
+                == candidate
+                    .seek_request_id
+                    .map(|request| (request, candidate.audio_revision))
+        });
         if let Some(candidate) = audible {
             let source = if candidate.seek_request_id.is_some_and(|request_id| {
                 current_seek_source != Some((request_id, candidate.device_preview_identity))
@@ -1413,13 +1435,24 @@ impl EditorView {
             self.playback_candidates
                 .retain(|candidate| candidate.audio_revision > revision);
         }
-        visible_change |= super::arrangement_seek::resolve_prepared_seek_terminal(
-            &mut self.prepared_seek,
-            &mut self.status,
-            &mut self.error,
-            applied,
-            rejected_revision,
-        );
+        let awaiting_seek_metadata = applied_seek_source.is_some_and(|(request, revision)| {
+            applied == revision
+                && !seek_metadata_consumed
+                && rejected_revision.is_none_or(|(rejected, _)| rejected != revision)
+                && self.audible_playback.as_ref().is_none_or(|candidate| {
+                    candidate.seek_request_id != Some(request)
+                        || candidate.audio_revision != revision
+                })
+        });
+        if !awaiting_seek_metadata {
+            visible_change |= super::arrangement_seek::resolve_prepared_seek_terminal(
+                &mut self.prepared_seek,
+                &mut self.status,
+                &mut self.error,
+                applied,
+                rejected_revision,
+            );
+        }
         while let Some(pending) = self.pending_audio_commands.pop_front() {
             let action_is_current = queued_action_is_current(
                 pending,

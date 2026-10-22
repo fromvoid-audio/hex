@@ -969,6 +969,7 @@ fn device_comparison_review_enqueue_cancels_published_seek_before_callback(
     let mut pending = PendingSeek::from_intent(
         91,
         &SeekIntent {
+            recovery_generation: None,
             destination_frame: 128,
             start_playing: true,
             project_generation: 0,

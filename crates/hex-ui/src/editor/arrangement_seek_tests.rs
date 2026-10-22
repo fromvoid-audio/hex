@@ -301,6 +301,7 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         .expect("admission-time route fence");
 
     let intent = SeekIntent {
+        recovery_generation: None,
         destination_frame: 256,
         start_playing: true,
         project_generation: 7,
@@ -437,6 +438,7 @@ fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal
         )
         .expect("publish conditional seek candidate");
     let intent = SeekIntent {
+        recovery_generation: None,
         destination_frame: 256,
         start_playing: true,
         project_generation: 4,

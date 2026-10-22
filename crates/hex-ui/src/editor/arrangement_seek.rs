@@ -56,6 +56,7 @@ impl SeekAudioControl for Client {
 
 #[derive(Clone)]
 pub(super) struct SeekIntent {
+    pub recovery_generation: Option<u64>,
     pub destination_frame: u64,
     pub start_playing: bool,
     pub project_generation: u64,
@@ -72,6 +73,8 @@ pub(super) enum SeekStage {
 }
 
 pub(super) struct PendingSeek {
+    pub native_output_identity: Option<u64>,
+    pub recovery_generation: Option<u64>,
     pub request_id: u64,
     pub mode: ArrangementSeekMode,
     pub project_generation: u64,
@@ -91,6 +94,7 @@ pub(super) struct PendingSeek {
 impl PendingSeek {
     fn intent(&self) -> SeekIntent {
         SeekIntent {
+            recovery_generation: self.recovery_generation,
             destination_frame: self.destination_frame,
             start_playing: self.start_playing,
             project_generation: self.project_generation,
@@ -154,6 +158,8 @@ impl PendingSeek {
     pub fn from_intent(request_id: u64, intent: &SeekIntent, fence: FreshRuntimeFence) -> Self {
         Self {
             request_id,
+            native_output_identity: None,
+            recovery_generation: intent.recovery_generation,
             mode: ArrangementSeekMode::Interactive,
             project_generation: intent.project_generation,
             project_revision: intent.project_revision,
@@ -294,8 +300,13 @@ use hex_engine::playback::PlaybackHandoffRejection;
 use std::sync::atomic::Ordering::Acquire;
 
 impl EditorView {
-    fn seek_context_is_current(&self, generation: u64, revision: u64) -> bool {
-        self.mode == super::EditorMode::Arrangement
+    fn seek_context_is_current(
+        &self,
+        generation: u64,
+        revision: u64,
+        recovery: Option<u64>,
+    ) -> bool {
+        (self.mode == super::EditorMode::Arrangement || recovery.is_some())
             && self.project_generation == generation
             && self
                 .state
@@ -304,7 +315,7 @@ impl EditorView {
             && !self.gain_recorder.blocks_edits()
             && !self.opening_project
             && !self.close_prompt_open
-            && self.recovery.generation().is_none()
+            && self.recovery.permits_seek(recovery)
             && !self.device_gesture.has_pending_terminal()
             && self.device_gesture_barriers.is_empty()
             && self.tuning.client.snapshot().is_none()
@@ -334,8 +345,9 @@ impl EditorView {
         generation: u64,
         revision: u64,
         preview: Option<DevicePreviewIdentity>,
+        recovery: Option<u64>,
     ) -> bool {
-        self.seek_context_is_current(generation, revision)
+        self.seek_context_is_current(generation, revision, recovery)
             && self.worker_requests_pending == 0
             && self.pending_requests.is_empty()
             && match preview {
@@ -358,6 +370,9 @@ impl EditorView {
     ) -> bool {
         self.prepared_seek.as_ref().is_some_and(|pending| {
             pending.request_id == request_id
+                && pending.native_output_identity.is_none_or(|identity| {
+                    self.audio.as_ref().and_then(|audio| audio.control.output_identity()) == Some(identity)
+                })
                 // This predicate is ONLY applied-metadata eligibility, not
                 // publication admission. Invalidation can lose the callback
                 // CAS, and Complete can precede applied/rejected telemetry.
@@ -365,12 +380,45 @@ impl EditorView {
                 // promotion proves which runtime was installed or returned.
                 && matches!(pending.stage, SeekStage::Published { .. })
                 && pending.device_preview_identity == preview
-                && self.seek_source_is_current(
+                && (self.native_seek_applied_source(pending).is_some() || self.seek_source_is_current(
                     pending.project_generation,
                     pending.project_revision,
                     preview,
+                    pending.recovery_generation,
+                ))
+        }) || (preview.is_none()
+            && self.recovery.prepared_request() == Some(request_id)
+            && self.state.as_ref().is_some_and(|state| {
+                self.seek_source_is_current(
+                    self.project_generation,
+                    state.revision,
+                    None,
+                    self.recovery.generation(),
                 )
-        })
+            }))
+    }
+
+    /// Applied source correlation survives cancellation of musical intent. Retain only the
+    /// existing scalar native slot until its protected metadata arrives; stale previews and
+    /// superseded outputs/sources must never keep that slot alive.
+    pub(super) fn native_seek_applied_source(&self, pending: &PendingSeek) -> Option<(u64, u64)> {
+        let SeekStage::Published { audio_revision } = pending.stage else {
+            return None;
+        };
+        let audio = self.audio.as_ref()?;
+        if pending.prepared_revision.is_some()
+            || pending.native_output_identity.is_none()
+            || pending.native_output_identity != audio.control.output_identity()
+            || pending.project_generation != self.project_generation
+            || self.state.as_ref()?.revision != pending.project_revision
+            || audio.control.status()?.applied_revision.load(Acquire) != audio_revision
+            || pending
+                .device_preview_identity
+                .is_some_and(|identity| self.active_seek_preview() != Some(identity))
+        {
+            return None;
+        }
+        Some((pending.request_id, audio_revision))
     }
 
     pub(super) fn current_seek_requires_preroll(&self) -> Option<bool> {
@@ -440,6 +488,7 @@ impl EditorView {
             return;
         };
         let intent = super::arrangement_seek::SeekIntent {
+            recovery_generation: None,
             destination_frame,
             start_playing,
             project_generation: self.project_generation,
@@ -482,6 +531,40 @@ impl EditorView {
         )
     }
 
+    /// Reuse scalar preparation for a recovery-owned stopped cursor, retaining all source,
+    /// output, route and callback freshness checks. This is not a user seek barrier exemption.
+    pub(super) fn request_recovery_prepared_seek(
+        &mut self,
+        position: u64,
+        generation: u64,
+    ) -> Option<u64> {
+        if !self.recovery.permits_seek(Some(generation))
+            || self.prepared_seek.is_some()
+            || self.retired_seek_result.is_some()
+            || self.latched_seek_intent.is_some()
+            || self.recovery.seek_needed(true) != Some(position)
+            || position > MAX_SEEK_WORK_FRAMES
+        {
+            return None;
+        }
+        let (prepared_revision, audio_revision, project_revision) =
+            self.current_preroll_source()?;
+        let intent = SeekIntent {
+            recovery_generation: Some(generation),
+            destination_frame: position,
+            start_playing: false,
+            project_generation: self.project_generation,
+            project_revision,
+            prepared_revision,
+            device_preview_identity: None,
+        };
+        self.admit_prepared_seek(intent, audio_revision);
+        self.prepared_seek
+            .as_ref()
+            .filter(|seek| seek.recovery_generation == Some(generation))
+            .map(|seek| seek.request_id)
+    }
+
     pub(super) fn play_toggle_action(
         &self,
         actual_playing: bool,
@@ -507,7 +590,11 @@ impl EditorView {
         mut intent: super::arrangement_seek::SeekIntent,
         mut audio_revision: u64,
     ) {
-        if !self.seek_context_is_current(intent.project_generation, intent.project_revision) {
+        if !self.seek_context_is_current(
+            intent.project_generation,
+            intent.project_revision,
+            intent.recovery_generation,
+        ) {
             self.error = Some("arrangement seek source is no longer available".into());
             return;
         }
@@ -588,7 +675,8 @@ impl EditorView {
             self.error = Some("arrangement seek output is unavailable".into());
             return;
         };
-        let pending = PendingSeek::from_intent(request_id, &intent, fence);
+        let mut pending = PendingSeek::from_intent(request_id, &intent, fence);
+        pending.native_output_identity = Some(output_identity);
         let request = hex_session::service::ResidentArrangementSeekIntent {
             request_id,
             project_generation: intent.project_generation,
@@ -647,6 +735,8 @@ impl EditorView {
                 == Some(output_identity) =>
             {
                 pending.stage = SeekStage::Published { audio_revision };
+                self.recovery
+                    .prepared_published(pending.request_id, audio_revision);
                 if pending.cancelled {
                     let control = self.audio.as_ref().map(|audio| &audio.control);
                     pending.cancellation_retry = cancel_published_seek(control, pending)
@@ -659,9 +749,14 @@ impl EditorView {
             }
             Err(error) => {
                 let cancelled = pending.cancelled;
+                let recovery = pending.recovery_generation;
                 self.prepared_seek = None;
                 if !cancelled {
-                    self.error = Some(error.into());
+                    if recovery.is_some() && self.recovery.permits_seek(recovery) {
+                        self.fail_audio_recovery(error);
+                    } else {
+                        self.error = Some(error.into());
+                    }
                 }
             }
         }
@@ -678,7 +773,7 @@ impl EditorView {
         let audible = self.audible_playback.as_ref()?;
         let status = audio.control.status()?;
         let applied = status.applied_revision.load(Acquire);
-        if self.mode != super::EditorMode::Arrangement
+        if (self.mode != super::EditorMode::Arrangement && intent.recovery_generation.is_none())
             || state.revision != intent.project_revision
             || self.project_generation != intent.project_generation
             || self.applied_project_revision != Some(intent.project_revision)
@@ -691,12 +786,13 @@ impl EditorView {
             || !self.pending_requests.is_empty()
             || self.opening_project
             || self.close_prompt_open
-            || self.recovery.generation().is_some()
+            || !self.recovery.permits_seek(intent.recovery_generation)
             || !self.device_gesture_barriers.is_empty()
             || !self.seek_source_is_current(
                 intent.project_generation,
                 intent.project_revision,
                 intent.device_preview_identity,
+                intent.recovery_generation,
             )
             || audible.device_preview_identity != intent.device_preview_identity
             || audible.tuning_preview_identity.is_some()
@@ -722,6 +818,7 @@ impl EditorView {
                     pending.project_generation,
                     pending.project_revision,
                     pending.device_preview_identity,
+                    pending.recovery_generation,
                 )
         }) {
             // Retain intent only for another sequence of this SAME held
@@ -905,12 +1002,13 @@ impl EditorView {
             && self.pending_requests.is_empty()
             && !self.opening_project
             && !self.close_prompt_open
-            && self.recovery.generation().is_none()
+            && self.recovery.permits_seek(pending.recovery_generation)
             && self.device_gesture_barriers.is_empty()
             && self.seek_source_is_current(
                 pending.project_generation,
                 pending.project_revision,
                 pending.device_preview_identity,
+                pending.recovery_generation,
             )
             && audible.device_preview_identity == pending.device_preview_identity
             && audible.tuning_preview_identity.is_none()
