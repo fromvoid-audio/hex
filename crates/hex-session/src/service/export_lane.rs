@@ -1,7 +1,9 @@
 //! One bounded export's real control custody. UI result polling never retires it.
 use super::sampler_export::ServiceExportSnapshot;
 use super::*;
-use hex_engine::native_device_resources::{ControlSamplerSelection, DeviceResourcePhase};
+use hex_engine::native_device_resources::{
+    ControlSamplerSelection, DeviceResourceAdmission, DeviceResourcePhase, PreparedDeviceResources,
+};
 
 enum DispatchState {
     Pending(Option<hex_engine::native_device_resources::DispatchedSourceObligation>),
@@ -10,6 +12,7 @@ enum DispatchState {
 pub(super) struct ActiveExport {
     pub(super) job_id: u64,
     pub(super) snapshot: ServiceExportSnapshot,
+    resources: Option<PreparedDeviceResources>,
     pub(super) runtime_bytes: usize,
     dispatch: DispatchState,
 }
@@ -71,6 +74,14 @@ impl ExportLane {
             current,
             native: self.native_hold,
             export: self.active.as_ref().map(|a| a.snapshot.selection()),
+            export_resources: self.active.as_ref().and_then(|active| {
+                active.resources.as_ref().map(|resources| {
+                    DeviceResourceAdmission::prepared_on_control(
+                        resources,
+                        &active.snapshot.prepared,
+                    )
+                })
+            }),
             runtime_bytes: self.active.as_ref().map_or(0, |a| a.runtime_bytes),
             outbound: self.active.as_ref().and_then(|a| {
                 match (&a.dispatch, a.snapshot.sources.as_ref()) {
@@ -121,6 +132,12 @@ impl ExportLane {
         preview: Option<&super::resident_preview::Preview>,
     ) -> Result<(), String> {
         self.poll();
+        if job.sources.is_some() || job.resources.is_some() {
+            return Err("export source capture is already initialized".into());
+        }
+        if job.prepared.requires_device_resources() && resident.is_none() {
+            return Err("export requires its matching resident resource snapshot".into());
+        }
         if self.worker.is_none() {
             return Err("export worker is unavailable".into());
         }
@@ -131,22 +148,23 @@ impl ExportLane {
         self.next_id = id.checked_add(1).ok_or("export job identity exhausted")?;
         job.job_id = id;
         if session.native_reservation.is_none() {
-            if job.prepared.requires_control_sampler_sources() {
+            if resident.is_some() || job.prepared.requires_control_sampler_sources() {
                 return Err("sampler requires an explicit resident reservation".into());
             }
             return Ok(());
         }
-        let native_views = resident.map(|(_, sink)| sink.resident_admission());
-        let sets = resident.map(|(snapshot, _)| [&snapshot.resources]);
-        let revisions = resident.map(|(snapshot, _)| [snapshot.prepared.as_ref()]);
-        let mut registered = Vec::new();
-        if let (Some(sets), Some(revisions), Some(views)) = (&sets, &revisions, &native_views) {
-            registered.push(
-                hex_engine::native_device_resources::DeviceResourceAdmission::new(sets, &[])
-                    .with_prepared_revisions(revisions),
+        if let Some((snapshot, sink)) = resident {
+            return self.prepare_resident_job(
+                job,
+                session,
+                current_sources,
+                snapshot,
+                sink,
+                seeks,
+                preview,
             );
-            registered.extend_from_slice(views);
         }
+        let mut registered = Vec::new();
         if let Some(seeks) = seeks {
             registered.extend(seeks.views());
         }
@@ -157,35 +175,15 @@ impl ExportLane {
             .map_or(Ok(0), super::resident_seek::Lane::allowance)?
             .checked_add(preview.map_or(Ok(0), super::resident_preview::Preview::control_bytes)?)
             .ok_or("export held control allowance overflow")?;
-        let native_hold = resident.map_or(self.native_hold, |(_, sink)| sink.native_sampler_hold());
-        // Offline export retains its existing private source-borrowing renderer. It compiles a
-        // separate matching snapshot; an ordinary device-resource revision is never handed to
-        // the old private constructor. Current original banks and all actual native owners share
-        // this same admission ledger throughout compilation and dispatch.
-        let current = if resident.is_some() {
-            session
-                .prepare_service_snapshot(
-                    session.project(),
-                    sampler_export::Admission {
-                        registered: &registered,
-                        current: Some(ControlSamplerSelection {
-                            sources: current_sources,
-                            prepared: Some(&job.prepared),
-                        }),
-                        native: native_hold,
-                        runtime_bytes: seek_allowance,
-                        ..sampler_export::Admission::default()
-                    },
-                )
-                .map_err(|error| error.to_string())?
-        } else {
-            ServiceExportSnapshot {
-                prepared: Arc::clone(&job.prepared),
-                sources: current_sources
-                    .map(|s| s.capture_on_control())
-                    .transpose()
-                    .map_err(|e| format!("sampler export capture refused: {e:?}").to_lowercase())?,
-            }
+        let native_hold = self.native_hold;
+        let current = ServiceExportSnapshot {
+            prepared: Arc::clone(&job.prepared),
+            sources: current_sources
+                .map(|sources| sources.capture_on_control())
+                .transpose()
+                .map_err(|error| {
+                    format!("sampler export capture refused: {error:?}").to_lowercase()
+                })?,
         };
         job.prepared = Arc::clone(&current.prepared);
         let runtime_bytes = match current.sources.as_ref() {
@@ -205,15 +203,18 @@ impl ExportLane {
             }
             None => (None, None),
         };
+        let scratch = hex_export::control_storage_allowance(
+            job.controlled.as_ref().map(|(_, signal, _, _)| signal),
+        )
+        .map_err(|error| error.to_string())?;
         let runtime_bytes = runtime_bytes
             .checked_add(std::mem::size_of::<DispatchState>())
+            .and_then(|bytes| bytes.checked_add(scratch))
             .ok_or("export runtime and owner metadata overflow")?;
         let selections = [
             ControlSamplerSelection {
                 sources: current_sources,
-                prepared: Some(resident.map_or(job.prepared.as_ref(), |(snapshot, _)| {
-                    snapshot.prepared.as_ref()
-                })),
+                prepared: Some(job.prepared.as_ref()),
             },
             current.selection(),
             ControlSamplerSelection {
@@ -260,8 +261,150 @@ impl ExportLane {
         self.active = Some(ActiveExport {
             job_id: id,
             snapshot: current,
+            resources: None,
             runtime_bytes,
             dispatch: DispatchState::Pending(obligation),
+        });
+        Ok(())
+    }
+    /// Ordinary jobs capture the exact accepted compiler scope, never a private sampler recompile.
+    /// Actual anchor handles plus a finite worker-capture/runtime allowance remain admitted until
+    /// post-drop completion or join; cancellation/result polling never releases that custody.
+    #[allow(clippy::too_many_arguments)]
+    fn prepare_resident_job(
+        &mut self,
+        job: &mut ExportJob,
+        session: &Session,
+        current_sources: Option<&hex_engine::native_device_resources::ControlSamplerSources>,
+        snapshot: &resident_audio::Snapshot,
+        sink: &dyn WorkerAudioSink,
+        seeks: Option<&super::resident_seek::Lane>,
+        preview: Option<&super::resident_preview::Preview>,
+    ) -> Result<(), String> {
+        if current_sources.is_some()
+            || job.sources.is_some()
+            || job.resources.is_some()
+            || !Arc::ptr_eq(&snapshot.prepared, &job.prepared)
+        {
+            return Err("export prepared revision or source scope differs".into());
+        }
+        let limits = session
+            .native_reservation
+            .ok_or("native reservation unavailable")?;
+        let runtime = hex_engine::SessionPlayback::linear_export_runtime_allowance(&job.prepared)
+            .map_err(|error| {
+            format!("export resource preparation refused: {error:?}").to_lowercase()
+        })?;
+        let scratch = hex_export::control_storage_allowance(
+            job.controlled.as_ref().map(|(_, signal, _, _)| signal),
+        )
+        .map_err(|error| {
+            format!("export resource preparation refused: {error:?}").to_lowercase()
+        })?;
+        let wrappers = std::mem::size_of::<ActiveExport>()
+            .checked_add(std::mem::size_of::<ExportJob>())
+            .ok_or("export owner metadata overflow")?;
+        let base = runtime
+            .checked_add(scratch)
+            .and_then(|bytes| bytes.checked_add(wrappers))
+            .ok_or("export runtime allowance overflow")?;
+        let capture_quote = snapshot
+            .resources
+            .metadata_bytes()
+            .map_err(|error| {
+                format!("export resource preparation refused: {error:?}").to_lowercase()
+            })?
+            .checked_mul(2)
+            .and_then(|bytes| bytes.checked_add(base))
+            .ok_or("export capture allowance overflow")?;
+        let mut registered = vec![DeviceResourceAdmission::prepared_on_control(
+            &snapshot.resources,
+            &snapshot.prepared,
+        )];
+        registered.extend(sink.resident_admission());
+        if let Some(seeks) = seeks {
+            registered.extend(seeks.views());
+        }
+        if let Some(preview) = preview {
+            registered.push(preview.admission());
+        }
+        let held = seeks
+            .map_or(Ok(0), super::resident_seek::Lane::allowance)?
+            .checked_add(preview.map_or(Ok(0), super::resident_preview::Preview::control_bytes)?)
+            .ok_or("export held control allowance overflow")?;
+        let native = sink.native_sampler_hold();
+        let stores = [&session.native_assets];
+        let legacy = session
+            .media
+            .values()
+            .flat_map(|media| [&media.source_audio, &media.audio])
+            .collect::<Vec<_>>();
+        let check =
+            |extra: Option<&PreparedDeviceResources>, allowance: usize| -> Result<(), String> {
+                let mut views = registered.clone();
+                if let Some(extra) = extra {
+                    views.push(DeviceResourceAdmission::prepared_on_control(
+                        extra,
+                        &job.prepared,
+                    ));
+                }
+                let phase = DeviceResourcePhase {
+                    stores: &stores,
+                    registered: &views,
+                    selections: &[],
+                    outbound: &[],
+                    legacy: &legacy,
+                    checked_runtime_bytes: allowance
+                        .checked_add(held)
+                        .and_then(|bytes| bytes.checked_add(native.construction_bytes))
+                        .ok_or("native export reservation overflow")?,
+                    construction_bytes: 0,
+                };
+                let inventory = hex_engine::native_device_resources::inspect_device_resource_union(
+                    &phase,
+                    &phase,
+                    limits.storage,
+                )
+                .map_err(|error| format!("export storage refused: {error:?}").to_lowercase())?;
+                if inventory
+                    .retained_frames
+                    .checked_add(native.frames)
+                    .is_none_or(|frames| frames > session.max_resident_frames)
+                {
+                    return Err("resident audio frame limit reached".into());
+                }
+                Ok(())
+            };
+        check(None, capture_quote)?;
+        let anchor = snapshot
+            .resources
+            .capture_on_control(limits.storage.max_retained_bytes)
+            .map_err(|error| {
+                format!("export resource preparation refused: {error:?}").to_lowercase()
+            })?;
+        let capture = anchor
+            .capture_on_control(limits.storage.max_retained_bytes)
+            .map_err(|error| {
+                format!("export resource preparation refused: {error:?}").to_lowercase()
+            })?;
+        // The actual worker capture pins the same immutable allocations. Its wrapper/handle
+        // capacity is reserved conservatively, without declaring closed Arc-count provenance.
+        let runtime_bytes = base
+            .checked_add(capture.metadata_bytes().map_err(|error| {
+                format!("export resource preparation refused: {error:?}").to_lowercase()
+            })?)
+            .ok_or("export capture allowance overflow")?;
+        check(Some(&anchor), runtime_bytes)?;
+        job.resources = Some(capture);
+        self.active = Some(ActiveExport {
+            job_id: job.job_id,
+            snapshot: ServiceExportSnapshot {
+                prepared: Arc::clone(&job.prepared),
+                sources: None,
+            },
+            resources: Some(anchor),
+            runtime_bytes,
+            dispatch: DispatchState::Pending(None),
         });
         Ok(())
     }

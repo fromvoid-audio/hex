@@ -516,6 +516,11 @@ impl PreparedRevision {
             Some(sources),
         )
     }
+    /// Whether playback/export must receive the exact ordinary resource set used by compilation.
+    /// This scalar grants no source identity, owning handle or publication/admission authority.
+    pub fn requires_device_resources(&self) -> bool {
+        self.device_resource_scope.is_some()
+    }
     pub fn requires_control_sampler_sources(&self) -> bool {
         self.resource_scope.is_some()
     }

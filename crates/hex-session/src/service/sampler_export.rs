@@ -33,6 +33,7 @@ pub(crate) struct Admission<'a> {
     pub(crate) current: Option<ControlSamplerSelection<'a>>,
     pub(crate) native: NativeSamplerReservationHold,
     pub(crate) export: Option<ControlSamplerSelection<'a>>,
+    pub(crate) export_resources: Option<resources::DeviceResourceAdmission<'a>>,
     pub(crate) runtime_bytes: usize,
     pub(crate) outbound: Option<resources::ControlSamplerOutbound<'a>>,
 }
@@ -57,6 +58,7 @@ impl Admission<'_> {
         self.registered
             .iter()
             .copied()
+            .chain(self.export_resources)
             .chain(
                 self.preview
                     .map(super::resident_preview::Preview::admission),

@@ -161,7 +161,7 @@ fn render_stems_with_resources_and_hook(
                 source,
             })?;
         staging.files.push(target);
-        let mut writer = BufWriter::new(file);
+        let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
         write_header(&mut writer, rate, bytes, byte_rate)?;
         writers.push(writer);
     }

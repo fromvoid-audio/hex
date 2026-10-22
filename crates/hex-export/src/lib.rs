@@ -24,6 +24,7 @@ use std::{
 };
 
 const FRAMES_PER_BLOCK: usize = 256;
+const IO_BUFFER_BYTES: usize = 8 * 1024;
 const MAX_TEMP_ATTEMPTS: usize = 16;
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -38,7 +39,8 @@ pub use controlled::{
     render_prepared_with_device_resources_and_policy,
 };
 pub use controlled::{
-    controlled_frame_count, render_control_sampler_with_policy, render_prepared_with_policy,
+    control_storage_allowance, controlled_frame_count, render_control_sampler_with_policy,
+    render_prepared_with_policy,
 };
 pub use publication::{OverwriteConsent, Publication};
 pub use stems::{Stem, render_stems_new, render_stems_new_with_device_resources};
@@ -502,7 +504,7 @@ fn write_wav(
     renderer: &mut impl BlockRenderer,
     encoding: WavEncoding,
 ) -> Result<(), ExportError> {
-    let mut writer = BufWriter::new(file);
+    let mut writer = BufWriter::with_capacity(IO_BUFFER_BYTES, file);
     write_header_encoded(&mut writer, sample_rate, data_bytes, byte_rate, encoding)?;
 
     let mut block = [[0.0; 2]; FRAMES_PER_BLOCK];

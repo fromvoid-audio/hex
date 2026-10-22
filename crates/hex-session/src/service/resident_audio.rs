@@ -1342,6 +1342,7 @@ impl Session {
 
 #[cfg(test)]
 mod tests {
+    mod export_tests;
     use super::*;
     use std::sync::{Mutex, atomic::AtomicUsize};
     use std::time::Duration;

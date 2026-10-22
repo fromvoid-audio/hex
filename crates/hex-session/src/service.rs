@@ -700,6 +700,7 @@ type Exporter = Arc<
 struct ExportJob {
     job_id: u64,
     sources: Option<hex_engine::native_device_resources::ControlSamplerSources>,
+    resources: Option<hex_engine::native_device_resources::PreparedDeviceResources>,
     revision: u64,
     path: PathBuf,
     prepared: Arc<PreparedRevision>,
@@ -4495,6 +4496,7 @@ fn run_worker(
                                 Ok(ExportJob {
                                     job_id: 0,
                                     sources: None,
+                                    resources: None,
                                     revision,
                                     path: path.clone(),
                                     prepared: Arc::clone(prepared),
@@ -4541,6 +4543,7 @@ fn run_worker(
                                 .map(|frames| ExportJob {
                                     job_id: 0,
                                     sources: None,
+                                    resources: None,
                                     revision,
                                     path: path.clone(),
                                     prepared: Arc::clone(prepared),
@@ -5614,7 +5617,40 @@ fn run_export_worker(
         }
         let (id, mut event) = {
             let ExportWork::Render(mut job) = work;
-            let result = if let Some(sources) = job.sources.take() {
+            let result = if job.sources.is_some() && job.resources.is_some() {
+                Err("export cannot combine private and ordinary source scopes".into())
+            } else if let Some(resources) = job.resources.take() {
+                if let Some((start, signal, control, overwrite)) = job.controlled.take() {
+                    let policy = if overwrite {
+                        hex_export::Publication::confirmed_save(&job.path)
+                    } else {
+                        Ok(hex_export::Publication::CreateNew)
+                    };
+                    policy
+                        .and_then(|policy| {
+                            hex_export::render_prepared_with_device_resources_and_policy(
+                                &job.path,
+                                job.prepared,
+                                &resources,
+                                start,
+                                job.frames,
+                                signal,
+                                &control,
+                                &policy,
+                            )
+                        })
+                        .map_err(|error| error.to_string())
+                } else {
+                    hex_export::render_prepared_new_with_device_resources(
+                        &job.path,
+                        job.prepared,
+                        &resources,
+                        0,
+                        job.frames,
+                    )
+                    .map_err(|error| error.to_string())
+                }
+            } else if let Some(sources) = job.sources.take() {
                 let (start, signal, control, overwrite) =
                     job.controlled.take().unwrap_or_else(|| {
                         (

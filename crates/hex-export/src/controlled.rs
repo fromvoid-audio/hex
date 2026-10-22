@@ -86,6 +86,107 @@ pub enum ExportSignal {
     Stems(Vec<super::Stem>),
 }
 
+/// Conservative control-worker export scratch, separate from the engine's checked linear
+/// runtime allowance. Includes exporter block/IO buffers, bounded capture-plan/selection backing,
+/// and actual caller-owned selection/name capacities plus the bounded stem working copy. Engine
+/// runtime/source/factory payloads, paths, filesystem/platform storage and the control stack are
+/// excluded: this is neither whole-graph allocation provenance nor a source-frame reservation.
+/// Invalid counts/names and byte overflow refuse before the job captures/distributes resources.
+pub fn control_storage_allowance(signal: Option<&ExportSignal>) -> Result<usize, ExportError> {
+    let overflow = || ExportError::Invalid("export scratch allowance overflows");
+    let block = FRAMES_PER_BLOCK
+        .checked_mul(std::mem::size_of::<Frame>())
+        .ok_or_else(overflow)?;
+    let mut bytes = block
+        .checked_add(
+            std::mem::size_of::<ControlledRenderer>() - std::mem::size_of::<SessionPlayback>(),
+        )
+        .ok_or_else(overflow)?;
+    // Four shared scalar controls; conservative Arc headers/alignment, never source payloads.
+    bytes = bytes
+        .checked_add(
+            4 * (2 * std::mem::size_of::<usize>()
+                + std::mem::size_of::<AtomicU64>()
+                + std::mem::align_of::<AtomicU64>()
+                - 1),
+        )
+        .ok_or_else(overflow)?;
+    let (count, selection, stems) = match signal {
+        None | Some(ExportSignal::Main) => (0, 0, None),
+        Some(ExportSignal::CapturedMix(ids)) => {
+            if ids.is_empty() || ids.len() > hex_engine::MAX_OUTPUT_CAPTURES {
+                return Err(ExportError::Invalid(
+                    "invalid export output selection count",
+                ));
+            }
+            (
+                ids.len(),
+                ids.capacity()
+                    .checked_mul(std::mem::size_of::<OutputCaptureId>())
+                    .ok_or_else(overflow)?,
+                None,
+            )
+        }
+        Some(ExportSignal::Stems(stems)) => {
+            if stems.is_empty()
+                || stems.len() > hex_engine::MAX_OUTPUT_CAPTURES
+                || stems.iter().any(|stem| stem.name.len() > 4096)
+            {
+                return Err(ExportError::Invalid("invalid stem selection count"));
+            }
+            let names = stems.iter().try_fold(0usize, |bytes, stem| {
+                bytes.checked_add(stem.name.capacity()).ok_or_else(overflow)
+            })?;
+            let selection = stems
+                .capacity()
+                .checked_mul(std::mem::size_of::<super::Stem>())
+                .and_then(|bytes| bytes.checked_add(names))
+                .ok_or_else(overflow)?;
+            (stems.len(), selection, Some(stems))
+        }
+    };
+    bytes = bytes.checked_add(selection).ok_or_else(overflow)?;
+    let writers = if stems.is_some() { count } else { 1 };
+    bytes = bytes
+        .checked_add(
+            writers
+                .checked_mul(IO_BUFFER_BYTES + std::mem::size_of::<BufWriter<File>>())
+                .ok_or_else(overflow)?,
+        )
+        .ok_or_else(overflow)?;
+    if count != 0 {
+        // The plan rejects capacity above this existing bound after try_reserve_exact. Its
+        // shared revision is already pinned/accounted by the job, not copied into this quote.
+        let plan = std::mem::size_of::<OutputCapturePlan>()
+            .checked_add(
+                hex_engine::MAX_OUTPUT_CAPTURES
+                    .checked_mul(std::mem::size_of::<OutputCaptureId>())
+                    .ok_or_else(overflow)?,
+            )
+            .ok_or_else(overflow)?;
+        let outputs = count
+            .checked_mul(block + std::mem::size_of::<&mut [Frame]>())
+            .ok_or_else(overflow)?;
+        bytes = bytes
+            .checked_add(plan)
+            .and_then(|bytes| bytes.checked_add(outputs))
+            .ok_or_else(overflow)?;
+    }
+    if stems.is_some() {
+        let ordered = count
+            .checked_mul(
+                std::mem::size_of::<super::Stem>() + 4096 + std::mem::size_of::<OutputCaptureId>(),
+            )
+            .ok_or_else(overflow)?;
+        // One encoded PCM16 block reused for each stem; the full frame transaction is above.
+        bytes = bytes
+            .checked_add(ordered)
+            .and_then(|bytes| bytes.checked_add(FRAMES_PER_BLOCK * 4))
+            .ok_or_else(overflow)?;
+    }
+    Ok(bytes)
+}
+
 /// Resolve an optional range for the causal controlled renderer. Explicit
 /// spans and pre-Main capture/stem defaults retain their own source semantics.
 pub fn controlled_frame_count(
@@ -437,6 +538,54 @@ mod tests {
     use super::*;
     use hex_lattice_contract::{DeviceTypeId, ParameterId, ParameterValue};
     use hex_project::{Command, Created, Editor};
+
+    #[test]
+    fn control_storage_quote_counts_owned_capacity_and_rejects_unbounded_selection() {
+        let mut editor = Editor::new(hex_project::Project::new(48000).unwrap(), 1).unwrap();
+        let Created::Track(track) = editor
+            .execute(Command::AddTrack { name: "a".into() })
+            .unwrap()
+        else {
+            panic!("track")
+        };
+        let mut selected = Vec::with_capacity(8);
+        selected.push(OutputCaptureId::Track(track));
+        let narrow = ExportSignal::CapturedMix(vec![OutputCaptureId::Track(track)]);
+        let wide = ExportSignal::CapturedMix(selected);
+        assert!(
+            control_storage_allowance(Some(&wide)).unwrap()
+                > control_storage_allowance(Some(&narrow)).unwrap()
+        );
+        let mut name = String::with_capacity(8192);
+        name.push('a');
+        let mut owned = ExportSignal::Stems(vec![super::super::Stem {
+            id: OutputCaptureId::Track(track),
+            name,
+        }]);
+        let large = control_storage_allowance(Some(&owned)).unwrap();
+        if let ExportSignal::Stems(stems) = &mut owned {
+            stems[0].name.shrink_to_fit();
+        }
+        assert!(large > control_storage_allowance(Some(&owned)).unwrap());
+        assert!(control_storage_allowance(Some(&ExportSignal::CapturedMix(Vec::new()))).is_err());
+        assert!(
+            control_storage_allowance(Some(&ExportSignal::CapturedMix(vec![
+                OutputCaptureId::Track(
+                    track
+                );
+                hex_engine::MAX_OUTPUT_CAPTURES
+                    + 1
+            ])))
+            .is_err()
+        );
+        assert!(
+            control_storage_allowance(Some(&ExportSignal::Stems(vec![super::super::Stem {
+                id: OutputCaptureId::Track(track),
+                name: "x".repeat(4097),
+            }])))
+            .is_err()
+        );
+    }
 
     #[test]
     fn preroll_progress_cancel_and_budget_refusal_never_return_partial_history() {

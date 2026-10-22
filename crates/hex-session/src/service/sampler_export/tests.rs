@@ -451,6 +451,7 @@ pub(crate) fn job(snapshot: &ServiceExportSnapshot, path: PathBuf) -> ExportJob 
     ExportJob {
         job_id: 0,
         sources: None,
+        resources: None,
         revision: 0,
         path,
         prepared: Arc::clone(&snapshot.prepared),
@@ -641,6 +642,7 @@ fn captured_export_new_and_media_open_check_complete_union_before_adoption() {
         native: NativeSamplerReservationHold::default(),
         current: Some(snapshot.selection()),
         export: Some(anchor.selection()),
+        export_resources: None,
         runtime_bytes: hex_engine::SessionPlayback::control_sampler_export_runtime_allowance(
             &snapshot.prepared,
             source,
@@ -838,6 +840,7 @@ fn legacy_staged_owner_union_has_independent_exact_byte_limits_before_commit() {
         native: NativeSamplerReservationHold::default(),
         current: None,
         export: Some(anchor.selection()),
+        export_resources: None,
         outbound: Some(resources::ControlSamplerOutbound {
             anchor: source,
             obligation: &obligation,
