@@ -437,3 +437,167 @@ fn current_format_overlaps_refuse_and_exact_adjacency_roundtrips_without_rewrite
         assert_eq!(loaded.midi_source(clip).unwrap().notes().len(), 2);
     }
 }
+
+#[test]
+fn overwrite_at_full_note_capacity_charges_only_the_actual_final_set() {
+    use hex_project::{MAX_NOTES, MidiNoteSnapshot, TrackContentSnapshot};
+    let (editor, clip) = fixture(false);
+    let mut snapshot = editor.project().snapshot();
+    let first = snapshot.next_id;
+    let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut snapshot.tracks[0].content else {
+        panic!("hybrid")
+    };
+    midi_clips[0].notes = (0..MAX_NOTES)
+        .map(|index| MidiNoteSnapshot {
+            id: first + index as u64,
+            start_raw: index as u64,
+            duration_raw: 1,
+            pitch: 60,
+            channel: 3,
+            velocity: 91,
+        })
+        .collect();
+    snapshot.next_id = first + MAX_NOTES as u64;
+    let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 4).unwrap();
+    let before = editor.project().midi_source(clip).unwrap().clone();
+    let expected_id = editor.project().snapshot().next_id;
+    let (Created::Note(created), ()) = editor
+        .execute_midi_prepared_transition::<_, Invalid>(
+            Command::AddMidiNote {
+                clip,
+                start: BeatTime::from_raw(1),
+                duration: BeatTime::from_raw(1),
+                pitch: 60,
+                channel: 7,
+                velocity: 103,
+            },
+            |_, _| Ok(()),
+        )
+        .unwrap()
+    else {
+        panic!("replacement identity")
+    };
+    let after = editor.project().midi_source(clip).unwrap();
+    assert_eq!(after.notes().len(), MAX_NOTES);
+    assert_eq!(created.value(), expected_id);
+    assert!(
+        after
+            .notes()
+            .iter()
+            .all(|note| note.id() != before.notes()[1].id())
+    );
+    assert_eq!(after.notes()[0], before.notes()[0]);
+    assert_eq!(after.notes()[1..MAX_NOTES - 1], before.notes()[2..]);
+    assert!(editor.undo());
+    assert_eq!(editor.project().midi_source(clip), Some(&before));
+    assert!(editor.redo());
+}
+
+#[test]
+fn fixed_receipts_reject_wrong_single_prefix_and_extra_batch_retirement() {
+    use hex_project::TrackContentSnapshot;
+    for batch in [false, true] {
+        let (mut editor, clip) = fixture(false);
+        let before = editor.project().clone();
+        let mut input = vec![note(4, 2, 60, 7)];
+        if batch {
+            input.push(note(8, 1, 70, 1));
+        }
+        editor
+            .execute_midi_prepared_transition::<_, Invalid>(
+                Command::AddMidiNotes { clip, notes: input },
+                |_, _| Ok(()),
+            )
+            .unwrap();
+        let effect = editor.next_midi_history_effect(false).unwrap();
+        let mut forged = editor.project().snapshot();
+        let TrackContentSnapshot::Hybrid { midi_clips, .. } = &mut forged.tracks[0].content else {
+            panic!("hybrid")
+        };
+        if batch {
+            midi_clips[0].notes.remove(1);
+        } else {
+            midi_clips[0].notes[0].duration_raw = beat(2).raw();
+        }
+        let forged = Project::from_snapshot(forged).unwrap();
+        assert!(!effect.validates_forward(&before, &forged));
+    }
+}
+
+#[test]
+fn splitting_long_looped_gates_preserves_existing_bounded_occurrence_semantics() {
+    let (mut editor, clip) = fixture(false);
+    let ids = editor
+        .project()
+        .midi_source(clip)
+        .unwrap()
+        .notes()
+        .iter()
+        .map(|n| n.id())
+        .collect();
+    editor
+        .execute(Command::RemoveMidiNotes { clip, notes: ids })
+        .unwrap();
+    editor
+        .execute(Command::AddMidiNotes {
+            clip,
+            notes: vec![note(0, 2, 60, 3)],
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip,
+            source_length: beat(20),
+            source_start: BeatTime::ZERO,
+            loop_start: BeatTime::ZERO,
+            loop_end: BeatTime::ONE,
+            looping: true,
+            length: beat(4),
+        })
+        .unwrap();
+    editor.execute(Command::MasterGain { gain: 0.5 }).unwrap();
+    assert!(editor.undo());
+    let before = editor.project().clone();
+    let mut prepared = false;
+    let result = editor.execute_validated::<Invalid>(
+        Command::SplitMidiClip {
+            clip,
+            beat: beat(2),
+        },
+        |_| {
+            prepared = true;
+            Ok(())
+        },
+    );
+    let Created::Clip(right) = result.unwrap() else {
+        panic!("split identity")
+    };
+    assert!(prepared);
+    assert_eq!(
+        editor.project().midi_source(clip).unwrap(),
+        before.midi_source(clip).unwrap()
+    );
+    // The existing playback occurrence owner caps at each loop boundary;
+    // splitting materializes two adjacent gates, not overlapping authored notes.
+    let gates: Vec<_> = editor
+        .project()
+        .midi_source(right)
+        .unwrap()
+        .notes()
+        .iter()
+        .map(|note| (note.start(), note.duration(), note.channel()))
+        .collect();
+    assert_eq!(
+        gates,
+        vec![
+            (BeatTime::ZERO, BeatTime::ONE, 3),
+            (BeatTime::ONE, BeatTime::ONE, 3)
+        ]
+    );
+    let after = editor.project().clone();
+    assert_eq!(Project::from_snapshot(after.snapshot()).unwrap(), after);
+    assert!(editor.undo());
+    assert_eq!(editor.project().tracks(), before.tracks());
+    assert!(editor.redo());
+    assert_eq!(editor.project(), &after);
+}
