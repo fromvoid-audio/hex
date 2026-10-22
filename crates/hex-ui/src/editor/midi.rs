@@ -156,7 +156,7 @@ impl EditorView {
         let Some((grid, viewport, width)) = self.nudge_grid_context(platform) else {
             return;
         };
-        let start = if grid == super::musical_time::SnapGrid::Off {
+        let start = if grid.is_off() {
             if right {
                 item.start().raw().checked_add(BeatTime::ONE.raw())
             } else {
@@ -167,7 +167,7 @@ impl EditorView {
                 .map(BeatTime::raw)
         };
         let Some(start) = start else {
-            if grid == super::musical_time::SnapGrid::Off {
+            if grid.is_off() {
                 self.error = Some("midi clip move exceeds the beat range".into());
             }
             return;
@@ -486,6 +486,7 @@ impl EditorView {
 
     pub(super) fn edit_pending(&self) -> bool {
         self.gain_recorder.blocks_edits()
+            || self.sampler_parameter_pending()
             || self.opening_project
             || self.close_prompt_open
             || self.worker_requests_pending != 0

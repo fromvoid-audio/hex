@@ -301,13 +301,28 @@ fn stateful_seek_candidate_uses_captured_fence_and_latest_intent_waits_for_termi
         .expect("admission-time route fence");
 
     let intent = SeekIntent {
+        recovery_generation: None,
         destination_frame: 256,
         start_playing: true,
         project_generation: 7,
         project_revision: 3,
-        prepared_revision: Arc::clone(&prepared),
+        prepared_revision: Some(Arc::clone(&prepared)),
+        device_preview_identity: None,
     };
     let mut pending = PendingSeek::from_intent(1, &intent, fence);
+    let worker_intent = SeekIntent {
+        prepared_revision: None,
+        ..intent.clone()
+    };
+    let worker_pending = PendingSeek::from_intent(2, &worker_intent, fence);
+    assert!(
+        worker_intent.spec().is_none(),
+        "native intent cannot expose a headless graph request"
+    );
+    assert!(
+        worker_pending.defers_replacement(),
+        "a second native intent waits for scalar acceptance/refusal before replacing cancellation correlation"
+    );
     let service = Service::new(48_000, 8, 1 << 20).expect("session service");
     let request_id = service
         .request_arrangement_seek(ArrangementSeekSpec {
@@ -423,11 +438,13 @@ fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal
         )
         .expect("publish conditional seek candidate");
     let intent = SeekIntent {
+        recovery_generation: None,
         destination_frame: 256,
         start_playing: true,
         project_generation: 4,
         project_revision: 7,
-        prepared_revision: prepared,
+        prepared_revision: Some(prepared),
+        device_preview_identity: None,
     };
     let mut pending = PendingSeek::from_intent(11, &intent, fence);
     pending.stage = SeekStage::Published { audio_revision };
@@ -452,6 +469,15 @@ fn invalidating_published_seek_cancels_callback_candidate_and_waits_for_terminal
             audio_revision,
             hex_engine::playback::PlaybackHandoffRejection::FreshRuntimeCancelled
         ))
+    );
+
+    assert_eq!(
+        cancel_published_seek(Some(&control), &mut pending),
+        Some(FreshRuntimeCancellationResult::Complete)
+    );
+    assert!(
+        pending.cancelled,
+        "completed return is not an applied runtime"
     );
 
     let mut pending_slot = Some(pending);

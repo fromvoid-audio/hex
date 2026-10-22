@@ -21,7 +21,7 @@ pub(crate) struct MenuItem<A> {
 
 pub(crate) struct PopupMenu<A> {
     pub position: Point<Pixels>,
-    // Item zero is a full-width action; remaining items are glyph cells.
+    // Item zero and any items after the glyph catalog are full-width actions.
     pub icon_grid: Option<Vec<&'static str>>,
     pub items: Vec<MenuItem<A>>,
     pub selected: usize,
@@ -63,8 +63,8 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
     let (width, height) = if grid.is_some() {
         (
             ICON_WIDTH,
-            ROW_HEIGHT
-                + menu.items.len().saturating_sub(1).div_ceil(ICON_COLUMNS) as f32 * ICON_CELL
+            ROW_HEIGHT * menu.items.len().saturating_sub(grid.map_or(0, Vec::len)) as f32
+                + grid.map_or(0, Vec::len).div_ceil(ICON_COLUMNS) as f32 * ICON_CELL
                 + 13.0,
         )
     } else {
@@ -97,6 +97,7 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
         .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation());
     let is_icon_menu = grid.is_some();
     let mut cells = Vec::new();
+    let mut trailing = Vec::new();
     for (index, item) in menu.items.iter().enumerate() {
         let action = item.action.clone();
         let label = item.label;
@@ -161,6 +162,8 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
             );
         if glyph.is_some() {
             cells.push(row);
+        } else if index > 0 && grid.is_some() {
+            trailing.push(row);
         } else {
             panel = panel.child(row);
         }
@@ -178,6 +181,8 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
                 .children(cells),
         );
     }
+    panel = panel.children(trailing);
+    let glyph_count = grid.map_or(0, Vec::len);
     let is_grid = grid.is_some();
     let selected = menu.selected;
     let count = menu.items.len();
@@ -201,13 +206,13 @@ pub(crate) fn popup<T: 'static, A: Clone + 'static>(
                     }
                     "up" | "down" => {
                         let forward = event.keystroke.key == "down";
-                        let steps = if !is_grid || selected == 0 {
+                        let steps = if !is_grid || selected == 0 || selected > glyph_count {
                             1
                         } else if forward {
-                            if selected + ICON_COLUMNS < count {
+                            if selected + ICON_COLUMNS <= glyph_count {
                                 ICON_COLUMNS
                             } else {
-                                count - selected
+                                (glyph_count + 1).min(count) - selected
                             }
                         } else {
                             selected.min(ICON_COLUMNS)

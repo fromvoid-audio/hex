@@ -1803,6 +1803,42 @@ fn four_review_noop_predecessor_preserves_successor_and_does_not_add_history(
     );
 }
 
+// This capacity oracle drains real FIFO edits, rather than benchmarking a full
+// window repaint for every worker poll. Input and the settled result still paint.
+fn pump_capacity_replay(
+    editor: &gpui::Entity<EditorView>,
+    cx: &mut TestAppContext,
+    expected: &EqState,
+    device: DeviceId,
+) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        editor.update(cx, |view, cx| {
+            view.tick(cx);
+        });
+        if editor.read_with(cx, |view, _| {
+            settled(view) && read(view, device) == *expected
+        }) {
+            editor.update(cx, |_, cx| cx.notify());
+            return;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "capacity replay did not complete: {}",
+            editor.read_with(cx, |view, _| format!(
+                "worker={} queued={} gesture={:?} barriers={} error={:?} revision={:?}",
+                view.worker_requests_pending,
+                view.pending_requests.len(),
+                view.device_gesture.snapshot(),
+                view.device_gesture_barriers.len(),
+                view.error,
+                view.state.as_ref().map(|state| state.revision),
+            ))
+        );
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
 #[gpui::test]
 fn four_review_stream_capacity_refuses_whole_new_burst_and_preserves_accepted_history(
     cx: &mut TestAppContext,
@@ -1866,7 +1902,9 @@ fn four_review_stream_capacity_refuses_whole_new_burst_and_preserves_accepted_hi
     let mut expected = before.clone();
     expected.nodes[0].slope = 3;
     expected.nodes[1].slope = 3;
-    pump_until(&editor, cx, |v| settled(v) && read(v, device) == expected);
+    pump_capacity_replay(&editor, cx, &expected, device);
+    visual.run_until_parked();
+    assert!(editor.read_with(cx, |v, _| settled(v) && read(v, device) == expected));
     assert_eq!(
         editor.read_with(cx, |v, _| eq_panel::queued_scrolls_for_test(v, device)),
         (0, false)

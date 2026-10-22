@@ -1,4 +1,12 @@
-//! Optional, control-owned MIDI controller input. Hardware notes are ignored.
+//! # Purpose
+//! Own optional control-side MIDI controller input and bounded scalar delivery.
+//!
+//! # Dependencies
+//! Uses the standard library and the configured platform MIDI dependency on supported targets.
+//!
+//! # Does not own
+//! Does not schedule musical notes, mutate project state or perform audio callback work. Hardware
+//! note hosting is outside this controller-only boundary.
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},

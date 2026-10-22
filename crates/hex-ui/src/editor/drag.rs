@@ -110,7 +110,7 @@ pub(super) enum NativeDeviceDragSource {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct ReturnDeviceDropTarget {
-    pub(super) owner: hex_project::ReturnId,
+    pub(super) owner: super::device_panel::EffectBusOwner,
     pub(super) before: Option<hex_project::DeviceId>,
 }
 
@@ -948,12 +948,16 @@ impl super::EditorView {
                             && candidate_class == class
                             && candidate.state().type_id() == type_id
                     })
-                }) || state.project.return_tracks().iter().any(|track| {
-                    class == hex_engine::NativeDeviceClass::Effect
-                        && track.devices().iter().any(|candidate| {
-                            candidate.id() == device && candidate.state().type_id() == type_id
-                        })
-                })
+                }) || (class == hex_engine::NativeDeviceClass::Effect
+                    && state.project.main_devices().iter().any(|candidate| {
+                        candidate.id() == device && candidate.state().type_id() == type_id
+                    }))
+                    || state.project.return_tracks().iter().any(|track| {
+                        class == hex_engine::NativeDeviceClass::Effect
+                            && track.devices().iter().any(|candidate| {
+                                candidate.id() == device && candidate.state().type_id() == type_id
+                            })
+                    })
             }
         }
     }

@@ -1,3 +1,15 @@
+//! # Purpose
+//! Own native output lifecycle, bounded prepared-graph publication, callback command delivery and
+//! off-callback reclamation.
+//!
+//! # Dependencies
+//! Uses hex-engine for musical rendering, hex-stream for verified pages, CPAL for device I/O and
+//! rtrb for bounded ownership queues.
+//!
+//! # Does not own
+//! Does not edit projects, decode media on callback, own GPUI, or implement device DSP. Stop must
+//! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
+//! control.
 mod device;
 mod render_fault;
 pub mod sample_preview;

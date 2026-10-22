@@ -89,6 +89,7 @@ fn devices(project: &Project) -> impl Iterator<Item = &hex_project::Device> {
                 .iter()
                 .flat_map(|track| track.devices()),
         )
+        .chain(project.main_devices())
 }
 pub(crate) fn has_references(project: &Project) -> bool {
     devices(project).any(|device| {
@@ -165,6 +166,9 @@ impl Manifest {
             for device in &mut track.devices {
                 apply(device, &mut bindings)?;
             }
+        }
+        for device in &mut snapshot.main_devices {
+            apply(device, &mut bindings)?;
         }
         if !bindings.is_empty() {
             return Err(StorageError::Invalid(
