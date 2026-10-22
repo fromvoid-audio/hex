@@ -15,6 +15,7 @@ import json
 import math
 import os
 import re
+import shlex
 import shutil
 from pathlib import Path
 import signal
@@ -1543,6 +1544,7 @@ class LocalCiRunner:
     def _run_step(self, step: Step, index: int) -> dict[str, object]:
         started = time.monotonic()
         text = None
+        phase = "opening step log"
         log_path = self.output_dir / f"{index:02d}-{step.step_id}.log"
         entry: dict[str, object] = {
             "step_id": step.step_id,
@@ -1568,6 +1570,7 @@ class LocalCiRunner:
         try:
             with log_path.open("w", encoding="utf-8") as log, \
                     terminal_progress(f"checking {step.step_id}", announce=False):
+                phase = "running command"
                 result = subprocess.run(
                     list(step.argv),
                     cwd=self.root,
@@ -1578,6 +1581,7 @@ class LocalCiRunner:
                 )
             entry["exit_code"] = result.returncode
             entry["status"] = "passed" if result.returncode == 0 else "failed"
+            phase = "reading step log"
             text = log_path.read_text(errors="replace")
             rust_counts = [int(n) for n in re.findall(r"test result: ok\. (\d+) passed;", text)]
             python_counts = [int(n) for n in re.findall(r"^Ran (\d+) tests? in ", text, re.MULTILINE)]
@@ -1589,20 +1593,21 @@ class LocalCiRunner:
                 entry["error"] = "requested test scope executed no passing tests; zero-match/all-skipped is not qualification"
         except FileNotFoundError as error:
             entry["status"] = "failed"
-            entry["error"] = f"required executable not found: {error.filename}"
-            log_path.write_text(entry["error"] + "\n", encoding="utf-8")
+            entry["error"] = (f"required executable not found: {error.filename}"
+                              if phase == "running command" else f"log I/O failure while {phase}: {error}")
+            self._retain_step_error(log_path, entry)
         except InterruptedRun:
             entry["status"] = "interrupted"
             entry["error"] = "pipeline interrupted"
             entry["exit_code"] = 130
             entry["ended_at"] = utc_now()
-            with log_path.open("a", encoding="utf-8") as log:
-                log.write("\npipeline interrupted\n")
+            self._retain_step_error(log_path, entry)
             raise
         except OSError as error:
             entry["status"] = "failed"
-            entry["error"] = str(error)
-            log_path.write_text(f"command could not run: {error}\n", encoding="utf-8")
+            entry["error"] = (f"command could not run: {error}" if phase == "running command"
+                              else f"log I/O failure while {phase}: {error}")
+            self._retain_step_error(log_path, entry)
         finally:
             ended = time.monotonic()
             duration = ended - started
@@ -1620,6 +1625,90 @@ class LocalCiRunner:
         self._write_summary()
         print(f"[{index}/{len(self.steps)}] {step.step_id}: {entry['status']}", flush=True)
         return entry
+
+    @staticmethod
+    def _retain_step_error(log_path: Path, entry: dict[str, object]) -> None:
+        # Never replace captured output or let a second log error hide the actual failure.
+        try:
+            with log_path.open("a", encoding="utf-8") as log:
+                log.write(f"\n{entry['error']}\n")
+        except OSError as error:
+            entry["log_error"] = str(error)
+
+    def _diagnostic_text(self, text: str) -> str:
+        # Console excerpts are not raw logs. Remove terminal controls and known sensitive
+        # environment values without printing the environment or altering retained evidence.
+        text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
+        text = re.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", text)
+        sensitive = r"token|password|passwd|secret|credential|authorization|(?:api|access|private)[_-]?key"
+        for key, value in sorted(self.env.items(), key=lambda item: len(item[1]), reverse=True):
+            if value and re.search(sensitive, key, re.IGNORECASE):
+                text = text.replace(value, "[redacted]")
+        text = re.sub(r"(?im)(\b[\w-]*(?:" + sensitive + r")[\w-]*\s*[:=]\s*)[^\n]+",
+                      r"\1[redacted]", text)
+        text = re.sub(r"(?i)(--[\w-]*(?:" + sensitive + r")[\w-]*\s+)(?:'[^']*'|\"[^\"]*\"|\S+)",
+                      r"\1[redacted]", text)
+        return text
+
+    def _print_failure_details(self) -> None:
+        """Present the settled result; diagnostics never confer qualification or execute retries."""
+        status = self.summary.get("status")
+        if status not in {"failed", "interrupted", "stale", "incomplete"}:
+            return
+        executed = [s for s in self.summary["steps"] if s["status"] != "not_run"]
+        step = next((s for s in executed if s["status"] in {"failed", "interrupted"}),
+                    executed[-1] if executed else None)
+        category = "preflight refusal"
+        excerpt = ""
+        log_note = "log unavailable; see summary"
+        if step:
+            if step["log"]:
+                path = self.root / step["log"]
+                log_note = str(path)
+                try:
+                    with path.open("rb") as log:
+                        log.seek(0, os.SEEK_END)
+                        log.seek(max(0, log.tell() - 65536))
+                        tail = log.read(65536).decode("utf-8", errors="replace")
+                    lines = self._diagnostic_text(tail).splitlines()
+                    marker = r"^\s*(?:error(?:\[|:)|thread .*panicked at|---- .* stdout ----|FAIL:|ERROR:|Traceback \()"
+                    start = next((i for i, line in enumerate(lines) if re.search(marker, line)), None)
+                    if start is not None:
+                        excerpt = "\n".join(line[:240] for line in lines[start:start + 20])[:4000]
+                except OSError:
+                    log_note += " (unreadable; failure retained in summary)"
+            error = str(step.get("error") or "")
+            category = ("interrupted" if step["status"] == "interrupted" else
+                        "no passing tests" if "no passing tests" in error else
+                        "missing executable" if "required executable not found" in error else
+                        "log I/O failure" if "log I/O failure" in error else
+                        "compiler failure" if re.search(r"error\[E\d+\]|error:.*could not compile|--> .*:\d+:\d+", excerpt) else
+                        "test failure" if re.search(r"panicked at|stdout ----|FAIL:|ERROR:|Traceback", excerpt) else
+                        "command failure")
+        result = "stale (source changed; prior results do not qualify)" if status == "stale" else status
+        details = [f"local ci diagnostic: {result}", f"profile: {self.mode}",
+                   f"step: {step['step_id'] if step else 'not started'} ({category})",
+                   f"summary: {self.summary_path}", f"log: {log_note}"]
+        if step:
+            command = self._diagnostic_text(shlex.join(step["argv"]))
+            truncated = len(command) > 2000
+            if truncated:
+                command = command[:2000] + " ... [truncated; exact argv retained in summary]"
+            details.extend((f"command: {command}", f"cwd: {self.root}"))
+            if step.get("error"):
+                details.append(self._diagnostic_text(str(step["error"]))[:2000])
+            if excerpt:
+                details.extend(("failure excerpt (at most 20 lines / 4000 characters from last 64 KiB):", excerpt))
+            else:
+                details.append("no recognized compiler/test excerpt; inspect the retained log")
+            rerun = "use the exact argv retained in the summary" if truncated else command
+            details.append(f"rerun (diagnostic only; partial, not merge qualification): {rerun}")
+        else:
+            details.extend(self._diagnostic_text(str(value))[:2000]
+                           for key, value in self.summary.items() if key.endswith("_error"))
+        if status == "stale":
+            details.append("freeze the intended candidate and rerun its required plan before qualification")
+        print(self._diagnostic_text("\n".join(details)), flush=True)
 
     def run(self) -> int:
         self.output_dir.mkdir(parents=True, exist_ok=False)
@@ -1770,6 +1859,10 @@ class LocalCiRunner:
                 # the caller's process-wide signal handlers.
                 for signum, handler in previous_handlers.items():
                     signal.signal(signum, handler)
+        try:
+            self._print_failure_details()
+        except (OSError, ValueError):
+            pass  # Console failure must not replace the recorded result or cleanup.
         return int(self.summary["exit_code"] if self.summary["exit_code"] is not None else 2)
 
 

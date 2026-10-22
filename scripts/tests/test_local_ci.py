@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.util
+from contextlib import redirect_stdout
+import io
 import ast
 import hashlib
 import json
@@ -429,6 +431,88 @@ class LocalCiRunnerTests(unittest.TestCase):
         self.assertGreater(summary["steps"][0]["duration_seconds"], 0)
         self.assertIn("not-installed", (self.repo / summary["steps"][0]["log"]).read_text())
         self.assertIn("required executable not found", summary["steps"][0]["error"])
+
+    def test_failure_details_show_bounded_compiler_and_assertion_context(self):
+        for kind, detail, expected in (
+            ("compiler", "error[E0425]: cannot find value `missing` in this scope\n --> src/problem.rs:3:5\n  |\n3 |     missing;\n  |     ^^^^^^^ not found", "compiler failure"),
+            ("assertion", "thread 'tests::literal_pcm' panicked at src/problem.rs:3:5:\nassertion `left == right` failed\n  left: 0.1875\n right: 0.125", "test failure"),
+        ):
+            with self.subTest(kind=kind):
+                content = ("irrelevant setup\n" * 100 + "\x1b[31m" + detail + "\x1b[0m\nAPI_TOKEN=must-not-display\n"
+                           + "api_key=unconfigured-sensitive-value\n"
+                           + "x" * 10000 + "\n" + "noise\n" * 100)
+                runner = self.runner(kind, env={**self.env, "PRIVATE_TOKEN": "must-not-display"},
+                    steps=(local_ci.Step(kind, (sys.executable, "-c", "import sys; print(" + repr(content) + "); sys.exit(7)")),))
+                console = io.StringIO()
+                with redirect_stdout(console):
+                    self.assertEqual(runner.run(), 1)
+                output = console.getvalue()
+                self.assertIn(expected, output)
+                self.assertIn("src/problem.rs:3:5", output)
+                self.assertIn(str(runner.output_dir / f"01-{kind}.log"), output)
+                self.assertIn("profile: full", output)
+                self.assertIn("command:", output)
+                self.assertIn("diagnostic only; partial", output)
+                self.assertIn("exact argv retained in summary", output)
+                self.assertNotIn("must-not-display", output)
+                self.assertNotIn("unconfigured-sensitive-value", output)
+                self.assertNotIn("\x1b", output)
+                self.assertLess(len(output), 12000)
+                raw = (self.repo / self.summary(kind)["steps"][0]["log"]).read_text()
+                self.assertIn(detail, raw)
+                self.assertIn("must-not-display", raw)
+
+    def test_console_diagnostic_failure_does_not_replace_recorded_result(self):
+        runner = self.runner("broken-console", env={**self.env, "FAIL_MATCH": "bad"},
+                             steps=(local_ci.Step("bad", ("bad",)),))
+        with patch.object(runner, "_print_failure_details", side_effect=BrokenPipeError("closed console")):
+            self.assertEqual(runner.run(), 1)
+        self.assertEqual(self.summary("broken-console")["status"], "failed")
+
+    def test_failure_details_cover_zero_match_missing_tool_interrupt_and_stale(self):
+        cases = (
+            ("empty-tests", (sys.executable, "-c", "print('test result: ok. 0 passed;')"), {}, True, 1, "no passing tests"),
+            ("missing-tool", ("not-installed",), {}, False, 1, "missing executable"),
+            ("interrupted-detail", ("first",), {"INTERRUPT_ON": "1"}, False, 130, "interrupted"),
+            ("stale-detail", ("first",), {"MUTATE_FILE": str(self.repo / "source.rs"), "FAKE_FILE_LIST": "source.rs"}, False, 3, "source changed"),
+        )
+        for name, argv, env, tests, code, category in cases:
+            with self.subTest(name=name):
+                (self.repo / "source.rs").write_text("original\n")
+                runner = self.runner(name, env={**self.env, **env}, steps=(local_ci.Step(name, argv, requires_tests=tests),))
+                console = io.StringIO()
+                with redirect_stdout(console):
+                    self.assertEqual(runner.run(), code)
+                output = console.getvalue()
+                self.assertIn(category, output)
+                self.assertIn(str(runner.summary_path), output)
+                self.assertIn(str(runner.output_dir / f"01-{name}.log"), output)
+                self.assertIn("diagnostic only; partial", output)
+
+    def test_log_io_failure_retains_failure_summary_and_diagnostic_fallback(self):
+        for operation in ("open", "read"):
+            with self.subTest(operation=operation):
+                runner = self.runner("log-" + operation, steps=(local_ci.Step("first", ("first",)),))
+                log = runner.output_dir / "01-first.log"
+                original_open = Path.open
+                original_read = Path.read_text
+                def open_path(path, *args, **kwargs):
+                    if operation == "open" and path == log:
+                        raise PermissionError("fixture log unwritable")
+                    return original_open(path, *args, **kwargs)
+                def read_path(path, *args, **kwargs):
+                    if operation == "read" and path == log:
+                        raise PermissionError("fixture log unreadable")
+                    return original_read(path, *args, **kwargs)
+                console = io.StringIO()
+                with patch.object(Path, "open", open_path), patch.object(Path, "read_text", read_path), redirect_stdout(console):
+                    self.assertEqual(runner.run(), 1)
+                output = console.getvalue()
+                self.assertIn("log I/O failure", output)
+                self.assertIn(str(log), output)
+                self.assertEqual(self.summary("log-" + operation)["steps"][0]["status"], "failed")
+                if operation == "read":
+                    self.assertIn("completed first", log.read_text())
 
     def test_invalid_step_ids_refuse_entire_plan_and_restore_resources(self) -> None:
         handlers = {sig: local_ci.signal.getsignal(sig)
