@@ -338,6 +338,9 @@ fn marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement(
         };
         visual.run_until_parked();
         editor.read_with(&visual, |v, _| assert!(v.midi_ruler.gesture.is_none()));
+        if matches!(cancel, 0 | 1 | 3) {
+            assert_marker(&mut visual, 0.0);
+        }
         visual.simulate_mouse_up(up, MouseButton::Left, Modifiers::default());
         pump(&editor, &mut visual);
         editor.read_with(&visual, |v, _| {
@@ -374,18 +377,26 @@ fn marker_cancels_on_escape_focus_viewport_competing_ack_and_clip_retirement(
 #[gpui::test]
 fn stale_rendered_generation_cannot_capture_a_start_marker(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, _clip) = fixture(cx);
-    let bounds = visual.debug_bounds("midi-source-ruler").unwrap();
-    editor.update(&mut visual, |v, _| {
-        let b = CanvasBounds {
-            x: f32::from(bounds.origin.x) + 1.0,
-            y: f32::from(bounds.origin.y) + 1.0,
-            width: f32::from(bounds.size.width) - 2.0,
-            height: f32::from(bounds.size.height) - 2.0,
-        };
-        let rendered = v.midi_ruler_context(b).unwrap();
-        v.project_generation += 1;
-        assert!(!v.begin_midi_start(rendered, b.x));
-        assert!(v.midi_ruler.gesture.is_none());
-        assert!(!v.edit_pending());
+    let down = marker_at(&mut visual, 0.0);
+    // Dispatch against the completed frame and inspect before repaint can retire
+    // the context. A later clean frame alone cannot prove input admission.
+    visual.update(|window, cx| {
+        editor.update(cx, |v, _| v.project_generation += 1);
+        window.dispatch_input(
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                position: down,
+                button: MouseButton::Left,
+                click_count: 1,
+                modifiers: Modifiers::default(),
+                first_mouse: false,
+            }),
+            cx,
+        );
+        assert!(
+            editor.read(cx).midi_ruler.gesture.is_none(),
+            "old rendered marker cannot capture a new generation"
+        );
+        assert!(!editor.read(cx).edit_pending());
     });
+    visual.run_until_parked();
 }
