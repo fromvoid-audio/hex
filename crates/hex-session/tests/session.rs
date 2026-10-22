@@ -366,7 +366,14 @@ fn split_preserves_trimmed_one_shot_render_order_across_blocks_and_persistence()
             .import(prepare(&directory, "split.wav", 48_000, &source))
             .expect("import source"),
     );
-    let track = session.project().tracks()[0].id();
+    let Created::Track(other_track) = session
+        .command(Command::AddTrack {
+            name: "independent audio".into(),
+        })
+        .expect("other track")
+    else {
+        panic!("other track")
+    };
     session
         .command(Command::TrimClip {
             clip: original,
@@ -378,7 +385,7 @@ fn split_preserves_trimmed_one_shot_render_order_across_blocks_and_persistence()
         .expect("trim one-shot");
     session
         .command(Command::PlaceClip {
-            track,
+            track: other_track,
             asset,
             start: 5,
             duration: 8,
@@ -386,7 +393,7 @@ fn split_preserves_trimmed_one_shot_render_order_across_blocks_and_persistence()
             source_length: 8,
             looping: false,
         })
-        .expect("place overlapping clip");
+        .expect("place independent concurrent clip");
     let before = session.project().clone();
     let baseline = session.compile().expect("compile baseline");
 

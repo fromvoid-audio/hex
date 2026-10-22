@@ -6,7 +6,7 @@ use hex_project::{
 };
 const Q: u64 = 1 << 32;
 
-fn review_overlap_fixture() -> (Editor, ClipId, ClipId, ClipId) {
+fn review_adjacent_fixture() -> (Editor, ClipId, ClipId, ClipId) {
     let (mut editor, clip) = frame_fixture(AudioViewMode::Repeat);
     let track = editor.project().tracks()[0].id();
     let asset = editor.project().clip(clip).unwrap().asset();
@@ -14,8 +14,8 @@ fn review_overlap_fixture() -> (Editor, ClipId, ClipId, ClipId) {
         .execute(Command::PlaceClip {
             track,
             asset,
-            start: 12_000,
-            duration: 60_000,
+            start: 48_000,
+            duration: 24_000,
             source_offset: 2_000,
             source_length: 120_000,
             looping: false,
@@ -27,21 +27,21 @@ fn review_overlap_fixture() -> (Editor, ClipId, ClipId, ClipId) {
     let Created::Clip(midi) = editor
         .execute(Command::PlaceMidiClip {
             track,
-            start: beat(Q / 2),
-            length: beat(5 * Q / 2),
+            start: beat(3 * Q),
+            length: beat(Q),
         })
         .unwrap()
     else {
         panic!("midi")
     };
-    // Current-format load accepts these existing same-track overlaps.
+    // Current-format load preserves the adjacent hybrid placements.
     let loaded = Project::from_snapshot(editor.project().snapshot()).unwrap();
     (Editor::new(loaded, 8).unwrap(), clip, audio, midi)
 }
 
 #[test]
-fn review_outer_noop_preserves_existing_overlap_ids_and_redo() {
-    let (mut editor, clip, _, _) = review_overlap_fixture();
+fn review_outer_noop_preserves_adjacent_ids_and_redo() {
+    let (mut editor, clip, _, _) = review_adjacent_fixture();
     editor
         .execute(Command::SetAudioClipGain { clip, millidb: 100 })
         .unwrap();
@@ -65,8 +65,8 @@ fn review_outer_noop_preserves_existing_overlap_ids_and_redo() {
 }
 
 #[test]
-fn review_outer_shrink_preserves_existing_audio_midi_overlap_and_one_history_step() {
-    let (mut editor, clip, audio, midi) = review_overlap_fixture();
+fn review_outer_shrink_preserves_adjacent_audio_midi_and_one_history_step() {
+    let (mut editor, clip, audio, midi) = review_adjacent_fixture();
     let before = editor.project().snapshot();
     let old_audio = editor.project().clip(audio).unwrap().clone();
     let old_midi = editor.project().midi_clip(midi).unwrap().clone();
@@ -92,7 +92,7 @@ fn review_outer_shrink_preserves_existing_audio_midi_overlap_and_one_history_ste
 
 #[test]
 fn review_outer_growth_cuts_only_new_tail_and_prepare_refusal_is_atomic() {
-    let (mut editor, clip, audio, midi) = review_overlap_fixture();
+    let (mut editor, clip, audio, midi) = review_adjacent_fixture();
     let before = editor.project().snapshot();
     let command = Command::ResizeAudioClipView {
         clip,
@@ -101,21 +101,21 @@ fn review_outer_growth_cuts_only_new_tail_and_prepare_refusal_is_atomic() {
         },
     };
     let check = |candidate: &Project| {
-        let left = candidate.clip(audio).unwrap();
-        assert_eq!(
-            (left.start(), left.duration(), left.source_offset()),
-            (12_000, 36_000, 2_000)
-        );
-        let left = candidate.midi_clip(midi).unwrap();
-        assert_eq!(left.start(), beat(Q / 2));
+        assert!(candidate.clip(audio).is_none());
+        let retained = candidate.midi_clip(midi).unwrap();
         assert_eq!(
             candidate
                 .tempo_map()
-                .beat_to_frame(beat(
-                    left.start().raw().checked_add(left.length().raw()).unwrap()
-                ))
+                .beat_to_frame(retained.start())
                 .unwrap(),
-            48_000
+            84_000
+        );
+        assert_eq!(
+            candidate
+                .tempo_map()
+                .beat_to_frame(beat(retained.start().raw() + retained.length().raw()))
+                .unwrap(),
+            96_000
         );
         assert_eq!(candidate.snapshot().next_id, before.next_id);
     };

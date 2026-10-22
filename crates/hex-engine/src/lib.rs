@@ -3233,3 +3233,7 @@ pub use session_playback::{
 
 #[cfg(test)]
 mod main_chain_review_tests;
+
+#[cfg(test)]
+#[path = "../tests/support/routed_midi_fixture.rs"]
+mod routed_midi_fixture;

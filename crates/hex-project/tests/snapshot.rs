@@ -56,7 +56,7 @@ fn valid_snapshot() -> Snapshot {
                         gain: hex_project::ClipGain::UNITY,
                         id: 40,
                         asset: 10,
-                        start: 128,
+                        start: 1_024,
                         duration: 80,
                         source_offset: 64,
                         source_length: 32,

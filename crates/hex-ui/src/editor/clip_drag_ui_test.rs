@@ -2638,6 +2638,9 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
         },
         &mut visual,
     );
+    if midi[0] {
+        edit(Command::RemoveClip(audio), &mut visual);
+    }
     let mut clips = Vec::new();
     for (index, is_midi) in midi.iter().copied().enumerate() {
         let clip = if is_midi {
@@ -2694,9 +2697,6 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
             })
         };
         clips.push(clip);
-    }
-    if midi[0] {
-        edit(Command::RemoveClip(audio), &mut visual);
     }
     for (i, clip) in clips.iter().enumerate() {
         let header = visual

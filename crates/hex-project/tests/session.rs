@@ -703,7 +703,7 @@ fn arrangement_to_session_copy_respects_combined_clip_limit_atomically() {
             gain: hex_project::ClipGain::UNITY,
             id,
             asset: asset.value(),
-            start: 0,
+            start: id,
             duration: 1,
             source_offset: 0,
             source_length: 1,
