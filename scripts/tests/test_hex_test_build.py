@@ -731,7 +731,7 @@ class DeliveryTests(unittest.TestCase):
         impact = delivery.ci.ci_plan.python_tests
         selected = impact.select("merge", ["crates/hex-engine/src/lib.rs"],
             [{"name": "hex-engine", "manifest": "crates/hex-engine/Cargo.toml"}],
-            delivery.ci.ci_plan.UI_PACKAGES, sorted(impact.REVIEWED_MODULES))
+            delivery.ci.ci_plan.UI_PACKAGES, sorted(impact.REVIEWED_MODULES), env={})
         plan = {"scope": "full", "profile": "merge", "qualifies_merge": True,
                 "source": tree["commit"], "base": "base", "python_tests": selected}
         dependencies = {"fixture": "same guarded inputs"}
