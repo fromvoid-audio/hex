@@ -1,6 +1,5 @@
-#[path = "../../tests/support/routed_midi_fixture.rs"]
-mod routed_midi_fixture;
 use super::*;
+use crate::routed_midi_fixture;
 mod authored_history;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;

@@ -1,7 +1,6 @@
 //! Original delayed processors enter through the normal registry/compiler seam.
-#[path = "../../tests/support/routed_midi_fixture.rs"]
-mod routed_midi_fixture;
 use super::*;
+use crate::routed_midi_fixture;
 use crate::{
     Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, SineTable,
 };
