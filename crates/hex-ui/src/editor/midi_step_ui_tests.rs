@@ -274,3 +274,40 @@ fn clip_view_change_only_cancels_held_keys_when_step_mode_owns_them(cx: &mut Tes
         });
     }
 }
+
+#[gpui::test]
+fn active_tuning_gesture_cannot_queue_a_step_behind_an_implicit_commit(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, _) = fixture(cx);
+    visual.simulate_keystrokes("m");
+    let button = visual.debug_bounds(STEP).unwrap();
+    visual.simulate_click(button.center(), Modifiers::default());
+    editor.update(&mut visual, |v, _| {
+        let original = v.state.as_ref().unwrap().project.tuning();
+        v.tuning
+            .client
+            .begin(v.project_generation, original)
+            .unwrap();
+    });
+    visual.simulate_keystrokes("right");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(
+            v.midi_marker,
+            Some(0),
+            "tuning must quiesce before any step, including a rest"
+        );
+        assert!(v.last_enqueued_edit.is_none());
+        assert!(v.tuning.client.snapshot().is_some());
+    });
+    visual.simulate_event(KeyDownEvent {
+        keystroke: Keystroke::parse("a").unwrap(),
+        is_held: false,
+    });
+    visual.simulate_keystrokes("right");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.midi_marker, Some(0));
+        assert!(
+            v.last_enqueued_edit.is_none(),
+            "held notes must not queue behind a tuning commit"
+        );
+    });
+}

@@ -26,7 +26,13 @@ impl StepEntry {
 }
 impl EditorView {
     pub(super) fn enter_midi_step(&mut self) {
-        if !self.midi_step.enabled || self.edit_pending() || self.midi_step.pending.is_some() {
+        if !self.midi_step.enabled
+            || self.edit_pending()
+            || self.midi_step.pending.is_some()
+            || self.tuning.client.snapshot().is_some()
+            || self.tuning.client.has_pending_requests()
+            || self.tuning.client.is_recovery_pending()
+        {
             return;
         }
         let Some(clip) = self.detail_midi_clip_data() else {
