@@ -1,6 +1,7 @@
 //! Same-source/pitch authoring: later input wins, retaining only an older left prefix.
 //! Channels remain musical data, not separate collision lanes. The bounded union
-//! of authored intervals gives O((existing + authored) log authored) work. All
+//! of authored intervals and stable-ID indexing use bounded
+//! O((existing + authored) log(existing + authored)) work. All
 //! selected originals are excluded together. Authors then run in input order;
 //! an erased author's earlier destructive cuts do not resurrect old right tails.
 use crate::{BeatTime, Invalid, MAX_NOTES, MidiNote, MidiNoteInsert, MidiSource, NoteId, Project};
@@ -97,7 +98,8 @@ pub enum MidiNoteOverwriteChange {
 /// priority order; later authored notes win. All removed originals are excluded
 /// together, so selected members cannot collide with their old positions.
 /// Bind a preview to its actual source/revision and discard it when that changes.
-/// This query checks numeric geometry, not source extent, capacity or admission;
+/// This query checks numeric/batch bounds, not source extent, final project
+/// capacity or playback admission;
 /// the explicit source-extent command and strict edit commands retain their rules.
 pub struct MidiNoteOverwritePreview {
     pub(crate) retained: Vec<Option<BeatTime>>,
