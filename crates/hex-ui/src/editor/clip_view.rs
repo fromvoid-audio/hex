@@ -175,6 +175,7 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> Div {
         self.reconcile_piano_pan();
+        self.reconcile_midi_ruler();
         let open = self.clip_view_open;
         let selected_midi = self.state.as_ref().is_some_and(|state| {
             self.detail_clip_id()
