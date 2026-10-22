@@ -2770,6 +2770,10 @@ fn assert_move_handoff(cx: &mut TestAppContext, midi: &[bool], vertical: bool) {
     for _ in 0..2 {
         editor.update(&mut visual, |_, cx| cx.notify());
         visual.run_until_parked();
+        assert!(
+            visual.debug_bounds("clip-drop-overlap-0").is_none(),
+            "release retires hover feedback independently of destination paint"
+        );
         for (preview, bounds, fill, title, title_fill) in &previews {
             assert_eq!(
                 visual.debug_bounds(preview),

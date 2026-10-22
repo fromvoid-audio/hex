@@ -672,7 +672,7 @@ impl EditorView {
                     }
                     clip_area = clip_area.children([overlay]);
                 }
-                if !overlap_events.is_empty() {
+                if self.active_clip_drag.is_some() && !overlap_events.is_empty() {
                     // Captured member IDs are sorted by the existing selection
                     // owner. Originals are protected in BOTH copy/move modes.
                     let occupied = track
@@ -820,6 +820,7 @@ impl EditorView {
                 for (index, (start, end)) in
                     drop_overlap_spans(state, track, (visible_start, visible_end), excluded_clip)
                         .into_iter()
+                        .filter(|_| clip_preview.is_none() || self.active_clip_drag.is_some())
                         .enumerate()
                 {
                     clip_area = clip_area.child(
