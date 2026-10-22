@@ -413,14 +413,14 @@ fn legacy_seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_hist
         panic!("expected clip")
     };
     graph = next;
-    for _ in 0..16 {
+    for index in 0..16 {
         (_, graph) = session
             .command_prepared_revision(
                 Command::AddMidiNote {
                     clip,
                     start: hex_project::BeatTime::ZERO,
                     duration: hex_project::BeatTime::from_quarters(2).expect("note duration"),
-                    pitch: 60,
+                    pitch: 60 + index,
                     channel: 0,
                     velocity: 100,
                 },
@@ -437,7 +437,7 @@ fn legacy_seventeenth_overlapping_feedback_voice_refuses_canonical_edit_and_hist
                     clip,
                     start: hex_project::BeatTime::ZERO,
                     duration: hex_project::BeatTime::from_quarters(2).expect("note duration"),
-                    pitch: 60,
+                    pitch: 76,
                     channel: 0,
                     velocity: 100,
                 },

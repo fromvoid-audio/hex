@@ -28,6 +28,8 @@ mod clip_content_cache;
 mod clip_drag_ui_test;
 mod clip_name;
 mod clip_selection;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod project_recovery_ui_test;
 mod workspace_view;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod workspace_view_ui_test;
@@ -79,14 +81,17 @@ mod loop_region;
 mod loop_selection_ui_test;
 mod menus;
 mod midi;
+mod midi_audition;
 mod midi_canvas;
 mod midi_creation;
 mod midi_drag;
 mod midi_draw;
 mod midi_group_drag;
+mod midi_note_overwrite;
 mod midi_scene;
 mod midi_selection;
 mod midi_source_controls;
+mod midi_step;
 mod midi_stroke;
 mod midi_thumbnail;
 mod mixer;
@@ -650,10 +655,16 @@ pub(super) struct EditorView {
     pub(in crate::editor) midi_stroke: Option<midi_stroke::MidiStroke>,
     pub(in crate::editor) midi_draw_mode: bool,
     pub(in crate::editor) midi_draw_pitch_locked: bool,
+    /// Source-relative insertion beat; reset with the existing piano_view_clip owner.
+    /// Pure view state: never transport position or a canonical project edit.
     pub(in crate::editor) midi_marker: Option<u64>,
-    pub(in crate::editor) midi_marquee: Option<([f32; 2], [f32; 2], bool)>,
+    midi_step: midi_step::StepEntry,
+    midi_audition: midi_audition::MidiAudition,
+    pub(in crate::editor) midi_marquee: Option<midi_selection::Marquee>,
     pub(in crate::editor) midi_scene_cache: midi_scene::MidiSceneCache,
     pub(in crate::editor) midi_hit_cycle: Option<midi_scene::HitCycle>,
+    // Only suppresses redundant pointer invalidations; paint resolves current geometry.
+    pub(in crate::editor) midi_hover: Option<midi_scene::NoteHover>,
     piano_view_clip: Option<(u64, ClipId)>,
     piano_zoom_wheel_accum: f32,
     pub(in crate::editor) piano_beat_start: hex_project::BeatTime,
@@ -717,6 +728,8 @@ pub(super) struct EditorView {
     preset_dialog_open: bool,
     status: String,
     pub(in crate::editor) error: Option<display_error::DisplayError>,
+    recovery_failure: Option<Arc<hex_session::service::RecoveryFailure>>,
+    recovery_prompt_open: bool,
     computer_keyboard: computer_keyboard::ComputerKeyboard,
     controller_input: controller_input::ControllerInput,
     _computer_keyboard_keys: gpui::Subscription,
@@ -1127,6 +1140,7 @@ impl EditorView {
             }
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
+            view.midi_step.cancel_pending();
             if view.cancel_loop_rail_gesture() {
                 cx.defer_in(window, |_, _, cx| cx.notify());
             }
@@ -1143,6 +1157,7 @@ impl EditorView {
         let focus_blur = cx.on_blur(&midi_focus, window, |view, _, cx| {
             view.cancel_computer_keyboard();
             view.computer_keyboard.suspended = true;
+            view.midi_step.cancel_pending();
             let midi_cancelled = view.cancel_midi_note_gesture();
             if midi_cancelled {
                 cx.notify();
@@ -1160,6 +1175,7 @@ impl EditorView {
                 view.cancel_track_resize(cx);
                 view.cancel_computer_keyboard();
                 view.computer_keyboard.suspended = true;
+                view.midi_step.cancel_pending();
                 view.audio_event_editor.gesture = None;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
@@ -1243,9 +1259,12 @@ impl EditorView {
             midi_draw_mode: false,
             midi_draw_pitch_locked: true,
             midi_marker: None,
+            midi_step: midi_step::StepEntry::default(),
+            midi_audition: midi_audition::MidiAudition::default(),
             midi_marquee: None,
             midi_scene_cache: midi_scene::MidiSceneCache::default(),
             midi_hit_cycle: None,
+            midi_hover: None,
             piano_view_clip: None,
             piano_zoom_wheel_accum: 0.0,
             piano_beat_start: hex_project::BeatTime::ZERO,
@@ -1309,6 +1328,8 @@ impl EditorView {
             preset_dialog_open: false,
             status,
             error: None,
+            recovery_failure: None,
+            recovery_prompt_open: false,
             computer_keyboard: computer_keyboard::ComputerKeyboard::default(),
             controller_input: controller_input::ControllerInput::default(),
             _computer_keyboard_keys: computer_keyboard_keys,
