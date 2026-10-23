@@ -60,6 +60,72 @@ pub(crate) fn original_instance_for_binding(binding: Binding) -> hex_plugin_host
 
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_native_worker_retirement_preserves_failure_and_requires_observed_reap() {
+    for cancelled in 0..3 {
+        let instance = original_instance();
+        let cancel = instance.cancellation_on_control();
+        let (mut worker, mut callback) = NativeWorker::start_on_control(instance).unwrap();
+        if cancelled == 0 {
+            for block in 0..4 {
+                callback
+                    .stage(&[[0.25; 2]; 8], &[], &mut [[0.0; 2]; 8])
+                    .unwrap();
+                callback.finish(true).unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                while worker.published_blocks_on_control() < block + 1 {
+                    assert!(std::time::Instant::now() < deadline);
+                    thread::yield_now();
+                }
+            }
+        } else {
+            cancel.cancel_on_control();
+            if cancelled == 2 {
+                // Exercise an actual worker-side native error as well as
+                // cancellation observed only by the joining stop operation.
+                callback
+                    .stage(&[[0.25; 2]; 8], &[], &mut [[0.0; 2]; 8])
+                    .unwrap();
+                callback.finish(true).unwrap();
+                let deadline = std::time::Instant::now() + Duration::from_secs(3);
+                while !worker.reaper.is_finished() {
+                    assert!(std::time::Instant::now() < deadline);
+                    thread::yield_now();
+                }
+            }
+        }
+        let retired = worker.retire_on_control().unwrap();
+        if cancelled == 0 {
+            assert!(retired.failure.is_none());
+            assert!(retired.native.status.success());
+            let terminal = retired.native.terminal.unwrap();
+            assert_eq!((terminal.blocks, terminal.frames), (4, 32));
+            assert!(terminal.closed && terminal.unloaded);
+        } else {
+            assert!(matches!(
+                retired.failure,
+                Some(hex_plugin_host::Error::Cancelled)
+            ));
+            assert!(retired.native.terminal.is_none());
+            assert_eq!(worker.published_blocks_on_control(), 0);
+        }
+        assert!(worker.retire_on_control().is_err());
+        assert!(worker.quiesce_on_control().is_err());
+        assert!(
+            callback
+                .stage(&[[1.0; 2]; 8], &[], &mut [[0.0; 2]; 8])
+                .is_err(),
+            "actual native retirement never grants another renderable endpoint"
+        );
+        // This still-live callback carrier has not returned merely because
+        // native retirement completed. Its matching worker retains the queues.
+        assert!(worker.owns_callback(&callback));
+        drop(callback);
+        drop(worker);
+    }
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_native_worker_returns_same_instance_for_fresh_epoch() {
     let mut instance = original_instance();
     let presentation = hex_plugin_host::protocol::PresentationLatency {

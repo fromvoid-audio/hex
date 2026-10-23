@@ -169,6 +169,16 @@ pub struct NativeWorker {
     reaper: Reaper,
     binding: Binding,
     quantum: u16,
+    retirement_requested: bool,
+}
+/// Actual native process retirement after joining its transport worker. A
+/// processing/stop failure remains explicit even when cancellation reaps the
+/// child. This is not callback-carrier return or Root/publication disposal.
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+#[derive(Debug)]
+pub struct NativeWorkerRetirement {
+    pub native: hex_plugin_host::native::Retirement,
+    pub failure: Option<hex_plugin_host::Error>,
 }
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 impl NativeWorker {
@@ -191,6 +201,7 @@ impl NativeWorker {
                 reaper,
                 binding,
                 quantum,
+                retirement_requested: false,
             },
             callback,
         ))
@@ -218,6 +229,11 @@ impl NativeWorker {
     pub fn quiesce_on_control(
         &mut self,
     ) -> Result<hex_plugin_host::native::Quiescent, hex_plugin_host::Error> {
+        if self.retirement_requested {
+            return Err(hex_plugin_host::Error::Protocol(
+                "native worker retirement is terminal",
+            ));
+        }
         let joined = self.reaper.join_on_control();
         let state = self
             .reaper
@@ -250,6 +266,52 @@ impl NativeWorker {
                 Err(hex_plugin_host::Error::Protocol(
                     "native worker already returned its source",
                 ))
+            }
+        }
+    }
+
+    /// Join and retire this exact native source without returning a reusable
+    /// lease. Normal completion requires the SDK terminal; processing/stop
+    /// failure cancels and observes this same child's actual reap. A refusal
+    /// must remain retained as failed custody, never retried or relabelled.
+    /// The caller still retains this worker/rings until its matching callback
+    /// carrier actually returns; this result alone cannot release a Root slot.
+    pub fn retire_on_control(&mut self) -> Result<NativeWorkerRetirement, hex_plugin_host::Error> {
+        use hex_plugin_host::Error;
+        if self.retirement_requested {
+            return Err(Error::Protocol(
+                "native worker retirement already requested",
+            ));
+        }
+        self.retirement_requested = true;
+        let joined = self.reaper.join_on_control();
+        let state = self
+            .reaper
+            .worker
+            .as_mut()
+            .ok_or(Error::Protocol("native worker terminal missing"))?;
+        let mut failure = state
+            .native_error
+            .take()
+            .or_else(|| joined.err().map(|fault| Error::Protocol(fault.message())));
+        let Some(Processor::Native(instance)) = state.processor.as_mut() else {
+            return Err(Error::Protocol("native worker already returned its source"));
+        };
+        if failure.is_none() {
+            match instance.stop_and_reap_on_control() {
+                Ok(native) => return Ok(NativeWorkerRetirement { native, failure }),
+                Err(error) => failure = Some(error),
+            }
+        }
+        match instance.cancel_and_reap_on_control() {
+            Ok(native) => Ok(NativeWorkerRetirement { native, failure }),
+            Err(custody) => {
+                let custody_error = Some(custody.to_string());
+                Err(Error::Preparation {
+                    cause: Box::new(failure.unwrap_or(custody)),
+                    exit: None,
+                    custody_error,
+                })
             }
         }
     }
