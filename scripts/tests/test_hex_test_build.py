@@ -26,6 +26,54 @@ SIGNED = {"identifier": delivery.IDENTITY, "team_identifier": SIGNING["team_iden
 
 
 class DeliveryTests(unittest.TestCase):
+    def test_full_checkpoint_delivery_requires_unchanged_original_report_and_log(self):
+        # Synthetic full-plan certificates exercise the consumer, not app CI.
+        runner = delivery.ci.LocalCiRunner(self.root)
+        tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
+        runner.summary["start_tree"] = tree
+        folder = self.root / "artifacts/local-ci/original"
+        folder.mkdir(parents=True)
+        log = folder / "01-guard.log"
+        log.write_text("guard passed\n")
+        steps = delivery.ci.FULL_STEPS
+        passed = [{"step_id": s.step_id, "argv": list(s.argv), "status": "passed",
+                   "exit_code": 0, "error": None, "test_results": {"python_executions": [1]}}
+                  for s in steps]
+        passed[0]["log"] = str(log.relative_to(self.root))
+        original = {"schema_version": 2, "mode": "full", "status": "failed", "stale": False,
+                    "minimum_free_bytes": 2 * 1024 ** 3,
+                    "exit_code": 2, "commit": tree["commit"], "dirty": False,
+                    "start_tree": tree, "end_tree": tree, "disk_error": "capacity refusal",
+                    "disk_refusal": {"before_step": 1},
+                    "steps": [passed[0], *[{"step_id": s.step_id, "argv": list(s.argv),
+                              "status": "not_run", "log": None, "exit_code": None} for s in steps[1:]]]}
+        target = {"target_identity": {"device": 1, "inode": 2}, "dependency_inputs": {"fixture": True}}
+        checkpoint = delivery.ci.ci_checkpoint
+        original["checkpoint"] = checkpoint.seal(self.root, original, steps, {}, target)
+        source = folder / "summary.json"
+        source.write_text(json.dumps(original))
+        lineage = {"report": str(source), "sha256": checkpoint.file_digest(source),
+                   "passed_count": 1, "logs": original["checkpoint"]["logs"]}
+        complete = {**original, "status": "passed", "exit_code": 0, "resume": lineage,
+                    "target_cache": {"dependency_inputs": target["dependency_inputs"]},
+                    "steps": [*checkpoint.inherited_steps(original, lineage), *passed[1:]]}
+        complete.pop("checkpoint")
+        report = self.root / "completed.json"
+        report.write_text(json.dumps(complete))
+        with patch.object(runner, "_capture_repository_state", return_value=True):
+            delivery.validate_ci(report, runner, tree["commit"])
+            log.write_text("changed\n")
+            with self.assertRaisesRegex(delivery.DeliveryError, "inherited"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            log.write_text("guard passed\n")
+            source.write_text(source.read_text() + "\n")
+            with self.assertRaisesRegex(delivery.DeliveryError, "inherited"):
+                delivery.validate_ci(report, runner, tree["commit"])
+            complete.pop("resume")
+            report.write_text(json.dumps(complete))
+            with self.assertRaisesRegex(delivery.DeliveryError, "lineage"):
+                delivery.validate_ci(report, runner, tree["commit"])
+
     def test_current_review_malformed_ci_report_is_explicit_refusal(self):
         runner = delivery.ci.LocalCiRunner(self.root)
         tree = {"commit": "a" * 40, "dirty": False, "content_sha256": "fixture"}
