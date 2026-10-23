@@ -1902,3 +1902,6 @@ fn derived_pcm_ingress_refusal_keeps_its_actual_reservation_and_buffer() {
     drop(refused);
     assert_eq!(budget.used(), 0);
 }
+
+#[path = "tests/project_tempo.rs"]
+mod project_tempo;

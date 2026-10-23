@@ -18,13 +18,14 @@
 //! preparation must preserve project, IDs and history.
 mod arrangement_occupancy;
 mod audio_events;
+mod project_tempo;
 pub use audio_events::{AudioEvent, AudioEventEdit, AudioEvents, MAX_AUDIO_EVENTS};
 mod audio_edit;
 mod clip_fade_trim;
 mod clip_name;
 pub use audio_edit::{
-    AudioClipDomain, AudioClipEdit, AudioDomainClock, AudioFadeProjection, AudioViewMode,
-    AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
+    AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
+    AudioViewMode, AudioViewOccurrence, AudioViewPlacement, AudioViewProjection, AudioViewResize,
     AudioViewResizeOperation, BeatsPreserve, BeatsTail, MAX_AUDIO_DOMAIN_FRAMES, MAX_AUDIO_POINTS,
     MAX_SOURCE_GAIN, ProjectedAudioFade, SOURCE_GAIN_UNITY, SourceGainPoint, WarpMarker, WarpMode,
     WarpSettings, audio_projection_beat, audio_projection_frame, default_audio_warp,

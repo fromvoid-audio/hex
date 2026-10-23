@@ -335,6 +335,11 @@ pub enum Command {
     MasterGain {
         gain: f32,
     },
+    /// Replace all project tempo points and retain musical clip onsets.
+    /// Unwarped audio keeps its source processing and natural frame duration.
+    SetProjectTempo {
+        tempo: crate::Tempo,
+    },
     SetTempoPoint {
         beat: crate::BeatTime,
         tempo: crate::Tempo,
@@ -1176,6 +1181,10 @@ pub(crate) fn split_clip_at_tempo(
     if cut <= edit.view_start || cut >= edit.view_end {
         return Err(Invalid("split has no positive musical crop"));
     }
+    let reference_start = edit
+        .reference_start_raw()
+        .map(|_| edit.reference_beat_at_destination(original, frame, tempo))
+        .transpose()?;
     let mut left = original.clone();
     let mut right = original.clone();
     left.audio_edit_mut()
@@ -1185,9 +1194,7 @@ pub(crate) fn split_clip_at_tempo(
         .audio_edit_mut()
         .ok_or(Invalid("audio domain missing"))?;
     view.view_start = cut;
-    if view.musical_start.is_some() {
-        view.musical_start = Some(tempo.frame_to_beat(frame)?);
-    }
+    view.set_reference_start_raw(reference_start)?;
     right.id = right_id;
     right.start = frame;
     crate::audio_edit::project_clip(&mut left, tempo)?;
@@ -2010,6 +2017,10 @@ impl Project {
                     return Err(Invalid("master gain must be finite and within 0..2"));
                 }
                 self.master_gain = gain;
+                Ok(Created::None)
+            }
+            Command::SetProjectTempo { tempo } => {
+                self.set_project_tempo(tempo)?;
                 Ok(Created::None)
             }
             Command::SetTempoPoint { beat, tempo } => {

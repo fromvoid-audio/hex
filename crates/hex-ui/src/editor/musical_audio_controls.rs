@@ -130,7 +130,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
     ));
     controls = controls.child(button(
         capture,
-        if edit.is_some_and(|e| e.musical_start.is_some()) {
+        if edit.is_some_and(|e| e.live_musical_start().is_some()) {
             "anchor · beats"
         } else {
             "anchor · frames"

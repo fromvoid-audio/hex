@@ -1,10 +1,10 @@
-//! Current schema35 requires tuning, original/device assets and every MIDI clip-volume row.
+//! Current schema36 requires tuning, original/device assets and every MIDI clip-volume row.
 use super::{Project, StorageError};
 use hex_tuning::{Audition, ProjectTuning, Scale, Waveform};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
-pub(crate) struct DocumentV35<'a> {
+pub(crate) struct DocumentV36<'a> {
     #[serde(flatten)]
     base: super::fade_shapes::DocumentV29<'a>,
     tuning: Tuning,
@@ -131,7 +131,7 @@ impl Tuning {
         ProjectTuning::new(self.enabled, scale, audition).map_err(|e| StorageError::Invalid(e.0))
     }
 }
-impl<'a> DocumentV35<'a> {
+impl<'a> DocumentV36<'a> {
     pub(crate) fn from_project(project: &'a Project) -> Result<Self, StorageError> {
         let base = super::fade_shapes::DocumentV29::for_current_envelope(project)?;
         Ok(Self {
@@ -158,7 +158,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid tuning envelope"))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(35) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(36) {
         return Err(StorageError::Invalid("invalid tuning envelope version"));
     }
     let volumes: super::midi_clip_volume::Manifest =
