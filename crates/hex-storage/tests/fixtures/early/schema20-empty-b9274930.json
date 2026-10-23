@@ -1,0 +1,28 @@
+{
+  "format": "hex-project",
+  "version": 20,
+  "sample_rate": 48000,
+  "next_id": 1,
+  "assets": [],
+  "tracks": [],
+  "return_tracks": [],
+  "loop_region": null,
+  "master_gain": 1.0,
+  "tempo_points": [
+    {
+      "beat_raw": 0,
+      "micro_bpm": 120000000
+    }
+  ],
+  "meter_points": [
+    {
+      "beat_raw": 0,
+      "numerator": 4,
+      "denominator": 4
+    }
+  ],
+  "session": {
+    "scenes": [],
+    "cells": []
+  }
+}

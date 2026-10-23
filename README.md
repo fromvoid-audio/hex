@@ -21,6 +21,8 @@ Normal launch refuses running installed or raw desktop processes. Use
 `./launch --help` for explicit restart and recovery options; never infer permission
 to discard an unsaved project. Launch without `--test` records tests as not run.
 See [native builds](docs/test-builds.md) for qualified user-test delivery.
+Use [`./release beta`](docs/releases.md) for immutable signed/notarized beta,
+nightly and stable distribution packages.
 
 For a specific debugging need:
 
