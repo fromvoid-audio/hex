@@ -740,7 +740,8 @@ impl Project {
     pub fn master_gain(&self) -> f32 {
         self.master_gain
     }
-    /// Canonical piecewise-constant tempo map. Audio clips remain frame-anchored.
+    /// Canonical piecewise-constant tempo map. Global tempo edits preserve
+    /// musical onsets; each audio clip retains its own source-processing clock.
     pub fn tempo_map(&self) -> &TempoMap {
         &self.tempo_map
     }
