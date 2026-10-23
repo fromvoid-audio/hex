@@ -18,10 +18,6 @@ pub struct Configuration {
     pub quantum: u16,
     pub input_channels: u8,
     pub output_channels: u8,
-    /// Real caller-supplied per-direction presentation contributions, never
-    /// a claim that physical or unknown latency has been removed/measured.
-    pub input_presentation_frames: u32,
-    pub output_presentation_frames: u32,
     pub bundle: String,
     pub executable: String,
 }
@@ -59,13 +55,11 @@ impl Configuration {
         out.extend(self.sample_rate.to_le_bytes());
         out.extend(self.quantum.to_le_bytes());
         out.extend([self.input_channels, self.output_channels, 0, 0, 0, 0]); // Float32 + reserved
-        out.extend(self.input_presentation_frames.to_le_bytes());
-        out.extend(self.output_presentation_frames.to_le_bytes());
         for path in [&self.bundle, &self.executable] {
             out.extend((path.len() as u32).to_le_bytes());
             out.extend(path.as_bytes());
         }
-        control(*b"HXVICF01", &out)
+        control(*b"HXVICF02", &out)
     }
     pub fn validate_block(&self, block: &Block, sequence: u64) -> Result<()> {
         self.validate()?;
@@ -91,6 +85,64 @@ impl Configuration {
     }
 }
 
+/// Actual caller-derived per-direction contributions. Absence is represented
+/// by None, never by substituting zero for an unknown device/graph contribution.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PresentationLatency {
+    pub input_frames: u32,
+    pub output_frames: u32,
+}
+pub fn presentation_request(
+    binding: Binding,
+    value: Option<PresentationLatency>,
+) -> Result<Vec<u8>> {
+    let mut out = Vec::with_capacity(43);
+    stamp(&mut out, binding);
+    out.push(u8::from(value.is_some()));
+    if let Some(value) = value {
+        out.extend(value.input_frames.to_le_bytes());
+        out.extend(value.output_frames.to_le_bytes());
+    }
+    control(*b"HXVIPR01", &out)
+}
+/// Raw source-bound preparation facts. No state capture, processing start,
+/// canonical/graph admission or audio application is acknowledged by this type.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Facts {
+    pub algorithmic_latency_frames: u32,
+    pub presentation_available: bool,
+}
+impl Facts {
+    pub fn decode(body: &[u8], config: &Configuration) -> Result<Self> {
+        config.validate()?;
+        let mut r = Reader::new(body);
+        if r.binding()? != config.binding
+            || r.array::<16>()? != config.identity.class.bytes()
+            || r.array::<32>()? != config.identity.binary.executable_sha256
+            || r.array::<32>()? != config.identity.binary.info_sha256
+            || f64::from_le_bytes(r.array()?) != config.sample_rate
+            || u16::from_le_bytes(r.array()?) != config.quantum
+            || r.byte()? != config.input_channels
+            || r.byte()? != config.output_channels
+        {
+            return Err(Error::Protocol(
+                "instance preparation facts differ from selected source/configuration",
+            ));
+        }
+        let algorithmic_latency_frames = u32::from_le_bytes(r.array()?);
+        let presentation_available = match r.byte()? {
+            0 => false,
+            1 => true,
+            _ => return Err(Error::Protocol("invalid presentation interface fact")),
+        };
+        r.end()?;
+        Ok(Self {
+            algorithmic_latency_frames,
+            presentation_available,
+        })
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Presentation {
     Absent,
@@ -105,7 +157,11 @@ pub struct Ready {
     pub presentation: Presentation,
 }
 impl Ready {
-    pub fn decode(body: &[u8], config: &Configuration) -> Result<Self> {
+    pub fn decode(
+        body: &[u8],
+        config: &Configuration,
+        expected: Option<PresentationLatency>,
+    ) -> Result<Self> {
         config.validate()?;
         let mut r = Reader::new(body);
         if r.binding()? != config.binding
@@ -123,6 +179,19 @@ impl Ready {
             1 => Presentation::Applied,
             _ => return Err(Error::Protocol("refused presentation cannot be ready")),
         };
+        let supplied = match r.byte()? {
+            0 => None,
+            1 => Some(PresentationLatency {
+                input_frames: u32::from_le_bytes(r.array()?),
+                output_frames: u32::from_le_bytes(r.array()?),
+            }),
+            _ => return Err(Error::Protocol("invalid presentation acknowledgement")),
+        };
+        if supplied != expected {
+            return Err(Error::Protocol(
+                "presentation acknowledgement differs from the requested contributions",
+            ));
+        }
         let component = match r.byte()? {
             0 => false,
             1 => true,
@@ -186,7 +255,7 @@ impl Terminal {
 }
 
 pub fn control(magic: [u8; 8], body: &[u8]) -> Result<Vec<u8>> {
-    let limit = if &magic == b"HXVICF01" {
+    let limit = if &magic == b"HXVICF02" {
         CONFIG_LIMIT
     } else {
         CONTROL_LIMIT

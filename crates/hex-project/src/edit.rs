@@ -50,6 +50,23 @@ pub enum Command {
         edge: TrimEdge,
         length: crate::BeatTime,
     },
+    /// Resize one edge in place. Crossed time becomes empty; other section
+    /// positions and the remaining song timeline stay fixed. No stretching.
+    ResizeArrangementSectionEdge {
+        section: crate::SectionId,
+        edge: TrimEdge,
+        boundary: crate::BeatTime,
+    },
+    /// Move the seam of two touching sections, preserving their outer span.
+    /// Content mode removes time from the shrinking edge and inserts empty time
+    /// at the growing edge in one history/publication operation. Marker-only mode
+    /// preserves all musical data. Both sections must retain positive lengths.
+    ResizeArrangementSectionBoundary {
+        left: crate::SectionId,
+        right: crate::SectionId,
+        boundary: crate::BeatTime,
+        marker_only: bool,
+    },
     /// Remove the section's entire half-open time interval and close the gap.
     DeleteArrangementSection(crate::SectionId),
     /// Insert a song-wide copy immediately after the source, allocating new IDs.
@@ -1481,6 +1498,8 @@ impl Project {
             | Command::ReorderSectionBefore { .. }
             | Command::ReorderSectionAfter { .. }
             | Command::ResizeArrangementSection { .. }
+            | Command::ResizeArrangementSectionEdge { .. }
+            | Command::ResizeArrangementSectionBoundary { .. }
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
             | Command::MergeArrangementSections(_)) => {
@@ -2653,6 +2672,11 @@ impl Command {
             Self::ReorderSectionBefore { .. }
                 | Self::ReorderSectionAfter { .. }
                 | Self::ResizeArrangementSection { .. }
+                | Self::ResizeArrangementSectionEdge { .. }
+                | Self::ResizeArrangementSectionBoundary {
+                    marker_only: false,
+                    ..
+                }
                 | Self::DeleteArrangementSection(_)
                 | Self::DuplicateArrangementSection(_)
         )

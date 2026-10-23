@@ -498,6 +498,8 @@ impl Command {
             | Self::ReorderSectionBefore { .. }
             | Self::ReorderSectionAfter { .. }
             | Self::ResizeArrangementSection { .. }
+            | Self::ResizeArrangementSectionEdge { .. }
+            | Self::ResizeArrangementSectionBoundary { .. }
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
             | Self::MergeArrangementSections(_)
