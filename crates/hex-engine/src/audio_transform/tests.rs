@@ -670,6 +670,12 @@ fn section_splices_are_exact_pcm_insertions_removals_and_copies_at_unequal_block
         let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
         let baseline = prepare(&seed, &media, &context);
         let source_pcm = render(&baseline, 0, SOURCE_END, 113);
+        assert!(
+            source_pcm[CUT..SECTION_END]
+                .iter()
+                .any(|frame| *frame != [0.0; 2]),
+            "the copied/cut interval must contain audible source PCM"
+        );
         for name in ["grow", "shrink", "delete", "duplicate"] {
             let mut editor = Editor::new(seed.project().clone(), 32).unwrap();
             let Created::ArrangementSection(section) = editor
