@@ -348,6 +348,12 @@ fn selected_lane_palette_and_paint_order_preserve_clip_fill_and_outer_selection_
                 format!("selected-track-lane-{edge}-{}", source.value()).into_boxed_str(),
             );
             let bounds = visual.debug_bounds(selector).unwrap();
+            let edge_layers = visual.rendered_quad_paint_layers(selector, false);
+            assert!(
+                edge_layers.iter().map(|x| x.0).max().unwrap()
+                    < clip_layers.iter().map(|x| x.0).min().unwrap(),
+                "lane accents must remain below all four clip selection strokes"
+            );
             assert!((f32::from(bounds.size.height) * scale - 1.0).abs() < 0.001);
             assert!(
                 bounds.top() >= lane.top() + gpui::px(1.0)

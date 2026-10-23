@@ -514,6 +514,38 @@ impl EditorView {
                 .h(px(1.0))
                 .bg(rgb(theme::color(theme::PaletteRole::Border))),
         );
+        if track_selected {
+            // Paint beneath clip content so every outer selection stroke stays
+            // intact, including where vertical clip edges cross these accents.
+            let edge = gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                .alpha(theme::TRACK_SELECTION_EDGE_OPACITY);
+            let stroke = 1.0 / scale_factor.max(1.0);
+            clip_area = clip_area
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(1.0))
+                        .h(px(stroke))
+                        .debug_selector(move || {
+                            format!("selected-track-lane-top-{}", track_id.value())
+                        })
+                        .bg(edge),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(1.0))
+                        .h(px(stroke))
+                        .debug_selector(move || {
+                            format!("selected-track-lane-bottom-{}", track_id.value())
+                        })
+                        .bg(edge),
+                );
+        }
         clip_area = clip_area.child(content);
         let move_display = self.time_range_move_display();
         let mut move_preview_shape_budget = super::midi_thumbnail::ROW_NOTE_SHAPE_LIMIT;
@@ -905,38 +937,6 @@ impl EditorView {
                         .bg(rgb(theme::color(theme::PaletteRole::Secondary))),
                 );
             }
-        }
-        if track_selected {
-            // Keep the outer clip selection stroke intact. These lane accents
-            // sit one logical pixel inside it, beneath cursor/time overlays.
-            let edge = gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .alpha(theme::TRACK_SELECTION_EDGE_OPACITY);
-            let stroke = 1.0 / scale_factor.max(1.0);
-            clip_area = clip_area
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .top(px(1.0))
-                        .h(px(stroke))
-                        .debug_selector(move || {
-                            format!("selected-track-lane-top-{}", track_id.value())
-                        })
-                        .bg(edge),
-                )
-                .child(
-                    div()
-                        .absolute()
-                        .left_0()
-                        .right_0()
-                        .bottom(px(1.0))
-                        .h(px(stroke))
-                        .debug_selector(move || {
-                            format!("selected-track-lane-bottom-{}", track_id.value())
-                        })
-                        .bg(edge),
-                );
         }
         if self.selected_track == Some(track_id) && self.time_selection.is_some() {
             clip_area = clip_area.child(
