@@ -84,6 +84,7 @@ use **save as…** to keep a separate copy before continuing.
 use the header controls to switch between **arrange view** and **console view**.
 arrange places clips along a time ruler. console provides the clip/scene workspace.
 these views share the project; switching views does not create another document.
+tracks can contain both audio and midi clips under the same mixer controls.
 
 in arrange, select a track or clip before editing it. drag a clip to move it and
 use its edges to adjust its extent. work at a zoom level where the intended edge
@@ -120,7 +121,7 @@ keep source recordings available with the project.
 
 # midi and sampler
 
-press **command+shift+t** to add a midi track. select the intended track and use
+press **command+shift+t** to add a track for notes. select the intended track and use
 **command+shift+m** to create a midi clip. select the clip to edit its notes in the
 piano roll. note position, length and pitch belong to the clip; selecting a device
 is a different operation.
@@ -187,8 +188,8 @@ even when live audio output is unavailable.
 | save / save as | command+s / command+shift+s |
 | play or pause / stop | space / escape |
 | import audio | command+i |
-| add audio track | command+t |
-| add midi track / midi clip | command+shift+t / command+shift+m |
+| add track | command+t |
+| add track for notes / midi clip | command+shift+t / command+shift+m |
 | undo / redo | command+z / command+shift+z |
 | toggle browser / search | command+option+b / command+f |
 | settings | command+, |
