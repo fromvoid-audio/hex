@@ -7,10 +7,12 @@ pub(crate) const LABEL: &str = concat!(
     " · ",
     env!("HEX_BUILD_IDENTITY")
 );
-// Ten-pixel Ioskeley Mono is approximately six pixels per character. Keep the
-// existing compact minimum and reserve the additional space for dated nightlies.
+// Reserve the right edge (8), two control gaps (8), log button (20),
+// changelog button including padding (62), and an eight-pixel title gap.
+// Ten-pixel Ioskeley Mono advances six pixels per character; UTF-8 byte length
+// conservatively bounds that width. Keep the existing compact minimum.
 pub(crate) const HEADER_INSET: f32 = {
-    let width = 84.0 + LABEL.len() as f32 * 6.0;
+    let width = 106.0 + LABEL.len() as f32 * 6.0;
     if width > 232.0 { width } else { 232.0 }
 };
 
