@@ -1871,7 +1871,7 @@ impl PublicationControl {
     pub fn prepare_output_transport_worker_on_control(
         &mut self,
         callback: &mut Callback,
-        binding: hex_plugin_host::transport::Binding,
+        binding: hex_lattice_contract::ForeignProcessorBinding,
         quantum: u16,
         process: impl FnMut(
             hex_plugin_host::transport::Block,
@@ -1949,7 +1949,7 @@ impl Callback {
                 "output transport requires an unexposed empty callback",
             ));
         }
-        let binding = hex_plugin_host::transport::Binding {
+        let binding = hex_lattice_contract::ForeignProcessorBinding {
             root: self.candidate_root.root_id(),
             instance,
             graph: graph_revision,

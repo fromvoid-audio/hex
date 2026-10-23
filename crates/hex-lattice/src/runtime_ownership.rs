@@ -89,6 +89,13 @@ impl RuntimeOwnership {
             _ => false,
         }
     }
+    pub(super) fn foreign_configuration_matches(&self, old: &Self) -> bool {
+        match (self, old) {
+            (Self::Foreign(new), Self::Foreign(old)) => new == old,
+            (Self::Foreign(_), _) | (_, Self::Foreign(_)) => false,
+            _ => true,
+        }
+    }
     pub(super) fn can_retarget_from(&self, old: &Self) -> bool {
         match (self, old) {
             (Self::Legacy { primary, scratch }, Self::Legacy { primary: old, .. }) => {

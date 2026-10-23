@@ -1561,6 +1561,41 @@ impl Playback {
         self.render_with_post_node_observer(output, None)
     }
 
+    /// The normal canonical renderer with the audio owner's already retained
+    /// foreign endpoints. No finite fallback may omit a required native effect.
+    /// Staged input is still uncommitted: only the audio owner can accept it
+    /// after final host conversion. Monitor audio remains after the project tap.
+    pub fn render_with_foreign_processors(
+        &mut self,
+        output: &mut [Frame],
+        pages: Option<&mut dyn MediaPages>,
+        observer: Option<&mut crate::NodeSignalObserver<'_>>,
+        project: Option<&mut crate::ProjectOutputTap<'_, '_>>,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
+    ) -> Result<(), Invalid> {
+        let start = self.position();
+        let playing = self.playing();
+        let result = self
+            .session_runtime
+            .as_mut()
+            .ok_or(Invalid(
+                "foreign effects require a prepared session runtime",
+            ))
+            .and_then(|runtime| {
+                runtime
+                    .render_with_foreign_processors(output, pages, observer, project, foreign)
+                    .map_err(|error| Invalid(error.diagnostic_message()))
+            });
+        if let Err(error) = result {
+            foreign.reject_callback();
+            output.fill([0.0; 2]);
+            return Err(error);
+        }
+        self.mix_metronome(start, playing, output);
+        self.mix_tuning_audition(output);
+        Ok(())
+    }
+
     /// Render while exposing bounded borrowed output from each processed
     /// native device node. The observer is audio-thread code when used by
     /// `hex-audio`: it must not allocate, block or retain the slice.

@@ -24,6 +24,11 @@ impl DeviceMeter {
     pub fn observe_input(&self, frames: &[[f32; 2]]) {
         Self::observe(&self.input, frames);
     }
+    /// Foreign providers receive untrimmed frames for aligned dry history.
+    /// Meter their actual wet input without changing that borrowed signal.
+    pub(crate) fn observe_input_with_gain(&self, frames: &[[f32; 2]], gain: f32) {
+        Self::observe_with_gain(&self.input, frames, gain);
+    }
     pub fn observe_output(&self, frames: &[[f32; 2]]) {
         Self::observe(&self.output, frames);
     }
@@ -46,7 +51,11 @@ impl DeviceMeter {
         target.fetch_max(peak.to_bits(), Relaxed);
     }
     fn observe(peak: &AtomicU32, frames: &[[f32; 2]]) {
+        Self::observe_with_gain(peak, frames, 1.0);
+    }
+    fn observe_with_gain(peak: &AtomicU32, frames: &[[f32; 2]], gain: f32) {
         let value = frames.iter().flatten().fold(0.0_f32, |peak, sample| {
+            let sample = sample * gain;
             if sample.is_finite() {
                 peak.max(sample.abs())
             } else {

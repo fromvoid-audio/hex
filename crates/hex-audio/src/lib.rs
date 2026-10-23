@@ -7,12 +7,16 @@
 //! Uses hex-engine for musical rendering, hex-stream for verified pages, CPAL for device I/O and
 //! rtrb for bounded ownership queues. hex-plugin-host supplies the copied transport
 //! and source-bound native client; native ABI remains in its external helper.
+//! hex-lattice supplies the borrowed foreign node/factory contracts; hex-plugin-state
+//! and hex-lattice-contract validate the exact native effect configuration.
 //!
 //! # Does not own
 //! Does not edit projects, decode media on callback, own GPUI, or implement device DSP. Stop must
 //! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
 //! control.
 mod device;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub mod plugin_effects;
 pub mod plugin_worker;
 mod render_fault;
 pub mod sample_preview;

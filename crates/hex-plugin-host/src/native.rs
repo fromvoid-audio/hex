@@ -3,13 +3,13 @@
 mod epoch;
 pub use epoch::Quiescent;
 
-use crate::transport::{Binding, Block};
+use crate::transport::Block;
 use crate::{
     Error, Result,
     channel::{Channel, Packet, end_after, pause},
     protocol::{self, Configuration, Facts, PresentationLatency, Ready, Terminal},
 };
-use hex_lattice_contract::NativeDeviceState;
+use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
 use hex_plugin_scan::macos::{
     build_identity::InstanceBuild,
     identity::{Bundle, Executable},

@@ -327,6 +327,30 @@ impl PreparedRevision {
         )
     }
 
+    /// Prepare the ordinary resident graph with a host's effect registry and
+    /// the existing built-in instrument registry. Foreign factories declare
+    /// immutable facts only; the audio host must separately retain and admit
+    /// their actual source/worker/endpoint owners. This grants no publication
+    /// authority and never reconstructs a native instance from state bytes.
+    pub fn prepare_with_effect_registry(
+        project: &Project,
+        media: &BTreeMap<AssetId, crate::Audio>,
+        sine_table: Arc<SineTable>,
+        previous_session: Option<&PreparedSessionInventory>,
+        effects: &hex_lattice::NativeDeviceRegistry<'_>,
+    ) -> Result<Self, Invalid> {
+        let instruments = hex_devices::native_instrument_registry()
+            .map_err(|_| Invalid("invalid built-in native instrument registry"))?;
+        Self::prepare_with_registries(
+            project,
+            media,
+            sine_table,
+            previous_session,
+            effects,
+            &instruments,
+        )
+    }
+
     pub fn prepare_with_audio_transforms(
         project: &Project,
         media: &BTreeMap<AssetId, crate::Audio>,

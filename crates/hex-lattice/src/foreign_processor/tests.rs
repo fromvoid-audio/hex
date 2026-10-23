@@ -65,6 +65,7 @@ impl ForeignProcessors for BorrowedEndpoint {
             self.configuration.as_ref()
         ));
         assert_eq!(node.prepared.quantum_frames(), 8);
+        assert_eq!(node.input_gain, 10.0);
         assert_eq!(frame_offset, self.next);
         self.next += frames.len();
         self.segments += 1;
@@ -76,6 +77,8 @@ impl ForeignProcessors for BorrowedEndpoint {
         }
         if !node.bypassed {
             for frame in frames {
+                frame[0] *= node.input_gain;
+                frame[1] *= node.input_gain;
                 *frame = [frame[0] * 0.25, frame[1] * 0.25];
             }
         }
@@ -108,8 +111,10 @@ fn foreign_nodes_borrow_exact_configuration_and_route_segments_for_all_chain_own
     ] {
         for bypassed in [false, true] {
             let instance = declaration(owner, bypassed);
+            let meter = Arc::clone(&instance.meter);
             let mut foreign = endpoint(&instance);
             let mut chain = NativeRuntimeChain::new_prepared(vec![instance]).unwrap();
+            chain.set_metering(true);
             assert_eq!(
                 chain.algorithmic_latency_frames_for_entry(0).unwrap(),
                 Some(19)
@@ -144,10 +149,10 @@ fn foreign_nodes_borrow_exact_configuration_and_route_segments_for_all_chain_own
                 }
             }
             chain.commit_block();
-            assert_eq!(
-                foreign.first_input,
-                Some(if bypassed { [1.0, -0.5] } else { [10.0, -5.0] })
-            );
+            let peaks = meter.take_peaks();
+            assert_eq!(peaks[0], 10.0);
+            assert!((peaks[1] - if bypassed { 1.0 } else { 0.25 }).abs() < 1.0e-6);
+            assert_eq!(foreign.first_input, Some([1.0, -0.5]));
             assert_eq!(
                 (foreign.segments, foreign.next, foreign.rejections),
                 (2, 5, 0)
@@ -204,6 +209,73 @@ fn missing_foreign_context_refuses_and_failed_processing_revokes_without_replayi
         Err(DeviceContractError::ForeignProcessingFailed)
     );
     assert_eq!((foreign.segments, foreign.rejections), (1, 2));
+}
+
+#[test]
+fn aligned_foreign_bypass_keeps_only_the_same_graph_configuration_not_tail_or_source_authority() {
+    let old = NativeRuntimeChain::new_prepared(vec![declaration(ProcessorChainOwner::Main, false)])
+        .unwrap();
+    let mut next =
+        NativeRuntimeChain::new_prepared(vec![declaration(ProcessorChainOwner::Main, true)])
+            .unwrap();
+    assert!(old.configuration_matches_range(&next, 0..1));
+    assert_eq!(
+        old.zero_input_drain_for_range(0..1),
+        Some(crate::OutputTail::Unbounded)
+    );
+    assert_eq!(
+        next.process_block(&mut [[1.0; 2]]),
+        Err(DeviceContractError::ForeignProcessingUnavailable)
+    );
+    for change in 0..3 {
+        let mut changed = declaration(ProcessorChainOwner::Main, true);
+        match change {
+            0 => changed.device_id += 1,
+            1 => changed.owner = ProcessorChainOwner::Track(5),
+            _ => {
+                changed.definition = Some(PreparedProcessorFactory::Foreign(
+                    PreparedForeignProcessor::new(8, 4, 16).unwrap(),
+                ))
+            }
+        }
+        let changed = NativeRuntimeChain::new_prepared(vec![changed]).unwrap();
+        assert!(!old.configuration_matches_range(&changed, 0..1));
+    }
+    let removed = NativeRuntimeChain::new_prepared(Vec::new()).unwrap();
+    assert!(!old.configuration_matches_range(&removed, 0..1));
+}
+
+#[test]
+fn graph_configuration_and_retargeting_keep_the_exact_shared_source_epoch() {
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
+        root: 1,
+        instance: 17,
+        graph: 2,
+        epoch: 3,
+    };
+    let mut before = declaration(ProcessorChainOwner::Main, false);
+    let facts = PreparedForeignProcessor::new(8, 3, 16).unwrap();
+    before.definition = Some(PreparedProcessorFactory::Foreign(
+        facts.with_binding(binding).unwrap(),
+    ));
+    let before = NativeRuntimeChain::new_prepared(vec![before]).unwrap();
+    let mut after = declaration(ProcessorChainOwner::Main, false);
+    after.definition = Some(PreparedProcessorFactory::Foreign(
+        facts
+            .with_binding(hex_lattice_contract::ForeignProcessorBinding {
+                epoch: 4,
+                ..binding
+            })
+            .unwrap(),
+    ));
+    let after = NativeRuntimeChain::new_prepared(vec![after]).unwrap();
+    assert!(!before.configuration_matches_range(&after, 0..1));
+    assert!(!after.can_retarget_parameters_from_range(&before, 0..1));
+    assert!(
+        facts
+            .with_binding(hex_lattice_contract::ForeignProcessorBinding { root: 0, ..binding })
+            .is_err()
+    );
 }
 
 #[test]

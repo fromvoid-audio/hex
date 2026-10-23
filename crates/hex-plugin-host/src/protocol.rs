@@ -1,8 +1,8 @@
 //! Existing ordinary-instance wire; actual direct reap belongs to the client.
 //! Control/worker only. Bounds precede copies; copied facts never authorize a graph.
-use crate::transport::{Binding, Block, MAX_FRAMES};
+use crate::transport::{Block, MAX_FRAMES};
 use crate::{Error, Result};
-use hex_lattice_contract::NativeDeviceState;
+use hex_lattice_contract::{ForeignProcessorBinding as Binding, NativeDeviceState};
 use hex_plugin_state::{Identity, STATE_VERSION, TYPE_ID};
 use std::io::Cursor;
 
@@ -25,13 +25,7 @@ pub struct Configuration {
 }
 impl Configuration {
     pub fn validate(&self) -> Result<()> {
-        if [
-            self.binding.root,
-            self.binding.instance,
-            self.binding.graph,
-            self.binding.epoch,
-        ]
-        .contains(&0)
+        if !self.binding.is_valid()
             || !self.sample_rate.is_finite()
             || self.sample_rate <= 0.0
             || self.sample_rate > 768000.0

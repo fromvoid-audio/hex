@@ -147,7 +147,11 @@ impl ForeignProcessors for Borrowed {
         self.next_offset += frames.len();
         self.processed += frames.len();
         for frame in frames {
-            let gain = if node.bypassed { 1.0 } else { 0.25 };
+            let gain = if node.bypassed {
+                1.0
+            } else {
+                node.input_gain * 0.25
+            };
             let mut copied = [frame[0] * gain, frame[1] * gain];
             std::mem::swap(&mut copied, &mut self.ring[self.cursor]);
             self.cursor = (self.cursor + 1) % self.ring.len();

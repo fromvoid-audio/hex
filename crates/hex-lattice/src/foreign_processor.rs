@@ -2,7 +2,9 @@
 //! The host retains actual source/endpoint/worker custody and performs final
 //! host-format acceptance. A scalar declaration or state equality grants none.
 use crate::{NativeInstrumentClock, ProcessorChainOwner, StereoFrame};
-use hex_lattice_contract::{DeviceContractError, DeviceTypeId, NativeDeviceState};
+use hex_lattice_contract::{
+    DeviceContractError, DeviceTypeId, ForeignProcessorBinding, NativeDeviceState,
+};
 
 /// Control-validated facts for a copied foreign endpoint. No runtime factory,
 /// native pointer or resource owner lives here. The host must bind these facts
@@ -14,6 +16,7 @@ pub struct PreparedForeignProcessor {
     processor_latency: u32,
     bridge_latency: u32,
     total_latency: u32,
+    binding: Option<ForeignProcessorBinding>,
 }
 impl PreparedForeignProcessor {
     pub fn new(
@@ -32,7 +35,24 @@ impl PreparedForeignProcessor {
             processor_latency,
             bridge_latency,
             total_latency,
+            binding: None,
         })
+    }
+    /// Retain the exact existing source/endpoint binding in immutable graph
+    /// facts. Native providers derive this from their actual prepared lease.
+    /// The value itself grants no source or graph admission authority.
+    pub fn with_binding(
+        mut self,
+        binding: ForeignProcessorBinding,
+    ) -> Result<Self, DeviceContractError> {
+        if !binding.is_valid() {
+            return Err(DeviceContractError::InvalidId);
+        }
+        self.binding = Some(binding);
+        Ok(self)
+    }
+    pub fn binding(self) -> Option<ForeignProcessorBinding> {
+        self.binding
     }
     pub fn quantum_frames(self) -> u16 {
         self.quantum
@@ -60,6 +80,11 @@ pub struct ForeignProcessorNode<'a> {
     pub configuration: &'a NativeDeviceState,
     pub prepared: PreparedForeignProcessor,
     pub bypassed: bool,
+    /// Cached finite host input trim. Segments contain the original untrimmed
+    /// signal so the host can preserve aligned dry history. Apply this gain to
+    /// the copied wet input, including while bypassed; output trim remains in
+    /// the chain after the host returns the selected wet/dry samples.
+    pub input_gain: f32,
 }
 
 /// Unique borrowed view of the host's already retained foreign endpoints.

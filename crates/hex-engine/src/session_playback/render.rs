@@ -636,6 +636,8 @@ impl SessionPlayback {
                 &mut output[output_offset..chunk_end],
                 self.compensation.as_ref(),
                 &tail_clock,
+                output_offset,
+                foreign,
             )?;
             let chunk = u64::try_from(chunk_frames)
                 .map_err(|_| SessionPlaybackError::ArithmeticOverflow)?;

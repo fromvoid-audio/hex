@@ -239,7 +239,7 @@ mod tests {
         let mut body = Vec::new();
         protocol::stamp(
             &mut body,
-            crate::transport::Binding {
+            hex_lattice_contract::ForeignProcessorBinding {
                 root: 1,
                 instance: 2,
                 graph: 3,

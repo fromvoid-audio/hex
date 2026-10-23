@@ -195,6 +195,8 @@ impl ReturnEffectTailBank {
         output: &mut [Frame],
         compensation: Option<&crate::signal_graph::SignalRuntime>,
         clock: &dyn hex_lattice::NativeInstrumentClock,
+        frame_offset: usize,
+        foreign: &mut dyn hex_lattice::ForeignProcessors,
     ) -> Result<(), SessionPlaybackError> {
         let (slots, scratch) = (&mut self.slots, &mut self.scratch);
         for tail in slots.iter_mut().flatten() {
@@ -219,14 +221,24 @@ impl ReturnEffectTailBank {
                     let origin = crate::signal_graph::OriginClock(
                         compensation.delays.stamp_at_delay(arrival),
                     );
-                    tail.chain
-                        .process_range_with_clock(entry..entry + 1, frames, Some(&origin))
+                    tail.chain.process_range_with_foreign(
+                        entry..entry + 1,
+                        frames,
+                        frame_offset,
+                        Some(&origin),
+                        foreign,
+                    )
                 } else {
                     if arrival != 0 {
                         return Err(SessionPlaybackError::DeviceRuntime);
                     }
-                    tail.chain
-                        .process_range_with_clock(entry..entry + 1, frames, Some(clock))
+                    tail.chain.process_range_with_foreign(
+                        entry..entry + 1,
+                        frames,
+                        frame_offset,
+                        Some(clock),
+                        foreign,
+                    )
                 }
                 .map_err(|_| SessionPlaybackError::DeviceRuntime)?;
                 arrival = arrival

@@ -1,6 +1,7 @@
 //! Joining control custody for the exact copied endpoint. The processor closure
 //! runs only on this worker and must bound its own IPC calls/child supervision.
 //! This is not installed-plugin process admission or crash recovery authority.
+use hex_lattice_contract::ForeignProcessorBinding as Binding;
 use hex_plugin_host::transport::*;
 use std::{
     sync::atomic::Ordering::{Acquire, Release},
@@ -402,4 +403,4 @@ mod tests {
 }
 
 #[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
-mod native_tests;
+pub(crate) mod native_tests;

@@ -13,6 +13,7 @@
 //! No stale-buffer replay, waiting, waking, allocation or DSP rollback occurs.
 
 type Frame = [f32; 2];
+use hex_lattice_contract::ForeignProcessorBinding as Binding;
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::{
     Arc,
@@ -26,17 +27,6 @@ pub mod wire;
 pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;
 pub const QUEUE_CAPACITY: usize = 8;
-
-/// Exact instance/root/graph/transport epoch. Recreate this copied exchange on
-/// discontinuity; retaining a loaded native instance requires its separate actual
-/// quiescence/resume ACK, not mutation of these immutable endpoint bindings.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Binding {
-    pub root: u64,
-    pub instance: u64,
-    pub graph: u64,
-    pub epoch: u64,
-}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fault {
@@ -244,10 +234,7 @@ pub fn channel_from_completed_prefix(
     quantum: u16,
     completed_blocks: u64,
 ) -> Result<(Control, Callback, Worker), Fault> {
-    if [binding.root, binding.instance, binding.graph, binding.epoch].contains(&0)
-        || quantum == 0
-        || usize::from(quantum) > MAX_FRAMES
-    {
+    if !binding.is_valid() || quantum == 0 || usize::from(quantum) > MAX_FRAMES {
         return Err(Fault::Configuration);
     }
     let position = completed_blocks

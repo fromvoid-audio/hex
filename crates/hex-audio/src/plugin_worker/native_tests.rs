@@ -2,6 +2,15 @@
 use super::*;
 
 fn original_instance() -> hex_plugin_host::native::Prepared {
+    original_instance_for_binding(Binding {
+        root: 1,
+        instance: 2,
+        graph: 3,
+        epoch: 4,
+    })
+}
+
+pub(crate) fn original_instance_for_binding(binding: Binding) -> hex_plugin_host::native::Prepared {
     use hex_plugin_host::{native::*, protocol::PresentationLatency};
     use hex_plugin_scan::macos::build_identity::InstanceBuild;
     use hex_plugin_state::ClassId;
@@ -30,12 +39,7 @@ fn original_instance() -> hex_plugin_host::native::Prepared {
         source,
         Options {
             preparation: Preparation {
-                binding: Binding {
-                    root: 1,
-                    instance: 2,
-                    graph: 3,
-                    epoch: 4,
-                },
+                binding,
                 sample_rate: 48000.0,
                 quantum: 8,
                 input_channels: 2,

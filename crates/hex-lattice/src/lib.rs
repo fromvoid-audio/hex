@@ -912,7 +912,15 @@ impl NativeRuntimeChain {
                     && left.device_type == right.device_type
                     && left.runtime_version == right.runtime_version
                     && left.sample_rate == right.sample_rate
-                    && left.bypassed == right.bypassed
+                    && left.runtime.foreign_configuration_matches(&right.runtime)
+                    // Foreign bypass is the host's aligned wet/dry selection:
+                    // the same source still processes, at the same latency.
+                    // This compares graph views only. The host must separately
+                    // retain/admit the actual endpoint and its dry history.
+                    && (left.bypassed == right.bypassed
+                        || matches!((&left.runtime, &right.runtime),
+                            (RuntimeOwnership::Foreign(left), RuntimeOwnership::Foreign(right))
+                                if left == right))
                     && left.matrix == right.matrix
                     && match (&left.configuration, &right.configuration) {
                         (Some(left), Some(right)) => {
@@ -948,6 +956,9 @@ impl NativeRuntimeChain {
                     && candidate.device_type == old.device_type
                     && candidate.runtime_version == old.runtime_version
                     && candidate.sample_rate == old.sample_rate
+                    && candidate
+                        .runtime
+                        .foreign_configuration_matches(&old.runtime)
                     && candidate.bypassed == old.bypassed
                     && candidate.matrix == old.matrix;
                 if !stable_processing_identity {
@@ -1415,14 +1426,21 @@ impl NativeRuntimeChain {
         clock: Option<&dyn NativeInstrumentClock>,
         foreign: &mut dyn ForeignProcessors,
     ) -> Result<(), DeviceContractError> {
-        if !entry.bypassed && entry.input_gain != 1.0 {
+        let is_foreign = matches!(entry.runtime, RuntimeOwnership::Foreign(_));
+        if !entry.bypassed && !is_foreign && entry.input_gain != 1.0 {
             for frame in frames.iter_mut() {
                 frame[0] *= entry.input_gain;
                 frame[1] *= entry.input_gain;
             }
         }
         if entry.metering {
-            entry.meter.observe_input(frames);
+            if is_foreign {
+                entry
+                    .meter
+                    .observe_input_with_gain(frames, entry.input_gain);
+            } else {
+                entry.meter.observe_input(frames);
+            }
         }
         if let RuntimeOwnership::Foreign(prepared) = &entry.runtime {
             let configuration = entry
@@ -1438,6 +1456,7 @@ impl NativeRuntimeChain {
                     configuration,
                     prepared: *prepared,
                     bypassed: entry.bypassed,
+                    input_gain: entry.input_gain,
                 },
                 frame_offset,
                 frames,

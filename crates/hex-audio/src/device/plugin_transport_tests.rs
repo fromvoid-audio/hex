@@ -165,7 +165,7 @@ fn owned_worker_and_all_four_original_guards_retire_on_control_after_zero_alloca
     }
     let lifetime = WorkerLifetime(Arc::clone(&records));
     let (mut control, mut callback) = prepared::channel(48_000).unwrap();
-    let binding = plugin_transport::Binding {
+    let binding = hex_lattice_contract::ForeignProcessorBinding {
         root: control.output_identity().unwrap(),
         instance: 1,
         graph: 1,
