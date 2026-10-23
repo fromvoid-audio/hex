@@ -43,6 +43,8 @@ mod device_comparison;
 mod effect_bus;
 #[cfg(test)]
 mod effect_bus_tests;
+#[cfg(test)]
+mod format_upgrade_tests;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -189,6 +191,8 @@ pub struct Event {
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
     pub save_complete: bool,
+    /// Replacing the current file changes its reader compatibility. Opening never writes.
+    pub document_format_upgrade_required: bool,
     pub open_complete: bool,
     pub project_replaced: bool,
     /// Completion of explicit Stop recovery, including refusal. A returned graph
@@ -561,6 +565,12 @@ pub enum Request {
     Redo,
     SaveNew(PathBuf),
     SaveCurrent,
+    /// Explicit user consent to replace an older saved format. Bound to the
+    /// selected document and project generation; normal token checks still apply.
+    SaveCurrentWithFormatUpgrade {
+        project_generation: u64,
+        path: PathBuf,
+    },
     RestorePlayback {
         generation: u64,
     },
@@ -594,6 +604,7 @@ impl Request {
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
+                | Request::SaveCurrentWithFormatUpgrade { .. }
                 | Request::SaveDevicePreset { .. }
                 | Request::LoadDevicePreset { .. }
                 | Request::CompareDevice { .. }
@@ -1663,6 +1674,7 @@ fn run_worker(
                 live_expression_complete: None,
                 audio_batch_complete: None,
                 save_complete: false,
+                document_format_upgrade_required: false,
                 open_complete: false,
                 project_replaced: false,
                 stopped_playback_restore_complete: false,
@@ -1696,6 +1708,7 @@ fn run_worker(
             live_expression_complete: None,
             audio_batch_complete: None,
             save_complete: false,
+            document_format_upgrade_required: false,
             open_complete: false,
             project_replaced: false,
             stopped_playback_restore_complete: false,
@@ -2245,6 +2258,7 @@ fn run_worker(
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
                     | Request::SaveCurrent
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
                     | Request::Export(_)
                     | Request::ExportRange { .. }
                     | Request::NewWithAudioMode { .. }
@@ -2267,7 +2281,12 @@ fn run_worker(
             if matches!(&request, Request::RestoreStoppedPlayback) {
                 stopped_playback_restore_complete = true;
             }
-            if matches!(&request, Request::SaveNew(_) | Request::SaveCurrent) {
+            if matches!(
+                &request,
+                Request::SaveNew(_)
+                    | Request::SaveCurrent
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
+            ) {
                 save_complete = true;
             }
         } else if let Some(reason) = barrier_failure {
@@ -2287,7 +2306,12 @@ fn run_worker(
                     error: Some(reason.clone()),
                 });
             }
-            if matches!(&request, Request::SaveNew(_) | Request::SaveCurrent) {
+            if matches!(
+                &request,
+                Request::SaveNew(_)
+                    | Request::SaveCurrent
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
+            ) {
                 save_complete = true;
             }
             if let Request::Export(path) | Request::ExportRange { path, .. } = &request {
@@ -4637,8 +4661,20 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
-                Request::SaveCurrent => {
+                request @ (Request::SaveCurrent | Request::SaveCurrentWithFormatUpgrade { .. }) => {
                     save_complete = true;
+                    let consent = match &request {
+                        Request::SaveCurrentWithFormatUpgrade {
+                            project_generation: expected,
+                            path,
+                        } => {
+                            *expected == project_generation
+                                && document.as_ref().is_some_and(|handle| handle.path == *path)
+                        }
+                        _ => false,
+                    };
+                    let stale_consent =
+                        matches!(request, Request::SaveCurrentWithFormatUpgrade { .. }) && !consent;
                     match (
                         document.as_mut(),
                         project_for_save(&session, media_base.as_deref()),
@@ -4648,6 +4684,14 @@ fn run_worker(
                                 Some("cannot save current project before it has a file path".into())
                         }
                         (_, Err(reason)) => error = Some(reason),
+                        (Some(_), Ok(_)) if stale_consent => {
+                            error = Some("project changed · format upgrade cancelled".into());
+                        }
+                        (Some(handle), Ok(_))
+                            if handle.token.requires_format_upgrade() && !consent =>
+                        {
+                            error = Some("saving replaces this project's older format; use save as to preserve it, or explicitly confirm format overwrite".into());
+                        }
                         (Some(handle), Ok(project)) => {
                             match hex_storage::replace_existing(
                                 &handle.path,
@@ -5689,6 +5733,9 @@ fn run_worker(
                 audio_batch_complete,
                 audio_batch_failure,
                 save_complete,
+                document_format_upgrade_required: document
+                    .as_ref()
+                    .is_some_and(|handle| handle.token.requires_format_upgrade()),
                 open_complete,
                 project_replaced,
                 stopped_playback_restore_complete,

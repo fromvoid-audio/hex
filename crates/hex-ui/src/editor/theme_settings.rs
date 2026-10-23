@@ -1160,6 +1160,20 @@ mod tests {
                 editor
             })
             .expect("editor window");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            cx.run_until_parked();
+            if editor.read_with(cx, |view, _| {
+                !view.theme_settings.loading && !view.audio_import_settings.is_loading()
+            }) {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "settings did not load"
+            );
+            std::thread::yield_now();
+        }
         (handle, editor)
     }
 
@@ -1304,7 +1318,22 @@ mod tests {
             );
         }
 
-        click_bounds(&mut visual, "theme-role-secondary");
+        let role = visual.debug_bounds("theme-role-secondary").unwrap();
+        let ruler = visual.debug_bounds("timeline-ruler").unwrap();
+        let center = point(
+            role.origin.x + role.size.width / 2.0,
+            role.origin.y + role.size.height / 2.0,
+        );
+        assert!(
+            ruler.contains(&center),
+            "fixture must exercise the underlying ruler hit area"
+        );
+        visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+        assert!(
+            !editor.read_with(cx, |view, _| view.scrub_active()),
+            "modal clicks must not start an underlying seek"
+        );
+        visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
         assert_eq!(
             editor.read_with(cx, |view, _| view.theme_settings.selected_role),
