@@ -11,7 +11,7 @@ use super::waveform::{
 use super::{EditorView, ViewState};
 use crate::theme;
 use gpui::{
-    Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb,
+    Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb, rgba,
 };
 use hex_project::{BeatTime, Clip, MidiClip, MidiClipTrim, MidiSourcePlayback, Track};
 
@@ -137,7 +137,7 @@ fn midi_note_body(
     (notes, count)
 }
 
-fn clip_fade_layer(samples: Vec<(f32, f32)>) -> impl IntoElement + use<> {
+fn clip_fade_layer(samples: Vec<(f32, f32)>, active: bool) -> impl IntoElement + use<> {
     canvas(
         |_, _, _| (),
         move |bounds, _, window, _| {
@@ -145,17 +145,33 @@ fn clip_fade_layer(samples: Vec<(f32, f32)>) -> impl IntoElement + use<> {
             let top = f32::from(bounds.origin.y);
             let width = f32::from(bounds.size.width);
             let height = f32::from(bounds.size.height);
-            let mut path = PathBuilder::stroke(px(1.25));
+            let mut shade = PathBuilder::fill();
+            if let Some((x, _)) = samples.first() {
+                shade.move_to(point(px(left + width * x), px(top)));
+            }
+            let mut path = active.then(|| PathBuilder::stroke(px(1.25)));
             for (index, (x, gain)) in samples.iter().copied().enumerate() {
                 let point = point(px(left + width * x), px(top + height * (1.0 - gain)));
-                if index == 0 {
-                    path.move_to(point);
-                } else {
-                    path.line_to(point);
+                if let Some(path) = path.as_mut() {
+                    if index == 0 {
+                        path.move_to(point);
+                    } else {
+                        path.line_to(point);
+                    }
                 }
+                shade.line_to(point);
             }
-            if let Ok(path) = path.build() {
-                window.paint_path(path, rgb(theme::color(theme::PaletteRole::Secondary)));
+            if let Some((x, _)) = samples.last() {
+                shade.line_to(point(px(left + width * x), px(top)));
+            }
+            shade.close();
+            if let Ok(shade) = shade.build() {
+                window.paint_path(shade, rgba(0x00000038));
+            }
+            if let Some(path) = path
+                && let Ok(path) = path.build()
+            {
+                window.paint_path(path, rgba(0x000000e0));
             }
         },
     )
@@ -1706,7 +1722,8 @@ impl EditorView {
                     fade_envelope_samples(clip.retained_fade(), clip.start(), start, end)
                 };
                 if !clip.retained_fade().is_neutral() && fade.len() >= 2 {
-                    content = content.child(clip_fade_layer(fade));
+                    content =
+                        content.child(clip_fade_layer(fade, self.fade_curve_active(clip.id())));
                 }
             }
             ClipPaintSource::Midi(clip) => {
@@ -1959,7 +1976,8 @@ impl EditorView {
                 fade_envelope_samples(fade, clip.start(), visible_start, visible_end)
             };
             if samples.len() >= 2 {
-                content = content.child(clip_fade_layer(samples));
+                content =
+                    content.child(clip_fade_layer(samples, self.fade_curve_active(clip.id())));
             }
         }
         let clip_pixel_width = self
@@ -1977,10 +1995,28 @@ impl EditorView {
             viewport,
             cx,
         );
+        let hover_generation = self.project_generation;
         let mut content = content
             .child(self.clip_name_header(track, clip.id(), clip.name(), fill, cx))
             .id(("clip", clip_id.value()))
             .debug_selector(|| format!("clip-visual-{}", clip_id.value()))
+            .on_hover(cx.listener(move |view, hovered, _, cx| {
+                if *hovered && view.project_generation != hover_generation {
+                    return;
+                }
+                let hovered_clip = (hover_generation, clip_id);
+                let next = if *hovered {
+                    Some(hovered_clip)
+                } else if view.hovered_fade_clip == Some(hovered_clip) {
+                    None
+                } else {
+                    view.hovered_fade_clip
+                };
+                if view.hovered_fade_clip != next {
+                    view.hovered_fade_clip = next;
+                    cx.notify();
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(move |view, event: &gpui::MouseDownEvent, window, cx| {

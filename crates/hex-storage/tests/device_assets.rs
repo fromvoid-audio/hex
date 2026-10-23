@@ -67,7 +67,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     let legacy = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&legacy).unwrap()["version"],
-        36
+        37
     );
     assert_eq!(
         hex_storage::decode(&legacy).unwrap().snapshot(),
@@ -128,7 +128,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     let bytes = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        36
+        37
     );
     let reopened = hex_storage::decode(&bytes).unwrap();
     assert_eq!(reopened.snapshot(), editor.project().snapshot());
@@ -282,7 +282,7 @@ fn superseded_alpha30_variants_refuse_without_rewriting_user_files() {
         assert!(matches!(
             hex_storage::load(&path),
             Err(hex_storage::StorageError::Invalid(
-                "unsupported project format or version; current format is 36"
+                "unsupported project format or version; current format is 37"
             ))
         ));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);

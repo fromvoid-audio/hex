@@ -326,6 +326,7 @@ fn header_volume_text_commit_uses_canonical_gain_and_automation_refuses_drag(
             Command::ReplaceTrackGainEnvelope {
                 track,
                 points: vec![hex_project::GainPoint {
+                    incoming_gain: None,
                     beat: hex_project::BeatTime::ZERO,
                     gain: 0.8,
                     outgoing: hex_project::GainInterpolation::Step,
@@ -527,6 +528,7 @@ fn automation_readout_owns_gain(cx: &mut TestAppContext, recorded: bool) {
             track,
             expected_epoch: 0,
             span: GainTouchSpan {
+                source_start: BeatTime::ZERO,
                 start: BeatTime::ZERO,
                 end: BeatTime::ONE,
                 context: GainTouchContext {
@@ -552,6 +554,7 @@ fn automation_readout_owns_gain(cx: &mut TestAppContext, recorded: bool) {
         Command::ReplaceTrackGainEnvelope {
             track,
             points: vec![GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ZERO,
                 gain: 0.8,
                 outgoing: GainInterpolation::Step,

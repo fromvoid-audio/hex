@@ -17,6 +17,7 @@ pub use hex_export::{ExportControl, ExportProgress, ExportSignal, Stem};
 use hex_media::{Limits, ResampleLimits, decode_wav_file, waveform::Waveform};
 use hex_project::{Command, Created, Project};
 use hex_tuning::ProjectTuning;
+mod arrangement_sections;
 #[cfg(test)]
 mod audio_batch_tests;
 mod audio_sink;
@@ -350,6 +351,12 @@ impl GainLaneEdit {
 // (25,600 payload bytes). Boxing would hide storage and add control allocations.
 #[allow(clippy::large_enum_variant)]
 pub enum Request {
+    /// Captured Main-lane intent. Never retarget to a newer document/revision.
+    EditArrangementSection {
+        project_generation: u64,
+        revision: u64,
+        command: Command,
+    },
     /// Explicitly confirmed recovery storage action, scoped to one observed failure.
     RestartRecovery(RecoveryRestart),
     /// Scalar native seek; all candidate/source owners remain on control workers.
@@ -579,6 +586,7 @@ impl Request {
         matches!(
             self,
             Request::Undo
+                | Request::EditArrangementSection { .. }
                 | Request::SamplerEdit(SamplerEdit::History(_))
                 | Request::SamplerEdit(SamplerEdit::Midi(_))
                 | Request::AssignSampler { .. }
@@ -970,6 +978,8 @@ impl Service {
         let worker_shutdown = Arc::clone(&shutdown);
         let worker = thread::Builder::new()
             .name("hex-session".into())
+            // Structural stopped publications reuse the bounded preroll constructor.
+            .stack_size(crate::arrangement_seek::SEEK_WORKER_STACK_BYTES)
             .spawn(move || {
                 let mut events = WorkerEvents::new(event_tx, Arc::clone(&worker_shutdown), audio);
                 let session = match session {
@@ -1213,7 +1223,7 @@ fn view_state_bound(
 ) -> Arc<ViewState> {
     let project = Arc::new(session.project().clone());
     let rate = u64::from(project.sample_rate());
-    let latest_clip_end = latest_clip_end(&project);
+    let latest_clip_end = latest_timeline_content_end(&project);
     let latest_content_end = latest_clip_end.max(
         project
             .loop_region()
@@ -1263,7 +1273,7 @@ fn preview_view_state(
     prepared: Arc<PreparedRevision>,
 ) -> Arc<ViewState> {
     let rate = u64::from(project.sample_rate());
-    let content_end = latest_clip_end(&project).max(
+    let content_end = latest_timeline_content_end(&project).max(
         project
             .loop_region()
             .map(|region| region.end())
@@ -1953,6 +1963,24 @@ fn run_worker(
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
         let mut barrier_failure = browser_failure.or_else(|| match &request {
+            Request::EditArrangementSection {
+                project_generation: captured,
+                revision: captured_revision,
+                command,
+            } => {
+                if *captured != project_generation || *captured_revision != revision {
+                    Some("arrangement section target changed".into())
+                } else if !arrangement_sections::is_command(command) {
+                    Some("section request requires a structural marker command".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Some("finish or cancel the active gesture before editing sections".into())
+                } else {
+                    None
+                }
+            }
             Request::SamplerEdit(SamplerEdit::Midi(edit)) => {
                 if pending_sampler_parameter.is_some() {
                     Some("sampler edit is already preparing".into())
@@ -2198,6 +2226,7 @@ fn run_worker(
                 Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
+                    | Request::EditArrangementSection { .. }
                     | Request::ImportDeviceAsset { .. }
             );
         let sampler_refusal = private_sampler
@@ -2212,6 +2241,7 @@ fn run_worker(
                     | Request::AssignSampler { .. }
                     | Request::LoadFirstSampler { .. }
                     | Request::Edit(_)
+                    | Request::EditArrangementSection { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
                     | Request::SaveCurrent
@@ -2222,7 +2252,9 @@ fn run_worker(
                     | Request::OpenWith { .. }
                     | Request::OpenWithAudioMode { .. }
             );
-        if native_edit_refusal {
+        if matches!(&request, Request::Edit(command) if arrangement_sections::is_command(command)) {
+            error = Some("section edits require a revision-bound section request".into());
+        } else if native_edit_refusal {
             error = Some("sampler native playback requires a fresh output; close or open a project before changing its sources or configuration".into());
         } else if sampler_refusal {
             error=Some(if events.native_audio_requested() {"sampler supports computer keyboard, frame-zero arrangement play and stop; other history steps and runtime tools are unavailable"} else {"sampler supports private offline export; native playback, other history steps and runtime tools are unavailable"}.into());
@@ -4358,6 +4390,51 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
+                Request::EditArrangementSection {
+                    project_generation: captured_generation,
+                    revision: captured_revision,
+                    command,
+                } => {
+                    if captured_generation != project_generation || captured_revision != revision {
+                        error = Some("arrangement section target changed".into());
+                    } else if !arrangement_sections::is_command(&command) {
+                        error = Some("section request requires a structural marker command".into());
+                    } else {
+                        let context = hex_engine::AudioSourceContext {
+                            project_generation,
+                            editor_revision: revision.saturating_add(1),
+                        };
+                        let admission = export_lane.admission_with_resident_owners(
+                            compiled.as_ref().map(|(_, prepared)| {
+                                hex_engine::native_device_resources::ControlSamplerSelection {
+                                    sources: current_sources.as_ref(),
+                                    prepared: Some(prepared),
+                                }
+                            }),
+                            resident_seek.as_ref(),
+                            resident_preview.as_ref(),
+                        );
+                        match arrangement_sections::command(
+                            &mut session,
+                            command,
+                            compiled.as_ref().map(|(_, artifact)| artifact.as_ref()),
+                            context,
+                            &mut events,
+                            &mut resident_snapshot,
+                            admission,
+                        ) {
+                            Ok((result, prepared)) => {
+                                if session.project() != state.project.as_ref() {
+                                    unsaved = true;
+                                    replacement_revision = Some(prepared);
+                                }
+                                created = Some(result);
+                                status = Some("arrangement section edited".into());
+                            }
+                            Err(reason) => error = Some(reason.to_string()),
+                        }
+                    }
+                }
                 Request::Edit(command) => {
                     duplicate_complete = matches!(&command, Command::DuplicateClip(_));
                     match session.command_prepared_revision_with(
@@ -4387,6 +4464,43 @@ fn run_worker(
                         }
                         Ok(_) => status = Some("no change".into()),
                         Err(reason) => error = Some(reason.to_string().to_lowercase()),
+                    }
+                }
+                request @ (Request::Undo | Request::Redo)
+                    if events.resident_publication_enabled()
+                        && session.audio_mode() == DocumentAudioMode::Resident
+                        && session
+                            .section_history_requires_stop(matches!(&request, Request::Redo)) =>
+                {
+                    let context = hex_engine::AudioSourceContext {
+                        project_generation,
+                        editor_revision: revision.saturating_add(1),
+                    };
+                    let admission = export_lane.admission_with_resident_owners(
+                        compiled.as_ref().map(|(_, prepared)| {
+                            hex_engine::native_device_resources::ControlSamplerSelection {
+                                sources: current_sources.as_ref(),
+                                prepared: Some(prepared),
+                            }
+                        }),
+                        resident_seek.as_ref(),
+                        resident_preview.as_ref(),
+                    );
+                    match arrangement_sections::history(
+                        &mut session,
+                        matches!(request, Request::Redo),
+                        context,
+                        &mut events,
+                        &mut resident_snapshot,
+                        admission,
+                    ) {
+                        Ok(Some(prepared)) => {
+                            unsaved = true;
+                            replacement_revision = Some(prepared);
+                            status = Some("section history committed".into());
+                        }
+                        Ok(None) => status = Some("no history change".into()),
+                        Err(reason) => error = Some(reason.to_string()),
                     }
                 }
                 request @ (Request::Undo | Request::Redo)
@@ -5664,7 +5778,7 @@ fn run_worker(
     }
 }
 
-fn latest_clip_end(project: &Project) -> u64 {
+fn latest_timeline_content_end(project: &Project) -> u64 {
     let audio_end = project
         .tracks()
         .iter()
@@ -5685,7 +5799,13 @@ fn latest_clip_end(project: &Project) -> u64 {
         })
         .max()
         .unwrap_or(0);
-    audio_end.max(midi_end)
+    let section_end = project
+        .arrangement_sections()
+        .iter()
+        .filter_map(|section| project.tempo_map().beat_to_frame(section.end()).ok())
+        .max()
+        .unwrap_or(0);
+    audio_end.max(midi_end).max(section_end)
 }
 
 fn run_export_worker(
