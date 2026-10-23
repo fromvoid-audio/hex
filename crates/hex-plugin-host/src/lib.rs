@@ -28,6 +28,9 @@
 //! the existing joining transport worker, never an audio callback. Ready is a
 //! prepared instance fact, not canonical/audio application. Numeric child IDs
 //! are never used after reap/unknown custody; no descendant containment is claimed.
+//! Retained preparation failures preserve their actual child lease for Root's
+//! independent disposal polling. Synchronous convenience APIs join before
+//! returning an error; neither path grants graph/callback retirement authority.
 
 #[cfg(unix)]
 mod channel;
