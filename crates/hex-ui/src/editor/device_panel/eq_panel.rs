@@ -6,7 +6,8 @@ use hex_engine::eq::{self, EqState, Node, NodeId, NodeParameter};
 use hex_lattice_contract::ParameterId;
 use hex_session::device_gesture::{GestureTarget, ParameterPairValue};
 use hex_widgets::{
-    ResponseGraph, ResponseGraphEvent, ResponseGraphModel, ResponseGraphNode, ResponseGraphPhase,
+    ResponseGraph, ResponseGraphCreationHint, ResponseGraphEvent, ResponseGraphModel,
+    ResponseGraphNode, ResponseGraphPhase,
 };
 
 mod axes;
@@ -18,7 +19,8 @@ mod spectrum;
 pub(super) use spectrum::SpectrumSelection;
 pub(in crate::editor) use spectrum::reconcile as reconcile_spectrum;
 
-// Outer five percent of the inset logarithmic plot; existing node hits win.
+// Outer five percent of the inset plot: side cuts precede bottom notches.
+// Existing node hits retain priority through the response graph owner.
 const CUT_CREATION_EDGE: f32 = 0.05;
 
 // Content geometry only: preserve shared device-action paint and tooltip/input
@@ -85,7 +87,10 @@ impl Creation {
     fn update(&mut self, position: [f32; 2]) {
         if let Some(node) = self.state.nodes.iter_mut().find(|node| node.id == self.id) {
             node.frequency_hz = frequency_from_x(position[0], self.sample_rate);
-            if matches!(node.kind, eq::NodeKind::LowCut | eq::NodeKind::HighCut) {
+            if matches!(
+                node.kind,
+                eq::NodeKind::LowCut | eq::NodeKind::HighCut | eq::NodeKind::Notch
+            ) {
                 node.q = q_from_y(position[1]);
             } else {
                 node.gain_db = position[1] * 48.0 - 24.0;
@@ -166,6 +171,13 @@ pub(super) fn render_body(
             .device(device)
             .map(hex_project::Device::active_variant)
     });
+    let creation_idle = !view.opening_project
+        && !view.close_prompt_open
+        && view.worker_requests_pending == 0
+        && view.pending_requests.is_empty()
+        && view.device_gesture_barriers.is_empty()
+        && view.device_gesture.snapshot().is_none()
+        && !view.device_panel.has_pending_draft(cx);
     let Some(panel) = view.device_panel.eq_panels.get_mut(&device) else {
         return div().id("eq-unavailable");
     };
@@ -220,6 +232,10 @@ pub(super) fn render_body(
         .map(|pending| pending.id)
         .or(panel.selected)
         .filter(|id| displayed.node(*id).is_ok());
+    let show_creation_hint = creation_idle
+        && displayed.nodes.len() < eq::MAX_NODES
+        && panel.creation.is_none()
+        && panel.pending_creation.is_none();
     let bank = panel.bank;
     let entity = panel.entity.clone();
     spectrum::sync_selected(view, device, owner);
@@ -242,6 +258,7 @@ pub(super) fn render_body(
     if let Some(model) = model {
         entity.update(cx, |graph, cx| {
             graph.set_creation_drag_enabled(true);
+            graph.set_creation_hint_resolver(show_creation_hint.then_some(creation_hint), cx);
             let _ = graph.set_axes(Some(axes::frequency_axes(sample_rate)), cx);
             let _ = graph.set_analyzer_style(theme::device_analyzer_style(), cx);
             let _ = graph.set_scroll_nodes(scroll_nodes, cx);
@@ -852,14 +869,64 @@ fn frequency_from_x(x: f32, rate: u32) -> f32 {
 fn q_from_y(y: f32) -> f32 {
     (0.1 * ((18.0_f32 / 0.1).ln() * y.clamp(0.0, 1.0)).exp()).clamp(0.1, 18.0)
 }
-fn creation_kind(x: f32) -> eq::NodeKind {
+fn creation_kind([x, y]: [f32; 2]) -> eq::NodeKind {
     if x <= CUT_CREATION_EDGE {
         eq::NodeKind::LowCut
     } else if x >= 1.0 - CUT_CREATION_EDGE {
         eq::NodeKind::HighCut
+    } else if y <= CUT_CREATION_EDGE {
+        eq::NodeKind::Notch
     } else {
         eq::NodeKind::Bell
     }
+}
+
+/// Caller-owned shapes let the generic widget indicate the exact same action
+/// as the canonical EQ creation resolver without depending on device/DSP types.
+fn creation_hint(position: [f32; 2]) -> ResponseGraphCreationHint {
+    let (id, points): (&'static str, &'static [[f32; 2]]) = match creation_kind(position) {
+        eq::NodeKind::LowCut => (
+            "low-cut",
+            &[
+                [0.0, 0.05],
+                [0.25, 0.1],
+                [0.5, 0.7],
+                [0.75, 0.8],
+                [1.0, 0.8],
+            ],
+        ),
+        eq::NodeKind::HighCut => (
+            "high-cut",
+            &[
+                [0.0, 0.8],
+                [0.25, 0.8],
+                [0.5, 0.7],
+                [0.75, 0.1],
+                [1.0, 0.05],
+            ],
+        ),
+        eq::NodeKind::Notch => (
+            "notch",
+            &[
+                [0.0, 0.8],
+                [0.25, 0.8],
+                [0.5, 0.05],
+                [0.75, 0.8],
+                [1.0, 0.8],
+            ],
+        ),
+        _ => (
+            "bell",
+            &[
+                [0.0, 0.3],
+                [0.25, 0.35],
+                [0.5, 0.95],
+                [0.75, 0.35],
+                [1.0, 0.3],
+            ],
+        ),
+    };
+    ResponseGraphCreationHint { id, points }
 }
 fn begin_creation(
     view: &mut EditorView,
@@ -888,7 +955,7 @@ fn begin_creation(
     let result = EqState::decode(&expected).and_then(|mut state| {
         let id = NodeId::new(next_id.max(u64::from(state.next_node_id)))?;
         let mut node = Node::new(id, frequency_from_x(position[0], sample_rate), 0.0, bank)?;
-        node.kind = creation_kind(position[0]);
+        node.kind = creation_kind(position);
         state.add(node)?;
         let mut creation = Creation {
             expected,
@@ -1290,19 +1357,42 @@ mod tests {
 
     #[test]
     fn creation_zones_and_vertical_domains_have_explicit_boundaries() {
-        assert_eq!(creation_kind(0.0), eq::NodeKind::LowCut);
-        assert_eq!(creation_kind(CUT_CREATION_EDGE), eq::NodeKind::LowCut);
-        assert_eq!(creation_kind(CUT_CREATION_EDGE + 0.001), eq::NodeKind::Bell);
-        assert_eq!(creation_kind(0.5), eq::NodeKind::Bell);
+        assert_eq!(creation_kind([0.0, 0.5]), eq::NodeKind::LowCut);
         assert_eq!(
-            creation_kind(1.0 - CUT_CREATION_EDGE - 0.001),
+            creation_kind([CUT_CREATION_EDGE, 0.5]),
+            eq::NodeKind::LowCut
+        );
+        assert_eq!(
+            creation_kind([CUT_CREATION_EDGE + 0.001, 0.5]),
+            eq::NodeKind::Bell
+        );
+        assert_eq!(creation_kind([0.5, 0.5]), eq::NodeKind::Bell);
+        assert_eq!(
+            creation_kind([1.0 - CUT_CREATION_EDGE - 0.001, 0.5]),
             eq::NodeKind::Bell
         );
         assert_eq!(
-            creation_kind(1.0 - CUT_CREATION_EDGE),
+            creation_kind([1.0 - CUT_CREATION_EDGE, 0.5]),
             eq::NodeKind::HighCut
         );
-        assert_eq!(creation_kind(1.0), eq::NodeKind::HighCut);
+        assert_eq!(creation_kind([1.0, 0.5]), eq::NodeKind::HighCut);
+        for x in [0.0, CUT_CREATION_EDGE] {
+            assert_eq!(creation_kind([x, 0.0]), eq::NodeKind::LowCut);
+        }
+        for x in [1.0 - CUT_CREATION_EDGE, 1.0] {
+            assert_eq!(creation_kind([x, 0.0]), eq::NodeKind::HighCut);
+        }
+        for y in [0.0, CUT_CREATION_EDGE] {
+            assert_eq!(creation_kind([0.5, y]), eq::NodeKind::Notch);
+            assert_eq!(creation_hint([0.5, y]).id, "notch");
+        }
+        assert_eq!(
+            creation_kind([0.5, CUT_CREATION_EDGE + 0.001]),
+            eq::NodeKind::Bell
+        );
+        assert_eq!(creation_hint([0.0, 0.0]).id, "low-cut");
+        assert_eq!(creation_hint([1.0, 0.0]).id, "high-cut");
+        assert_eq!(creation_hint([0.5, 0.5]).id, "bell");
         assert_eq!(q_from_y(-1.0), 0.1);
         assert!((q_from_y(2.0) - 18.0).abs() < 0.0001);
     }
