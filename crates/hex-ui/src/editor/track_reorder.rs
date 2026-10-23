@@ -97,6 +97,7 @@ impl EditorView {
             return;
         }
         self.track_header_focus(track, cx).focus(window);
+        self.track_reorder.painted_gap = None;
         self.track_reorder.gesture = Some(Gesture {
             generation: self.project_generation,
             revision,
