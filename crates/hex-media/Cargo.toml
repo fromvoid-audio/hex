@@ -12,3 +12,8 @@ workspace = true
 hex-engine = { path = "../hex-engine" }
 hex-project = { path = "../hex-project" }
 sha2 = "=0.10.9"
+
+[dev-dependencies]
+hex-devices = { path = "../hex-devices" }
+hex-lattice = { path = "../hex-lattice" }
+hex-lattice-contract = { path = "../hex-lattice-contract" }

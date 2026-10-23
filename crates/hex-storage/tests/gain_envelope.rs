@@ -18,11 +18,13 @@ fn fixture() -> Project {
         track,
         points: vec![
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ZERO,
                 gain: 0.25,
                 outgoing: GainInterpolation::Linear,
             },
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ONE,
                 gain: 1.5,
                 outgoing: GainInterpolation::Step,
@@ -76,7 +78,7 @@ fn schema21_roundtrip_retains_every_lane_feed_send_provenance_and_opaque_payload
     let p = fixture();
     let bytes = encode(&p).unwrap();
     let doc: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(doc["version"], 32);
+    assert_eq!(doc["version"], 37);
     assert_eq!(decode(&bytes).unwrap(), p);
     assert!(encode_schema20(&p).is_err());
     let dir = std::env::temp_dir().join(format!(
@@ -134,8 +136,10 @@ fn strict_new_lane_fields_order_modes_roles_limits_and_backports_refuse() {
     for version in [19, 20, 24] {
         invalid = base.clone();
         invalid["version"] = json!(version);
+        invalid.as_object_mut().unwrap().remove("main_devices");
         invalid.as_object_mut().unwrap().remove("tuning");
         invalid.as_object_mut().unwrap().remove("device_assets");
+        invalid.as_object_mut().unwrap().remove("asset_sources");
         invalid.as_object_mut().unwrap().remove("track_colors");
         invalid.as_object_mut().unwrap().remove("accented_clips");
         invalid.as_object_mut().unwrap().remove("audio_clip_state");
@@ -158,7 +162,7 @@ fn new_writer_uses_complete_schema_even_without_lanes_or_feeds() {
     let bytes = encode(&p).unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).unwrap()["version"],
-        32
+        37
     );
     assert_eq!(decode(&bytes).unwrap(), p);
     let mut s = p.snapshot();
@@ -167,7 +171,7 @@ fn new_writer_uses_complete_schema_even_without_lanes_or_feeds() {
     let bytes = encode(&p).unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).unwrap()["version"],
-        32
+        37
     );
     assert_eq!(decode(&bytes).unwrap(), p);
 }
@@ -189,7 +193,7 @@ fn schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaq
     let bytes = encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<Value>(&bytes).unwrap()["version"],
-        32
+        37
     );
     assert_eq!(decode(&bytes).unwrap(), project);
     let mut editor = Editor::new(project.clone(), 8).unwrap();
@@ -217,15 +221,11 @@ fn schema22_epoch_only_save_history_retains_base_feeds_sends_provenance_and_opaq
     hex_storage::save_new(&path, &project).unwrap();
     assert_eq!(hex_storage::load(&path).unwrap(), project);
     std::fs::remove_dir_all(dir).unwrap();
-    for bytes in [
-        encode(&previous).unwrap(),
-        hex_storage::encode_schema22(&previous).unwrap(),
-    ] {
-        let p = decode(&bytes).unwrap();
-        assert_eq!(p, previous);
-        assert!(p.tracks()[0].gain_lane().spans().is_empty());
-        assert_eq!(p.tracks()[0].gain_lane().recording_epoch(), 0);
-    }
+    let p = decode(&encode(&previous).unwrap()).unwrap();
+    assert_eq!(p, previous);
+    assert!(p.tracks()[0].gain_lane().spans().is_empty());
+    assert_eq!(p.tracks()[0].gain_lane().recording_epoch(), 0);
+    assert!(decode(&hex_storage::encode_schema22(&previous).unwrap()).is_err());
 }
 
 #[test]
@@ -235,8 +235,11 @@ fn schema24_combined_model_roundtrip_keeps_trimmed_devices_routes_automation_and
         Some(ImportProvenance::new("ableton-live-set", 1, 1, vec![0, 255, 42, 7]).unwrap());
     let mut editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "combined".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -318,11 +321,13 @@ fn schema24_combined_model_roundtrip_keeps_trimmed_devices_routes_automation_and
     let mut snapshot = editor.project().snapshot();
     snapshot.tracks[0].gain_envelope = vec![
         GainPoint {
+            incoming_gain: None,
             beat: BeatTime::ZERO,
             gain: 0.2,
             outgoing: GainInterpolation::Linear,
         },
         GainPoint {
+            incoming_gain: None,
             beat: BeatTime::from_raw(480),
             gain: 1.6,
             outgoing: GainInterpolation::Step,
@@ -332,7 +337,7 @@ fn schema24_combined_model_roundtrip_keeps_trimmed_devices_routes_automation_and
     let project = Project::from_snapshot(snapshot).unwrap();
     let bytes = encode(&project).unwrap();
     let document: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(document["version"], 32);
+    assert_eq!(document["version"], 37);
     assert_eq!(document["tracks"][0]["gain_touch_epoch"], 23);
     assert!(
         document["tracks"][0]["gain_touch_spans"]

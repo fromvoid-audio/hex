@@ -73,6 +73,11 @@ impl CapturedBinding {
                         .iter()
                         .find(|device| device.id() == self.key.device)
                 }),
+            (Some(DevicePanelOwner::Main), NativeDeviceClass::Effect) => state
+                .project
+                .main_devices()
+                .iter()
+                .find(|device| device.id() == self.key.device),
             _ => None,
         };
         let Some(device) = device else {

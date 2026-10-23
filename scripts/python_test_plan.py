@@ -1,0 +1,126 @@
+"""Conservative Python self-test impact, independent of Rust check scope.
+
+Only reviewed app-owned Rust edits have a fast path. Tooling, configuration,
+unknown inputs and explicit audits retain complete unittest discovery.
+"""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+REVIEWED_MODULES = frozenset({
+    "test_changelog", "test_ci_plan", "test_device_catalog", "test_device_layout",
+    "test_eq8_response_compare", "test_gpui_patch", "test_hex_test_build",
+    "test_launch", "test_launch_restart", "test_launch_restart_compile",
+    "test_local_ci", "test_pcm_build_gate", "test_python_test_plan",
+    "test_stream_build_inputs", "test_terminal_progress", "test_ui_build_identity",
+    # Architecture fixtures exercise check-architecture.py policy/refusal logic;
+    # that guard still runs for app source/doc edits. Policy/test edits fall back.
+    "test_architecture",
+    # Mach-O/parser and receipt-bound bootstrap fixtures depend on native helper
+    # sources/build inputs, not ordinary app Rust. Those inputs fall back below.
+    "test_vst3_macos_bootstrap",
+    "test_vst3_instance_worker",
+})
+# Explicit native acceptance must never disappear behind app-only selection.
+# Keep partial opt-ins comprehensive too; each owning suite validates its inputs.
+NATIVE_ACCEPTANCE_ENV = (
+    "HEX_VST3_MACOS_RECEIPT", "HEX_VST3_DISCOVERY_RECEIPT",
+    "HEX_VST3_PACKAGE_SCANNER", "HEX_VST3_PACKAGE_FIXTURES", "HEX_TEST_SIGNING_IDENTITY",
+    "HEX_VST3_INSTANCE_RECEIPT", "HEX_VST3_INSTANCE_TEST_APP",
+)
+SHARED_TESTS = (
+    "test_ci_plan.ScopeTests.test_current_review_native_build_environment_variants_are_semantic",
+    "test_ci_plan.ScopeTests.test_review_target_directory_is_ownership_not_semantic_config",
+    "test_ci_plan.ScopeTests.test_known_scopes_keep_prose_and_all_dev_reverse_dependencies",
+    "test_ci_plan.ScopeTests.test_high_risk_unknown_and_mixed_cannot_be_scoped_away",
+    "test_ci_plan.ScopeTests.test_immutable_rename_deletion_untracked_and_prose_digest",
+    "test_ci_plan.ScopeTests.test_profiles_preserve_default_and_feature_configurations",
+    "test_ci_plan.ScopeTests.test_runtime_contract_consumers_and_required_configurations",
+    "test_ci_plan.ScopeTests.test_requested_zero_match_and_all_skipped_refuse_but_metadata_needs_no_rust",
+    "test_ci_plan.CacheIdentityTests.test_source_changes_stay_incremental_but_dependency_config_mode_and_membership_do_not",
+)
+# Preserve discovery's module names: lifecycle tests import test_local_ci and
+# test_launch as shared fixture modules. Package-qualified aliases load them twice.
+UNITTEST_BOOTSTRAP = (
+    "import sys, unittest; sys.path.insert(0, 'scripts/tests'); "
+    "unittest.main(module=None)"
+)
+COMPREHENSIVE_ARGV = (
+    "python3", "-m", "unittest", "discover", "-s", "scripts/tests", "-p", "test_*.py",
+)
+
+
+def available_modules(root: Path) -> list[str]:
+    tests = root / "scripts/tests"
+    # Discovery can recurse into packages. Preserve the path so a nested module
+    # cannot disappear behind a reviewed top-level module with the same name.
+    return sorted(".".join(path.relative_to(tests).with_suffix("").parts)
+                  for path in tests.rglob("test_*.py"))
+
+
+def select(profile: str, paths: list[str], inventory: list[dict],
+           ui_packages: set[str], modules: list[str], *, env: dict | None = None) -> dict:
+    """Select from non-prose Git inputs; no test imports or historical cache.
+
+    Cargo inventory establishes ownership, not just a crates/ prefix. The caller
+    retains ordinary Rust classification and all its reverse-dependency checks.
+    Native opt-ins come from the invoking environment (or an explicit test map);
+    their presence and comprehensive selection are recorded in the resolved plan.
+    """
+    modules = sorted(set(modules))
+
+    def comprehensive(reason: str) -> dict:
+        return {"mode": "comprehensive", "selected_groups": modules,
+                "excluded_groups": [], "test_selectors": modules,
+                "reasons": [reason]}
+
+    if profile != "merge":
+        return comprehensive("explicit audit/release or non-merge profile retains full Python coverage")
+    if not paths:
+        return {"mode": "none", "selected_groups": [], "excluded_groups": modules,
+                "test_selectors": [], "reasons": ["prose-only plan retains metadata checks"]}
+    native = [key for key in NATIVE_ACCEPTANCE_ENV
+              if (os.environ if env is None else env).get(key)]
+    if native:
+        return comprehensive("explicit native acceptance inputs retain full Python coverage: "
+                             + ", ".join(native))
+    if set(modules) != REVIEWED_MODULES:
+        return comprehensive("new, missing or unregistered Python test module")
+    categories = set()
+    for path in paths:
+        if not path.endswith(".rs") or path.endswith("/build.rs"):
+            return comprehensive("tooling, configuration, build input or unknown path: " + path)
+        owners = [(str(Path(package["manifest"]).parent), package["name"])
+                  for package in inventory
+                  if str(Path(package["manifest"]).parent) != "."
+                  and path.startswith(str(Path(package["manifest"]).parent) + "/")]
+        if not owners:
+            return comprehensive("Rust input has no supported Cargo workspace owner: " + path)
+        owner, name = max(owners, key=lambda owner: len(owner[0]))
+        relative = path[len(owner) + 1:]
+        if not relative.startswith(("src/", "tests/", "examples/", "benches/")):
+            return comprehensive("input is outside supported Cargo source directories: " + path)
+        categories.add("ui" if name in ui_packages else "core")
+    if len(categories) != 1:
+        return comprehensive("mixed UI/core inputs retain comprehensive Python coverage")
+    selectors = [*SHARED_TESTS, "test_python_test_plan"]
+    return {"mode": "shared", "selected_groups": ["shared-invariants", "test_python_test_plan"],
+            "excluded_groups": [*(name for name in modules
+                                   if name not in {"test_ci_plan", "test_python_test_plan"}),
+                                "test_ci_plan:remaining-cases"],
+            "test_selectors": selectors,
+            "reasons": ["ordinary app-only " + next(iter(categories))
+                        + " Rust inputs; shared invariants retained, unaffected tooling suites excluded"]}
+
+
+def argv(selection: dict) -> tuple[str, ...]:
+    if selection.get("mode") == "comprehensive":
+        return COMPREHENSIVE_ARGV
+    if selection.get("mode") != "shared":
+        raise ValueError("Python test step needs a known nonempty selection")
+    selectors = selection.get("test_selectors")
+    if not isinstance(selectors, list) or not selectors or any(
+            not isinstance(name, str) or not name for name in selectors):
+        raise ValueError("Python test selection is empty or malformed")
+    return ("python3", "-c", UNITTEST_BOOTSTRAP, *selectors)

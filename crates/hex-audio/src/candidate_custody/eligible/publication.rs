@@ -46,6 +46,17 @@ pub struct AudioCandidatePublicationReservation {
     pub max_construction_peak_data_bytes: usize,
 }
 impl AudioCandidatePublicationReservation {
+    /// Pure requested-capacity quote for a new normal worker channel and this
+    /// publication bank. It is neither allocator/RSS nor native admission proof.
+    pub fn worker_control_storage_quote(self) -> Option<usize> {
+        if self.runtime_slots == 0
+            || self.archive_slots == 0
+            || self.receipt_rows < self.runtime_slots
+        {
+            return None;
+        }
+        crate::candidate_custody::CandidateRoot::worker_control_storage_quote(self)
+    }
     fn ledger(self) -> AudioStorageLedgerReservation {
         AudioStorageLedgerReservation {
             data_rows: self.data_rows,
@@ -248,23 +259,9 @@ impl Queued {
     }
 }
 impl Bank {
-    /// All physical cell/receipt/anchor backing and lifecycle handle payloads
-    /// are allocated before the first candidate is accepted. No graph count or
-    /// process/RSS ceiling is introduced by this caller-selected reservation.
-    pub(super) fn prepare(
+    pub(in crate::candidate_custody) fn backing_quote(
         reservation: AudioCandidatePublicationReservation,
-        base_bytes: usize,
-    ) -> Result<(Self, Work), &'static str> {
-        if reservation.runtime_slots == 0
-            || reservation.archive_slots == 0
-            || reservation.receipt_rows < reservation.runtime_slots
-            || reservation.max_construction_peak_data_bytes < reservation.max_retained_data_bytes
-        {
-            return Err("invalid constructor publication reservation");
-        }
-        // Reject impossible caller requests BEFORE reserving, initializing or
-        // allocating per-cell lifecycle payloads. Actual capacities are checked
-        // again below; opaque Arc headers remain bounded RESOURCE groups.
+    ) -> Result<usize, &'static str> {
         let declared = [
             reservation
                 .runtime_slots
@@ -292,8 +289,30 @@ impl Bank {
                 .checked_mul(std::mem::size_of::<Option<BankDrop>>()),
         ]
         .into_iter()
-        .try_fold(base_bytes, |sum, value| sum.checked_add(value?))
+        .try_fold(0usize, |sum, value| sum.checked_add(value?))
         .ok_or("constructor publication metadata overflow")?;
+        Ok(declared)
+    }
+    /// All physical cell/receipt/anchor backing and lifecycle handle payloads
+    /// are allocated before the first candidate is accepted. No graph count or
+    /// process/RSS ceiling is introduced by this caller-selected reservation.
+    pub(super) fn prepare(
+        reservation: AudioCandidatePublicationReservation,
+        base_bytes: usize,
+    ) -> Result<(Self, Work), &'static str> {
+        if reservation.runtime_slots == 0
+            || reservation.archive_slots == 0
+            || reservation.receipt_rows < reservation.runtime_slots
+            || reservation.max_construction_peak_data_bytes < reservation.max_retained_data_bytes
+        {
+            return Err("invalid constructor publication reservation");
+        }
+        // Reject impossible caller requests BEFORE reserving, initializing or
+        // allocating per-cell lifecycle payloads. Actual capacities are checked
+        // again below; opaque Arc headers remain bounded RESOURCE groups.
+        let declared = Self::backing_quote(reservation)?
+            .checked_add(base_bytes)
+            .ok_or("constructor publication metadata overflow")?;
         if declared > reservation.max_retained_data_bytes
             || declared > reservation.max_construction_peak_data_bytes
         {
@@ -371,6 +390,13 @@ pub struct AudioCandidateEligibleStageRefusal {
     pub domains: Vec<AudioCandidateDomainToken>,
 }
 impl super::Custody {
+    pub(in crate::candidate_custody) fn actual_control_backing_bytes(&self) -> Option<usize> {
+        let bank = lock(&self.bank);
+        if !self.enabled() || bank.closing {
+            return None;
+        }
+        Some(bank.metadata_bytes)
+    }
     #[cfg(test)]
     pub(in crate::candidate_custody) fn test_publication_status(&self) -> String {
         let bank = self.bank.try_lock().ok();
@@ -929,3 +955,9 @@ impl Bank {
 
 #[cfg(test)]
 mod tests;
+
+pub(in crate::candidate_custody) fn publication_backing_quote(
+    reservation: AudioCandidatePublicationReservation,
+) -> Option<usize> {
+    Bank::backing_quote(reservation).ok()
+}

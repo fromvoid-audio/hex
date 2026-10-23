@@ -223,8 +223,15 @@ fn canonical_verified_bindings_survive_save_as_and_changed_bytes_require_explici
     assert!(
         resident_import.state.project.tracks()[0]
             .instrument()
-            .is_some()
+            .is_none()
     );
+    for track in [
+        &imported.state.project.tracks()[0],
+        &resident_import.state.project.tracks()[0],
+    ] {
+        assert!(track.devices().is_empty());
+        assert_eq!(track.ordered_device_chain().count(), 0);
+    }
     let snapshot = imported.state.canonical_audio_source.as_ref().unwrap();
     assert_eq!(snapshot.audio_mode(), DocumentAudioMode::VerifiedStreaming);
     assert_eq!(snapshot.context().editor_revision, imported.state.revision);
@@ -370,8 +377,11 @@ fn verified_import_into_existing_track_preserves_its_instrument_and_native_refus
     );
     let added = run(
         &service,
-        Request::Edit(Command::AddTrack {
+        Request::Edit(Command::InsertTrackWithDevice {
             name: "existing".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }),
     );
     let track = &added.state.project.tracks()[0];

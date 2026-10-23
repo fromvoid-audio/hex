@@ -10,6 +10,7 @@ impl AudioPreparationCustody {
             incarnation: _,
             phase: _,
             bank,
+            current_sampler,
             slots,
             next_disposal: _,
             first_panic,
@@ -33,8 +34,11 @@ impl AudioPreparationCustody {
         if let Some(bank) = bank {
             l.inputs(bank)?;
         }
+        current_sampler.visit(l)?;
+        let bank = bank.as_ref().or_else(|| current_sampler.bank());
         l.vec(slots)?;
         l.growth(capacity.previous_slot_backing_bytes)?;
+        l.growth(capacity.native_compiler_workspace_bytes)?;
         for SourceSlot {
             track: _,
             clip: _,

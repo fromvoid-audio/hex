@@ -1,11 +1,19 @@
-//! Once-only, coupled native closure custody, adapted from original177
-//! 8d444c06. Backend guard destruction moves a carrier; only lifecycle control
-//! destroys its contents. Receiving a carrier is not final-active quiescence.
+//! Once-only coupled custody for native callback and error guards.
+//!
+//! Backend guard destruction moves a carrier; only lifecycle control destroys its contents.
+//! Final-active extraction requires the exact root-bound release authority, normal completion of
+//! the original stream-handle destructor and release of both terminal guard anchors. Silence,
+//! Pause, shutdown acknowledgment or merely receiving a carrier establishes none of those
+//! conditions. Destruction failure retains Pending and exclusive output custody without retry.
+//! This proves nonrenderability through the supported application callback paths, not
+//! independently observed AudioUnit stop/uninitialize/dispose success.
 use crate::prepared::{Callback, Status};
 #[cfg(all(test, feature = "allocation-probe"))]
 mod endpoint_tests;
 mod resources;
-pub(crate) use resources::{ChannelStorage, NativeCandidateBoundary};
+pub(crate) use resources::{
+    ChannelStorage, NativeCandidateBoundary, worker_boundary_storage_quote,
+};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 /// Sealed application-callback nonrenderability authority. It is not an OS
@@ -132,12 +140,12 @@ impl<T> Drop for Guard<T> {
     }
 }
 impl<T> Terminal<T> {
-    fn ready(&mut self) -> bool {
+    pub(crate) fn ready(&mut self) -> bool {
         self.cell
             .as_mut()
             .is_some_and(|cell| cell.get().is_some() && Arc::get_mut(cell).is_some())
     }
-    fn take(&mut self) -> Option<Box<T>> {
+    pub(crate) fn take(&mut self) -> Option<Box<T>> {
         if !self.ready() {
             return None;
         }

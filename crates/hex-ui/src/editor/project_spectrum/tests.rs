@@ -15,6 +15,7 @@ fn publish(view: &mut EditorView, project: Project) {
         comparison_audio: None,
         project: Arc::new(project),
         waveforms: old.waveforms.clone(),
+        source_overviews: old.source_overviews.clone(),
         audio_clip_waveforms: old.audio_clip_waveforms.clone(),
         midi_preview: Arc::clone(&old.midi_preview),
         gain_preview: old.gain_preview.clone(),

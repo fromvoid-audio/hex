@@ -29,6 +29,7 @@ pub(crate) fn audio_to_midi(project: &mut Project, id: ClipId) -> Result<Created
             id,
             start,
             length,
+            volume: crate::MidiClipVolume::default(),
             source: Arc::new(MidiSource::defaults(length)),
         });
         return Ok(Created::Clip(id));
@@ -53,6 +54,7 @@ pub(crate) fn audio_to_midi(project: &mut Project, id: ClipId) -> Result<Created
         flavor: clip.flavor,
         id,
         name: clip.name.clone(),
+        volume: crate::MidiClipVolume::default(),
         source: Arc::new(MidiSource::defaults(length)),
     });
     Ok(Created::SessionClip(id))

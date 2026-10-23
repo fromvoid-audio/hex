@@ -1,4 +1,12 @@
-//! Bounded metadata and authored state shared across native device boundaries.
+//! # Purpose
+//! Own neutral bounded native-device metadata, identifiers and authored state envelopes.
+//!
+//! # Dependencies
+//! Uses only the standard library; no DSP or other workspace dependency.
+//!
+//! # Does not own
+//! Does not construct processors, resolve assets, schedule notes or perform storage migrations.
+//! Opaque payloads and asset references require provider and host validation before processing.
 mod device_assets;
 #[cfg(test)]
 mod device_assets_tests;
@@ -447,6 +455,31 @@ impl NativeDeviceState {
     pub fn payload(&self) -> &[u8] {
         &self.payload
     }
+    /// Conservative shared payload/reference backing retained by this control-side state.
+    /// The inline state is charged by its enclosing owner. Arc headers/alignment are included;
+    /// reference entries contain only inline identities. Shared clones may be charged repeatedly,
+    /// so this is neither allocation identity nor an exclusive/closed-ownership proof.
+    pub fn retained_control_metadata_bytes(&self) -> Option<usize> {
+        let header = 2usize.checked_mul(std::mem::size_of::<usize>())?;
+        let payload = self.payload.len().checked_add(header)?.checked_add(
+            std::mem::align_of::<usize>()
+                .max(std::mem::align_of::<u8>())
+                .checked_sub(1)?,
+        )?;
+        let references = match self.asset_references.as_ref() {
+            Some(references) => references
+                .len()
+                .checked_mul(std::mem::size_of::<DeviceAssetReference>())?
+                .checked_add(header)?
+                .checked_add(
+                    std::mem::align_of::<usize>()
+                        .max(std::mem::align_of::<DeviceAssetReference>())
+                        .checked_sub(1)?,
+                )?,
+            None => 0,
+        };
+        payload.checked_add(references)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -801,6 +834,31 @@ mod tests {
             descriptor.validate(value)?;
             self.migrate_state(state)
         }
+    }
+
+    #[test]
+    fn state_metadata_quote_retains_shared_odd_payload_and_reference_backing() {
+        let state = NativeDeviceState::new(AVAILABILITY_TYPE, 1, vec![7; 3]).unwrap();
+        let clone = state.clone();
+        assert_eq!(
+            state.retained_control_metadata_bytes(),
+            clone.retained_control_metadata_bytes()
+        );
+        let alignment = std::mem::align_of::<usize>();
+        let minimum = (3 + 2 * std::mem::size_of::<usize>()).next_multiple_of(alignment);
+        assert!(state.retained_control_metadata_bytes().unwrap() >= minimum);
+        let bound = state
+            .with_asset_references(vec![DeviceAssetReference {
+                slot: DeviceAssetSlot::new(1).unwrap(),
+                asset: DeviceAssetKey::new(2).unwrap(),
+            }])
+            .unwrap();
+        assert!(
+            bound.retained_control_metadata_bytes().unwrap()
+                >= clone.retained_control_metadata_bytes().unwrap()
+                    + std::mem::size_of::<DeviceAssetReference>()
+                    + 2 * std::mem::size_of::<usize>()
+        );
     }
 
     #[test]
