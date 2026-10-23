@@ -156,13 +156,16 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     decode_version(bytes, 37)
 }
 
-/// Frozen additive upgrades backed by original schema34–36 encoder fixtures.
+/// Frozen upgrades backed by original schema34–36 encoder fixtures.
 /// Fields absent by design default only for the precise historical version;
 /// present inventories always pass their original strict parser.
 pub(crate) fn decode_version(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
     // Preserve duplicate-field refusal before adapting the older strict envelope.
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    if (34..=36).contains(&version) {
+        super::migrations::upgrade_nested(&mut value, version)?;
+    }
     require_device_host_gains(&value)?;
     let object = value
         .as_object_mut()
