@@ -1,6 +1,6 @@
 //! Original owned SDK modules only; never installed plug-ins or the Hex UI.
 use super::*;
-use hex_audio::plugin_transport::Events;
+use crate::transport::Events;
 use hex_plugin_state::decode;
 use std::path::PathBuf;
 
@@ -560,7 +560,7 @@ fn cancelling_one_real_instance_preserves_another_same_class_instance() {
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn real_immutable_quantum_adapter_has_exact_two_quantum_positions_and_rejects_host_refusal() {
-    use hex_audio::plugin_transport::{self, Fault};
+    use crate::transport::{self as plugin_transport, Fault};
     let mut instance = Prepared::prepare_on_control(
         &build(),
         source(),

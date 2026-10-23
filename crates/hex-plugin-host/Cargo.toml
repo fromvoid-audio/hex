@@ -8,11 +8,20 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+# Headless copied endpoint probes; no production counter dependency.
+allocation-probe = []
+# Queue witness for owning audio tests; not an admission or readiness fact.
+test-support = []
+
+[dev-dependencies]
+allocation-counter = "=0.8.1"
+
 [dependencies]
 hex-plugin-scan = { path = "../hex-plugin-scan" }
 hex-plugin-state = { path = "../hex-plugin-state" }
 hex-lattice-contract = { path = "../hex-lattice-contract" }
-hex-audio = { path = "../hex-audio" }
+rtrb = "=0.3.4"
 
 [target.'cfg(unix)'.dependencies]
 # Bounded control/worker socket readiness only; no process/signal feature here.

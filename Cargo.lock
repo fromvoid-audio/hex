@@ -2573,6 +2573,7 @@ dependencies = [
  "hex-lattice",
  "hex-lattice-contract",
  "hex-media",
+ "hex-plugin-host",
  "hex-project",
  "hex-stream",
  "hex-tuning",
@@ -2721,10 +2722,11 @@ dependencies = [
 name = "hex-plugin-host"
 version = "0.1.0"
 dependencies = [
- "hex-audio",
+ "allocation-counter",
  "hex-lattice-contract",
  "hex-plugin-scan",
  "hex-plugin-state",
+ "rtrb",
  "rustix 1.1.5",
 ]
 

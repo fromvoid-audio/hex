@@ -13,12 +13,12 @@
 //! # Dependencies
 //! Uses hex-plugin-scan's fresh source/helper provenance, hex-plugin-state's
 //! strict provider codec and hex-lattice-contract's immutable state envelope.
-//! hex-audio supplies its existing copied Block/Binding vocabulary, not callback
-//! ownership. std and rustix event-only readiness serve control/worker I/O;
+//! Owns the bounded copied transport vocabulary/rings independently of native
+//! output. std and rustix event-only readiness serve control/worker I/O;
 //! there are no process-global handlers or rustix process APIs in this client.
 //!
 //! # Does not own
-//! No SDK ABI/pointers, unsafe Rust, device/callback, worker scheduling, canonical
+//! No SDK ABI/pointers, unsafe Rust, native device/callback, worker scheduling, canonical
 //! edits/history, graph/publication/retirement or plugin admission authority.
 //! All client I/O, cancellation, waiting and destruction belong on control or
 //! the existing joining transport worker, never an audio callback. Ready is a
@@ -66,3 +66,6 @@ impl std::fmt::Display for Error {
     }
 }
 impl std::error::Error for Error {}
+
+/// Copied bounded exchange; native callback and joining-worker custody belong to audio.
+pub mod transport;

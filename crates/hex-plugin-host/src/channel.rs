@@ -232,7 +232,7 @@ mod tests {
         let mut body = Vec::new();
         protocol::stamp(
             &mut body,
-            hex_audio::plugin_transport::Binding {
+            crate::transport::Binding {
                 root: 1,
                 instance: 2,
                 graph: 3,

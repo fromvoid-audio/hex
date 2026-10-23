@@ -16,7 +16,7 @@ ALLOWED = {
     'hex-plugin-catalog': {'hex-plugin-scan'},
     'hex-plugin-state': {'hex-lattice-contract'},
     # Ordinary control/worker client; never callback, process-global signals or graph authority.
-    'hex-plugin-host': {'hex-plugin-scan', 'hex-plugin-state', 'hex-lattice-contract', 'hex-audio'},
+    'hex-plugin-host': {'hex-plugin-scan', 'hex-plugin-state', 'hex-lattice-contract'},
     'hex-diagnostics': set(),
     'hex-lattice-contract': set(),
     'hex-project': {'hex-lattice-contract', 'hex-tuning'},
@@ -33,7 +33,7 @@ ALLOWED = {
     'hex-preferences': set(),
     'hex-widgets': set(),
     # Concrete catalog/pair custody and control disposal, never an engine->stream edge.
-    'hex-audio': {'hex-engine', 'hex-stream'},
+    'hex-audio': {'hex-engine', 'hex-stream', 'hex-plugin-host'},
     'hex-ui': {'hex-plugin-catalog', 'hex-mts', 'hex-tuning', 'hex-midi', 'hex-diagnostics', 'hex-engine', 'hex-audio', 'hex-session', 'hex-project', 'hex-library', 'hex-preferences', 'hex-lattice-contract', 'hex-widgets'},
     # Desktop injects the Session sink and binds neutral source facts to actual
     # audio/stream constructor custody; Session has no device/stream edge.
@@ -60,7 +60,7 @@ DEV_ALLOWED = {
 }
 BOUNDARIES = {'mts-esp-master-adapter': {'hex-mts'}, 'libloading': set(), 'coremidi': {'hex-midi'}, 'gpui': {'hex-ui', 'hex-desktop', 'hex-widgets'},
               'gpui_platform': {'hex-ui', 'hex-desktop', 'hex-widgets'},
-              'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream'},
+              'cpal': {'hex-audio'}, 'rtrb': {'hex-audio', 'hex-stream', 'hex-plugin-host'},
               # Source/scanner identities and bounded control-side hashes of
               # the engine's actual retained PCM bank; never callback DSP.
               'sha2': {'hex-media', 'hex-engine', 'hex-plugin-scan', 'hex-clap-scan'},
@@ -97,8 +97,8 @@ for name, package in packages.items():
         target = dep['name']
         if target == 'rustix' and 'process' in dep.get('features', []) and name not in {'hex-plugin-scan', 'hex-clap-scan'}:
             errors.append(f'{name}: rustix process APIs belong only to the scanner supervisor')
-        if target == 'allocation-counter' and (name not in {'hex-audio', 'hex-stream', 'hex-desktop'} or dep['kind'] != 'dev'):
-            errors.append(f'{name}: allocation-counter is allowed only for audio/stream/desktop dev probes')
+        if target == 'allocation-counter' and (name not in {'hex-audio', 'hex-stream', 'hex-desktop', 'hex-plugin-host'} or dep['kind'] != 'dev'):
+            errors.append(f'{name}: allocation-counter is allowed only for audio/stream/desktop/copied-host dev probes')
         allowed = ALLOWED[name]
         if dep['kind'] == 'dev':
             allowed = allowed | DEV_ALLOWED.get(name, set())

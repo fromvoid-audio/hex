@@ -12,7 +12,7 @@
 //! Missing/malformed output or saturation revokes the entire one-shot exchange.
 //! No stale-buffer replay, waiting, waking, allocation or DSP rollback occurs.
 
-use hex_engine::Frame;
+type Frame = [f32; 2];
 use rtrb::{Consumer, Producer, RingBuffer};
 use std::sync::{
     Arc,
@@ -22,9 +22,6 @@ use std::sync::{
     },
 };
 pub mod wire;
-mod worker;
-pub(crate) use worker::Reaper;
-pub(crate) use worker::spawn;
 
 pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;
@@ -272,7 +269,9 @@ pub fn channel(binding: Binding, quantum: u16) -> Result<(Control, Callback, Wor
 }
 
 impl Callback {
-    pub(crate) fn reject(&mut self, fault: Fault) {
+    /// Permanently refuse this exchange at its actual host validation boundary.
+    /// Rejection neither replays work nor destroys either endpoint.
+    pub fn reject(&mut self, fault: Fault) {
         let _ = self.fail::<()>(fault);
     }
     pub fn binding(&self) -> Binding {
@@ -461,8 +460,17 @@ impl Callback {
 }
 
 impl Worker {
-    #[cfg(test)]
-    pub(crate) fn pending_requests_for_test(&self) -> usize {
+    /// Queue-independent revocation by the joining worker owner. Does not
+    /// dispose either endpoint or grant native/canonical acceptance.
+    pub fn revoke(&self) {
+        self.revoked.store(true, Release);
+    }
+    /// Diagnostic count after matching completion publication, never custody.
+    pub fn completed_blocks(&self) -> u64 {
+        self.sequence
+    }
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pending_requests_for_test(&self) -> usize {
         self.requests.slots()
     }
     fn fail<T>(&self, fault: Fault) -> Result<T, Fault> {

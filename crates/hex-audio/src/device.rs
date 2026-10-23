@@ -291,7 +291,7 @@ fn bridge_callback_request(supported: cpal::SupportedBufferSize) -> Result<u16, 
             "output device does not report a bounded buffer range for plugin processing".into(),
         );
     };
-    let frames = max.min(crate::plugin_transport::MAX_FRAMES as u32);
+    let frames = max.min(hex_plugin_host::transport::MAX_FRAMES as u32);
     if min == 0 || min > max || min > frames {
         return Err("output device cannot provide a supported plugin callback size".into());
     }
@@ -549,7 +549,7 @@ pub(crate) fn headless_worker_output(
     control
         .configure_physical_callback_request(
             &mut callback,
-            crate::plugin_transport::MAX_FRAMES as u16,
+            hex_plugin_host::transport::MAX_FRAMES as u16,
         )
         .map_err(|error| error.to_string())?;
     let root = control.native_candidate_root();
@@ -656,8 +656,11 @@ mod tests {
                     };
                     let sample = index * channels + channel;
                     assert_eq!(floats[sample].to_bits(), expected.to_bits());
-                    assert_eq!(signed[sample], cpal::Sample::from_sample(expected));
-                    assert_eq!(unsigned[sample], cpal::Sample::from_sample(expected));
+                    assert_eq!(signed[sample], <i16 as cpal::Sample>::from_sample(expected));
+                    assert_eq!(
+                        unsigned[sample],
+                        <u16 as cpal::Sample>::from_sample(expected)
+                    );
                 }
             }
         }

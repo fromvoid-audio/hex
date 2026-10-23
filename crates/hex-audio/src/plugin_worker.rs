@@ -1,8 +1,9 @@
 //! Joining control custody for the exact copied endpoint. The processor closure
 //! runs only on this worker and must bound its own IPC calls/child supervision.
 //! This is not installed-plugin process admission or crash recovery authority.
-use super::*;
+use hex_plugin_host::transport::*;
 use std::{
+    sync::atomic::Ordering::{Acquire, Release},
     sync::{Arc, atomic::AtomicU64},
     thread::{self, JoinHandle},
     time::Duration,
@@ -83,13 +84,13 @@ pub(crate) fn spawn(
                     Ok(Some(block)) => {
                         let result = process(block).and_then(|reply| worker.complete(reply));
                         if let Err(error) = result {
-                            let _ = worker.fail::<()>(error);
+                            worker.revoke();
                             if error != Fault::Revoked {
                                 fault = Some(error);
                             }
                             break;
                         }
-                        published.store(worker.sequence, Release);
+                        published.store(worker.completed_blocks(), Release);
                     }
                     Ok(None) => thread::sleep(Duration::from_micros(50)),
                     Err(Fault::Revoked) => break,
@@ -163,7 +164,10 @@ mod tests {
         }
         assert_eq!(reaper.join_on_control(), Err(Fault::InvalidSamples));
         assert_eq!(reaper.join_on_control(), Err(Fault::InvalidSamples));
-        assert!(reaper.worker.as_ref().unwrap().revoked.load(Acquire));
+        assert!(matches!(
+            reaper.worker.as_mut().unwrap().receive(),
+            Err(Fault::Revoked)
+        ));
         drop((callback, reaper));
     }
 

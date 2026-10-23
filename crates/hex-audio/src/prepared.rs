@@ -919,7 +919,7 @@ pub struct Control {
 /// The unique worker-side publication/return endpoint; never a UI command client.
 pub struct PublicationControl {
     requested_physical_callback_frames: Option<u16>,
-    output_transport_reaper: Option<crate::plugin_transport::Reaper>,
+    output_transport_reaper: Option<crate::plugin_worker::Reaper>,
     publications: Producer<QueuedPublication>,
     retired: Option<Consumer<ReturnedPublication>>,
     candidate_root: crate::candidate_custody::CandidateRoot,
@@ -959,7 +959,7 @@ pub(crate) enum OutputTransportDelivery {
 
 pub struct Callback {
     requested_physical_callback_frames: Option<u16>,
-    output_transport: Option<Box<crate::plugin_transport::Callback>>,
+    output_transport: Option<Box<hex_plugin_host::transport::Callback>>,
     output_transport_cancelled: bool,
     transport_setup_open: bool,
     sample_preview: crate::sample_preview::Callback,
@@ -1246,7 +1246,7 @@ impl PublicationControl {
         frames: u16,
     ) -> Result<(), Invalid> {
         if frames == 0
-            || usize::from(frames) > crate::plugin_transport::MAX_FRAMES
+            || usize::from(frames) > hex_plugin_host::transport::MAX_FRAMES
             || self.requested_physical_callback_frames.is_some()
             || callback.requested_physical_callback_frames.is_some()
             || self.revision != 0
@@ -1871,13 +1871,14 @@ impl PublicationControl {
     pub fn prepare_output_transport_worker_on_control(
         &mut self,
         callback: &mut Callback,
-        binding: crate::plugin_transport::Binding,
+        binding: hex_plugin_host::transport::Binding,
         quantum: u16,
         process: impl FnMut(
-            crate::plugin_transport::Block,
-        )
-            -> Result<crate::plugin_transport::Block, crate::plugin_transport::Fault>
-        + Send
+            hex_plugin_host::transport::Block,
+        ) -> Result<
+            hex_plugin_host::transport::Block,
+            hex_plugin_host::transport::Fault,
+        > + Send
         + 'static,
     ) -> Result<(), Invalid> {
         if self.native_custody
@@ -1896,7 +1897,7 @@ impl PublicationControl {
             binding.epoch,
             quantum,
         )?;
-        match crate::plugin_transport::spawn(control, worker, process) {
+        match crate::plugin_worker::spawn(control, worker, process) {
             Ok(reaper) => {
                 self.output_transport_reaper = Some(reaper);
                 Ok(())
@@ -1913,7 +1914,7 @@ impl PublicationControl {
     pub fn output_transport_completed_blocks_on_control(&self) -> Option<u64> {
         self.output_transport_reaper
             .as_ref()
-            .map(crate::plugin_transport::Reaper::completed_blocks)
+            .map(crate::plugin_worker::Reaper::completed_blocks)
     }
 }
 
@@ -1931,8 +1932,8 @@ impl Callback {
         quantum: u16,
     ) -> Result<
         (
-            crate::plugin_transport::Control,
-            crate::plugin_transport::Worker,
+            hex_plugin_host::transport::Control,
+            hex_plugin_host::transport::Worker,
         ),
         Invalid,
     > {
@@ -1948,13 +1949,13 @@ impl Callback {
                 "output transport requires an unexposed empty callback",
             ));
         }
-        let binding = crate::plugin_transport::Binding {
+        let binding = hex_plugin_host::transport::Binding {
             root: self.candidate_root.root_id(),
             instance,
             graph: graph_revision,
             epoch,
         };
-        let (control, callback, worker) = crate::plugin_transport::channel(binding, quantum)
+        let (control, callback, worker) = hex_plugin_host::transport::channel(binding, quantum)
             .map_err(|_| Invalid("invalid output transport configuration"))?;
         self.output_transport = Some(Box::new(callback));
         Ok((control, worker))
@@ -1981,7 +1982,7 @@ impl Callback {
             frames.fill([0.0; 2]);
             if self.status.playing.load(Relaxed) {
                 if let Some(transport) = self.output_transport.as_mut() {
-                    transport.reject(crate::plugin_transport::Fault::Revoked);
+                    transport.reject(hex_plugin_host::transport::Fault::Revoked);
                 }
                 return false;
             }
@@ -1993,14 +1994,14 @@ impl Callback {
         if transport.binding().graph != self.status.applied_revision.load(Acquire)
             || transport.binding().epoch != self.status.transport_epoch.load(Acquire)
         {
-            transport.reject(crate::plugin_transport::Fault::Identity);
+            transport.reject(hex_plugin_host::transport::Fault::Identity);
             return false;
         }
-        if self.gain_recording.has_take() || frames.len() > crate::plugin_transport::MAX_FRAMES {
-            transport.reject(crate::plugin_transport::Fault::Protocol);
+        if self.gain_recording.has_take() || frames.len() > hex_plugin_host::transport::MAX_FRAMES {
+            transport.reject(hex_plugin_host::transport::Fault::Protocol);
             return false;
         }
-        let mut input = [[0.0; 2]; crate::plugin_transport::MAX_FRAMES];
+        let mut input = [[0.0; 2]; hex_plugin_host::transport::MAX_FRAMES];
         input[..frames.len()].copy_from_slice(frames);
         // This finite stereo-output profile has no MIDI destination. Refuse
         // output events rather than silently claiming they reached a device.
@@ -2016,7 +2017,7 @@ impl Callback {
         };
         if transport
             .fault()
-            .is_some_and(|fault| fault != crate::plugin_transport::Fault::Revoked)
+            .is_some_and(|fault| fault != hex_plugin_host::transport::Fault::Revoked)
         {
             return Refused;
         }

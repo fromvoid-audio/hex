@@ -1,7 +1,7 @@
 //! Actual prepared rendering and final host conversion, driven headlessly.
 //! No native device admission, physical deadline or user acceptance is claimed.
 use super::*;
-use crate::plugin_transport::{self, Fault};
+use hex_plugin_host::transport::{self as plugin_transport, Fault};
 use std::sync::atomic::Ordering::Acquire;
 
 fn original_graph() -> hex_engine::playback::Playback {

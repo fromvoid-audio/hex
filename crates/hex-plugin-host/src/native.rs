@@ -1,11 +1,11 @@
 //! Actual Mac child control/worker custody. No process-global signal changes or
 //! numeric PID signalling. The helper's pre-SDK guardian owns self-cancellation.
+use crate::transport::{Binding, Block};
 use crate::{
     Error, Result,
     channel::{Channel, Packet, end_after, pause},
     protocol::{self, Configuration, Facts, PresentationLatency, Ready, Terminal},
 };
-use hex_audio::plugin_transport::{Binding, Block};
 use hex_lattice_contract::NativeDeviceState;
 use hex_plugin_scan::macos::{
     build_identity::InstanceBuild,
@@ -509,9 +509,9 @@ impl Prepared {
             .sequence
             .checked_add(1)
             .ok_or(Error::Protocol("instance sequence exhausted"))?;
-        let mut bytes = [0; hex_audio::plugin_transport::wire::MAX_PACKET_BYTES];
+        let mut bytes = [0; crate::transport::wire::MAX_PACKET_BYTES];
         let mut cursor = Cursor::new(bytes.as_mut_slice());
-        hex_audio::plugin_transport::wire::write(&mut cursor, &block).map_err(Error::Io)?;
+        crate::transport::wire::write(&mut cursor, &block).map_err(Error::Io)?;
         let length = cursor.position() as usize;
         let until = end_after(self.limits.exchange)?;
         let token = self.lease.cancellation.clone();

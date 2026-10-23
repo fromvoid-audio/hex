@@ -1,6 +1,6 @@
 //! Finite hostile-wire contracts; actual SDK behavior is tested separately.
 use super::*;
-use hex_audio::plugin_transport::{Events, MidiEvent};
+use crate::transport::{Events, MidiEvent};
 use hex_plugin_state::{BinaryIdentity, ClassId, State};
 fn config() -> Configuration {
     Configuration {
@@ -133,7 +133,7 @@ fn immutable_request_bounds_and_failed_reply_never_fabricate_pcm() {
     };
     config.validate_block(&block, 0).unwrap();
     let mut bytes = Vec::new();
-    hex_audio::plugin_transport::wire::write(&mut bytes, &block).unwrap();
+    crate::transport::wire::write(&mut bytes, &block).unwrap();
     assert_eq!(pcm(&bytes, &config, 0).unwrap().pcm[..8], block.pcm[..8]);
     let mut wrong = bytes.clone();
     wrong[16] ^= 1;

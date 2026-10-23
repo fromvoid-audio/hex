@@ -1,7 +1,7 @@
 //! Existing ordinary-instance wire; actual direct reap belongs to the client.
 //! Control/worker only. Bounds precede copies; copied facts never authorize a graph.
+use crate::transport::{Binding, Block, MAX_FRAMES};
 use crate::{Error, Result};
-use hex_audio::plugin_transport::{Binding, Block, MAX_FRAMES};
 use hex_lattice_contract::NativeDeviceState;
 use hex_plugin_state::{Identity, STATE_VERSION, TYPE_ID};
 use std::io::Cursor;
@@ -363,7 +363,7 @@ pub fn stop(binding: Binding, sequence: u64, frames: u64) -> [u8; 64] {
 pub fn pcm(bytes: &[u8], config: &Configuration, sequence: u64) -> Result<Block> {
     config.validate()?;
     let mut cursor = Cursor::new(bytes);
-    let block = hex_audio::plugin_transport::wire::read(&mut cursor)
+    let block = crate::transport::wire::read(&mut cursor)
         .map_err(Error::Io)?
         .ok_or(Error::Protocol("missing instance PCM reply"))?;
     if cursor.position() != bytes.len() as u64

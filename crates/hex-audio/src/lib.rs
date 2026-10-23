@@ -5,14 +5,15 @@
 //!
 //! # Dependencies
 //! Uses hex-engine for musical rendering, hex-stream for verified pages, CPAL for device I/O and
-//! rtrb for bounded ownership queues.
+//! rtrb for bounded ownership queues. hex-plugin-host supplies the copied transport
+//! and source-bound native client; native ABI remains in its external helper.
 //!
 //! # Does not own
 //! Does not edit projects, decode media on callback, own GPUI, or implement device DSP. Stop must
 //! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
 //! control.
 mod device;
-pub mod plugin_transport;
+mod plugin_worker;
 mod render_fault;
 pub mod sample_preview;
 pub use device::{PreparedOutput, WorkerOutputProfile, WorkerPreparedOutput};
