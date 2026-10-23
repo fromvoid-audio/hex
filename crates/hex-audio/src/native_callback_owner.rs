@@ -140,12 +140,12 @@ impl<T> Drop for Guard<T> {
     }
 }
 impl<T> Terminal<T> {
-    fn ready(&mut self) -> bool {
+    pub(crate) fn ready(&mut self) -> bool {
         self.cell
             .as_mut()
             .is_some_and(|cell| cell.get().is_some() && Arc::get_mut(cell).is_some())
     }
-    fn take(&mut self) -> Option<Box<T>> {
+    pub(crate) fn take(&mut self) -> Option<Box<T>> {
         if !self.ready() {
             return None;
         }

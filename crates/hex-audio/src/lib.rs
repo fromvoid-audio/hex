@@ -11,6 +11,7 @@
 //! remain effective under queue pressure; final graph, source and endpoint destruction belongs on
 //! control.
 mod device;
+pub mod plugin_transport;
 mod render_fault;
 pub mod sample_preview;
 pub use device::{PreparedOutput, WorkerPreparedOutput};
