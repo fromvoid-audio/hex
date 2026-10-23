@@ -141,6 +141,7 @@ pub(super) struct DevicePanelState {
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
     eq_panels: HashMap<DeviceId, eq_panel::Panel>,
     eq_spectrum: eq_panel::SpectrumSelection,
+    sampler_cursor: sampler_overview::CursorState,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
@@ -483,6 +484,7 @@ pub(super) fn view(
         view.device_panel.generation = view.project_generation;
     }
     reconcile_eq_spectrum(view);
+    sampler_overview::reconcile_cursor(view);
     let Some(state) = view.state.as_ref().cloned() else {
         return empty_panel("project is still loading");
     };
@@ -2083,7 +2085,7 @@ fn render_instrument(
                 "{readiness} · * release inactive in trigger mode{}",
                 loop_error.map_or_else(String::new, |error| format!(" · {error}"))
             )));
-        let overview = sampler_overview::render(view, device, &name);
+        let overview = sampler_overview::render(view, track, device, &name, cx);
         let body = crate::device_composition::body()
             .flex()
             .flex_col()
