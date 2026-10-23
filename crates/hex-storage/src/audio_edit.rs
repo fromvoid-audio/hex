@@ -2,8 +2,9 @@
 use crate::StorageError;
 use hex_project::{
     AudioClipDomain, AudioClipEdit, AudioClipTiming, AudioDomainClock, AudioFadeProjection,
-    AudioViewMode, AudioViewPlacement, BeatTime, BeatsPreserve, BeatsTail, ClipFade,
-    SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker, WarpMode, WarpSettings,
+    AudioProcessingProjection, AudioViewMode, AudioViewPlacement, BeatTime, BeatsPreserve,
+    BeatsTail, ClipFade, SourceGainPoint, Tempo, TempoMap, TempoPoint, WarpMarker, WarpMode,
+    WarpSettings,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -11,12 +12,29 @@ use std::sync::Arc;
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct AudioEditDto {
+    #[serde(deserialize_with = "required_processing_projection")]
+    processing_projection: Option<ProcessingProjection>,
+    placement_start_offset: i8,
+    placement_end_offset: i8,
     domain: Domain,
     view_start: u64,
     view_end: u64,
     timing: Timing,
     #[serde(deserialize_with = "required_placement")]
     placement: Option<Placement>,
+}
+fn required_processing_projection<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> Result<Option<ProcessingProjection>, D::Error> {
+    Option::deserialize(d)
+}
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProcessingProjection {
+    sample_rate: u32,
+    #[serde(deserialize_with = "bounded_tempo_points")]
+    tempo_points: Vec<Point>,
+    origin_beat_raw: String,
 }
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -173,6 +191,23 @@ impl From<AudioClipEdit> for AudioEditDto {
     fn from(edit: AudioClipEdit) -> Self {
         let d = &edit.domain;
         Self {
+            placement_start_offset: edit.placement_start_offset,
+            placement_end_offset: edit.placement_end_offset,
+            processing_projection: edit.processing_projection.as_ref().map(|p| {
+                ProcessingProjection {
+                    sample_rate: p.tempo.sample_rate(),
+                    tempo_points: p
+                        .tempo
+                        .points()
+                        .iter()
+                        .map(|point| Point {
+                            beat_raw: point.beat().raw(),
+                            micro_bpm: point.tempo().micro_bpm(),
+                        })
+                        .collect(),
+                    origin_beat_raw: p.origin_beat_raw.to_string(),
+                }
+            }),
             domain: Domain {
                 source_offset: d.source_offset,
                 source_length: d.source_length,
@@ -385,7 +420,33 @@ impl TryFrom<AudioEditDto> for AudioClipEdit {
                 })
                 .collect(),
         });
+        let processing_projection = dto
+            .processing_projection
+            .map(|p| -> Result<_, StorageError> {
+                let points = p
+                    .tempo_points
+                    .into_iter()
+                    .map(|point| {
+                        Tempo::new(point.micro_bpm)
+                            .map(|tempo| TempoPoint::new(BeatTime::from_raw(point.beat_raw), tempo))
+                    })
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|e| StorageError::Invalid(e.0))?;
+                let tempo =
+                    TempoMap::new(p.sample_rate, points).map_err(|e| StorageError::Invalid(e.0))?;
+                let origin_beat_raw = p.origin_beat_raw.parse::<i128>().map_err(|_| {
+                    StorageError::Invalid("invalid audio processing projection origin")
+                })?;
+                Ok(Arc::new(AudioProcessingProjection {
+                    tempo: Arc::new(tempo),
+                    origin_beat_raw,
+                }))
+            })
+            .transpose()?;
         Ok(AudioClipEdit {
+            processing_projection,
+            placement_start_offset: dto.placement_start_offset,
+            placement_end_offset: dto.placement_end_offset,
             domain: Arc::new(AudioClipDomain {
                 events: None,
                 source_offset: d.source_offset,

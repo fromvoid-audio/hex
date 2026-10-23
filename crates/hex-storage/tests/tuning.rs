@@ -29,7 +29,7 @@ fn required_current_tuning_roundtrips_every_waveform_enabled_and_disabled() {
             let project = tuned(enabled, waveform);
             let bytes = encode(&project).unwrap();
             let doc: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(doc["version"], 36);
+            assert_eq!(doc["version"], 37);
             assert_eq!(
                 doc["tuning"]["scale"]["cents"].as_array().unwrap().len(),
                 48
@@ -47,7 +47,7 @@ fn required_current_tuning_roundtrips_every_waveform_enabled_and_disabled() {
 
 #[test]
 fn older_alpha_tuning_documents_are_explicitly_unsupported() {
-    for version in 1..36 {
+    for version in 1..37 {
         let mut value = document();
         value["version"] = json!(version);
         refuses(&value);

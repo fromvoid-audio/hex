@@ -94,6 +94,7 @@ fn project(count: usize, wav: &Path) -> Result<Project, Box<dyn Error>> {
         });
     }
     Ok(Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
         main_devices: Vec::new(),
         tuning: Default::default(),
         sample_rate: 48_000,
