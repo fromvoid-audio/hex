@@ -127,22 +127,6 @@ impl PreparedMidiGateTemplate {
             )?;
         Some(bytes)
     }
-    pub(crate) fn query<T: MidiTiming + ?Sized>(
-        &self,
-        launch: BeatTime,
-        timing: &T,
-        start_frame: u64,
-        end_frame: u64,
-        buffer: &mut MidiSpanBuffer,
-    ) -> Result<(), MidiTemplateError> {
-        self.query_with_origin(
-            SessionMidiOrigin::launch(launch),
-            timing,
-            start_frame,
-            end_frame,
-            buffer,
-        )
-    }
     pub(crate) fn query_with_origin<T: MidiTiming + ?Sized>(
         &self,
         origin: SessionMidiOrigin,

@@ -911,25 +911,6 @@ impl PreparedMidiInstrumentTemplate {
         self.query_with_onset_floor(origin, timing, start_frame, end_frame, buffer, None)
     }
 
-    pub(crate) fn query_after_onset<T: MidiTiming + ?Sized>(
-        &self,
-        launch: BeatTime,
-        timing: &T,
-        start_frame: u64,
-        end_frame: u64,
-        buffer: &mut MidiSpanBuffer,
-        onset_floor_exclusive: BeatTime,
-    ) -> Result<(), MidiTemplateError> {
-        self.query_after_onset_with_origin(
-            SessionMidiOrigin::launch(launch),
-            timing,
-            start_frame,
-            end_frame,
-            buffer,
-            onset_floor_exclusive,
-        )
-    }
-
     pub(crate) fn query_after_onset_with_origin<T: MidiTiming + ?Sized>(
         &self,
         origin: SessionMidiOrigin,
@@ -979,7 +960,7 @@ impl PreparedMidiInstrumentTemplate {
         &self,
         launch: BeatTime,
         timing: &T,
-        _table: &SineTable,
+        table: &SineTable,
         start_frame: u64,
         output: &mut [[f32; 2]],
         buffer: &mut MidiSpanBuffer,
@@ -987,7 +968,7 @@ impl PreparedMidiInstrumentTemplate {
         self.render_with_origin(
             SessionMidiOrigin::launch(launch),
             timing,
-            _table,
+            table,
             start_frame,
             output,
             buffer,

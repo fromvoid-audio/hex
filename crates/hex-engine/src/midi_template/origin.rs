@@ -14,6 +14,15 @@ pub struct SessionMidiOrigin {
     pub elapsed_at_anchor: BeatTime,
 }
 impl SessionMidiOrigin {
+    /// Decode bounded scalar telemetry without adding a project-model dependency
+    /// to its transport owner. Every u64 is a representable Q32.32 beat.
+    pub const fn from_raw(performance_anchor_raw: u64, elapsed_at_anchor_raw: u64) -> Self {
+        Self::new(
+            BeatTime::from_raw(performance_anchor_raw),
+            BeatTime::from_raw(elapsed_at_anchor_raw),
+        )
+    }
+
     /// Both coordinates are already validated Q32.32 beats; neither must precede the other.
     pub const fn new(performance_anchor: BeatTime, elapsed_at_anchor: BeatTime) -> Self {
         Self {

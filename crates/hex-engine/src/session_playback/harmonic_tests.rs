@@ -592,3 +592,6 @@ fn first_paint_keeps_active_clean_filter_integrators_for_64_voices_and_feedback_
         more.render(&mut [[0.0; 2]; 257]).unwrap();
     }
 }
+
+#[path = "harmonic_tests/cue.rs"]
+mod cue;

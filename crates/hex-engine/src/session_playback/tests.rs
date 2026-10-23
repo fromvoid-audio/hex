@@ -1,6 +1,7 @@
 use super::*;
 use crate::routed_midi_fixture;
 mod authored_history;
+mod cue;
 use crate::MidiTiming;
 use crate::compile::PreparedAudioSource;
 use crate::playback::{Playback, PlaybackAction, PlaybackCommand};
@@ -7551,8 +7552,8 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
     assert!(before_cut.iter().any(|frame| frame[0] != 0.0));
 
     let mut old_spans = MidiSpanBuffer::default();
-    let launch = match old.routes[0].owner {
-        RouteOwner::Session { launch, .. } => launch,
+    let origin = match old.routes[0].owner {
+        RouteOwner::Session { origin, .. } => origin,
         _ => panic!("Session source is selected"),
     };
     old.revision
@@ -7560,7 +7561,7 @@ fn repeated_loop_occurrence_descriptor_and_pcm_survive_tempo_handoff() {
         .midi_clip(clip)
         .unwrap()
         .instrument_template()
-        .query(launch, &old.timing_view(), 100_000, 100_001, &mut old_spans)
+        .query_with_origin(origin, &old.timing_view(), 100_000, 100_001, &mut old_spans)
         .unwrap();
     let repeated = old_spans
         .spans()
@@ -7834,7 +7835,7 @@ fn pause_and_stop_after_handoff_hold_then_reset_the_reanchored_clock() {
         Some(SessionPlaybackOwner::Session { clip })
     );
     assert!(
-        matches!(candidate.routes[0].owner, RouteOwner::Session { launch, .. } if launch == BeatTime::ZERO)
+        matches!(candidate.routes[0].owner, RouteOwner::Session { origin, .. } if origin == SessionMidiOrigin::launch(BeatTime::ZERO))
     );
 }
 
@@ -8339,10 +8340,10 @@ fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
         candidate.owner(track),
         Some(SessionPlaybackOwner::Session { clip })
     );
-    let RouteOwner::Session { launch, .. } = candidate.routes[0].owner else {
+    let RouteOwner::Session { origin, .. } = candidate.routes[0].owner else {
         panic!("due launch selects the Session clip");
     };
-    assert_eq!(launch, effective_cut);
+    assert_eq!(origin, SessionMidiOrigin::launch(effective_cut));
     let mut spans = MidiSpanBuffer::default();
     candidate
         .revision
@@ -8350,7 +8351,7 @@ fn due_pending_quantization_uses_actual_cut_beat_on_shared_frame_plateau() {
         .midi_clip(clip)
         .unwrap()
         .instrument_template()
-        .query(launch, &candidate.timing_view(), 96_000, 96_001, &mut spans)
+        .query_with_origin(origin, &candidate.timing_view(), 96_000, 96_001, &mut spans)
         .unwrap();
     assert!(spans.spans().any(|span| span.start_frame == 96_000));
 }
@@ -9110,7 +9111,7 @@ fn route_status_generation_tracks_committed_commands_and_due_transitions() {
     let route = playback.route_status(0).unwrap();
     assert_eq!(route.track, track);
     assert_eq!(route.owner, SessionPlaybackOwner::Arrangement);
-    assert_eq!(route.active_launch, None);
+    assert_eq!(route.active_origin, None);
     assert_eq!(route.pending, None);
 
     playback.apply(SessionPlaybackCommand::Play).unwrap();
@@ -9125,7 +9126,10 @@ fn route_status_generation_tracks_committed_commands_and_due_transitions() {
     assert_eq!(launched, initial.wrapping_add(1));
     let route = playback.route_status(0).unwrap();
     assert_eq!(route.owner, SessionPlaybackOwner::Session { clip });
-    assert_eq!(route.active_launch, Some(BeatTime::ZERO));
+    assert_eq!(
+        route.active_origin,
+        Some(SessionMidiOrigin::launch(BeatTime::ZERO))
+    );
 
     let mut advance = [[0.0; 2]; 64];
     playback.render(&mut advance).unwrap();
@@ -9178,8 +9182,8 @@ fn route_status_generation_tracks_committed_commands_and_due_transitions() {
     );
     assert_eq!(playback.performance_frame(), 0);
     assert_eq!(
-        playback.route_status(0).unwrap().active_launch,
-        Some(BeatTime::ZERO)
+        playback.route_status(0).unwrap().active_origin,
+        Some(SessionMidiOrigin::launch(BeatTime::ZERO))
     );
 }
 
@@ -11566,3 +11570,5 @@ fn closed_candidate_main_checks_prepared_and_actual_runtime_before_any_groups() 
     refuses_without_emitting(&empty); // runtime-only population
     refuses_without_emitting(&main); // prepared-only population
 }
+
+mod cue_isolation;

@@ -392,18 +392,6 @@ impl PreparedMidiSourceTemplate {
         self.track
     }
 
-    /// Resolve one source-relative note occurrence using the preparation-time
-    /// NoteId index. The handoff path uses this to compare a carried voice with
-    /// its candidate revision without rescanning authored notes.
-    pub(crate) fn occurrence(
-        &self,
-        note: NoteId,
-        iteration: u64,
-        launch: BeatTime,
-    ) -> Option<SourceOccurrence> {
-        self.occurrence_with_origin(note, iteration, SessionMidiOrigin::launch(launch))
-    }
-
     /// Resolve one occurrence in global performance coordinates. Historical
     /// onsets are refused before gate projection, matching no-chase queries.
     pub(crate) fn occurrence_with_origin(
