@@ -291,6 +291,7 @@ impl EditorView {
             .debug_selector(|| "browser-toolbar".to_owned())
             .child(self.browser_history_arrow(false, cx))
             .child(self.browser_history_arrow(true, cx))
+            .child(self.browser_reveal_button(cx))
             .child(
                 div()
                     .flex_1()
@@ -345,6 +346,38 @@ impl EditorView {
                 },
                 cx,
             ))
+    }
+
+    fn browser_reveal_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
+        let target = self.browser_selected_sample(cx);
+        let enabled = target.is_some();
+        hex_widgets::action(theme::text("◎"), theme::action_style())
+            .id("browser-reveal-sample")
+            .debug_selector(|| "browser-reveal-sample".to_owned())
+            .w(px(22.0))
+            .h(px(22.0))
+            .text_xs()
+            .when(!enabled, |button| button.cursor_default().opacity(0.4))
+            .tooltip(move |_, cx| {
+                browser_label_tooltip(
+                    if enabled {
+                        "show selected sample"
+                    } else {
+                        "no sample selected in current results"
+                    },
+                    cx,
+                )
+            })
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(move |view, _, window, cx| {
+                    window.prevent_default();
+                    cx.stop_propagation();
+                    if let Some(path) = &target {
+                        view.reveal_browser_sample(path, window, cx);
+                    }
+                }),
+            )
     }
 
     pub(super) fn browser_sidebar(

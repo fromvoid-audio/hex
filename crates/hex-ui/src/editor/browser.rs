@@ -1550,6 +1550,36 @@ impl EditorView {
         self.browser_item_at(self.browser.selected_index, cx)
     }
 
+    fn browser_selected_sample(&self, cx: &App) -> Option<PathBuf> {
+        if !self.browser.results_focused {
+            return None;
+        }
+        self.browser_visible_entries(cx)
+            .get(self.browser.selected_index)
+            .filter(|entry| entry.kind == EntryKind::WaveAudio)
+            .map(|entry| entry.path.clone())
+    }
+
+    /// Reveal only the same stable sample painted by the control. A replacement
+    /// result or selection cannot turn an old pointer event into a new selection.
+    /// This view-only action must not enter the selection/audition request path.
+    fn reveal_browser_sample(
+        &mut self,
+        path: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.browser_selected_sample(cx).as_deref() != Some(path) {
+            return;
+        }
+        let index = self.browser.selected_index;
+        self.browser
+            .scroll
+            .scroll_to_item(index, gpui::ScrollStrategy::Top);
+        self.browser.results_focus.focus(window);
+        cx.notify();
+    }
+
     fn restore_browser_selection(&mut self, selection: Option<BrowserItemKey>, cx: &App) {
         let index = selection
             .as_ref()
@@ -2514,19 +2544,13 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let description = theme::text(tooltip);
-        div()
+        hex_widgets::action(theme::text(label), theme::action_style())
             .id(label)
             .debug_selector(move || format!("browser-control-{label}"))
             .w(px(22.0))
             .h(px(22.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: description.clone(),
@@ -2540,20 +2564,14 @@ impl EditorView {
                     action(view, window, cx);
                 }),
             )
-            .child(theme::text(label))
     }
 
     fn browser_folder_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let description = theme::text("choose a folder");
-        div()
+        hex_widgets::action(theme::text("⌂"), theme::action_style())
             .id("browser-folder-picker")
             .w(px(22.0))
             .h(px(22.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
             .tooltip(move |_, cx| {
@@ -2566,7 +2584,6 @@ impl EditorView {
                 MouseButton::Left,
                 cx.listener(|view, _, _, cx| view.open_browser_folder(cx)),
             )
-            .child(theme::text("⌂"))
     }
 
     fn open_browser_folder(&mut self, cx: &mut Context<Self>) {

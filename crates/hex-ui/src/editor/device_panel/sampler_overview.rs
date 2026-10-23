@@ -1,19 +1,99 @@
-//! Read-only, peak-only original-source overview. No PCM or filesystem access.
+//! Peak-only original-source overview and static edit cursor. No PCM, file I/O,
+//! playback readhead or canonical edits. Cursor positions are nearest original
+//! frame boundaries, including the end boundary at `source_frames`.
 use super::*;
-use gpui::{canvas, fill, point, size};
+use gpui::{MouseDownEvent, canvas, relative};
+use std::{cell::Cell, rc::Rc};
 
-const WIDTH: f32 = 180.0;
-const WAVE_HEIGHT: f32 = 96.0;
+const RULER_HEIGHT: f32 = 14.0;
 
-pub(super) fn render(view: &EditorView, device: &hex_project::Device, name: &str) -> Div {
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SourceTarget {
+    generation: u64,
+    track: TrackId,
+    device: DeviceId,
+    asset: hex_project::AssetId,
+    content: hex_project::OriginalSourceFacts,
+    frames: u64,
+    rate: u32,
+}
+
+impl SourceTarget {
+    fn resolve(view: &EditorView, track: TrackId, device: DeviceId) -> Option<Self> {
+        if view.selected_track != Some(track)
+            || view.device_panel.owner != Some(DevicePanelOwner::Track(track))
+        {
+            return None;
+        }
+        let state = view.state.as_ref()?;
+        let instrument = state.project.track(track)?.instrument()?;
+        if instrument.id() != device
+            || instrument.state().type_id().as_str().ok() != Some("hex.instrument.sampler")
+        {
+            return None;
+        }
+        let references = instrument.state().asset_references();
+        if references.len() != 1 {
+            return None;
+        }
+        let asset = state
+            .project
+            .assets()
+            .find(|a| a.id().value() == references[0].asset.value())?;
+        let overview = view.sampler_source_overview(asset)?;
+        (overview.source_frames() > 0 && overview.sample_rate() > 0).then_some(Self {
+            generation: view.project_generation,
+            track,
+            device,
+            asset: asset.id(),
+            content: overview.content(),
+            frames: overview.source_frames(),
+            rate: overview.sample_rate(),
+        })
+    }
+
+    fn current(self, view: &EditorView) -> bool {
+        Self::resolve(view, self.track, self.device) == Some(self)
+    }
+}
+
+#[derive(Default)]
+pub(super) struct CursorState {
+    cursor: Option<(SourceTarget, u64)>,
+}
+
+pub(super) fn reconcile_cursor(view: &mut EditorView) {
+    if view
+        .device_panel
+        .sampler_cursor
+        .cursor
+        .is_some_and(|(target, _)| !target.current(view))
+    {
+        view.device_panel.sampler_cursor.cursor = None;
+    }
+}
+
+fn frame_at_x(x: f32, width: f32, frames: u64) -> Option<u64> {
+    if !x.is_finite() || !width.is_finite() || width <= 0.0 || x < 0.0 || x > width || frames == 0 {
+        return None;
+    }
+    Some(((f64::from(x) / f64::from(width) * frames as f64).round() as u64).min(frames))
+}
+
+pub(super) fn render(
+    view: &EditorView,
+    track: TrackId,
+    device: &hex_project::Device,
+    name: &str,
+    cx: &mut Context<EditorView>,
+) -> Div {
     let shell = div()
-        .w(px(WIDTH))
-        .flex_shrink_0()
-        .h_full()
+        .w_full()
+        .min_w_0()
+        .flex_1()
         .min_h_0()
         .flex()
         .flex_col()
-        .gap(px(4.0))
         .overflow_hidden()
         .debug_selector(|| "sampler-source-overview".into());
     let Some(state) = view.state.as_ref() else {
@@ -51,56 +131,90 @@ pub(super) fn render(view: &EditorView, device: &hex_project::Device, name: &str
     if !(start >= 0.0 && start < end && end <= frames as f64) {
         return shell.child(theme::text("source region exceeds overview"));
     }
-    let facts = format!("{frames} frames · {} hz", overview.sample_rate());
+    let facts = format!(
+        "{frames} frames · {} hz · {:.3} s",
+        overview.sample_rate(),
+        frames as f64 / f64::from(overview.sample_rate())
+    );
     let table = state.source_overviews.clone();
     let asset_id = asset.id();
+    let target = (view.selected_track == Some(track)
+        && view.device_panel.owner == Some(DevicePanelOwner::Track(track)))
+    .then_some(SourceTarget {
+        generation: view.project_generation,
+        track,
+        device: device.id(),
+        asset: asset_id,
+        content: overview.content(),
+        frames,
+        rate: overview.sample_rate(),
+    });
+    let cursor = view
+        .device_panel
+        .sampler_cursor
+        .cursor
+        .filter(|(key, frame)| Some(*key) == target && *frame <= frames)
+        .map(|(_, frame)| frame);
+    let hit_bounds = Rc::new(Cell::new(None::<Bounds<Pixels>>));
+    let measured_bounds = Rc::clone(&hit_bounds);
     let waveform = div()
         .relative()
-        .w(px(WIDTH))
-        .h(px(WAVE_HEIGHT))
-        .flex_shrink_0()
+        .w_full()
+        .flex_1()
+        .min_h_0()
         .bg(rgb(theme::color(theme::PaletteRole::WaveBackground)))
+        .when(target.is_some(), |waveform| waveform.cursor_crosshair())
         .debug_selector(|| "sampler-source-waveform".into())
+        .on_mouse_down(
+            MouseButton::Left,
+            cx.listener(move |view, event: &MouseDownEvent, window, cx| {
+                let Some(target) = target.filter(|target| target.current(view)) else {
+                    return;
+                };
+                let Some(bounds) = hit_bounds.get() else {
+                    return;
+                };
+                if !bounds.contains(&event.position) {
+                    return;
+                }
+                let Some(frame) = frame_at_x(
+                    f32::from(event.position.x - bounds.left()),
+                    f32::from(bounds.size.width),
+                    target.frames,
+                ) else {
+                    return;
+                };
+                view.device_panel.sampler_cursor.cursor = Some((target, frame));
+                view.focus.focus(window);
+                window.prevent_default();
+                cx.stop_propagation();
+                cx.notify();
+            }),
+        )
         .child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    let width = f32::from(bounds.size.width);
-                    let height = f32::from(bounds.size.height);
-                    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
-                        return;
-                    }
-                    let Some(overview) = table.get(asset_id) else {
-                        return;
-                    };
-                    let extent = overview.source_frames() as f64;
-                    for (index, peaks) in overview.peaks().enumerate() {
-                        let Some(range) = overview.bin_range(index) else {
-                            return;
-                        };
-                        let left = (range.start as f64 / extent) as f32 * width;
-                        let right = (range.end as f64 / extent) as f32 * width;
-                        for (channel, peak) in peaks.iter().enumerate() {
-                            let half = height * 0.25;
-                            let center = half + channel as f32 * height * 0.5;
-                            let top = center - peak.max.clamp(-1.0, 1.0) * (half - 1.0).max(0.0);
-                            let bottom = center - peak.min.clamp(-1.0, 1.0) * (half - 1.0).max(0.0);
-                            window.paint_quad(fill(
-                                Bounds::new(
-                                    bounds.origin + point(px(left), px(top)),
-                                    size(
-                                        px((right - left).max(1.0).min((width - left).max(0.0))),
-                                        px((bottom - top).max(1.0).min((height - top).max(0.0))),
-                                    ),
-                                ),
-                                rgb(theme::color(theme::PaletteRole::Waveform)),
-                            ));
-                        }
-                    }
+            div()
+                .absolute()
+                .left(relative((start / frames as f64) as f32))
+                .w(relative(((end - start) / frames as f64) as f32))
+                .top_0()
+                .bottom(px(RULER_HEIGHT))
+                .bg(rgb(theme::color(theme::PaletteRole::Surface)))
+                .debug_selector(|| "sampler-source-active-region".into()),
+        )
+        .child(
+            super::super::overview_waveform::render(
+                super::super::overview_waveform::Source::Sampler {
+                    table,
+                    asset: asset_id,
                 },
+                Rc::clone(&view.overview_waveform_cache),
+                Some((start / frames as f64, end / frames as f64)),
             )
             .absolute()
-            .inset_0(),
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom(px(RULER_HEIGHT)),
         )
         .child(source_marker(
             "sampler-source-start",
@@ -140,19 +254,78 @@ pub(super) fn render(view: &EditorView, device: &hex_project::Device, name: &str
     } else {
         waveform
     };
-    shell
-        .child(waveform)
-        .child(theme::text(name))
-        .child(theme::text(facts))
-        .child(theme::text("source overview · read only"))
+    let waveform = waveform
+        .when_some(cursor, |waveform, frame| {
+            waveform.child(source_marker(
+                "sampler-source-cursor",
+                frame as f64 / frames as f64,
+                theme::PaletteRole::Text,
+            ))
+        })
+        .child(
+            canvas(
+                move |bounds, _, _| {
+                    measured_bounds.set(Some(bounds));
+                },
+                |_, _, _, _| {},
+            )
+            .absolute()
+            .top_0()
+            .left_0()
+            .right_0()
+            .bottom(px(RULER_HEIGHT)),
+        )
+        .child(
+            div()
+                .absolute()
+                .bottom_0()
+                .left_0()
+                .right_0()
+                .h(px(RULER_HEIGHT))
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .px(px(3.0))
+                .text_size(px(9.0))
+                .line_height(px(RULER_HEIGHT))
+                .bg(rgb(theme::color(theme::PaletteRole::WaveBackground)))
+                .child(theme::text("0 s"))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .text_ellipsis()
+                        .child(theme::text(name)),
+                )
+                .child(
+                    div()
+                        .debug_selector(|| "sampler-source-cursor-readout".into())
+                        .child(theme::text(cursor.map_or(facts, |frame| {
+                            cursor_label(frame, overview.sample_rate())
+                        }))),
+                ),
+        );
+    shell.child(waveform)
+}
+
+fn cursor_label(frame: u64, sample_rate: u32) -> String {
+    format!(
+        "cursor · {frame} frames · {:.3} s",
+        frame as f64 / f64::from(sample_rate)
+    )
 }
 fn source_marker(selector: &'static str, fraction: f64, color: theme::PaletteRole) -> Div {
     div()
         .absolute()
-        .left(px(1.0 + (WIDTH - 3.0) * fraction.clamp(0.0, 1.0) as f32))
+        .left(relative(fraction.clamp(0.0, 1.0) as f32))
+        .ml(px(-fraction.clamp(0.0, 1.0) as f32))
         .top_0()
         .w(px(1.0))
-        .h(px(WAVE_HEIGHT))
+        .bottom(px(RULER_HEIGHT))
         .bg(rgb(theme::color(color)))
         .debug_selector(move || selector.into())
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "sampler_cursor_tests.rs"]
+mod tests;

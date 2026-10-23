@@ -278,7 +278,11 @@ fn browser_vst3_standard_folder_button_scans_owned_roots_and_restores_type_searc
     editor.read_with(&visual, |view, cx| {
         let rows = view.browser_visible_plugins(cx);
         assert_eq!(rows.len(), 2, "{}", view.browser.plugins.status);
-        assert!(view.browser.plugins.status.contains("2 discovered"));
+        assert!(
+            view.browser.plugins.status.contains("2 discovered"),
+            "{}; rows: {rows:?}",
+            view.browser.plugins.status
+        );
         assert_ne!(
             rows[0].module, rows[1].module,
             "same reported UID in different modules remains visible"

@@ -298,25 +298,62 @@ fn bounded_input_validation_and_queue_independent_stop() {
 #[cfg(feature = "allocation-probe")]
 #[test]
 fn endpoint_exchange_has_zero_total_and_signed_net_allocation() {
-    let (control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
-    let input = [[0.5; 2]; 8];
-    let mut output = [[0.0; 2]; 8];
-    let info = allocation_counter::measure(|| {
-        for _ in 0..32 {
-            assert!(callback.stage(&input, &[], &mut output).is_ok());
-            assert!(callback.finish(true).is_ok());
-            echo(&mut worker);
+    for origin in [0, 1_u64 << 32] {
+        let (control, mut callback, mut worker) =
+            channel_from_completed_prefix(BINDING, 8, origin).unwrap();
+        let input = [[0.5; 2]; 8];
+        let mut output = [[0.0; 2]; 8];
+        let info = allocation_counter::measure(|| {
+            for _ in 0..32 {
+                assert!(callback.stage(&input, &[], &mut output).is_ok());
+                assert!(callback.finish(true).is_ok());
+                echo(&mut worker);
+            }
+            control.revoke();
+            assert!(matches!(
+                callback.stage(&input, &[], &mut output),
+                Err(Fault::Revoked)
+            ));
+        });
+        assert_eq!(info.count_total, 0);
+        assert_eq!(info.bytes_total, 0);
+        assert_eq!(info.count_current, 0);
+        assert_eq!(info.bytes_current, 0);
+        // Endpoint and queue destruction deliberately lies outside the measured scope.
+        drop((callback, worker, control));
+    }
+}
+
+#[test]
+fn fresh_continuation_channels_prime_two_quanta_at_the_actual_absolute_prefix() {
+    for quantum in [1_u16, 8, MAX_FRAMES as u16] {
+        for origin in [0, 3, u64::from(u32::MAX)] {
+            let (_control, mut callback, mut worker) =
+                channel_from_completed_prefix(BINDING, quantum, origin).unwrap();
+            let q = usize::from(quantum);
+            let input = [[0.5; 2]; MAX_FRAMES];
+            let mut output = [[9.0; 2]; MAX_FRAMES];
+            for n in 0..4 {
+                callback.stage(&input[..q], &[], &mut output[..q]).unwrap();
+                callback.finish(true).unwrap();
+                let mut block = worker.receive().unwrap().unwrap();
+                assert_eq!(block.sequence, origin + n);
+                assert_eq!(block.first_frame, (origin + n) * u64::from(quantum));
+                block.pcm[..q].fill([0.25; 2]);
+                worker.complete(block).unwrap();
+                assert_eq!(
+                    output[..q],
+                    vec![if n < 2 { [0.0; 2] } else { [0.25; 2] }; q]
+                );
+            }
         }
-        control.revoke();
-        assert!(matches!(
-            callback.stage(&input, &[], &mut output),
-            Err(Fault::Revoked)
-        ));
-    });
-    assert_eq!(info.count_total, 0);
-    assert_eq!(info.bytes_total, 0);
-    assert_eq!(info.count_current, 0);
-    assert_eq!(info.bytes_current, 0);
-    // Endpoint and queue destruction deliberately lies outside the measured scope.
-    drop((callback, worker, control));
+    }
+    assert!(matches!(
+        channel_from_completed_prefix(BINDING, 1, u64::MAX - 1),
+        Err(Fault::Exhausted)
+    ));
+    assert!(matches!(
+        channel_from_completed_prefix(BINDING, 2, u64::MAX / 2 + 1),
+        Err(Fault::Exhausted)
+    ));
 }

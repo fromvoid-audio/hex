@@ -75,7 +75,7 @@ pub(super) fn field(view: &mut EditorView, id: ClipId, cx: &mut Context<EditorVi
                 NumericControlKind::HorizontalSlider,
                 spec,
                 value,
-                super::super::device_panel::control_style(),
+                crate::theme::control_style(),
             )
         });
         let Ok(config) = config else { return div() };

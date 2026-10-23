@@ -287,6 +287,7 @@ fn no_op_commit_has_no_history_and_new_automation_retires_the_gesture() {
         Command::ReplaceTrackGainEnvelope {
             track,
             points: vec![hex_project::GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ZERO,
                 gain: 0.8,
                 outgoing: hex_project::GainInterpolation::Step,

@@ -192,6 +192,7 @@ pub fn finish_take(
         }
         event_index += remaining;
         let span = GainTouchSpan {
+            source_start: start,
             start,
             end: exact_beat(end_frame)?,
             steps,
