@@ -120,6 +120,7 @@ impl EditorView {
                 self.cancel_computer_keyboard();
             }
             self.piano_zoom_wheel_accum = 0.0;
+            self.piano_pitch_wheel_accum = 0.0;
             self.piano_beat_start = BeatTime::ZERO;
             self.piano_beat_span =
                 BeatTime::from_raw(super::midi_scene::fit_span(length, BeatTime::ONE.raw()));
@@ -159,6 +160,7 @@ impl EditorView {
             Err(error) => {
                 self.error = Some(error.to_string().into());
                 self.cancel_midi_note_gesture();
+                self.retire_pending_midi_drag();
                 None
             }
         };
@@ -171,7 +173,9 @@ impl EditorView {
         let selected_ids = self.midi_selection.shared_ids();
         let draw_primary = self.midi_selection.primary();
         let selection_epoch = self.midi_selection.epoch();
-        let preview = self.midi_note_gesture.map(|gesture| gesture.preview);
+        let preview = self
+            .displayed_midi_note_gesture()
+            .map(|gesture| gesture.preview);
         let selected_note_data = selected.and_then(|id| state.project.midi_note(id));
         let status = if let Some((first, last)) = self.midi_time_selection_bounds() {
             format!(
@@ -211,11 +215,10 @@ impl EditorView {
         let canvas_scene = std::sync::Arc::clone(&scene);
         let draw_selected = selected_ids;
         let draw_preview = self
-            .midi_note_gesture
+            .displayed_midi_note_gesture()
             .map(|gesture| (gesture.note, gesture.preview));
         let draw_group = self
-            .midi_group_gesture
-            .as_ref()
+            .displayed_midi_group_gesture()
             .map(|gesture| (gesture.shared_originals(), gesture.clone()));
         let draw_stroke = self
             .midi_stroke
@@ -340,6 +343,27 @@ impl EditorView {
                     };
                     window.set_cursor_style(cursor, &hitbox);
                 }
+                if let Some((first, last)) = draw_time {
+                    let end = beat_start.raw().saturating_add(beat_span.raw());
+                    let first = first.max(beat_start.raw());
+                    let last = last.min(end);
+                    if first < last {
+                        let left = ((first - beat_start.raw()) as f64 / beat_span.raw() as f64)
+                            as f32
+                            * width;
+                        let right = ((last - beat_start.raw()) as f64 / beat_span.raw() as f64)
+                            as f32
+                            * width;
+                        window.paint_quad(fill(
+                            Bounds::new(
+                                point(bounds.origin.x + px(left), bounds.origin.y),
+                                size(px(right - left), bounds.size.height),
+                            ),
+                            gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                                .opacity(theme::TIME_SELECTION_OPACITY),
+                        ));
+                    }
+                }
                 let mut quad = |x: f32, y: f32, w: f32, h: f32, color: u32| {
                     let left = x.max(0.0);
                     let top = y.max(0.0);
@@ -398,24 +422,6 @@ impl EditorView {
                             theme::color(theme::PaletteRole::Grid)
                         },
                     );
-                }
-                if let Some((first, last)) = draw_time {
-                    let end = beat_start.raw().saturating_add(beat_span.raw());
-                    let first = first.max(beat_start.raw());
-                    let last = last.min(end);
-                    if first < last {
-                        let left = ((first - beat_start.raw()) as f64 / beat_span.raw() as f64)
-                            as f32
-                            * width;
-                        let right = ((last - beat_start.raw()) as f64 / beat_span.raw() as f64)
-                            as f32
-                            * width;
-                        let color = theme::color(theme::PaletteRole::Primary);
-                        quad(left, 0.0, 1.0, height, color);
-                        quad(right - 1.0, 0.0, 1.0, height, color);
-                        quad(left, 0.0, right - left, 2.0, color);
-                        quad(left, height - 2.0, right - left, 2.0, color);
-                    }
                 }
                 for note in canvas_scene.notes() {
                     if draw_selected.binary_search(&note.id).is_ok()
@@ -753,11 +759,20 @@ impl EditorView {
                     }
                     cx.stop_propagation();
                     wheel_entity.update(cx, |view, cx| {
-                        if view.zoom_piano_wheel_at(
-                            gesture_bounds_from(bounds),
-                            f32::from(event.position.x),
-                            delta,
-                        ) {
+                        let changed = if event.modifiers.alt {
+                            view.zoom_piano_pitch_wheel_at(
+                                gesture_bounds_from(bounds),
+                                f32::from(event.position.y),
+                                delta,
+                            )
+                        } else {
+                            view.zoom_piano_wheel_at(
+                                gesture_bounds_from(bounds),
+                                f32::from(event.position.x),
+                                delta,
+                            )
+                        };
+                        if changed {
                             cx.notify();
                         }
                     });
@@ -1361,13 +1376,15 @@ impl EditorView {
                                 if gesture.is_copy() {
                                     match gesture.copied_notes() {
                                         Ok(insert) => {
-                                            view.enqueue(Request::Edit(
+                                            view.submit_midi_drag_preview(
+                                                clip_id,
+                                                super::midi_pending_drag::Frozen::Group(gesture),
                                                 Command::EditMidiNotesWithSourceExtent {
                                                     clip: clip_id,
                                                     remove: Vec::new(),
                                                     insert,
                                                 },
-                                            ));
+                                            );
                                         }
                                         Err(error) => view.error = Some(error.into()),
                                     }
@@ -1376,10 +1393,14 @@ impl EditorView {
                                 }
                                 match gesture.updates() {
                                     Ok(notes) => {
-                                        view.enqueue(Request::Edit(Command::UpdateMidiNotes {
-                                            clip: clip_id,
-                                            notes,
-                                        }));
+                                        view.submit_midi_drag_preview(
+                                            clip_id,
+                                            super::midi_pending_drag::Frozen::Group(gesture),
+                                            Command::UpdateMidiNotes {
+                                                clip: clip_id,
+                                                notes,
+                                            },
+                                        );
                                     }
                                     Err(error) => view.error = Some(error.into()),
                                 }
@@ -1426,14 +1447,18 @@ impl EditorView {
                             event.modifiers.platform,
                         );
                         if !midi_drag::is_noop(&gesture) {
-                            view.enqueue(Request::Edit(Command::UpdateMidiNote {
-                                note: gesture.note,
-                                start: BeatTime::from_raw(gesture.preview.start),
-                                duration: BeatTime::from_raw(gesture.preview.duration),
-                                pitch: gesture.preview.pitch,
-                                channel: gesture.channel,
-                                velocity: gesture.velocity,
-                            }));
+                            view.submit_midi_drag_preview(
+                                clip_id,
+                                super::midi_pending_drag::Frozen::Single(gesture),
+                                Command::UpdateMidiNote {
+                                    note: gesture.note,
+                                    start: BeatTime::from_raw(gesture.preview.start),
+                                    duration: BeatTime::from_raw(gesture.preview.duration),
+                                    pitch: gesture.preview.pitch,
+                                    channel: gesture.channel,
+                                    velocity: gesture.velocity,
+                                },
+                            );
                         }
                         view_cx.notify();
                     });
@@ -1955,6 +1980,49 @@ impl EditorView {
         self.cancel_midi_note_gesture();
     }
 
+    pub(super) fn zoom_piano_pitch_wheel_at(
+        &mut self,
+        bounds: [f32; 4],
+        y: f32,
+        delta: f32,
+    ) -> bool {
+        if self.context_menu.is_some()
+            || self.midi_clip().is_none()
+            || !delta.is_finite()
+            || delta == 0.0
+            || !y.is_finite()
+            || !bounds.iter().all(|value| value.is_finite())
+            || bounds[2] <= 0.0
+            || bounds[3] <= 0.0
+        {
+            return false;
+        }
+        let fraction = (y - bounds[1]) / bounds[3];
+        if !(0.0..=1.0).contains(&fraction) {
+            return false;
+        }
+        self.piano_pitch_wheel_accum = (self.piano_pitch_wheel_accum + delta).clamp(-320.0, 320.0);
+        let steps = (self.piano_pitch_wheel_accum / 80.0).trunc() as i8;
+        if steps == 0 {
+            return false;
+        }
+        self.piano_pitch_wheel_accum -= f32::from(steps) * 80.0;
+        let Some(next) = super::midi_scene::wheel_pitch_zoom(
+            self.piano_pitch_low,
+            self.piano_pitch_rows,
+            fraction,
+            steps,
+        ) else {
+            return false;
+        };
+        if next == (self.piano_pitch_low, self.piano_pitch_rows) {
+            return false;
+        }
+        self.cancel_midi_note_gesture();
+        (self.piano_pitch_low, self.piano_pitch_rows) = next;
+        true
+    }
+
     pub(super) fn zoom_piano_wheel_at(&mut self, bounds: [f32; 4], x: f32, delta: f32) -> bool {
         if self.context_menu.is_some() || !delta.is_finite() || delta == 0.0 {
             return false;
@@ -2180,7 +2248,30 @@ impl EditorView {
             .child(
                 canvas(
                     |_, _, _| (),
-                    move |_, _, window, _| {
+                    move |bounds, _, window, _| {
+                        let wheel_entity = entity.clone();
+                        window.on_mouse_event(move |event: &ScrollWheelEvent, phase, _, cx| {
+                            if !phase.capture()
+                                || !event.modifiers.alt
+                                || !bounds.contains(&event.position)
+                            {
+                                return;
+                            }
+                            let delta = -f32::from(event.physical_delta().pixel_delta(px(80.0)).y);
+                            if !delta.is_finite() || delta == 0.0 {
+                                return;
+                            }
+                            cx.stop_propagation();
+                            wheel_entity.update(cx, |view, cx| {
+                                if view.zoom_piano_pitch_wheel_at(
+                                    gesture_bounds_from(bounds),
+                                    f32::from(event.position.y),
+                                    delta,
+                                ) {
+                                    cx.notify();
+                                }
+                            });
+                        });
                         let entity = entity.clone();
                         window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
                             if !phase.capture() {
@@ -2236,26 +2327,18 @@ impl EditorView {
         tooltip: &'static str,
         click: impl Fn(&gpui::ClickEvent, &mut Window, &mut gpui::App) + 'static,
     ) -> gpui::Stateful<Div> {
-        let button = div()
+        let button = hex_widgets::action(theme::text(label), theme::action_style())
             .id(id)
             .w(px(25.0))
             .h(px(22.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .hover(|s| s.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: tooltip.into(),
                 })
                 .into()
             })
-            .on_click(click)
-            .child(theme::text(label));
+            .on_click(click);
         #[cfg(feature = "ui-test-support")]
         let button = button.debug_selector(move || tooltip.into());
         button
@@ -2427,3 +2510,7 @@ mod copy_tests;
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "midi_input_refinement_ui_tests.rs"]
 mod input_refinement_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "midi_pending_drag_ui_tests.rs"]
+mod pending_drag_tests;

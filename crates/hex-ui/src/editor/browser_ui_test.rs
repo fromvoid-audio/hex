@@ -3270,6 +3270,21 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
                 ));
                 assert!(view.browser.preview_in_flight.is_none());
                 assert!(view.browser.preview_pending.is_none());
+                let source = super::super::overview_waveform::Source::Browser(Arc::clone(
+                    &slot.metadata.borrow().as_ref().unwrap().waveform,
+                ));
+                let expected = super::super::waveform::waveform_column_count(
+                    f32::from(waveform.size.width),
+                    2.0,
+                );
+                assert!(expected > 48, "browser paint must use detailed columns");
+                assert_eq!(
+                    view.overview_waveform_cache
+                        .borrow()
+                        .prepared_columns(&source, waveform, 2.0),
+                    Some(expected),
+                    "actual browser canvas must populate its geometry cache at rendered bounds"
+                );
                 assert_eq!(view.browser.playback_generation, 0, "hover cannot audition");
                 assert!(Arc::ptr_eq(view.state.as_ref().unwrap(), &canonical));
                 assert!(view.pending_audio_commands.is_empty());
@@ -3281,6 +3296,38 @@ fn browser_hover_and_selection_keep_selected_waveform_and_surroundings_stable(
                 waveform
             );
         }
+    }
+    // Actual GPUI TestWindow is fixed at 2x; 1x geometry has a separate oracle,
+    // while native 1x visual acceptance remains a distinct check.
+    let scale = visual.update(|window, _| window.scale_factor());
+    assert_eq!(scale, 2.0);
+    for width in [960.0, 1280.0] {
+        visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(700.0)));
+        visual.run_until_parked();
+        let waveform = visual.debug_bounds("browser-audition-waveform").unwrap();
+        editor.read_with(&visual, |view, _| {
+            let key = view.browser.preview_selected.as_ref().unwrap();
+            let slot = &view.browser.preview_cache[key];
+            let metadata = slot.metadata.borrow();
+            let source = super::super::overview_waveform::Source::Browser(Arc::clone(
+                &metadata.as_ref().unwrap().waveform,
+            ));
+            let expected = super::super::waveform::waveform_column_count(
+                f32::from(waveform.size.width),
+                scale,
+            );
+            assert_eq!(
+                view.overview_waveform_cache
+                    .borrow()
+                    .prepared_columns(&source, waveform, scale),
+                Some(expected),
+                "browser resize must repaint the detailed waveform at its actual new bounds"
+            );
+            assert_eq!(
+                view.browser.playback_generation, 0,
+                "resize cannot audition"
+            );
+        });
     }
 }
 
@@ -5263,3 +5310,6 @@ fn sampler_menu_captures_stale_target_and_correlates_cancel_without_duplicate_lo
 
 #[path = "browser_plugin_ui_test.rs"]
 mod plugin_browser;
+
+#[path = "browser_reveal_ui_test.rs"]
+mod reveal;

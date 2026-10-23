@@ -896,7 +896,8 @@ fn rendered_sampler_save_open(
     let target_selector = Box::leak(format!("track-name-{}", track.value()).into_boxed_str());
     let other_selector = Box::leak(format!("track-name-{}", other.value()).into_boxed_str());
     let other_selected = Box::leak(format!("selected-track-{}", other.value()).into_boxed_str());
-    let end = Instant::now()
+    let started = Instant::now();
+    let end = started
         + if gain {
             Duration::from_secs(60)
         } else {
@@ -1173,6 +1174,7 @@ fn rendered_sampler_save_open(
         assert!(Instant::now() < end, "actual Open picker did not open");
     }
     cx.simulate_paths_selection(Some(vec![open_path.clone()]));
+    let reopen_started = Instant::now();
     loop {
         pulse(&mut visual);
         if h.backend
@@ -1191,7 +1193,19 @@ fn rendered_sampler_save_open(
         }
         assert!(
             Instant::now() < end,
-            "actual Open did not reach a fresh matching native CURRENT"
+            "actual Open did not reach a fresh matching native CURRENT: total={:?}, reopen={:?}, expected_revision={}, previous_output={before_output}, current={:?}, submitted={:?}, ui={:?}, prompt={:?}",
+            started.elapsed(),
+            reopen_started.elapsed(),
+            loaded_revision + 2,
+            h.backend
+                .lock()
+                .unwrap()
+                .as_ref()
+                .and_then(|b| b.status())
+                .and_then(|s| s.rendered_current(&h)),
+            h.observation.lock().unwrap().resident_submitted.last(),
+            cx.update(|cx| hex_ui::sampler_keyboard_test_status(window, cx)),
+            cx.pending_prompt()
         );
     }
     for _ in 0..12 {
@@ -1249,7 +1263,17 @@ fn rendered_sampler_save_open(
     });
     visual.run_until_parked();
     if looped {
-        keyboard::exercise_blocked_sampler_keyboard(cx, &mut visual, &mut h, window, end, stereo);
+        // Setup ends at this handoff. Keyboard operations must own their wait
+        // budgets rather than borrow the source/file workflow's deadline.
+        let setup_finished = Instant::now();
+        keyboard::exercise_blocked_sampler_keyboard(
+            cx,
+            &mut visual,
+            &mut h,
+            window,
+            setup_finished,
+            stereo,
+        );
         visual.update(|w, _| w.remove_window());
         visual.run_until_parked();
         return;

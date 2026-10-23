@@ -617,11 +617,10 @@ impl super::EditorView {
             {
                 return false;
             }
-            if self.opening_project
-                || self.close_prompt_open
-                || self.worker_requests_pending != 0
-                || !self.pending_requests.is_empty()
-            {
+            // Source validity follows the installed canonical state. Harmless
+            // worker work does not retire a held gesture; existing-track release
+            // also validates this captured revision on the worker before editing.
+            if self.opening_project || self.close_prompt_open {
                 return false;
             }
             let Some(state) = self.state.as_ref() else {
@@ -1318,18 +1317,18 @@ impl super::EditorView {
             clear(self);
             return;
         }
-        if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
-            self.error = Some("clip move canceled · project work pending".into());
-            clear(self);
-            cx.notify();
-            return;
-        }
         let pointer = window.mouse_position();
         let pointer = (f32::from(pointer.x), f32::from(pointer.y));
         if self
             .painted_track_insertion_target(pointer.0, pointer.1)
             .is_some()
         {
+            if self.worker_requests_pending != 0 || !self.pending_requests.is_empty() {
+                self.error = Some("clip move canceled · project work pending".into());
+                clear(self);
+                cx.notify();
+                return;
+            }
             self.drop_clip_to_new_track(drag, window, cx);
             return;
         }
@@ -1406,19 +1405,22 @@ impl super::EditorView {
             move_command(drag.clip, target_track, preview.position)
         };
         let copy_intent = super::group_copy::Pending::capture(self, &command);
-        if !drag.copy_modifier.get() {
-            // Freeze the release-time projection before transferring display
-            // custody. Retiring the held capture would also erase group content.
-            drag.preview.set(Some(preview));
-            self.pending_clip_move = self
-                .active_clip_drag
-                .take()
-                .map(|drag| super::pending_clip_move::Pending::new(drag, command.clone()));
-        } else {
-            clear(self);
-        }
+        // Input capture ends here. Keep the frozen destination for moves AND
+        // copies until the shared receipt observes this edit's real terminal.
+        drag.preview.set(Some(preview));
+        self.pending_clip_move = self.active_clip_drag.take().map(|drag| {
+            super::pending_clip_move::Pending::new(
+                drag,
+                command.clone(),
+                std::sync::Arc::clone(&state.project),
+            )
+        });
         let before_pending = self.worker_requests_pending;
-        if self.enqueue(Request::Edit(command)) {
+        if self.enqueue(Request::MoveExistingClips {
+            project_generation: drag.project_generation,
+            revision: drag.revision,
+            command,
+        }) {
             if let Some(mut intent) = copy_intent {
                 if self.worker_requests_pending > before_pending {
                     intent.submitted(self.worker_requests_pending);
@@ -2095,4 +2097,4 @@ mod tests {
 
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "group_drag_ui_test.rs"]
-mod group_drag_ui_test;
+pub(super) mod group_drag_ui_test;
