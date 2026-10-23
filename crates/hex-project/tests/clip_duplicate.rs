@@ -313,9 +313,14 @@ fn mixed_group_duplicate_keeps_gaps_and_source_metadata_while_overwriting_only_c
     assert!(editor.project().clip(gap).is_some(), "gap content survives");
 
     for original in [&original_a, &original_b] {
-        let duplicate = copies
+        let duplicate = editor
+            .project()
+            .track(audio_track)
+            .unwrap()
+            .clips()
             .iter()
-            .map(|id| audio_snapshot(&after, *id))
+            .filter(|clip| copies.contains(&clip.id().value()))
+            .map(|clip| audio_snapshot(&after, clip.id().value()))
             .find(|clip| {
                 clip.asset == original.asset
                     && clip.source_offset == original.source_offset
@@ -328,9 +333,13 @@ fn mixed_group_duplicate_keeps_gaps_and_source_metadata_while_overwriting_only_c
         assert_eq!(duplicate, &expected);
         assert!(duplicate.start >= 120_000);
     }
-    let midi_copy = copies
+    let midi_copy = editor
+        .project()
+        .track(midi_track)
+        .unwrap()
+        .midi_clips()
         .iter()
-        .map(|id| midi_snapshot(&after, *id))
+        .map(|clip| midi_snapshot(&after, clip.id().value()))
         .find(|clip| clip.id != midi.value())
         .expect("copied midi clip");
     let mut expected_midi = original_midi;
@@ -371,7 +380,7 @@ fn invalid_selection_and_failed_preparation_preserve_project_and_redo() {
         .expect("note");
     let stale = midi_clip(&mut editor, track, beat(4), beat(1));
     editor
-        .execute(Command::RemoveClip(stale))
+        .execute(Command::RemoveMidiClip(stale))
         .expect("remove stale id");
     editor
         .execute(Command::SetProjectTempo {
@@ -399,7 +408,7 @@ fn invalid_selection_and_failed_preparation_preserve_project_and_redo() {
 
     let result: Result<_, Invalid> = editor
         .execute_prepared(Command::DuplicateClips(vec![clip]), |_| {
-            Err(Invalid("injected preparation refusal"))
+            Err::<(), _>(Invalid("injected preparation refusal"))
         });
     assert!(result.is_err());
     assert_eq!(editor.project(), &before);
