@@ -302,6 +302,82 @@ fn frame_range_clipboard_preserves_volume_across_source_and_destination_tempo_ch
 }
 
 #[test]
+fn frame_clipboard_keeps_latest_equal_frame_knot_limits() {
+    let (mut editor, track, clip) = fixture();
+    let after = BeatTime::from_raw(beat(1).raw() + 1);
+    let authored = MidiClipVolume::new(
+        [
+            (beat(0), 0.0, 0.0),
+            (beat(1), 1.0, 2.0),
+            (after, 3.0, 0.0),
+            (beat(2), 4.0, 4.0),
+        ]
+        .into_iter()
+        .map(|(beat, incoming, value)| MidiClipVolumePoint {
+            beat,
+            incoming: MidiClipGain::new(incoming).unwrap(),
+            value: MidiClipGain::new(value).unwrap(),
+        })
+        .collect(),
+        beat(8),
+    )
+    .unwrap();
+    editor
+        .execute(Command::ReplaceMidiClipVolume {
+            clip,
+            volume: authored,
+        })
+        .unwrap();
+    let map = editor.project().tempo_map();
+    assert_eq!(
+        map.beat_to_frame(beat(1)).unwrap(),
+        map.beat_to_frame(after).unwrap()
+    );
+    let end = map.beat_to_frame(beat(2)).unwrap();
+    let destination = map.beat_to_frame(beat(12)).unwrap();
+    let clipboard = editor
+        .project()
+        .capture_time_range(&hex_project::TimeRange::new(vec![track], 0, end).unwrap())
+        .unwrap();
+    editor
+        .execute(Command::PasteTimeRange {
+            clipboard: std::sync::Arc::new(clipboard),
+            track,
+            frame: destination,
+        })
+        .unwrap();
+    let pasted = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .midi_clips()
+        .iter()
+        .find(|owner| owner.id() != clip)
+        .unwrap();
+    assert_eq!(pasted.volume().gain_before(beat(1)).linear(), 3.0);
+    assert_eq!(pasted.volume().gain_at(beat(1)).linear(), 0.0);
+    assert_eq!(
+        pasted
+            .volume()
+            .gain_at(BeatTime::from_raw(beat(1).raw() / 2))
+            .linear(),
+        1.5
+    );
+    let saved = pasted.volume().clone();
+    assert!(editor.undo());
+    assert!(editor.redo());
+    let pasted = editor
+        .project()
+        .track(track)
+        .unwrap()
+        .midi_clips()
+        .iter()
+        .find(|owner| owner.id() != clip)
+        .unwrap();
+    assert_eq!(pasted.volume(), &saved);
+}
+
+#[test]
 fn frame_range_keeps_volume_when_authored_clip_edges_share_earlier_inverse_beats() {
     let (mut editor, track, clip) = fixture();
     editor

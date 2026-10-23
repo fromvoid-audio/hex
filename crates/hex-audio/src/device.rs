@@ -272,6 +272,19 @@ where
                 let mut peaks = [0.0_f32; 2];
                 let complete = data.len() / channels * channels;
                 data[complete..].fill(T::from_sample(0.0));
+                if !valid_transport_buffer(callback, data.len(), channels) {
+                    // Render chunks are not physical callback bounds. Never
+                    // turn a large callback into hidden same-callback 2Q waits.
+                    callback.revoke_output_transport();
+                    data.fill(T::from_sample(0.0));
+                    callback.report_render_fault(
+                        Some(&hex_engine::Invalid(
+                            "plugin physical callback extent exceeds its fixed quantum",
+                        )),
+                        status.position.load(Relaxed),
+                    );
+                    return;
+                }
                 for chunk in data[..complete].chunks_mut(channels * block.len()) {
                     let frames = chunk.len() / channels;
                     let block_start_frame = status.position.load(Relaxed);
@@ -310,6 +323,12 @@ where
     )
 }
 
+fn valid_transport_buffer(callback: &prepared::Callback, samples: usize, channels: usize) -> bool {
+    callback.output_transport_quantum().is_none_or(|quantum| {
+        channels != 0 && samples % channels == 0 && samples / channels <= quantum
+    })
+}
+
 fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
     callback: &mut prepared::Callback,
     output: &mut [T],
@@ -322,16 +341,69 @@ fn finish_host_chunk<T: SizedSample + FromSample<f32>>(
 where
     f32: FromSample<T>,
 {
-    let valid = rendered.is_ok() && copy_host_chunk(output, source, channels);
+    let valid = if callback.output_transport_quantum().is_some() {
+        let staged = rendered.is_ok() && callback.stage_output_transport(source);
+        let converted = staged && copy_host_chunk(output, source, channels);
+        let delivery = callback.finish_output_transport(converted);
+        finish_transport_copy(
+            delivery,
+            converted,
+            rendered.is_ok(),
+            output,
+            source,
+            channels,
+        )
+    } else {
+        // Keep ordinary output on its existing direct conversion path.
+        rendered.is_ok() && copy_host_chunk(output, source, channels)
+    };
     let _ = callback.finish_spectrum_block(capture_start, valid);
     if !valid {
         output.fill(T::from_sample(0.0));
         source.fill([0.0; 2]);
-        callback.report_render_fault(rendered.as_ref().err(), block_start_frame);
+        let transport_error = callback.output_transport_error();
+        callback.report_render_fault(
+            rendered.as_ref().err().or(transport_error.as_ref()),
+            block_start_frame,
+        );
     }
     callback.finish_gain_recording_quantum(valid);
     valid
 }
+
+/// Final host ownership boundary: a clean terminal cancellation after copying
+/// still replaces that output with silence. It never accepts worker input.
+fn finish_transport_copy<T: SizedSample + FromSample<f32>>(
+    delivery: prepared::OutputTransportDelivery,
+    converted: bool,
+    rendered: bool,
+    output: &mut [T],
+    source: &mut [Frame],
+    channels: usize,
+) -> bool
+where
+    f32: FromSample<T>,
+{
+    let valid = match delivery {
+        prepared::OutputTransportDelivery::Accepted => converted,
+        prepared::OutputTransportDelivery::Refused => false,
+        prepared::OutputTransportDelivery::Cancelled => {
+            source.fill([0.0; 2]);
+            rendered && copy_host_chunk(output, source, channels)
+        }
+    };
+    if !valid {
+        output.fill(T::from_sample(0.0));
+        source.fill([0.0; 2]);
+    }
+    valid
+}
+
+#[cfg(test)]
+mod plugin_transport_tests;
+
+#[cfg(test)]
+mod handoff_profile;
 
 // Preserve the existing rounding (including subnormals) when the sum fits.
 // A same-sign overflowing sum still has a representable mean: halving each
