@@ -147,26 +147,6 @@ pub(super) fn timeline_waveform_view_cached(
     )
 }
 
-pub(super) fn waveform_view_at(
-    waveform: &Arc<CachedWaveform>,
-    clip: &Clip,
-    timeline_origin: u64,
-    visible_start: u64,
-    visible_end: u64,
-) -> Div {
-    waveform_canvas(
-        Arc::clone(waveform),
-        WaveformMapping::Clip {
-            clip: clip.clone(),
-            timeline_origin,
-        },
-        visible_start,
-        visible_end,
-        None,
-        None,
-    )
-}
-
 pub(super) fn waveform_view_cached(
     waveform: &Arc<CachedWaveform>,
     clip: &Clip,
@@ -272,6 +252,12 @@ pub(super) fn waveform_canvas(
                 .map(Arc::new)
             });
             if let Some(geometry) = geometry {
+                #[cfg(all(test, feature = "ui-test-support"))]
+                if let Some(cache) = &cache
+                    && let Ok(mut cache) = cache.try_borrow_mut()
+                {
+                    cache.record_paint(bounds, window.content_mask().bounds, &geometry);
+                }
                 for channel in &geometry.channels {
                     window.paint_path(
                         channel.centerline.clone(),
@@ -983,3 +969,7 @@ mod tests {
 #[cfg(all(test, feature = "ui-test-support"))]
 #[path = "waveform_resize_ui_test.rs"]
 mod resize_tests;
+
+#[cfg(all(test, feature = "ui-test-support"))]
+#[path = "waveform_header_ui_test.rs"]
+mod waveform_header_ui_test;

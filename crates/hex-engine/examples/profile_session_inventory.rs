@@ -40,6 +40,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
             soloed: false,
             devices: Vec::new(),
             instrument: Some(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: instrument_id,
                 bypassed: false,
                 state: hex_project::default_instrument_state()?,
@@ -69,6 +70,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
                 track,
                 scene,
                 content: SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                    volume: hex_project::MidiClipVolume::default(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: clip,
                     name: format!("pattern {index:03}.{scene}"),
@@ -92,6 +94,7 @@ fn fixture() -> Result<Project, Box<dyn Error>> {
         }
     }
     Ok(Project::from_snapshot(Snapshot {
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),

@@ -1,9 +1,20 @@
-//! Versioned, bounded persistence of canonical metadata; no media or callback work.
+//! # Purpose
+//! Own strict bounded serialization and recoverable publication of canonical project metadata.
+//!
+//! # Dependencies
+//! Uses hex-project, hex-tuning, hex-lattice-contract, serde/serde_json and fs2.
+//!
+//! # Does not own
+//! Does not decode PCM, construct DSP, access callback state or silently convert unsupported alpha
+//! formats. Unsupported/malformed input refuses without rewriting the original file.
 mod files;
 mod journal;
 pub mod preset;
 pub mod tuning_library;
-pub use journal::{Journal, journal_path, load_journal};
+pub use journal::{
+    Journal, JournalRestartOutcome, JournalRestartToken, journal_path, load_journal,
+    restart_journal,
+};
 mod audio_edit;
 mod replacement;
 mod schema;
@@ -130,10 +141,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode the single current schema31 envelope with required tuning and complete
-/// device asset manifests, preserving all other active project capabilities.
+/// Encode the single current schema35 envelope with required tuning and complete
+/// device asset and MIDI clip-volume inventories, preserving all active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::tuning::DocumentV31::from_project(project)?)
+    encode_document(&schema::tuning::DocumentV35::from_project(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -149,6 +160,24 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if project.tracks().iter().flat_map(|track| track.midi_clips()).any(|clip| !clip.volume().points().is_empty())
+        || project.session_cells().iter().any(|cell| matches!(cell.content(), hex_project::SessionCellContent::Midi(clip) if !clip.volume().points().is_empty()))
+    {
+        return Err(StorageError::Invalid("older schema cannot save midi clip volume"));
+    }
+    if project
+        .assets()
+        .any(|asset| asset.original_source().is_some())
+    {
+        return Err(StorageError::Invalid(
+            "older schema cannot save device-original source identities",
+        ));
+    }
+    if !project.main_devices().is_empty() {
+        return Err(StorageError::Invalid(
+            "older schema cannot save main devices",
+        ));
+    }
     if project.tuning() != hex_tuning::ProjectTuning::default() {
         return Err(StorageError::Invalid(
             "older schema cannot save project tuning",
@@ -205,6 +234,17 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     if bytes.len() > MAX_DOCUMENT_BYTES {
         return Err(StorageError::Invalid("project document exceeds byte limit"));
+    }
+    #[derive(serde::Deserialize)]
+    struct CurrentHeader<'a> {
+        format: &'a str,
+        version: u32,
+    }
+    let header: CurrentHeader<'_> = serde_json::from_slice(bytes)?;
+    if header.format != "hex-project" || header.version != 35 {
+        return Err(StorageError::Invalid(
+            "unsupported project format or version; current format is 35",
+        ));
     }
     schema::DocumentV11::decode(bytes)
 }

@@ -6,6 +6,7 @@ use std::path::PathBuf;
 
 fn valid_snapshot() -> Snapshot {
     Snapshot {
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
@@ -14,6 +15,7 @@ fn valid_snapshot() -> Snapshot {
         sample_rate: 48_000,
         next_id: 100,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 10,
             path: PathBuf::from("Media/Source.WAV"),
             source_sample_rate: 48_000,
@@ -54,7 +56,7 @@ fn valid_snapshot() -> Snapshot {
                         gain: hex_project::ClipGain::UNITY,
                         id: 40,
                         asset: 10,
-                        start: 128,
+                        start: 1_024,
                         duration: 80,
                         source_offset: 64,
                         source_length: 32,
@@ -131,6 +133,7 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut missing_position = valid_snapshot();
     missing_position.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        comparison: None,
         id: 50,
         bypassed: false,
         state: hex_project::default_instrument_state().unwrap(),
@@ -139,6 +142,7 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut out_of_range = valid_snapshot();
     out_of_range.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        comparison: None,
         id: 50,
         bypassed: false,
         state: hex_project::default_instrument_state().unwrap(),
@@ -148,6 +152,7 @@ fn instrument_position_requires_a_present_slot_and_valid_effect_gap() {
 
     let mut valid = valid_snapshot();
     valid.tracks[0].instrument = Some(hex_project::DeviceSnapshot {
+        comparison: None,
         id: 50,
         bypassed: false,
         state: hex_project::default_instrument_state().unwrap(),
@@ -203,6 +208,7 @@ fn rejects_track_asset_and_clip_limit_overruns() {
     let mut assets = valid_snapshot();
     assets.assets = (0..=MAX_ASSETS)
         .map(|index| AssetSnapshot {
+            original_source: None,
             id: 1_000 + index as u64,
             path: PathBuf::from(format!("Samples/{index}.wav")),
             source_sample_rate: 48_000,

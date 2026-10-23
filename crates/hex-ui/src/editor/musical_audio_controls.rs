@@ -50,10 +50,26 @@ pub(super) fn warp_header(
     );
     controls = controls.child(sample_bpm::field(view, clip_id, cx));
     if active {
-        controls = controls.child(musical_control_label(&format!(
-            "algorithm · {}",
-            mode_name(mode)
-        )));
+        if let WarpMode::Beats {
+            preserve,
+            tail,
+            decay,
+        } = mode
+        {
+            controls = controls.child(beats_controls(
+                capture,
+                preserve,
+                tail,
+                decay,
+                view.edit_pending(),
+                cx,
+            ));
+        } else {
+            controls = controls.child(musical_control_label(&format!(
+                "algorithm · {}",
+                mode_name(mode)
+            )));
+        }
         // Direct choices expose only algorithms backed by the existing worker.
         for (row_index, choices) in modes().chunks(2).enumerate() {
             let mut row = div().flex().gap(px(2.0));
@@ -129,48 +145,7 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
                 controls =
                     controls.child(musical_control_label("transpose stored; tempo sets pitch"))
             }
-            WarpMode::Beats {
-                preserve,
-                tail,
-                decay,
-            } => {
-                let preserve = match preserve {
-                    BeatsPreserve::Transients => "transients".into(),
-                    BeatsPreserve::Division(beat) => format!(
-                        "{:.3} beats",
-                        beat.raw() as f64 / BeatTime::ONE.raw() as f64
-                    ),
-                };
-                controls = controls.child(button(
-                    capture,
-                    &format!("preserve · {preserve}"),
-                    Action::Preserve,
-                    view.edit_pending(),
-                    cx,
-                ));
-                controls = controls.child(button(
-                    capture,
-                    &format!(
-                        "tail · {}",
-                        match tail {
-                            BeatsTail::Off => "off",
-                            BeatsTail::Forward => "forward",
-                            BeatsTail::Alternating => "alternate",
-                        }
-                    ),
-                    Action::Tail,
-                    view.edit_pending(),
-                    cx,
-                ));
-                controls = controls.child(musical_control_row(
-                    capture,
-                    format!("decay {decay}%"),
-                    Action::Decay(-10),
-                    Action::Decay(10),
-                    view.edit_pending(),
-                    cx,
-                ));
-            }
+            WarpMode::Beats { .. } => {}
             WarpMode::Tones { grain_ms } => {
                 controls = controls.child(musical_control_row(
                     capture,
@@ -332,6 +307,80 @@ pub(super) fn view(view: &EditorView, clip_id: ClipId, cx: &mut Context<EditorVi
     }
     controls
 }
+/// The existing canonical Beats bindings live beside the visible mode picker,
+/// above source/marker fields; no second state or DSP path.
+fn beats_controls(
+    capture: Capture,
+    preserve: BeatsPreserve,
+    selected: BeatsTail,
+    envelope: u8,
+    disabled: bool,
+    cx: &mut Context<EditorView>,
+) -> Div {
+    let preserve = match preserve {
+        BeatsPreserve::Transients => "transients".into(),
+        BeatsPreserve::Division(beat) => format!(
+            "{:.3} beats",
+            beat.raw() as f64 / BeatTime::ONE.raw() as f64
+        ),
+    };
+    let mut choices = div().flex().gap(px(2.0));
+    for (tail, label, selector) in [
+        (BeatsTail::Off, "stop", "audio-clip-beats-stop"),
+        (BeatsTail::Forward, "forward", "audio-clip-beats-forward"),
+        (
+            BeatsTail::Alternating,
+            "back / forth",
+            "audio-clip-beats-alternating",
+        ),
+    ] {
+        choices = choices.child(
+            button(capture, label, Action::SelectTail(tail), disabled, cx)
+                .flex_grow()
+                .flex_shrink_0()
+                .border_1()
+                .border_color(rgb(theme::color(if tail == selected {
+                    theme::PaletteRole::Text
+                } else {
+                    theme::PaletteRole::Border
+                })))
+                .debug_selector(move || selector.into()),
+        );
+    }
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(2.0))
+        .flex_shrink_0()
+        .child(
+            button(
+                capture,
+                &format!("preserve · {preserve}"),
+                Action::Preserve,
+                disabled,
+                cx,
+            )
+            .debug_selector(|| "audio-clip-beats-preserve".into()),
+        )
+        .child(choices)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(2.0))
+                .child(
+                    button(capture, "−", Action::Decay(-10), disabled, cx)
+                        .debug_selector(|| "audio-clip-beats-envelope-less".into()),
+                )
+                .child(musical_control_label(&format!("envelope {envelope}")).flex_1())
+                .child(
+                    button(capture, "+", Action::Decay(10), disabled, cx)
+                        .debug_selector(|| "audio-clip-beats-envelope-more".into()),
+                )
+                .debug_selector(|| "audio-clip-beats-envelope".into()),
+        )
+}
+
 fn clamped_page(page: usize, count: usize) -> usize {
     page.min(count.saturating_sub(1) / PAGE)
 }
@@ -381,7 +430,7 @@ fn button(
             if disabled
                 || view.edit_pending()
                 || view.project_generation != capture.generation
-                || view.selected_clip != Some(capture.clip)
+                || view.detail_clip_id() != Some(capture.clip)
             {
                 return;
             }
@@ -434,6 +483,14 @@ fn button(
 fn action_key(action: Action) -> String {
     match action {
         Action::SelectMode(index) => format!("mode-{index}"),
+        Action::SelectTail(tail) => format!(
+            "tail-{}",
+            match tail {
+                BeatsTail::Off => 0,
+                BeatsTail::Forward => 1,
+                BeatsTail::Alternating => 2,
+            }
+        ),
         Action::MarkerFrame(i, d) => format!("marker-frame-{i}-{d}"),
         Action::MarkerBeat(i, d) => format!("marker-beat-{i}-{d}"),
         Action::MarkerRemove(i) => format!("marker-remove-{i}"),
@@ -465,7 +522,6 @@ fn action_key(action: Action) -> String {
                     },
                 Action::Seed => 10,
                 Action::Preserve => 11,
-                Action::Tail => 12,
                 Action::Decay(v) =>
                     if v < 0 {
                         13

@@ -288,8 +288,11 @@ fn failed_prepared_import_preserves_project_ids_and_resident_media() {
         panic!("import result expected")
     };
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("add instrument track")
     else {
@@ -363,7 +366,14 @@ fn split_preserves_trimmed_one_shot_render_order_across_blocks_and_persistence()
             .import(prepare(&directory, "split.wav", 48_000, &source))
             .expect("import source"),
     );
-    let track = session.project().tracks()[0].id();
+    let Created::Track(other_track) = session
+        .command(Command::AddTrack {
+            name: "independent audio".into(),
+        })
+        .expect("other track")
+    else {
+        panic!("other track")
+    };
     session
         .command(Command::TrimClip {
             clip: original,
@@ -375,7 +385,7 @@ fn split_preserves_trimmed_one_shot_render_order_across_blocks_and_persistence()
         .expect("trim one-shot");
     session
         .command(Command::PlaceClip {
-            track,
+            track: other_track,
             asset,
             start: 5,
             duration: 8,
@@ -383,7 +393,7 @@ fn split_preserves_trimmed_one_shot_render_order_across_blocks_and_persistence()
             source_length: 8,
             looping: false,
         })
-        .expect("place overlapping clip");
+        .expect("place independent concurrent clip");
     let before = session.project().clone();
     let baseline = session.compile().expect("compile baseline");
 
@@ -436,8 +446,11 @@ fn offline_export_renders_repeated_midi_from_the_prepared_session_graph() {
     let path = directory.path().join("looped-midi.wav");
     let mut session = Session::new(48_000, 12, 0).expect("session");
     let track = match session
-        .command(Command::AddMidiTrack {
+        .command(Command::InsertTrackWithDevice {
             name: "keys".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("instrument track")
     {
@@ -817,8 +830,11 @@ fn converted_import_preserves_source_metadata_and_uses_playback_frames_for_histo
 fn ordered_instrument_candidate_prepares_and_roundtrips_history() {
     let mut session = Session::new(48_000, 16, 0).expect("session");
     let (track, _) = match session
-        .command(Command::AddTrack {
+        .command(Command::InsertTrackWithDevice {
             name: "chain".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .expect("track")
     {

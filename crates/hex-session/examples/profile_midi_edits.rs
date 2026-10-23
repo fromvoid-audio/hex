@@ -43,6 +43,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
             instrument: None,
             instrument_position: None,
             content: TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
+                volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
                 id: clip_id,
@@ -59,6 +60,7 @@ fn fixture() -> Result<Project, hex_project::Invalid> {
         });
     }
     Project::from_snapshot(Snapshot {
+        main_devices: Vec::new(),
         tuning: Default::default(),
         audio_feeds: Vec::new(),
         midi_routes: Vec::new(),

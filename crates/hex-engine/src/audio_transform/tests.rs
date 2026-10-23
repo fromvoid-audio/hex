@@ -1315,3 +1315,590 @@ fn sample_bpm_and_edge_stretch_keep_pcm_pitch_and_partition_seek_consistency() {
         }
     }
 }
+
+#[test]
+fn beats_actual_preparation_joins_cache_parameters_version_and_undo_match_rendered_playback() {
+    let (mut editor, clip, mut media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    media.insert(
+        asset,
+        Audio::new(16_000, vec![[0.5, -0.25]; 8_000]).unwrap(),
+    );
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Division(BeatTime::from_ratio(1, 4).unwrap()),
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let length = editor.project().clip(clip).unwrap().duration() as usize;
+    assert_eq!(length, 16_000);
+    let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+    let first = prepare(&editor, &media, &context);
+    let pcm = render(&first, 0, length, 127);
+    for at in [4_000, 8_000, 12_000] {
+        assert_eq!(pcm[at], [0.5, -0.25]);
+        assert_eq!(pcm[at - 1], pcm[at], "actual prepared neighbor join");
+    }
+    for block in [1, 31, 257, 513] {
+        assert_eq!(render(&first, 0, length, block), pcm);
+        assert_eq!(render(&first, 3_987, 511, block), pcm[3_987..4_498]);
+    }
+    let hits = context.cache_hits();
+    let repeated = prepare(&editor, &media, &context);
+    assert!(context.cache_hits() > hits);
+    assert_eq!(render(&repeated, 0, length, 63), pcm);
+    let mut gated = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .domain
+        .warp
+        .as_ref()
+        .unwrap()
+        .clone();
+    gated.mode = WarpMode::Beats {
+        preserve: hex_project::BeatsPreserve::Division(BeatTime::from_ratio(1, 4).unwrap()),
+        tail: BeatsTail::Forward,
+        decay: 25,
+    };
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(gated),
+        })
+        .unwrap();
+    let low_hits = context.cache_hits();
+    let decayed = prepare(&editor, &media, &context);
+    assert_eq!(
+        context.cache_hits(),
+        low_hits,
+        "envelope edit must invalidate prepared PCM"
+    );
+    let low_pcm = render(&decayed, 0, length, 63);
+    for (at, frame) in low_pcm.iter().enumerate() {
+        let gain = (-9.0 * (at % 4_000) as f64 / 4_000.0).exp();
+        assert!((f64::from(frame[0]) - 0.5 * gain).abs() < 1e-7);
+        assert!((f64::from(frame[1]) + 0.25 * gain).abs() < 1e-7);
+    }
+    assert!(editor.undo());
+    let full_again = prepare(&editor, &media, &context);
+    assert_eq!(render(&full_again, 0, length, 257), pcm);
+    assert_eq!(
+        render(&decayed, 0, length, 513),
+        low_pcm,
+        "retained lower-envelope revision is immutable"
+    );
+    let mut off = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .domain
+        .warp
+        .as_ref()
+        .unwrap()
+        .clone();
+    off.mode = WarpMode::Beats {
+        preserve: hex_project::BeatsPreserve::Division(BeatTime::from_ratio(1, 4).unwrap()),
+        tail: BeatsTail::Off,
+        decay: 100,
+    };
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(off),
+        })
+        .unwrap();
+    let hits = context.cache_hits();
+    let stopped = prepare(&editor, &media, &context);
+    assert_eq!(
+        context.cache_hits(),
+        hits,
+        "tail edit must not reuse Forward PCM"
+    );
+    let off_pcm = render(&stopped, 0, length, 127);
+    assert!(off_pcm[2_000..4_000].iter().all(|s| *s == [0.0; 2]));
+    assert_eq!(
+        off_pcm[4_000], [0.0; 2],
+        "Off restart removes background, not source attacks"
+    );
+    assert_ne!(off_pcm, pcm);
+    assert!(editor.undo());
+    let restored = prepare(&editor, &media, &context);
+    assert!(context.cache_hits() > hits);
+    assert_eq!(render(&restored, 0, length, 257), pcm);
+    assert!(editor.redo());
+    let hits = context.cache_hits();
+    for entry in &mut context.cache.borrow_mut().entries {
+        entry.algorithm_version = hex_warp::ALGORITHM_VERSION - 1;
+    }
+    let rebuilt = prepare(&editor, &media, &context);
+    assert_eq!(
+        context.cache_hits(),
+        hits,
+        "old algorithm PCM must not survive cache lookup"
+    );
+    assert_eq!(render(&rebuilt, 0, length, 513), off_pcm);
+    assert_eq!(
+        render(&first, 0, length, 127),
+        pcm,
+        "retained old revision remains immutable"
+    );
+    eprintln!("executed actual Beats canonical/preparation/cache/version/Undo/partition/seek path");
+}
+
+#[test]
+fn beats_wsola_default_preparation_locks_drums_and_keeps_bass_continuous() {
+    let (mut editor, clip, mut media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    let original: Vec<_> = (0..8_000)
+        .map(|i| {
+            let bass = (std::f32::consts::TAU * 55.0 * i as f32 / 16_000.0).sin() * 0.15;
+            if i % 2_000 == 0 {
+                [0.9, -0.8]
+            } else {
+                [bass, -bass * 0.7]
+            }
+        })
+        .collect();
+    media.insert(asset, Audio::new(16_000, original.clone()).unwrap());
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+    for (tempo, ratio) in [(80_000_000, 1.5), (60_000_000, 2.0)] {
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(tempo).unwrap(),
+            })
+            .unwrap();
+        let length = editor.project().clip(clip).unwrap().duration() as usize;
+        assert_eq!(length, (8_000.0 * ratio) as usize);
+        let revision = prepare(&editor, &media, &context);
+        let pcm = render(&revision, 0, length, 127);
+        let expected: Vec<_> = [0, 2_000, 4_000, 6_000]
+            .map(|i| (i as f64 * ratio) as usize)
+            .to_vec();
+        let actual: Vec<_> = pcm
+            .iter()
+            .enumerate()
+            .filter_map(|(i, x)| (x[0] > 0.7).then_some(i))
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "mapped attacks must neither move nor repeat"
+        );
+        for at in &expected {
+            assert_eq!(pcm[*at], [0.9, -0.8]);
+        }
+        for interval in expected.windows(2) {
+            let from = interval[0] + 500;
+            let to = interval[1] - 500;
+            let rms = (pcm[from..to]
+                .iter()
+                .map(|x| f64::from(x[0]).powi(2))
+                .sum::<f64>()
+                / (to - from) as f64)
+                .sqrt();
+            assert!((0.09..0.12).contains(&rms), "bass bed RMS {rms}");
+            assert!(
+                pcm[from..to]
+                    .iter()
+                    .all(|x| (x[1] + x[0] * 0.7).abs() < 1e-6)
+            );
+            let largest_step = pcm[from..to]
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(largest_step < 0.01, "generated bass edge {largest_step}");
+        }
+        for block in [1, 31, 257, 513] {
+            assert_eq!(render(&revision, 0, length, block), pcm);
+            assert_eq!(
+                render(&revision, expected[1] as u64 - 19, 511, block),
+                pcm[expected[1] - 19..expected[1] + 492]
+            );
+        }
+        let hits = context.cache_hits();
+        let repeated = prepare(&editor, &media, &context);
+        assert!(context.cache_hits() > hits);
+        assert_eq!(render(&repeated, 0, length, 63), pcm);
+        eprintln!(
+            "executed actual default Transients Forward100 WSOLA drum+bass ratio={ratio} frames={length}, locked attacks/continuous bass/partition/seek/cache"
+        );
+    }
+}
+
+#[test]
+fn beats_alternating_preparation_reverses_safe_chirp_tail_and_undo_preserves_revisions() {
+    let (mut editor, clip, mut media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    media.insert(
+        asset,
+        Audio::new(
+            16_000,
+            (0..8_000)
+                .map(|i| {
+                    let t = i as f64 / 16_000.0;
+                    let x = (std::f64::consts::TAU * (60.0 * t + 500.0 * t * t) + 0.4).sin() as f32
+                        * 0.5;
+                    [x, -x * 0.7]
+                })
+                .collect(),
+        )
+        .unwrap(),
+    );
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+    let forward = prepare(&editor, &media, &context);
+    let forward_pcm = render(&forward, 0, 16_000, 127);
+    let mut settings = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .domain
+        .warp
+        .as_ref()
+        .unwrap()
+        .clone();
+    settings.mode = WarpMode::Beats {
+        preserve: hex_project::BeatsPreserve::Transients,
+        tail: BeatsTail::Alternating,
+        decay: 100,
+    };
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let hits = context.cache_hits();
+    let alternating = prepare(&editor, &media, &context);
+    assert_eq!(context.cache_hits(), hits);
+    let pcm = render(&alternating, 0, 16_000, 63);
+    assert_ne!(
+        pcm, forward_pcm,
+        "Alternating must not silently use Forward traversal"
+    );
+    let frequency = |frames: &[crate::Frame]| {
+        frames
+            .windows(2)
+            .filter(|w| w[0][0] <= 0.0 && w[1][0] > 0.0)
+            .count() as f64
+            * 16_000.0
+            / frames.len() as f64
+    };
+    let reversed = frequency(&pcm[11_500..12_500]);
+    let normal = frequency(&forward_pcm[11_500..12_500]);
+    assert!(
+        reversed > 200.0 && reversed + 60.0 < normal,
+        "safe chirp tail not reversed: Alt={reversed} Forward={normal}"
+    );
+    assert!(pcm.iter().all(|x| (x[1] + x[0] * 0.7).abs() < 1e-6));
+    for block in [1, 31, 257, 513] {
+        assert_eq!(render(&alternating, 0, 16_000, block), pcm);
+        assert_eq!(
+            render(&alternating, 11_937, 511, block),
+            pcm[11_937..12_448]
+        );
+    }
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 257),
+        forward_pcm
+    );
+    drop(editor);
+    drop(media);
+    assert_eq!(render(&alternating, 0, 16_000, 513), pcm);
+    assert_eq!(render(&forward, 0, 16_000, 127), forward_pcm);
+    eprintln!(
+        "executed actual Alternating protected WSOLA chirp native preparation/cache/Undo/retained revisions/seek/partition: AltHz={reversed} ForwardHz={normal}"
+    );
+}
+
+fn preview_matches_preparation(
+    editor: &Editor,
+    clip: hex_project::ClipId,
+    media: &BTreeMap<hex_project::AssetId, Audio>,
+) -> bool {
+    let metadata = validate_clip_warp_preview(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+    );
+    let actual = crate::PreparedRevision::prepare_with_audio_transforms(
+        editor.project(),
+        media,
+        Arc::new(crate::SineTable::new()),
+        None,
+        &AudioTransformPreparation::default(),
+    );
+    assert_eq!(
+        metadata.is_ok(),
+        actual.is_ok(),
+        "metadata={metadata:?} actual_error={:?}",
+        actual.as_ref().err()
+    );
+    if let (Err(expected), Err(actual)) = (&metadata, &actual) {
+        assert_eq!(expected, actual);
+    }
+    metadata.is_ok()
+}
+#[test]
+fn warp_preview_admission_matches_actual_preparation_pitch_modes_tempo_and_rounding() {
+    for pitch in [-1_200, 0, 1_200] {
+        for mode in [
+            None,
+            Some(WarpMode::RePitch),
+            Some(WarpMode::Beats {
+                preserve: hex_project::BeatsPreserve::Transients,
+                tail: BeatsTail::Forward,
+                decay: 100,
+            }),
+        ] {
+            for end in [499, 500, 1_000, 8_000, 64_000, 64_001] {
+                let (mut editor, clip, media) = fixture(false);
+                let settings = default_audio_warp(
+                    editor.project().clip(clip).unwrap(),
+                    editor.project().tempo_map(),
+                    mode.unwrap_or(WarpMode::RePitch),
+                )
+                .unwrap();
+                editor
+                    .execute(Command::SetAudioClipWarp {
+                        clip,
+                        settings: Some(settings),
+                    })
+                    .unwrap();
+                editor
+                    .execute(Command::SetAudioClipPitch { clip, cents: pitch })
+                    .unwrap();
+                editor
+                    .execute(Command::SetTempoPoint {
+                        beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+                        tempo: Tempo::new(90_000_000).unwrap(),
+                    })
+                    .unwrap();
+                editor
+                    .execute(Command::StretchAudioClipEdge {
+                        clip,
+                        edge: hex_project::TrimEdge::Right,
+                        frame: end,
+                    })
+                    .unwrap();
+                if mode.is_none() {
+                    editor
+                        .execute(Command::SetAudioClipWarp {
+                            clip,
+                            settings: None,
+                        })
+                        .unwrap();
+                }
+                preview_matches_preparation(&editor, clip, &media);
+            }
+        }
+    }
+}
+#[test]
+fn warp_preview_admission_nonuniform_markers_and_subframe_errors_match_actual_preparation() {
+    for (middle, pitch) in [
+        (BeatTime::ONE.raw() / 2, 0),
+        (BeatTime::ONE.raw() / 2, 2_400),
+        (1, 0),
+    ] {
+        let (mut editor, clip, media) = fixture(false);
+        let mut settings = default_audio_warp(
+            editor.project().clip(clip).unwrap(),
+            editor.project().tempo_map(),
+            WarpMode::Beats {
+                preserve: hex_project::BeatsPreserve::Transients,
+                tail: BeatsTail::Forward,
+                decay: 100,
+            },
+        )
+        .unwrap();
+        settings.markers.insert(
+            1,
+            hex_project::WarpMarker {
+                source_frame: 1_600,
+                beat: BeatTime::from_raw(middle),
+            },
+        );
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: pitch })
+            .unwrap();
+        let valid = preview_matches_preparation(&editor, clip, &media);
+        assert_eq!(
+            valid,
+            middle > 1 && pitch == 0,
+            "nonuniform first segment or subframe projection must control admission"
+        );
+    }
+    let (editor, clip, media) = fixture(false);
+    assert!(
+        preview_matches_preparation(&editor, clip, &media),
+        "untouched resident audio needs no warp map"
+    );
+}
+#[test]
+fn warp_preview_valid_endpoints_can_be_disconnected_by_marker_tempo_crossings() {
+    // A slow-source second marker interval first traverses 30bpm, then moves
+    // entirely beyond the 480bpm point. Its maximum stretch drops, so validity
+    // is NOT globally monotonic in the requested right-edge frame.
+    let (mut seed, clip, media) = fixture(false);
+    let mut settings = default_audio_warp(
+        seed.project().clip(clip).unwrap(),
+        seed.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    settings.markers.insert(
+        1,
+        hex_project::WarpMarker {
+            source_frame: 7_600,
+            beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+        },
+    );
+    seed.execute(Command::SetAudioClipWarp {
+        clip,
+        settings: Some(settings),
+    })
+    .unwrap();
+    seed.execute(Command::SetTempoPoint {
+        beat: BeatTime::ZERO,
+        tempo: Tempo::new(30_000_000).unwrap(),
+    })
+    .unwrap();
+    seed.execute(Command::SetTempoPoint {
+        beat: BeatTime::ONE,
+        tempo: Tempo::new(480_000_000).unwrap(),
+    })
+    .unwrap();
+    for (end, expected) in [(3_200, true), (32_000, false), (34_200, true)] {
+        let mut editor = Editor::new(seed.project().clone(), 32).unwrap();
+        editor
+            .execute(Command::StretchAudioClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Right,
+                frame: end,
+            })
+            .unwrap();
+        assert_eq!(
+            preview_matches_preparation(&editor, clip, &media),
+            expected,
+            "endpoint {end}"
+        );
+    }
+}
+
+#[test]
+fn derived_pcm_ingress_refusal_keeps_its_actual_reservation_and_buffer() {
+    let budget = Arc::new(budget::Budget::new(1024));
+    let reservation = budget.reserve(32).unwrap();
+    let audio = Audio::from_derived(8_000, vec![[0.25; 2]; 4], reservation).unwrap();
+    let pointer = audio.frames().as_ptr();
+    let refused = crate::OwnedAudioSource::try_from_decoded_audio_on_control(
+        audio,
+        4,
+        &AtomicBool::new(false),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        refused.reason,
+        crate::native_device_resources::ResourcePreparationError::Storage(
+            crate::AudioStorageError::SourceMismatch
+        )
+    );
+    assert_eq!(refused.audio.frames().as_ptr(), pointer);
+    assert!(refused.audio.frames._derived.is_some());
+    assert_eq!(budget.used(), 32);
+    drop(refused);
+    assert_eq!(budget.used(), 0);
+}

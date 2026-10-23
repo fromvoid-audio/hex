@@ -87,8 +87,11 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
     assert!(shape.effect_tracks <= shape.tracks);
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
     editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "admission proof".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap();
     let mut snapshot = editor.project().snapshot();
@@ -111,6 +114,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         track.instrument_position = Some(48);
         for slot in 0..64 {
             track.devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: if index >= shape.tracks - shape.effect_tracks && slot == 63 {
                     stateful.clone()
@@ -125,6 +129,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
             track.content = hex_project::TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: vec![hex_project::MidiClipSnapshot {
+                    volume: hex_project::MidiClipVolume::default(),
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: next,
@@ -155,6 +160,7 @@ pub(super) fn revision(shape: &Shape, held: bool, first_id: u64) -> Arc<Prepared
         let mut devices = Vec::new();
         for slot in 0..64 {
             devices.push(hex_project::DeviceSnapshot {
+                comparison: None,
                 id: next,
                 state: if index < shape.returns && slot == 63 {
                     stateful.clone()
