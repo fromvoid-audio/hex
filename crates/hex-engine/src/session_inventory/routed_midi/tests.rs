@@ -262,3 +262,5 @@ fn routed_session_fanout_admits_exact_weighted_note_limit_before_reserving_templ
         Err(crate::Invalid("routed Session MIDI note key limit reached"))
     ));
 }
+
+mod volume;

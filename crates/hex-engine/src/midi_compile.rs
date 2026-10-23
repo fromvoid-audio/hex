@@ -336,6 +336,22 @@ fn compile_instrument_track_with_empty_bank(
     if track.midi_clips().is_empty() {
         return Ok(None);
     }
+    let volumes = if track
+        .midi_clips()
+        .iter()
+        .any(|clip| !clip.volume().points().is_empty())
+    {
+        let max =
+            crate::PreparedTempoMap::validate_canonical(project.tempo_map(), project.sample_rate())
+                .map_err(|_| Invalid("invalid clip volume preparation timing"))?;
+        let timing =
+            crate::prepared_tempo::CanonicalMidiTiming::for_validated(project.tempo_map(), max);
+        crate::midi_clip_volume::arrangement::PreparedArrangementVolumes::prepare(
+            project, track, &timing,
+        )?
+    } else {
+        None
+    };
     let mut keys = crate::midi_note_bank::PreparedMidiNoteBank::empty_keys();
     let mut clip_counts = Vec::new();
     clip_counts
@@ -512,6 +528,7 @@ fn compile_instrument_track_with_empty_bank(
         bank: bank.unwrap_or_else(empty_bank),
         shared_contexts,
         mutable,
+        volumes,
     }))
 }
 

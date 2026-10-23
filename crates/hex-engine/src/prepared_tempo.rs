@@ -7,6 +7,10 @@
 //! containing this owned map must be retired away from the callback so its
 //! backing point and prefix vectors are never freed there.
 use hex_project::{BeatTime, LoopRegion, MAX_TEMPO_POINTS, TempoMap};
+mod borrowed;
+pub(crate) use borrowed::CanonicalMidiTiming;
+mod breaks;
+pub(crate) use breaks::{MidiTempoBreaks, TempoBreaks};
 mod persistent;
 
 /// Maximum canonical tempo segments admitted into a prepared graph.

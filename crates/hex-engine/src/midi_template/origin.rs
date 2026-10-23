@@ -43,7 +43,7 @@ impl SessionMidiOrigin {
             .checked_add(self.elapsed_at_anchor.raw())
             .map(BeatTime::from_raw)
     }
-    pub(super) fn project(self, elapsed: u128) -> Result<Option<u64>, MidiTemplateError> {
+    pub(crate) fn project(self, elapsed: u128) -> Result<Option<u64>, MidiTemplateError> {
         if elapsed > u128::from(u64::MAX) {
             return Err(MidiTemplateError::BeatDomainExhausted);
         }

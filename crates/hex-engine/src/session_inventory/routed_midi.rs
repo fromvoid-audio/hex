@@ -140,6 +140,28 @@ pub(super) fn prepare_clip(
             .map_err(template_error)?,
         )
     };
+    // Source/instrument reuse above and below intentionally excludes volume:
+    // changing only this clip's curve must not manufacture new note custody.
+    // Revalidate volume admission on every preparation: effective tempo loops
+    // can change break density without changing the canonical map/max BPM.
+    let volume = if clip.volume().points().is_empty() {
+        None
+    } else {
+        let data = clip.source();
+        let playback = hex_project::MidiSourcePlayback::new(
+            data.source_length(),
+            data.source_start(),
+            data.looping()
+                .then_some((data.loop_start(), data.loop_end())),
+            data.source_length(),
+        )
+        .map_err(|error| crate::Invalid(error.0))?;
+        Some(crate::midi_clip_volume::PreparedMidiClipVolume::prepare(
+            clip.volume(),
+            playback,
+            source_timing,
+        )?)
+    };
     let bank = config
         .note_bank
         .as_ref()
@@ -178,6 +200,7 @@ pub(super) fn prepare_clip(
         name: clone_string(clip.name())?,
         source_identity,
         source,
+        volume,
         instrument,
         instrument_id,
         instrument_state,
@@ -208,6 +231,18 @@ pub(super) fn account_template(
         >())
         .ok_or(crate::Invalid(
             "Session MIDI bank handle byte count overflow",
+        ))?;
+    // This is conservative control metadata accounting, once per prepared
+    // row even when routed owners share the immutable curve's Arc. It is not
+    // an allocation identity or a CURRENT closed-storage custody declaration.
+    *bytes = bytes
+        .checked_add(
+            clip.volume
+                .as_ref()
+                .map_or(0, |program| program.retained_control_metadata_bytes()),
+        )
+        .ok_or(crate::Invalid(
+            "session midi clip volume byte count overflow",
         ))?;
     crate::midi_note_bank::PreparedMidiNoteBank::validate_project_budget(
         *bytes,

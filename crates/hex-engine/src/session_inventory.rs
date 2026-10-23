@@ -135,6 +135,9 @@ pub struct PreparedSessionMidiClip {
     pub name: String,
     source_identity: MidiSourceIdentity,
     source: Arc<PreparedMidiSourceTemplate>,
+    // Empty canonical curves are unity and retain no metadata. A nonempty
+    // program has its own revision identity, separate from sounding notes.
+    volume: Option<crate::midi_clip_volume::PreparedMidiClipVolume>,
     instrument: Arc<PreparedMidiInstrumentTemplate>,
     instrument_id: Option<DeviceId>,
     instrument_state: Option<hex_lattice_contract::NativeDeviceState>,
@@ -233,6 +236,12 @@ impl std::fmt::Debug for PreparedSessionMidiClip {
 impl PreparedSessionMidiClip {
     pub fn source_template(&self) -> &PreparedMidiSourceTemplate {
         &self.source
+    }
+
+    pub(crate) fn volume_program(
+        &self,
+    ) -> Option<&crate::midi_clip_volume::PreparedMidiClipVolume> {
+        self.volume.as_ref()
     }
 
     pub fn instrument_template(&self) -> &PreparedMidiInstrumentTemplate {

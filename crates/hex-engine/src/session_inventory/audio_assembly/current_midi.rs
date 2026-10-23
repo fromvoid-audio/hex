@@ -97,6 +97,14 @@ impl SessionAssembly {
         {
             return Err(AudioStorageError::SourceMismatch);
         }
+        // Nonempty volume introduces retained metadata that this sealed born
+        // constructor has not declared yet. Keep its explicit refusal until
+        // audible consumers and actual allocation custody are integrated.
+        if project.session_cells().iter().any(|cell| {
+            matches!(cell.content(), SessionCellContent::Midi(clip) if !clip.volume().points().is_empty())
+        }) {
+            return Err(AudioStorageError::UnsupportedGraph);
+        }
         let max =
             crate::PreparedTempoMap::validate_canonical(project.tempo_map(), project.sample_rate())
                 .map_err(|_| AudioStorageError::UnsupportedGraph)?;
@@ -188,6 +196,7 @@ impl SessionAssembly {
                 name: clone_string(clip.name()).map_err(|_| AudioStorageError::Allocation)?,
                 source_identity: clip.source_identity(),
                 source,
+                volume: None,
                 instrument,
                 instrument_id: Some(device.id()),
                 instrument_state: None,
@@ -237,6 +246,7 @@ impl SessionAssembly {
                 || clip.source_identity != row.source_identity
                 || clip.instrument_id != Some(row.device)
                 || clip.instrument_state.is_some()
+                || clip.volume.is_some()
                 || clip.tuning_identity != row.tuning
                 || !clip.instrument_enabled
                 || clip.work != row.work

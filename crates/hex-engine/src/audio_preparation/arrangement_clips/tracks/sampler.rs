@@ -43,6 +43,11 @@ pub(crate) fn compiler_quote(
             })
         })
         .ok_or(AudioStorageError::Overflow)?;
+    let retained = retained
+        .checked_add(
+            crate::midi_clip_volume::arrangement::PreparedArrangementVolumes::closed_quote(track)?,
+        )
+        .ok_or(AudioStorageError::Overflow)?;
     Ok((retained, workspace))
 }
 pub(crate) fn compiler_workspace_quote(
@@ -95,6 +100,7 @@ pub(super) struct SamplerTrackConstruction {
     contexts: Option<SharedDeclaration>,
     handles: [u64; 2],
     instrument: Option<InstrumentTrack>,
+    volume_identity: Option<crate::midi_clip_volume::arrangement::ArrangementVolumeIdentity>,
     installed: bool,
 }
 impl SamplerTrackConstruction {
@@ -114,6 +120,7 @@ impl SamplerTrackConstruction {
     ) -> Result<(), AudioStorageError> {
         if self.present()
             || self.instrument.is_some()
+            || self.volume_identity.is_some()
             || self.handles != [0; 2]
             || config.track != track.id()
             || track.instrument().is_none_or(|d| d.id() != config.device)
@@ -129,7 +136,7 @@ impl SamplerTrackConstruction {
         self.handles = [handle()?, handle()?];
         let (contexts, paired) = contexts.clone_on_control().into_paired_parts_on_control();
         self.contexts = Some(paired);
-        self.instrument = crate::midi_compile::compile_current_sampler_track(
+        let instrument = crate::midi_compile::compile_current_sampler_track(
             project,
             track,
             &config.prepared,
@@ -137,6 +144,15 @@ impl SamplerTrackConstruction {
             &mut self.bank,
         )
         .map_err(invalid)?;
+        let volume_identity = instrument
+            .as_ref()
+            .and_then(|i| i.volumes.as_ref())
+            .map(|volumes| volumes.preparation_identity())
+            .transpose()
+            .map_err(invalid)?;
+        // All fallible preparation precedes these persistent owner moves.
+        self.instrument = instrument;
+        self.volume_identity = volume_identity;
         Ok(())
     }
     pub(super) fn install(&mut self, track: &mut Track) -> Result<(), AudioStorageError> {
@@ -189,6 +205,13 @@ impl SamplerTrackConstruction {
             {
                 return Err(AudioStorageError::UnknownStorage);
             }
+            match (instrument.volumes.as_ref(), self.volume_identity.as_ref()) {
+                (None, None) => {}
+                (Some(value), Some(identity)) if identity.matches(value) => {}
+                _ => return Err(AudioStorageError::SourceMismatch),
+            }
+        } else if self.volume_identity.is_some() {
+            return Err(AudioStorageError::SourceMismatch);
         }
         Ok(())
     }
@@ -202,7 +225,7 @@ impl SamplerTrackConstruction {
             .as_ref()
             .and_then(|d| d.parts(&instrument.bank))
             .ok_or(AudioStorageError::UnknownStorage)?;
-        instrument
+        let bytes = instrument
             .spans
             .capacity()
             .checked_mul(std::mem::size_of::<crate::midi_compile::CompiledNoteSpan>())
@@ -216,7 +239,20 @@ impl SamplerTrackConstruction {
             })
             .and_then(|n| n.checked_add(payload))
             .and_then(|n| n.checked_add(overhead))
-            .ok_or(AudioStorageError::Overflow)
+            .ok_or(AudioStorageError::Overflow)?;
+        let mut bytes = bytes;
+        if let Some(volumes) = &instrument.volumes {
+            bytes = bytes
+                .checked_add(volumes.allocated_row_bytes().map_err(invalid)?)
+                .and_then(|n| n.checked_add(volumes.retained_control_metadata_bytes()))
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        if let Some(identity) = &self.volume_identity {
+            bytes = bytes
+                .checked_add(identity.retained_bytes()?)
+                .ok_or(AudioStorageError::Overflow)?;
+        }
+        Ok(bytes)
     }
     pub(super) fn visit<'a>(
         &'a self,
@@ -228,6 +264,12 @@ impl SamplerTrackConstruction {
             return Ok(());
         };
         self.validate(track)?;
+        if let Some(volumes) = &instrument.volumes {
+            volumes.visit_storage(ledger)?;
+        }
+        if let Some(identity) = &self.volume_identity {
+            identity.visit_storage(ledger)?;
+        }
         ledger.vec(&instrument.spans)?;
         ledger.vec(&instrument.nodes)?;
         ledger.shared(
@@ -264,6 +306,7 @@ impl SamplerTrackConstruction {
     }
     pub(super) fn dispose(&mut self) {
         drop(self.instrument.take());
+        drop(self.volume_identity.take());
         self.bank = None;
         self.contexts = None;
         self.device = None;

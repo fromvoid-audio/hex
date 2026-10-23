@@ -1204,6 +1204,7 @@ impl SessionPlayback {
                             pages.as_deref_mut(),
                             &mut captured[..output.len()],
                             &self.analytic_continuations,
+                            Some(self.revision.session().timing()),
                         )
                         .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
                     if let Some(capture) = capture.as_mut() {
@@ -1919,7 +1920,7 @@ enum SourceStage {
     Instrument,
 }
 
-fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
+fn render_route_source_chunk<P: MediaPages + ?Sized, T: crate::prepared_tempo::MidiTempoBreaks>(
     context: RouteSourceContext<'_, T>,
     spans: &mut MidiSpanBuffer,
     performance_frame: u64,
@@ -1964,6 +1965,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                         output,
                         suppressions,
                         continuations,
+                        Some(revision.session().timing()),
                     )
                     .map_err(|error| SessionPlaybackError::Arrangement(error.0));
             }
@@ -1980,14 +1982,25 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                             suppressions,
                             pages.as_deref_mut(),
                             continuations,
+                            Some(revision.session().timing()),
                         )
                     } else if let Some(page_provider) = pages.as_deref_mut() {
-                        track.render_additive_with_pages(arrangement_frame, output, page_provider)
-                    } else if track.has_gain_automation() {
-                        // This is the raw source stage; the buffered caller applies gain once.
-                        track.render_additive_with_midi_floor(arrangement_frame, output, None)
+                        track.render_additive_with_pages(
+                            arrangement_frame,
+                            output,
+                            page_provider,
+                            Some(revision.session().timing()),
+                        )
                     } else {
-                        track.render_additive(arrangement_frame, output)
+                        // Arrangement volume uses the canonical clip clock,
+                        // including the whole-track fast path. Buffered callers
+                        // still own applying any track gain automation once.
+                        track.render_additive_with_midi_floor(
+                            arrangement_frame,
+                            output,
+                            None,
+                            Some(revision.session().timing()),
+                        )
                     }
                 }
                 SourceStage::Audio => {
@@ -2007,6 +2020,7 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                     output,
                     suppressions,
                     continuations,
+                    Some(revision.session().timing()),
                 ),
             }
             .map_err(|error| SessionPlaybackError::Arrangement(error.0))?;
@@ -2032,7 +2046,14 @@ fn render_route_source_chunk<P: MediaPages + ?Sized, T: MidiTiming>(
                     .with_continuations(continuations);
                 prepared
                     .instrument_template()
-                    .render_additive(context, source_mix, performance_frame, output, spans)
+                    .render_additive_with_volume(
+                        context,
+                        source_mix,
+                        performance_frame,
+                        output,
+                        spans,
+                        prepared.volume_program(),
+                    )
                     .map_err(SessionPlaybackError::Midi)?;
             }
         }
