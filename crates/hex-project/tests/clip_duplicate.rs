@@ -267,6 +267,21 @@ fn mixed_group_duplicate_keeps_gaps_and_source_metadata_while_overwriting_only_c
             fade_out: 225,
         })
         .expect("set non-default fades");
+    let fade = editor
+        .project()
+        .clip(audio_a)
+        .unwrap()
+        .retained_fade()
+        .with_shape(20, 30, 200, -300)
+        .unwrap()
+        .with_curve_positions(250, 700)
+        .unwrap();
+    editor
+        .execute(Command::SetClipFadeEnvelope {
+            clip: audio_a,
+            fade,
+        })
+        .expect("retain two-axis fade shape");
     let midi = midi_clip(&mut editor, midi_track, beat(4), beat(1));
     editor
         .execute(Command::SetMidiClipSource {

@@ -1,7 +1,7 @@
 //! Rendered whole-clip shortcuts and ordered real-worker terminal regressions.
 use super::*;
 use crate::editor::drag::group_drag_ui_test::{click, fixture, pump};
-use gpui::{AppContext, Entity, Modifiers, TestAppContext, VisualTestContext};
+use gpui::{Entity, Modifiers, TestAppContext, VisualTestContext};
 use hex_project::{BeatTime, Command};
 use std::time::{Duration, Instant};
 
@@ -326,6 +326,7 @@ fn close_prompt_preserves_previously_accepted_duplicate_continuations(cx: &mut T
     let (_files, handle, editor, originals) = fixture(cx);
     let mut visual = VisualTestContext::from_window(handle, cx);
     click(&mut visual, originals[0], false);
+    let revision = editor.read_with(&visual, |v, _| v.state.as_ref().unwrap().revision);
     press(&editor, &mut visual);
     press(&editor, &mut visual);
     visual.update(|window, cx| {
@@ -344,7 +345,14 @@ fn close_prompt_preserves_previously_accepted_duplicate_continuations(cx: &mut T
     editor.read_with(&visual, |v, _| {
         assert!(v.close_prompt_open);
         assert!(!v.duplicate_intent.is_pending());
-        assert_eq!(all_ids(v).len(), originals.len() + 2);
+        let state = v.state.as_ref().unwrap();
+        assert_eq!(state.revision, revision + 2);
+        // The second copy overwrites the existing clip at 96,000 under the
+        // ordinary clip overwrite policy; it still commits its own history.
+        assert_eq!(all_ids(v).len(), originals.len() + 1);
+        assert!(state.project.clip(originals[1]).is_none());
+        let selected = state.project.clip(v.selected_clip.unwrap()).unwrap();
+        assert_eq!((selected.start(), selected.source_offset()), (96_000, 0));
         assert_ne!(v.selected_clip, Some(originals[0]));
     });
     cx.simulate_prompt_answer("cancel");
