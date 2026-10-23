@@ -278,7 +278,11 @@ fn browser_vst3_standard_folder_button_scans_owned_roots_and_restores_type_searc
     editor.read_with(&visual, |view, cx| {
         let rows = view.browser_visible_plugins(cx);
         assert_eq!(rows.len(), 2, "{}", view.browser.plugins.status);
-        assert!(view.browser.plugins.status.contains("2 discovered"));
+        assert!(
+            view.browser.plugins.status.contains("2 discovered"),
+            "{}; rows: {rows:?}",
+            view.browser.plugins.status
+        );
         assert_ne!(
             rows[0].module, rows[1].module,
             "same reported UID in different modules remains visible"
@@ -310,4 +314,119 @@ fn browser_vst3_standard_folder_button_scans_owned_roots_and_restores_type_searc
         std::fs::read(physical.join("plugin-catalog.json")).unwrap(),
         stored
     );
+}
+
+#[gpui::test]
+fn browser_vst3_sidebar_visibility_selects_real_source_and_preserves_search_history(
+    cx: &mut TestAppContext,
+) {
+    cx.update(crate::editor::bind_editor_keys);
+    let (handle, editor, _track, directory, _wave) = browser_drag_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        visual.run_until_parked();
+        if editor.read_with(&visual, |view, _| !view.browser.plugins.loading) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "metadata restoration completes"
+        );
+        std::thread::yield_now();
+    }
+    // No discovery is requested: the existing validated original metadata
+    // fixture is enough to verify sidebar navigation and typed row selection.
+    let module = directory.0.canonicalize().unwrap().join("Original.vst3");
+    editor.update(&mut visual, |view, cx| {
+        view.apply_plugin_catalog(original_plugin_catalog(module.clone()), cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let click = |visual: &mut VisualTestContext, selector: &'static str| {
+        let bounds = visual
+            .debug_bounds(selector)
+            .unwrap_or_else(|| panic!("missing {selector}"));
+        visual.simulate_click(bounds.center(), Modifiers::default());
+        visual.run_until_parked();
+    };
+    for source in [
+        "browser-section-all",
+        "browser-section-samples",
+        "browser-section-devices",
+        "browser-section-projects",
+        "browser-section-vst3",
+    ] {
+        assert!(
+            visual.debug_bounds(source).is_some(),
+            "enabled source {source} must paint"
+        );
+    }
+    click(&mut visual, "browser-control-⚙");
+    click(&mut visual, "browser-section-visibility-4");
+    assert!(visual.debug_bounds("browser-section-vst3").is_none());
+    click(&mut visual, "browser-section-visibility-4");
+    click(&mut visual, "browser-section-vst3");
+    click(&mut visual, "browser-vst3-row-0");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.browser.section, BrowserSection::Plugins);
+        assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::Plugin(ref path, Some(id))) if path == &module && id == [1; 16]));
+        assert!(view.browser_visible_devices(cx).is_empty());
+        assert!(view.browser.plugins.status.contains("unavailable"), "catalog metadata must retain truthful discovery/hosting status");
+    });
+    click(&mut visual, "browser-search");
+    visual.simulate_input("vendor");
+    visual.run_until_parked();
+    // A query edit deliberately clears result focus. Select the filtered row
+    // before navigating so history has a real selected identity to restore.
+    click(&mut visual, "browser-vst3-row-0");
+    click(&mut visual, "browser-section-devices");
+    click(&mut visual, "browser-history-back");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.browser.section, BrowserSection::Plugins);
+        assert_eq!(view.browser.search.read(cx).content, "vendor");
+        assert_eq!(view.browser_visible_plugins(cx).len(), 1);
+        assert!(matches!(view.browser_selected_item(cx), Some(crate::editor::browser::BrowserItemKey::Plugin(ref path, Some(id))) if path == &module && id == [1; 16]));
+    });
+    click(&mut visual, "browser-section-visibility-4");
+    assert!(visual.debug_bounds("browser-section-vst3").is_none());
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(
+            view.browser.section,
+            BrowserSection::Samples,
+            "hiding active vst3 selects the existing visible fallback"
+        );
+        assert_eq!(view.browser.search.read(cx).content, "vendor");
+    });
+    click(&mut visual, "browser-history-back");
+    editor.read_with(&visual, |view, _| {
+        assert_ne!(
+            view.browser.section,
+            BrowserSection::Plugins,
+            "history cannot restore a hidden source"
+        )
+    });
+    click(&mut visual, "browser-section-visibility-4");
+    click(&mut visual, "browser-section-vst3");
+    editor.update(&mut visual, |view, cx| {
+        view.apply_plugin_catalog(hex_plugin_catalog::Catalog::default(), cx);
+        cx.notify();
+    });
+    visual.run_until_parked();
+    assert!(
+        visual.debug_bounds("browser-section-vst3").is_some(),
+        "empty metadata must not remove the sidebar entry"
+    );
+    assert!(visual.debug_bounds("browser-vst3-row-0").is_none());
+    visual.simulate_keystrokes("enter");
+    editor.read_with(&visual, |view, cx| {
+        assert_eq!(view.browser.section, BrowserSection::Plugins);
+        assert!(view.browser_visible_plugins(cx).is_empty());
+        assert!(view.pending_requests.is_empty() && view.pending_audio_commands.is_empty());
+        assert!(view.last_enqueued_edit.is_none());
+        assert!(
+            !view.browser.plugins.busy,
+            "source navigation leaves the scan idle"
+        );
+    });
 }

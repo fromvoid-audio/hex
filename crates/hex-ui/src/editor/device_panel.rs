@@ -55,6 +55,7 @@ mod parameter_rows;
 pub(super) use operator_panel::bind_keys as bind_operator_keys;
 mod return_drag;
 mod sampler_overview;
+pub(super) use sampler_overview::{cancel_sampler_boundary, sampler_boundary_preview};
 mod saturator_panel;
 mod send_controls;
 mod snapshot;
@@ -141,6 +142,7 @@ pub(super) struct DevicePanelState {
         HashMap<operator_panel::envelope::GraphKey, operator_panel::envelope::GraphGesture>,
     eq_panels: HashMap<DeviceId, eq_panel::Panel>,
     eq_spectrum: eq_panel::SpectrumSelection,
+    sampler_cursor: sampler_overview::CursorState,
     eq8_panels: HashMap<DeviceId, eq8_panel::Eq8PanelState>,
     eq8_graphs: HashMap<DeviceId, eq8_panel::GraphControl>,
     eq8_responses: HashMap<DeviceId, eq8_panel::ResponseCache>,
@@ -258,7 +260,7 @@ fn title_label(title: String, warning: bool) -> Div {
 }
 
 pub(super) fn control_style() -> ControlStyle {
-    theme::device_style(theme::DeviceStyleRole::Control)
+    theme::control_style()
 }
 
 // Reuse the canonical device-side balance display/parser for track mixer fields.
@@ -483,6 +485,10 @@ pub(super) fn view(
         view.device_panel.generation = view.project_generation;
     }
     reconcile_eq_spectrum(view);
+    sampler_overview::reconcile_cursor(view);
+    if window.is_some_and(|window| !view.focus.is_focused(window)) {
+        cancel_sampler_boundary(view);
+    }
     let Some(state) = view.state.as_ref().cloned() else {
         return empty_panel("project is still loading");
     };
@@ -1589,6 +1595,7 @@ fn render_effect(
             )
         }
     };
+    let rendered = rendered.debug_selector(move || format!("device-shell-{}", device_id.value()));
     view.device_panel.views.insert(
         device_id,
         (
@@ -2041,7 +2048,7 @@ fn render_instrument(
             cx,
         );
         let mut fields = vec![gain, pitch, start, end];
-        match hex_engine::sampler_parameter_value_on_control(
+        let loop_error = match hex_engine::sampler_parameter_value_on_control(
             hex_engine::SamplerParameter::LoopEnabled,
             device.state(),
         ) {
@@ -2053,13 +2060,10 @@ fn render_instrument(
                 ] {
                     fields.push(view.sampler_parameter_control(track, device, parameter, cx));
                 }
+                None
             }
-            Err(error) => fields.push(
-                div()
-                    .child(theme::text(error.to_string()))
-                    .into_any_element(),
-            ),
-        }
+            Err(error) => Some(error.to_string()),
+        };
         for parameter in [
             hex_engine::SamplerParameter::AttackMs,
             hex_engine::SamplerParameter::DecayMs,
@@ -2070,35 +2074,32 @@ fn render_instrument(
         }
         let controls = div()
             .grid()
-            .grid_cols(3)
-            .gap(px(4.0))
+            .grid_cols(if loop_error.is_none() { 11 } else { 8 })
+            .gap(px(2.0))
+            .w_full()
             .flex_shrink_0()
             .debug_selector(|| "sampler-controls".into())
             .children(fields);
         let details = div()
-            .flex_1()
-            .min_h_0()
+            .w_full()
+            .flex_shrink_0()
+            .text_size(px(9.0))
+            .line_height(px(12.0))
             .overflow_hidden()
             .child(theme::text(format!(
-                "{name} · {readiness} · * release inactive in trigger mode"
+                "{readiness} · * release inactive in trigger mode{}",
+                loop_error.map_or_else(String::new, |error| format!(" · {error}"))
             )));
-        let overview = sampler_overview::render(view, device, &name);
+        let overview = sampler_overview::render(view, track, device, &name, cx);
         let body = crate::device_composition::body()
             .flex()
-            .gap(px(8.0))
-            .p(px(5.0))
+            .flex_col()
+            .gap(px(2.0))
+            .p(px(4.0))
             .text_xs()
             .child(overview)
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .h_full()
-                    .flex()
-                    .flex_col()
-                    .child(controls)
-                    .child(details),
-            );
+            .child(controls)
+            .child(details);
         device_frame(
             device_drag_title(
                 view,
@@ -2188,6 +2189,7 @@ fn render_instrument(
             }
         }
     };
+    let rendered = rendered.debug_selector(move || format!("device-shell-{}", device_id.value()));
     view.device_panel.views.insert(
         device_id,
         (
@@ -2390,9 +2392,9 @@ fn bypass_action(
             "toggle device bypass"
         },
         if bypassed {
-            theme::DeviceActionRole::Muted
+            theme::DeviceActionRole::Bypassed
         } else {
-            theme::DeviceActionRole::Normal
+            theme::DeviceActionRole::Enabled
         },
         selected,
     )

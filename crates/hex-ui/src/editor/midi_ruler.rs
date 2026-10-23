@@ -351,7 +351,8 @@ impl EditorView {
                                     point(px(left), bounds.origin.y),
                                     size(px(right - left), px(b.height)),
                                 ),
-                                gpui::rgba((theme::color(theme::PaletteRole::Primary) << 8) | 0x44),
+                                gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                                    .opacity(theme::TIME_SELECTION_OPACITY),
                             ));
                         }
                     }
@@ -412,7 +413,9 @@ impl EditorView {
                             return;
                         }
                         move_entity.update(cx, |view, cx| {
-                            if view.midi_time_selection.gesture.is_some() {
+                            if view.midi_time_selection.gesture.is_some()
+                                && !view.midi_grid_time_selection_active()
+                            {
                                 if event.pressed_button == Some(MouseButton::Left) {
                                     view.update_midi_time_selection(
                                         b,
@@ -454,7 +457,9 @@ impl EditorView {
                             return;
                         }
                         up_entity.update(cx, |view, cx| {
-                            if view.midi_time_selection.gesture.is_some() {
+                            if view.midi_time_selection.gesture.is_some()
+                                && !view.midi_grid_time_selection_active()
+                            {
                                 view.finish_midi_time_selection(
                                     b,
                                     f32::from(event.position.x),

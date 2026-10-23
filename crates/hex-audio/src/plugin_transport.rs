@@ -29,7 +29,9 @@ pub const MAX_FRAMES: usize = 256;
 pub const MAX_EVENTS: usize = 64;
 pub const QUEUE_CAPACITY: usize = 8;
 
-/// Exact instance/root/graph/transport epoch. Recreate on any discontinuity.
+/// Exact instance/root/graph/transport epoch. Recreate this copied exchange on
+/// discontinuity; retaining a loaded native instance requires its separate actual
+/// quiescence/resume ACK, not mutation of these immutable endpoint bindings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub root: u64,
@@ -204,6 +206,7 @@ struct Stage {
 pub struct Callback {
     binding: Binding,
     quantum: u16,
+    first_reply_sequence: u64,
     requests: Producer<Block>,
     replies: Consumer<Block>,
     revoked: Arc<AtomicBool>,
@@ -226,12 +229,29 @@ pub struct Worker {
 
 /// Allocate only on control. The two rings have eight fixed inline slots each.
 pub fn channel(binding: Binding, quantum: u16) -> Result<(Control, Callback, Worker), Fault> {
+    channel_from_completed_prefix(binding, quantum, 0)
+}
+
+/// Fresh queues after an actual native quiescence/resume acknowledgement. The
+/// caller retains the unique native source and uses its exact completed block
+/// prefix; these copied scalars grant no native/root/callback custody. Old queues
+/// must be returned/disposed on control, never retagged or replayed. The fresh
+/// pipeline still primes exactly 2Q frames, independent of its absolute origin.
+pub fn channel_from_completed_prefix(
+    binding: Binding,
+    quantum: u16,
+    completed_blocks: u64,
+) -> Result<(Control, Callback, Worker), Fault> {
     if [binding.root, binding.instance, binding.graph, binding.epoch].contains(&0)
         || quantum == 0
         || usize::from(quantum) > MAX_FRAMES
     {
         return Err(Fault::Configuration);
     }
+    let position = completed_blocks
+        .checked_mul(u64::from(quantum))
+        .ok_or(Fault::Exhausted)?;
+    let first_reply_sequence = completed_blocks.checked_add(2).ok_or(Fault::Exhausted)?;
     let (request_tx, request_rx) = RingBuffer::new(QUEUE_CAPACITY);
     let (reply_tx, reply_rx) = RingBuffer::new(QUEUE_CAPACITY);
     let revoked = Arc::new(AtomicBool::new(false));
@@ -243,11 +263,12 @@ pub fn channel(binding: Binding, quantum: u16) -> Result<(Control, Callback, Wor
         Callback {
             binding,
             quantum,
+            first_reply_sequence,
             requests: request_tx,
             replies: reply_rx,
             revoked: Arc::clone(&revoked),
             state: State {
-                position: 0,
+                position,
                 input: empty,
                 output: empty,
             },
@@ -260,7 +281,7 @@ pub fn channel(binding: Binding, quantum: u16) -> Result<(Control, Callback, Wor
             requests: request_rx,
             replies: reply_tx,
             revoked,
-            sequence: 0,
+            sequence: completed_blocks,
             in_flight: false,
         },
     ))
@@ -349,7 +370,7 @@ impl Callback {
                 stage.state.input = Block::empty(self.binding, self.quantum);
                 stage.state.input.sequence = sequence;
                 stage.state.input.first_frame = position;
-                if sequence >= 2 {
+                if sequence >= self.first_reply_sequence {
                     let reply = self.replies.pop().map_err(|_| Fault::MissingOutput)?;
                     reply.valid(self.binding, self.quantum, sequence - 2)?;
                     stage.state.output = reply;

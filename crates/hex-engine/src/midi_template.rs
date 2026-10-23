@@ -130,11 +130,7 @@ pub(crate) fn session_source_note_has_occurrence(source: &MidiSource, note: &Mid
 }
 
 fn source_note_has_intro_occurrence(source: &MidiSource, note: &MidiNote) -> bool {
-    let intro_end = if source.looping() {
-        source.loop_end().raw()
-    } else {
-        source.source_length().raw()
-    };
+    let intro_end = source.effective_end().raw();
     note.start().raw() >= source.source_start().raw() && note.start().raw() < intro_end
 }
 
@@ -247,15 +243,9 @@ impl PreparedMidiSourceTemplate {
                 "invalid midi admission timing",
             ));
         }
-        let source = MidiSourcePlayback::new(
-            source_data.source_length(),
-            source_data.source_start(),
-            source_data
-                .looping()
-                .then_some((source_data.loop_start(), source_data.loop_end())),
-            source_data.source_length(),
-        )
-        .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
+        let source = source_data
+            .playback_for_duration(source_data.source_length())
+            .map_err(|error| MidiTemplateError::InvalidSource(error.0))?;
         let source_start = source.source_start().raw();
         let first_pass = if let Some((_, loop_end)) = source.loop_range() {
             loop_end
@@ -264,7 +254,7 @@ impl PreparedMidiSourceTemplate {
                 .ok_or(MidiTemplateError::ArithmeticOverflow)?
         } else {
             source
-                .source_length()
+                .initial_end()
                 .raw()
                 .checked_sub(source_start)
                 .ok_or(MidiTemplateError::ArithmeticOverflow)?
@@ -300,9 +290,7 @@ impl PreparedMidiSourceTemplate {
         repeat_spans
             .try_reserve_exact(source_data.notes().len())
             .map_err(|_| MidiTemplateError::Allocation)?;
-        let intro_end = source
-            .loop_range()
-            .map_or(source.source_length().raw(), |(_, loop_end)| loop_end.raw());
+        let intro_end = source.initial_end().raw();
 
         for note in source_data.notes() {
             let note_start = note.start().raw();

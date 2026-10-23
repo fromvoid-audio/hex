@@ -76,7 +76,8 @@ class SelectionTests(unittest.TestCase):
 
     def test_explicit_native_inputs_keep_comprehensive_discovery_and_native_cases(self):
         for key in ("HEX_VST3_MACOS_RECEIPT", "HEX_VST3_DISCOVERY_RECEIPT",
-                    "HEX_VST3_PACKAGE_SCANNER", "HEX_VST3_PACKAGE_FIXTURES", "HEX_TEST_SIGNING_IDENTITY"):
+                    "HEX_VST3_PACKAGE_SCANNER", "HEX_VST3_PACKAGE_FIXTURES", "HEX_TEST_SIGNING_IDENTITY",
+                    "HEX_VST3_INSTANCE_RECEIPT", "HEX_VST3_INSTANCE_TEST_APP"):
             with self.subTest(key=key):
                 chosen = selection(["crates/hex-ui/src/editor.rs"], env={key: "explicit-input"})
                 self.assertEqual(chosen["mode"], "comprehensive")
@@ -98,9 +99,13 @@ assert not getattr(native.NativeBootstrapTests, "__unittest_skip__", False)
 suite = unittest.defaultTestLoader.loadTestsFromTestCase(native.NativeBootstrapTests)
 assert any(case.id().endswith(".test_actual_native_identity_and_effect_instrument_pcm")
            for case in suite)
+import test_vst3_instance_worker as instance
+assert not getattr(instance.NativeInstanceTests, "__unittest_skip__", False)
+assert unittest.defaultTestLoader.loadTestsFromTestCase(instance.NativeInstanceTests).countTestCases() > 0
 """
         result = subprocess.run([sys.executable, "-c", code], cwd=ROOT,
-                                env={**os.environ, "HEX_VST3_MACOS_RECEIPT": "collection-only"},
+                                env={**os.environ, "HEX_VST3_MACOS_RECEIPT": "collection-only",
+                                     "HEX_VST3_INSTANCE_RECEIPT": "collection-only"},
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 

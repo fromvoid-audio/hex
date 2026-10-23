@@ -341,6 +341,7 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
+            .debug_selector(move || format!("device-shell-{}", id.value()))
             .into_any_element()
         }
         Err(error) => {
@@ -365,6 +366,7 @@ pub(super) fn render_return_effect(
                 actions,
                 body,
             )
+            .debug_selector(move || format!("device-shell-{}", id.value()))
             .into_any_element()
         }
     };

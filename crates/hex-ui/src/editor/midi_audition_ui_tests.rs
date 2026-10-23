@@ -125,13 +125,13 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     });
     let start = position(&mut visual, &editor, 0.5, 65);
     let end = position(&mut visual, &editor, 3.5, 59);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, shift);
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.computer_keyboard.request_id, request)
     });
-    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(end, MouseButton::Left, shift);
     pump(&editor, &mut visual);
     let chord = editor.read_with(&visual, |v, _| {
         assert_eq!(v.computer_keyboard.request_id, request + 1);
@@ -140,9 +140,9 @@ fn click_chord_and_marquee_prepare_once_with_exact_velocities_but_disabled_paint
     });
     // Explicitly committing the same marquee is one new intent, never a paint trigger.
     let request = editor.read_with(&visual, |v, _| v.computer_keyboard.request_id);
-    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
-    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_down(start, MouseButton::Left, shift);
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), shift);
+    visual.simulate_mouse_up(end, MouseButton::Left, shift);
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert_eq!(v.computer_keyboard.request_id, request + 1)

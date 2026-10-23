@@ -5,11 +5,13 @@ use hex_project::{BeatTime, GainInterpolation, GainPoint, ReturnFeedSnapshot};
 fn ramp() -> Vec<GainPoint> {
     vec![
         GainPoint {
+            incoming_gain: None,
             beat: BeatTime::ZERO,
             gain: 0.25,
             outgoing: GainInterpolation::Linear,
         },
         GainPoint {
+            incoming_gain: None,
             beat: BeatTime::ONE,
             gain: 1.25,
             outgoing: GainInterpolation::Step,

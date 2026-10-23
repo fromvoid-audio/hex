@@ -23,7 +23,7 @@ fn next(service: &Service) -> Event {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
+pub(super) fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         let done = editor.update(&mut *visual, |v, cx| {
@@ -40,7 +40,7 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
         std::thread::sleep(Duration::from_millis(2));
     }
 }
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
 ) -> (
     Arc<Environment>,
@@ -311,7 +311,6 @@ fn fresh_midi_left_extension_grid_modifier_release_keeps_the_same_canonical_cand
     assert_eq!(snapped.start().raw() % BeatTime::ONE.raw(), 0);
     let free = Modifiers {
         platform: true,
-        shift: true,
         ..Modifiers::default()
     };
     visual.simulate_modifiers_change(free);
@@ -327,7 +326,7 @@ fn fresh_midi_left_extension_grid_modifier_release_keeps_the_same_canonical_cand
     assert_ne!(
         desired.start(),
         snapped.start(),
-        "command modifier recomputes free MIDI edge; Shift does not turn MIDI into audio warp"
+        "command modifier recomputes free ordinary MIDI trim edge"
     );
     visual.simulate_mouse_up(target, MouseButton::Left, free);
     pump(&editor, &mut visual);
@@ -358,9 +357,11 @@ fn fresh_midi_left_extension_escape_and_actual_project_replacement_never_commit_
                     .unwrap()
                     .preview
                     .borrow()
-                    .unwrap()
-                    .source_prefix()
-                    > BeatTime::ZERO
+                    .and_then(|preview| match preview {
+                        super::MidiEdgePreview::Trim(trim) => Some(trim.source_prefix()),
+                        super::MidiEdgePreview::Stretch(_) => None,
+                    })
+                    .is_some_and(|prefix| prefix > BeatTime::ZERO)
             )
         });
         editor.update(&mut visual, |v, _| v.last_enqueued_edit = None);

@@ -263,6 +263,7 @@ pub struct NumericControl {
     pub(crate) value: f64,
     pub(crate) draft: f64,
     enabled: bool,
+    commit_unchanged_text: bool,
     pub(crate) editing: bool,
     pub(crate) invalid_text: bool,
     pub(crate) text: String,
@@ -364,6 +365,7 @@ impl NumericControl {
             value,
             draft: value,
             enabled: true,
+            commit_unchanged_text: false,
             editing: false,
             text_modified: false,
             invalid_text: false,
@@ -477,6 +479,13 @@ impl NumericControl {
             self.focus = self.focus.clone().tab_index(0).tab_stop(tab_stop);
             cx.notify();
         }
+    }
+
+    /// Opt into a Commit for explicitly modified, accepted text even when its
+    /// number is unchanged. This serves semantic owners such as replacing a
+    /// tempo map. Defaults off; cancellation and untouched text never commit.
+    pub fn set_commit_unchanged_text(&mut self, enabled: bool) {
+        self.commit_unchanged_text = enabled;
     }
 
     pub fn set_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
@@ -1020,6 +1029,11 @@ impl NumericControl {
                         phase: NumericEventPhase::Commit,
                         value,
                     });
+                } else if self.commit_unchanged_text && self.text_modified {
+                    cx.emit(NumericControlEvent {
+                        phase: NumericEventPhase::Commit,
+                        value,
+                    });
                 }
                 self.text = self.spec.format(value).unwrap_or_default();
                 self.editing = false;
@@ -1072,6 +1086,11 @@ impl NumericControl {
                 phase: NumericEventPhase::Change,
                 value,
             });
+            cx.emit(NumericControlEvent {
+                phase: NumericEventPhase::Commit,
+                value,
+            });
+        } else if self.commit_unchanged_text && self.text_modified {
             cx.emit(NumericControlEvent {
                 phase: NumericEventPhase::Commit,
                 value,

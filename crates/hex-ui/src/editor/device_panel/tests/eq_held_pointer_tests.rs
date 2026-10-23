@@ -143,6 +143,66 @@ fn eq_held_node_position_survives_real_preview_ack_and_repeated_completed_frames
     }
     let end = plot(&mut visual, device, 0.65, 0.67);
     visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    // Release capture separately from display custody. Advance the real keyed
+    // worker stream, but hold its exact Commit reply across completed frames.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let terminal = loop {
+        let terminal = editor.update(&mut visual, |view, cx| {
+            view.pump_device_gesture();
+            let terminal = if let Ok(event) = view.service.try_event() {
+                if event.gesture_ack.as_ref().is_some_and(|ack| {
+                    ack.phase == hex_session::device_gesture::GesturePhase::Commit
+                }) {
+                    Some(event)
+                } else {
+                    view.receive(event);
+                    None
+                }
+            } else {
+                None
+            };
+            cx.notify();
+            terminal
+        });
+        visual.run_until_parked();
+        graph.read_with(&visual, |graph, _| {
+            assert!(!graph.is_dragging());
+            let actual = graph.node_position(node.value()).unwrap();
+            assert!(
+                (actual[0] - 0.65).abs() < 0.0001 && (actual[1] - 0.67).abs() < 0.0001,
+                "released node reverted before its exact Commit: {actual:?}"
+            );
+        });
+        if let Some(terminal) = terminal {
+            break terminal;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    assert!(terminal.error.is_none());
+    for _ in 0..4 {
+        editor.update(&mut visual, |view, cx| {
+            assert_eq!(read(view, device), before);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        graph.read_with(&visual, |graph, _| {
+            let actual = graph.node_position(node.value()).unwrap();
+            assert!((actual[0] - 0.65).abs() < 0.0001 && (actual[1] - 0.67).abs() < 0.0001);
+        });
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.receive(terminal);
+        cx.notify();
+    });
+    for _ in 0..4 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        graph.read_with(&visual, |graph, _| {
+            let actual = graph.node_position(node.value()).unwrap();
+            assert!((actual[0] - 0.65).abs() < 0.0001 && (actual[1] - 0.67).abs() < 0.0001);
+        });
+    }
     pump_until(&editor, cx, |view| {
         settled(view) && read(view, device) != before
     });
@@ -1292,4 +1352,80 @@ fn eq_review_completed_seek_cancel_reconciles_actual_callback_revision(cx: &mut 
     });
     backend.close();
     drop(output);
+}
+
+#[gpui::test]
+fn eq_created_node_retains_released_position_through_exact_worker_terminal(
+    cx: &mut TestAppContext,
+) {
+    let (handle, editor, _environment, device) = held_node_window(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let graph = graph(&editor, cx, device);
+    let before = editor.read_with(&visual, |view, _| read(view, device));
+    let id = editor.read_with(&visual, |view, _| {
+        view.state
+            .as_ref()
+            .unwrap()
+            .project
+            .next_identity()
+            .max(u64::from(before.next_node_id)) as u32
+    });
+    let start = plot(&mut visual, device, 0.8, 0.8);
+    let end = plot(&mut visual, device, 0.72, 0.75);
+    visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    visual.run_until_parked();
+    let held = graph.read_with(&visual, |graph, _| {
+        graph.node_position(id).expect("new held node")
+    });
+    visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    // The worker can finish; deliberately hold its actual terminal before intake.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let terminal = loop {
+        if let Some(event) = editor.read_with(&visual, |view, _| view.service.try_event().ok()) {
+            assert!(
+                event.request_complete && event.error.is_none(),
+                "{:?}",
+                event.error
+            );
+            break event;
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::yield_now();
+    };
+    for _ in 0..4 {
+        editor.update(&mut visual, |view, cx| {
+            assert_eq!(read(view, device), before);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        assert_eq!(
+            graph.read_with(&visual, |graph, _| graph.node_position(id)),
+            Some(held),
+            "released creation must not vanish before its ordinary edit completes"
+        );
+    }
+    editor.update(&mut visual, |view, cx| {
+        view.receive(terminal);
+        cx.notify();
+    });
+    for _ in 0..4 {
+        editor.update(&mut visual, |_, cx| cx.notify());
+        visual.run_until_parked();
+        assert_eq!(
+            graph.read_with(&visual, |graph, _| graph.node_position(id)),
+            Some(held)
+        );
+    }
+    let after = editor.read_with(&visual, |view, _| read(view, device));
+    assert_eq!(after.nodes.len(), before.nodes.len() + 1);
+    editor.update(&mut visual, |view, _| assert!(view.enqueue(Request::Undo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == before
+    });
+    editor.update(cx, |view, _| assert!(view.enqueue(Request::Redo)));
+    pump_until(&editor, cx, |view| {
+        settled(view) && read(view, device) == after
+    });
 }
