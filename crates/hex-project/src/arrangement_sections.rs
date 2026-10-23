@@ -1,7 +1,9 @@
 //! Song-form markers and one atomic beat-domain cut/insert permutation.
 //! Sections are disjoint half-open ranges. Gaps are real song time and travel
 //! with intervening content; explicit marker-only range edits never change music.
-//! Structural edge resize/delete/duplicate use the sibling splice planner; marker
+//! Fixed-span inner/shared edge edits and song-wide ripple resize/delete/duplicate
+//! use the sibling splice planner. Inner edges keep other markers fixed; shared
+//! edges keep the pair's outer span fixed. Crossed time becomes empty. Marker
 //! merging preserves the earliest identity/name/color and all musical material.
 //! Reordering cuts `[start,end)` and inserts it before/after the target's original
 //! range. Later destinations subtract the removed length. The entire intervening
@@ -283,6 +285,17 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             edge,
             length,
         } => splice::resize(project, section, edge, length),
+        Command::ResizeArrangementSectionBoundary {
+            left,
+            right,
+            boundary,
+            marker_only,
+        } => shared_boundary::apply(project, left, right, boundary, marker_only),
+        Command::ResizeArrangementSectionEdge {
+            section,
+            edge,
+            boundary,
+        } => splice::resize_isolated(project, section, edge, boundary),
         Command::DeleteArrangementSection(section) => splice::delete(project, section),
         Command::DuplicateArrangementSection(section) => splice::duplicate(project, section),
         Command::MergeArrangementSections(selected) => {
@@ -331,6 +344,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
 mod reorder;
 use reorder::{reorder, reorder_after};
 
+mod shared_boundary;
 mod splice;
 pub use splice::SectionSplicePreview;
 impl Project {
@@ -346,6 +360,17 @@ impl Project {
                 edge,
                 length,
             } => splice::preview_resize(self, *section, *edge, *length),
+            Command::ResizeArrangementSectionBoundary {
+                left,
+                right,
+                boundary,
+                marker_only,
+            } => shared_boundary::preview(self, *left, *right, *boundary, *marker_only),
+            Command::ResizeArrangementSectionEdge {
+                section,
+                edge,
+                boundary,
+            } => splice::preview_isolated(self, *section, *edge, *boundary),
             Command::DeleteArrangementSection(section) => splice::preview_delete(self, *section),
             Command::DuplicateArrangementSection(section) => {
                 splice::preview_duplicate(self, *section)

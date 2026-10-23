@@ -428,8 +428,7 @@ impl EditorView {
                                 x,
                                 y,
                                 event.click_count == 2,
-                                event.modifiers.shift,
-                                event.modifiers.platform,
+                                event.modifiers,
                                 cx,
                             ) {
                                 view.focus.focus(window);
