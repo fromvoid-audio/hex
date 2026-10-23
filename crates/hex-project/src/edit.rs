@@ -71,6 +71,13 @@ pub enum Command {
     DeleteArrangementSection(crate::SectionId),
     /// Insert a song-wide copy immediately after the source, allocating new IDs.
     DuplicateArrangementSection(crate::SectionId),
+    /// Split marker metadata at a strict interior beat, preserving all music.
+    /// The left marker retains its ID; the right gets a fresh ID and the same
+    /// name/color. One validated command owns both adjoining positive ranges.
+    SplitArrangementSection {
+        section: crate::SectionId,
+        at: crate::BeatTime,
+    },
     /// Merge the earliest-to-latest selected marker span, including intervening
     /// markers/gaps, retaining earliest identity/name/color and all music.
     MergeArrangementSections(Vec<crate::SectionId>),
@@ -385,6 +392,14 @@ pub enum Command {
         source_start: u64,
         source_end: u64,
     },
+    /// Move a complete ordinary track before a stable anchor, or to the end
+    /// with None. Already adjacent, self, and already-last drops are no-ops.
+    /// Returns use distinct ReturnId owners and remain in their own partition;
+    /// Main is not a Track. Neither can be addressed by this typed command.
+    MoveTrackBefore {
+        track: TrackId,
+        before: Option<TrackId>,
+    },
     RemoveTrack(TrackId),
     /// Remove explicit tracks through the existing cleanup as one history edit.
     RemoveTracks(Vec<TrackId>),
@@ -482,6 +497,8 @@ pub enum Command {
     },
     /// Place a new clip after the selected clip using its same media interval.
     DuplicateClip(ClipId),
+    /// Copy a frozen whole-clip selection after its complete extent, atomically.
+    DuplicateClips(Vec<ClipId>),
     /// Split a clip at an absolute timeline frame.
     SplitClip {
         clip: ClipId,
@@ -1500,6 +1517,7 @@ impl Project {
             | Command::ResizeArrangementSectionBoundary { .. }
             | Command::DeleteArrangementSection(_)
             | Command::DuplicateArrangementSection(_)
+            | Command::SplitArrangementSection { .. }
             | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
             }
@@ -1731,6 +1749,7 @@ impl Project {
             | Command::RenameSessionMidiClip { .. }) => {
                 crate::session::apply(self, session_command)
             }
+            Command::DuplicateClips(clips) => crate::clip_duplicate::apply(self, clips),
             Command::DuplicateClip(clip) => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 let start = original
@@ -2062,6 +2081,7 @@ impl Project {
                     source_end,
                 })
             }
+            Command::MoveTrackBefore { track, before } => self.move_track_before(track, before),
             Command::RemoveTracks(ids) => {
                 if ids.is_empty() || ids.len() > crate::MAX_TRACKS {
                     return Err(Invalid("track removal needs a bounded selection"));

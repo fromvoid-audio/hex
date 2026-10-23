@@ -1,6 +1,7 @@
 // Current two-phase ordinary-instance protocol. One privately retained duplex descriptor;
 // plug-in stdio is disconnected before loading. No native pointer is serialized.
 #pragma once
+#include "macos_state_stream.hpp"
 #include <array>
 #include <cerrno>
 #include <cmath>
@@ -63,7 +64,7 @@ struct Reader {
 };
 inline Reader configuration(int fd) {
     std::array<uint8_t,12> header{};
-    if(read_exact(fd,header.data(),header.size())!=1 || std::memcmp(header.data(),"HXVICF02",8))
+    if(read_exact(fd,header.data(),header.size())!=1 || std::memcmp(header.data(),"HXVICF03",8))
         throw std::runtime_error("instance configuration frame refused");
     const auto size=number(header.data()+8,4);
     if(size>config_limit) throw std::runtime_error("instance configuration byte bound");
@@ -103,6 +104,47 @@ struct Config {
     }
     void stamp(Bytes& out) const { number(out,1,2);for(auto id:binding) number(out,id,8); }
 };
+// Startup is a separate bounded control frame, fully validated before module
+// entry. Echoing its exact copied envelope in Facts binds restoration to this
+// unique operation without treating an SDK capture as canonical state.
+struct Startup {
+    Bytes payload;
+    hex_instance::CapturedState state{};
+    bool restored() const { return !payload.empty(); }
+    void acknowledge(Bytes& out) const {
+        number(out,restored()?1:0,1);number(out,payload.size(),2);
+        out.insert(out.end(),payload.begin(),payload.end());
+    }
+};
+inline Startup startup(int fd,const Config& config) {
+    std::array<uint8_t,12> header{};
+    if(read_exact(fd,header.data(),header.size())!=1 || std::memcmp(header.data(),"HXVIST01",8))
+        throw std::runtime_error("startup state frame refused");
+    const auto size=number(header.data()+8,4);
+    if(size<37 || size>37+4096) throw std::runtime_error("startup state frame bound");
+    Reader in{Bytes(static_cast<size_t>(size)),0};
+    if(read_exact(fd,in.bytes.data(),in.bytes.size())!=1 || in.number(2)!=1)
+        throw std::runtime_error("truncated startup state frame");
+    for(auto id:config.binding) if(in.number(8)!=id) throw std::runtime_error("startup state binding mismatch");
+    const auto known=in.number(1),count=in.number(2);
+    if(known>1 || count>4096 || count!=in.bytes.size()-in.at || (!known && count) || (known && count<96))
+        throw std::runtime_error("startup state extent refused");
+    Startup result{};
+    if(!known) return result;
+    result.payload.assign(in.bytes.begin()+in.at,in.bytes.end());
+    const auto* p=result.payload.data();
+    if(std::memcmp(p,"HXVS",4) || p[4]!=1 || (p[5]&~3) || !(p[5]&1) || p[6] || p[7] ||
+        std::memcmp(p+8,config.cid.data(),16) || std::memcmp(p+24,config.executable_hash.data(),32) ||
+        std::memcmp(p+56,config.info_hash.data(),32)) throw std::runtime_error("startup state source envelope refused");
+    const auto component=number(p+88,4),controller=number(p+92,4);
+    if(component>4000 || controller>4000-component || (!(p[5]&2) && controller) || count!=96+component+controller)
+        throw std::runtime_error("startup state chunks refused");
+    result.state.component=true;result.state.controller=(p[5]&2)!=0;
+    result.state.component_bytes=static_cast<uint32_t>(component);
+    result.state.controller_bytes=static_cast<uint32_t>(controller);
+    std::copy_n(p+96,static_cast<size_t>(component+controller),result.state.bytes.begin());
+    return result;
+}
 struct Presentation {
     uint32_t input=0,output=0;
 };

@@ -199,13 +199,6 @@ impl EditorView {
         }));
     }
 
-    pub(super) fn duplicate_midi_clip(&mut self, clip: ClipId) {
-        if self.edit_pending() {
-            return;
-        }
-        self.enqueue(Request::Edit(Command::DuplicateMidiClip(clip)));
-    }
-
     pub(super) fn remove_selected_note(&mut self) {
         if self.edit_pending() {
             return;

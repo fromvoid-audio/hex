@@ -37,6 +37,9 @@ class Instance final {
     ProcessingConfiguration configuration_{};
     StateStream* component_stream=nullptr;
     StateStream* controller_stream=nullptr;
+    StateStream* restore_component_stream=nullptr;
+    StateStream* restore_controller_stream=nullptr;
+    bool restoration_started=false,restored=false;
     std::thread::id processing_thread;
     std::atomic<bool> processing{false}, processing_fault{false}, quarantined{false};
 
@@ -122,6 +125,38 @@ public:
         return true;
     }
 
+    // A one-shot startup operation on this exact initialized/connected owner.
+    // Restore precedes configure/activation and latency facts. A failed foreign
+    // call is not rollbackable and never falls back to new default state.
+    bool restore_initial_state_on_control(const CapturedState& state) {
+        if (![NSThread isMainThread] || !opened || !component_initialized ||
+            configured || configuration_started || active || processing.load() ||
+            quarantined.load() || restoration_started || !state.component ||
+            state.component_bytes>StateStream::capacity ||
+            state.controller_bytes>StateStream::capacity-state.component_bytes ||
+            (!state.controller && state.controller_bytes) || (state.controller && !controller)) return false;
+        restoration_started=true;
+        restore_component_stream=new(std::nothrow) StateStream(state.bytes.data(),state.component_bytes);
+        if (!restore_component_stream || !restore_component_stream->valid() ||
+            component->setState(restore_component_stream)!=kResultOk ||
+            !restore_component_stream->valid() || !restore_component_stream->exclusive()) return false;
+        if (controller) {
+            if (!restore_component_stream->rewind_read_only_on_control() ||
+                controller->setComponentState(restore_component_stream)!=kResultOk ||
+                !restore_component_stream->valid() || !restore_component_stream->exclusive()) return false;
+            if (state.controller) {
+                restore_controller_stream=new(std::nothrow) StateStream(
+                    state.bytes.data()+state.component_bytes,state.controller_bytes);
+                if (!restore_controller_stream || !restore_controller_stream->valid() ||
+                    controller->setState(restore_controller_stream)!=kResultOk ||
+                    !restore_controller_stream->valid() || !restore_controller_stream->exclusive()) return false;
+            }
+            if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
+                host->refusal_flags()) return false;
+        }
+        restored=true;return true;
+    }
+
     // Prepare only a fresh inactive owner. SDK arrangement refusal may itself
     // mutate foreign state; an existing active owner is never reconfigured or
     // described as rolled back. Its control owner prepares a separate candidate
@@ -192,6 +227,13 @@ public:
             std::copy_n(component_stream->bytes.begin(),captured.component_bytes,captured.bytes.begin());
         } else if (first!=kNotImplemented && first!=kResultFalse) return false;
         if (controller) {
+            if (!restored && captured.component) {
+                if (!component_stream->rewind_read_only_on_control() ||
+                    controller->setComponentState(component_stream)!=kResultOk ||
+                    !component_stream->valid() || !component_stream->exclusive()) return false;
+                if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
+                    host->refusal_flags()) return false;
+            }
             controller_stream=new(std::nothrow) StateStream(StateStream::capacity-captured.component_bytes);
             if (!controller_stream) return false;
             const auto second=controller->getState(controller_stream);
@@ -344,6 +386,14 @@ public:
         if (controller_stream) {
             if (!controller_stream->dispose_on_control()) return refuse_cleanup();
             controller_stream=nullptr;
+        }
+        if (restore_component_stream) {
+            if (!restore_component_stream->dispose_on_control()) return refuse_cleanup();
+            restore_component_stream=nullptr;
+        }
+        if (restore_controller_stream) {
+            if (!restore_controller_stream->dispose_on_control()) return refuse_cleanup();
+            restore_controller_stream=nullptr;
         }
         if (factory) { factory->release(); factory = nullptr; }
         if (host) {

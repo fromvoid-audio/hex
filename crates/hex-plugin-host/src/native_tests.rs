@@ -185,6 +185,23 @@ impl Case {
                 .env("HEX_ORIGINAL_INSTANCE_RELEASE", release);
         }
     }
+    fn setup_restore(&self, variant: u32) -> impl FnOnce(&mut Command) + Send + 'static {
+        let setup = self.setup(variant);
+        let trace = self.root.join("restore");
+        move |command| {
+            setup(command);
+            command.env("HEX_ORIGINAL_RESTORE_TRACE", trace);
+        }
+    }
+    fn restore_observation(&self) -> [i32; 15] {
+        let bytes = fs::read(self.root.join("restore")).unwrap();
+        assert_eq!(bytes.len(), 60);
+        let mut values = [0; 15];
+        for (value, part) in values.iter_mut().zip(bytes.chunks_exact(4)) {
+            *value = i32::from_le_bytes(part.try_into().unwrap());
+        }
+        values
+    }
     fn observation(&self) -> Option<[i32; 14]> {
         let bytes = fs::read(self.trace()).ok()?;
         if bytes.len() != 56 {
@@ -260,7 +277,7 @@ impl Drop for Joining {
 fn source() -> Source {
     Source::inspect_on_control(&fixture("processing"), "Contents/MacOS/fixture", class()).unwrap()
 }
-fn cancelled_preparation(result: Result<Prepared>) {
+fn cancelled_preparation<T>(result: Result<T>) {
     match result {
         Err(Error::Preparation {
             cause,
@@ -638,7 +655,8 @@ fn actual_facts_wait_before_setters_state_or_dsp_then_finalize_matching_presenta
         pending.facts(),
         Facts {
             algorithmic_latency_frames: 0,
-            presentation_available: true
+            presentation_available: true,
+            restored: false
         }
     );
     let observed = case.observation().unwrap();
@@ -673,56 +691,63 @@ fn actual_facts_wait_before_setters_state_or_dsp_then_finalize_matching_presenta
 #[test]
 #[ignore = "explicit source-bound native instance and original SDK fixtures required"]
 fn actual_pending_unknown_presentation_and_cancellation_never_start_foreign_dsp() {
-    for terminal in ["unknown", "cancel", "token", "drop"] {
-        let case = Case::new();
-        let pending = Pending::prepare(
-            &build(),
-            source(),
-            options().preparation,
-            PreparationCancellation::new_on_control().unwrap(),
-            case.setup(0),
-        )
-        .unwrap();
-        assert_eq!(case.observation().unwrap()[0], 14);
-        if terminal == "unknown" {
-            match pending.complete_on_control(None) {
-                Err(Error::Preparation {
-                    cause,
-                    exit,
-                    custody_error,
-                }) => {
-                    assert!(matches!(
-                        *cause,
-                        Error::Protocol("actual presentation contributions are unavailable")
-                    ));
-                    assert!(!exit.unwrap().success());
-                    assert!(custody_error.is_none());
+    for restored in [false, true] {
+        for terminal in ["unknown", "cancel", "token", "drop"] {
+            let case = Case::new();
+            let selected = source();
+            let state = restored.then(|| startup_state(&selected, true, 3));
+            let setup = case.setup_restore(if restored { 37 } else { 0 });
+            let pending = Pending::prepare_with_restore(
+                &build(),
+                selected,
+                options().preparation,
+                state,
+                PreparationCancellation::new_on_control().unwrap(),
+                setup,
+            )
+            .unwrap();
+            assert_eq!(pending.facts().restored, restored);
+            assert_eq!(case.observation().unwrap()[0], 14);
+            if terminal == "unknown" {
+                match pending.complete_on_control(None) {
+                    Err(Error::Preparation {
+                        cause,
+                        exit,
+                        custody_error,
+                    }) => {
+                        assert!(matches!(
+                            *cause,
+                            Error::Protocol("actual presentation contributions are unavailable")
+                        ));
+                        assert!(!exit.unwrap().success());
+                        assert!(custody_error.is_none());
+                    }
+                    _ => panic!("unknown contributions cannot prepare a present interface"),
                 }
-                _ => panic!("unknown contributions cannot prepare a present interface"),
-            }
-        } else if terminal == "cancel" {
-            let retired = pending.cancel_and_reap_on_control().unwrap();
-            assert!(!retired.status.success());
-            assert!(retired.terminal.is_none());
-        } else if terminal == "token" {
-            pending.cancellation_on_control().cancel_on_control();
-            match pending.complete_on_control(Some(options().presentation)) {
-                Err(Error::Preparation {
-                    cause,
-                    exit,
-                    custody_error,
-                }) => {
-                    assert!(matches!(*cause, Error::Cancelled));
-                    assert!(!exit.unwrap().success());
-                    assert!(custody_error.is_none());
+            } else if terminal == "cancel" {
+                let retired = pending.cancel_and_reap_on_control().unwrap();
+                assert!(!retired.status.success());
+                assert!(retired.terminal.is_none());
+            } else if terminal == "token" {
+                pending.cancellation_on_control().cancel_on_control();
+                match pending.complete_on_control(Some(options().presentation)) {
+                    Err(Error::Preparation {
+                        cause,
+                        exit,
+                        custody_error,
+                    }) => {
+                        assert!(matches!(*cause, Error::Cancelled));
+                        assert!(!exit.unwrap().success());
+                        assert!(custody_error.is_none());
+                    }
+                    _ => panic!("cancelled facts must not complete preparation"),
                 }
-                _ => panic!("cancelled facts must not complete preparation"),
+            } else {
+                drop(pending); // the unique lease cancels and directly joins on control
             }
-        } else {
-            drop(pending); // the unique lease cancels and directly joins on control
+            let observed = case.observation().unwrap();
+            assert_eq!((observed[8], observed[10]), (0, 0));
         }
-        let observed = case.observation().unwrap();
-        assert_eq!((observed[8], observed[10]), (0, 0));
     }
 }
 
@@ -895,4 +920,213 @@ fn actual_startup_deadline_retires_a_held_entry_without_release_or_processing() 
         (observed[0], observed[2], observed[8], observed[10]),
         (8, 0, 0, 0)
     );
+}
+
+fn startup_state(selected: &Source, controller: bool, latency: u32) -> NativeDeviceState {
+    let mut component = Vec::from(&b"HXPS"[..]);
+    component.extend(latency.to_le_bytes());
+    component.extend(0.75_f32.to_le_bytes());
+    component.extend(48000_f64.to_le_bytes());
+    component.extend([2, 2, 0, 0]);
+    component.extend([0; 8]);
+    let mut independent = Vec::from(&b"HXCT"[..]);
+    independent.extend(91_u32.to_le_bytes());
+    hex_plugin_state::encode(hex_plugin_state::State {
+        identity: selected.identity(),
+        component: Some(&component),
+        controller: controller.then_some(independent.as_slice()),
+    })
+    .unwrap()
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_public_startup_restore_retains_saved_envelope_and_restores_real_pcm() {
+    let selected = source();
+    let saved = startup_state(&selected, false, 0);
+    let pending = Pending::prepare_restored_on_control(
+        &build(),
+        selected,
+        options().preparation,
+        saved.clone(),
+        PreparationCancellation::new_on_control().unwrap(),
+        TrustUserCode::Acknowledged,
+    )
+    .unwrap();
+    assert!(pending.facts().restored);
+    assert_eq!(pending.facts().algorithmic_latency_frames, 0);
+    let mut instance = pending
+        .complete_on_control(Some(options().presentation))
+        .unwrap();
+    assert!(instance.ready().restored);
+    assert_eq!(instance.configuration().restore.as_ref(), Some(&saved));
+    assert_ne!(
+        instance.ready().initial_state,
+        saved,
+        "actual IAP capture is separate from the retained canonical envelope"
+    );
+    let block = request(instance.configuration(), 0);
+    let reply = instance.exchange_on_worker(block).unwrap();
+    for (actual, input) in reply.pcm[..8].iter().zip(block.pcm) {
+        assert_eq!(*actual, [input[0] * 0.375, input[1] * 0.375]);
+    }
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_restored_controller_and_latency_facts_precede_capture_and_exact_final_pcm() {
+    let case = Case::new();
+    let selected = source();
+    let saved = startup_state(&selected, true, 3);
+    let pending = Pending::prepare_with_restore(
+        &build(),
+        selected,
+        options().preparation,
+        Some(saved.clone()),
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup_restore(37),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            pending.facts().restored,
+            pending.facts().algorithmic_latency_frames
+        ),
+        (true, 3)
+    );
+    let before = case.restore_observation();
+    assert_eq!(&before[..3], &[1, 1, 1]);
+    assert!(
+        before[3] > 0 && before[4] > 0,
+        "the existing host refresh queries real controller metadata and values"
+    );
+    assert_eq!(&before[10..12], &[0, 0]);
+    assert_eq!(
+        (
+            case.observation().unwrap()[8],
+            case.observation().unwrap()[10]
+        ),
+        (0, 0)
+    );
+    let mut instance = pending
+        .complete_on_control(Some(options().presentation))
+        .unwrap();
+    let captured = decode(&instance.ready().initial_state).unwrap();
+    assert_eq!(
+        captured.controller.unwrap(),
+        [b'H', b'X', b'C', b'T', 91, 0, 0, 0]
+    );
+    assert_eq!(instance.configuration().restore.as_ref(), Some(&saved));
+    let mut generated = vec![[0.0; 2]; 3];
+    let mut actual = Vec::new();
+    for n in 0..3 {
+        let block = request(instance.configuration(), n);
+        generated.extend(block.pcm[..8].iter().map(|frame| {
+            [
+                frame[0] * (0.5 + n as f32 * 0.125) * 0.75,
+                frame[1] * (0.5 + n as f32 * 0.125) * 0.75,
+            ]
+        }));
+        actual.extend_from_slice(&instance.exchange_on_worker(block).unwrap().pcm[..8]);
+    }
+    assert_eq!(actual, generated[..24]);
+    assert_eq!(&case.restore_observation()[10..12], &[1, 1]);
+    assert!(
+        instance
+            .stop_and_reap_on_control()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert_eq!(&case.restore_observation()[12..15], &[1, 1, 1]);
+    assert_eq!(case.observation().unwrap()[1], 0);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_restore_hangs_cancel_or_time_out_with_direct_reap_and_preserve_another_instance() {
+    let mut other_options = options();
+    other_options.preparation.binding.instance = 99;
+    let mut other = Prepared::prepare_on_control(
+        &build(),
+        source(),
+        other_options,
+        PreparationCancellation::new_on_control().unwrap(),
+        TrustUserCode::Acknowledged,
+    )
+    .unwrap();
+    for (n, (variant, stage, timeout)) in [
+        (41, 16, false),
+        (45, 17, false),
+        (49, 18, false),
+        (57, 19, false),
+        (41, 16, true),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let case = Case::new();
+        let context = PreparationCancellation::new_on_control().unwrap();
+        let token = context.token_on_control();
+        let selected = source();
+        let saved = startup_state(&selected, true, 3);
+        let build = build();
+        let setup = case.setup_restore(variant);
+        let result = case.after_stage(
+            stage,
+            move || {
+                Pending::prepare_with_restore(
+                    &build,
+                    selected,
+                    options().preparation,
+                    Some(saved),
+                    context,
+                    setup,
+                )
+            },
+            move || {
+                if !timeout {
+                    token.cancel_on_control();
+                }
+            },
+        );
+        if timeout {
+            match result {
+                Err(Error::Preparation {
+                    cause,
+                    exit,
+                    custody_error,
+                }) => {
+                    assert!(matches!(*cause, Error::Timeout));
+                    assert_eq!(exit.unwrap().code(), Some(9));
+                    assert!(custody_error.is_none());
+                }
+                _ => panic!("held restore must expire and directly retire before barrier release"),
+            }
+        } else {
+            cancelled_preparation(result);
+        }
+        assert!(!case.release().exists());
+        let observed = case.observation().unwrap();
+        assert_eq!((observed[0], observed[8], observed[10]), (stage, 0, 0));
+        let block = request(other.configuration(), n as u64);
+        let output = other.exchange_on_worker(block).unwrap();
+        for (actual, input) in output.pcm[..8].iter().zip(block.pcm) {
+            assert_eq!(
+                *actual,
+                [
+                    input[0] * (0.5 + n as f32 * 0.125),
+                    input[1] * (0.5 + n as f32 * 0.125)
+                ]
+            );
+        }
+    }
+    assert!(other.stop_and_reap_on_control().unwrap().status.success());
 }

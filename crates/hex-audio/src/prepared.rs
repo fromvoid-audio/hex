@@ -4384,6 +4384,8 @@ mod tests {
         let fade = hex_project::ClipFade::new(1_024, 0, 64, 64)
             .unwrap()
             .with_shape(4, 4, 700, -700)
+            .unwrap()
+            .with_curve_positions(250, 750)
             .unwrap();
         editor
             .execute(hex_project::Command::SetClipFadeEnvelope { clip, fade })

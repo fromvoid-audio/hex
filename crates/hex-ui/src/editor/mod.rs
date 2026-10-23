@@ -154,6 +154,9 @@ mod track_layout;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_layout_ui_test;
 mod track_name;
+mod track_reorder;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_reorder_ui_test;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_selection_ui_test;
 mod tracks;
@@ -777,6 +780,9 @@ pub(super) struct EditorView {
     _scrub_focus_lifecycle: gpui::Subscription,
     track_scroll: track_layout::TrackScroll,
     track_layout: track_layout::TrackLayout,
+    track_reorder: track_reorder::TrackReorder,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    track_row_builds: usize,
     focused_return: Option<hex_project::ReturnId>,
     send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
@@ -814,6 +820,7 @@ pub(super) struct EditorView {
     pending_trim: Option<trim::PendingTrim>,
     fade_key_held: bool,
     active_fade_drag: Option<fade_handles::FadeDrag>,
+    pending_fade: Option<fade_handles::PendingFade>,
     hovered_fade_clip: Option<(u64, ClipId)>,
     active_midi_trim_drag: Option<trim::MidiTrimDrag>,
     pointer_down: Option<drag::PointerDown>,
@@ -1222,7 +1229,9 @@ impl EditorView {
                 view.audio_event_editor.gesture = None;
                 let midi_cancelled = view.cancel_midi_note_gesture();
                 let scrub_cancelled = view.cancel_scrub();
-                let paint_cancelled = view.cancel_clip_paint() | view.cancel_section_pointer();
+                let paint_cancelled = view.cancel_clip_paint()
+                    | view.cancel_section_pointer()
+                    | view.cancel_track_reorder();
                 if let Some(audio) = view.audio.as_mut() {
                     let _ = audio.control.audition_cancel();
                 }
@@ -1241,6 +1250,7 @@ impl EditorView {
             view.cancel_track_resize(cx);
             view.audio_event_editor.gesture = None;
             if view.cancel_midi_note_gesture()
+                | view.cancel_track_reorder()
                 | view.cancel_scrub()
                 | view.cancel_clip_paint()
                 | view.cancel_section_pointer()
@@ -1403,6 +1413,9 @@ impl EditorView {
             _scrub_focus_lifecycle: scrub_focus_blur,
             track_scroll: track_layout::TrackScroll::new(),
             track_layout: track_layout::TrackLayout::default(),
+            track_reorder: track_reorder::TrackReorder::default(),
+            #[cfg(all(test, feature = "ui-test-support"))]
+            track_row_builds: 0,
             focused_return: None,
             send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),
@@ -1443,6 +1456,7 @@ impl EditorView {
             pending_trim: None,
             fade_key_held: false,
             active_fade_drag: None,
+            pending_fade: None,
             hovered_fade_clip: None,
             active_midi_trim_drag: None,
             pointer_down: None,

@@ -274,6 +274,7 @@ impl EditorView {
             );
         }
         content = content.children(self.edit_cursor_layer(viewport));
+        content = content.children(self.track_reorder_line());
         let upper = div()
             .flex()
             .flex_col()
@@ -326,6 +327,7 @@ impl EditorView {
                             height: f32::from(bounds.size.height),
                         });
                         view.arrangement_bounds_epoch = view.drag_layout_generation;
+                        view.track_reorder_painted();
                     });
                     let zoom_entity = measure_entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
@@ -631,6 +633,7 @@ impl EditorView {
             .child(returns)
             .child(main)
             .child(self.track_resize_events(cx))
+            .children([self.track_reorder_events(cx)])
             .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {
                 let Some(payload) = event
                     .dragged_item()

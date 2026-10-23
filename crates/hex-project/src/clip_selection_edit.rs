@@ -488,7 +488,8 @@ impl Command {
             | Self::MoveTimeRange { .. }
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
-            | Self::MoveClipsWithOverwrite { .. } => ClipCommandScope::Explicit,
+            | Self::MoveClipsWithOverwrite { .. }
+            | Self::DuplicateClips(_) => ClipCommandScope::Explicit,
             Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::RenameArrangementSection { .. }
@@ -501,6 +502,7 @@ impl Command {
             | Self::ResizeArrangementSectionBoundary { .. }
             | Self::DeleteArrangementSection(_)
             | Self::DuplicateArrangementSection(_)
+            | Self::SplitArrangementSection { .. }
             | Self::MergeArrangementSections(_)
             | Self::SetTuning(..)
             | Self::SetTrackColor { .. }
@@ -539,6 +541,7 @@ impl Command {
             | Self::MoveReturnDevice { .. }
             | Self::AddTrack { .. }
             | Self::InsertTrack { .. }
+            | Self::MoveTrackBefore { .. }
             | Self::ImportAudioTrack { .. }
             | Self::ImportPreparedAudioTrack { .. }
             | Self::ImportPreparedAudioTrackAt { .. }
