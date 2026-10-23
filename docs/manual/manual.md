@@ -95,6 +95,10 @@ right-click a clip to switch its visual flavor. **use accent flavor** gives the
 track's color a saturated fill; **use muted flavor** uses a pale tint. selection
 keeps its own outline in either flavor.
 
+right-click a track header or the track area and choose **insert track** or
+**insert return track**. return buses stay pinned above **main** in arrange;
+their headers provide volume, activation and removal controls.
+
 the lower detail area follows the selected clip or device. selecting another
 track can change the available controls. a pending edit or load may need to
 finish before another document operation is available; check the displayed status

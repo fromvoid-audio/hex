@@ -107,7 +107,7 @@ fn adaptive_grid_menu_right_click_keyboard_choice_and_cancel_preserve_project_an
     visual.simulate_mouse_down(position, MouseButton::Right, Modifiers::default());
     visual.simulate_mouse_up(position, MouseButton::Right, Modifiers::default());
     visual.run_until_parked();
-    editor.read_with(cx, |view, _| {
+    let fine_index = editor.read_with(cx, |view, _| {
         let menu = view
             .context_menu
             .as_ref()
@@ -123,8 +123,23 @@ fn adaptive_grid_menu_right_click_keyboard_choice_and_cancel_preserve_project_an
             choices.iter().map(|item| item.checked).collect::<Vec<_>>(),
             [false, true, false]
         );
+        menu.items
+            .iter()
+            .position(|item| {
+                matches!(
+                    item.action,
+                    EditorContextAction::AdaptiveGrid {
+                        density: AdaptiveGridDensity::Fine,
+                        ..
+                    }
+                )
+            })
+            .unwrap()
     });
-    visual.simulate_keystrokes("down enter");
+    for _ in 0..fine_index {
+        visual.simulate_keystrokes("down");
+    }
+    visual.simulate_keystrokes("enter");
     editor.read_with(cx, |view, app| {
         assert_eq!(view.snap_grid.density(), AdaptiveGridDensity::Fine);
         assert!(view.context_menu.is_none());
@@ -288,7 +303,7 @@ fn adaptive_grid_menu_empty_arranger_choice_survives_keyboard_snap_toggle(cx: &m
     visual.simulate_mouse_up(body.center(), MouseButton::Right, Modifiers::default());
     editor.read_with(cx, |view, _| {
         let menu = view.context_menu.as_ref().unwrap();
-        assert_eq!(menu.items.len(), 4);
+        assert_eq!(menu.items.len(), 5);
         assert_eq!(menu.items[0].label, "insert track");
     });
     visual.simulate_keystrokes("up enter");
