@@ -19,6 +19,8 @@ use hex_plugin_host::{
 
 mod definition;
 pub use definition::NativeEffectDefinition;
+mod callbacks;
+pub use callbacks::NativeEffectCallbacks;
 
 struct Configuration {
     identity: ProcessorInstanceIdentity,

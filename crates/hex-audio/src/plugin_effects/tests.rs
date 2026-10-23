@@ -133,8 +133,9 @@ fn actual_native_graph_track_return_main_and_aligned_bypass_have_exact_pcm_witho
             let mut playback =
                 hex_engine::playback::Playback::try_from_prepared_with_session(revision).unwrap();
             playback.apply(hex_engine::PlaybackCommand::Play);
-            let (mut worker, mut callback) = f.effect.into_parts();
-            assert!(callback.matches_worker(&worker));
+            let (mut workers, mut callback) =
+                NativeEffectCallbacks::from_effects_on_control(vec![f.effect]).unwrap();
+            let mut worker = workers.pop().unwrap();
             let mut output = vec![[9.0; 2]; 64];
             let mut rendered = 0;
             for chunk in output.chunks_mut(5) {
@@ -456,4 +457,155 @@ fn actual_removed_main_effect_keeps_its_original_native_pipeline_tail() {
     drop(worker);
     let terminal = stopped.retire_on_control().unwrap().terminal.unwrap();
     assert_eq!((terminal.blocks, terminal.frames), (3, 24));
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+#[cfg(feature = "allocation-probe")]
+fn actual_multiple_native_nodes_route_exact_epochs_and_accept_only_final_host_output() {
+    let mut f = fixture(0, false);
+    let identity = ProcessorInstanceIdentity::new(
+        ProcessorChainOwner::Main,
+        f.editor.project().next_identity(),
+    )
+    .unwrap();
+    let main = NativeEffect::prepare_on_control(
+        identity,
+        original_instance_for_binding(Binding {
+            root: 1,
+            instance: identity.device_id(),
+            graph: 3,
+            epoch: 4,
+        }),
+    )
+    .unwrap();
+    let Created::Device(main_device) = f
+        .editor
+        .execute(Command::InsertMainDevice {
+            before: None,
+            state: main.configuration().clone(),
+        })
+        .unwrap()
+    else {
+        panic!("main device")
+    };
+    assert_eq!(main_device.value(), identity.device_id());
+    let mut sources = vec![main, f.effect]; // Deliberately unrelated to graph order.
+    let definition = NativeEffectDefinition::new(&sources).unwrap();
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
+    let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+    let revision = Arc::new(
+        hex_engine::PreparedRevision::prepare_with_effect_registry(
+            f.editor.project(),
+            &f.media,
+            Arc::new(hex_engine::SineTable::new()),
+            None,
+            &registry,
+        )
+        .unwrap(),
+    );
+    drop(definition);
+    // An actual other epoch with identical device/class/state coexists in the
+    // carrier, as it will during source replacement/retained-tail return. Its
+    // presence must neither hijack the graph nor fabricate zero-input work.
+    let unused_binding = Binding {
+        graph: 4,
+        epoch: 5,
+        ..sources[1].binding()
+    };
+    sources.push(
+        NativeEffect::prepare_on_control(
+            sources[1].identity(),
+            original_instance_for_binding(unused_binding),
+        )
+        .unwrap(),
+    );
+    sources.reverse();
+    let (mut workers, mut callbacks) =
+        NativeEffectCallbacks::from_effects_on_control(sources).unwrap();
+    let mut playback =
+        hex_engine::playback::Playback::try_from_prepared_with_session(revision).unwrap();
+    let mut stopped_output = [[9.0; 2]; 8];
+    callbacks.begin_host_callback(8).unwrap();
+    playback
+        .render_with_foreign_processors(&mut stopped_output, None, None, None, &mut callbacks)
+        .unwrap();
+    callbacks.finish_host_callback(true).unwrap();
+    assert_eq!(stopped_output, [[0.0; 2]; 8]);
+    assert!(workers.iter().all(|w| w.published_blocks_on_control() == 0));
+    playback.apply(hex_engine::PlaybackCommand::Play);
+    let mut output = vec![[9.0; 2]; 96];
+    let mut rendered = 0;
+    for chunk in output.chunks_mut(5) {
+        let measured = allocation_counter::measure(|| {
+            callbacks.begin_host_callback(chunk.len()).unwrap();
+            playback
+                .render_with_foreign_processors(chunk, None, None, None, &mut callbacks)
+                .unwrap();
+            assert!(chunk.iter().flatten().all(|x| x.is_finite()));
+            callbacks.finish_host_callback(true).unwrap();
+        });
+        assert_eq!(
+            (
+                measured.count_total,
+                measured.bytes_total,
+                measured.count_current,
+                measured.bytes_current
+            ),
+            (0, 0, 0, 0)
+        );
+        rendered += chunk.len();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        for worker in &workers {
+            let blocks = if worker.binding() == unused_binding {
+                0
+            } else {
+                (rendered / 8) as u64
+            };
+            while worker.published_blocks_on_control() < blocks {
+                assert!(Instant::now() < deadline);
+                std::thread::yield_now();
+            }
+            assert_eq!(worker.published_blocks_on_control(), blocks);
+        }
+    }
+    let mut expected = vec![[0.0; 2]; 96];
+    for (i, sample) in f.samples.iter().enumerate() {
+        let track_gain = 0.5 + (i / 8) as f32 * 0.125;
+        let main_gain = 0.5 + ((i + 16) / 8) as f32 * 0.125;
+        expected[i + 32] = [
+            sample[0] * track_gain * main_gain,
+            sample[1] * track_gain * main_gain,
+        ];
+    }
+    assert_eq!(
+        output, expected,
+        "two real SDK nodes in the canonical graph"
+    );
+    // Complete graph render still cannot dispatch a single node before final
+    // host acceptance. Reject every staged endpoint, including the inactive one.
+    callbacks.begin_host_callback(8).unwrap();
+    playback
+        .render_with_foreign_processors(&mut [[0.0; 2]; 8], None, None, None, &mut callbacks)
+        .unwrap();
+    assert!(callbacks.finish_host_callback(false).is_err());
+    assert!(callbacks.begin_host_callback(8).is_err());
+    let mut stopped = Vec::new();
+    for worker in &mut workers {
+        let source = worker.quiesce_on_control().unwrap();
+        assert_eq!(
+            source.completed_blocks(),
+            if worker.binding() == unused_binding {
+                0
+            } else {
+                12
+            }
+        );
+        stopped.push(source);
+    }
+    drop(callbacks);
+    drop(workers);
+    for source in stopped {
+        assert!(source.retire_on_control().unwrap().status.success());
+    }
 }
