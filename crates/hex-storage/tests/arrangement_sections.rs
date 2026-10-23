@@ -221,7 +221,16 @@ fn global_tempo_absorbed_sections_roundtrip_and_reject_competing_processing_cloc
 
 #[test]
 fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge() {
-    for operation in ["resize", "duplicate", "delete", "merge"] {
+    for operation in [
+        "resize",
+        "duplicate",
+        "delete",
+        "merge",
+        "shared",
+        "shared-marker",
+        "isolated-left",
+        "isolated-right",
+    ] {
         let mut editor = Editor::new(fixture(), 16).unwrap();
         let sections = editor.project().arrangement_sections().to_vec();
         assert_eq!(sections.len(), 2);
@@ -255,6 +264,38 @@ fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge(
                     resized.end().raw() - resized.start().raw(),
                     new_length.raw()
                 );
+            }
+            "isolated-left" | "isolated-right" => {
+                let marker = editor.project().arrangement_section(ids[0]).unwrap();
+                let (edge, boundary) = if operation == "isolated-left" {
+                    (
+                        hex_project::TrimEdge::Left,
+                        BeatTime::from_raw(marker.start().raw() + BeatTime::ONE.raw()),
+                    )
+                } else {
+                    (
+                        hex_project::TrimEdge::Right,
+                        BeatTime::from_raw(marker.end().raw() - BeatTime::ONE.raw()),
+                    )
+                };
+                editor
+                    .execute(Command::ResizeArrangementSectionEdge {
+                        section: ids[0],
+                        edge,
+                        boundary,
+                    })
+                    .unwrap();
+            }
+            "shared" | "shared-marker" => {
+                let old = editor.project().arrangement_section(ids[0]).unwrap().end();
+                editor
+                    .execute(Command::ResizeArrangementSectionBoundary {
+                        left: ids[0],
+                        right: ids[1],
+                        boundary: BeatTime::from_raw(old.raw() + BeatTime::ONE.raw()),
+                        marker_only: operation == "shared-marker",
+                    })
+                    .unwrap();
             }
             "duplicate" => {
                 let Created::ArrangementSection(copy) = editor
