@@ -1,5 +1,6 @@
 //! Original delayed processors enter through the normal registry/compiler seam.
 use super::*;
+use crate::routed_midi_fixture;
 use crate::{
     Audio, PreparedRevision, Renderer, SessionPlayback, SessionPlaybackCommand, SineTable,
 };
@@ -480,6 +481,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
     owner.content = hex_project::TrackContentSnapshot::Hybrid {
         audio_clips,
         midi_clips: vec![hex_project::MidiClipSnapshot {
+            volume: hex_project::MidiClipVolume::default(),
             name: "clip".into(),
             flavor: hex_project::ClipFlavor::default(),
             id: next + 1,
@@ -500,6 +502,7 @@ fn independent_generator_five_and_audio_prefix_three_align_before_sum() {
             }],
         }],
     };
+    routed_midi_fixture::separate_midi(&mut snapshot, 0);
     f.editor = Editor::new(hex_project::Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
     let effects: [&dyn NativeDeviceDefinition; 1] = [&Definition];
     let effects = NativeDeviceRegistry::new(&effects).unwrap();

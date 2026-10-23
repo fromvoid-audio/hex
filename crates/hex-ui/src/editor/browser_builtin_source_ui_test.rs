@@ -37,6 +37,7 @@ fn place_icon_preferences_window(
                         directory.0.join("icon-theme.json"),
                         directory.0.join("project-directory.json"),
                     ),
+                    None,
                     crate::editor::test_environment::Inputs {
                         existing_environment: Some(std::sync::Arc::clone(&directory.1)),
                         home: Some(home),

@@ -67,7 +67,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     let legacy = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&legacy).unwrap()["version"],
-        33
+        35
     );
     assert_eq!(
         hex_storage::decode(&legacy).unwrap().snapshot(),
@@ -128,7 +128,7 @@ fn device_asset_binding_roundtrips_history_and_all_device_owners_without_payload
     let bytes = hex_storage::encode(editor.project()).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&bytes).unwrap()["version"],
-        33
+        35
     );
     let reopened = hex_storage::decode(&bytes).unwrap();
     assert_eq!(reopened.snapshot(), editor.project().snapshot());
@@ -198,6 +198,7 @@ fn device_asset_manifest_rejects_incomplete_duplicate_unknown_and_unbounded_bind
         match case {
             0 => {
                 value.as_object_mut().unwrap().remove("device_assets");
+                value.as_object_mut().unwrap().remove("asset_sources");
             }
             1 => {
                 value["device_assets"] = serde_json::json!([]);
@@ -274,13 +275,14 @@ fn superseded_alpha30_variants_refuse_without_rewriting_user_files() {
         }
         if !assets {
             value.as_object_mut().unwrap().remove("device_assets");
+            value.as_object_mut().unwrap().remove("asset_sources");
         }
         let bytes = serde_json::to_vec(&value).unwrap();
         std::fs::write(&path, &bytes).unwrap();
         assert!(matches!(
             hex_storage::load(&path),
             Err(hex_storage::StorageError::Invalid(
-                "unsupported alpha project format 30"
+                "unsupported project format or version; current format is 35"
             ))
         ));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);

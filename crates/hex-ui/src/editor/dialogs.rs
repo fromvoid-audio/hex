@@ -112,12 +112,7 @@ impl EditorView {
                     files: true,
                     directories: false,
                     multiple: false,
-                    prompt: Some(match mode {
-                        hex_session::DocumentAudioMode::Resident => "open project".into(),
-                        hex_session::DocumentAudioMode::VerifiedStreaming => {
-                            "open project as verified streaming".into()
-                        }
-                    }),
+                    prompt: Some("open project".into()),
                 },
                 directory.as_deref(),
             );

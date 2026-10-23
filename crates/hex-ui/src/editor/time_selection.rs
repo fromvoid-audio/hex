@@ -188,6 +188,7 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
+        self.retain_clip_detail_for_time_selection();
         self.selected_clip = None;
         true
     }
@@ -324,10 +325,10 @@ impl EditorView {
             free_modifier: free,
             last_tick: Instant::now(),
         });
+        self.retain_clip_detail_for_time_selection();
         self.selected_track = Some(track);
         self.selected_clip = None;
         self.cancel_midi_note_gesture();
-        self.device_panel_active = true;
         true
     }
 
@@ -755,7 +756,11 @@ impl EditorView {
             self.pending_time_range_move = Some(pending);
             return;
         }
-        if event.error.is_some() || event.state.revision <= pending.source_revision {
+        // The copy/move is admitted with no other pending edit. Its advanced
+        // canonical revision witnesses the commit; a later recovery checkpoint
+        // can still attach an error to that same completion. Keep that diagnostic,
+        // but settle the committed destination. Refused edits do not advance it.
+        if event.state.revision <= pending.source_revision {
             return;
         }
         // The accepted copy still commits, but its selection intent does not
@@ -1105,7 +1110,7 @@ impl EditorView {
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(0.13)
+                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
                         .id(("time-selection-handle", track.value()))
@@ -1177,7 +1182,7 @@ impl EditorView {
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(0.13)
+                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
                         .id("main-project-time-selection-handle")

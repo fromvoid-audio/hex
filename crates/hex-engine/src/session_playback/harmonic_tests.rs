@@ -63,7 +63,8 @@ fn fixture(notes: usize, duration: u64) -> Project {
                 id: first + index as u64,
                 start_raw: 0,
                 duration_raw: duration,
-                pitch: 36 + (index % 48) as u8,
+                // Keep all 64 simultaneous voices on distinct authored pitches.
+                pitch: 36 + index as u8,
                 channel: 0,
                 velocity: 100,
             })
@@ -591,3 +592,6 @@ fn first_paint_keeps_active_clean_filter_integrators_for_64_voices_and_feedback_
         more.render(&mut [[0.0; 2]; 257]).unwrap();
     }
 }
+
+#[path = "harmonic_tests/cue.rs"]
+mod cue;

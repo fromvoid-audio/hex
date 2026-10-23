@@ -44,8 +44,8 @@ impl FileToken {
     }
 }
 
-/// Decode and capture the same single bounded read, preserving original bytes
-/// including formatting and legacy schema rather than re-encoding a migration.
+/// Decode and capture the same single bounded read, preserving original current-format
+/// bytes including whitespace rather than re-encoding the decoded project.
 pub fn load_with_token(path: impl AsRef<Path>) -> Result<(Project, FileToken), StorageError> {
     let bytes = read_document(path.as_ref())?;
     let project = decode(&bytes)?;
@@ -449,15 +449,21 @@ mod tests {
     }
 
     #[test]
-    fn legacy_token_checks_original_schema_bytes_instead_of_migrated_encoding() {
+    fn token_checks_original_current_bytes_instead_of_reencoded_formatting() {
         let dir = TestDir::new();
-        let path = dir.0.join("legacy.hex");
-        let legacy = br#"{"format":"hex-project","version":1,"sample_rate":48000,"next_id":1,"assets":[],"tracks":[]}"#;
-        fs::write(&path, legacy).expect("legacy fixture");
-        let (project, token) = load_with_token(&path).expect("migrated project and original token");
-        token.check_unchanged(&path).expect("legacy untouched");
-        assert_ne!(encode(&project).expect("current schema"), legacy);
-        fs::write(&path, encode(&project).expect("migration bytes")).expect("external migration");
+        let path = dir.0.join("formatted.hex");
+        let project = Project::new(48_000).unwrap();
+        let encoded = encode(&project).unwrap();
+        let formatted = serde_json::to_vec_pretty(
+            &serde_json::from_slice::<serde_json::Value>(&encoded).unwrap(),
+        )
+        .unwrap();
+        assert_ne!(encoded, formatted);
+        fs::write(&path, &formatted).expect("formatted fixture");
+        let (loaded, token) = load_with_token(&path).expect("project and original token");
+        assert_eq!(loaded, project);
+        token.check_unchanged(&path).expect("original untouched");
+        fs::write(&path, &encoded).expect("external formatting change");
         assert!(matches!(
             token.check_unchanged(&path),
             Err(StorageError::Conflict { .. })

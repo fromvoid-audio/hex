@@ -1,4 +1,11 @@
-//! Product-wide text rules. Identifiers and source data keep their original casing.
+//! Product-wide display text and typography; source data keeps original casing.
+//!
+//! App-owned labels, status, units, tooltips and accessibility text pass through text. Do not
+//! case-fold paths, identifiers, file contents or saved user names. Root views inherit bundled
+//! Ioskeley Mono; load_fonts must register and verify it before UI startup, with no silent
+//! system-font fallback. OS dialogs/menu chrome retain OS fonts. Transparent titlebar rows reserve
+//! TITLEBAR_LEADING_INSET independently of compact panel padding so app controls do not paint
+//! under native window chrome.
 use gpui::{App, SharedString};
 
 #[path = "theme/device.rs"]
@@ -12,6 +19,9 @@ pub(crate) use device::{
 };
 use std::borrow::Cow;
 use std::cell::Cell;
+
+/// Shared translucency for arranger and clip-editor time ranges.
+pub(crate) const TIME_SELECTION_OPACITY: f32 = 0.13;
 
 /// Editable palette roles used throughout the native UI.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
