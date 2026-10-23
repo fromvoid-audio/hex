@@ -343,11 +343,17 @@ where
 {
     let staged = rendered.is_ok() && callback.stage_output_transport(source);
     let converted = staged && copy_host_chunk(output, source, channels);
-    let valid = callback.finish_output_transport(converted) && converted;
+    let delivery = callback.finish_output_transport(converted);
+    let valid = finish_transport_copy(
+        delivery,
+        converted,
+        rendered.is_ok(),
+        output,
+        source,
+        channels,
+    );
     let _ = callback.finish_spectrum_block(capture_start, valid);
     if !valid {
-        output.fill(T::from_sample(0.0));
-        source.fill([0.0; 2]);
         let transport_error = callback.output_transport_error();
         callback.report_render_fault(
             rendered.as_ref().err().or(transport_error.as_ref()),
@@ -355,6 +361,34 @@ where
         );
     }
     callback.finish_gain_recording_quantum(valid);
+    valid
+}
+
+/// Final host ownership boundary: a clean terminal cancellation after copying
+/// still replaces that output with silence. It never accepts worker input.
+fn finish_transport_copy<T: SizedSample + FromSample<f32>>(
+    delivery: prepared::OutputTransportDelivery,
+    converted: bool,
+    rendered: bool,
+    output: &mut [T],
+    source: &mut [Frame],
+    channels: usize,
+) -> bool
+where
+    f32: FromSample<T>,
+{
+    let valid = match delivery {
+        prepared::OutputTransportDelivery::Accepted => converted,
+        prepared::OutputTransportDelivery::Refused => false,
+        prepared::OutputTransportDelivery::Cancelled => {
+            source.fill([0.0; 2]);
+            rendered && copy_host_chunk(output, source, channels)
+        }
+    };
+    if !valid {
+        output.fill(T::from_sample(0.0));
+        source.fill([0.0; 2]);
+    }
     valid
 }
 

@@ -276,8 +276,9 @@ impl Callback {
     pub fn quantum_frames(&self) -> usize {
         usize::from(self.quantum)
     }
-    pub fn revoke(&self) {
+    pub fn revoke(&mut self) {
         self.revoked.store(true, Release);
+        self.staged = None;
     }
     pub fn latency_frames(&self) -> u32 {
         u32::from(self.quantum) * 2
@@ -410,6 +411,10 @@ impl Callback {
 }
 
 impl Worker {
+    #[cfg(test)]
+    pub(crate) fn pending_requests_for_test(&self) -> usize {
+        self.requests.slots()
+    }
     fn fail<T>(&self, fault: Fault) -> Result<T, Fault> {
         self.revoked.store(true, Release);
         Err(fault)

@@ -898,6 +898,15 @@ impl std::ops::DerefMut for Control {
     }
 }
 
+/// Final worker-input disposition, distinct from host delivery. Cancellation
+/// must replace an already copied host chunk with silence, never dispatch it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum OutputTransportDelivery {
+    Accepted,
+    Cancelled,
+    Refused,
+}
+
 pub struct Callback {
     output_transport: Option<Box<crate::plugin_transport::Callback>>,
     output_transport_cancelled: bool,
@@ -1837,6 +1846,7 @@ impl Callback {
             || self.spectrum_capture.is_some()
             || self.status.client_exposed.load(Acquire)
             || self.status.closing.load(Acquire)
+            || epoch != self.status.transport_epoch.load(Acquire)
         {
             return Err(Invalid(
                 "output transport requires an unexposed empty callback",
@@ -1861,7 +1871,7 @@ impl Callback {
     }
 
     pub(crate) fn revoke_output_transport(&mut self) {
-        if let Some(transport) = self.output_transport.as_ref() {
+        if let Some(transport) = self.output_transport.as_mut() {
             transport.revoke();
             self.output_transport_cancelled = true;
         }
@@ -1884,7 +1894,9 @@ impl Callback {
         let Some(transport) = self.output_transport.as_mut() else {
             return true;
         };
-        if transport.binding().graph != self.status.applied_revision.load(Acquire) {
+        if transport.binding().graph != self.status.applied_revision.load(Acquire)
+            || transport.binding().epoch != self.status.transport_epoch.load(Acquire)
+        {
             transport.reject(crate::plugin_transport::Fault::Identity);
             return false;
         }
@@ -1901,13 +1913,40 @@ impl Callback {
             .is_ok_and(|events| events.as_slice().is_empty())
     }
 
-    pub(crate) fn finish_output_transport(&mut self, accepted: bool) -> bool {
-        if self.output_transport_cancelled {
-            return true;
+    pub(crate) fn finish_output_transport(&mut self, accepted: bool) -> OutputTransportDelivery {
+        use OutputTransportDelivery::{Accepted, Cancelled, Refused};
+        let Some(transport) = self.output_transport.as_ref() else {
+            return Accepted;
+        };
+        if transport
+            .fault()
+            .is_some_and(|fault| fault != crate::plugin_transport::Fault::Revoked)
+        {
+            return Refused;
         }
-        self.output_transport
-            .as_mut()
-            .is_none_or(|transport| transport.finish(accepted).is_ok())
+        // Control may cancel after staging/conversion. Recheck its real owner
+        // signals at the last boundary before any request can reach the worker.
+        if self.status.closing.load(Acquire) || self.status.pending_stop_marker.load(Acquire) != 0 {
+            self.revoke_output_transport();
+            return Cancelled;
+        }
+        if self.output_transport_cancelled {
+            return if self.status.playing.load(Relaxed) {
+                Refused
+            } else {
+                Cancelled
+            };
+        }
+        match self.output_transport.as_mut() {
+            Some(transport) => {
+                if transport.finish(accepted).is_ok() {
+                    Accepted
+                } else {
+                    Refused
+                }
+            }
+            _ => Refused,
+        }
     }
     pub(crate) fn output_transport_error(&self) -> Option<Invalid> {
         self.output_transport
@@ -3116,6 +3155,9 @@ impl Callback {
     }
 
     fn invalidate_gain_recording(&mut self, reason: crate::gain_recording::AbortReason) {
+        // Reuse the existing transport-discontinuity owner/epoch; asynchronous
+        // output must not expose pre-seek/pause/stop buffers in a new context.
+        self.revoke_output_transport();
         self.gain_recording.abort(reason);
         if let Some(mut active) = self
             .active

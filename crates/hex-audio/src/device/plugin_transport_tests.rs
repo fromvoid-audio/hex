@@ -306,6 +306,79 @@ fn final_host_shape_refusal_happens_before_any_worker_request() {
     assert!(control.status.render_fault.load(Acquire));
 }
 
+fn discontinuity_discards_previous_epoch(action: hex_engine::PlaybackCommand) {
+    let (mut control, mut callback, transport, mut worker) = profile();
+    render(&mut callback, 8, 2, false);
+    let first = worker.receive().unwrap().unwrap();
+    worker.complete(first).unwrap();
+    render(&mut callback, 8, 2, false);
+    let pending = worker.receive().unwrap().unwrap();
+    control.command(action).unwrap();
+    assert!(
+        render(&mut callback, 8, 2, false).iter().all(|x| *x == 0.0),
+        "old PCM cannot cross an actual seek/pause discontinuity"
+    );
+    assert!(transport.is_revoked());
+    assert_eq!(worker.complete(pending), Err(Fault::Revoked));
+}
+
+#[test]
+fn transport_review_seek_discards_previous_epoch() {
+    discontinuity_discards_previous_epoch(hex_engine::PlaybackCommand::Seek(128));
+}
+#[test]
+fn transport_review_pause_discards_previous_epoch() {
+    discontinuity_discards_previous_epoch(hex_engine::PlaybackCommand::Pause);
+}
+#[test]
+fn transport_review_stale_setup_never_starts_an_exchange() {
+    let (control, mut callback) = prepared::channel(48_000).unwrap();
+    let stale_epoch = control.status.transport_epoch.load(Acquire) + 1;
+    assert!(
+        callback
+            .prepare_output_transport_on_control(1, 1, stale_epoch, 8)
+            .is_err(),
+        "setup must bind the actual existing transport epoch"
+    );
+    drop((control, callback));
+}
+#[test]
+fn transport_review_shutdown_before_dispatch_never_sends_the_staged_block() {
+    let (mut control, mut callback, transport, mut worker) = profile();
+    for _ in 0..2 {
+        render(&mut callback, 8, 2, false);
+        let block = worker.receive().unwrap().unwrap();
+        worker.complete(block).unwrap();
+    }
+    callback.begin_block();
+    let mut source = [[0.0; 2]; 8];
+    callback.render(&mut source).unwrap();
+    assert!(callback.stage_output_transport(&mut source));
+    let mut host = [9.0_f32; 16];
+    assert!(copy_host_chunk(&mut host, &source, 2));
+    assert!(host.iter().any(|sample| *sample != 0.0));
+    control.request_shutdown();
+    let delivery = callback.finish_output_transport(true);
+    assert_eq!(
+        delivery,
+        prepared::OutputTransportDelivery::Cancelled,
+        "known shutdown must win before dispatch"
+    );
+    assert!(finish_transport_copy(
+        delivery,
+        true,
+        true,
+        &mut host,
+        &mut source,
+        2
+    ));
+    assert_eq!(host, [0.0; 16]);
+    assert_eq!(source, [[0.0; 2]; 8]);
+    assert_eq!(worker.pending_requests_for_test(), 0);
+    assert!(transport.is_revoked());
+    assert!(matches!(worker.receive(), Err(Fault::Revoked)));
+}
+
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 #[test]
 #[ignore = "requires an explicit current-source original native fixture receipt"]

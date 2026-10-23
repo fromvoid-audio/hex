@@ -83,8 +83,8 @@ pub(crate) fn spawn(
                     Ok(Some(block)) => {
                         let result = process(block).and_then(|reply| worker.complete(reply));
                         if let Err(error) = result {
+                            let _ = worker.fail::<()>(error);
                             if error != Fault::Revoked {
-                                let _ = worker.fail::<()>(error);
                                 fault = Some(error);
                             }
                             break;
@@ -114,6 +114,34 @@ pub(crate) fn spawn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transport_review_backend_cancel_revokes_before_next_audio_request() {
+        let binding = Binding {
+            root: 1,
+            instance: 2,
+            graph: 3,
+            epoch: 4,
+        };
+        let (control, mut callback, worker) = channel(binding, 8).unwrap();
+        let mut reaper = spawn(control, worker, |_| Err(Fault::Revoked)).unwrap();
+        callback
+            .stage(&[[0.5; 2]; 8], &[], &mut [[0.0; 2]; 8])
+            .unwrap();
+        callback.finish(true).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        while !reaper.is_finished() {
+            assert!(std::time::Instant::now() < deadline);
+            thread::yield_now();
+        }
+        assert!(
+            matches!(
+                callback.stage(&[[0.5; 2]; 8], &[], &mut [[0.0; 2]; 8]),
+                Err(Fault::Revoked)
+            ),
+            "a backend cancellation must publish revocation before worker exit"
+        );
+        assert_eq!(reaper.join_on_control(), Ok(()));
+    }
     #[test]
     fn joining_control_retains_endpoints_after_real_worker_exit_and_refusal() {
         let binding = Binding {
