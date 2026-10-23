@@ -1087,7 +1087,11 @@ impl EditorView {
             .truncate()
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .child(self.track_name_label(track, cx))
+            .child(self.track_name_label(
+                super::track_name::Target::Track(track.id()),
+                track.name(),
+                cx,
+            ))
             .tooltip(move |_, cx| {
                 cx.new(|_| ClipTooltip {
                     name: track_name.clone(),
