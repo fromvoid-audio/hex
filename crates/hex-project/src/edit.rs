@@ -489,6 +489,8 @@ pub enum Command {
     },
     /// Place a new clip after the selected clip using its same media interval.
     DuplicateClip(ClipId),
+    /// Copy a frozen whole-clip selection after its complete extent, atomically.
+    DuplicateClips(Vec<ClipId>),
     /// Split a clip at an absolute timeline frame.
     SplitClip {
         clip: ClipId,
@@ -1739,6 +1741,7 @@ impl Project {
             | Command::RenameSessionMidiClip { .. }) => {
                 crate::session::apply(self, session_command)
             }
+            Command::DuplicateClips(clips) => crate::clip_duplicate::apply(self, clips),
             Command::DuplicateClip(clip) => {
                 let original = self.clip(clip).ok_or(Invalid("clip no longer exists"))?;
                 let start = original

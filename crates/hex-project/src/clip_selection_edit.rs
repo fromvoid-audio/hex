@@ -488,7 +488,8 @@ impl Command {
             | Self::MoveTimeRange { .. }
             | Self::CopyTimeRangeTo { .. }
             | Self::SplitTracksAtFrame { .. }
-            | Self::MoveClipsWithOverwrite { .. } => ClipCommandScope::Explicit,
+            | Self::MoveClipsWithOverwrite { .. }
+            | Self::DuplicateClips(_) => ClipCommandScope::Explicit,
             Self::AddArrangementSection { .. }
             | Self::SetArrangementSectionRange { .. }
             | Self::RenameArrangementSection { .. }

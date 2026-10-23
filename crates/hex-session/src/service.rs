@@ -361,6 +361,12 @@ pub enum Request {
         revision: u64,
         command: Command,
     },
+    /// Whole-clip duplicate intent bound to one canonical source, never retargeted.
+    DuplicateClips {
+        project_generation: u64,
+        revision: u64,
+        clips: Vec<hex_project::ClipId>,
+    },
     /// Explicitly confirmed recovery storage action, scoped to one observed failure.
     RestartRecovery(RecoveryRestart),
     /// Scalar native seek; all candidate/source owners remain on control workers.
@@ -1910,11 +1916,11 @@ fn run_worker(
         let mut gesture_request = false;
         let mut preview_prepared = None;
         let mut preview_project = None;
-        // Resolve catalog insertions on the worker before any gesture barrier. Invalid identities
+        // Resolve source-bound UI edits on the worker before any gesture barrier. Invalid identities
         // and requests during a live draft cannot commit unrelated gesture history.
         // A valid request then uses the exact generic Edit publication path below,
         // including Created selection and keyboard/tuning preparation.
-        let browser_insert = match &request {
+        let resolved_edit = match &request {
             Request::InsertBrowserInstrumentTrack {
                 project_generation: expected_generation,
                 revision: expected_revision,
@@ -1965,9 +1971,27 @@ fn run_worker(
                     )
                 },
             ),
+            Request::DuplicateClips {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                clips,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("clip duplication canceled · project changed".to_owned())
+                } else if clips.is_empty() || clips.len() > hex_project::MAX_CLIPS {
+                    Err("clip duplication exceeds project limits".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before duplicating clips".into())
+                } else {
+                    Ok(Command::DuplicateClips(clips.clone()))
+                },
+            ),
             _ => None,
         };
-        let (request, browser_failure) = match browser_insert {
+        let (request, resolution_failure) = match resolved_edit {
             Some(Ok(command)) => (Request::Edit(command), None),
             Some(Err(reason)) => (request, Some(reason)),
             None => (request, None),
@@ -1975,7 +1999,7 @@ fn run_worker(
         let barrier = request.finalizes_parameter_gesture();
         // Reject stale comparison ownership before a barrier could commit an
         // unrelated live draft. Valid requests still use the existing barrier.
-        let mut barrier_failure = browser_failure.or_else(|| match &request {
+        let mut barrier_failure = resolution_failure.or_else(|| match &request {
             Request::EditArrangementSection {
                 project_generation: captured,
                 revision: captured_revision,
@@ -2670,6 +2694,9 @@ fn run_worker(
                 Request::InsertEffectBusDevice { .. } => {
                     error =
                         Some("effect insertion request was not prepared; select it again".into());
+                }
+                Request::DuplicateClips { .. } => {
+                    error = Some("clip duplication target was not resolved".into());
                 }
                 Request::DropBrowserDeviceOnArrangement {
                     project_generation: expected_generation,
@@ -9093,6 +9120,207 @@ mod service_tests {
         assert_eq!(refused.state.project, active.state.project);
         assert_eq!(refused.state.can_undo, active.state.can_undo);
         assert!(refused.playback.is_none());
+    }
+
+    #[test]
+    fn selected_clip_duplicate_uses_cached_audio_and_one_history_step_and_refuses_stale_targets() {
+        let directory = TestDir::new();
+        let source = directory.0.join("duplicate-source.wav");
+        fs::write(&source, wav_mono(&[16_384; 128])).expect("authored PCM");
+        let service = Service::new(48_000, 32, 8_000_000).expect("service");
+        next_event(&service);
+        service.submit(Request::Import(source.clone())).unwrap();
+        let imported = next_event(&service);
+        assert!(imported.error.is_none(), "{:?}", imported.error);
+        let audio = imported.state.project.tracks()[0].clips()[0].id();
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "midi".into(),
+            }))
+            .unwrap();
+        let track = next_event(&service).state.project.tracks()[1].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::from_quarters(1).unwrap(),
+            }))
+            .unwrap();
+        let before = next_event(&service);
+        let midi = before.state.project.track(track).unwrap().midi_clips()[0].id();
+        let clips = vec![audio, midi];
+        fs::remove_file(&source).unwrap();
+        // Source custody is already canonical: duplication must not reopen media.
+        service
+            .submit(Request::DuplicateClips {
+                project_generation: 0,
+                revision: before.state.revision,
+                clips: clips.clone(),
+            })
+            .unwrap();
+        let duplicated = next_event(&service);
+        assert!(duplicated.request_complete);
+        assert!(duplicated.error.is_none(), "{:?}", duplicated.error);
+        assert!(matches!(duplicated.created, Some(Created::Clips { .. })));
+        assert_eq!(duplicated.state.revision, before.state.revision + 1);
+        assert_eq!(duplicated.state.project.tracks()[0].clips().len(), 2);
+        assert_eq!(
+            duplicated
+                .state
+                .project
+                .track(track)
+                .unwrap()
+                .midi_clips()
+                .len(),
+            2
+        );
+        let mut playback = duplicated.playback.expect("prepared copied playback");
+        playback.apply(hex_engine::PlaybackCommand::Play);
+        let mut pcm = [[0.0; 2]; 128];
+        playback.render(&mut pcm).unwrap();
+        assert!(pcm.iter().flatten().any(|sample| sample.abs() > 0.1));
+        playback.apply(hex_engine::PlaybackCommand::Seek(24_000));
+        let mut copied_pcm = [[0.0; 2]; 128];
+        playback.render(&mut copied_pcm).unwrap();
+        assert_eq!(
+            copied_pcm, pcm,
+            "the copied clip retains exact original PCM"
+        );
+        for (generation, revision, selected) in [
+            (1, duplicated.state.revision, clips.clone()),
+            (0, before.state.revision, clips.clone()),
+            (0, duplicated.state.revision, Vec::new()),
+            (0, duplicated.state.revision, vec![audio, audio]),
+        ] {
+            service
+                .submit(Request::DuplicateClips {
+                    project_generation: generation,
+                    revision,
+                    clips: selected,
+                })
+                .unwrap();
+            let refused = next_event(&service);
+            assert!(refused.request_complete);
+            assert!(refused.error.is_some());
+            assert!(refused.created.is_none());
+            assert!(refused.playback.is_none());
+            assert_eq!(refused.state.revision, duplicated.state.revision);
+            assert_eq!(refused.state.project, duplicated.state.project);
+            assert_eq!(refused.state.can_undo, duplicated.state.can_undo);
+            assert_eq!(refused.state.can_redo, duplicated.state.can_redo);
+        }
+        service.submit(Request::Undo).unwrap();
+        let undone = next_event(&service);
+        let restored = undone.state.project.snapshot();
+        let mut original = before.state.project.snapshot();
+        original.next_id = restored.next_id;
+        assert_eq!(restored, original);
+        service.submit(Request::Redo).unwrap();
+        assert_eq!(next_event(&service).state.project, duplicated.state.project);
+        // Restore the authored external file before testing reopen; missing-media
+        // recovery is separate from the cached-source duplication guarantee.
+        fs::write(&source, wav_mono(&[16_384; 128])).unwrap();
+        let path = directory.0.join("duplicated.hex");
+        service.submit(Request::SaveNew(path.clone())).unwrap();
+        let saved = next_event(&service);
+        assert!(saved.error.is_none(), "{:?}", saved.error);
+        service.submit(Request::Open(path)).unwrap();
+        let reopened = next_event(&service);
+        assert!(reopened.error.is_none(), "{:?}", reopened.error);
+        assert!(reopened.project_replaced);
+        assert_eq!(reopened.state.project, duplicated.state.project);
+    }
+
+    #[test]
+    fn selected_clip_duplicate_early_native_refusal_is_a_terminal_without_legacy_flag() {
+        // Only the output boundary is substituted. The worker's real early
+        // native-source refusal precedes the ordinary Edit match/legacy flag.
+        struct HeldOutput {
+            armed: Arc<AtomicBool>,
+            context: Option<hex_engine::AudioSourceContext>,
+        }
+        impl WorkerAudioSink for HeldOutput {
+            fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+                Err("fixture offline output".into())
+            }
+            fn canonical_changed(&mut self, source: Arc<CanonicalAudioSourceSnapshot>) {
+                self.context = Some(source.context());
+            }
+            fn native_sampler_hold(&self) -> NativeSamplerReservationHold {
+                NativeSamplerReservationHold {
+                    current_context: self
+                        .armed
+                        .load(Ordering::Acquire)
+                        .then_some(self.context)
+                        .flatten(),
+                    ..Default::default()
+                }
+            }
+            fn poll(&mut self) {}
+            fn close(&mut self) {}
+        }
+        let armed = Arc::new(AtomicBool::new(false));
+        let service = Service::with_audio_sink(
+            16,
+            0,
+            None,
+            Box::new(HeldOutput {
+                armed: Arc::clone(&armed),
+                context: None,
+            }),
+        )
+        .unwrap();
+        next_event(&service);
+        service
+            .submit(Request::Edit(Command::AddTrack {
+                name: "midi".into(),
+            }))
+            .unwrap();
+        let track = next_event(&service).state.project.tracks()[0].id();
+        service
+            .submit(Request::Edit(Command::PlaceMidiClip {
+                track,
+                start: hex_project::BeatTime::ZERO,
+                length: hex_project::BeatTime::from_quarters(1).unwrap(),
+            }))
+            .unwrap();
+        let before = next_event(&service);
+        let clip = before.state.project.tracks()[0].midi_clips()[0].id();
+        armed.store(true, Ordering::Release);
+        service
+            .submit(Request::DuplicateClips {
+                project_generation: 0,
+                revision: before.state.revision,
+                clips: vec![clip],
+            })
+            .unwrap();
+        let refused = next_event(&service);
+        assert!(refused.request_complete);
+        assert!(!refused.duplicate_complete);
+        assert!(
+            refused
+                .error
+                .as_deref()
+                .is_some_and(|error| error.contains("fresh output"))
+        );
+        assert!(refused.created.is_none());
+        assert!(refused.playback.is_none());
+        assert_eq!(refused.state.revision, before.state.revision);
+        assert_eq!(refused.state.project, before.state.project);
+        assert_eq!(refused.state.can_undo, before.state.can_undo);
+        assert_eq!(refused.state.can_redo, before.state.can_redo);
+        armed.store(false, Ordering::Release);
+        service
+            .submit(Request::DuplicateClips {
+                project_generation: 0,
+                revision: before.state.revision,
+                clips: vec![clip],
+            })
+            .unwrap();
+        let retried = next_event(&service);
+        assert!(retried.request_complete);
+        assert!(retried.error.is_none(), "{:?}", retried.error);
+        assert_eq!(retried.state.project.tracks()[0].midi_clips().len(), 2);
     }
 
     fn next_event(service: &Service) -> Event {
