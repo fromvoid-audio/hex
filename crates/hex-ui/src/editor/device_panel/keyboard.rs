@@ -105,6 +105,11 @@ fn removal(
     device: DeviceId,
 ) -> Option<Command> {
     match owner {
+        DevicePanelOwner::Main => project
+            .main_devices()
+            .iter()
+            .any(|effect| effect.id() == device)
+            .then_some(Command::RemoveDevice(device)),
         DevicePanelOwner::Track(id) => {
             let track = project.track(id)?;
             if track

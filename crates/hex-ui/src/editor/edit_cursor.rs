@@ -119,6 +119,7 @@ impl EditorView {
                 })
             }
         });
+        self.advance_selection_intent();
         if !selected_clip_under_pointer {
             self.focus_track_details(window);
         }

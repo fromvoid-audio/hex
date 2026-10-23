@@ -65,6 +65,7 @@ fn event_drag_preview_cancel_and_revision_change_never_edit_outer_clip(cx: &mut 
             comparison_audio: None,
             project: state.project.clone(),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: state.audio_clip_waveforms.clone(),
             midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
@@ -100,6 +101,7 @@ fn event_move_preview_and_release_use_snapped_inner_coordinates(cx: &mut TestApp
             comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
@@ -163,6 +165,7 @@ fn selecting_an_off_grid_event_without_dragging_never_moves_audio(cx: &mut TestA
             comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
@@ -216,6 +219,7 @@ fn copying_after_an_outer_cut_uses_only_the_visible_inner_event(cx: &mut TestApp
             comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
@@ -303,6 +307,7 @@ fn cropped_event_drag_range_move_and_nudge_stay_inside_visible_container(cx: &mu
             comparison_audio: None,
             project: std::sync::Arc::new(canonical.project().clone()),
             waveforms: state.waveforms.clone(),
+            source_overviews: state.source_overviews.clone(),
             audio_clip_waveforms: Default::default(),
             midi_preview: state.midi_preview.clone(),
             gain_preview: state.gain_preview.clone(),
@@ -499,6 +504,7 @@ fn replace_event_project(view: &mut EditorView, project: hex_project::Project, r
         comparison_audio: None,
         project: std::sync::Arc::new(project),
         waveforms: state.waveforms.clone(),
+        source_overviews: state.source_overviews.clone(),
         audio_clip_waveforms: Default::default(),
         midi_preview: state.midi_preview.clone(),
         gain_preview: state.gain_preview.clone(),
@@ -653,5 +659,120 @@ fn duplicate_and_clipboard_paste_refuse_beyond_visible_child(cx: &mut TestAppCon
             ),
             "a fitting visible paste must still work"
         );
+    });
+}
+
+#[gpui::test]
+fn audio_fit_selection_and_back_use_local_waveform_bounds_without_model_history(
+    cx: &mut TestAppContext,
+) {
+    cx.update(super::super::bind_editor_keys);
+    let (handle, editor, _, _) = super::super::clip_view_ui_test::audio_detail_fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    visual.run_until_parked();
+    let b = visual.debug_bounds("audio-events-waveform").unwrap();
+    let at = |f| point(b.origin.x + b.size.width * f, b.origin.y + px(10.0));
+    visual.simulate_mouse_down(at(0.75), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(at(0.25), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(at(0.25), MouseButton::Left, Modifiers::default());
+    let (before, expected, prior) = editor.update(&mut visual, |v, cx| {
+        let (_, root, _) = v.event_context().unwrap();
+        let state = v.state.as_ref().unwrap();
+        let first = root
+            .root_frame_at(root.view_start, state.project.tempo_map())
+            .unwrap();
+        let (a, b) = v.audio_event_editor.range.unwrap();
+        let a = root
+            .root_frame_at(a.min(b), state.project.tempo_map())
+            .unwrap();
+        let b = root
+            .root_frame_at(
+                v.audio_event_editor
+                    .range
+                    .unwrap()
+                    .0
+                    .max(v.audio_event_editor.range.unwrap().1),
+                state.project.tempo_map(),
+            )
+            .unwrap();
+        let expected = Viewport {
+            start: a - first,
+            length: b - a,
+        };
+        let prior = Viewport {
+            start: 1_000,
+            length: 12_000,
+        };
+        v.audio_event_editor.viewport = Some(prior);
+        cx.notify();
+        (
+            (
+                state.project.snapshot(),
+                state.can_undo,
+                state.can_redo,
+                v.offline_cursor,
+            ),
+            expected,
+            prior,
+        )
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("z");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.audio_event_editor.viewport, Some(expected))
+    });
+    visual.simulate_keystrokes("z");
+    let back = visual.debug_bounds("audio-zoom-back").unwrap();
+    visual.simulate_click(back.center(), Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.audio_event_editor.viewport, Some(prior))
+    });
+    editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.range = None;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    let fit = visual.debug_bounds("audio-zoom-fit").unwrap();
+    visual.simulate_click(fit.center(), Modifiers::default());
+    editor.read_with(&visual, |v, _| {
+        let (_, root, _) = v.event_context().unwrap();
+        assert_eq!(v.event_viewport(&root).start, 0);
+        let s = v.state.as_ref().unwrap();
+        assert_eq!(
+            (
+                s.project.snapshot(),
+                s.can_undo,
+                s.can_redo,
+                v.offline_cursor
+            ),
+            before
+        );
+    });
+    visual.simulate_keystrokes("x");
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.audio_event_editor.viewport, Some(prior))
+    });
+    visual.simulate_click(fit.center(), Modifiers::default());
+    editor.update(&mut visual, |v, cx| {
+        v.project_generation += 1;
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("x");
+    editor.read_with(&visual, |v, _| {
+        assert!(v.audio_event_editor.fit_back.is_none())
+    });
+    editor.update(&mut visual, |v, cx| {
+        v.audio_event_editor.viewport = None;
+        v.audio_event_editor.range = Some((12_000, 36_000));
+        cx.notify();
+    });
+    visual.run_until_parked();
+    visual.simulate_keystrokes("z x");
+    editor.read_with(&visual, |v, _| {
+        assert!(
+            v.audio_event_editor.viewport.is_none(),
+            "back preserves automatic full-view mode"
+        )
     });
 }

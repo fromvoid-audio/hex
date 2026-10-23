@@ -15,7 +15,7 @@ mod device_comparison_tests;
 mod device_preset_ui_tests;
 mod device_reorder_tests;
 mod device_theme_tests;
-mod eq_ui_tests;
+pub(in crate::editor) mod eq_ui_tests;
 mod gate_ui_tests;
 mod header_actions_tests;
 mod header_style_tests;
@@ -59,8 +59,11 @@ fn actor_utility_fixture() -> (
     let service = Service::new(48_000, 8, 8_000_000).expect("service");
     let _initial = receive_service_event(&service);
     service
-        .submit(Request::Edit(Command::AddTrack {
+        .submit(Request::Edit(Command::InsertTrackWithDevice {
             name: "device track".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         }))
         .expect("add track request");
     let track_event = receive_service_event(&service);
@@ -3592,6 +3595,7 @@ fn same_update_typed_value_finishes_before_save_barrier(cx: &mut TestAppContext)
             comparison_audio: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            source_overviews: current.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -3907,6 +3911,7 @@ fn full_device_barrier_refusal_keeps_numeric_draft_and_retry_commits_once(cx: &m
             comparison_audio: None,
             project: current.project.clone(),
             waveforms: current.waveforms.clone(),
+            source_overviews: current.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -4199,6 +4204,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
                     comparison_audio: None,
                     project: Arc::new(initial_project.clone()),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -4341,6 +4347,7 @@ fn invalid_numeric_draft_is_cancelled_on_project_replacement_and_target_removal(
             comparison_audio: None,
             project: Arc::new(next_project.clone()),
             waveforms: current.waveforms.clone(),
+            source_overviews: current.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: current.midi_preview.clone(),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -5236,6 +5243,7 @@ fn matching_first_ack_does_not_retire_latest_value_while_same_parameter_edits_ar
         comparison_audio: None,
         project: Arc::new(project_editor.project().clone()),
         waveforms: state.waveforms.clone(),
+        source_overviews: state.source_overviews.clone(),
         audio_clip_waveforms: state.audio_clip_waveforms.clone(),
         midi_preview: state.midi_preview.clone(),
         gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -5352,3 +5360,5 @@ fn sine_and_effect_share_canonical_compact_header_and_body_bounds(cx: &mut TestA
         }
     }
 }
+
+mod main_chain_ui_tests;

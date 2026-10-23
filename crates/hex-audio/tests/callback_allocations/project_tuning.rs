@@ -6,8 +6,11 @@ fn builtin_fm4_and_operator_custom_tuning_handoff_and_release_allocate_nothing()
     for kind in ["hex.instrument.fm4", "hex.instrument.operator"] {
         let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
         let Created::Track(track) = editor
-            .execute(Command::AddMidiTrack {
+            .execute(Command::InsertTrackWithDevice {
                 name: "tuned native".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
             })
             .unwrap()
         else {
@@ -109,8 +112,11 @@ fn builtin_fm4_and_operator_custom_tuning_handoff_and_release_allocate_nothing()
 fn held_keyboard_tuning_publication_and_retirement_allocate_nothing() {
     let mut editor = Editor::new(Project::new(RATE).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
-        .execute(Command::AddMidiTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "tuning".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {

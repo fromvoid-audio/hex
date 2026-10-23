@@ -147,26 +147,6 @@ pub(super) fn timeline_waveform_view_cached(
     )
 }
 
-pub(super) fn waveform_view_at(
-    waveform: &Arc<CachedWaveform>,
-    clip: &Clip,
-    timeline_origin: u64,
-    visible_start: u64,
-    visible_end: u64,
-) -> Div {
-    waveform_canvas(
-        Arc::clone(waveform),
-        WaveformMapping::Clip {
-            clip: clip.clone(),
-            timeline_origin,
-        },
-        visible_start,
-        visible_end,
-        None,
-        None,
-    )
-}
-
 pub(super) fn waveform_view_cached(
     waveform: &Arc<CachedWaveform>,
     clip: &Clip,
@@ -632,25 +612,28 @@ pub(super) fn button(
     tooltip: &'static str,
     id: (&'static str, u64),
 ) -> gpui::Stateful<Div> {
-    div()
+    button_with_style(label, tooltip, id, theme::action_style())
+}
+
+/// Tooltip/identity adapter; stateful callers resolve their hover colors before
+/// the shared widget is built, rather than installing a second GPUI hover style.
+pub(super) fn button_with_style(
+    label: &'static str,
+    tooltip: &'static str,
+    id: (&'static str, u64),
+    style: hex_widgets::ActionStyle,
+) -> gpui::Stateful<Div> {
+    hex_widgets::action(theme::text(label), style)
         .id(id)
         .w(px(19.0))
         .h(px(21.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
         .text_xs()
-        .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-        .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
         .tooltip(move |_, cx| {
             cx.new(|_| ClipTooltip {
                 name: tooltip.to_string(),
             })
             .into()
         })
-        .child(theme::text(label))
 }
 
 pub(super) struct ClipTooltip {

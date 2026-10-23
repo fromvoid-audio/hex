@@ -30,8 +30,11 @@ fn inventory_shape(
 ) -> Result<Arc<PreparedRevision>, crate::Invalid> {
     let mut editor = Editor::new(Project::new(48_000).unwrap(), 1).unwrap();
     editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "layout".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap();
     let mut snapshot = editor.project().snapshot();
@@ -86,6 +89,7 @@ fn inventory_shape(
             track.content = hex_project::TrackContentSnapshot::Hybrid {
                 audio_clips: Vec::new(),
                 midi_clips: vec![hex_project::MidiClipSnapshot {
+                    volume: hex_project::MidiClipVolume::default(),
                     name: "clip".into(),
                     flavor: hex_project::ClipFlavor::default(),
                     id: next,

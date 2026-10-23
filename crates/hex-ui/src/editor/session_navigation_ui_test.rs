@@ -16,13 +16,23 @@ fn fixture() -> (
     let mut editor =
         Editor::new(Project::new(48_000).expect("test project"), 4).expect("test editor");
     let Created::Track(first_track) = editor
-        .execute(Command::AddMidiTrack { name: "one".into() })
+        .execute(Command::InsertTrackWithDevice {
+            name: "one".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
+        })
         .expect("first instrument")
     else {
         panic!("first track")
     };
     let Created::Track(second_track) = editor
-        .execute(Command::AddMidiTrack { name: "two".into() })
+        .execute(Command::InsertTrackWithDevice {
+            name: "two".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
+        })
         .expect("second instrument")
     else {
         panic!("second track")
@@ -85,6 +95,7 @@ fn session_window(
                     comparison_audio: None,
                     project: Arc::new(project),
                     waveforms: Default::default(),
+                    source_overviews: Default::default(),
                     audio_clip_waveforms: std::collections::BTreeMap::new(),
                     midi_preview: Arc::new(Default::default()),
                     gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),

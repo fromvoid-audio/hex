@@ -1,13 +1,13 @@
 use super::{
     AddMidiClip, AddMidiTrack, AddTrack, AdditiveSolo, CancelDragOrStop, CopyTimeSelection,
-    CutTimeSelection, DeleteClip, DuplicateClip, EditorView, ExportProject, FitTimeline,
-    ImportAudio, InsertTimeSelection, MidiOctaveDown, MidiOctaveUp, MoveLeft, MoveRight,
-    NewProject, NewStreamingProject, NextTrack, OpenProject, OpenRecentProject,
-    OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft, PanTimelineRight,
-    PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave, RecoverSavedProject,
-    RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject, SelectAllMidiNotes,
-    SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode, TogglePlay, ToggleSolo,
-    TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
+    CutTimeSelection, DeleteClip, DeleteSectionMarker, DuplicateClip, EditorView, ExportProject,
+    FitTimeline, ImportAudio, InsertTimeSelection, LoopSelection, MergeSections, MidiOctaveDown,
+    MidiOctaveUp, MoveLeft, MoveRight, NewProject, NewStreamingProject, NextTrack, OpenProject,
+    OpenRecentProject, OpenRelinkedProject, OpenStreamingProject, PanTimelineLeft,
+    PanTimelineRight, PasteTimeSelection, PreviousTrack, Quit, RecoverPreviousSave,
+    RecoverSavedProject, RecoverUntitledProject, Redo, RemoveTrack, SaveAsProject, SaveProject,
+    SelectAllMidiNotes, SetLoopFromClip, SplitClip, Stop, ToggleLoop, ToggleMidiDrawMode,
+    TogglePlay, ToggleSolo, TrimLeft, TrimRight, Undo, ZoomIn, ZoomOut,
 };
 use crate::theme;
 use gpui::{Context, MouseButton, MouseUpEvent, Window, div, prelude::*, px, rgb};
@@ -33,7 +33,7 @@ impl EditorView {
         let grid = self.snap_grid.with_platform_modifier(platform);
         let state = self.state.as_ref()?;
         let viewport = self.visible_viewport(state.timeline_frames);
-        if grid == super::musical_time::SnapGrid::Off {
+        if grid.is_off() {
             return Some((grid, viewport, 1.0));
         }
         let bounds = self
@@ -55,7 +55,7 @@ impl EditorView {
         let Some((grid, viewport, width)) = self.nudge_grid_context(platform) else {
             return;
         };
-        if grid == super::musical_time::SnapGrid::Off {
+        if grid.is_off() {
             let step = self.step_frames() as i64;
             self.enqueue(SessionRequest::Edit(Command::NudgeClip {
                 clip,
@@ -145,6 +145,40 @@ impl EditorView {
                     .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
                     .child(theme::text(&self.status)),
             );
+        }
+        if let Some(failure) = self.recovery_failure.as_ref().cloned() {
+            let can_restart = failure.can_restart();
+            bar = bar.child(
+                div()
+                    .id("automatic-recovery-unavailable")
+                    .debug_selector(|| "automatic-recovery-unavailable".into())
+                    .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                    .child(theme::text(if can_restart {
+                        "recovery unavailable"
+                    } else {
+                        "recovery needs attention"
+                    }))
+                    .tooltip(move |_, cx| {
+                        cx.new(|_| super::display_error::RecoveryTooltip {
+                            failure: std::sync::Arc::clone(&failure),
+                        })
+                        .into()
+                    }),
+            );
+            if can_restart {
+                bar = bar.child(
+                    div()
+                        .id("restart-automatic-recovery")
+                        .debug_selector(|| "restart-automatic-recovery".into())
+                        .px_1()
+                        .cursor_pointer()
+                        .text_color(rgb(theme::color(theme::PaletteRole::Primary)))
+                        .child(theme::text("start fresh recovery"))
+                        .on_click(cx.listener(|view, _, window, cx| {
+                            view.restart_recovery_dialog(window, cx)
+                        })),
+                );
+            }
         }
         bar = bar.child(self.controller_input_row(cx));
         if self.audio_batch.is_some() {
@@ -333,9 +367,14 @@ fn status_slot(
 
 impl Render for EditorView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.reconcile_zoom_fit();
+        self.sync_hardware_step_context(window);
+        self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
+        self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_clip_name(window, cx);
+        self.reconcile_sections(window, cx);
         self.sync_tuning(cx);
         self.tick_tuning_midi_activity();
         self.reconcile_clip_selection();
@@ -411,7 +450,7 @@ impl Render for EditorView {
                 "hex_changelog"
             } else if self.track_name.is_editing() {
                 "hex_track_name hex_text_editing"
-            } else if self.clip_name_edit.is_some() {
+            } else if self.clip_name_edit.is_some() || self.sections.naming() {
                 "hex_clip_name hex_text_editing"
             } else if self.tuning.open {
                 "hex_tuning"
@@ -468,6 +507,9 @@ impl Render for EditorView {
                 super::device_panel::capture_navigation_pointer_down(view, event, cx);
             }))
             .capture_any_mouse_up(cx.listener(|view, event: &MouseUpEvent, window, cx| {
+                if event.button == MouseButton::Left {
+                    view.piano_pitch_zoom = None;
+                }
                 if event.button == MouseButton::Left
                     && let Some(drag) = view.active_browser_audio_drag.clone()
                 {
@@ -493,6 +535,12 @@ impl Render for EditorView {
             .on_modifiers_changed(move |event, window, cx| {
                 modifier_entity.update(cx, |view, cx| {
                     view.tuning.shift = event.modifiers.shift;
+                    if view.refresh_piano_note_modifiers(event.modifiers, window) {
+                        cx.notify();
+                    }
+                    if view.refresh_loop_rail_modifiers(event.modifiers, window) {
+                        cx.notify();
+                    }
                     view.refresh_drag_modifiers(
                         event.modifiers.platform,
                         event.modifiers.alt,
@@ -596,15 +644,19 @@ impl Render for EditorView {
                 view.finish_track_name(false, window, cx);
             }))
             .on_action(cx.listener(|view, _: &super::RenameClip, window, cx| {
-                if !view.track_header_focused(window) {
+                if !view.section_name_begin(window, cx) && !view.track_header_focused(window) {
                     view.begin_clip_name(window, cx);
                 }
             }))
             .on_action(cx.listener(|view, _: &super::CommitClipName, window, cx| {
-                view.finish_clip_name(true, window, cx);
+                if !view.section_name_finish(true, window, cx) {
+                    view.finish_clip_name(true, window, cx);
+                }
             }))
             .on_action(cx.listener(|view, _: &super::CancelClipName, window, cx| {
-                view.finish_clip_name(false, window, cx);
+                if !view.section_name_finish(false, window, cx) {
+                    view.finish_clip_name(false, window, cx);
+                }
             }))
             .on_action(cx.listener(|view, _: &super::ToggleBrowser, window, cx| {
                 view.toggle_browser(window, cx);
@@ -713,12 +765,14 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
-                if view.cancel_project_spectrum_resize(cx)
+                if view.cancel_loop_rail_gesture()
+                    | view.cancel_project_spectrum_resize(cx)
                     | view.cancel_trim_gesture(cx)
                     | view.cancel_track_resize(cx)
                 {
                     cx.stop_active_drag(window);
                     cx.stop_propagation();
+                    cx.notify();
                     return;
                 }
                 if view.cancel_active_browser_audio_drag() {
@@ -738,11 +792,12 @@ impl Render for EditorView {
                 view.cancel_scrub();
                 let gain_canceled = view.cancel_gain_draft(cx);
                 let midi_canceled = view.cancel_midi_note_gesture();
-                let time_selection_canceled =
-                    view.cancel_time_selection_gesture() | view.cancel_clip_paint();
+                let time_selection_canceled = view.cancel_time_selection_gesture()
+                    | view.cancel_clip_paint()
+                    | view.cancel_section_pointer();
                 let selection_cleared = if !midi_canceled && view.midi_focus.is_focused(window) {
                     view.midi_marquee = None;
-                    view.midi_selection.clear()
+                    view.midi_selection.clear() | view.clear_midi_time_selection()
                 } else {
                     false
                 };
@@ -834,14 +889,19 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Undo, _, cx| {
-                if !view.cancel_gain_draft(cx) && super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_sampler_drafts(cx)
+                    && !view.cancel_gain_draft(cx)
+                    && super::device_panel::finalize_controls(view, cx)
+                {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Undo);
                 }
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &Redo, _, cx| {
-                if super::device_panel::finalize_controls(view, cx) {
+                if !view.cancel_sampler_drafts(cx)
+                    && super::device_panel::finalize_controls(view, cx)
+                {
                     view.cancel_duplicate_chain();
                     view.enqueue_device_barrier(SessionRequest::Redo);
                 }
@@ -854,7 +914,7 @@ impl Render for EditorView {
                     view.midi_focus.is_focused(window),
                 ) {
                     super::session_navigation::ArrowTarget::Piano => {
-                        view.nudge_selected_note(false);
+                        view.navigate_piano_cursor(false);
                     }
                     super::session_navigation::ArrowTarget::Session => {
                         view.navigate_session(
@@ -880,7 +940,7 @@ impl Render for EditorView {
                     view.midi_focus.is_focused(window),
                 ) {
                     super::session_navigation::ArrowTarget::Piano => {
-                        view.nudge_selected_note(true);
+                        view.navigate_piano_cursor(true);
                     }
                     super::session_navigation::ArrowTarget::Session => {
                         view.navigate_session(
@@ -958,11 +1018,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &super::ToggleSnapGrid, _, cx| {
-                view.snap_grid = if view.snap_grid == super::musical_time::SnapGrid::Off {
-                    super::musical_time::SnapGrid::Adaptive
-                } else {
-                    super::musical_time::SnapGrid::Off
-                };
+                view.toggle_snap_grid();
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CopyTimeSelection, window, cx| {
@@ -981,7 +1037,23 @@ impl Render for EditorView {
                 view.insert_time_selection(window);
                 cx.notify();
             }))
+            .on_action(cx.listener(|view, _: &DeleteSectionMarker, window, cx| {
+                if !view.delete_section_kind(true, window) {
+                    cx.propagate();
+                }
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &MergeSections, window, cx| {
+                if !view.merge_sections(window) {
+                    cx.propagate();
+                }
+                cx.notify();
+            }))
             .on_action(cx.listener(|view, _: &DeleteClip, window, cx| {
+                if view.delete_section(window) {
+                    cx.notify();
+                    return;
+                }
                 if view.delete_time_selection(window) {
                     cx.notify();
                     return;
@@ -1054,6 +1126,17 @@ impl Render for EditorView {
                 {
                     return;
                 }
+                if view.duplicate_section(window) {
+                    cx.notify();
+                    return;
+                }
+                if view.midi_focus.is_focused(window) {
+                    if !view.duplicate_midi_time_selection() {
+                        view.duplicate_piano_notes();
+                    }
+                    cx.notify();
+                    return;
+                }
                 if view.duplicate_time_selection(window) {
                     cx.notify();
                     return;
@@ -1102,8 +1185,12 @@ impl Render for EditorView {
                 view.export_dialog(window, cx);
                 cx.notify();
             }))
-            .on_action(cx.listener(|view, _: &SetLoopFromClip, _, cx| {
-                view.set_loop_from_clip();
+            .on_action(cx.listener(|view, _: &LoopSelection, window, cx| {
+                view.loop_selection_key(window);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &SetLoopFromClip, window, cx| {
+                view.set_loop_from_clip(window);
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &ToggleLoop, _, cx| {
@@ -1117,6 +1204,20 @@ impl Render for EditorView {
             .on_action(cx.listener(|view, _: &ZoomOut, _, cx| {
                 view.zoom_timeline(false);
                 cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &super::ZoomToFit, window, cx| {
+                if view.zoom_fit_key(false, window, cx) {
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
+            }))
+            .on_action(cx.listener(|view, _: &super::ZoomBack, window, cx| {
+                if view.zoom_fit_key(true, window, cx) {
+                    cx.notify();
+                } else {
+                    cx.propagate();
+                }
             }))
             .on_action(cx.listener(|view, _: &FitTimeline, _, cx| {
                 view.fit_timeline();

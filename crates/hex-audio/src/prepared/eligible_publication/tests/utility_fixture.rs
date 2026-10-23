@@ -3,8 +3,11 @@ use hex_project::{Command, Created, Editor};
 pub(super) fn project() -> (hex_project::Project, hex_project::TrackId) {
     let mut editor = Editor::new(hex_project::Project::new(48_000).unwrap(), 16).unwrap();
     let Created::Track(track) = editor
-        .execute(Command::AddTrack {
+        .execute(Command::InsertTrackWithDevice {
             name: "audio".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().expect("fixture instrument state"),
         })
         .unwrap()
     else {
@@ -105,7 +108,12 @@ pub(super) fn abc_project() -> (hex_project::Project, [hex_project::TrackId; 3])
     let mut ids = vec![x];
     for name in ["y", "z"] {
         let Created::Track(track) = edit
-            .execute(Command::AddTrack { name: name.into() })
+            .execute(Command::InsertTrackWithDevice {
+                name: name.into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().expect("fixture instrument state"),
+            })
             .unwrap()
         else {
             panic!("track")

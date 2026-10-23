@@ -1,8 +1,12 @@
 //! UI-only snap selection and bounded musical timeline helpers.
 
+#[path = "adaptive_grid_density.rs"]
+mod density;
+pub(super) use density::AdaptiveGridDensity;
+
 use super::viewport::Viewport;
 use crate::theme;
-use gpui::{Context, Div, Window, div, prelude::*, px, rgb};
+use gpui::{Context, Div, Window, div, prelude::*, px};
 use hex_project::{BeatTime, Command, Meter, MeterPosition, Project};
 use hex_session::service::Request;
 
@@ -11,14 +15,31 @@ const MAX_METER_MAP_POINTS: usize = 1_024;
 const MAX_GRID_LINES: usize = 256;
 const MAX_GRID_BANDS: usize = 256;
 const RULER_LABEL_SPACING_PX: f32 = 48.0;
-const GRID_LINE_SPACING_PX: f32 = 18.0;
 
-fn adaptive_grid_spacing(pixel_width: f32) -> f32 {
-    GRID_LINE_SPACING_PX.max(pixel_width / (MAX_GRID_LINES.saturating_sub(1) as f32))
+#[cfg(test)]
+thread_local! {
+    // Actual resolver work per test thread: step/base/share/natural demand.
+    static GRID_RESOLUTION_WORK: std::cell::Cell<[usize; 4]> = const { std::cell::Cell::new([0; 4]) };
+}
+
+#[cfg(test)]
+fn record_grid_work(kind: usize) {
+    GRID_RESOLUTION_WORK.with(|work| {
+        let mut counts = work.get();
+        counts[kind] += 1;
+        work.set(counts);
+    });
+}
+
+fn adaptive_grid_spacing(pixel_width: f32, density: AdaptiveGridDensity) -> f32 {
+    density
+        .minimum_spacing()
+        .max(pixel_width / (MAX_GRID_LINES.saturating_sub(1) as f32))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct RulerTick {
+    beat: BeatTime,
     pub(super) frame: u64,
     pub(super) label: String,
     pub(super) meter_marker: bool,
@@ -28,6 +49,7 @@ pub(super) struct RulerTick {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct GridLine {
+    beat: BeatTime,
     pub(super) frame: u64,
     pub(super) bar_start: bool,
     pub(super) meter_marker: bool,
@@ -43,10 +65,20 @@ pub(super) struct GridBand {
 /// Build alternating background bands spanning four adaptive grid units.
 /// Band indices are anchored to each meter segment's musical origin, so panning
 /// changes the visible subset without moving the pattern.
+#[cfg(test)]
 pub(super) fn adaptive_grid_bands(
     project: &Project,
     viewport: Viewport,
     pixel_width: f32,
+) -> Vec<GridBand> {
+    adaptive_grid_bands_for_grid(project, viewport, pixel_width, SnapGrid::Adaptive)
+}
+
+pub(super) fn adaptive_grid_bands_for_grid(
+    project: &Project,
+    viewport: Viewport,
+    pixel_width: f32,
+    grid: SnapGrid,
 ) -> Vec<GridBand> {
     if viewport.length == 0 || !pixel_width.is_finite() || pixel_width <= 0.0 {
         return Vec::new();
@@ -64,6 +96,13 @@ pub(super) fn adaptive_grid_bands(
     let points = project.meter_map().points();
     let first_segment = points.partition_point(|point| point.beat() <= first_visible_beat);
     let first_segment = first_segment.saturating_sub(1);
+    let resolution = AdaptiveGridResolution::new(
+        project,
+        viewport,
+        pixel_width,
+        adaptive_grid_spacing(pixel_width, grid.density()),
+        true,
+    );
     let mut bands = Vec::with_capacity(32);
     let mut candidates_considered = 0;
     'sections: for (index, point) in points
@@ -81,14 +120,7 @@ pub(super) fn adaptive_grid_bands(
             continue;
         }
         let beat_length = (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
-        let step = adaptive_grid_step(
-            project,
-            viewport,
-            point.beat(),
-            beat_length,
-            pixel_width,
-            adaptive_grid_spacing(pixel_width),
-        );
+        let step = resolution.step(point.beat(), beat_length);
         let Some(band_span) = step.checked_mul(4).filter(|span| *span > 0) else {
             continue;
         };
@@ -143,13 +175,33 @@ fn bounded_band_indices(first: u64, last: u64, budget: usize) -> impl Iterator<I
     (first..=last).take(budget)
 }
 
+#[cfg(test)]
+thread_local! {
+    // Per-test-thread observation of actual paint-list construction, not a
+    // process-wide setting or replacement resolver.
+    static GRID_LINE_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn grid_lines(
     project: &Project,
     viewport: Viewport,
     pixel_width: f32,
     grid: SnapGrid,
 ) -> Vec<GridLine> {
-    if grid == SnapGrid::Off {
+    let resolution = AdaptiveGridResolution::for_grid(project, viewport, pixel_width, grid);
+    grid_lines_resolved(project, viewport, pixel_width, grid, &resolution)
+}
+
+fn grid_lines_resolved(
+    project: &Project,
+    viewport: Viewport,
+    pixel_width: f32,
+    grid: SnapGrid,
+    resolution: &AdaptiveGridResolution<'_>,
+) -> Vec<GridLine> {
+    #[cfg(test)]
+    GRID_LINE_BUILDS.with(|count| count.set(count.get() + 1));
+    if grid.is_off() {
         return Vec::new();
     }
     if viewport.length == 0 || !pixel_width.is_finite() || pixel_width <= 0.0 {
@@ -176,7 +228,7 @@ pub(super) fn grid_lines(
         start_beat,
         last_beat,
         target_count,
-        grid.landmark_density(pixel_width),
+        grid.landmark_density(resolution),
     )
     .ticks;
     candidates.sort_by_key(|tick| tick.frame);
@@ -190,12 +242,20 @@ pub(super) fn grid_lines(
             false
         }
     });
-    let stride = candidates.len().div_ceil(MAX_GRID_LINES).max(1);
-    candidates
-        .into_iter()
-        .step_by(stride)
-        .take(MAX_GRID_LINES)
+    // Fill the available quota across the complete visible candidate set.
+    // Ceil-striding 257 candidates by two would unnecessarily paint only129.
+    let count = candidates.len().min(MAX_GRID_LINES);
+    (0..count)
+        .map(|sample| {
+            let index = if count <= 1 {
+                0
+            } else {
+                sample * (candidates.len() - 1) / (count - 1)
+            };
+            &candidates[index]
+        })
         .map(|tick| GridLine {
+            beat: tick.beat,
             frame: tick.frame,
             bar_start: tick.bar_start,
             meter_marker: tick.meter_marker,
@@ -227,6 +287,8 @@ pub(super) fn ruler_ticks(
     let target_count = ((pixel_width / RULER_LABEL_SPACING_PX).floor() as usize)
         .saturating_add(1)
         .clamp(1, MAX_RULER_TICKS);
+    let resolution =
+        AdaptiveGridResolution::new(project, viewport, pixel_width, RULER_LABEL_SPACING_PX, true);
     let ruler_candidates = ruler_candidates(
         project,
         viewport,
@@ -234,7 +296,7 @@ pub(super) fn ruler_ticks(
         start_beat,
         last_beat,
         target_count,
-        LandmarkDensity::Adaptive(pixel_width, RULER_LABEL_SPACING_PX),
+        LandmarkDensity::Adaptive(&resolution),
     );
     let mut candidates = ruler_candidates.ticks;
     candidates.sort_by_key(|tick| tick.frame);
@@ -302,11 +364,43 @@ struct RulerCandidates {
 }
 
 #[derive(Clone, Copy)]
-enum LandmarkDensity {
+enum LandmarkDensity<'a> {
     Meter,
-    Adaptive(f32, f32),
+    Adaptive(&'a AdaptiveGridResolution<'a>),
     #[cfg(test)]
     Fixed(u64),
+}
+
+// Max-min fair sharing of the existing small paint budget. Every sum is
+// capped at budget+1: enormous raw spans cannot overflow or affect the quota.
+// The inclusive level domain 0..=256 needs at most NINE midpoint probes, plus
+// one final bounded sum. No heap storage or historical-section walk is used.
+fn capped_fair_share(
+    count: usize,
+    budget: usize,
+    demand: impl Fn(usize) -> usize,
+) -> (usize, usize) {
+    #[cfg(test)]
+    record_grid_work(2);
+    let budget = budget.min(MAX_GRID_LINES);
+    if count == 0 || budget == 0 {
+        return (0, 0);
+    }
+    let cost = |level| {
+        (0..count).fold(0_usize, |sum, index| {
+            sum.saturating_add(demand(index).min(level)).min(budget + 1)
+        })
+    };
+    let (mut low, mut high) = (0, budget);
+    while low < high {
+        let middle = low + (high - low).div_ceil(2);
+        if cost(middle) <= budget {
+            low = middle;
+        } else {
+            high = middle - 1;
+        }
+    }
+    (low, budget - cost(low))
 }
 
 fn ruler_candidates(
@@ -316,7 +410,7 @@ fn ruler_candidates(
     start_beat: BeatTime,
     last_beat: BeatTime,
     target_count: usize,
-    target_grid: LandmarkDensity,
+    target_grid: LandmarkDensity<'_>,
 ) -> RulerCandidates {
     let tempo = project.tempo_map();
     let meters = project.meter_map();
@@ -336,14 +430,9 @@ fn ruler_candidates(
                 let meter_beat_length =
                     (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
                 let beat_length = match target_grid {
-                    LandmarkDensity::Adaptive(pixel_width, spacing) => adaptive_grid_step(
-                        project,
-                        viewport,
-                        point.beat(),
-                        meter_beat_length,
-                        pixel_width,
-                        spacing,
-                    ),
+                    LandmarkDensity::Adaptive(resolution) => {
+                        resolution.step(point.beat(), meter_beat_length)
+                    }
                     #[cfg(test)]
                     LandmarkDensity::Fixed(step) => step,
                     LandmarkDensity::Meter => meter_beat_length,
@@ -381,6 +470,7 @@ fn ruler_candidates(
                     before.fragmentary() && before.bar_end() == Some(point.beat())
                 });
             ticks.push(RulerTick {
+                beat: point.beat(),
                 frame,
                 label: meter_label(position),
                 meter_marker: true,
@@ -392,6 +482,20 @@ fn ruler_candidates(
 
     let section_count = sections.len();
     let sampled_sections = section_count.min(target_count);
+    // If all coarsened landmarks fit, preserve them all. Otherwise unused
+    // short-section slots belong to still-unsatisfied sections, in the same
+    // deterministic order as adaptive coarsening. Over-budget section sampling
+    // below retains its existing evenly spaced section identities.
+    let demand = |index: usize| {
+        sections[index]
+            .landmark_count
+            .min((target_count.min(MAX_GRID_LINES) + 1) as u64) as usize
+    };
+    let (level, mut remainder) = if section_count <= target_count {
+        capped_fair_share(section_count, target_count, demand)
+    } else {
+        (0, 0)
+    };
     #[cfg(test)]
     let mut landmark_attempts = 0;
     if sampled_sections > 0 {
@@ -408,11 +512,16 @@ fn ruler_candidates(
             let Some(section) = sections.get(section_index).copied() else {
                 continue;
             };
-            let quota = target_count / sampled_sections
-                + usize::from(sampled_index < target_count % sampled_sections);
-            let quota = u64::try_from(quota)
-                .unwrap_or(u64::MAX)
-                .min(section.landmark_count);
+            let quota = if section_count <= target_count {
+                let wanted = demand(section_index);
+                let extra = usize::from(wanted > level && remainder > 0);
+                remainder -= extra;
+                wanted.min(level) + extra
+            } else {
+                target_count / sampled_sections
+                    + usize::from(sampled_index < target_count % sampled_sections)
+            };
+            let quota = (quota as u64).min(section.landmark_count);
             for sample in 0..quota {
                 let offset = if quota <= 1 {
                     0
@@ -443,6 +552,7 @@ fn ruler_candidates(
                     && (viewport.start..viewport_end).contains(&frame)
                 {
                     ticks.push(RulerTick {
+                        beat,
                         frame,
                         label: meter_label(position),
                         meter_marker: false,
@@ -463,7 +573,27 @@ fn ruler_candidates(
     }
 }
 
-fn adaptive_grid_step(
+// Only visible sections can overflow the painted landmark quota. Historical
+// meter points outside the viewport do not justify allocating a paint list on
+// each snap/nudge. Binary searches preserve the current map/tempo semantics.
+fn visible_meter_sections(project: &Project, viewport: Viewport) -> Option<usize> {
+    if viewport.length == 0 {
+        return None;
+    }
+    let tempo = project.tempo_map();
+    let first = tempo.frame_to_beat(viewport.start).ok()?;
+    let last = tempo
+        .frame_to_beat(viewport.end()?.checked_sub(1)?)
+        .unwrap_or_else(|_| BeatTime::from_raw(u64::MAX));
+    let points = project.meter_map().points();
+    let start = points
+        .partition_point(|point| point.beat() <= first)
+        .saturating_sub(1);
+    let end = points.partition_point(|point| point.beat() <= last);
+    Some(end.saturating_sub(start).max(1))
+}
+
+fn adaptive_base_step(
     project: &Project,
     viewport: Viewport,
     beat: BeatTime,
@@ -471,6 +601,8 @@ fn adaptive_grid_step(
     pixel_width: f32,
     target_spacing: f32,
 ) -> u64 {
+    #[cfg(test)]
+    record_grid_work(1);
     if meter_beat_length == 0
         || viewport.length == 0
         || !pixel_width.is_finite()
@@ -500,14 +632,211 @@ fn adaptive_grid_step(
     step.max(1)
 }
 
+// Ephemeral metadata for ONE paint/snap/nudge/band operation. Visible natural
+// demands are evaluated once, then the existing max-min allocation is resolved
+// once. This fixed scratch never outlives the immutable operation or changes
+// the dense-map/outside-neighbor quotient/remainder fallback.
+struct AdaptiveGridResolution<'a> {
+    project: &'a Project,
+    viewport: Viewport,
+    pixel_width: f32,
+    target_spacing: f32,
+    visible: Option<VisibleGridQuota>,
+}
+
+struct VisibleGridQuota {
+    first: BeatTime,
+    last: BeatTime,
+    first_section: usize,
+    last_section: usize,
+    sections: usize,
+    available: usize,
+    quotas: [u16; MAX_GRID_LINES],
+}
+
+impl<'a> AdaptiveGridResolution<'a> {
+    fn for_grid(project: &'a Project, viewport: Viewport, width: f32, grid: SnapGrid) -> Self {
+        Self::new(
+            project,
+            viewport,
+            width,
+            adaptive_grid_spacing(width, grid.density()),
+            grid.is_adaptive(),
+        )
+    }
+
+    fn new(
+        project: &'a Project,
+        viewport: Viewport,
+        pixel_width: f32,
+        target_spacing: f32,
+        enabled: bool,
+    ) -> Self {
+        let mut resolution = Self {
+            project,
+            viewport,
+            pixel_width,
+            target_spacing,
+            visible: None,
+        };
+        if !enabled
+            || viewport.length == 0
+            || !pixel_width.is_finite()
+            || pixel_width <= 0.0
+            || !target_spacing.is_finite()
+        {
+            return resolution;
+        }
+        let tempo = project.tempo_map();
+        let (Ok(first), Some(end)) = (tempo.frame_to_beat(viewport.start), viewport.end()) else {
+            return resolution;
+        };
+        let last = tempo
+            .frame_to_beat(end.saturating_sub(1))
+            .unwrap_or_else(|_| BeatTime::from_raw(u64::MAX));
+        let points = project.meter_map().points();
+        let first_section = points
+            .partition_point(|point| point.beat() <= first)
+            .saturating_sub(1);
+        let last_section = points.partition_point(|point| point.beat() <= last);
+        let sections = last_section.saturating_sub(first_section).max(1);
+        // Internal origins are already regular landmarks. Reserve only the
+        // same frame-quantized edge-marker exceptions as the original law.
+        let extra_markers = usize::from(points.get(first_section).is_some_and(|point| {
+            point.beat() < first
+                && tempo
+                    .beat_to_frame(point.beat())
+                    .is_ok_and(|frame| frame >= viewport.start)
+        })) + usize::from(points.get(last_section).is_some_and(|point| {
+            tempo
+                .beat_to_frame(point.beat())
+                .is_ok_and(|frame| frame < end)
+        }));
+        let available = MAX_GRID_LINES.saturating_sub(extra_markers);
+        let mut quotas = [0_u16; MAX_GRID_LINES];
+        if sections <= available {
+            for (relative, quota) in quotas.iter_mut().take(sections).enumerate() {
+                #[cfg(test)]
+                record_grid_work(3);
+                let index = first_section + relative;
+                let Some(point) = points.get(index) else {
+                    continue;
+                };
+                let start = first.raw().max(point.beat().raw());
+                let end = points
+                    .get(index + 1)
+                    .and_then(|next| next.beat().raw().checked_sub(1))
+                    .unwrap_or(last.raw())
+                    .min(last.raw());
+                if start > end {
+                    continue;
+                }
+                let meter_length =
+                    (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
+                let base = adaptive_base_step(
+                    project,
+                    viewport,
+                    point.beat(),
+                    meter_length,
+                    pixel_width,
+                    target_spacing,
+                );
+                *quota = ((u128::from(end - start) / u128::from(base) + 1)
+                    .min((available + 1) as u128)) as u16;
+            }
+            let (level, mut remainder) =
+                capped_fair_share(sections, available, |index| usize::from(quotas[index]));
+            for quota in quotas.iter_mut().take(sections) {
+                let wanted = usize::from(*quota);
+                let extra = usize::from(wanted > level && remainder > 0);
+                remainder -= extra;
+                *quota = (wanted.min(level) + extra) as u16;
+            }
+        }
+        resolution.visible = Some(VisibleGridQuota {
+            first,
+            last,
+            first_section,
+            last_section,
+            sections,
+            available,
+            quotas,
+        });
+        resolution
+    }
+
+    fn step(&self, beat: BeatTime, meter_beat_length: u64) -> u64 {
+        #[cfg(test)]
+        record_grid_work(0);
+        let Self {
+            project,
+            viewport,
+            pixel_width,
+            target_spacing,
+            ..
+        } = *self;
+        if meter_beat_length == 0
+            || viewport.length == 0
+            || !pixel_width.is_finite()
+            || pixel_width <= 0.0
+            || !target_spacing.is_finite()
+        {
+            return meter_beat_length.max(1);
+        }
+        let mut step = adaptive_base_step(
+            project,
+            viewport,
+            beat,
+            meter_beat_length,
+            pixel_width,
+            target_spacing,
+        );
+        if let Some(visible) = &self.visible {
+            let points = project.meter_map().points();
+            let section = points
+                .partition_point(|point| point.beat() <= beat)
+                .saturating_sub(1);
+            let quota = if visible.sections <= visible.available
+                && (visible.first_section..visible.last_section).contains(&section)
+            {
+                usize::from(visible.quotas[section - visible.first_section])
+            } else {
+                visible.available / visible.sections
+                    + usize::from(
+                        section.saturating_sub(visible.first_section)
+                            < visible.available % visible.sections,
+                    )
+            }
+            .max(1) as u64;
+            let start = visible.first.raw().max(beat.raw());
+            let end = points
+                .get(section + 1)
+                .and_then(|point| point.beat().raw().checked_sub(1))
+                .unwrap_or(visible.last.raw())
+                .min(visible.last.raw());
+            if start <= end {
+                loop {
+                    // Conservative across ANY phase: a one-frame pan must not
+                    // halve the subdivision at a 255/256 landmark transition.
+                    let count = u128::from(end - start) / u128::from(step.max(1)) + 1;
+                    if count <= u128::from(quota) || step == u64::MAX {
+                        break;
+                    }
+                    step = step.saturating_mul(2);
+                }
+            }
+        }
+        step.max(1)
+    }
+}
+
 fn snap_to_meter_landmark(
     project: &Project,
     beat: BeatTime,
-    viewport: Viewport,
-    pixel_width: f32,
     grid: SnapGrid,
+    resolution: &AdaptiveGridResolution<'_>,
 ) -> Option<BeatTime> {
-    if grid == SnapGrid::Off {
+    if grid.is_off() {
         return Some(beat);
     }
     let points = project.meter_map().points();
@@ -528,15 +857,10 @@ fn snap_to_meter_landmark(
         let meter_beat_length =
             (4_u64 * BeatTime::ONE.raw()) / u64::from(point.meter().denominator());
         let step = match grid {
-            SnapGrid::Adaptive => adaptive_grid_step(
-                project,
-                viewport,
-                point.beat(),
-                meter_beat_length,
-                pixel_width,
-                adaptive_grid_spacing(pixel_width),
-            ),
-            SnapGrid::Off => return Some(beat),
+            SnapGrid::Adaptive | SnapGrid::AdaptiveDensity(_) => {
+                resolution.step(point.beat(), meter_beat_length)
+            }
+            SnapGrid::Off | SnapGrid::OffDensity(_) => return Some(beat),
             #[cfg(test)]
             fixed => fixed.step_raw()?,
         }
@@ -571,24 +895,21 @@ fn adjacent_landmark(
     grid: SnapGrid,
     right: bool,
 ) -> Option<BeatTime> {
-    if grid == SnapGrid::Off || !width.is_finite() || width <= 0.0 || viewport.length == 0 {
+    if grid.is_off() || !width.is_finite() || width <= 0.0 || viewport.length == 0 {
         return None;
     }
+    let resolution = AdaptiveGridResolution::for_grid(project, viewport, width, grid);
     let mut best: Option<(u64, BeatTime)> = None;
     let points = project.meter_map().points();
     for (index, point) in points.iter().take(MAX_METER_MAP_POINTS).enumerate() {
         let origin = point.beat().raw();
         let end = points.get(index + 1).map(|point| point.beat().raw());
         let step = match grid {
-            SnapGrid::Adaptive => adaptive_grid_step(
-                project,
-                viewport,
+            SnapGrid::Adaptive | SnapGrid::AdaptiveDensity(_) => resolution.step(
                 point.beat(),
                 4 * BeatTime::ONE.raw() / u64::from(point.meter().denominator()),
-                width,
-                adaptive_grid_spacing(width),
             ),
-            SnapGrid::Off => return None,
+            SnapGrid::Off | SnapGrid::OffDensity(_) => return None,
             #[cfg(test)]
             fixed => fixed.step_raw()?,
         }
@@ -634,7 +955,35 @@ fn adjacent_landmark(
             }
         }
     }
-    best.map(|(_, beat)| beat)
+    let candidate = best.map(|(_, beat)| beat)?;
+    if grid.is_adaptive()
+        && visible_meter_sections(project, viewport).is_some_and(|count| count > MAX_GRID_LINES / 2)
+    {
+        let candidate_frame = project.tempo_map().beat_to_frame(candidate).ok()?;
+        if viewport
+            .end()
+            .is_some_and(|end| (viewport.start..end).contains(&candidate_frame))
+        {
+            let lines = grid_lines_resolved(project, viewport, width, grid, &resolution);
+            return lines
+                .into_iter()
+                .filter(|line| {
+                    let value = frame.map_or(line.beat.raw(), |_| line.frame);
+                    let reference = frame.unwrap_or(beat.raw());
+                    if right {
+                        value > reference
+                    } else {
+                        value < reference
+                    }
+                })
+                .min_by_key(|line| {
+                    let value = frame.map_or(line.beat.raw(), |_| line.frame);
+                    if right { value } else { u64::MAX - value }
+                })
+                .map(|line| line.beat);
+        }
+    }
+    Some(candidate)
 }
 
 fn meter_label(position: MeterPosition) -> String {
@@ -652,6 +1001,8 @@ pub(super) enum SnapGrid {
     Off,
     #[default]
     Adaptive,
+    AdaptiveDensity(AdaptiveGridDensity),
+    OffDensity(AdaptiveGridDensity),
     // Fixed resolutions are retained only as musical-time regression fixtures.
     #[cfg(test)]
     Quarter,
@@ -662,17 +1013,43 @@ pub(super) enum SnapGrid {
 }
 
 impl SnapGrid {
-    pub(super) const fn toggled(self) -> Self {
+    const fn is_adaptive(self) -> bool {
+        matches!(self, Self::Adaptive | Self::AdaptiveDensity(_))
+    }
+
+    pub(super) const fn density(self) -> AdaptiveGridDensity {
         match self {
-            Self::Off => Self::Adaptive,
-            _ => Self::Off,
+            Self::AdaptiveDensity(density) | Self::OffDensity(density) => density,
+            _ => AdaptiveGridDensity::Medium,
+        }
+    }
+
+    pub(super) const fn is_off(self) -> bool {
+        matches!(self, Self::Off | Self::OffDensity(_))
+    }
+
+    pub(super) const fn with_density(self, density: AdaptiveGridDensity) -> Self {
+        match (self.is_off(), density) {
+            (true, AdaptiveGridDensity::Medium) => Self::Off,
+            (false, AdaptiveGridDensity::Medium) => Self::Adaptive,
+            (true, density) => Self::OffDensity(density),
+            (false, density) => Self::AdaptiveDensity(density),
+        }
+    }
+
+    pub(super) const fn toggled(self) -> Self {
+        let density = self.density();
+        if self.is_off() {
+            Self::Adaptive.with_density(density)
+        } else {
+            Self::Off.with_density(density)
         }
     }
 
     pub(super) const fn label(self) -> &'static str {
         match self {
-            Self::Off => "off",
-            Self::Adaptive => "adaptive",
+            Self::Off | Self::OffDensity(_) => "off",
+            Self::Adaptive | Self::AdaptiveDensity(_) => "adaptive",
             #[cfg(test)]
             Self::Quarter => "1/4",
             #[cfg(test)]
@@ -688,20 +1065,20 @@ impl SnapGrid {
     pub(super) const fn step_raw(self) -> Option<u64> {
         const QUARTER: u64 = 1_u64 << 32;
         match self {
-            Self::Off => None,
-            Self::Adaptive => None,
+            Self::Off | Self::OffDensity(_) | Self::Adaptive | Self::AdaptiveDensity(_) => None,
             Self::Quarter => Some(QUARTER),
             Self::Eighth => Some(QUARTER / 2),
             Self::Sixteenth => Some(QUARTER / 4),
         }
     }
 
-    fn landmark_density(self, pixel_width: f32) -> LandmarkDensity {
+    fn landmark_density<'a>(
+        self,
+        resolution: &'a AdaptiveGridResolution<'a>,
+    ) -> LandmarkDensity<'a> {
         match self {
-            Self::Off => LandmarkDensity::Meter,
-            Self::Adaptive => {
-                LandmarkDensity::Adaptive(pixel_width, adaptive_grid_spacing(pixel_width))
-            }
+            Self::Off | Self::OffDensity(_) => LandmarkDensity::Meter,
+            Self::Adaptive | Self::AdaptiveDensity(_) => LandmarkDensity::Adaptive(resolution),
             #[cfg(test)]
             fixed => LandmarkDensity::Fixed(fixed.step_raw().unwrap_or(1)),
         }
@@ -741,7 +1118,7 @@ impl SnapGrid {
         viewport: Viewport,
         pixel_width: f32,
     ) -> Option<u64> {
-        if self == Self::Off {
+        if self.is_off() {
             return Some(candidate_frame);
         }
         let beat = project.tempo_map().frame_to_beat(candidate_frame).ok()?;
@@ -756,10 +1133,32 @@ impl SnapGrid {
         viewport: Viewport,
         pixel_width: f32,
     ) -> Option<BeatTime> {
-        if self == Self::Off {
+        if self.is_off() {
             return Some(beat);
         }
-        snap_to_meter_landmark(project, beat, viewport, pixel_width, self)
+        let resolution = AdaptiveGridResolution::for_grid(project, viewport, pixel_width, self);
+        let candidate = snap_to_meter_landmark(project, beat, self, &resolution)?;
+        if self.is_adaptive()
+            && visible_meter_sections(project, viewport)
+                .is_some_and(|count| count > MAX_GRID_LINES / 2)
+        {
+            let frame = project.tempo_map().beat_to_frame(candidate).ok()?;
+            if viewport
+                .end()
+                .is_some_and(|end| (viewport.start..end).contains(&frame))
+            {
+                return grid_lines_resolved(project, viewport, pixel_width, self, &resolution)
+                    .into_iter()
+                    .min_by_key(|line| {
+                        (
+                            line.beat.raw().abs_diff(beat.raw()),
+                            u64::MAX - line.beat.raw(),
+                        )
+                    })
+                    .map(|line| line.beat);
+            }
+        }
+        Some(candidate)
     }
 }
 
@@ -850,20 +1249,12 @@ impl super::EditorView {
         handler: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        div()
+        hex_widgets::action(theme::text(label), theme::action_style())
             .id(description)
             .w(px(20.0))
             .h(px(19.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
             .opacity(if enabled { 1.0 } else { 0.45 })
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: description.into(),
@@ -874,7 +1265,6 @@ impl super::EditorView {
                 handler(view, window, cx);
                 cx.notify();
             }))
-            .child(theme::text(label))
     }
 }
 
@@ -1554,3 +1944,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "adaptive_grid_density_tests.rs"]
+mod density_tests;

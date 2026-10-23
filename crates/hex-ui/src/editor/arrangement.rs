@@ -135,10 +135,11 @@ impl EditorView {
                 ruler_width,
                 self.snap_grid,
             );
-            let bands = super::musical_time::adaptive_grid_bands(
+            let bands = super::musical_time::adaptive_grid_bands_for_grid(
                 &state.project,
                 empty_viewport,
                 ruler_width,
+                self.snap_grid,
             );
             let overview = super::overview::widget(
                 super::overview::cached(&self.overview_cache, self.project_generation, &state),
@@ -195,7 +196,12 @@ impl EditorView {
         let viewport = self.visible_viewport(state.timeline_frames);
         let grid =
             super::musical_time::grid_lines(&state.project, viewport, ruler_width, self.snap_grid);
-        let bands = super::musical_time::adaptive_grid_bands(&state.project, viewport, ruler_width);
+        let bands = super::musical_time::adaptive_grid_bands_for_grid(
+            &state.project,
+            viewport,
+            ruler_width,
+            self.snap_grid,
+        );
         let overview = super::overview::widget(
             super::overview::cached(&self.overview_cache, self.project_generation, &state),
             viewport,
@@ -303,7 +309,7 @@ impl EditorView {
                 MouseButton::Right,
                 cx.listener(|view, event: &gpui::MouseDownEvent, window, cx| {
                     cx.stop_propagation();
-                    view.open_track_context_menu(event.position, None, window, cx);
+                    view.open_arranger_grid_context_menu(event.position, window, cx);
                 }),
             );
         let header_width = self.track_header_width();
@@ -418,6 +424,18 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
+                            if view.begin_section_pointer(
+                                x,
+                                y,
+                                event.click_count == 2,
+                                event.modifiers.shift,
+                                event.modifiers.platform,
+                                cx,
+                            ) {
+                                view.focus.focus(window);
+                                cx.notify();
+                                return (true, false);
+                            }
                             if view.pointer_hits_fade_control(x, y) {
                                 return (false, false);
                             }
@@ -468,6 +486,17 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (changed, moving) = cursor_move_entity.update(cx, |view, cx| {
+                            if view.sections.held() {
+                                let changed = if event.pressed_button == Some(MouseButton::Left) {
+                                    view.update_section_pointer(x, y, event.modifiers.platform)
+                                } else {
+                                    view.cancel_section_pointer()
+                                };
+                                if changed {
+                                    cx.notify();
+                                }
+                                return (changed, false);
+                            }
                             if view.clip_paint_gesture.is_some() {
                                 let changed = if event.pressed_button == Some(MouseButton::Left) {
                                     view.update_clip_paint(x, y, event.modifiers.platform)
@@ -508,6 +537,11 @@ impl EditorView {
                             let moving = view.time_range_move_gesture.is_some();
                             let x = f32::from(event.position.x);
                             let y = f32::from(event.position.y);
+                            if view.finish_section_pointer(x, y, event.modifiers.platform) {
+                                cx.stop_propagation();
+                                cx.notify();
+                                return (true, false);
+                            }
                             if view.finish_clip_paint(x, y, event.modifiers.platform) {
                                 cx.stop_propagation();
                                 cx.notify();
@@ -681,6 +715,8 @@ impl EditorView {
             .h_full()
             .children([main_track_grid_layer(bands, lines, viewport)])
             .children(self.main_time_selection_overlay(viewport))
+            .children(self.section_elements(viewport, cx))
+            .children([self.section_pointer_events(cx)])
             .child(
                 canvas(
                     |_, _, _| (),
@@ -711,6 +747,9 @@ impl EditorView {
             .child(
                 div()
                     .id("main-track-header")
+                    .on_click(cx.listener(|view, _, window, cx| {
+                        super::device_panel::select_main(view, window, cx)
+                    }))
                     .relative()
                     .child(self.track_width_resize_handle(None, cx))
                     .debug_selector(|| "main-track-header".to_owned())

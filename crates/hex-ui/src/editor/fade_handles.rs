@@ -1,8 +1,11 @@
-//! Momentary Arrangement fade controls. Pointer previews never compile audio or
+//! Hover and momentary Arrangement fade controls. Pointer previews never compile audio or
 //! mutate history; release submits one validated canonical envelope command.
 use super::{EditorView, ViewState, drag::LaneBounds, viewport::Viewport};
 use crate::theme;
-use gpui::{Context, Div, MouseButton, Pixels, Point, Window, div, prelude::*, px, relative, rgb};
+use gpui::{
+    Context, Div, MouseButton, PathBuilder, Pixels, Point, Window, canvas, div, point, prelude::*,
+    px, relative, rgb, rgba,
+};
 use hex_project::{Clip, ClipFade, ClipId, Command, TrackId, TrimEdge};
 use hex_session::service::Request;
 use std::rc::Rc;
@@ -33,6 +36,63 @@ struct FadeControls {
     local_fade: ClipFade,
     reanchors: bool,
     positions: Vec<(Handle, Point<f32>)>,
+}
+
+// The hit target stays square; the painted curve control is a diamond.
+fn handle_shape(curve: bool, active: bool) -> impl gpui::IntoElement {
+    canvas(
+        |_, _, _| (),
+        move |bounds, _, window, _| {
+            let left = f32::from(bounds.left()) + 0.75;
+            let top = f32::from(bounds.top()) + 0.75;
+            let right = f32::from(bounds.right()) - 0.75;
+            let bottom = f32::from(bounds.bottom()) - 0.75;
+            let vertices = if curve {
+                [
+                    ((left + right) / 2.0, top),
+                    (right, (top + bottom) / 2.0),
+                    ((left + right) / 2.0, bottom),
+                    (left, (top + bottom) / 2.0),
+                ]
+            } else {
+                [(left, top), (right, top), (right, bottom), (left, bottom)]
+            };
+            let color: gpui::Hsla = if active {
+                rgb(theme::color(theme::PaletteRole::Secondary)).into()
+            } else {
+                rgba(0x000000cc).into()
+            };
+            for fill in [true, false] {
+                let mut path = if fill {
+                    PathBuilder::fill()
+                } else {
+                    PathBuilder::stroke(px(1.0))
+                };
+                for (index, (x, y)) in vertices.into_iter().enumerate() {
+                    if index == 0 {
+                        path.move_to(point(px(x), px(y)));
+                    } else {
+                        path.line_to(point(px(x), px(y)));
+                    }
+                }
+                path.close();
+                if let Ok(path) = path.build() {
+                    let paint = if fill {
+                        if active {
+                            gpui::Hsla { a: 0.45, ..color }
+                        } else {
+                            rgba(0x00000020).into()
+                        }
+                    } else {
+                        color
+                    };
+                    window.paint_path(path, paint);
+                }
+            }
+        },
+    )
+    .absolute()
+    .inset_0()
 }
 
 #[derive(Clone)]
@@ -194,6 +254,16 @@ impl EditorView {
             })
     }
     pub(super) fn reconcile_fade_gesture(&mut self) {
+        if self.hovered_fade_clip.is_some_and(|(generation, clip)| {
+            generation != self.project_generation
+                || self.mode != super::EditorMode::Arrangement
+                || self
+                    .state
+                    .as_ref()
+                    .is_none_or(|state| state.project.clip(clip).is_none())
+        }) {
+            self.hovered_fade_clip = None;
+        }
         if self
             .active_fade_drag
             .as_ref()
@@ -254,9 +324,7 @@ impl EditorView {
                 // configured grid; Off uses the ordinary modifier's adaptive grid.
                 let grid = if snap_modifier {
                     match drag.snap_grid {
-                        super::musical_time::SnapGrid::Off => {
-                            super::musical_time::SnapGrid::Adaptive
-                        }
+                        grid if grid.is_off() => grid.toggled(),
                         grid => grid,
                     }
                 } else {
@@ -343,6 +411,12 @@ impl EditorView {
             .filter(|drag| drag.clip.id() == clip && drag.moved && self.fade_drag_current(drag))
             .and_then(|drag| drag.preview_clip.as_ref())
     }
+    pub(super) fn fade_curve_active(&self, clip: ClipId) -> bool {
+        self.active_fade_drag
+            .as_ref()
+            .is_some_and(|drag| drag.clip.id() == clip && self.fade_drag_current(drag))
+    }
+
     fn fade_controls(
         &self,
         state: &ViewState,
@@ -356,6 +430,12 @@ impl EditorView {
             .active_fade_drag
             .as_ref()
             .is_some_and(|drag| drag.clip.id() == clip.id());
+        if !self.fade_key_held
+            && !active
+            && self.hovered_fade_clip != Some((self.project_generation, clip.id()))
+        {
+            return None;
+        }
         let fade = preview.unwrap_or(clip.retained_fade());
         if !self.fade_key_held && fade.is_neutral() && !fade.has_shape() && !active {
             return None;
@@ -480,6 +560,10 @@ impl EditorView {
         let mut handles = Vec::new();
         for (handle, position) in controls.positions {
             let clip_id = clip.id();
+            let active = self
+                .active_fade_drag
+                .as_ref()
+                .is_some_and(|drag| drag.clip.id() == clip_id && drag.handle == handle);
             let selector = format!("{}-{}", handle.name(), clip_id.value());
             let drag = FadeDrag {
                 generation: self.project_generation,
@@ -508,9 +592,10 @@ impl EditorView {
                     .h(px(8.0))
                     .top(relative(position.y))
                     .mt(px(-4.0))
-                    .border_1()
-                    .border_color(rgb(theme::color(theme::PaletteRole::Background)))
-                    .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
+                    .children([handle_shape(
+                        matches!(handle, Handle::InCurve | Handle::OutCurve),
+                        active,
+                    )])
                     .cursor(if matches!(handle, Handle::InCurve | Handle::OutCurve) {
                         gpui::CursorStyle::ResizeUpDown
                     } else {

@@ -32,6 +32,11 @@ pub(super) struct State {
     directory_gate: Option<Arc<TestGate>>,
 }
 impl State {
+    #[cfg(all(test, feature = "ui-test-support"))]
+    pub(super) fn test_path(&self) -> &std::path::Path {
+        &self.path
+    }
+
     pub(super) fn new(path: PathBuf) -> Self {
         Self {
             path,

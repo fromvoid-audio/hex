@@ -176,7 +176,7 @@ pub(super) struct CatalogSaveGate {
     pub(super) root_present_during_save: AtomicBool,
 }
 impl CatalogSaveGate {
-    async fn wait(&self) {
+    pub(super) async fn wait(&self) {
         std::future::poll_fn(|cx| {
             self.reached.store(true, Ordering::Release);
             if self.released.load(Ordering::Acquire) {

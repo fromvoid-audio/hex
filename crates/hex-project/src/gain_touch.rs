@@ -48,6 +48,9 @@ pub struct GainTouchStep {
 }
 #[derive(Clone, Debug, PartialEq)]
 pub struct GainTouchSpan {
+    /// Immutable recording beat corresponding to current placement `start`.
+    /// Relocation changes placement/step beats; event origins/context remain original.
+    pub source_start: BeatTime,
     pub start: BeatTime,
     pub end: BeatTime,
     pub context: GainTouchContext,
@@ -56,7 +59,13 @@ pub struct GainTouchSpan {
 impl GainTouchSpan {
     pub fn validate(&self) -> Result<(), Invalid> {
         self.context.validate()?;
-        if self.start >= self.end {
+        if self.start >= self.end
+            || self
+                .source_start
+                .raw()
+                .checked_add(self.end.raw().saturating_sub(self.start.raw()))
+                .is_none()
+        {
             return Err(Invalid("gain touch span must be nonempty and half-open"));
         }
         if self.steps.is_empty() || self.steps.len() > MAX_GAIN_TOUCH_STEPS_PER_SPAN {
@@ -68,7 +77,11 @@ impl GainTouchSpan {
         for (index, step) in self.steps.iter().enumerate() {
             if step.beat < self.start
                 || step.beat >= self.end
-                || step.origin_beat > step.beat
+                || self
+                    .source_start
+                    .raw()
+                    .checked_add(step.beat.raw() - self.start.raw())
+                    .is_none_or(|source_beat| step.origin_beat.raw() > source_beat)
                 || step.source_sequence == 0
                 || !step.gain.is_finite()
                 || !(0.0..=2.0).contains(&step.gain)
@@ -85,7 +98,13 @@ impl GainTouchSpan {
                         "gain touch event anchors and sequences must strictly increase",
                     ));
                 }
-                if step.origin_beat != step.beat {
+                if step.origin_beat.raw()
+                    != self
+                        .source_start
+                        .raw()
+                        .checked_add(step.beat.raw() - self.start.raw())
+                        .ok_or(Invalid("gain touch source position overflow"))?
+                {
                     return Err(Invalid(
                         "only a fragment's first step may carry an earlier event",
                     ));
@@ -104,7 +123,7 @@ impl GainTouchSpan {
             .checked_sub(1)?;
         self.steps.get(index).map(|step| step.gain)
     }
-    fn fragment(&self, start: BeatTime, end: BeatTime) -> Result<Self, Invalid> {
+    pub(crate) fn fragment(&self, start: BeatTime, end: BeatTime) -> Result<Self, Invalid> {
         let index = self
             .steps
             .partition_point(|step| step.beat <= start)
@@ -120,6 +139,12 @@ impl GainTouchSpan {
                 .filter(|step| step.beat > start && step.beat < end),
         );
         let fragment = Self {
+            source_start: BeatTime::from_raw(
+                self.source_start
+                    .raw()
+                    .checked_add(start.raw() - self.start.raw())
+                    .ok_or(Invalid("gain touch source position overflow"))?,
+            ),
             start,
             end,
             context: self.context,
@@ -294,7 +319,8 @@ pub fn validate_gain_lane_parts(
                 }
                 for step in &span.steps {
                     for prior in &old.steps {
-                        if step.source_sequence < prior.source_sequence
+                        if (step.source_sequence < prior.source_sequence
+                            && step.origin_beat >= prior.origin_beat)
                             || (step.source_sequence > prior.source_sequence
                                 && step.origin_beat <= prior.origin_beat)
                             || (step.source_sequence == prior.source_sequence

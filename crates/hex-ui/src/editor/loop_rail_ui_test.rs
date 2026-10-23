@@ -1,6 +1,7 @@
-use super::{EditorView, Viewport, clip_drag_ui_test};
+use super::{EditorView, Viewport};
 use gpui::{AppContext, Modifiers, MouseButton, TestAppContext, VisualTestContext, point, px};
-use hex_project::{Command, Editor, LoopRegion};
+use hex_project::{BeatTime, Command, Editor, LoopRegion};
+use hex_session::service::{Event, Request, Service};
 use std::{sync::Arc, thread, time::Duration};
 
 const TIMELINE_FRAMES: u64 = 384_000;
@@ -10,19 +11,59 @@ fn loop_editor(
     initial: Option<LoopRegion>,
 ) -> (gpui::AnyWindowHandle, gpui::Entity<EditorView>) {
     cx.update(super::bind_editor_keys);
-    let (mut project, _, _, _) = clip_drag_ui_test::audio_project();
+    let service = Service::new(48_000, 32, 8_000_000).unwrap();
+    fn next(service: &Service) -> Event {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            if let Ok(event) = service.try_event() {
+                assert!(event.error.is_none(), "{:?}", event.error);
+                return event;
+            }
+            assert!(std::time::Instant::now() < deadline);
+            thread::sleep(Duration::from_millis(1));
+        }
+    }
+    next(&service);
+    service
+        .submit(Request::Edit(Command::AddMidiTrack {
+            name: "loop fixture".into(),
+        }))
+        .unwrap();
+    let event = next(&service);
+    let track = event.state.project.tracks()[0].id();
+    service
+        .submit(Request::Edit(Command::PlaceMidiClip {
+            track,
+            start: BeatTime::ZERO,
+            length: BeatTime::from_quarters(12).unwrap(),
+        }))
+        .unwrap();
+    let mut event = next(&service);
     if let Some(region) = initial {
-        let mut history = Editor::new(project, 8).expect("project history");
-        history
-            .execute(Command::SetLoopRegion {
+        service
+            .submit(Request::Edit(Command::SetLoopRegion {
                 start: region.start(),
                 end: region.end(),
                 enabled: region.enabled(),
-            })
-            .expect("valid initial loop");
-        project = history.project().clone();
+            }))
+            .unwrap();
+        event = next(&service);
     }
-    let (handle, editor) = clip_drag_ui_test::editor_window(cx, project, Arc::default());
+    let handle = *cx.add_window(|_, _| gpui::Empty);
+    let editor = cx
+        .update_window(handle, |_, window, cx| {
+            window.activate_window();
+            let editor = window.replace_root(cx, |window, cx| {
+                EditorView::new(window, cx, service, Err("offline loop rail test".into()))
+            });
+            editor.update(cx, |view, cx| {
+                view.state = Some(event.state);
+                view.focus.focus(window);
+                cx.notify();
+            });
+            editor
+        })
+        .unwrap();
     editor.update(cx, |view, window_cx| {
         view.viewport = Some(Viewport {
             start: 0,
@@ -209,7 +250,7 @@ fn loop_rail_drag_continues_outside_rail_without_starting_lane_selection(cx: &mu
 }
 
 #[gpui::test]
-fn loop_rail_click_activates_resizable_ends_preserve_enable_and_toolbar_disables(
+fn loop_rail_command_click_activates_resizable_ends_preserve_enable_and_toolbar_disables(
     cx: &mut TestAppContext,
 ) {
     let (handle, editor) = loop_editor(cx, Some(LoopRegion::new(48_000, 192_000, false).unwrap()));
@@ -217,8 +258,12 @@ fn loop_rail_click_activates_resizable_ends_preserve_enable_and_toolbar_disables
     visual.run_until_parked();
 
     let midpoint = rail_point(&mut visual, 0.25);
-    visual.simulate_mouse_down(midpoint, MouseButton::Left, Modifiers::default());
-    visual.simulate_mouse_up(midpoint, MouseButton::Left, Modifiers::default());
+    let command = Modifiers {
+        platform: true,
+        ..Modifiers::default()
+    };
+    visual.simulate_mouse_down(midpoint, MouseButton::Left, command);
+    visual.simulate_mouse_up(midpoint, MouseButton::Left, command);
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((48_000, 192_000, true)));
 
@@ -247,7 +292,11 @@ fn loop_rail_click_activates_resizable_ends_preserve_enable_and_toolbar_disables
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((96_000, 288_000, true)));
 
-    visual.simulate_keystrokes("l");
+    let toggle = visual
+        .debug_bounds("toggle loop on/off · l or cmd+l sets selection")
+        .expect("rendered loop toolbar control");
+    visual.simulate_mouse_down(toggle.center(), MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_up(toggle.center(), MouseButton::Left, Modifiers::default());
     visual.run_until_parked();
     wait_for_loop(cx, handle, &editor, Some((96_000, 288_000, false)));
     assert!(visual.debug_bounds("loop-rail-range").is_some());
@@ -278,6 +327,7 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
             comparison_audio: None,
             project: Arc::new(history.project().clone()),
             waveforms: old.waveforms.clone(),
+            source_overviews: old.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
@@ -314,6 +364,7 @@ fn stale_loop_state_cancels_preview_without_overwriting_the_new_range(cx: &mut T
             comparison_audio: None,
             project: Arc::clone(&old.project),
             waveforms: old.waveforms.clone(),
+            source_overviews: old.source_overviews.clone(),
             audio_clip_waveforms: std::collections::BTreeMap::new(),
             midi_preview: Arc::clone(&old.midi_preview),
             gain_preview: Ok(Arc::new(hex_engine::GainAutomationPreview::default())),
