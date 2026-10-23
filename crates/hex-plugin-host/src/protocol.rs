@@ -360,6 +360,143 @@ pub fn stop(binding: Binding, sequence: u64, frames: u64) -> [u8; 64] {
     }
     out
 }
+
+/// Quiesce only after the exact acknowledged PCM prefix. This is not a final
+/// retirement request, nor authority to reuse an old callback/ring owner.
+pub fn quiesce(config: &Configuration, sequence: u64) -> Result<[u8; 64]> {
+    config.validate()?;
+    let frames = sequence
+        .checked_mul(u64::from(config.quantum))
+        .ok_or(Error::Protocol("instance position exhausted"))?;
+    let mut out = stop(config.binding, sequence, frames);
+    out[..4].copy_from_slice(b"HXVQ");
+    Ok(out)
+}
+
+pub fn validate_resume(previous: Binding, next: Binding) -> Result<()> {
+    if [
+        previous.root,
+        previous.instance,
+        previous.graph,
+        previous.epoch,
+    ]
+    .contains(&0)
+        || next.root != previous.root
+        || next.instance != previous.instance
+        || next.graph < previous.graph
+        || next.epoch <= previous.epoch
+    {
+        return Err(Error::Protocol(
+            "resume requires the same source owner and a newer epoch",
+        ));
+    }
+    Ok(())
+}
+
+/// Resume keeps the original source/rate/buses/quantum. Only the two requested
+/// binding words differ; the header still names the acknowledged old binding.
+pub fn resume_request(
+    config: &Configuration,
+    next: Binding,
+    presentation: Option<PresentationLatency>,
+) -> Result<Vec<u8>> {
+    config.validate()?;
+    validate_resume(config.binding, next)?;
+    let mut header = stop(config.binding, next.graph, next.epoch);
+    header[..4].copy_from_slice(b"HXVR");
+    header[10] = u8::from(presentation.is_some());
+    let mut out = Vec::with_capacity(72);
+    out.extend(header);
+    if let Some(value) = presentation {
+        out.extend(value.input_frames.to_le_bytes());
+        out.extend(value.output_frames.to_le_bytes());
+    }
+    Ok(out)
+}
+
+fn epoch_facts<'a>(
+    body: &'a [u8],
+    config: &Configuration,
+    sequence: u64,
+) -> Result<(Facts, Reader<'a>)> {
+    // Current fixed facts plus the exact optional original startup envelope.
+    config.validate()?;
+    let size = 134_usize
+        .checked_add(
+            config
+                .restore
+                .as_ref()
+                .map_or(0, |state| state.payload().len()),
+        )
+        .ok_or(Error::Protocol("epoch facts extent overflow"))?;
+    let facts = Facts::decode(
+        body.get(..size)
+            .ok_or(Error::Protocol("truncated epoch facts"))?,
+        config,
+    )?;
+    let mut rest = Reader::new(
+        body.get(size..)
+            .ok_or(Error::Protocol("truncated epoch facts"))?,
+    );
+    let frames = sequence
+        .checked_mul(u64::from(config.quantum))
+        .ok_or(Error::Protocol("instance position exhausted"))?;
+    if u64::from_le_bytes(rest.array()?) != sequence || u64::from_le_bytes(rest.array()?) != frames
+    {
+        return Err(Error::Protocol(
+            "quiescent PCM prefix differs from actual completion",
+        ));
+    }
+    Ok((facts, rest))
+}
+
+pub fn quiescent_facts(body: &[u8], config: &Configuration, sequence: u64) -> Result<Facts> {
+    let (facts, rest) = epoch_facts(body, config, sequence)?;
+    rest.end()?;
+    Ok(facts)
+}
+
+pub fn resumed(
+    body: &[u8],
+    config: &Configuration,
+    sequence: u64,
+    expected: Facts,
+    presentation: Option<PresentationLatency>,
+) -> Result<Presentation> {
+    let (facts, mut rest) = epoch_facts(body, config, sequence)?;
+    if facts != expected {
+        return Err(Error::Protocol(
+            "native facts changed before resumed acknowledgement",
+        ));
+    }
+    let result = match rest.byte()? {
+        0 => Presentation::Absent,
+        1 => Presentation::Applied,
+        _ => return Err(Error::Protocol("native presentation resume refused")),
+    };
+    let supplied = match rest.byte()? {
+        0 => None,
+        1 => Some(PresentationLatency {
+            input_frames: u32::from_le_bytes(rest.array()?),
+            output_frames: u32::from_le_bytes(rest.array()?),
+        }),
+        _ => {
+            return Err(Error::Protocol(
+                "invalid resumed presentation acknowledgement",
+            ));
+        }
+    };
+    rest.end()?;
+    if supplied != presentation
+        || (result == Presentation::Applied && supplied.is_none())
+        || (result == Presentation::Applied) != facts.presentation_available
+    {
+        return Err(Error::Protocol(
+            "resumed presentation differs from actual plan",
+        ));
+    }
+    Ok(result)
+}
 pub fn pcm(bytes: &[u8], config: &Configuration, sequence: u64) -> Result<Block> {
     config.validate()?;
     let mut cursor = Cursor::new(bytes);

@@ -15,7 +15,8 @@ namespace wire=hex_instance_wire;
 using namespace Steinberg;using namespace Steinberg::Vst;
 namespace {
 enum Failure : uint32_t { Configuration=1,Admission=2,ClassFailure=3,Setup=4,Presentation=5,Capture=6,
-    Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13,Restore=14 };
+    Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13,Restore=14,
+    Quiescence=15,Resume=16 };
 struct Refusal {}; // Expected local/SDK return-code refusal, never an exception from foreign code.
 struct Module {
     CFBundleRef bundle=nullptr;IPluginFactory* factory=nullptr;
@@ -205,6 +206,13 @@ int main(int argc,char** argv) {
             const auto hello=ready_body(*config,state,*latency,presentation,supplied,restoration.restored());
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
+            // One serialized epoch mailbox, never a second request reader. The
+            // processing lane is stopped and waiting at every main-lane SDK
+            // step. Mutex/condition waits live only in this isolated helper.
+            enum EpochStage { Idle,FactsRequested,FactsSent,ResumeRequested,ResumeConfigured,Restarted,ResumeSent };
+            EpochStage epoch_stage=Idle;
+            uint64_t next_graph=0,next_epoch=0;
+            std::optional<wire::Presentation> next_presentation;
             std::thread worker([&] {
                 bool started=false;
                 try {
@@ -223,6 +231,37 @@ int main(int argc,char** argv) {
                         const auto received=packet.read(channel,*config,blocks,frames);
                         if(received==2) { normal_stop=true;break; }
                         if(received==0) std::_Exit(Cancelled); // EOF never claims cooperative close
+                        if(received==3) {
+                            phase.store(3,std::memory_order_release);
+                            if(!instance.stop_processing()) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
+                            started=false;
+                            {
+                                std::unique_lock<std::mutex> lock(startup_mutex);
+                                epoch_stage=FactsRequested;startup_changed.notify_all();
+                                startup_changed.wait(lock,[&]{return epoch_stage==FactsSent;});
+                            }
+                            phase.store(1,std::memory_order_release);
+                            const auto resumed=packet.read(channel,*config,blocks,frames);
+                            if(resumed==2) { normal_stop=true;break; }
+                            if(resumed==0) std::_Exit(Cancelled);
+                            if(resumed!=4) { worker_failure.store(ProtocolFailure);break; }
+                            {
+                                std::unique_lock<std::mutex> lock(startup_mutex);
+                                next_graph=packet.next_graph;next_epoch=packet.next_epoch;
+                                next_presentation=packet.resumed_presentation;
+                                epoch_stage=ResumeRequested;startup_changed.notify_all();
+                                startup_changed.wait(lock,[&]{return epoch_stage==ResumeConfigured;});
+                            }
+                            phase.store(2,std::memory_order_release);
+                            started=instance.start_processing();
+                            if(!started) { worker_failure.store(Resume);break; }
+                            {
+                                std::unique_lock<std::mutex> lock(startup_mutex);
+                                epoch_stage=Restarted;startup_changed.notify_all();
+                                startup_changed.wait(lock,[&]{return epoch_stage==ResumeSent;});
+                            }
+                            continue;
+                        }
                         if(received!=1) { worker_failure.store(ProtocolFailure);break; }
                         bool valid=true;output_right.fill(0);input.silenceFlags=0;output.silenceFlags=0;
                         for(size_t n=0;n<packet.frames;++n) {
@@ -267,6 +306,45 @@ int main(int argc,char** argv) {
                 try {
                     instance.dispatch_host_callbacks();
                     if(instance.host_refusals()) { error(channel,&*config,HostControl);std::_Exit(HostControl); }
+                    EpochStage stage;
+                    { std::lock_guard<std::mutex> lock(startup_mutex);stage=epoch_stage; }
+                    if(stage==FactsRequested) {
+                        latency=instance.reported_latency_on_control();
+                        available=instance.presentation_latency_available_on_control();
+                        if(!latency || !available) { error(channel,&*config,Quiescence);std::_Exit(Quiescence); }
+                        auto body=facts_body(*config,*latency,*available,restoration);
+                        wire::number(body,blocks,8);wire::number(body,frames,8);
+                        if(!wire::send(channel,"HXVIQF01",body)) std::_Exit(Cancelled);
+                        std::lock_guard<std::mutex> lock(startup_mutex);
+                        epoch_stage=FactsSent;startup_changed.notify_all();
+                    } else if(stage==ResumeRequested) {
+                        supplied=next_presentation;
+                        presentation=hex_instance::Instance::PresentationResult::Absent;
+                        if(supplied) presentation=instance.set_presentation_latency(supplied->input,supplied->output);
+                        else if(*available) { error(channel,&*config,Presentation);std::_Exit(Presentation); }
+                        const auto current_latency=instance.reported_latency_on_control();
+                        if(!current_latency || *current_latency!=*latency || instance.host_refusals() ||
+                            (presentation==hex_instance::Instance::PresentationResult::Applied)!=*available ||
+                            (presentation!=hex_instance::Instance::PresentationResult::Applied &&
+                             presentation!=hex_instance::Instance::PresentationResult::Absent)) {
+                            error(channel,&*config,Presentation);std::_Exit(Presentation);
+                        }
+                        // The old input/reply sequence is quiescent. Only this
+                        // acknowledged transition changes its wire binding;
+                        // no old queued request is accepted under the new one.
+                        config->binding[2]=next_graph;config->binding[3]=next_epoch;
+                        std::lock_guard<std::mutex> lock(startup_mutex);
+                        epoch_stage=ResumeConfigured;startup_changed.notify_all();
+                    } else if(stage==Restarted) {
+                        auto body=facts_body(*config,*latency,*available,restoration);
+                        wire::number(body,blocks,8);wire::number(body,frames,8);
+                        wire::number(body,static_cast<uint32>(presentation),1);
+                        wire::number(body,supplied?1:0,1);
+                        if(supplied) { wire::number(body,supplied->input,4);wire::number(body,supplied->output,4); }
+                        if(!wire::send(channel,"HXVIRR01",body)) std::_Exit(Cancelled);
+                        std::lock_guard<std::mutex> lock(startup_mutex);
+                        epoch_stage=ResumeSent;startup_changed.notify_all();
+                    }
                     uint8_t byte=0;const auto peer=::recv(channel,&byte,1,MSG_PEEK|MSG_DONTWAIT);
                     if(peer==0 && phase.load(std::memory_order_acquire)!=1 && !done.load(std::memory_order_acquire)) {
                         // EOF is cancellation, not the graceful HXVE terminal.
