@@ -450,6 +450,22 @@ fn actual_inherited_autoreap_refuses_before_foreign_entry_without_changing_calle
             "expected custody refusal, got {:?}",
             result.err()
         );
+        let mut retained = Pending::prepare_retained_on_control(
+            &build(),
+            source(),
+            options().preparation,
+            PreparationCancellation::new_on_control().unwrap(),
+            TrustUserCode::Acknowledged,
+        )
+        .err()
+        .unwrap();
+        assert!(matches!(retained.cause(), Error::Custody(_)));
+        for _ in 0..2 {
+            assert!(
+                matches!(retained.poll_disposal_on_control(), Err(Error::Custody(_))),
+                "lost waitability cannot become a no-instance or reaped result"
+            );
+        }
         assert!(!case.trace().exists());
         let mut check = Command::new(build().helper())
             .arg("--child-custody-probe")
@@ -686,6 +702,148 @@ fn actual_facts_wait_before_setters_state_or_dsp_then_finalize_matching_presenta
             .status
             .success()
     );
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_retained_refusal_distinguishes_before_spawn_from_owned_native_failure() {
+    use std::os::unix::process::ExitStatusExt;
+    let case = Case::new();
+    let mut invalid = options().preparation;
+    invalid.binding.root = 0;
+    let mut refused = Pending::prepare_retained(
+        &build(),
+        source(),
+        invalid,
+        None,
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(0),
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(refused.cause(), Error::Protocol(_)));
+    assert!(matches!(
+        refused.poll_disposal_on_control().unwrap(),
+        Some(PreparationDisposal::NoInstance)
+    ));
+    assert!(!case.trace().exists());
+    let case = Case::new();
+    let mut failed = Pending::prepare_retained(
+        &build(),
+        source(),
+        options().preparation,
+        None,
+        PreparationCancellation::new_on_control().unwrap(),
+        case.setup(30),
+    )
+    .err()
+    .unwrap();
+    assert!(matches!(failed.cause(), Error::Protocol(_)));
+    assert!(matches!(
+        &failed.custody,
+        preparation_failure::Custody::Native(Lease {
+            child: ChildCustody::Owned(_),
+            ..
+        })
+    ));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    let disposed = loop {
+        if let Some(disposed) = failed.poll_disposal_on_control().unwrap() {
+            break disposed;
+        }
+        assert!(Instant::now() < deadline);
+        thread::yield_now();
+    };
+    let PreparationDisposal::Reaped(retired) = disposed else {
+        panic!("post-spawn failure cannot be an unstarted constructor")
+    };
+    assert_eq!(retired.status.signal(), Some(11));
+    assert!(retired.terminal.is_none());
+    assert_eq!(case.observation().unwrap()[4], 0);
+}
+
+#[test]
+#[ignore = "explicit source-bound native instance and original SDK fixtures required"]
+fn actual_retained_completion_failure_keeps_same_lease_until_observed_disposal() {
+    use std::sync::{Arc, atomic::AtomicI32};
+    for restored in [false, true] {
+        for terminal in ["unknown", "cancel", "token"] {
+            let case = Case::new();
+            let selected = source();
+            let state = restored.then(|| startup_state(&selected, true, 3));
+            let mut pending = Pending::prepare_retained(
+                &build(),
+                selected,
+                options().preparation,
+                state,
+                PreparationCancellation::new_on_control().unwrap(),
+                case.setup_restore(if restored { 37 } else { 0 }),
+            )
+            .unwrap();
+            assert_eq!(
+                pending.configuration().binding,
+                options().preparation.binding
+            );
+            let original_child = match &pending.lease.child {
+                ChildCustody::Owned(child) => child.id(),
+                _ => panic!("actual pending lease"),
+            };
+            let dropped = Arc::new(AtomicI32::new(-99));
+            pending.lease.reap_probe = Some(Arc::clone(&dropped));
+            let mut failure = match terminal {
+                "cancel" => pending.cancel_retained_on_control(),
+                "token" => {
+                    pending.cancellation_on_control().cancel_on_control();
+                    pending
+                        .complete_retained_on_control(Some(options().presentation))
+                        .err()
+                        .unwrap()
+                }
+                _ => pending.complete_retained_on_control(None).err().unwrap(),
+            };
+            assert_eq!(
+                dropped.load(AtomicOrdering::Acquire),
+                -99,
+                "error handoff retains the actual lease instead of dropping/joining it"
+            );
+            let preparation_failure::Custody::Native(lease) = &failure.custody else {
+                panic!("actual source is still retained")
+            };
+            assert!(
+                matches!(&lease.child, ChildCustody::Owned(child) if child.id() == original_child)
+            );
+            if terminal == "unknown" {
+                assert!(matches!(
+                    failure.cause(),
+                    Error::Protocol("actual presentation contributions are unavailable")
+                ));
+            } else {
+                assert!(matches!(failure.cause(), Error::Cancelled));
+            }
+            let deadline = Instant::now() + Duration::from_secs(3);
+            let retired = loop {
+                match failure.poll_disposal_on_control().unwrap() {
+                    Some(PreparationDisposal::Reaped(retired)) => break retired,
+                    Some(PreparationDisposal::NoInstance) => {
+                        panic!("cannot erase actual source custody")
+                    }
+                    None => {}
+                }
+                assert!(Instant::now() < deadline);
+                thread::yield_now();
+            };
+            assert!(!retired.status.success());
+            assert!(retired.terminal.is_none());
+            assert_eq!(dropped.load(AtomicOrdering::Acquire), -99);
+            drop(failure); // only after observed disposal, on this control lane
+            assert_eq!(
+                dropped.load(AtomicOrdering::Acquire),
+                retired.status.code().unwrap_or(-1)
+            );
+            let observed = case.observation().unwrap();
+            assert_eq!((observed[8], observed[10]), (0, 0));
+        }
+    }
 }
 
 #[test]
