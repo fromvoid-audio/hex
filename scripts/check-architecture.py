@@ -43,7 +43,7 @@ ALLOWED = {
 # ownership of editing or device implementations.
 DEV_ALLOWED = {
     # Real generic project/file/history round trips, never runtime state I/O.
-    'hex-plugin-state': {'hex-project', 'hex-storage'},
+    'hex-storage': {'hex-plugin-state'},
     # Real decoded WAV -> sealed source scope -> sampler PCM oracles only.
     'hex-media': {'hex-devices', 'hex-lattice', 'hex-lattice-contract'},
     # Verified-mode source limits for real worker/key-handler failure fixtures only.

@@ -6,7 +6,7 @@
 //!
 //! # Dependencies
 //! Uses only std and hex-lattice-contract's bounded immutable NativeDeviceState.
-//! Project/storage are test-only consumers of the unchanged generic envelope.
+//! Storage integration tests consume the unchanged generic project envelope.
 //!
 //! # Does not own
 //! No SDK ABI, foreign objects, discovery, filesystem, DSP, callback work, state
