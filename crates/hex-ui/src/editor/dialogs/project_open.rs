@@ -302,7 +302,7 @@ impl EditorView {
                             }
                             _ => {
                                 view.cancel_open_after_save();
-                                view.status = format!("{} cancelled", intent.action_label()).into();
+                                view.status = format!("{} cancelled", intent.action_label());
                             }
                         }
                     }
