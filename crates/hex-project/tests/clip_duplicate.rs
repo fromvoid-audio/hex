@@ -429,3 +429,48 @@ fn invalid_selection_and_failed_preparation_preserve_project_and_redo() {
     assert_eq!(editor.project(), &before);
     assert!(editor.can_redo());
 }
+
+#[test]
+fn mixed_duplicate_never_trims_an_original_at_a_fractional_frame_midi_end() {
+    let mut editor = Editor::new(Project::new(48_000).unwrap(), 16).unwrap();
+    let audio_track = track(&mut editor, "audio");
+    let midi_track = track(&mut editor, "midi");
+    let asset = match editor
+        .execute(Command::AddAsset {
+            path: "one-frame.wav".into(),
+            sample_rate: 48_000,
+            frames: 1,
+        })
+        .unwrap()
+    {
+        Created::Asset(id) => id,
+        other => panic!("unexpected asset result: {other:?}"),
+    };
+    let audio = audio_clip(&mut editor, audio_track, asset, 0, 1, 0);
+    let end = BeatTime::from_raw(BeatTime::ONE.raw() + 1);
+    let midi = midi_clip(&mut editor, midi_track, BeatTime::ZERO, end);
+    let before = editor.project().snapshot();
+    editor
+        .execute(Command::DuplicateClips(vec![audio, midi]))
+        .unwrap();
+    let after = editor.project().snapshot();
+    assert_eq!(
+        audio_snapshot(&after, audio.value()),
+        audio_snapshot(&before, audio.value())
+    );
+    assert_eq!(
+        midi_snapshot(&after, midi.value()),
+        midi_snapshot(&before, midi.value()),
+        "frame quantization must not overwrite any part of the selected original"
+    );
+    let copied = editor
+        .project()
+        .track(midi_track)
+        .unwrap()
+        .midi_clips()
+        .iter()
+        .find(|clip| clip.id() != midi)
+        .unwrap();
+    assert!(copied.start() >= end);
+    assert_eq!(copied.length(), end);
+}
