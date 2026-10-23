@@ -38,6 +38,12 @@ fn format_upgrade_requires_document_bound_consent_and_preserves_original_on_save
         serde_json::from_slice(&hex_storage::encode(&initial.state.project).unwrap()).unwrap();
     // This empty schema36 fixture predates horizontal fade coordinates.
     assert_eq!(
+        old.as_object_mut()
+            .unwrap()
+            .remove("midi_one_shot_boundaries"),
+        Some(serde_json::json!([]))
+    );
+    assert_eq!(
         old.as_object_mut().unwrap().remove("fade_curve_positions"),
         Some(serde_json::json!([]))
     );

@@ -27,7 +27,7 @@ pub use replacement::{
 use std::{fmt, io, path::PathBuf};
 
 /// Current saved-project schema; independent of the application version.
-pub const CURRENT_SCHEMA_VERSION: u32 = 38;
+pub const CURRENT_SCHEMA_VERSION: u32 = 39;
 
 pub const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
 /// Visible checkpoint state when releasing journal ownership failed.
@@ -144,10 +144,10 @@ impl From<serde_json::Error> for StorageError {
     }
 }
 
-/// Encode schema38 with required fade positions, tuning and complete device asset
+/// Encode schema39 with required MIDI one-shot policies, fade positions, tuning and device asset
 /// and MIDI clip-volume inventories, preserving all active project capabilities.
 pub fn encode(project: &Project) -> Result<Vec<u8>, StorageError> {
-    encode_document(&schema::fade_curve_positions::encode(project)?)
+    encode_document(&schema::midi_one_shot::encode(project)?)
 }
 
 /// Explicit schema22 encoding; newer playable routing is refused.
@@ -163,6 +163,11 @@ pub fn encode_schema20(project: &Project) -> Result<Vec<u8>, StorageError> {
 }
 
 fn refuse_legacy_routes(project: &Project) -> Result<(), StorageError> {
+    if project.tracks().iter().flat_map(|track| track.midi_clips()).any(|clip| clip.source().one_shot_boundary() != hex_project::MidiOneShotBoundary::SourceEnd)
+        || project.session_cells().iter().any(|cell| matches!(cell.content(), hex_project::SessionCellContent::Midi(clip) if clip.source().one_shot_boundary() != hex_project::MidiOneShotBoundary::SourceEnd)) {
+        return Err(StorageError::Invalid("older schema cannot save midi one-shot boundaries"));
+    }
+
     if !project.arrangement_sections().is_empty() {
         return Err(StorageError::Invalid(
             "older schema cannot save arrangement sections",
@@ -239,8 +244,11 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
     result?;
     Ok(output.bytes)
 }
-/// Open schemas34–38 into the current validated model without file/media I/O.
-/// Schemas34–37 default horizontal fade positions to center, preserving their
+/// Open current and evidenced historical schemas without file/media I/O.
+/// Schemas1–33 select frozen readers and branch-aware adapters using the version
+/// and complete field inventories. Only absent-by-design fields acquire their
+/// original defaults; authored metadata is never discarded to accept a file.
+/// Pre38 schemas default horizontal fade positions to center, preserving their
 /// original sample-exact rational laws.
 /// Schemas34/35 predate sections;34 also predates MIDI clip volume (unity).
 /// Schema36 had independent tempo and sections branches, selected by presence of
@@ -249,8 +257,6 @@ fn encode_document(document: &impl serde::Serialize) -> Result<Vec<u8>, StorageE
 /// remain strict. No tempo-map collapse,
 /// overlap repair or opaque device-state conversion is performed. Older projects
 /// violating current model invariants refuse rather than lose musical data.
-/// Schemas1–33 are not yet supported by this public migration path; retained
-/// internal DTOs alone do not establish complete historical compatibility.
 /// Newer/unknown fields, duplicate keys and malformed inventories refuse.
 /// Saving uses the current schema through existing atomic publication/recovery.
 pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
@@ -267,8 +273,10 @@ pub fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         return Err(StorageError::Invalid("unsupported project format"));
     }
     match header.version {
-        CURRENT_SCHEMA_VERSION => schema::fade_curve_positions::decode(bytes),
+        CURRENT_SCHEMA_VERSION => schema::midi_one_shot::decode(bytes),
+        38 => schema::fade_curve_positions::decode(bytes),
         37 => schema::DocumentV11::decode(bytes),
+        1..=33 => schema::legacy::decode(bytes, header.version),
         34..=36 => schema::tuning::decode_version(bytes, header.version),
         version if version > CURRENT_SCHEMA_VERSION => Err(StorageError::Invalid(
             "project uses a newer schema; open it with a newer hex version; original file unchanged",

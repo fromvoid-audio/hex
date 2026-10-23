@@ -118,7 +118,10 @@ pub mod timebase;
 pub use edit::{Command, Created, MidiNoteInsert, MidiNoteUpdate, TrackDeviceSlot};
 pub use history::Editor;
 pub use instrument_history::{InstrumentAssetHistoryDelta, InstrumentHistoryDelta};
-pub use midi::{MidiClip, MidiClipTrim, MidiNote, MidiSource, MidiSourceIdentity, TrackContent};
+pub use midi::{
+    MidiClip, MidiClipTrim, MidiNote, MidiOneShotBoundary, MidiSource, MidiSourceIdentity,
+    TrackContent,
+};
 pub use midi_note_overwrite::{MidiNoteOverwriteChange, MidiNoteOverwritePreview};
 pub use midi_playback::{
     MidiNoteOccurrence, MidiNoteOccurrenceIter, MidiNoteOccurrencePlan, MidiSourcePlayback,

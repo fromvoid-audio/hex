@@ -182,7 +182,7 @@ mod tests {
             let path = self.0.join("untitled.hex-journal");
             let mut bytes = replacement::encode_envelope(
                 "untitled.hex-journal",
-                br#"{"format":"hex-project","version":31}"#,
+                br#"{"format":"hex-project","version":0}"#,
             )
             .unwrap();
             bytes[..8].copy_from_slice(MAGIC);
