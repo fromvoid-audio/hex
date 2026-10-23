@@ -19,7 +19,6 @@ pub(super) struct Sandbox {
     samples: HashMap<usize, Entity<Sample>>,
     compositions: Entity<gallery::Gallery>,
     focus: FocusHandle,
-    alternate: bool,
     error: Option<String>,
 }
 impl Sandbox {
@@ -31,7 +30,6 @@ impl Sandbox {
             samples: HashMap::new(),
             compositions: cx.new(gallery::Gallery::new),
             focus: cx.focus_handle().tab_index(0).tab_stop(true),
-            alternate: false,
             error: None,
         };
         s.ensure(cx);
@@ -74,8 +72,8 @@ impl Sandbox {
         cx.notify();
     }
     fn theme(&mut self, cx: &mut Context<Self>) {
-        self.alternate = theme::preferences() == hex_preferences::ThemePreferences::default();
-        theme::apply_preferences(if self.alternate {
+        let light = theme::preferences() == hex_preferences::ThemePreferences::default();
+        theme::apply_preferences(if light {
             hex_preferences::ThemePreferences {
                 background: hex_preferences::RgbColor::new(225, 229, 238),
                 text: hex_preferences::RgbColor::new(24, 27, 34),
@@ -181,11 +179,13 @@ impl Render for Sandbox {
         }
         let mut tools = div().flex().flex_wrap().gap(px(4.0)).child(
             hex_widgets::action(
-                theme::text(if self.alternate {
-                    "dark theme"
-                } else {
-                    "light theme"
-                }),
+                theme::text(
+                    if theme::preferences() == hex_preferences::ThemePreferences::default() {
+                        "light theme"
+                    } else {
+                        "dark theme"
+                    },
+                ),
                 theme::action_style(),
             )
             .id("sandbox-theme")
