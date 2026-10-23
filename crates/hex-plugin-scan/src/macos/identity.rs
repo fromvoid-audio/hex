@@ -277,6 +277,8 @@ mod tests {
         assert!(read_file(&path, MAX_BINARY).is_err());
         #[cfg(unix)]
         {
+            file.set_len(1).unwrap(); // The target itself is valid; refusal must be for the link.
+            assert!(read_file(&path, MAX_BINARY).is_ok());
             let linked = directory.0.join("linked");
             std::os::unix::fs::symlink(&path, &linked).unwrap();
             assert!(read_file(&linked, MAX_BINARY).is_err());
