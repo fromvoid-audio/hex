@@ -12,6 +12,9 @@ fn git(arguments: &[&str]) -> Option<String> {
 fn main() {
     println!("cargo:rerun-if-env-changed=HEX_RELEASE_CHANGELOG");
     println!("cargo:rerun-if-env-changed=HEX_RELEASE_LABEL");
+    let version =
+        std::env::var("HEX_RELEASE_LABEL").unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_owned());
+    println!("cargo:rustc-env=HEX_DISPLAY_VERSION={version}");
     let release_dataset = std::env::var_os("HEX_RELEASE_CHANGELOG");
     let dataset = release_dataset
         .as_deref()
@@ -51,9 +54,7 @@ fn main() {
             let suffix = if parts[2] == "dirty" { " dirty" } else { "" };
             println!(
                 "cargo:rustc-env=HEX_BUILD_IDENTITY={}{suffix}",
-                std::env::var("HEX_RELEASE_LABEL")
-                    .map(|label| format!("{label} · {}", &parts[0][..8]))
-                    .unwrap_or_else(|_| parts[0][..8].to_owned())
+                &parts[0][..8]
             );
             return;
         }

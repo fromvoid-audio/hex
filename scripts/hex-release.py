@@ -243,6 +243,7 @@ def cut(args, store):
         checklist = args.checklist.read_bytes() if args.checklist else (
             "# native beta checks\n\n"
             "- confirm the displayed release label and source match this package.\n"
+            "- resize the window; confirm the version, log and changelog controls remain reachable.\n"
             "- open a copy of an existing project; confirm tracks, devices and media.\n"
             "- play, stop, seek and loop; check audible output and responsiveness.\n"
             "- save as a new project, quit normally and reopen that copy.\n"
