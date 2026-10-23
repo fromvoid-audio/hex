@@ -7,12 +7,17 @@
 //! The admitted feature combinations below come from their actual source DTOs.
 //! Adapt absent-by-design metadata, then use the frozen strict34 decoder. Unknown
 //! fields are never removed and an invalid branch never falls back to another.
+//! Original31's explicit20/22 exports also retain MIDI boundary policy. Extract
+//! that complete source-backed inventory and restore it after the frozen reader,
+//! before validating the typed current state; late authored notes stay retained.
 use super::{Project, StorageError};
+use hex_project::{MidiOneShotBoundary, SessionCellContentSnapshot, TrackContentSnapshot};
 use serde_json::{Value, json};
+use std::collections::BTreeMap;
 
 pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
     if (1..=29).contains(&version) {
-        return super::legacy_early::decode(bytes, version);
+        return decode_early(bytes, version);
     }
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: Value = serde_json::from_slice(bytes)?;
@@ -20,7 +25,7 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
         return Err(StorageError::Invalid("invalid historical project version"));
     }
     check_writer_shape(&value, version)?;
-    upgrade_midi_boundary(&mut value)?;
+    let boundaries = upgrade_midi_boundary(&mut value)?;
     match version {
         30..=33 => upgrade_assets_tuning(&mut value, version)?,
         _ => {
@@ -31,7 +36,78 @@ pub(crate) fn decode(bytes: &[u8], version: u32) -> Result<Project, StorageError
     }
     upgrade_audio_layout(&mut value)?;
     value["version"] = 34.into();
-    super::tuning::decode_version(&serde_json::to_vec(&value)?, 34)
+    let project = super::tuning::decode_version(&serde_json::to_vec(&value)?, 34)?;
+    restore_midi_boundaries(project, boundaries)
+}
+
+fn decode_early(bytes: &[u8], version: u32) -> Result<Project, StorageError> {
+    // The original31 MIDI branch also exposed public20/22 writers using its
+    // shared source DTOs. Their complete embedded policy inventory is evidenced
+    // independently from ordinary older20/22 documents, which default SourceEnd.
+    if matches!(version, 20 | 22) {
+        let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
+        let mut value: Value = serde_json::from_slice(bytes)?;
+        let mut embedded = None;
+        visit_midi(&value, |_, source| {
+            uniform(&mut embedded, source.get("one_shot_boundary").is_some())
+        })?;
+        if embedded == Some(true) {
+            validate_early_policy_layout(&value)?;
+            let boundaries = upgrade_midi_boundary(&mut value)?;
+            let project = super::legacy_early::decode(&serde_json::to_vec(&value)?, version)?;
+            return restore_midi_boundaries(project, boundaries);
+        }
+    }
+    super::legacy_early::decode(bytes, version)
+}
+
+fn validate_early_policy_layout(value: &Value) -> Result<(), StorageError> {
+    if value.get("import_provenance").is_none() || value.get("routing").is_none() {
+        return Err(StorageError::Invalid(
+            "historical MIDI policy requires the foundation writer layout",
+        ));
+    }
+    for owner in ["tracks", "return_tracks"] {
+        let tracks = value
+            .get(owner)
+            .and_then(Value::as_array)
+            .ok_or(StorageError::Invalid("missing historical track inventory"))?;
+        for track in tracks {
+            let devices = track
+                .get("devices")
+                .and_then(Value::as_array)
+                .ok_or(StorageError::Invalid("missing historical device inventory"))?;
+            let instrument = if owner == "tracks" {
+                track.get("instrument").filter(|device| !device.is_null())
+            } else {
+                None
+            };
+            for device in devices.iter().chain(instrument) {
+                if device.get("input_gain_millidb").is_none()
+                    || device.get("output_gain_millidb").is_none()
+                {
+                    return Err(StorageError::Invalid(
+                        "historical MIDI policy requires the two-trim writer layout",
+                    ));
+                }
+            }
+            // These explicit writers predate gain seams and relocated origins.
+            // Never combine independently evidenced branches into a new layout.
+            for (inventory, later_field) in [
+                ("gain_envelope", "incoming_gain"),
+                ("gain_touch_spans", "source_start_raw"),
+            ] {
+                if track
+                    .get(inventory)
+                    .and_then(Value::as_array)
+                    .is_some_and(|rows| rows.iter().any(|row| row.get(later_field).is_some()))
+                {
+                    return Err(StorageError::Invalid("mixed historical MIDI/gain layouts"));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn upgrade_audio_layout(value: &mut Value) -> Result<(), StorageError> {
@@ -251,7 +327,7 @@ fn check_writer_shape(value: &Value, version: u32) -> Result<(), StorageError> {
         }
     }
     let mut midi = None;
-    visit_midi(value, |source| {
+    visit_midi(value, |_, source| {
         uniform(&mut midi, source.get("one_shot_boundary").is_some())
     })?;
     let variants: &[(bool, bool, bool, bool)] = match version {
@@ -297,7 +373,7 @@ fn uniform<T: Copy + Eq>(selected: &mut Option<T>, value: T) -> Result<(), Stora
 
 fn visit_midi(
     value: &Value,
-    mut visit: impl FnMut(&Value) -> Result<(), StorageError>,
+    mut visit: impl FnMut(u64, &Value) -> Result<(), StorageError>,
 ) -> Result<(), StorageError> {
     let tracks = value
         .get("tracks")
@@ -309,7 +385,7 @@ fn visit_midi(
             .and_then(Value::as_array)
             .ok_or(StorageError::Invalid("missing historical MIDI clips"))?;
         for clip in clips {
-            visit(clip)?;
+            visit(midi_id(clip)?, clip)?;
         }
     }
     let cells = value
@@ -319,6 +395,10 @@ fn visit_midi(
     for cell in cells {
         if cell.pointer("/content/kind").and_then(Value::as_str) == Some("midi") {
             visit(
+                midi_id(
+                    cell.pointer("/content/clip")
+                        .ok_or(StorageError::Invalid("missing historical MIDI clip"))?,
+                )?,
                 cell.pointer("/content/clip/source")
                     .ok_or(StorageError::Invalid("missing historical MIDI source"))?,
             )?;
@@ -327,27 +407,37 @@ fn visit_midi(
     Ok(())
 }
 
-fn upgrade_midi_boundary(value: &mut Value) -> Result<(), StorageError> {
-    let mut loop_end = false;
-    visit_midi(value, |source| {
+fn midi_id(clip: &Value) -> Result<u64, StorageError> {
+    clip.get("id")
+        .and_then(Value::as_u64)
+        .filter(|id| *id != 0)
+        .ok_or(StorageError::Invalid("invalid historical MIDI identity"))
+}
+
+fn upgrade_midi_boundary(
+    value: &mut Value,
+) -> Result<BTreeMap<u64, MidiOneShotBoundary>, StorageError> {
+    let mut boundaries = BTreeMap::new();
+    visit_midi(value, |id, source| {
         if let Some(boundary) = source.get("one_shot_boundary") {
-            match boundary.as_str() {
-                Some("source_end") => {}
-                Some("loop_end") => loop_end = true,
+            let boundary = match boundary.as_str() {
+                Some("source_end") => MidiOneShotBoundary::SourceEnd,
+                Some("loop_end") => MidiOneShotBoundary::LoopEnd,
                 _ => {
                     return Err(StorageError::Invalid(
                         "invalid historical MIDI one-shot boundary",
                     ));
                 }
+            };
+            if boundaries.len() == hex_project::MAX_CLIPS {
+                return Err(StorageError::Invalid("historical MIDI policy limit"));
+            }
+            if boundaries.insert(id, boundary).is_some() {
+                return Err(StorageError::Invalid("duplicate historical MIDI policy"));
             }
         }
         Ok(())
     })?;
-    if loop_end {
-        return Err(StorageError::Invalid(
-            "historical MIDI loop-end policy requires the current typed migration contract; original unchanged",
-        ));
-    }
     for track in value
         .get_mut("tracks")
         .and_then(Value::as_array_mut)
@@ -375,5 +465,41 @@ fn upgrade_midi_boundary(value: &mut Value) -> Result<(), StorageError> {
                 .remove("one_shot_boundary");
         }
     }
-    Ok(())
+    Ok(boundaries)
+}
+
+// The frozen readers validate the original notes and source extent without
+// knowing31's policy field. Restore that independent metadata by exact clip ID,
+// then validate the complete typed state; never truncate retained source notes.
+fn restore_midi_boundaries(
+    project: Project,
+    mut boundaries: BTreeMap<u64, MidiOneShotBoundary>,
+) -> Result<Project, StorageError> {
+    if boundaries.is_empty() {
+        return Ok(project);
+    }
+    let mut snapshot = project.snapshot();
+    for track in &mut snapshot.tracks {
+        let clips = match &mut track.content {
+            TrackContentSnapshot::Hybrid { midi_clips, .. } => midi_clips,
+            TrackContentSnapshot::Instrument(clips) => clips,
+            TrackContentSnapshot::Audio(_) => continue,
+        };
+        for clip in clips {
+            clip.one_shot_boundary = boundaries
+                .remove(&clip.id)
+                .ok_or(StorageError::Invalid("missing historical MIDI policy"))?;
+        }
+    }
+    for cell in &mut snapshot.session.cells {
+        if let SessionCellContentSnapshot::Midi(clip) = &mut cell.content {
+            clip.source.one_shot_boundary = boundaries
+                .remove(&clip.id)
+                .ok_or(StorageError::Invalid("missing historical MIDI policy"))?;
+        }
+    }
+    if !boundaries.is_empty() {
+        return Err(StorageError::Invalid("unmatched historical MIDI policy"));
+    }
+    Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
 }

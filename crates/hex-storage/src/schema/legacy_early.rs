@@ -3,7 +3,7 @@
 //! Original reader definitions and tests for 1–13 are in 89674b36. Public writers
 //! for 14–29 and their competing development branches are pinned by the fixtures
 //! in tests/fixtures/early. Selection uses complete inventories, never parse-error
-//! fallback. Only fields absent by design acquire defaults; current 37 and the
+//! fallback. Only fields absent by design acquire defaults; current formats and the
 //! later historical decoder do not pass through this adapter.
 //!
 //! The 26 event writer (309d41ae) precedes names; named events (d8922776)

@@ -55,6 +55,14 @@ start at saved placement. Old musical audio has no placement/projection/offsets.
 Current incompatible features are refused by retained explicit older writers;
 unsupported or mixed historical fields are never silently discarded.
 
+`schema20-session-audio-b9274930` and `schema21-session-audio-a9da374e` separately
+exercise the inline Session-audio gain path: `Session Audio Case`, source window
+17..143 and-9350millidB survive relocation into the complete current audio-state
+inventory. Both original DTOs save gain only for Session audio;21's Arrangement
+musical/pitch edit does not create Session processing metadata. Original snapshot
+and byte roundtrips and unchanged-source hashes are in `session_audio_writers`
+in the manifest.
+
 | fixture | source | wire lineage |
 | --- | --- | --- |
 | `schema13-hybrid-89674b36.json` | `89674b362cc2234cdc359fdd353618c707878848` | hybrid |

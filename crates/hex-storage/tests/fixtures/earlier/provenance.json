@@ -273,5 +273,116 @@
       "original_rs_files": 140,
       "original_rs_aggregate_sha256": "db55d598523fe9a5065f7df0e5c7fa6e3dc6d24f78e5b37fdfcd1efb100e7247"
     }
-  ]
+  ],
+  "explicit_midi_writers": {
+    "sources": [
+      {
+        "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+        "original_rs_files": 140,
+        "original_rs_aggregate_sha256": "2d617f8b35c21cb38f4de7026bfea3ecbda895dc9e6fb9367701c46bde4e8642",
+        "post_build_all_original_rs_unchanged": true
+      },
+      {
+        "source_sha": "4043b1faa78ab6b5ff807ab5e5bd5399783527f7",
+        "original_rs_files": 143,
+        "original_rs_aggregate_sha256": "df30b3c68f7f9516a790e6cc8d181b9988b811e5c0d654344e861c8f085e7f3c",
+        "post_build_all_original_rs_unchanged": true
+      }
+    ],
+    "harness": "artifacts/earlier-migration-evidence/explicit_midi_fixture.rs",
+    "harness_sha256": "4d512377695a9e7500b30120aa5f062b89f5d28013d415a6af775b19cdc6866b",
+    "generator": "artifacts/earlier-migration-evidence/generate_explicit_midi.py",
+    "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+    "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+    "fixture_construction": "5d6c5f73:crates/hex-storage/tests/midi_once.rs::fixture; typed snapshot changes both Arrangement and Session boundaries",
+    "validation": "complete snapshot equality; byte-identical explicit writer reencode; exact retained note/source data and SourceEnd1 versus LoopEnd0 playback occurrences in both owners",
+    "fixtures": [
+      {
+        "path": "crates/hex-storage/tests/fixtures/earlier/schema20-midi-source-5d6c5f73.json",
+        "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+        "version": 20,
+        "policy": "source",
+        "sha256": "cdad1c49f193fc48c722416e1bcfb2fe69c7cf9a5d022793061db20f75536465",
+        "command": [
+          "cargo",
+          "run",
+          "--offline",
+          "--quiet",
+          "-p",
+          "hex-storage",
+          "--example",
+          "explicit_midi_fixture",
+          "--",
+          "20",
+          "source"
+        ]
+      },
+      {
+        "path": "crates/hex-storage/tests/fixtures/earlier/schema20-midi-loop-5d6c5f73.json",
+        "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+        "version": 20,
+        "policy": "loop",
+        "sha256": "205cf79285948570a4425aa365e1ddf984d2f79b3ffc16575e461651f2fa5380",
+        "command": [
+          "cargo",
+          "run",
+          "--offline",
+          "--quiet",
+          "-p",
+          "hex-storage",
+          "--example",
+          "explicit_midi_fixture",
+          "--",
+          "20",
+          "loop"
+        ]
+      },
+      {
+        "path": "crates/hex-storage/tests/fixtures/earlier/schema22-midi-source-5d6c5f73.json",
+        "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+        "version": 22,
+        "policy": "source",
+        "sha256": "1bc38d2352d8c7afcfae678434d97e7220787223b253599451be9fd4d65515da",
+        "command": [
+          "cargo",
+          "run",
+          "--offline",
+          "--quiet",
+          "-p",
+          "hex-storage",
+          "--example",
+          "explicit_midi_fixture",
+          "--",
+          "22",
+          "source"
+        ]
+      },
+      {
+        "path": "crates/hex-storage/tests/fixtures/earlier/schema22-midi-loop-5d6c5f73.json",
+        "source_sha": "5d6c5f73ce9da949d675d97f398511d5e4d65807",
+        "version": 22,
+        "policy": "loop",
+        "sha256": "833fcf04c0764488832bee982dd616e0c126b94872d439043e32bc5ead693556",
+        "command": [
+          "cargo",
+          "run",
+          "--offline",
+          "--quiet",
+          "-p",
+          "hex-storage",
+          "--example",
+          "explicit_midi_fixture",
+          "--",
+          "22",
+          "loop"
+        ]
+      }
+    ],
+    "audit4043": {
+      "all_four_original_reader_and_explicit_writer_roundtrips_passed": true,
+      "all_four_outputs_byte_identical_to_5d6": true,
+      "owning_storage_rs_difference": "none: lib.rs, schema.rs, return_feeds.rs, gain_envelopes.rs, gain_touch.rs",
+      "wire": "required one_shot_boundary in Arrangement MIDI clip and Session MIDI source; Both host trim DTO; schema20 no gain fields, schema22 complete legacy gain fields without incoming_gain/source_start_raw"
+    }
+  }
 }

@@ -14,6 +14,8 @@ const WRITERS: &[&[u8]] = &[
     include_bytes!("fixtures/early/schema18-output-dc6c050a.json"),
     include_bytes!("fixtures/early/schema20-inline-gain-b9274930.json"),
     include_bytes!("fixtures/early/schema21-inline-edit-a9da374e.json"),
+    include_bytes!("fixtures/early/schema20-session-audio-b9274930.json"),
+    include_bytes!("fixtures/early/schema21-session-audio-a9da374e.json"),
     include_bytes!("fixtures/early/schema22-touch-60c88034.json"),
     include_bytes!("fixtures/early/schema23-two-trim-c3076a24.json"),
     include_bytes!("fixtures/early/schema23-combined-3c7c786b.json"),
@@ -177,6 +179,20 @@ fn original_writers_preserve_complete_saved_values_roundtrip_and_history() {
                     if let Some(edit) = clip.as_object_mut().unwrap().remove("audio_edit") {
                         saved_values(&edit, &state["audio_edit"], "inline audio edit");
                     }
+                }
+            }
+            for cell in old["session"]["cells"].as_array_mut().unwrap() {
+                if cell["content"]["kind"] == "audio" {
+                    let clip = &mut cell["content"]["clip"];
+                    let state = current["audio_clip_state"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|row| row["clip"] == clip["id"])
+                        .unwrap();
+                    assert_eq!(clip["gain_millidb"], state["gain_millidb"]);
+                    assert!(state["audio_edit"].is_null());
+                    clip.as_object_mut().unwrap().remove("gain_millidb");
                 }
             }
         }

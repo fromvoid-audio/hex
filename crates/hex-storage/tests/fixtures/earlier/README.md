@@ -38,3 +38,11 @@ Sample tempo uses original Warp setup before the SetAudioClipSampleBpm command.
 The LoopEnd fixture follows the original MIDI toggle commands, retains the note
 at10..12 beats despite a2..6 loop/audible boundary, and copies the source into
 Session. Its authored notes must survive migration independently of playback.
+
+The same5d6/4043 sources exposed explicit schema20/22 writers using their shared
+MIDI DTOs. Four additional fixtures cover both policies in each explicit writer;
+the4043 outputs are byte-identical. Each source independently reopens the saved
+project and re-encodes it through the same explicit writer. These files require
+the foundation envelope, both host trims and the original gain DTO shapes; mixing
+their policy fields with inline audio, older trims or later gain seams refuses.
+Their complete source/hash/oracle record is `explicit_midi_writers` in the manifest.
