@@ -59,8 +59,10 @@ pub(crate) fn device_style(role: DeviceStyleRole) -> ControlStyle {
 
 /// One selected-header policy for every instrument, effect and return shell.
 /// Header paint is isolated from the neutral body and uses a readable foreground.
+/// The reserved shell stroke stays neutral and visible in every selection state.
 pub(crate) fn device_frame_style(selected: bool) -> DeviceFrameStyle {
-    let style = device_style(DeviceStyleRole::Layout);
+    let mut style = device_style(DeviceStyleRole::Layout);
+    style.border = color(PaletteRole::Border);
     let frame = style.with_device_selection(selected);
     if selected {
         frame.with_header_colors(style.accent, readable_text(style.accent, style.text))
