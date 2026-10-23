@@ -765,6 +765,7 @@ impl Render for EditorView {
                 cx.notify();
             }))
             .on_action(cx.listener(|view, _: &CancelDragOrStop, window, cx| {
+                view.cancel_duplicate_chain();
                 if view.cancel_loop_rail_gesture()
                     | view.cancel_project_spectrum_resize(cx)
                     | view.cancel_trim_gesture(cx)
@@ -1150,8 +1151,6 @@ impl Render for EditorView {
                     && view.selected_scene.is_some()
                 {
                     view.duplicate_selected_scene();
-                } else if let Some(clip) = view.selected_arrangement_midi_clip_data() {
-                    view.duplicate_midi_clip(clip);
                 } else if view.mode == super::EditorMode::Session {
                     view.error = Some("session cell duplication is not available yet".into());
                 } else {

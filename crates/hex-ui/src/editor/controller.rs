@@ -1,6 +1,5 @@
 #[cfg(test)]
 use super::EnqueuedNativeDeviceDrop;
-use super::duplicate::Press;
 use super::play_intent::AdmissionError;
 use super::refresh::AudioFrame;
 use super::seek::seek_is_pending;
@@ -984,6 +983,7 @@ impl EditorView {
                     self.pending_created_note_selection = None;
                     self.midi_step.cancel_pending();
                     visible_change |= self.retire_pending_trim();
+                    visible_change |= self.duplicate_intent.reject();
                     visible_change |= self.pending_group_copy.take().is_some();
                     visible_change |= self.retire_pending_clip_move();
                     visible_change |= self.retire_pending_section();
@@ -1008,6 +1008,7 @@ impl EditorView {
                 let group_copy_request = self.pending_group_copy_matches(&request);
                 let clip_move_request = self.pending_clip_move_matches(&request);
                 let section_request = self.pending_section_matches(&request);
+                let duplicate_request = self.pending_duplicate_matches(&request);
                 let midi_drag_request = self.pending_midi_drag_matches(&request);
                 let eq_creation_request = self.pending_eq_creation_matches(&request);
                 let time_copy_request = self.pending_time_copy_matches(&request);
@@ -1032,6 +1033,9 @@ impl EditorView {
                         }
                         if section_request {
                             self.section_submitted();
+                        }
+                        if duplicate_request {
+                            self.duplicate_submitted();
                         }
                         if midi_drag_request {
                             self.midi_drag_submitted();
@@ -1063,6 +1067,9 @@ impl EditorView {
                         }
                         if section_request {
                             self.retire_pending_section();
+                        }
+                        if duplicate_request {
+                            self.duplicate_intent.reject();
                         }
                         if midi_drag_request {
                             self.retire_pending_midi_drag();
@@ -1118,17 +1125,14 @@ impl EditorView {
                         if section_request {
                             self.retire_pending_section();
                         }
+                        if duplicate_request {
+                            self.duplicate_intent.reject();
+                        }
                         if midi_drag_request {
                             self.retire_pending_midi_drag();
                         }
                         if let Some(device) = eq_creation_request {
                             self.retire_pending_eq_creation(device);
-                        }
-                        if matches!(
-                            &request,
-                            Request::Edit(hex_project::Command::DuplicateClip(_))
-                        ) {
-                            self.duplicate_intent.reject();
                         }
                         break;
                     }
@@ -1136,6 +1140,7 @@ impl EditorView {
             }
         }
         visible_change |= self.pump_device_gesture();
+        visible_change |= self.retire_abandoned_duplicate();
         visible_change |= self.retire_abandoned_group_copy();
         visible_change |= self.retire_abandoned_clip_move();
         visible_change |= self.retire_abandoned_midi_drag();
@@ -1837,7 +1842,7 @@ impl EditorView {
         false
     }
 
-    pub(super) fn receive(&mut self, event: Event) -> Option<std::path::PathBuf> {
+    pub(super) fn receive(&mut self, mut event: Event) -> Option<std::path::PathBuf> {
         if !event.project_replaced
             && let Some(previous) = self.state.as_ref()
             && let Some(proof) = event.state.comparison_audio.as_ref()
@@ -1874,6 +1879,7 @@ impl EditorView {
         let group_copy_intent = self.group_copy_request_complete(&event);
         let midi_step_complete = self.take_completed_midi_step(&event);
         let created_note_selection = self.take_created_note_selection(&event);
+        let duplicate_completion = self.take_duplicate_completion(&mut event);
         if event.project_replaced {
             self.retire_sampler_parameter();
             self.retire_first_sampler_load();
@@ -2364,37 +2370,8 @@ impl EditorView {
                 generation: self.project_generation,
                 revision,
             });
-        if event.duplicate_complete {
-            let created = match event.created {
-                Some(hex_project::Created::Clip(clip)) => Some(clip),
-                _ => None,
-            };
-            let completion = self.duplicate_intent.complete(created);
-            if let Some(clip) = completion.select {
-                self.midi_note_gesture = None;
-                let track = self.state.as_ref().and_then(|state| {
-                    state
-                        .project
-                        .tracks()
-                        .iter()
-                        .find(|track| track.clips().iter().any(|item| item.id() == clip))
-                        .map(|track| track.id())
-                });
-                if let Some(track) = track {
-                    self.selected_track = Some(track);
-                    self.retained_clip_detail = None;
-                    self.selected_clip = Some(clip);
-                    self.piano_beat_start = hex_project::BeatTime::ZERO;
-                    self.midi_hit_cycle = None;
-                } else {
-                    self.duplicate_intent.reject();
-                }
-            }
-            if let Some(clip) = completion.submit {
-                if !self.enqueue_duplicate_continuation(clip) {
-                    self.duplicate_intent.reject();
-                }
-            }
+        if let Some(completion) = duplicate_completion {
+            self.complete_clip_duplicate(completion);
         } else if let Some(hex_project::Created::Scene(scene)) = event.created {
             if let Some(intent) = scene_duplicate_intent {
                 if intent.select_on_completion
@@ -2752,11 +2729,8 @@ impl EditorView {
         accepted
     }
 
-    fn enqueue_duplicate_continuation(&mut self, clip: hex_project::ClipId) -> bool {
-        self.enqueue_request(
-            Request::Edit(hex_project::Command::DuplicateClip(clip)),
-            true,
-        )
+    pub(super) fn enqueue_duplicate_continuation(&mut self, request: Request) -> bool {
+        self.enqueue_request(request, true)
     }
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
@@ -2952,6 +2926,7 @@ impl EditorView {
                 | Request::OpenWithAudioMode { .. }
                 | Request::GainLane { .. }
                 | Request::EditArrangementSection { .. }
+                | Request::DuplicateClips { .. }
                 | Request::Edit(_)
                 | Request::ConvertClip { .. }
                 | Request::CutTimeRange(_)
@@ -3014,6 +2989,7 @@ impl EditorView {
         let group_copy_request = self.pending_group_copy_matches(&request);
         let clip_move_request = self.pending_clip_move_matches(&request);
         let section_request = self.pending_section_matches(&request);
+        let duplicate_request = self.pending_duplicate_matches(&request);
         let midi_drag_request = self.pending_midi_drag_matches(&request);
         let eq_creation_request = self.pending_eq_creation_matches(&request);
         match self.service.submit(request) {
@@ -3033,6 +3009,9 @@ impl EditorView {
                 }
                 if section_request {
                     self.section_submitted();
+                }
+                if duplicate_request {
+                    self.duplicate_submitted();
                 }
                 if midi_drag_request {
                     self.midi_drag_submitted();
@@ -3061,18 +3040,6 @@ impl EditorView {
                 self.error = Some("project worker stopped".into());
                 false
             }
-        }
-    }
-
-    pub(super) fn duplicate_selected(&mut self) {
-        match self.duplicate_intent.press(self.selected_clip) {
-            Ok(Press::Start(clip)) => {
-                if !self.enqueue(Request::Edit(hex_project::Command::DuplicateClip(clip))) {
-                    self.duplicate_intent.reject();
-                }
-            }
-            Ok(Press::Queued | Press::NoSelection) => {}
-            Err(reason) => self.error = Some(reason.into()),
         }
     }
 
@@ -4241,11 +4208,10 @@ mod tests {
         retained_install_fresh_policy,
     };
     use crate::editor::audio_admission::{AudioAdmissionStatus, ProjectRevision};
-    use crate::editor::duplicate::{DuplicateIntent, Press};
     use crate::editor::{PendingPlaybackAction, PendingSceneDuplicate, PlaybackCandidate};
     use hex_engine::playback::Playback;
     use hex_engine::{PlaybackAction, PlaybackCommand, SessionPlaybackCommand};
-    use hex_project::{ClipId, Command, Created, Editor, Project};
+    use hex_project::{Command, Created, Editor, Project};
     use hex_session::device_gesture::GestureKey;
 
     #[test]
@@ -4724,69 +4690,9 @@ mod tests {
     }
 
     #[test]
-    fn close_prompt_preserves_already_accepted_duplicate_repeats() {
-        let mut editor = Editor::new(Project::new(48_000).expect("project"), 1).expect("editor");
-        let track = match editor
-            .execute(Command::AddTrack {
-                name: "track".into(),
-            })
-            .expect("track")
-        {
-            Created::Track(id) => id,
-            other => panic!("unexpected result: {other:?}"),
-        };
-        let asset = match editor
-            .execute(Command::AddAsset {
-                path: "source.wav".into(),
-                sample_rate: 48_000,
-                frames: 1,
-            })
-            .expect("asset")
-        {
-            Created::Asset(id) => id,
-            other => panic!("unexpected result: {other:?}"),
-        };
-        let clips: Vec<ClipId> = (0..4)
-            .map(|_| {
-                match editor
-                    .execute(Command::PlaceClip {
-                        track,
-                        asset,
-                        start: 0,
-                        duration: 1,
-                        source_offset: 0,
-                        source_length: 1,
-                        looping: false,
-                    })
-                    .expect("clip")
-                {
-                    Created::Clip(id) => id,
-                    other => panic!("unexpected result: {other:?}"),
-                }
-            })
-            .collect();
-        let [source, first, second, third] = clips.as_slice() else {
-            panic!("expected four fixture clips");
-        };
-
-        let mut intent = DuplicateIntent::default();
-        assert!(matches!(intent.press(Some(*source)), Ok(Press::Start(_))));
-        assert!(matches!(intent.press(Some(*source)), Ok(Press::Queued)));
-        assert!(matches!(intent.press(Some(*source)), Ok(Press::Queued)));
-
-        let first_result = intent.complete(Some(*first));
-        assert_eq!(first_result.submit, Some(*first));
+    fn close_prompt_allows_only_owned_duplicate_continuations() {
         assert!(allows_non_open_request(true, false, true));
         assert!(!allows_non_open_request(true, false, false));
-
-        let second_result = intent.complete(Some(*second));
-        assert_eq!(second_result.submit, Some(*second));
-        assert!(allows_non_open_request(true, false, true));
-
-        // Canceling the prompt clears only the close gate; accepted repeats remain chained.
-        let third_result = intent.complete(Some(*third));
-        assert_eq!(third_result.submit, None);
-        assert!(!intent.is_pending());
         assert!(allows_non_open_request(false, false, false));
         assert!(!allows_non_open_request(true, true, true));
     }

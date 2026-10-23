@@ -47,6 +47,7 @@ mod clip_conversion;
 pub use appearance::{ClipFlavor, ElementColor};
 mod clip_clipboard;
 mod clip_copy;
+mod clip_duplicate;
 mod clip_group;
 mod clip_group_preview;
 pub use clip_clipboard::ClipClipboard;
