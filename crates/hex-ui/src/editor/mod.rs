@@ -771,6 +771,8 @@ pub(super) struct EditorView {
     track_scroll: track_layout::TrackScroll,
     track_layout: track_layout::TrackLayout,
     track_reorder: track_reorder::TrackReorder,
+    #[cfg(all(test, feature = "ui-test-support"))]
+    track_row_builds: usize,
     focused_return: Option<hex_project::ReturnId>,
     send_menu_track: Option<TrackId>,
     pub(in crate::editor) session_scene_scroll: gpui::UniformListScrollHandle,
@@ -1394,6 +1396,8 @@ impl EditorView {
             track_scroll: track_layout::TrackScroll::new(),
             track_layout: track_layout::TrackLayout::default(),
             track_reorder: track_reorder::TrackReorder::default(),
+            #[cfg(all(test, feature = "ui-test-support"))]
+            track_row_builds: 0,
             focused_return: None,
             send_menu_track: None,
             session_scene_scroll: gpui::UniformListScrollHandle::new(),

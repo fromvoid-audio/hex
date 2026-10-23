@@ -186,6 +186,12 @@ fn pointer_commits_first_middle_last_and_one_undo(cx: &mut TestAppContext) {
         (0, 3, true, vec![1, 2, 3, 0]),
     ] {
         let (mut visual, editor, ids) = live_fixture(cx);
+        // Establish real user selection; assigning a fixture snapshot directly
+        // intentionally bypasses the controller's initial selection reconciliation.
+        let select = bounds(&mut visual, ids[1]).center();
+        visual.simulate_mouse_down(select, MouseButton::Left, Modifiers::default());
+        visual.simulate_mouse_up(select, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
         let selected = editor.read_with(&visual, |v, _| {
             (v.selected_track, v.selected_clip, v.selected_track_ids())
         });
@@ -680,5 +686,32 @@ fn scrolled_variable_height_drop_commits_the_visible_gap_and_retains_sizes(
         assert_eq!(tracks[7].id(), ids[8]);
         assert_eq!(tracks[8].id(), ids[7]);
         assert_eq!(v.track_height(ids[8]), height);
+    });
+}
+
+#[gpui::test]
+fn canonical_reorder_does_not_rebuild_every_offscreen_track(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_tracks(cx, 100, false);
+    let from = bounds(&mut visual, ids[0]).center();
+    let target = visual
+        .debug_bounds(Box::leak(
+            format!("arrangement-track-header-{}", ids[2].value()).into_boxed_str(),
+        ))
+        .unwrap();
+    let to = point(from.x, target.origin.y + px(1.0));
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.update(&mut visual, |v, _| v.track_row_builds = 0);
+    visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+    receive(&mut visual, &editor);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.state.as_ref().unwrap().project.tracks()[1].id(), ids[0]);
+        println!("track row builds after reorder: {}", v.track_row_builds);
+        assert!(
+            v.track_row_builds < 100,
+            "one reordered row must not rebuild100track elements: {}",
+            v.track_row_builds
+        );
     });
 }

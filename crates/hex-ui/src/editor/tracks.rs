@@ -416,6 +416,10 @@ impl EditorView {
         timeline: ClipViewTimeline<'_>,
         cx: &mut Context<Self>,
     ) -> Div {
+        #[cfg(all(test, feature = "ui-test-support"))]
+        {
+            self.track_row_builds = self.track_row_builds.saturating_add(1);
+        }
         let ClipViewTimeline {
             viewport,
             grid,
