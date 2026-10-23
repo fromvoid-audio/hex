@@ -382,6 +382,62 @@ impl GroupGesture {
         self.delta == 0 && self.pitch_delta == 0
     }
 
+    /// Copy toggles only a move gesture; a captured resize keeps its edge.
+    pub(super) fn set_copy(&mut self, copy: bool) -> bool {
+        if self.kind != HitKind::Move || self.copy == copy {
+            return false;
+        }
+        self.copy = copy;
+        true
+    }
+
+    /// Promote the existing single-note move without resampling its pointer
+    /// anchor. Both paths then share copy payloads and overwrite previews.
+    pub(super) fn from_note_copy(
+        note: midi_drag::NoteGesture,
+        selection_epoch: u64,
+    ) -> Result<Option<Self>, &'static str> {
+        let midi_drag::GestureKind::Move {
+            pointer_beat_raw,
+            pointer_pitch,
+        } = note.kind
+        else {
+            return Ok(None);
+        };
+        let mut originals = Vec::new();
+        originals
+            .try_reserve_exact(1)
+            .map_err(|_| "could not reserve midi copy preview")?;
+        originals.push(GroupNote {
+            id: note.note,
+            start: note.original.start,
+            duration: note.original.duration,
+            pitch: note.original.pitch,
+            channel: note.channel,
+            velocity: note.velocity,
+        });
+        Ok(Some(Self {
+            copy: true,
+            kind: HitKind::Move,
+            generation: note.generation,
+            revision: note.revision,
+            clip: note.clip,
+            selection_epoch,
+            originals: Arc::from(originals),
+            pointer_beat: pointer_beat_raw,
+            pointer_pitch,
+            bounds: note.bounds,
+            beat_start: note.beat_start,
+            beat_span: note.beat_span,
+            pitch_low: note.pitch_low,
+            pitch_rows: note.pitch_rows,
+            clip_length: note.clip_length,
+            grid: note.grid,
+            delta: i128::from(note.preview.start) - i128::from(note.original.start),
+            pitch_delta: i16::from(note.preview.pitch) - i16::from(note.original.pitch),
+        }))
+    }
+
     pub(super) fn is_copy(&self) -> bool {
         self.copy
     }
