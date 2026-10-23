@@ -110,7 +110,7 @@ class NativeBootstrapTests(unittest.TestCase):
             with self.subTest(scenario=scenario):
                 _value, observed = self.processing(scenario)
                 self.assertEqual(observed[7:9], [1, 1])
-                self.assertEqual(observed[9], 0 if scenario == 22 else 1)
+                self.assertEqual(observed[9], 1)  # one attempted DSP call, even when the plug-in refuses
 
     @staticmethod
     def stream_packet(sequence, *, graph=3, frames=8, events=True):

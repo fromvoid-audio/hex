@@ -127,6 +127,7 @@ public:
         if (data.numOutputs && (!data.outputs || data.outputs[0].numChannels!=outputs ||
             (precision==kSample32?!data.outputs[0].channelBuffers32:!data.outputs[0].channelBuffers64)))
             return kInvalidArgument;
+        ++observed.blocks; // count attempted foreign DSP, including a refusal
         if (fault==10) return kResultFalse;
         const float scale=0.5f+static_cast<float>(block)*0.125f;
         bool silent=true;
@@ -149,7 +150,7 @@ public:
         if (output) data.outputs[0].silenceFlags=silent || fault==9?((uint64(1)<<outputs)-1):0;
         if (fault==8 && output) data.outputs[0].numChannels=3;
         if (fault==13) data.numSamples=8192;
-        ++block;++observed.blocks;return kResultOk;
+        ++block;return kResultOk;
     }
 };
 
