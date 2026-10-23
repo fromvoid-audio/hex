@@ -22,6 +22,20 @@ pub(super) struct Controls {
     mixer: BTreeMap<MixerKey, Binding>,
 }
 
+impl Controls {
+    /// Read-only admission check; drafts remain with their numeric owners.
+    /// Unlike finalization, it does not collect bindings or commit values.
+    pub(super) fn has_pending_draft(&self, cx: &gpui::App) -> bool {
+        self.bindings
+            .values()
+            .chain(self.mixer.values())
+            .any(|binding| {
+                let control = binding.entity.read(cx);
+                control.is_interacting() || control.is_editing()
+            })
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum MixerKey {
     Balance(TrackId),
@@ -185,7 +199,7 @@ impl EditorView {
                     NumericControlKind::HorizontalSlider,
                     spec,
                     f64::from(track.gain()),
-                    device_panel::control_style(),
+                    theme::control_style(),
                 )
             });
             let Ok(config) = config else { return div() };
@@ -267,7 +281,7 @@ impl EditorView {
         let binding = &self.track_gain_controls.bindings[&id];
         binding.entity.update(cx, |control, cx| {
             control.set_enabled(enabled, cx);
-            let _ = control.set_external_style(device_panel::control_style(), cx);
+            let _ = control.set_external_style(theme::control_style(), cx);
             let _ = control.set_external_value(f64::from(active.unwrap_or(track.gain())), cx);
         });
         div()
@@ -337,7 +351,7 @@ impl EditorView {
                 NumericControlKind::HorizontalSlider,
                 spec,
                 f64::from(canonical),
-                device_panel::control_style(),
+                theme::control_style(),
             ) else {
                 return div();
             };
@@ -405,7 +419,7 @@ impl EditorView {
         let binding = &self.track_gain_controls.mixer[&key];
         binding.entity.update(cx, |control, cx| {
             control.set_enabled(enabled, cx);
-            let _ = control.set_external_style(device_panel::control_style(), cx);
+            let _ = control.set_external_style(theme::control_style(), cx);
             let _ = control.set_external_value(f64::from(active.unwrap_or(canonical)), cx);
         });
         div()

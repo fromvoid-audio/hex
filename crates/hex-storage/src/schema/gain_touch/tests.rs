@@ -14,11 +14,13 @@ fn fixture() -> Project {
         track,
         points: vec![
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::ZERO,
                 gain: 0.2,
                 outgoing: GainInterpolation::Linear,
             },
             GainPoint {
+                incoming_gain: None,
                 beat: BeatTime::from_raw(100),
                 gain: 0.8,
                 outgoing: GainInterpolation::Step,
@@ -30,6 +32,7 @@ fn fixture() -> Project {
 }
 fn touch() -> GainTouchSpan {
     GainTouchSpan {
+        source_start: BeatTime::from_raw(20),
         start: BeatTime::from_raw(20),
         end: BeatTime::from_raw(80),
         context: GainTouchContext {
@@ -85,10 +88,13 @@ fn span_roundtrip_preserves_canonical_value_through_current_writer() {
     let current = crate::encode(&restored).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&current).unwrap()["version"],
-        35
+        crate::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(crate::decode(&current).unwrap(), restored);
-    assert!(crate::decode(&crate::encode_schema22(&restored).unwrap()).is_err());
+    assert_eq!(
+        crate::decode(&crate::encode_schema22(&restored).unwrap()).unwrap(),
+        restored
+    );
     assert!(super::super::gain_envelopes::DocumentV21::from_project(&restored).is_err());
     let lane = GainLane::new(
         snapshot.tracks[0].gain_envelope.clone(),
@@ -189,7 +195,7 @@ fn empty_spans_preserve_existing_base_and_high_water_old_writers_refuse_loss() {
     let encoded = crate::encode(&project).unwrap();
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&encoded).unwrap()["version"],
-        35
+        crate::CURRENT_SCHEMA_VERSION
     );
     assert_eq!(crate::decode(&encoded).unwrap(), project);
     assert!(super::super::gain_envelopes::DocumentV21::from_project(&project).is_err());
@@ -202,6 +208,7 @@ fn proposed_trim_fragment_roundtrip_retains_original_held_event_identity() {
     let lane = GainLane::new(base, vec![touch()], 1).unwrap();
     let mut replacement = touch();
     replacement.start = BeatTime::from_raw(30);
+    replacement.source_start = replacement.start;
     replacement.end = BeatTime::from_raw(40);
     replacement.context.recording_epoch = 2;
     replacement.context.gesture_serial = 2;

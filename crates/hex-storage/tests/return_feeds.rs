@@ -50,10 +50,13 @@ fn current_feeds_keep_provenance_and_opaque_device_states() {
     let project = fixture();
     let bytes = encode(&project).unwrap();
     let doc: Value = serde_json::from_slice(&bytes).unwrap();
-    assert_eq!(doc["version"], 35);
+    assert_eq!(doc["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(doc["routing"], json!([]));
     assert_eq!(decode(&bytes).unwrap(), project);
-    assert!(decode(&encode_schema20(&project).unwrap()).is_err());
+    assert_eq!(
+        decode(&encode_schema20(&project).unwrap()).unwrap(),
+        project
+    );
 }
 
 #[test]
@@ -65,7 +68,7 @@ fn valid_feed_decode_load_and_save_preserve_canonical_state_and_input() {
     assert_eq!(decode(&encode(&decoded).unwrap()).unwrap(), decoded);
     assert_eq!(
         serde_json::from_slice::<Value>(&encode(&decoded).unwrap()).unwrap()["version"],
-        35
+        hex_storage::CURRENT_SCHEMA_VERSION
     );
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)

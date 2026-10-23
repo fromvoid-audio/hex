@@ -128,6 +128,19 @@ public:
         if (!count) return result;
         const auto request=requests[first]; first=(first+1)%requests.size(); --count;
         result.sequence=request.sequence; result.flags=request.flags;
+        return refresh_controller_on_control(controller,result);
+    }
+    // Startup restoration must rescan actual controller values without
+    // fabricating a plug-in restart request or IComponentHandler edit.
+    HostDispatch refresh_on_control(IEditController* controller) {
+        HostDispatch result{};result.metadata_revision=metadata.revision;
+        return refresh_controller_on_control(controller,result);
+    }
+private:
+    HostDispatch refresh_controller_on_control(IEditController* controller,HostDispatch result) {
+        if (![NSThread isMainThread]) { refuse(WrongThread);result.disposition=HostDisposition::WrongThread;return result; }
+        if (!accepting) { result.disposition=HostDisposition::Retiring;return result; }
+        if (dispatching) { recursive=true;refuse(RecursiveRestart);result.disposition=HostDisposition::Recursive;return result; }
         if (!controller) { refuse(UnsupportedCapability); result.disposition=HostDisposition::NoController; return result; }
         dispatching=true; recursive=false;
         struct Leave { bool& flag; ~Leave() { flag=false; } } leave{dispatching};
@@ -168,6 +181,7 @@ public:
         result.metadata_revision=metadata.revision; result.disposition=HostDisposition::Refreshed;
         return result;
     }
+public:
     // Native-control borrowed view only, valid until next dispatch or retirement.
     // A transport consumer must copy/validate its bounded data before crossing IPC.
     const ParameterSnapshot* snapshot() const { return [NSThread isMainThread]?&metadata:nullptr; }

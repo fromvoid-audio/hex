@@ -1,0 +1,67 @@
+{
+  "format": "hex-project",
+  "version": 13,
+  "sample_rate": 48000,
+  "next_id": 5,
+  "assets": [
+    {
+      "id": 2,
+      "path": "Media/one-shot.wav",
+      "source_sample_rate": 48000,
+      "source_frames": 8,
+      "playback_frames": 8,
+      "conversion_version": 0
+    }
+  ],
+  "tracks": [
+    {
+      "id": 1,
+      "name": "hybrid",
+      "gain": 1.0,
+      "balance": 0.0,
+      "muted": false,
+      "soloed": false,
+      "audio_clips": [],
+      "midi_clips": []
+    }
+  ],
+  "loop_region": null,
+  "master_gain": 1.0,
+  "tempo_points": [
+    {
+      "beat_raw": 0,
+      "micro_bpm": 120000000
+    }
+  ],
+  "meter_points": [
+    {
+      "beat_raw": 0,
+      "numerator": 4,
+      "denominator": 4
+    }
+  ],
+  "session": {
+    "scenes": [
+      {
+        "id": 3,
+        "name": "audio"
+      }
+    ],
+    "cells": [
+      {
+        "track": 1,
+        "scene": 3,
+        "content": {
+          "kind": "audio",
+          "clip": {
+            "id": 4,
+            "name": "legacy one shot",
+            "asset": 2,
+            "source_start": 2,
+            "source_end": 7
+          }
+        }
+      }
+    ]
+  }
+}

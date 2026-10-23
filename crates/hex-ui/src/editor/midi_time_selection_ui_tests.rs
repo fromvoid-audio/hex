@@ -31,15 +31,26 @@ fn assert_visible(
             "time selection never reduces to a note"
         );
     });
-    let color: gpui::Background =
-        gpui::rgba((crate::theme::color(crate::theme::PaletteRole::Primary) << 8) | 0x44).into();
-    assert!(
-        visual
-            .rendered_filled_quads("midi-source-ruler")
-            .iter()
-            .any(|(_, c)| c == &color),
-        "completed frame retains time highlight"
-    );
+    let color: gpui::Background = gpui::Hsla::from(gpui::rgb(crate::theme::color(
+        crate::theme::PaletteRole::Secondary,
+    )))
+    .opacity(0.13)
+    .into();
+    let scale = visual.update(|window, _| window.scale_factor());
+    for selector in ["midi-source-ruler", "midi-note-roll"] {
+        let bounds = visual.debug_bounds(selector).expect("selection canvas");
+        assert!(
+            visual
+                .rendered_filled_quads(selector)
+                .iter()
+                .any(|(quad, c)| c == &color
+                    && quad.size.height
+                        == gpui::ScaledPixels::from(
+                            f32::from(bounds.size.height - px(2.0)) * scale
+                        )),
+            "completed frame retains full-height translucent time highlight in {selector}"
+        );
+    }
 }
 #[gpui::test]
 fn range_copy_three_times_keeps_destination_after_real_ack_and_later_frames(

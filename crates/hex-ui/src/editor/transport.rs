@@ -296,20 +296,12 @@ impl EditorView {
         handler: impl Fn(&mut EditorView, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        div()
+        hex_widgets::action(theme::text(label), theme::action_style())
             .id(description)
             .debug_selector(move || description.into())
             .w(px(header::CONTROL_SIZE))
             .h(px(header::CONTROL_SIZE))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| MiniTooltip {
                     description: tooltip_description.clone(),
@@ -320,24 +312,15 @@ impl EditorView {
                 handler(view, window, cx);
                 cx.notify();
             }))
-            .child(theme::text(label))
     }
 
     fn snap_control(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
-        div()
+        hex_widgets::action(theme::text(self.snap_grid.label()), theme::action_style())
             .id("clip move snap grid")
             .debug_selector(|| "arranger-snap-toggle".to_owned())
             .w(px(68.0))
             .h(px(header::CONTROL_SIZE))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
-            .bg(rgb(theme::color(theme::PaletteRole::Raised)))
-            .text_color(rgb(theme::color(theme::PaletteRole::Text)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(|_, cx| {
                 cx.new(|_| MiniTooltip {
                     description: "arranger snap · click to toggle adaptive snapping".into(),
@@ -348,7 +331,6 @@ impl EditorView {
                 view.toggle_snap_grid();
                 cx.notify();
             }))
-            .child(theme::text(self.snap_grid.label()))
     }
 
     fn position_label(&self) -> String {

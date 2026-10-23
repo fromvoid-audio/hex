@@ -274,6 +274,7 @@ impl EditorView {
             );
         }
         content = content.children(self.edit_cursor_layer(viewport));
+        content = content.children(self.track_reorder_line());
         let upper = div()
             .flex()
             .flex_col()
@@ -326,6 +327,7 @@ impl EditorView {
                             height: f32::from(bounds.size.height),
                         });
                         view.arrangement_bounds_epoch = view.drag_layout_generation;
+                        view.track_reorder_painted();
                     });
                     let zoom_entity = measure_entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {
@@ -424,18 +426,31 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (started, moving) = cursor_down_entity.update(cx, |view, cx| {
+                            if view.begin_section_pointer(
+                                x,
+                                y,
+                                event.click_count == 2,
+                                event.modifiers,
+                                cx,
+                            ) {
+                                view.focus.focus(window);
+                                cx.notify();
+                                return (true, false);
+                            }
                             if view.pointer_hits_fade_control(x, y) {
                                 return (false, false);
                             }
                             if event.click_count == 2
+                                && !event.modifiers.shift
                                 && view.begin_clip_paint(x, y, event.modifiers.platform)
                             {
                                 view.focus.focus(window);
                                 cx.notify();
                                 return (true, false);
                             }
-                            let move_started = view.begin_main_time_range_move_gesture(x, y)
-                                || view.begin_time_range_move_gesture(x, y);
+                            let move_started = !event.modifiers.shift
+                                && (view.begin_main_time_range_move_gesture(x, y)
+                                    || view.begin_time_range_move_gesture(x, y));
                             let started = if move_started {
                                 view.update_time_range_copy_modifier(event.modifiers.alt);
                                 true
@@ -444,10 +459,12 @@ impl EditorView {
                                     x,
                                     y,
                                     event.modifiers.platform,
+                                    event.modifiers.shift,
                                 ) || view.begin_time_selection_gesture(
                                     x,
                                     y,
                                     event.modifiers.platform,
+                                    event.modifiers.shift,
                                 )
                             };
                             if started {
@@ -474,6 +491,17 @@ impl EditorView {
                         let x = f32::from(event.position.x);
                         let y = f32::from(event.position.y);
                         let (changed, moving) = cursor_move_entity.update(cx, |view, cx| {
+                            if view.sections.held() {
+                                let changed = if event.pressed_button == Some(MouseButton::Left) {
+                                    view.update_section_pointer(x, y, event.modifiers.platform)
+                                } else {
+                                    view.cancel_section_pointer()
+                                };
+                                if changed {
+                                    cx.notify();
+                                }
+                                return (changed, false);
+                            }
                             if view.clip_paint_gesture.is_some() {
                                 let changed = if event.pressed_button == Some(MouseButton::Left) {
                                     view.update_clip_paint(x, y, event.modifiers.platform)
@@ -514,6 +542,11 @@ impl EditorView {
                             let moving = view.time_range_move_gesture.is_some();
                             let x = f32::from(event.position.x);
                             let y = f32::from(event.position.y);
+                            if view.finish_section_pointer(x, y, event.modifiers.platform) {
+                                cx.stop_propagation();
+                                cx.notify();
+                                return (true, false);
+                            }
                             if view.finish_clip_paint(x, y, event.modifiers.platform) {
                                 cx.stop_propagation();
                                 cx.notify();
@@ -604,6 +637,7 @@ impl EditorView {
             .child(returns)
             .child(main)
             .child(self.track_resize_events(cx))
+            .children([self.track_reorder_events(cx)])
             .on_drag_move::<super::drag::NativeDeviceDrag>(move |event, _, cx| {
                 let Some(payload) = event
                     .dragged_item()
@@ -687,6 +721,8 @@ impl EditorView {
             .h_full()
             .children([main_track_grid_layer(bands, lines, viewport)])
             .children(self.main_time_selection_overlay(viewport))
+            .children(self.section_elements(viewport, cx))
+            .children([self.section_pointer_events(cx)])
             .child(
                 canvas(
                     |_, _, _| (),

@@ -81,6 +81,23 @@ impl TrackScroll {
         self.list.scroll_to(top);
     }
 }
+/// A single canonical row move is a one-position rotation of the changed span.
+/// Return the old source index and final insertion index, not an original gap.
+fn single_row_move(old: &[TrackId], new: &[TrackId]) -> Option<(usize, usize)> {
+    if old.len() != new.len() {
+        return None;
+    }
+    let first = old.iter().zip(new).position(|(a, b)| a != b)?;
+    let last = old.iter().zip(new).rposition(|(a, b)| a != b)?;
+    if old[first] == new[last] && old[first + 1..=last] == new[first..last] {
+        Some((first, last))
+    } else if old[last] == new[first] && old[first..last] == new[first + 1..=last] {
+        Some((last, first))
+    } else {
+        None
+    }
+}
+
 impl EditorView {
     fn maximum_header_width(&self) -> f32 {
         self.track_layout
@@ -130,10 +147,20 @@ impl EditorView {
             top.item_ix = anchor
                 .and_then(|id| ids.iter().position(|item| *item == id))
                 .unwrap_or(top.item_ix.min(ids.len().saturating_sub(1)));
-            // Re-measure the bounded (<=256) row set only on a structural edit.
-            // Ordinary frames and width drags render visible rows; height drags
-            // invalidate only the captured row, retaining the logical scroll.
-            self.track_scroll.list.reset(ids.len());
+            if let Some((from, to)) = single_row_move(&self.track_layout.tracks, &ids) {
+                // Cached sizes belong to stable TrackIds. Preserve every
+                // unchanged row; only the inserted moved row loses its size.
+                // GPUI still scans bounded metadata, but constructs elements
+                // only for unmeasured/visible rows instead of all100+ tracks.
+                self.track_scroll.list.splice(from..from + 1, 0);
+                self.track_scroll.list.splice(to..to, 1);
+                let _ = self.track_scroll.list.clone().measure_all();
+            } else {
+                // Adds/removals or other structural changes keep the existing
+                // full measurement path. Width/height invalidations remain
+                // owned by their existing layout paths.
+                self.track_scroll.list.reset(ids.len());
+            }
             self.track_scroll.list.scroll_to(top);
             self.track_layout.tracks = ids;
         }
