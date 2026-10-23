@@ -401,3 +401,96 @@ fn discarded_local_duplicate_queue_retires_while_admitted_request_keeps_custody(
         assert_ne!(v.selected_clip, Some(originals[0]));
     });
 }
+
+#[gpui::test]
+fn full_real_worker_queue_defers_duplicate_and_retires_its_own_terminal(cx: &mut TestAppContext) {
+    let (_files, handle, editor, originals) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    click(&mut visual, originals[0], false);
+    editor.update(&mut visual, |v, _| {
+        // SaveCurrent refuses this untitled fixture without changing revision.
+        // Undrained terminal delivery fills the actual bounded worker channel.
+        let mut full = false;
+        for _ in 0..128 {
+            match v.service.submit(Request::SaveCurrent) {
+                Ok(()) => v.worker_requests_pending += 1,
+                Err(hex_session::service::SubmitError::Full(_)) => {
+                    full = true;
+                    break;
+                }
+                Err(error) => panic!("unexpected queue admission: {error:?}"),
+            }
+        }
+        assert!(full, "the real worker channel must reach backpressure");
+        v.start_clip_duplicate(v.selected_clip_ids(), 0, false);
+        assert!(
+            v.duplicate_intent
+                .pending
+                .as_ref()
+                .unwrap()
+                .receipt
+                .is_queued()
+        );
+        assert!(
+            v.pending_requests
+                .iter()
+                .any(|request| v.pending_duplicate_matches(request))
+        );
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.duplicate_intent.is_pending());
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert_eq!(all_ids(v).len(), originals.len() + 1);
+        assert_ne!(v.selected_clip, Some(originals[0]));
+    });
+}
+
+#[gpui::test]
+fn confirmed_new_project_cancels_repeats_without_stranding_future_duplication(
+    cx: &mut TestAppContext,
+) {
+    let (_files, handle, editor, originals) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    click(&mut visual, originals[0], false);
+    press(&editor, &mut visual);
+    press(&editor, &mut visual);
+    editor.update(&mut visual, |v, _| {
+        v.new_project(hex_session::DocumentAudioMode::Resident);
+        v.new_project(hex_session::DocumentAudioMode::Resident);
+        assert!(v.opening_project);
+        assert!(
+            v.duplicate_intent.is_pending(),
+            "admitted edit still owns its terminal"
+        );
+        assert_eq!(v.duplicate_intent.queued_repeats, 0);
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.project_generation, 1);
+        assert!(!v.duplicate_intent.is_pending());
+        assert!(all_ids(v).is_empty());
+        assert!(v.error.is_none(), "{:?}", v.error);
+    });
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::AddTrack {
+            name: "new midi".into()
+        })));
+    });
+    pump(&editor, &mut visual);
+    editor.update(&mut visual, |v, _| {
+        assert!(v.enqueue(Request::Edit(Command::PlaceMidiClip {
+            track: v.selected_track.unwrap(),
+            start: BeatTime::ZERO,
+            length: BeatTime::ONE,
+        })));
+    });
+    pump(&editor, &mut visual);
+    press(&editor, &mut visual);
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |v, _| {
+        assert!(!v.duplicate_intent.is_pending());
+        assert!(v.error.is_none(), "{:?}", v.error);
+        assert_eq!(all_ids(v).len(), 2);
+    });
+}
