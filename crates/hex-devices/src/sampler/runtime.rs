@@ -80,6 +80,9 @@ pub struct SamplerRuntime {
     active: Active,
 }
 impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
     fn supports_occurrence_gain(&self) -> bool {
         true
     }
@@ -197,6 +200,20 @@ impl SamplerRuntime {
     }
 }
 impl MutableInstrumentRuntime for SamplerRuntime {
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn active_occurrence_ids(&self, output: &mut [u64]) -> Result<usize, Error> {
+        let count = self.active.iter().flatten().count();
+        if output.len() < count {
+            return Err(Error::ActiveOccurrenceCapacityExceeded);
+        }
+        for (slot, voice) in output[..count].iter_mut().zip(self.active.iter().flatten()) {
+            *slot = voice.occurrence;
+        }
+        output[..count].sort_unstable();
+        Ok(count)
+    }
     fn supports_occurrence_gain(&self) -> bool {
         true
     }

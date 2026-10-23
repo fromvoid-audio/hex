@@ -1,6 +1,7 @@
 //! Source-local piano ruler, playback start and retained loop brace. Owns one
 //! captured preview; release uses the existing source edit command and Session ACK owner.
-//! Source start is neither the insertion cursor nor the Arrangement playhead.
+//! Source start is neither the insertion cursor nor the playback cursor. Blank
+//! clicks delegate to the cue owner; drags retain source-time selection.
 use super::{
     EditorView,
     midi_drag::{self, MidiGrid},
@@ -284,7 +285,14 @@ impl EditorView {
             .border_color(rgb(theme::color(theme::PaletteRole::Border)))
             .bg(rgb(theme::color(theme::PaletteRole::Raised)))
             .track_focus(&self.midi_focus)
-            .key_context("hex_midi");
+            .key_context("hex_midi")
+            .tooltip(|_, cx| {
+                cx.new(|_| super::transport::MiniTooltip {
+                    description: "click: cue playback · drag: select time · drag marker: set start"
+                        .into(),
+                })
+                .into()
+            });
         let mut step = self
             .midi_snap_grid
             .step_raw()

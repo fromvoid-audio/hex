@@ -68,6 +68,31 @@ impl MidiSourcePlayback {
         self.arrangement_duration
     }
 
+    /// Source phase at an elapsed clip beat, independent of note content. An
+    /// ongoing Session loop can repeat beyond `arrangement_duration`; finite
+    /// placement consumers must check their placement duration separately.
+    /// One-shot sources return `None` at their exclusive end. No note is chased.
+    pub fn source_phase_at_elapsed(self, elapsed: BeatTime) -> Option<BeatTime> {
+        let raw = elapsed.raw();
+        if let Some((start, end)) = self.loop_range {
+            let first_pass = end.raw() - self.source_start.raw();
+            let phase = if raw < first_pass {
+                self.source_start.raw().checked_add(raw)?
+            } else {
+                start
+                    .raw()
+                    .checked_add((raw - first_pass) % (end.raw() - start.raw()))?
+            };
+            Some(BeatTime::from_raw(phase))
+        } else {
+            self.source_start
+                .raw()
+                .checked_add(raw)
+                .filter(|phase| *phase < self.source_length.raw())
+                .map(BeatTime::from_raw)
+        }
+    }
+
     /// Build a constant-time plan for a validated source-local note.
     pub fn note_occurrences(
         self,
@@ -372,6 +397,25 @@ mod tests {
             );
         }
         output
+    }
+
+    #[test]
+    fn source_phase_preserves_intro_loop_seam_and_exclusive_one_shot_end() {
+        let b = BeatTime::from_raw;
+        let one = MidiSourcePlayback::new(b(10), b(3), None, b(20)).unwrap();
+        assert_eq!(one.source_phase_at_elapsed(b(0)), Some(b(3)));
+        assert_eq!(one.source_phase_at_elapsed(b(6)), Some(b(9)));
+        assert_eq!(one.source_phase_at_elapsed(b(7)), None);
+        assert_eq!(one.source_phase_at_elapsed(b(u64::MAX)), None);
+        let looped = MidiSourcePlayback::new(b(10), b(1), Some((b(3), b(7))), b(2)).unwrap();
+        let actual: Vec<_> = (0..=11)
+            .map(|e| looped.source_phase_at_elapsed(b(e)).unwrap().raw())
+            .collect();
+        assert_eq!(actual, [1, 2, 3, 4, 5, 6, 3, 4, 5, 6, 3, 4]);
+        assert_eq!(looped.source_phase_at_elapsed(b(u64::MAX)), Some(b(4)));
+        let inside = MidiSourcePlayback::new(b(10), b(5), Some((b(3), b(7))), b(2)).unwrap();
+        assert_eq!(inside.source_phase_at_elapsed(b(1)), Some(b(6)));
+        assert_eq!(inside.source_phase_at_elapsed(b(2)), Some(b(3)));
     }
 
     #[test]

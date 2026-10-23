@@ -85,6 +85,7 @@ mod midi_audition;
 mod midi_canvas;
 mod midi_created_selection;
 mod midi_creation;
+mod midi_cue;
 mod midi_drag;
 mod midi_draw;
 mod midi_group_drag;

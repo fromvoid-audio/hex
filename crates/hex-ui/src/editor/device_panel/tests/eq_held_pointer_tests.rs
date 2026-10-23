@@ -202,7 +202,7 @@ fn eq_held_node_space_key_routes_transport_without_retiring_pointer_or_edit(
     }
 }
 
-fn pump_output(
+pub(in crate::editor) fn pump_output(
     editor: &gpui::Entity<EditorView>,
     cx: &mut TestAppContext,
     output: &mut hex_audio::WorkerPreparedOutput,
@@ -228,7 +228,7 @@ fn pump_output(
     std::thread::yield_now();
 }
 
-fn attach_actual_output(
+pub(in crate::editor) fn attach_actual_output(
     editor: &gpui::Entity<EditorView>,
     cx: &mut TestAppContext,
     visual: &mut VisualTestContext,

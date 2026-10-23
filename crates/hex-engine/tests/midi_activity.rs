@@ -1,5 +1,6 @@
 use hex_engine::{
-    MidiSpanBuffer, PreparedPlaybackObservation, PreparedRevision, SessionPlaybackOwner,
+    MidiSpanBuffer, PreparedPlaybackObservation, PreparedRevision, SessionMidiOrigin,
+    SessionPlaybackOwner,
 };
 use hex_project::{BeatTime, Command, Created, Editor, Project};
 use std::{collections::BTreeMap, sync::Arc};
@@ -72,12 +73,26 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
         SessionPlaybackOwner::Session { clip: session },
     ] {
         let keys = prepared
-            .midi_gate_keys(track, owner, Some(BeatTime::ZERO), (0, 0), &mut spans)
+            .midi_gate_keys(
+                track,
+                owner,
+                Some(SessionMidiOrigin::launch(BeatTime::ZERO)),
+                None,
+                (0, 0),
+                &mut spans,
+            )
             .unwrap();
         assert_eq!(
             observation
                 .activity()
-                .gate_keys(track, owner, Some(BeatTime::ZERO), (0, 0), &mut spans)
+                .gate_keys(
+                    track,
+                    owner,
+                    Some(SessionMidiOrigin::launch(BeatTime::ZERO)),
+                    None,
+                    (0, 0),
+                    &mut spans
+                )
                 .unwrap(),
             keys,
             "the resource-free observation retains every gate, not the 32-note preview"
@@ -93,7 +108,8 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
                 .midi_gate_keys(
                     track,
                     owner,
-                    Some(BeatTime::ZERO),
+                    Some(SessionMidiOrigin::launch(BeatTime::ZERO)),
+                    None,
                     (12000, 12000),
                     &mut spans
                 )
@@ -108,6 +124,7 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
                 track,
                 SessionPlaybackOwner::Session { clip: session },
                 None,
+                None,
                 (0, 0),
                 &mut spans
             )
@@ -119,6 +136,7 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
                 track,
                 SessionPlaybackOwner::Arrangement,
                 None,
+                None,
                 (u64::MAX, 0),
                 &mut spans
             )
@@ -129,6 +147,7 @@ fn applied_source_gate_query_covers_all_notes_not_the_sampled_drawing_preview() 
             .midi_gate_keys(
                 track,
                 SessionPlaybackOwner::Silence,
+                None,
                 None,
                 (0, 0),
                 &mut spans
@@ -204,6 +223,7 @@ fn review_followup_activity_honors_bypassed_and_missing_arrangement_instruments(
                 tracks[1],
                 SessionPlaybackOwner::Arrangement,
                 None,
+                None,
                 (0, 0),
                 &mut spans
             )
@@ -222,6 +242,7 @@ fn review_followup_activity_honors_bypassed_and_missing_arrangement_instruments(
                 tracks[1],
                 SessionPlaybackOwner::Arrangement,
                 None,
+                None,
                 (0, 0),
                 &mut spans
             )
@@ -237,6 +258,7 @@ fn review_followup_activity_honors_bypassed_and_missing_arrangement_instruments(
             .midi_gate_keys(
                 tracks[1],
                 SessionPlaybackOwner::Arrangement,
+                None,
                 None,
                 (0, 0),
                 &mut spans
@@ -322,7 +344,8 @@ fn review_followup_activity_uses_effective_routed_session_owner() {
                 .midi_gate_keys(
                     track,
                     effective.owner,
-                    effective.active_launch,
+                    effective.active_origin,
+                    None,
                     (runtime.arrangement_frame(), runtime.performance_frame()),
                     &mut spans
                 )
@@ -336,7 +359,8 @@ fn review_followup_activity_uses_effective_routed_session_owner() {
             .midi_gate_keys(
                 tracks[0],
                 SessionPlaybackOwner::Session { clip },
-                Some(BeatTime::ZERO),
+                Some(SessionMidiOrigin::launch(BeatTime::ZERO)),
+                None,
                 (0, 0),
                 &mut spans
             )
@@ -457,15 +481,29 @@ fn resource_free_observation_matches_mixed_routed_periodic_activity_and_meter_id
             SessionPlaybackOwner::Session { clip },
             SessionPlaybackOwner::Silence,
         ] {
-            for launch in [None, Some(BeatTime::ZERO)] {
+            for launch in [None, Some(SessionMidiOrigin::launch(BeatTime::ZERO))] {
                 for frame in [0, 11_999, 12_000, 14_000, 27_999, 28_000, 56_000, u64::MAX] {
                     assert_eq!(
                         observation
                             .activity()
-                            .gate_keys(track, owner, launch, (frame, frame), &mut copied_spans)
+                            .gate_keys(
+                                track,
+                                owner,
+                                launch,
+                                None,
+                                (frame, frame),
+                                &mut copied_spans
+                            )
                             .map_err(|_| ()),
                         revision
-                            .midi_gate_keys(track, owner, launch, (frame, frame), &mut source_spans)
+                            .midi_gate_keys(
+                                track,
+                                owner,
+                                launch,
+                                None,
+                                (frame, frame),
+                                &mut source_spans
+                            )
                             .map_err(|_| ()),
                         "track {track:?}, owner {owner:?}, launch {launch:?}, frame {frame}"
                     );
@@ -480,7 +518,8 @@ fn resource_free_observation_matches_mixed_routed_periodic_activity_and_meter_id
             .gate_keys(
                 tracks[1],
                 SessionPlaybackOwner::Session { clip },
-                Some(BeatTime::ZERO),
+                Some(SessionMidiOrigin::launch(BeatTime::ZERO)),
+                None,
                 (0, 0),
                 &mut copied_spans
             )

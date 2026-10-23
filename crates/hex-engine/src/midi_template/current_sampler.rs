@@ -30,6 +30,7 @@ impl PreparedMidiSourceTemplate {
             admitted_max_micro_bpm: _,
             first_pass: _,
             period: _,
+            source: _,
             intro,
             repeats,
             intro_spans,

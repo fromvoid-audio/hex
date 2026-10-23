@@ -267,13 +267,13 @@ impl PreparedSessionMidiClip {
         self.instrument_id == other.instrument_id
     }
 
-    pub(crate) fn occurrence(
+    pub(crate) fn occurrence_with_origin(
         &self,
         note: hex_project::NoteId,
         iteration: u64,
-        launch: hex_project::BeatTime,
+        origin: crate::SessionMidiOrigin,
     ) -> Option<super::midi_template::SourceOccurrence> {
-        self.source.occurrence(note, iteration, launch)
+        self.source.occurrence_with_origin(note, iteration, origin)
     }
 }
 

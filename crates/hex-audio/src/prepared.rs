@@ -94,7 +94,8 @@ pub struct SessionPendingRoute {
 pub struct SessionRouteEntry {
     pub track_id: u64,
     pub owner: SessionRouteOwner,
-    pub active_launch_beat_raw: Option<u64>,
+    /// Accepted source origin, published with the route snapshot sequence.
+    pub active_origin: Option<hex_engine::SessionMidiOrigin>,
     pub pending: Option<SessionPendingRoute>,
 }
 
@@ -103,7 +104,7 @@ impl Default for SessionRouteEntry {
         Self {
             track_id: 0,
             owner: SessionRouteOwner::Silence,
-            active_launch_beat_raw: None,
+            active_origin: None,
             pending: None,
         }
     }
@@ -118,14 +119,17 @@ pub struct SessionRouteSnapshot {
     /// The transport frame at which this route snapshot was published.
     /// It is not a live cursor; read `Status::performance_frame` for that.
     pub performance_at_update: u64,
+    /// Effective renderer clock translation from the same accepted revision.
+    pub clock_anchor: Option<hex_engine::SessionClockAnchor>,
 }
 
 struct AtomicRouteSlot {
     track_id: AtomicU64,
     owner_tag: AtomicU32,
     owner_clip_id: AtomicU64,
-    active_launch_tag: AtomicU32,
-    active_launch_beat_raw: AtomicU64,
+    active_origin_tag: AtomicU32,
+    active_performance_anchor_raw: AtomicU64,
+    active_elapsed_at_anchor_raw: AtomicU64,
     pending_tag: AtomicU32,
     pending_target_tag: AtomicU32,
     pending_clip_id: AtomicU64,
@@ -139,8 +143,9 @@ impl AtomicRouteSlot {
             track_id: AtomicU64::new(0),
             owner_tag: AtomicU32::new(0),
             owner_clip_id: AtomicU64::new(0),
-            active_launch_tag: AtomicU32::new(0),
-            active_launch_beat_raw: AtomicU64::new(0),
+            active_origin_tag: AtomicU32::new(0),
+            active_performance_anchor_raw: AtomicU64::new(0),
+            active_elapsed_at_anchor_raw: AtomicU64::new(0),
             pending_tag: AtomicU32::new(0),
             pending_target_tag: AtomicU32::new(0),
             pending_clip_id: AtomicU64::new(0),
@@ -153,8 +158,9 @@ impl AtomicRouteSlot {
         self.track_id.store(0, SeqCst);
         self.owner_tag.store(0, SeqCst);
         self.owner_clip_id.store(0, SeqCst);
-        self.active_launch_tag.store(0, SeqCst);
-        self.active_launch_beat_raw.store(0, SeqCst);
+        self.active_origin_tag.store(0, SeqCst);
+        self.active_performance_anchor_raw.store(0, SeqCst);
+        self.active_elapsed_at_anchor_raw.store(0, SeqCst);
         self.pending_tag.store(0, SeqCst);
         self.pending_target_tag.store(0, SeqCst);
         self.pending_clip_id.store(0, SeqCst);
@@ -442,6 +448,10 @@ pub struct Status {
     route_capability: AtomicU32,
     route_generation: AtomicU64,
     route_performance_at_update: AtomicU64,
+    route_clock_anchor_tag: AtomicU32,
+    route_clock_cut_frame: AtomicU64,
+    route_clock_old_beat_raw: AtomicU64,
+    route_clock_new_beat_raw: AtomicU64,
     route_slots: Box<[AtomicRouteSlot]>,
 }
 
@@ -570,6 +580,10 @@ impl Status {
             route_capability: AtomicU32::new(SessionCapabilityStatus::Legacy as u32),
             route_generation: AtomicU64::new(0),
             route_performance_at_update: AtomicU64::new(0),
+            route_clock_anchor_tag: AtomicU32::new(0),
+            route_clock_cut_frame: AtomicU64::new(0),
+            route_clock_old_beat_raw: AtomicU64::new(0),
+            route_clock_new_beat_raw: AtomicU64::new(0),
             route_slots,
         }
     }
@@ -612,6 +626,15 @@ impl Status {
                 SessionCapabilityStatus::from_code(self.route_capability.load(SeqCst))?;
             let route_state_generation = self.route_generation.load(SeqCst);
             let performance_at_update = self.route_performance_at_update.load(SeqCst);
+            let clock_anchor = match self.route_clock_anchor_tag.load(SeqCst) {
+                0 => None,
+                1 => Some(hex_engine::SessionClockAnchor::from_raw(
+                    self.route_clock_cut_frame.load(SeqCst),
+                    self.route_clock_old_beat_raw.load(SeqCst),
+                    self.route_clock_new_beat_raw.load(SeqCst),
+                )),
+                _ => return None,
+            };
             if count > output.len() || count > self.route_slots.len() {
                 return None;
             }
@@ -620,8 +643,9 @@ impl Status {
                 let track_id = slot.track_id.load(SeqCst);
                 let owner_tag = slot.owner_tag.load(SeqCst);
                 let owner_clip_id = slot.owner_clip_id.load(SeqCst);
-                let active_launch_tag = slot.active_launch_tag.load(SeqCst);
-                let active_launch_beat_raw = slot.active_launch_beat_raw.load(SeqCst);
+                let active_origin_tag = slot.active_origin_tag.load(SeqCst);
+                let active_performance_anchor_raw = slot.active_performance_anchor_raw.load(SeqCst);
+                let active_elapsed_at_anchor_raw = slot.active_elapsed_at_anchor_raw.load(SeqCst);
                 let pending_tag = slot.pending_tag.load(SeqCst);
                 let pending_target_tag = slot.pending_target_tag.load(SeqCst);
                 let pending_clip_id = slot.pending_clip_id.load(SeqCst);
@@ -635,9 +659,12 @@ impl Status {
                     3 => SessionRouteOwner::Silence,
                     _ => return None,
                 };
-                let active_launch_beat_raw = match active_launch_tag {
+                let active_origin = match active_origin_tag {
                     0 => None,
-                    1 => Some(active_launch_beat_raw),
+                    1 => Some(hex_engine::SessionMidiOrigin::from_raw(
+                        active_performance_anchor_raw,
+                        active_elapsed_at_anchor_raw,
+                    )),
                     _ => return None,
                 };
                 let pending = match pending_tag {
@@ -662,7 +689,7 @@ impl Status {
                 *destination = SessionRouteEntry {
                     track_id,
                     owner,
-                    active_launch_beat_raw,
+                    active_origin,
                     pending,
                 };
             }
@@ -674,6 +701,7 @@ impl Status {
                     capability,
                     route_state_generation,
                     performance_at_update,
+                    clock_anchor,
                 });
             }
         }
@@ -695,6 +723,7 @@ impl Status {
         capability: SessionCapabilityStatus,
         generation: u64,
         performance_at_update: u64,
+        clock_anchor: Option<hex_engine::SessionClockAnchor>,
     ) {
         self.route_revision.store(revision, SeqCst);
         self.route_count.store(count as u32, SeqCst);
@@ -702,6 +731,19 @@ impl Status {
         self.route_generation.store(generation, SeqCst);
         self.route_performance_at_update
             .store(performance_at_update, SeqCst);
+        if let Some(anchor) = clock_anchor {
+            self.route_clock_cut_frame.store(anchor.cut_frame, SeqCst);
+            self.route_clock_old_beat_raw
+                .store(anchor.old_beat.raw(), SeqCst);
+            self.route_clock_new_beat_raw
+                .store(anchor.new_beat.raw(), SeqCst);
+            self.route_clock_anchor_tag.store(1, SeqCst);
+        } else {
+            self.route_clock_cut_frame.store(0, SeqCst);
+            self.route_clock_old_beat_raw.store(0, SeqCst);
+            self.route_clock_new_beat_raw.store(0, SeqCst);
+            self.route_clock_anchor_tag.store(0, SeqCst);
+        }
     }
 
     fn publish_empty_routes(&self) {
@@ -710,7 +752,7 @@ impl Status {
         for slot in self.route_slots.iter() {
             slot.clear();
         }
-        self.publish_route_header(0, 0, SessionCapabilityStatus::Legacy, 0, 0);
+        self.publish_route_header(0, 0, SessionCapabilityStatus::Legacy, 0, 0, None);
         self.sampler_console.store(false, Release);
         self.session_capability
             .store(SessionCapabilityStatus::Legacy as u32, Relaxed);
@@ -736,12 +778,16 @@ impl Status {
                 slot.owner_clip_id.store(0, SeqCst);
             }
         }
-        if let Some(beat) = route.active_launch {
-            slot.active_launch_beat_raw.store(beat.raw(), SeqCst);
-            slot.active_launch_tag.store(1, SeqCst);
+        if let Some(origin) = route.active_origin {
+            slot.active_performance_anchor_raw
+                .store(origin.performance_anchor.raw(), SeqCst);
+            slot.active_elapsed_at_anchor_raw
+                .store(origin.elapsed_at_anchor.raw(), SeqCst);
+            slot.active_origin_tag.store(1, SeqCst);
         } else {
-            slot.active_launch_beat_raw.store(0, SeqCst);
-            slot.active_launch_tag.store(0, SeqCst);
+            slot.active_performance_anchor_raw.store(0, SeqCst);
+            slot.active_elapsed_at_anchor_raw.store(0, SeqCst);
+            slot.active_origin_tag.store(0, SeqCst);
         }
         if let Some(pending) = route.pending {
             let (tag, clip_id) = match pending.target {
@@ -936,7 +982,7 @@ pub struct Callback {
     // Defensive retention if a push unexpectedly fails; never drop graph ownership.
     held_retirement: Option<ReturnedPublication>,
     terminal_disposal_pending: bool,
-    published_route_key: Option<(u64, u64)>,
+    published_route_key: Option<(u64, u64, Option<hex_engine::SessionClockAnchor>)>,
     #[cfg(test)]
     route_slot_visits: usize,
     #[cfg(test)]
@@ -3239,7 +3285,7 @@ impl Callback {
         let revision = active.revision;
         let playback = &active.playback;
         let generation = playback.session_route_state_generation();
-        let key = (revision, generation);
+        let key = (revision, generation, playback.session_clock_anchor());
         if !force && self.published_route_key == Some(key) {
             return;
         }
@@ -3278,6 +3324,7 @@ impl Callback {
             capability,
             generation,
             playback.performance_frame(),
+            playback.session_clock_anchor(),
         );
         self.status.end_route_snapshot();
         self.published_route_key = Some(key);
@@ -7310,7 +7357,7 @@ mod tests {
             let mut entries = [SessionRouteEntry {
                 track_id: 0,
                 owner: SessionRouteOwner::Silence,
-                active_launch_beat_raw: None,
+                active_origin: None,
                 pending: None,
             }; 1];
             let mut observed = 0;

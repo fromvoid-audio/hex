@@ -257,8 +257,9 @@ fn resident_sampler_occurrence_gains_allocate_and_free_nothing_in_the_actual_pai
         GateMode, Mode, PreparedSamplerPlan, Region, SampleChannels, SampleShape, Settings,
     };
     use hex_lattice::{
-        NativeInstrumentEvent, NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeLimits,
-        NativeInstrumentRuntimePair,
+        NativeInstrumentEvent, NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError,
+        NativeInstrumentRuntimeLimits, NativeInstrumentRuntimePair,
+        PreparedMutableInstrumentRuntime,
     };
     let pcm = [1.0; 32];
     let views = [DeviceResourceView {
@@ -287,16 +288,18 @@ fn resident_sampler_occurrence_gains_allocate_and_free_nothing_in_the_actual_pai
     .unwrap()
     .prepare_runtime_on_control(4, 16, &TuningTable::default())
     .unwrap();
-    let mut runtime = NativeInstrumentRuntimePair::new(
-        &prepared,
-        NativeInstrumentRuntimeLimits {
-            max_pair_bytes: 2 * 1024 * 1024,
-            max_events_per_block: 16,
-            max_active_occurrences: 4,
-            max_tail_frames: 8_000 * 600,
-        },
-    )
-    .unwrap();
+    let limits = NativeInstrumentRuntimeLimits {
+        max_pair_bytes: 2 * 1024 * 1024,
+        max_events_per_block: 16,
+        max_active_occurrences: 4,
+        max_tail_frames: 8_000 * 600,
+    };
+    let mut runtime = NativeInstrumentRuntimePair::new(&prepared, limits).unwrap();
+    let mut inherited = NativeInstrumentRuntimePair::new(&prepared, limits).unwrap();
+    assert!(
+        prepared.max_release_tail_frames() > 32,
+        "conservative factory bound outlives an individual source voice"
+    );
     let events = [
         NativeInstrumentEvent::NoteOn {
             frame_offset: 0,
@@ -317,24 +320,103 @@ fn resident_sampler_occurrence_gains_allocate_and_free_nothing_in_the_actual_pai
                 .unwrap(),
         ];
     let mut frames = [[0.0; 2]; 7];
+    let mut tail = [[0.0; 2]; 25];
+    let mut replay = tail;
+    let mut survivor = [[0.0; 2]; 2];
+    let mut copied = survivor;
+    let mut refused = [[9.0; 2]; 2];
+    let mut ids = [0; 4];
+    let survivor_gain = [NativeInstrumentOccurrenceGain::new(1, 0.5, 0.5, 2, 0).unwrap()];
+    let retired_gain = [NativeInstrumentOccurrenceGain::new(2, 0.5, 0.5, 2, 0).unwrap()];
     let mut failure = None;
-    // Construction, resource binding, output oracle and destruction stay out.
+    fn observe(
+        pair: &NativeInstrumentRuntimePair,
+        output: &mut [u64],
+        expected: &[u64],
+    ) -> Result<(), NativeInstrumentRuntimeError> {
+        let count = pair.active_occurrence_ids(output)?;
+        if &output[..count] != expected {
+            return Err(NativeInstrumentRuntimeError::InvalidActiveOccurrenceIds);
+        }
+        Ok(())
+    }
+    // Construction, original resource binding, caller buffers, gain values,
+    // oracles and destruction stay outside. Query both transactional histories,
+    // short capacity, early per-voice retirement and unchanged gain refusals.
     let measurement = allocation_counter::measure(|| {
         for _ in 0..32 {
-            runtime.reset();
-            runtime.begin_block();
-            frames.fill([0.0; 2]);
-            if let Err(error) = runtime.process_block_with_clock_and_occurrence_gains(
-                std::hint::black_box(&events),
-                &mut frames,
-                None,
-                std::hint::black_box(&gains),
-                std::hint::black_box(&resources),
-            ) {
+            let result = (|| {
+                runtime.reset();
+                observe(&runtime, &mut ids, &[])?;
+                runtime.begin_block();
+                frames.fill([0.0; 2]);
+                runtime.process_block_with_clock_and_occurrence_gains(
+                    std::hint::black_box(&events),
+                    &mut frames,
+                    None,
+                    std::hint::black_box(&gains),
+                    std::hint::black_box(&resources),
+                )?;
+                observe(&runtime, &mut ids, &[1, 2])?;
+                if runtime.active_occurrence_ids(&mut ids[..1])
+                    != Err(NativeInstrumentRuntimeError::ActiveOccurrenceCapacityExceeded)
+                {
+                    return Err(NativeInstrumentRuntimeError::InvalidActiveOccurrenceIds);
+                }
+                runtime.commit_block();
+                observe(&runtime, &mut ids, &[1, 2])?;
+                runtime.begin_block();
+                tail.fill([0.0; 2]);
+                runtime.process_block(&[], &mut tail, &resources)?;
+                observe(&runtime, &mut ids, &[1])?;
+                runtime.rollback_block();
+                observe(&runtime, &mut ids, &[1, 2])?;
+                runtime.begin_block();
+                replay.fill([0.0; 2]);
+                runtime.process_block(&[], &mut replay, &resources)?;
+                runtime.commit_block();
+                observe(&runtime, &mut ids, &[1])?;
+                inherited.inherit_from(&runtime)?;
+                observe(&inherited, &mut ids, &[1])?;
+                runtime.begin_block();
+                if runtime.process_block_with_clock_and_occurrence_gains(
+                    &[],
+                    &mut refused,
+                    None,
+                    &retired_gain,
+                    &resources,
+                ) != Err(NativeInstrumentRuntimeError::InvalidOccurrenceGain)
+                {
+                    return Err(NativeInstrumentRuntimeError::InvalidOccurrenceGain);
+                }
+                observe(&runtime, &mut ids, &[1])?;
+                survivor.fill([0.0; 2]);
+                runtime.process_block_with_clock_and_occurrence_gains(
+                    &[],
+                    &mut survivor,
+                    None,
+                    &survivor_gain,
+                    &resources,
+                )?;
+                runtime.commit_block();
+                observe(&runtime, &mut ids, &[])?;
+                inherited.begin_block();
+                copied.fill([0.0; 2]);
+                inherited.process_block_with_clock_and_occurrence_gains(
+                    &[],
+                    &mut copied,
+                    None,
+                    &survivor_gain,
+                    &resources,
+                )?;
+                inherited.commit_block();
+                observe(&inherited, &mut ids, &[])?;
+                Ok(())
+            })();
+            if let Err(error) = result {
                 failure = Some(error);
                 break;
             }
-            runtime.commit_block();
         }
     });
     assert_eq!(failure, None);
@@ -347,6 +429,14 @@ fn resident_sampler_occurrence_gains_allocate_and_free_nothing_in_the_actual_pai
         ),
         (0, 0, 0, 0)
     );
+    assert_eq!(tail, [[2.0; 2]; 25]);
+    assert_eq!(
+        replay, tail,
+        "rollback and read-only observation retain sample history"
+    );
+    assert_eq!(refused, [[9.0; 2]; 2]);
+    assert_eq!(survivor, [[0.5; 2]; 2]);
+    assert_eq!(copied, survivor);
     for (index, actual) in frames.iter().enumerate() {
         let expected = if index < 2 {
             1.0
