@@ -99,6 +99,23 @@ pub(super) struct Cache {
     entries: VecDeque<Entry>,
 }
 impl Cache {
+    /// Read-only wiring witness: entries are populated by the canvas paint
+    /// closure. Geometry unit tests separately verify their actual outline.
+    #[cfg(test)]
+    pub(super) fn prepared_columns(
+        &self,
+        source: &Source,
+        bounds: Bounds<Pixels>,
+        scale: f32,
+    ) -> Option<usize> {
+        let (identity, _) = source.identity()?;
+        let key = Key::new(bounds, scale);
+        self.entries
+            .iter()
+            .find(|entry| entry.key == key && entry.identity.same(&identity))
+            .map(|entry| entry.geometry.columns)
+    }
+
     fn geometry(
         &mut self,
         source: &Source,
