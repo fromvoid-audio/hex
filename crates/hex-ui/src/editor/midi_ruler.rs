@@ -351,7 +351,8 @@ impl EditorView {
                                     point(px(left), bounds.origin.y),
                                     size(px(right - left), px(b.height)),
                                 ),
-                                gpui::rgba((theme::color(theme::PaletteRole::Primary) << 8) | 0x44),
+                                gpui::Hsla::from(rgb(theme::color(theme::PaletteRole::Secondary)))
+                                    .opacity(theme::TIME_SELECTION_OPACITY),
                             ));
                         }
                     }

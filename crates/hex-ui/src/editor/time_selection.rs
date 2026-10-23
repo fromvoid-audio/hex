@@ -1110,7 +1110,7 @@ impl EditorView {
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(0.13)
+                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
                         .id(("time-selection-handle", track.value()))
@@ -1182,7 +1182,7 @@ impl EditorView {
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(0.13)
+                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
                         .id("main-project-time-selection-handle")
