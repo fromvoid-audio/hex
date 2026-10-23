@@ -89,6 +89,9 @@ impl Custody {
         if slot.retiring || slot.starting || slot.phase != Phase::Accepted {
             return None;
         }
+        if let Some(Owner::Effect(owner)) = work.sources.cells[index].owner.as_ref() {
+            return Some(owner.configuration().clone());
+        }
         let Some(Owner::Prepared(owner)) = work.sources.cells[index].owner.as_ref() else {
             return None;
         };

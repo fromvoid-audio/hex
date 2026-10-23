@@ -11,6 +11,7 @@ fn root() -> Custody {
     super::super::tests::configured(8 * 1024 * 1024)
 }
 mod completion;
+mod effect;
 
 fn input() -> (InstanceBuild, native::Source, native::Preparation) {
     input_for(

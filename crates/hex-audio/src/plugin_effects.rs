@@ -4,7 +4,7 @@
 //! not Root/publication admission. The output owner must retain the matching
 //! workers through actual callback terminal return and final control disposal.
 //! No canonical edits, defaults, scheduler or native DSP runs here on callback.
-use crate::plugin_worker::NativeWorker;
+use crate::plugin_worker::{NativeWorker, NativeWorkerStartFailure};
 use hex_lattice::{
     ForeignProcessorNode, ForeignProcessors, PreparedForeignProcessor, ProcessorInstanceIdentity,
 };
@@ -42,6 +42,42 @@ impl NativeEffect {
         identity: ProcessorInstanceIdentity,
         instance: Prepared,
     ) -> Result<Self, Error> {
+        Self::prepare_retained_on_control(identity, instance)
+            .map_err(NativeWorkerStartFailure::finish_on_control)
+    }
+    /// Preserve the actual source/queue owners on every preparation refusal.
+    /// Root must retain the failure until observed native disposal and final
+    /// control destruction; successful construction is not graph admission.
+    #[allow(clippy::result_large_err)] // Root reserves both the larger success owner and actual failure packet before startup.
+    pub fn prepare_retained_on_control(
+        identity: ProcessorInstanceIdentity,
+        instance: Prepared,
+    ) -> Result<Self, NativeWorkerStartFailure> {
+        let (configuration, dry) = match Self::configuration_on_control(identity, &instance) {
+            Ok(parts) => parts,
+            Err(cause) => {
+                return Err(NativeWorkerStartFailure::retain_source_on_control(
+                    cause, instance,
+                ));
+            }
+        };
+        let (worker, callback) = NativeWorker::start_retained_on_control(instance)?;
+        Ok(Self {
+            worker,
+            callback: NativeEffectCallback {
+                configuration,
+                transport: callback,
+                input: [[0.0; 2]; MAX_FRAMES],
+                dry_output: [[0.0; 2]; MAX_FRAMES],
+                dry,
+                dry_cursor: 0,
+            },
+        })
+    }
+    fn configuration_on_control(
+        identity: ProcessorInstanceIdentity,
+        instance: &Prepared,
+    ) -> Result<(Configuration, Vec<[f32; 2]>), Error> {
         let config = instance.configuration();
         if config.binding.instance != identity.device_id()
             || !config.sample_rate.is_finite()
@@ -88,18 +124,12 @@ impl NativeEffect {
         dry.try_reserve_exact(dry_frames)
             .map_err(|_| Error::Protocol("native effect dry history allocation refused"))?;
         dry.resize(dry_frames, [0.0; 2]);
-        let (worker, callback) = NativeWorker::start_on_control(instance)?;
-        Ok(Self {
-            worker,
-            callback: NativeEffectCallback {
-                configuration,
-                transport: callback,
-                input: [[0.0; 2]; MAX_FRAMES],
-                dry_output: [[0.0; 2]; MAX_FRAMES],
-                dry,
-                dry_cursor: 0,
-            },
-        })
+        Ok((configuration, dry))
+    }
+    pub(crate) fn retire_on_control(
+        &mut self,
+    ) -> Result<crate::plugin_worker::NativeWorkerRetirement, Error> {
+        self.worker.retire_on_control()
     }
     pub fn identity(&self) -> ProcessorInstanceIdentity {
         self.callback.configuration.identity

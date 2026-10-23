@@ -72,6 +72,15 @@ impl PublicationControl {
         self.candidate_root
             .complete_native_source_preparation(binding, presentation)
     }
+    /// Construct the actual copied-transport worker/callback pair inside Root.
+    /// Ok acknowledges retained custody, including constructor refusal. Neither
+    /// the pair nor its facts grant graph/publication admission yet.
+    pub fn start_native_effect(&mut self, binding: Binding) -> Result<(), &'static str> {
+        if !self.native_custody || self.status.closing.load(Acquire) {
+            return Err("native preparation output is closing");
+        }
+        self.candidate_root.start_native_effect(binding)
+    }
     /// Copy the original restored envelope, or actual initial capture for a
     /// fresh source. Read-only state is never Root/graph admission authority.
     pub fn native_source_prepared_state(&self, binding: Binding) -> Option<NativeDeviceState> {

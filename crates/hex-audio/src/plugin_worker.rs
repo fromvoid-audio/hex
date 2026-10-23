@@ -107,18 +107,58 @@ fn spawn_processor(
     worker: Worker,
     processor: Processor,
 ) -> std::io::Result<Reaper> {
+    spawn_processor_with(control, worker, processor, spawn_transport).map_err(|failure| {
+        let SpawnFailure { error, reaper } = failure;
+        drop(reaper); // Legacy synchronous control cleanup; not a disposal receipt.
+        error
+    })
+}
+struct SpawnFailure {
+    error: std::io::Error,
+    reaper: Reaper,
+}
+fn spawn_processor_with(
+    control: Control,
+    worker: Worker,
+    processor: Processor,
+    spawn: impl FnOnce(
+        crate::native_callback_owner::Guard<State>,
+        Arc<AtomicU64>,
+    ) -> std::io::Result<JoinHandle<Completion>>,
+) -> Result<Reaper, SpawnFailure> {
     let completed = Arc::new(AtomicU64::new(0));
     let published = Arc::clone(&completed);
-    // The existing once-only guard also covers worker unwinding. Even if the
-    // callback carrier has retired first, a worker exit cannot finally free
-    // its ring endpoints: the exact terminal remains on joining control.
-    let (mut guard, terminal) = crate::native_callback_owner::reserve(State {
+    let (guard, terminal) = crate::native_callback_owner::reserve(State {
         worker,
         processor: Some(processor),
         #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
         native_error: None,
     });
-    let join = thread::Builder::new()
+    let join = spawn(guard, published);
+    let mut reaper = Reaper {
+        control,
+        join: None,
+        result: None,
+        completed,
+        terminal,
+        worker: None,
+    };
+    match join {
+        Ok(join) => {
+            reaper.join = Some(join);
+            Ok(reaper)
+        }
+        Err(error) => {
+            reaper.revoke();
+            Err(SpawnFailure { error, reaper })
+        }
+    }
+}
+fn spawn_transport(
+    mut guard: crate::native_callback_owner::Guard<State>,
+    published: Arc<AtomicU64>,
+) -> std::io::Result<JoinHandle<Completion>> {
+    thread::Builder::new()
         .name("hex-plugin-transport".into())
         .spawn(move || {
             let mut fault = None;
@@ -150,16 +190,13 @@ fn spawn_processor(
                 }
             }
             Completion { fault }
-        })?;
-    Ok(Reaper {
-        control,
-        join: Some(join),
-        result: None,
-        completed,
-        terminal,
-        worker: None,
-    })
+        })
 }
+
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+mod start;
+#[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+pub use start::NativeWorkerStartFailure;
 
 /// Joining native processor/endpoint custody. This is not graph admission.
 /// The caller must retain this control owner until the matching callback has
@@ -185,26 +222,10 @@ impl NativeWorker {
     /// Construct exact paired queues from the consumed actual native lease.
     /// No caller-supplied identity/prefix is treated as source authority.
     pub fn start_on_control(
-        mut instance: hex_plugin_host::native::Prepared,
+        instance: hex_plugin_host::native::Prepared,
     ) -> Result<(Self, Callback), hex_plugin_host::Error> {
-        instance.validate_worker_transfer_on_control()?;
-        let binding = instance.configuration().binding;
-        let quantum = instance.configuration().quantum;
-        let prefix = instance.completed_blocks_on_control();
-        let (control, callback, worker) =
-            channel_from_completed_prefix(binding, quantum, prefix)
-                .map_err(|fault| hex_plugin_host::Error::Protocol(fault.message()))?;
-        let reaper = spawn_processor(control, worker, Processor::Native(Box::new(instance)))
-            .map_err(|error| hex_plugin_host::Error::IoAt("native transport worker", error))?;
-        Ok((
-            Self {
-                reaper,
-                binding,
-                quantum,
-                retirement_requested: false,
-            },
-            callback,
-        ))
+        Self::start_retained_on_control(instance)
+            .map_err(NativeWorkerStartFailure::finish_on_control)
     }
     pub fn binding(&self) -> Binding {
         self.binding
@@ -320,6 +341,47 @@ impl NativeWorker {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn spawn_refusal_retains_the_actual_processor_until_control_disposes_the_return() {
+        struct Capture(Arc<AtomicU64>);
+        impl Drop for Capture {
+            fn drop(&mut self) {
+                self.0.fetch_add(1, Release);
+            }
+        }
+        let dropped = Arc::new(AtomicU64::new(0));
+        let capture = Capture(Arc::clone(&dropped));
+        let (control, callback, worker) = channel(
+            Binding {
+                root: 1,
+                instance: 2,
+                graph: 3,
+                epoch: 4,
+            },
+            8,
+        )
+        .unwrap();
+        let returned = spawn_processor_with(
+            control,
+            worker,
+            Processor::Function(Box::new(move |block| {
+                let _capture = &capture;
+                Ok(block)
+            })),
+            |guard, _| {
+                drop(guard); // Same closure-ownership return as std thread spawn refusal.
+                Err(std::io::Error::other("original thread creation refusal"))
+            },
+        );
+        assert!(returned.is_err());
+        assert_eq!(
+            dropped.load(Acquire),
+            0,
+            "failed spawn must return original processor custody"
+        );
+        drop((returned, callback));
+        assert_eq!(dropped.load(Acquire), 1);
+    }
     #[test]
     fn processor_capture_returns_to_control_after_exit_or_unwind() {
         struct Capture(Arc<std::sync::Mutex<Option<thread::ThreadId>>>);

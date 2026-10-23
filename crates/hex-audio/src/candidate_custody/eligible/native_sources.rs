@@ -13,6 +13,7 @@ use hex_plugin_host::native::{
 use hex_plugin_scan::macos::build_identity::InstanceBuild;
 
 mod completion;
+mod effect;
 
 const MAX_SOURCES: usize = hex_lattice::MAX_STATEFUL_PROCESSORS;
 type Cancellations = [Option<Cancellation>; MAX_SOURCES];
@@ -28,6 +29,10 @@ pub enum NativeSourcePreparationProgress {
     Prepared {
         facts: hex_plugin_host::protocol::Facts,
         presentation: hex_plugin_host::protocol::Presentation,
+    },
+    /// Actual unsplit worker/endpoint pair retained by Root, not publication.
+    Effect {
+        prepared: hex_lattice::PreparedForeignProcessor,
     },
     Retiring,
     /// Source-owner disposal finished; the original return awaits recovery.
@@ -52,6 +57,7 @@ struct Slot {
     retiring: bool,
     facts: Option<hex_plugin_host::protocol::Facts>,
     presentation: Option<hex_plugin_host::protocol::Presentation>,
+    processor: Option<hex_lattice::PreparedForeignProcessor>,
     cancellation: Option<Cancellation>,
 }
 impl Slot {
@@ -64,6 +70,7 @@ impl Slot {
             retiring: false,
             facts: None,
             presentation: None,
+            processor: None,
             cancellation: None,
         }
     }
@@ -89,7 +96,11 @@ impl Bank {
         for (slot, target) in self.slots.iter_mut().zip(cancellations) {
             if slot.phase != Phase::Vacant {
                 slot.retiring = true;
-                *target = slot.cancellation.clone();
+                // A fully constructed effect retires through its existing
+                // joining worker/SDK stop. In-flight preparation cancels now.
+                if slot.processor.is_none() {
+                    *target = slot.cancellation.clone();
+                }
             }
         }
     }
@@ -105,6 +116,8 @@ impl Bank {
 enum Owner {
     Pending(Pending),
     Prepared(native::Prepared),
+    Effect(crate::plugin_effects::NativeEffect),
+    WorkerRefused(crate::plugin_worker::NativeWorkerStartFailure),
     Refused(PreparationFailure),
 }
 #[derive(Default)]
@@ -313,6 +326,9 @@ impl Custody {
             Phase::Complete => NativeSourcePreparationProgress::Complete,
             _ if slot.retiring => NativeSourcePreparationProgress::Retiring,
             _ if slot.starting => NativeSourcePreparationProgress::Preparing,
+            _ if slot.processor.is_some() => NativeSourcePreparationProgress::Effect {
+                prepared: slot.processor?,
+            },
             _ if slot.presentation.is_some() => NativeSourcePreparationProgress::Prepared {
                 facts: slot.facts?,
                 presentation: slot.presentation?,
@@ -332,7 +348,11 @@ impl Custody {
                 return false;
             }
             slot.retiring = true;
-            slot.cancellation.clone()
+            if slot.processor.is_none() {
+                slot.cancellation.clone()
+            } else {
+                None
+            }
         };
         if let Some(cancellation) = cancellation {
             cancellation.cancel_on_control();
@@ -378,12 +398,22 @@ impl Custody {
                     {
                         cell.owner = Some(Owner::Refused(owner.cancel_retained_on_control()));
                     }
-                    let Some(Owner::Refused(owner)) = cell.owner.as_mut() else {
-                        return Err(hex_plugin_host::Error::Protocol(
-                            "native preparation owner missing",
-                        ));
+                    let disposed = match cell.owner.as_mut() {
+                        Some(Owner::Refused(owner)) => owner.poll_disposal_on_control()?,
+                        Some(Owner::WorkerRefused(owner)) => owner.poll_disposal_on_control()?,
+                        Some(Owner::Effect(owner)) => {
+                            let retired = owner.retire_on_control()?;
+                            if let Some(error) = retired.failure {
+                                cell.error = Some(error.to_string());
+                            }
+                            Some(PreparationDisposal::Reaped(retired.native))
+                        }
+                        _ => {
+                            return Err(hex_plugin_host::Error::Protocol(
+                                "native preparation owner missing",
+                            ));
+                        }
                     };
-                    let disposed = owner.poll_disposal_on_control()?;
                     if disposed.is_some() {
                         let cancellation =
                             lock(&self.bank).sources.slots[index].cancellation.take();
