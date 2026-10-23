@@ -1,6 +1,8 @@
 //! Song-form markers and one atomic beat-domain cut/insert permutation.
 //! Sections are disjoint half-open ranges. Gaps are real song time and travel
-//! with intervening content; marker resize/move never changes musical material.
+//! with intervening content; explicit marker-only range edits never change music.
+//! Structural edge resize/delete/duplicate use the sibling splice planner; marker
+//! merging preserves the earliest identity/name/color and all musical material.
 //! Reordering cuts `[start,end)` and inserts it before/after the target's original
 //! range. Later destinations subtract the removed length. The entire intervening
 //! interval (including gaps) shifts by that length. All tracks, gain base/touch
@@ -276,6 +278,17 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
         }
         Command::ReorderSectionBefore { section, before } => reorder(project, section, before),
         Command::ReorderSectionAfter { section, after } => reorder_after(project, section, after),
+        Command::ResizeArrangementSection {
+            section,
+            edge,
+            length,
+        } => splice::resize(project, section, edge, length),
+        Command::DeleteArrangementSection(section) => splice::delete(project, section),
+        Command::DuplicateArrangementSection(section) => splice::duplicate(project, section),
+        Command::MergeArrangementSections(selected) => {
+            project.arrangement_sections = project.preview_section_merge(&selected)?.sections;
+            Ok(Created::None)
+        }
         Command::RemoveArrangementSection(id) => {
             let index = project
                 .arrangement_sections
@@ -317,3 +330,63 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
 }
 mod reorder;
 use reorder::{reorder, reorder_after};
+
+mod splice;
+pub use splice::SectionSplicePreview;
+impl Project {
+    /// Lightweight section/tempo display projection. It does not compile audio,
+    /// transfer source custody, or promise that later preparation will succeed.
+    pub fn preview_arrangement_section_edit(
+        &self,
+        command: &Command,
+    ) -> Result<SectionSplicePreview, Invalid> {
+        match command {
+            Command::ResizeArrangementSection {
+                section,
+                edge,
+                length,
+            } => splice::preview_resize(self, *section, *edge, *length),
+            Command::DeleteArrangementSection(section) => splice::preview_delete(self, *section),
+            Command::DuplicateArrangementSection(section) => {
+                splice::preview_duplicate(self, *section)
+            }
+            Command::MergeArrangementSections(selected) => self.preview_section_merge(selected),
+            _ => Err(Invalid("command has no section splice preview")),
+        }
+    }
+    fn preview_section_merge(
+        &self,
+        selected: &[SectionId],
+    ) -> Result<SectionSplicePreview, Invalid> {
+        if selected.is_empty() || selected.len() > MAX_ARRANGEMENT_SECTIONS {
+            return Err(Invalid("select at least two sections to merge"));
+        }
+        let mut indices = Vec::new();
+        indices
+            .try_reserve_exact(selected.len())
+            .map_err(|_| Invalid("could not reserve section merge selection"))?;
+        for id in selected {
+            indices.push(
+                self.arrangement_sections
+                    .iter()
+                    .position(|s| s.id == *id)
+                    .ok_or(Invalid("selected section no longer exists"))?,
+            );
+        }
+        indices.sort_unstable();
+        indices.dedup();
+        if indices.len() < 2 {
+            return Err(Invalid("select at least two distinct sections to merge"));
+        }
+        let first = indices[0];
+        let last = indices[indices.len() - 1];
+        let mut sections = self.arrangement_sections.clone();
+        sections[first].end = sections[last].end;
+        sections.drain(first + 1..=last);
+        validate(&sections, &self.tempo_map)?;
+        Ok(SectionSplicePreview {
+            sections,
+            tempo_map: self.tempo_map.clone(),
+        })
+    }
+}

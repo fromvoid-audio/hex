@@ -957,6 +957,7 @@ impl EditorView {
                     )
                     .child(controls),
             );
+        let settings = self.audio_import_settings_row(cx);
         let mut card = div()
             .id("theme settings panel")
             .debug_selector(|| "theme settings panel".into())
@@ -974,6 +975,7 @@ impl EditorView {
             .font_family(theme::FONT_FAMILY)
             .text_color(rgb(style.text))
             .shadow_lg()
+            .child(settings)
             .child(div().text_sm().child(theme::text("theme colors")))
             .child(rows)
             .child(content);
@@ -1522,5 +1524,78 @@ mod tests {
             hex_preferences::load_theme_preferences(&path).expect("preserved raw palette"),
             invalid
         );
+    }
+
+    #[gpui::test]
+    fn auto_warp_setting_click_persists_reloads_and_save_refusal_keeps_active_policy(
+        cx: &mut TestAppContext,
+    ) {
+        fn policy(
+            editor: &gpui::Entity<EditorView>,
+            cx: &TestAppContext,
+        ) -> hex_project::AudioImportWarp {
+            editor.read_with(cx, |view, _| {
+                let request = view
+                    .capture_audio_import_policy(hex_session::service::Request::Import(
+                        PathBuf::from("/captured sample.wav"),
+                    ))
+                    .unwrap();
+                match request {
+                    hex_session::service::Request::Import(_) => hex_project::AudioImportWarp::Off,
+                    hex_session::service::Request::ImportAudioBatch { options, .. } => options.warp,
+                    _ => panic!("arrangement import did not retain its policy"),
+                }
+            })
+        }
+        let _restore = RestoreTheme(theme::preferences());
+        theme::apply_preferences(ThemePreferences::default());
+        let directory = TestDirectory::new();
+        let path = directory.0.join("audio-import.json");
+        let (handle, editor) = editor_fixture(cx, &directory);
+        let mut visual = VisualTestContext::from_window(handle, cx);
+        visual.run_until_parked();
+        assert_eq!(policy(&editor, cx), hex_project::AudioImportWarp::Off);
+        assert!(
+            !path.exists(),
+            "loading defaults must not publish a settings file"
+        );
+        visual.simulate_keystrokes("cmd-,");
+        visual.run_until_parked();
+        assert!(visual.debug_bounds("theme settings panel").is_some());
+        click_bounds(&mut visual, "auto warp imports");
+        visual.run_until_parked();
+        assert!(
+            hex_preferences::load_audio_import_preferences(&path)
+                .unwrap()
+                .auto_warp_beats
+        );
+        assert_eq!(policy(&editor, cx), hex_project::AudioImportWarp::Beats);
+
+        let (reopened_handle, reopened_editor) = editor_fixture(cx, &directory);
+        let mut reopened = VisualTestContext::from_window(reopened_handle, cx);
+        reopened.run_until_parked();
+        assert_eq!(
+            policy(&reopened_editor, cx),
+            hex_project::AudioImportWarp::Beats
+        );
+        reopened.simulate_keystrokes("cmd-,");
+        reopened.run_until_parked();
+        // A directory at the independent preference-file path deterministically
+        // refuses publication without changing the active import policy.
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        click_bounds(&mut reopened, "auto warp imports");
+        reopened.run_until_parked();
+        assert_eq!(
+            policy(&reopened_editor, cx),
+            hex_project::AudioImportWarp::Beats
+        );
+        assert!(path.is_dir());
+        assert!(
+            reopened
+                .debug_bounds("audio import settings status")
+                .is_some()
+        );
+        assert!(reopened.debug_bounds("theme settings panel").is_some());
     }
 }

@@ -41,7 +41,22 @@ pub enum Command {
         section: crate::SectionId,
         color: crate::ElementColor,
     },
+    /// Remove the marker only, preserving all musical content and song time.
     RemoveArrangementSection(crate::SectionId),
+    /// Insert empty time or remove edge time song-wide, keeping marker start fixed.
+    /// Left edits its prefix; Right edits its suffix. No time stretching occurs.
+    ResizeArrangementSection {
+        section: crate::SectionId,
+        edge: TrimEdge,
+        length: crate::BeatTime,
+    },
+    /// Remove the section's entire half-open time interval and close the gap.
+    DeleteArrangementSection(crate::SectionId),
+    /// Insert a song-wide copy immediately after the source, allocating new IDs.
+    DuplicateArrangementSection(crate::SectionId),
+    /// Merge the earliest-to-latest selected marker span, including intervening
+    /// markers/gaps, retaining earliest identity/name/color and all music.
+    MergeArrangementSections(Vec<crate::SectionId>),
     /// One song-wide cut-and-insert permutation, resolved against stable IDs.
     ReorderSectionBefore {
         section: crate::SectionId,
@@ -1299,6 +1314,7 @@ impl Project {
     pub(crate) fn apply_audio_imports(
         &mut self,
         commands: Vec<Command>,
+        warp: crate::AudioImportWarp,
     ) -> Result<Vec<Created>, Invalid> {
         let count = commands.len();
         let mut incoming = Vec::new();
@@ -1390,23 +1406,42 @@ impl Project {
                 playback_frames,
                 self.asset(asset).ok_or(Invalid("imported media missing"))?,
             )?;
+            let mut clip = Clip {
+                name: "clip".into(),
+                flavor: crate::ClipFlavor::default(),
+                id: ClipId(0),
+                asset,
+                start,
+                duration: playback_frames,
+                source_offset: 0,
+                source_length: playback_frames,
+                looping: false,
+                source_phase: 0,
+                fade: ClipFade::neutral(playback_frames)?,
+                gain: crate::ClipGain::UNITY,
+                edit: None,
+            };
+            if warp == crate::AudioImportWarp::Beats {
+                let settings = crate::default_audio_warp(
+                    &clip,
+                    self.tempo_map(),
+                    crate::WarpMode::Beats {
+                        preserve: crate::BeatsPreserve::Transients,
+                        tail: crate::BeatsTail::Forward,
+                        decay: 100,
+                    },
+                )?;
+                let mut edit = crate::AudioClipEdit::capture(&clip);
+                edit.anchor(clip.start, self.tempo_map())?;
+                let domain = std::sync::Arc::make_mut(&mut edit.domain);
+                domain.warp = Some(settings);
+                domain.warp_enabled = true;
+                clip.edit = Some(std::sync::Arc::new(edit));
+                crate::audio_edit::project_clip(&mut clip, self.tempo_map())?;
+            }
             incoming.push(crate::ClipGroupPreview {
                 track,
-                content: crate::ClipGroupContent::Audio(Clip {
-                    name: "clip".into(),
-                    flavor: crate::ClipFlavor::default(),
-                    id: ClipId(0),
-                    asset,
-                    start,
-                    duration: playback_frames,
-                    source_offset: 0,
-                    source_length: playback_frames,
-                    looping: false,
-                    source_phase: 0,
-                    fade: ClipFade::neutral(playback_frames)?,
-                    gain: crate::ClipGain::UNITY,
-                    edit: None,
-                }),
+                content: crate::ClipGroupContent::Audio(clip),
             });
             owners.push((track, asset));
         }
@@ -1442,7 +1477,11 @@ impl Project {
             | Command::SetArrangementSectionColor { .. }
             | Command::RemoveArrangementSection(_)
             | Command::ReorderSectionBefore { .. }
-            | Command::ReorderSectionAfter { .. }) => {
+            | Command::ReorderSectionAfter { .. }
+            | Command::ResizeArrangementSection { .. }
+            | Command::DeleteArrangementSection(_)
+            | Command::DuplicateArrangementSection(_)
+            | Command::MergeArrangementSections(_)) => {
                 crate::arrangement_sections::apply(self, command)
             }
             Command::SetTuning(tuning) => {
@@ -2599,6 +2638,21 @@ impl Project {
             },
         );
         Ok(id)
+    }
+}
+
+impl Command {
+    /// Structural section edits use stopped resident preparation/publication.
+    /// Metadata edits and marker merging do not alter musical material.
+    pub fn requires_stopped_section_edit(&self) -> bool {
+        matches!(
+            self,
+            Self::ReorderSectionBefore { .. }
+                | Self::ReorderSectionAfter { .. }
+                | Self::ResizeArrangementSection { .. }
+                | Self::DeleteArrangementSection(_)
+                | Self::DuplicateArrangementSection(_)
+        )
     }
 }
 

@@ -632,6 +632,131 @@ fn tiny_derived_roots_cannot_accumulate_large_original_source_cache_owners() {
 }
 
 #[test]
+fn section_splices_are_exact_pcm_insertions_removals_and_copies_at_unequal_blocks() {
+    const CUT: usize = 16_000;
+    const SECTION_END: usize = 32_000;
+    const SOURCE_END: usize = 48_000;
+    const INSERTED: usize = SECTION_END - CUT;
+
+    for processing in 0..3 {
+        let (mut seed, clip, media) = fixture(true);
+        seed.execute(Command::TrimClip {
+            clip,
+            start: 0,
+            duration: SOURCE_END as u64,
+            source_offset: 0,
+            source_length: 8_000,
+        })
+        .unwrap();
+        let extended = seed.project().clip(clip).unwrap();
+        assert_eq!(extended.duration(), SOURCE_END as u64);
+        assert_eq!(extended.source_phase(), 137);
+        assert_eq!(extended.fade().fade_in(), 997);
+        assert_eq!(extended.fade().fade_out(), 1_601);
+        assert_eq!(
+            Project::from_snapshot(seed.project().snapshot()).unwrap(),
+            seed.project().clone()
+        );
+
+        if processing > 0 {
+            seed.execute(Command::SetAudioClipPitch { clip, cents: 137 })
+                .unwrap();
+            seed.execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        }
+        if processing == 2 {
+            let settings = default_audio_warp(
+                seed.project().clip(clip).unwrap(),
+                seed.project().tempo_map(),
+                WarpMode::Beats {
+                    preserve: hex_project::BeatsPreserve::Transients,
+                    tail: hex_project::BeatsTail::Forward,
+                    decay: 100,
+                },
+            )
+            .unwrap();
+            seed.execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            })
+            .unwrap();
+        }
+        let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+        let baseline = prepare(&seed, &media, &context);
+        let source_pcm = render(&baseline, 0, SOURCE_END, 113);
+        assert!(
+            source_pcm[CUT..SECTION_END]
+                .iter()
+                .any(|frame| *frame != [0.0; 2]),
+            "the copied/cut interval must contain audible source PCM"
+        );
+        for name in ["grow", "shrink", "delete", "duplicate"] {
+            let mut editor = Editor::new(seed.project().clone(), 32).unwrap();
+            let Created::ArrangementSection(section) = editor
+                .execute(Command::AddArrangementSection {
+                    name: name.into(),
+                    color: hex_project::ElementColor::Cyan,
+                    start: BeatTime::from_quarters(2).unwrap(),
+                    end: BeatTime::from_quarters(if name == "shrink" { 6 } else { 4 }).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("section")
+            };
+            let (command, expected) = match name {
+                "grow" => {
+                    let mut pcm = source_pcm[..SECTION_END].to_vec();
+                    pcm.extend(vec![[0.0; 2]; INSERTED]);
+                    pcm.extend_from_slice(&source_pcm[SECTION_END..]);
+                    (
+                        Command::ResizeArrangementSection {
+                            section,
+                            edge: hex_project::TrimEdge::Right,
+                            length: BeatTime::from_quarters(4).unwrap(),
+                        },
+                        pcm,
+                    )
+                }
+                "shrink" => (
+                    Command::ResizeArrangementSection {
+                        section,
+                        edge: hex_project::TrimEdge::Right,
+                        length: BeatTime::from_quarters(2).unwrap(),
+                    },
+                    source_pcm[..SECTION_END].to_vec(),
+                ),
+                "delete" => {
+                    let mut pcm = source_pcm[..CUT].to_vec();
+                    pcm.extend_from_slice(&source_pcm[SECTION_END..]);
+                    (Command::DeleteArrangementSection(section), pcm)
+                }
+                _ => {
+                    let mut pcm = source_pcm[..SECTION_END].to_vec();
+                    pcm.extend_from_slice(&source_pcm[CUT..SECTION_END]);
+                    pcm.extend_from_slice(&source_pcm[SECTION_END..]);
+                    (Command::DuplicateArrangementSection(section), pcm)
+                }
+            };
+            editor.execute(command).unwrap();
+            let prepared = prepare(&editor, &media, &context);
+            assert_eq!(
+                render(&prepared, 0, expected.len(), 127),
+                expected,
+                "{name} with 127-frame blocks"
+            );
+            assert_eq!(
+                render(&prepared, 0, expected.len(), 257),
+                expected,
+                "{name} with 257-frame blocks"
+            );
+        }
+    }
+}
+
+#[test]
 fn pending_and_committed_derived_cache_share_one_ceiling_without_freeing_audible_pcm() {
     let (mut editor, clip, media) = fixture(false);
     editor
