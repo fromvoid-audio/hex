@@ -227,6 +227,7 @@ impl EditorView {
         let draw_creation = self.midi_creation.as_ref().map(|creation| creation.preview);
         let draw_marquee = self.midi_marquee.clone();
         let draw_marker = self.midi_marker;
+        let draw_step = self.midi_step_preview();
         let draw_playhead = self.midi_playhead_source_beat();
         let draw_time = self.midi_time_selection_bounds();
         let draw_pitch_locked = self.midi_draw_pitch_locked;
@@ -682,6 +683,35 @@ impl EditorView {
                         top,
                         1.0,
                         height.max(1.0),
+                        theme::color(theme::PaletteRole::Primary),
+                    );
+                }
+
+                // Held chords are lines, separate from authored/selected note bodies.
+                for note in draw_step.into_iter().flatten() {
+                    if note.pitch < pitch_low
+                        || u16::from(note.pitch) >= u16::from(pitch_low) + u16::from(pitch_rows)
+                    {
+                        continue;
+                    }
+                    let first = note.start.raw().max(beat_start.raw());
+                    let last = note
+                        .start
+                        .raw()
+                        .saturating_add(note.duration.raw())
+                        .min(beat_start.raw().saturating_add(raw_span));
+                    if first >= last {
+                        continue;
+                    }
+                    let left = ((first - beat_start.raw()) as f64 / raw_span as f64) as f32 * width;
+                    let right = ((last - beat_start.raw()) as f64 / raw_span as f64) as f32 * width;
+                    let row = pitch_low.saturating_add(pitch_rows - 1) - note.pitch;
+                    let y = (f32::from(row) + 0.5) * height / f32::from(pitch_rows);
+                    quad(
+                        left,
+                        y - 1.0,
+                        right - left,
+                        2.0,
                         theme::color(theme::PaletteRole::Primary),
                     );
                 }
@@ -2184,6 +2214,7 @@ impl EditorView {
 
     fn piano_keys(&self, low: u8, cx: &mut Context<Self>) -> Div {
         let rows = self.piano_pitch_rows;
+        let held = self.midi_live_pitches();
         let entity = cx.entity();
         let mut keys = div()
             .relative()
@@ -2211,12 +2242,17 @@ impl EditorView {
                     .items_center()
                     .pl(px(2.0))
                     .text_size(px(7.0))
-                    .text_color(rgb(if black {
+                    .debug_selector(move || format!("midi-piano-key-{pitch}"))
+                    .text_color(rgb(if held[usize::from(pitch)] {
+                        theme::color(theme::PaletteRole::Background)
+                    } else if black {
                         theme::color(theme::PaletteRole::Muted)
                     } else {
                         theme::color(theme::PaletteRole::Text)
                     }))
-                    .bg(rgb(if black {
+                    .bg(rgb(if held[usize::from(pitch)] {
+                        theme::color(theme::PaletteRole::Primary)
+                    } else if black {
                         theme::color(theme::PaletteRole::Background)
                     } else {
                         theme::color(theme::PaletteRole::Raised)
