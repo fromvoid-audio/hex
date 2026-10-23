@@ -20,7 +20,8 @@ EXECUTABLE = APP / "Contents/MacOS/hex-vst3-host"
 SOURCES = ("macos_bootstrap.py", "macos_helper.mm", "macos_fixture.cpp", "build.py",
            "macos_scan.mm", "macos_scan_wire.hpp", "macos_factory_fixture.cpp", "launch_ignored.cpp",
            "macos_instance.hpp", "macos_lifecycle_fixture.cpp", "macos_lifecycle_case.hpp",
-           "macos_host_messages.hpp", "macos_host.hpp", "macos_host_case.hpp", "macos_stream_case.hpp")
+           "macos_host_messages.hpp", "macos_host.hpp", "macos_host_case.hpp", "macos_stream_case.hpp",
+           "macos_processing.hpp", "macos_processing_fixture.cpp", "macos_processing_case.hpp")
 MAX_FILE = 16 * 1024 * 1024
 
 
@@ -116,7 +117,7 @@ def verify(receipt, run=False):
         return data
     executable = root / EXECUTABLE
     macho(executable, 2)
-    for name in ("effect", "instrument", "lifecycle"):
+    for name in ("effect", "instrument", "lifecycle", "processing"):
         fixture = root / APP / "Contents/Resources/fixtures" / (name + ".vst3")
         info = plistlib.loads((fixture / "Contents/Info.plist").read_bytes())
         if info.get("CFBundleExecutable") != "fixture" or info.get("CFBundleIdentifier") != "org.portalsurfer.hex.fixture." + name:
@@ -203,7 +204,8 @@ def build(sdk, output, *, discovery_only=False):
     if not discovery_only:
         for instrument, name, source in ((0, "effect", "macos_fixture.cpp"),
                                          (1, "instrument", "macos_fixture.cpp"),
-                                         (0, "lifecycle", "macos_lifecycle_fixture.cpp")):
+                                         (0, "lifecycle", "macos_lifecycle_fixture.cpp"),
+                                         (0, "processing", "macos_processing_fixture.cpp")):
             bundle = resources / "fixtures" / (name + ".vst3")
             (bundle / "Contents").mkdir(parents=True)
             info = {"CFBundleExecutable": "fixture", "CFBundleIdentifier": "org.portalsurfer.hex.fixture." + name,
