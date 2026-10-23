@@ -1,5 +1,5 @@
-//! Sparse, independently-owned Session cells. Session clips contain source data only;
-//! they have no Arrangement placement or back-reference.
+//! Sparse, independently-owned Session cells. Clips own source data and local
+//! processing metadata, without Arrangement placement or a back-reference.
 use crate::{
     BeatTime, ClipId, Created, Invalid, MAX_CLIPS, MAX_NOTES, MAX_SCENES, MAX_SESSION_CELLS,
     MidiSource, NoteId, SceneId, TrackId,
@@ -26,6 +26,7 @@ pub struct SessionMidiClip {
     pub(crate) id: ClipId,
     pub(crate) name: String,
     pub(crate) source: Arc<MidiSource>,
+    pub(crate) volume: crate::MidiClipVolume,
 }
 
 /// Frame-anchored, one-shot audio source assigned to one Session cell.
@@ -63,6 +64,9 @@ impl SessionAudioClip {
     }
 }
 impl SessionMidiClip {
+    pub fn volume(&self) -> &crate::MidiClipVolume {
+        &self.volume
+    }
     pub fn flavor(&self) -> crate::ClipFlavor {
         self.flavor
     }
@@ -192,6 +196,7 @@ pub(crate) fn apply(
                     flavor: crate::ClipFlavor::default(),
                     id,
                     name,
+                    volume: crate::MidiClipVolume::default(),
                     source: Arc::new(MidiSource::defaults(source_length)),
                 }),
             });
@@ -305,6 +310,7 @@ pub(crate) fn apply(
                     flavor: original.flavor,
                     id,
                     name: original.name.clone(),
+                    volume: original.volume.clone(),
                     source: Arc::new(source),
                 }),
             });
@@ -491,6 +497,15 @@ pub(crate) fn apply(
             let target = project
                 .session_midi_clip(clip)
                 .ok_or(Invalid("session midi clip no longer exists"))?;
+            crate::midi::validate_source_boundary(
+                source_length,
+                source_start,
+                loop_start,
+                loop_end,
+                looping,
+                target.source.one_shot_boundary(),
+            )?;
+            target.volume.validate_source_length(source_length)?;
             for note in target.source.notes() {
                 crate::midi::validate_note(
                     note.start,
@@ -643,7 +658,9 @@ fn duplicate_scene(project: &mut crate::Project, scene: SceneId) -> Result<Creat
                     flavor: clip.flavor,
                     id: ClipId(0),
                     name,
+                    volume: clip.volume.clone(),
                     source: Arc::new(MidiSource {
+                        one_shot_boundary: source.one_shot_boundary,
                         source_length: source.source_length,
                         source_start: source.source_start,
                         loop_start: source.loop_start,

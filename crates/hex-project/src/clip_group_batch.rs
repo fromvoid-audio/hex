@@ -100,6 +100,7 @@ fn private_copy_source(clip: &mut MidiClip) -> Result<(), Invalid> {
         .map_err(|_| Invalid("could not reserve copied midi notes"))?;
     notes.extend_from_slice(&old.notes);
     clip.source = Arc::new(crate::midi::MidiSource {
+        one_shot_boundary: old.one_shot_boundary,
         source_length: old.source_length,
         source_start: old.source_start,
         loop_start: old.loop_start,
@@ -125,9 +126,19 @@ fn id_charge(total: &mut usize, count: usize) -> Result<(), Invalid> {
 
 pub(super) fn apply(
     project: &mut Project,
+    incoming: Vec<ClipGroupPreview>,
+    selected: &BTreeSet<ClipId>,
+    copy: bool,
+) -> Result<Created, Invalid> {
+    apply_with_cuts(project, incoming, selected, copy, &[])
+}
+
+pub(super) fn apply_with_cuts(
+    project: &mut Project,
     mut incoming: Vec<ClipGroupPreview>,
     selected: &BTreeSet<ClipId>,
     copy: bool,
+    cuts: &[(crate::TrackId, u64, u64)],
 ) -> Result<Created, Invalid> {
     let mut rows = Vec::new();
     rows.try_reserve_exact(project.tracks.len())
@@ -144,6 +155,22 @@ pub(super) fn apply(
             crate::SessionCellContent::Audio(_) => count.clip(0)?,
             crate::SessionCellContent::Midi(clip) => count.clip(clip.source.notes.len())?,
             crate::SessionCellContent::Stop => (),
+        }
+    }
+    // Rectangle edits replace empty cells as well as incoming clip footprints.
+    for &(track, start, end) in cuts {
+        if start >= end {
+            return Err(Invalid("replacement interval must be positive"));
+        }
+        let index = project
+            .tracks
+            .iter()
+            .position(|row| row.id() == track)
+            .ok_or(Invalid("destination track no longer exists"))?;
+        let (left, right) = crate::midi::midi_overwrite_frame_bounds(tempo, start, end)?;
+        push(&mut rows[index].frames, (start, end))?;
+        if left < right {
+            push(&mut rows[index].beats, (left.raw(), right.raw()))?;
         }
     }
     // All incoming ownership is part of the final count, before any fragments.
@@ -194,11 +221,7 @@ pub(super) fn apply(
         union(&mut row.frames);
         union(&mut row.beats);
         for original in original_row.clips() {
-            if selected.contains(&original.id()) {
-                if copy {
-                    count.clip(0)?;
-                    push(&mut row.audio, original.clone())?;
-                }
+            if !copy && selected.contains(&original.id()) {
                 continue;
             }
             let end = original
@@ -220,11 +243,7 @@ pub(super) fn apply(
             }
         }
         for original in original_row.midi_clips() {
-            if selected.contains(&original.id()) {
-                if copy {
-                    count.clip(original.notes().len())?;
-                    push(&mut row.midi, original.clone())?;
-                }
+            if !copy && selected.contains(&original.id()) {
                 continue;
             }
             let end = original

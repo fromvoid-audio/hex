@@ -47,6 +47,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
     let project = Project::from_snapshot(Snapshot {
+        arrangement_sections: Vec::new(),
+        main_devices: Vec::new(),
         tuning: Default::default(),
         return_feeds: Vec::new(),
         audio_feeds: Vec::new(),
@@ -55,6 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         sample_rate: 48_000,
         next_id,
         assets: vec![AssetSnapshot {
+            original_source: None,
             id: 1,
             path: "generated/shared.wav".into(),
             source_sample_rate: 48_000,

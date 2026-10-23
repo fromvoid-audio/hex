@@ -384,6 +384,7 @@ impl EditorView {
                 return false;
             };
             GainPoint {
+                incoming_gain: None,
                 beat,
                 gain: pointer_gain(rect, pos[1]),
                 outgoing: hex_project::GainInterpolation::Linear,

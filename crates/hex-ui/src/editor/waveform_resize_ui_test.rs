@@ -268,6 +268,7 @@ fn resize_waveforms(cx: &mut TestAppContext, stretch: bool) {
                         comparison_audio: None,
                         project: Arc::clone(&old.project),
                         waveforms: BTreeMap::from([(asset, Arc::clone(&peaks))]),
+                        source_overviews: Default::default(),
                         audio_clip_waveforms: prepared,
                         midi_preview: Arc::clone(&old.midi_preview),
                         gain_preview: old.gain_preview.clone(),
