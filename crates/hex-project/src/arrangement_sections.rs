@@ -1,8 +1,8 @@
 //! Song-form markers and one atomic beat-domain cut/insert permutation.
 //! Sections are disjoint half-open ranges. Gaps are real song time and travel
 //! with intervening content; marker resize/move never changes musical material.
-//! Reordering cuts `[start,end)` and inserts it before the target's original
-//! start. Later destinations subtract the removed length. The entire intervening
+//! Reordering cuts `[start,end)` and inserts it before/after the target's original
+//! range. Later destinations subtract the removed length. The entire intervening
 //! interval (including gaps) shifts by that length. All tracks, gain base/touch
 //! lanes, tempo and meter follow one permutation; the loop keeps its musical
 //! beat interval. Authored tempo/meter points remain present even when their
@@ -193,6 +193,29 @@ impl Project {
         } else {
             target.start
         };
+        self.preview_section_reorder_at(source, insertion)
+    }
+    /// Return canonical geometry for moving one section after another section.
+    /// Insertion is at the target's original end, so it supports appending after
+    /// the final marker and retains all intervening gaps under the cut/insert law.
+    pub fn preview_section_reorder_after(
+        &self,
+        section: SectionId,
+        after: SectionId,
+    ) -> Result<SectionReorderPreview, Invalid> {
+        let source = self
+            .arrangement_section(section)
+            .ok_or(Invalid("arrangement section no longer exists"))?;
+        let target = self
+            .arrangement_section(after)
+            .ok_or(Invalid("arrangement destination no longer exists"))?;
+        self.preview_section_reorder_at(source, target.end)
+    }
+    fn preview_section_reorder_at(
+        &self,
+        source: &ArrangementSection,
+        insertion: BeatTime,
+    ) -> Result<SectionReorderPreview, Invalid> {
         let destination = if insertion >= source.end {
             BeatTime::from_raw(insertion.raw() - (source.end.raw() - source.start.raw()))
         } else {
@@ -252,6 +275,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
             Ok(Created::ArrangementSection(id))
         }
         Command::ReorderSectionBefore { section, before } => reorder(project, section, before),
+        Command::ReorderSectionAfter { section, after } => reorder_after(project, section, after),
         Command::RemoveArrangementSection(id) => {
             let index = project
                 .arrangement_sections
@@ -292,4 +316,4 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
     }
 }
 mod reorder;
-use reorder::reorder;
+use reorder::{reorder, reorder_after};

@@ -75,7 +75,7 @@ impl EditorView {
                     NumericControlKind::HorizontalSlider,
                     spec,
                     value,
-                    super::device_panel::control_style(),
+                    theme::control_style(),
                 )
             });
             let Ok(config) = config else { return div() };
