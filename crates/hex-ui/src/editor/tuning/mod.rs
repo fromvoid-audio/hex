@@ -66,6 +66,8 @@ pub(super) struct TuningState {
     midi_spans: Option<Box<hex_engine::MidiSpanBuffer>>,
     recent_keys: [Option<Instant>; 128],
     pub client: TuningGestureClient,
+    // Ignore the remaining widget events after declining its Begin during preview recovery.
+    numeric_begin_refused: bool,
     pub(super) value: ProjectTuning,
     generation: u64,
     focus: FocusHandle,
@@ -124,6 +126,7 @@ impl TuningState {
             midi_spans: None,
             recent_keys: [None; 128],
             client: TuningGestureClient::default(),
+            numeric_begin_refused: false,
             value,
             generation: 0,
             focus: cx.focus_handle(),
@@ -596,6 +599,22 @@ impl EditorView {
             cx.notify();
             return;
         }
+        if event.phase == NumericEventPhase::Begin {
+            self.tuning.numeric_begin_refused = false;
+            if self.tuning.client.is_recovery_pending() {
+                self.tuning.numeric_begin_refused = true;
+                self.tuning.error = self
+                    .tuning
+                    .client
+                    .begin(self.project_generation, self.tuning.value)
+                    .err()
+                    .map(str::to_owned);
+                cx.notify();
+                return;
+            }
+        } else if self.tuning.numeric_begin_refused {
+            return;
+        }
         if event.phase == NumericEventPhase::Cancel {
             self.tuning_change(self.tuning.value, event.phase);
             cx.notify();
@@ -811,6 +830,17 @@ impl EditorView {
                 self.tuning.selected = index;
             }
             self.tuning.context = hit;
+            cx.notify();
+            return;
+        }
+        if self.tuning.client.is_recovery_pending() {
+            self.tuning.error = self
+                .tuning
+                .client
+                .begin(self.project_generation, self.tuning.value)
+                .err()
+                .map(str::to_owned);
+            self.tuning.drag = None;
             cx.notify();
             return;
         }

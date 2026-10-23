@@ -133,6 +133,7 @@ impl EditorView {
         self.clip_selection.anchor = Some((track, clip));
         self.clip_selection.scope = Some((self.project_generation, state.revision));
         self.selected_track = Some(track);
+        self.retained_clip_detail = None;
         self.selected_clip = Some(clip);
         self.midi_selection.clear();
         self.midi_note_gesture = None;

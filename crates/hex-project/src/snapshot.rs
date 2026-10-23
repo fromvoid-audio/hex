@@ -66,6 +66,7 @@ pub struct SessionAudioClipSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMidiClipSnapshot {
+    pub volume: crate::MidiClipVolume,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
     pub name: String,
@@ -83,6 +84,7 @@ pub struct MidiSourceSnapshot {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AssetSnapshot {
+    pub original_source: Option<crate::OriginalSourceFacts>,
     pub id: u64,
     pub path: PathBuf,
     pub source_sample_rate: u32,
@@ -169,6 +171,7 @@ impl TrackContentSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClipSnapshot {
+    pub volume: crate::MidiClipVolume,
     pub name: String,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
@@ -250,6 +253,7 @@ impl Project {
                 .assets
                 .values()
                 .map(|asset| AssetSnapshot {
+                    original_source: asset.original_source,
                     id: asset.id.0,
                     path: asset.path.clone(),
                     source_sample_rate: asset.source_sample_rate,
@@ -315,6 +319,7 @@ impl Project {
                             .midi_clips
                             .iter()
                             .map(|clip| MidiClipSnapshot {
+                                volume: clip.volume.clone(),
                                 name: clip.name.clone(),
                                 flavor: clip.flavor,
                                 id: clip.id.0,
@@ -392,6 +397,7 @@ impl Project {
                             crate::SessionCellContent::Stop => SessionCellContentSnapshot::Stop,
                             crate::SessionCellContent::Midi(clip) => {
                                 SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                                    volume: clip.volume.clone(),
                                     flavor: clip.flavor,
                                     id: clip.id.value(),
                                     name: clip.name.clone(),
@@ -506,6 +512,7 @@ impl Project {
             assets.insert(
                 id,
                 Asset {
+                    original_source: asset.original_source,
                     id,
                     path: asset.path,
                     source_sample_rate: asset.source_sample_rate,
@@ -720,7 +727,10 @@ impl Project {
                         velocity: note.velocity,
                     });
                 }
+                crate::midi_note_overwrite::validate_occupancy(&notes)?;
+                clip.volume.validate_source_length(source_length)?;
                 compiled_midi.push(MidiClip {
+                    volume: clip.volume.clone(),
                     name: clip.name.clone(),
                     flavor: clip.flavor,
                     id: ClipId(clip.id),
@@ -859,7 +869,10 @@ impl Project {
                             velocity: note.velocity,
                         });
                     }
+                    crate::midi_note_overwrite::validate_occupancy(&notes)?;
+                    clip.volume.validate_source_length(source_length)?;
                     crate::SessionCellContent::Midi(crate::SessionMidiClip {
+                        volume: clip.volume,
                         flavor: clip.flavor,
                         id: ClipId(clip.id),
                         name: clip.name,
@@ -961,6 +974,8 @@ impl Project {
             project.routing = Self::validate_return_feed_snapshot(&candidate)?;
             project.adopt_playable_snapshot(&candidate)?;
         }
+        project.validate_arrangement_occupancy()?;
+        project.validate_midi_volumes()?;
         Ok(project)
     }
 }

@@ -286,6 +286,73 @@ impl ClaimedAudioCandidateRuntime {
             .as_ref()
             .map(|r| r.playback.sample_rate())
     }
+    /// Actual CURRENT sampler transport and activation, including epoch zero
+    /// before its first keyboard input. No source or runtime owner is exposed.
+    pub fn current_sampler_edit_status(&self) -> Option<(AudioCandidateRuntimeStatus, u64)> {
+        let status = self.status()?;
+        let runtime = self.inner.runtime.as_ref()?;
+        runtime.sampler_sources.as_ref()?;
+        Some((
+            status,
+            runtime
+                .playback
+                .current_sampler_keyboard_epoch()
+                .unwrap_or(0),
+        ))
+    }
+    /// Actual runtime activation scalar, independent of a newer mailbox binding.
+    pub fn current_sampler_keyboard_epoch(&self) -> Option<u64> {
+        let runtime = self.inner.runtime.as_ref()?;
+        runtime.sampler_sources.as_ref()?;
+        runtime.playback.current_sampler_keyboard_epoch()
+    }
+    pub fn current_sampler_keyboard_rejected_epoch(&self) -> Option<u64> {
+        let runtime = self.inner.runtime.as_ref()?;
+        runtime.sampler_sources.as_ref()?;
+        runtime.playback.current_sampler_keyboard_rejected_epoch()
+    }
+    /// Scalar input only; the current runtime retains its exact constructor bank.
+    pub fn apply_current_sampler_keyboard(
+        &mut self,
+        frame: Option<crate::computer_keyboard::CurrentSamplerKeyboardFrame>,
+    ) -> Result<bool, crate::Invalid> {
+        if self.inner.phase != ClaimedPhase::Current {
+            return Err(crate::Invalid("sampler runtime is not current"));
+        }
+        let runtime = self
+            .inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::Invalid("sampler runtime unavailable"))?;
+        if runtime.sampler_sources.is_none() {
+            return Ok(false);
+        }
+        runtime.playback.apply_current_sampler_keyboard(frame)?;
+        Ok(true)
+    }
+    /// Priority output Stop with the host's exact scalar clock. Ordinary playback may retain
+    /// only its matching output-bound input; legacy native CURRENT keeps terminal Stop.
+    pub fn apply_priority_stop(
+        &mut self,
+        clock: &crate::computer_keyboard::KeyboardActivationClock,
+    ) -> Result<(), crate::PlaybackActionError> {
+        if self.inner.phase != ClaimedPhase::Current {
+            return Err(crate::PlaybackActionError::SessionNotPrepared);
+        }
+        let runtime = self
+            .inner
+            .runtime
+            .as_mut()
+            .ok_or(crate::PlaybackActionError::SessionNotPrepared)?;
+        if runtime.sampler_sources.is_some() {
+            runtime.apply_action(crate::PlaybackAction::Transport(
+                crate::PlaybackCommand::Stop,
+            ))
+        } else {
+            runtime.playback.apply_priority_stop(clock);
+            Ok(())
+        }
+    }
     pub fn apply_action(
         &mut self,
         action: crate::PlaybackAction,
@@ -297,8 +364,7 @@ impl ClaimedAudioCandidateRuntime {
             .runtime
             .as_mut()
             .ok_or(crate::PlaybackActionError::SessionNotPrepared)?
-            .playback
-            .try_apply_action(action)
+            .apply_action(action)
     }
     pub fn render(&mut self, output: &mut [crate::Frame]) -> Result<(), crate::Invalid> {
         if self.inner.phase != ClaimedPhase::Current {
@@ -308,8 +374,7 @@ impl ClaimedAudioCandidateRuntime {
             .runtime
             .as_mut()
             .ok_or(crate::Invalid("candidate runtime unavailable"))?
-            .playback
-            .render(output)
+            .render_with_signal_observers(output, None, None)
     }
     /// Pure exact next-chunk demand. A proposed Play/Pause flag is speculative;
     /// neither transport nor page readiness is committed by this observation.
@@ -348,6 +413,9 @@ impl ClaimedAudioCandidateRuntime {
         }
         let next = self.inner.runtime.as_mut().ok_or_else(invalid)?;
         let old = previous.inner.runtime.as_mut().ok_or_else(invalid)?;
+        if next.sampler_sources.is_some() || old.sampler_sources.is_some() {
+            return Err(invalid());
+        }
         next.playback
             .preview_stream_handoff(&mut old.playback, maximum_frames, playing, visit)
     }
@@ -376,6 +444,9 @@ impl ClaimedAudioCandidateRuntime {
         }
         let next_runtime = self.inner.runtime.as_mut().ok_or_else(invalid)?;
         let old_runtime = old.inner.runtime.as_mut().ok_or_else(invalid)?;
+        if next_runtime.sampler_sources.is_some() || old_runtime.sampler_sources.is_some() {
+            return Err(invalid());
+        }
         let transfer = groups::Transfer::new(
             &mut self.inner.groups,
             &mut old.inner.groups,

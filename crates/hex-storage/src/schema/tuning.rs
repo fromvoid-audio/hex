@@ -1,13 +1,15 @@
-//! One current schema33 requires project tuning and the complete device manifest.
+//! Current schema35 requires tuning, original/device assets and every MIDI clip-volume row.
 use super::{Project, StorageError};
 use hex_tuning::{Audition, ProjectTuning, Scale, Waveform};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
-pub(crate) struct DocumentV33<'a> {
+pub(crate) struct DocumentV35<'a> {
     #[serde(flatten)]
     base: super::fade_shapes::DocumentV29<'a>,
     tuning: Tuning,
+    midi_clip_volumes: super::midi_clip_volume::Manifest,
+    asset_sources: super::original_sources::Manifest,
     device_assets: super::device_assets::Manifest,
     main_devices: Vec<super::DeviceDtoV14>,
 }
@@ -129,12 +131,14 @@ impl Tuning {
         ProjectTuning::new(self.enabled, scale, audition).map_err(|e| StorageError::Invalid(e.0))
     }
 }
-impl<'a> DocumentV33<'a> {
+impl<'a> DocumentV35<'a> {
     pub(crate) fn from_project(project: &'a Project) -> Result<Self, StorageError> {
         let base = super::fade_shapes::DocumentV29::for_current_envelope(project)?;
         Ok(Self {
             base,
             tuning: project.tuning().into(),
+            midi_clip_volumes: super::midi_clip_volume::Manifest::from_project(project)?,
+            asset_sources: super::original_sources::Manifest::from_project(project),
             device_assets: super::device_assets::Manifest::from_project(project)?,
             main_devices: project
                 .main_devices()
@@ -150,12 +154,17 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     // Preserve duplicate-field refusal before adapting the older strict envelope.
     let _: super::audio_events::UniqueKeys = serde_json::from_slice(bytes)?;
     let mut value: serde_json::Value = serde_json::from_slice(bytes)?;
+    require_device_host_gains(&value)?;
     let object = value
         .as_object_mut()
         .ok_or(StorageError::Invalid("invalid tuning envelope"))?;
-    if object.get("version").and_then(|v| v.as_u64()) != Some(33) {
+    if object.get("version").and_then(|v| v.as_u64()) != Some(35) {
         return Err(StorageError::Invalid("invalid tuning envelope version"));
     }
+    let volumes: super::midi_clip_volume::Manifest =
+        serde_json::from_value(object.remove("midi_clip_volumes").ok_or(
+            StorageError::Invalid("midi clip volume inventory is missing"),
+        )?)?;
     let tuning: Tuning = serde_json::from_value(
         object
             .remove("tuning")
@@ -170,6 +179,11 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
     let main: BoundedMain = serde_json::from_value(serde_json::json!({
         "devices": object.remove("main_devices").ok_or(StorageError::Invalid("main device inventory is missing"))?
     }))?;
+    let original_sources: super::original_sources::Manifest = serde_json::from_value(
+        object
+            .remove("asset_sources")
+            .ok_or(StorageError::Invalid("asset source inventory is missing"))?,
+    )?;
     object.insert("version".into(), 29.into());
     let base = super::fade_shapes::DocumentV29::decode(&serde_json::to_vec(&value)?)?;
     let mut snapshot = base.snapshot();
@@ -180,7 +194,54 @@ pub(crate) fn decode(bytes: &[u8]) -> Result<Project, StorageError> {
         .map(super::device_dto_into_snapshot)
         .collect::<Result<_, _>>()?;
     manifest.apply(&mut snapshot)?;
+    original_sources.apply(&mut snapshot)?;
+    volumes.apply(&mut snapshot)?;
     Project::from_snapshot(snapshot).map_err(|e| StorageError::Invalid(e.0))
+}
+
+/// The private staging DTOs also serve old-shaped internal envelopes and default
+/// absent host trims to unity. Current files must carry both saved values rather
+/// than silently losing a trim. Inspect only actual device owners; asset and
+/// comparison rows have different contracts and never carry these fields.
+fn require_device_host_gains(value: &serde_json::Value) -> Result<(), StorageError> {
+    fn require(device: &serde_json::Value) -> Result<(), StorageError> {
+        if device.get("input_gain_millidb").is_none() || device.get("output_gain_millidb").is_none()
+        {
+            return Err(StorageError::Invalid("device host gain fields are missing"));
+        }
+        Ok(())
+    }
+    for owner in ["tracks", "return_tracks"] {
+        for track in value
+            .get(owner)
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            for device in track
+                .get("devices")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+            {
+                require(device)?;
+            }
+            if owner == "tracks"
+                && let Some(instrument) = track.get("instrument").filter(|value| !value.is_null())
+            {
+                require(instrument)?;
+            }
+        }
+    }
+    for device in value
+        .get("main_devices")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        require(device)?;
+    }
+    Ok(())
 }
 
 #[derive(Deserialize)]

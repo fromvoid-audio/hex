@@ -1,18 +1,26 @@
-//! Original borrowed-PCM playback prerequisite for the planned Sampler device.
+//! Original source-coordinate sampler kernel and explicit empty catalog state.
 //!
-//! This module is not a registered instrument or a claim of Simpler parity.
-//! The control owner validates PCM once and retains it for every borrowed voice.
-//! Rendering is deterministic, allocation-free and independent of block size.
-//! See `docs/sampler.md` for host asset and reference acceptance still required.
+//! The empty catalog sentinel is silent and owns no asset or substitute PCM; malformed or
+//! source-bearing state without its actual source must refuse preparation. Loaded playback
+//! uses a registered mutable factory over the host's exact original-rate inventory. Ordinary
+//! playback retains that configuration in each runtime lease, including outgoing voices; the
+//! obsolete private constructor keeps its separately closed source path. Source regions are nonempty half-open
+//! frame intervals. Pitch/rate conversion, reverse, Classic loops, One-Shot/Slice gate laws and
+//! envelope ages share the same bounded scalar preparation. Voices borrow immutable PCM without
+//! per-note scan, copy or owning handle; sample queries remain deterministic across block sizes.
+//! These original laws do not establish Live parity or native deadline acceptance.
 mod binding;
+pub mod catalog;
+pub mod control;
 mod envelope;
 mod plan;
 mod runtime;
+pub mod state;
 mod voice;
 pub use binding::{BorrowedSamplerVoice, BoundSamplerPlan};
 pub use envelope::Envelope;
 pub use plan::{PreparedSamplerPlan, SampleChannels, SampleShape};
-pub use runtime::{MAX_SAMPLER_RUNTIME_VOICES, PreparedSamplerRuntime};
+pub use runtime::{MAX_SAMPLER_RUNTIME_VOICES, PreparedSamplerRuntime, SamplerRuntime};
 pub use voice::{Voice, VoiceCoefficients};
 
 use crate::Invalid;

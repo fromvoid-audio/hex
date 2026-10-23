@@ -259,6 +259,24 @@ pub(crate) struct SharedAnalyticContextTable {
 }
 
 impl SharedAnalyticContextTable {
+    /// The closed native sampler constructor has no analytic owners. Its
+    /// validated tuning remains inline in the actual constructor allocation.
+    pub(crate) fn current_sampler_table(tuning: hex_lattice::TuningTable) -> Result<Self, Invalid> {
+        let tuning_identity = if tuning.is_neutral() {
+            TuningIdentity::default()
+        } else {
+            TuningIdentity(
+                NEXT_TUNING_ID
+                    .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                    .map_err(|_| Invalid("tuning identity exhausted"))?,
+            )
+        };
+        Ok(Self {
+            tuning,
+            tuning_identity,
+            ..Self::default()
+        })
+    }
     /// Exhaustive audited empty-table payload check for the opt-in compiler.
     /// Vec headers belong to this outer payload; nonzero spare capacities or
     /// nested handles are unsupported rather than assumed free/complete.
@@ -295,6 +313,16 @@ impl SharedAnalyticContextTable {
         registry: &NativeInstrumentRegistry<'_>,
         previous: Option<&Self>,
     ) -> Result<Arc<Self>, Invalid> {
+        Self::prepare_scoped(project, registry, previous, None)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn prepare_scoped(
+        project: &Project,
+        registry: &NativeInstrumentRegistry<'_>,
+        previous: Option<&Self>,
+        samplers: Option<&dyn crate::native_device_resources::InstrumentResourcePreparation>,
+    ) -> Result<Arc<Self>, Invalid> {
         let tuning = project.tuning().table().map_err(|e| Invalid(e.0))?;
         let tuning_identity = if tuning.is_neutral() {
             TuningIdentity::default()
@@ -321,16 +349,18 @@ impl SharedAnalyticContextTable {
             let Some(device) = track.instrument().filter(|device| !device.bypassed()) else {
                 continue;
             };
-            let prepared = registry
-                .prepare_instrument(
-                    device.state(),
-                    &hex_lattice::DevicePreparationContext {
-                        sample_rate: project.sample_rate(),
-                        tuning: &tuning,
-                        resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
-                    },
-                )
-                .map_err(|_| Invalid("track instrument state is unsupported"))?;
+            let prepared = crate::native_device_resources::prepare_instrument(
+                registry,
+                device.id(),
+                device.state(),
+                &hex_lattice::DevicePreparationContext {
+                    sample_rate: project.sample_rate(),
+                    tuning: &tuning,
+                    resources: &hex_lattice::EMPTY_DEVICE_RESOURCES,
+                },
+                samplers,
+            )
+            .map_err(|_| Invalid("track instrument state is unsupported"))?;
             if prepared.prefers_mutable_continuation()
                 || previous.is_some_and(|old| {
                     old.mutable_continuations

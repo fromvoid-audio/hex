@@ -240,6 +240,19 @@ fn refused_bounce_leaves_project_and_redo_and_files_untouched() {
     assert_eq!(session.project(), &original);
     assert!(session.can_redo());
     assert_eq!(fs::read(&blocked).unwrap(), b"preserve");
+    // A successful create-new render followed by final admission refusal cleans only
+    // that uncommitted generated file, retaining the original source and history.
+    assert!(
+        session
+            .bounce_midi_clip_with_admission(clip, &folder.0, None, |_, _| Err(
+                SessionError::Invalid("injected final bounce refusal")
+            ),)
+            .is_err()
+    );
+    assert_eq!(session.project(), &original);
+    assert!(session.can_redo());
+    assert_eq!(fs::read_dir(&folder.0).unwrap().count(), 1);
+    assert_eq!(fs::read(&blocked).unwrap(), b"preserve");
     session.command(Command::RemoveMidiClip(clip)).unwrap();
     session.undo();
     session.redo();
@@ -373,9 +386,20 @@ fn looped_and_mutable_bounces_chase_history_and_isolate_other_clips() {
         let before = session.compile_prepared_revision(None).unwrap();
         let (start, frames) = session.project().midi_bounce_range(clip).unwrap();
         let expected = pcm(before, (start + frames) as usize);
+        let Created::Track(other_track) = session
+            .command(Command::InsertTrackWithDevice {
+                name: "independent voice".into(),
+                before_track: None,
+                slot: hex_project::TrackDeviceSlot::Instrument,
+                state: hex_project::default_instrument_state().unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("other track")
+        };
         let Created::Clip(other) = session
             .command(Command::PlaceMidiClip {
-                track,
+                track: other_track,
                 start: beat(1),
                 length: beat(3),
             })

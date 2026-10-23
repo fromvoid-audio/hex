@@ -1,5 +1,10 @@
-//! Immutable canonical Project/counter pairing owned by the existing worker.
-//! Correlation only: constructor custody and exact page protection remain separate.
+//! Immutable canonical Project/source/context pairing owned by the Session worker.
+//!
+//! The exact document generation/editor revision travels with captured source facts. This is
+//! correlation, not native admission: desktop workers independently retain and verify their actual
+//! source/domain owners. Verified-mode events do not offer a resident Playback fallback, including
+//! empty graphs; private loaded-sampler sources also stay in their worker-owned path rather than
+//! escaping through an Event owner.
 use super::*;
 pub struct CanonicalAudioSourceSnapshot {
     project: Arc<Project>,
@@ -78,6 +83,9 @@ impl CanonicalAudioSourceSnapshot {
     pub fn candidate_reservation_quote(
         &self,
     ) -> Result<hex_engine::AudioCandidateReservationQuote, hex_engine::AudioStorageError> {
+        if hex_engine::native_device_resources::requires_private_sampler_sources(&self.project) {
+            return Err(hex_engine::AudioStorageError::UnsupportedGraph);
+        }
         hex_engine::AudioCandidateReservationQuote::for_project(
             &self.project,
             self.required_sources().count(),

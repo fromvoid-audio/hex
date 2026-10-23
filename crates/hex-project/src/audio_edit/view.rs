@@ -486,9 +486,6 @@ pub(crate) fn resize_view(
     operation: AudioViewResizeOperation,
 ) -> Result<crate::Created, Invalid> {
     let original = project.clip(id).ok_or(Invalid("audio clip is missing"))?;
-    let original_end = AudioViewProjection::new(original, project.tempo_map())?
-        .outer_frame_bounds()
-        .1;
     // Only the operation is admitted. Recompute all scalars from current state.
     let next = preview_view_resize(original, project.tempo_map(), operation)?;
     let asset = project
@@ -496,20 +493,5 @@ pub(crate) fn resize_view(
         .ok_or(Invalid("audio media missing"))?;
     let clip =
         materialize_view_resize(original, project.tempo_map(), asset.playback_frames(), next)?;
-    let track = project
-        .tracks()
-        .iter()
-        .find(|track| track.clips().iter().any(|c| c.id() == id))
-        .map(|track| track.id())
-        .ok_or(Invalid("audio clip track is missing"))?;
-    if matches!(
-        operation,
-        AudioViewResizeOperation::OuterEnd { .. } | AudioViewResizeOperation::RepeatOuterEnd { .. }
-    ) && next.frame_end > original_end
-    {
-        crate::edit::overwrite_audio_interval(project, track, original_end, next.frame_end, id)?;
-        crate::midi::overwrite_midi_in_frames(project, track, original_end, next.frame_end, id)?;
-    }
-    *project.clip_mut(id)? = clip;
-    Ok(crate::Created::None)
+    crate::clip_group::replace_audio(project, clip)
 }

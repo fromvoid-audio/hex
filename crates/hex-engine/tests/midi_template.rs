@@ -1,6 +1,7 @@
 use hex_engine::{
-    MidiEdgeBuffer, MidiInstrumentRenderContext, MidiSpanBuffer, MidiTemplateError,
-    PreparedMidiInstrumentTemplate, PreparedMidiSourceTemplate, PreparedTempoMap,
+    MidiEdgeBuffer, MidiInstrumentRenderContext, MidiSpanBuffer, MidiTemplateError, MidiTiming,
+    PreparedMidiInstrumentTemplate, PreparedMidiSourceTemplate, PreparedTempoError,
+    PreparedTempoMap, SessionMidiOrigin,
     midi_compile::{MidiEventKind, midi_events},
 };
 use hex_project::{
@@ -771,8 +772,8 @@ fn ongoing_instrument_admits_repeating_32_note_chord_and_matches_finite_pcm() {
         BeatTime::ZERO,
         Some((BeatTime::ZERO, beat(4))),
     );
-    for _ in 0..32 {
-        add_note(&mut fixture, BeatTime::ZERO, beat(4), 48);
+    for index in 0..32 {
+        add_note(&mut fixture, BeatTime::ZERO, beat(4), 48 + index);
     }
 
     let project = fixture.editor.project();
@@ -999,8 +1000,8 @@ fn ongoing_instrument_admission_rejects_voice_pileups() {
         BeatTime::ZERO,
         None,
     );
-    for _ in 0..65 {
-        add_note(&mut fixture, beat(0), beat(1), 48);
+    for index in 0..65 {
+        add_note(&mut fixture, beat(0), beat(1), 36 + index);
     }
     let project = fixture.editor.project();
     let timing =
@@ -1024,20 +1025,20 @@ fn ongoing_instrument_admission_counts_repeat_voices_that_start_during_intro_rel
         BeatTime::ZERO,
         Some((BeatTime::ZERO, beat(3))),
     );
-    for _ in 0..63 {
+    for index in 0..63 {
         add_note(
             &mut fixture,
             BeatTime::from_ratio(29, 10).unwrap(),
             BeatTime::from_ratio(1, 10).unwrap(),
-            48,
+            36 + index,
         );
     }
-    for _ in 0..64 {
+    for index in 0..64 {
         add_note(
             &mut fixture,
             BeatTime::from_ratio(1, 20).unwrap(),
             BeatTime::from_ratio(1, 100).unwrap(),
-            55,
+            36 + index,
         );
     }
     let project = fixture.editor.project();
@@ -1392,7 +1393,18 @@ fn density_refuses_clustered_edges_and_admits_dense_spread_out_notes() {
         None,
     );
     for pitch in 0..129 {
-        add_note(&mut clustered, BeatTime::ZERO, beat(1), (pitch % 128) as u8);
+        // The repeated pitch has an adjacent gate; all 129 onsets still fall
+        // within 24 frames, so this tests onset pressure rather than overwrite.
+        add_note(
+            &mut clustered,
+            BeatTime::from_ratio(pitch / 128, 1024).unwrap(),
+            if pitch == 0 {
+                BeatTime::from_ratio(1, 1024).unwrap()
+            } else {
+                beat(1)
+            },
+            (pitch % 128) as u8,
+        );
     }
     let project = clustered.editor.project();
     let timing = PreparedTempoMap::prepare(project.tempo_map().clone(), 48_000).unwrap();
@@ -1462,4 +1474,234 @@ fn short_playable_gates_and_loop_periods_are_rejected() {
         ),
         Err(MidiTemplateError::LoopPeriodTooShortForAdmission)
     ));
+}
+
+#[test]
+fn origin_cue_reuses_canonical_intro_loop_and_unreachable_source_projection() {
+    let mut f = fixture(
+        8_000,
+        BeatTime::ZERO,
+        beat(12),
+        beat(6),
+        beat(3),
+        Some((beat(1), beat(4))),
+    );
+    add_note(
+        &mut f,
+        BeatTime::from_ratio(3, 2).unwrap(),
+        BeatTime::from_ratio(1, 4).unwrap(),
+        64,
+    );
+    add_note(&mut f, beat(3), BeatTime::from_ratio(1, 4).unwrap(), 67);
+    let (source, timing) = prepare(&f);
+    for (point, elapsed) in [
+        (beat(3), Some(BeatTime::ZERO)),
+        (
+            BeatTime::from_ratio(7, 2).unwrap(),
+            Some(BeatTime::from_ratio(1, 2).unwrap()),
+        ),
+        (
+            BeatTime::from_ratio(3, 2).unwrap(),
+            Some(BeatTime::from_ratio(3, 2).unwrap()),
+        ),
+        (BeatTime::ZERO, None),
+        (beat(5), None),
+    ] {
+        assert_eq!(source.earliest_elapsed_for_source(point).unwrap(), elapsed);
+    }
+    assert!(source.earliest_elapsed_for_source(beat(6)).is_err());
+    let origin = SessionMidiOrigin::new(
+        BeatTime::from_ratio(1, 2).unwrap(),
+        BeatTime::from_ratio(9, 2).unwrap(),
+    );
+    let start = timing.beat_to_frame(origin.performance_anchor).unwrap();
+    let mut edges = MidiEdgeBuffer::default();
+    source
+        .query_with_origin(origin, &timing, start, start + 256, &mut edges)
+        .unwrap();
+    let onset = edges
+        .events()
+        .find(|e| e.kind == MidiEventKind::NoteOn)
+        .unwrap();
+    assert_eq!((onset.frame, onset.pitch, onset.iteration), (start, 64, 2));
+    let table = hex_devices::SineTable::new();
+    let instrument = PreparedMidiInstrumentTemplate::prepare(&source, &table).unwrap();
+    let mut spans = MidiSpanBuffer::default();
+    instrument
+        .query_with_origin(origin, &timing, start, start + 256, &mut spans)
+        .unwrap();
+    let onset = spans.spans().find(|s| s.pitch == 64).unwrap();
+    assert_eq!(
+        (onset.onset_beat, onset.gate_end_beat, onset.iteration),
+        (
+            origin.performance_anchor,
+            BeatTime::from_ratio(3, 4).unwrap(),
+            2
+        )
+    );
+}
+
+// Refuse any attempt to convert a historical performance onset. The wrapper
+// retains GLOBAL bounds and tempo conversion; it never offsets the timing map.
+struct NoHistoryTiming<'a> {
+    timing: &'a PreparedTempoMap,
+    anchor: BeatTime,
+}
+impl MidiTiming for NoHistoryTiming<'_> {
+    fn sample_rate(&self) -> u32 {
+        self.timing.sample_rate()
+    }
+    fn max_micro_bpm(&self) -> u64 {
+        u64::from(self.timing.max_micro_bpm())
+    }
+    fn beat_to_frame(&self, beat: BeatTime) -> Result<u64, PreparedTempoError> {
+        if beat < self.anchor {
+            return Err(PreparedTempoError::BeatToFrame(
+                "historical onset must be filtered",
+            ));
+        }
+        self.timing.beat_to_frame(beat)
+    }
+    fn frame_to_beat(&self, frame: u64) -> Result<BeatTime, PreparedTempoError> {
+        self.timing.frame_to_beat(frame)
+    }
+    fn beat_lower_bound_for_frame(&self, frame: u64) -> Result<u128, PreparedTempoError> {
+        self.timing.beat_lower_bound_for_frame(frame)
+    }
+}
+#[test]
+fn origin_filters_chased_tails_and_orphan_offs_before_global_tempo_conversion_and_matches_literal_pcm()
+ {
+    let mut f = fixture(
+        8_000,
+        BeatTime::ZERO,
+        beat(16),
+        beat(16),
+        BeatTime::ZERO,
+        None,
+    );
+    add_note(&mut f, BeatTime::ZERO, beat(12), 60);
+    add_note(&mut f, beat(10), beat(1), 64);
+    add_note(&mut f, beat(11), BeatTime::from_ratio(1, 2).unwrap(), 67);
+    let mut literal = fixture(
+        8_000,
+        BeatTime::ZERO,
+        beat(5),
+        beat(5),
+        BeatTime::ZERO,
+        None,
+    );
+    add_note(&mut literal, beat(1), beat(1), 64);
+    add_note(
+        &mut literal,
+        beat(2),
+        BeatTime::from_ratio(1, 2).unwrap(),
+        67,
+    );
+    for f in [&mut f, &mut literal] {
+        for (at, micro_bpm) in [
+            (BeatTime::from_ratio(3, 2).unwrap(), 90_000_000),
+            (BeatTime::from_ratio(9, 4).unwrap(), 150_000_000),
+        ] {
+            f.editor
+                .execute(Command::SetTempoPoint {
+                    beat: at,
+                    tempo: tempo(micro_bpm),
+                })
+                .unwrap();
+        }
+    }
+    let (source, timing) = prepare(&f);
+    let origin = SessionMidiOrigin::new(beat(1), beat(10));
+    let clock = NoHistoryTiming {
+        timing: &timing,
+        anchor: origin.performance_anchor,
+    };
+    let table = hex_devices::SineTable::new();
+    let instrument = PreparedMidiInstrumentTemplate::prepare(&source, &table).unwrap();
+    let start = timing.beat_to_frame(beat(1)).unwrap();
+    let end = timing.beat_to_frame(beat(4)).unwrap();
+    let mut edges = MidiEdgeBuffer::default();
+    let mut actual = Vec::new();
+    let mut frame = start - 128;
+    while frame < end {
+        let next = (frame + 127).min(end);
+        source
+            .query_with_origin(origin, &clock, frame, next, &mut edges)
+            .unwrap();
+        actual.extend(
+            edges
+                .events()
+                .map(|e| (e.frame, e.kind, e.pitch, e.velocity)),
+        );
+        frame = next;
+    }
+    let expected: Vec<_> = midi_events(literal.editor.project())
+        .unwrap()
+        .into_iter()
+        .map(|e| (e.frame, e.kind, e.pitch, e.velocity))
+        .collect();
+    assert_eq!(actual, expected);
+    assert!(
+        !actual.iter().any(|e| e.2 == 60),
+        "no chased onset or orphan NoteOff from the pre-cue gate"
+    );
+    let mut spans = MidiSpanBuffer::default();
+    instrument
+        .query_with_origin(origin, &clock, start, start + 1, &mut spans)
+        .unwrap();
+    let first = spans.spans().next().unwrap();
+    assert_eq!(
+        (first.pitch, first.onset_beat, first.gate_end_beat),
+        (64, beat(1), beat(2))
+    );
+    let compiled =
+        hex_engine::compile::project(literal.editor.project(), &std::collections::BTreeMap::new())
+            .unwrap();
+    let track = &compiled.tracks()[0];
+    let mut expected = vec![[0.0; 2]; end as usize];
+    track.render_additive(0, &mut expected).unwrap();
+    for partition in [73, 256] {
+        let mut output = vec![[0.0; 2]; end as usize];
+        let context =
+            MidiInstrumentRenderContext::with_origin(origin, &clock, &table).after_onset(beat(1));
+        let mut at = 0;
+        while at < output.len() {
+            let next = (at + partition).min(output.len());
+            instrument
+                .render_additive(
+                    context,
+                    track.mix(),
+                    at as u64,
+                    &mut output[at..next],
+                    &mut spans,
+                )
+                .unwrap();
+            at = next;
+        }
+        assert_eq!(output, expected, "global cue PCM partition={partition}");
+    }
+    let mut direct = [[0.0; 2]; 256];
+    instrument
+        .render_with_origin(origin, &clock, &table, start, &mut direct, &mut spans)
+        .unwrap();
+    assert_eq!(direct, expected[start as usize..start as usize + 256]);
+    assert!(direct.iter().flatten().any(|x| x.abs() > 1e-5));
+    let mut output = [[1.0; 2]; 257];
+    assert_eq!(
+        instrument.render_with_origin(origin, &clock, &table, start, &mut output, &mut spans),
+        Err(MidiTemplateError::QueryTooWide)
+    );
+    assert!(spans.is_empty() && output.iter().flatten().all(|x| *x == 0.0));
+    let exhausted = SessionMidiOrigin::new(BeatTime::ZERO, BeatTime::from_raw(u64::MAX));
+    assert_eq!(
+        source.query_with_origin(exhausted, &timing, 0, 1, &mut edges),
+        Err(MidiTemplateError::BeatDomainExhausted)
+    );
+    assert!(edges.is_empty());
+    assert_eq!(
+        instrument.query_with_origin(origin, &timing, start + 1, start, &mut spans),
+        Err(MidiTemplateError::InvalidFrameRange)
+    );
+    assert!(spans.is_empty());
 }

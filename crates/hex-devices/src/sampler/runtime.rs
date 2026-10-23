@@ -2,12 +2,13 @@
 use super::*;
 use hex_lattice::{
     DeviceResources, MutableInstrumentRuntime, NativeInstrumentEvent,
-    NativeInstrumentRuntimeError as Error, PreparedMutableInstrumentRuntime,
+    NativeInstrumentOccurrenceGain, NativeInstrumentRuntimeError as Error,
+    PreparedMutableInstrumentRuntime,
 };
 use std::any::Any;
 
 pub const MAX_SAMPLER_RUNTIME_VOICES: usize = 32;
-const MAX_EVENTS: usize = 1024;
+pub(super) const MAX_EVENTS: usize = 1024;
 
 /// Control-prepared key table and original source binding, without PCM/markers.
 /// Not registry admission: the actual owner graph must still qualify separately.
@@ -72,11 +73,22 @@ struct ActiveVoice {
     gate: Option<u64>,
 }
 type Active = [Option<ActiveVoice>; MAX_SAMPLER_RUNTIME_VOICES];
-struct SamplerRuntime {
+/// Opaque fixed-storage sampler processor created only by its prepared factory.
+/// Hosts may identify this concrete audited type; no source owner is stored here.
+pub struct SamplerRuntime {
     prepared: PreparedSamplerRuntime,
     active: Active,
 }
 impl PreparedMutableInstrumentRuntime for PreparedSamplerRuntime {
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
+    fn resource_factory_inline_bytes(&self) -> Option<usize> {
+        Some(std::mem::size_of::<Self>())
+    }
     fn algorithmic_latency_frames(&self) -> Option<u32> {
         Some(0)
     }
@@ -188,6 +200,66 @@ impl SamplerRuntime {
     }
 }
 impl MutableInstrumentRuntime for SamplerRuntime {
+    fn supports_active_occurrence_ids(&self) -> bool {
+        true
+    }
+    fn active_occurrence_ids(&self, output: &mut [u64]) -> Result<usize, Error> {
+        let count = self.active.iter().flatten().count();
+        if output.len() < count {
+            return Err(Error::ActiveOccurrenceCapacityExceeded);
+        }
+        for (slot, voice) in output[..count].iter_mut().zip(self.active.iter().flatten()) {
+            *slot = voice.occurrence;
+        }
+        output[..count].sort_unstable();
+        Ok(count)
+    }
+    fn supports_occurrence_gain(&self) -> bool {
+        true
+    }
+    fn preflight_occurrence_gains(
+        &self,
+        events: &[NativeInstrumentEvent],
+        gains: &[NativeInstrumentOccurrenceGain],
+    ) -> Result<(), Error> {
+        if events.len() > self.prepared.max_events
+            || gains.len() > MAX_EVENTS + MAX_SAMPLER_RUNTIME_VOICES
+        {
+            return Err(Error::EventCapacityExceeded);
+        }
+        // Mark the bounded union once instead of scanning the entire event
+        // batch for every gain (up to 1,024 incoming identities). The caller
+        // already proved sorted unique gain IDs. This is local validation
+        // scratch, not retained voice/gain state.
+        let mut known = [false; MAX_EVENTS + MAX_SAMPLER_RUNTIME_VOICES];
+        let mut mark = |id| {
+            if let Ok(index) = gains.binary_search_by_key(&id, |gain| gain.occurrence_id()) {
+                known[index] = true;
+            }
+        };
+        for voice in self.active.iter().flatten() {
+            mark(voice.occurrence);
+        }
+        for event in events {
+            if let NativeInstrumentEvent::NoteOn { occurrence_id, .. } = event {
+                mark(*occurrence_id);
+            }
+        }
+        if !known[..gains.len()].iter().all(|known| *known) {
+            return Err(Error::InvalidOccurrenceGain);
+        }
+        Ok(())
+    }
+    fn process_block_with_clock_and_occurrence_gains(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        _clock: Option<&dyn hex_lattice::NativeInstrumentClock>,
+        gains: &[NativeInstrumentOccurrenceGain],
+        resources: &dyn DeviceResources,
+    ) {
+        self.process_with_gains(events, frames, gains, resources);
+    }
     fn preflight_events(
         &self,
         events: &[NativeInstrumentEvent],
@@ -225,43 +297,7 @@ impl MutableInstrumentRuntime for SamplerRuntime {
         frames: &mut [StereoFrame],
         resources: &dyn DeviceResources,
     ) {
-        let pcm = (0..resources
-            .len()
-            .min(hex_lattice_contract::MAX_DEVICE_ASSET_REFERENCES))
-            .filter_map(|index| resources.get(index))
-            .find(|view| self.prepared.source.matches(*view));
-        let Some(view) = pcm else { return };
-        let mut active = self.active;
-        let mut next = 0;
-        for (offset, frame) in frames.iter_mut().enumerate() {
-            while events
-                .get(next)
-                .is_some_and(|event| event.frame_offset() == offset)
-            {
-                if self.event(&mut active, events[next]).is_err() {
-                    return;
-                }
-                next += 1;
-            }
-            for voice in active.iter().flatten() {
-                let Some(mut note) = self.prepared.notes[usize::from(voice.pitch)] else {
-                    continue;
-                };
-                for channel_gain in &mut note.channel_gain {
-                    *channel_gain *= voice.gain;
-                }
-                let sample = note.sample(view.pcm, voice.age, voice.gate.unwrap_or(u64::MAX));
-                for channel in 0..2 {
-                    frame[channel] = (f64::from(frame[channel]) + f64::from(sample[channel]))
-                        .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
-                        as f32;
-                }
-            }
-            if self.advance(&mut active, 1).is_err() {
-                return;
-            }
-        }
-        self.active = active;
+        self.process_with_gains(events, frames, &[], resources);
     }
     fn reset(&mut self) {
         self.active.fill(None);
@@ -289,6 +325,58 @@ impl MutableInstrumentRuntime for SamplerRuntime {
     }
     fn as_any(&self) -> &dyn Any {
         self
+    }
+}
+
+impl SamplerRuntime {
+    fn process_with_gains(
+        &mut self,
+        events: &[NativeInstrumentEvent],
+        frames: &mut [StereoFrame],
+        gains: &[NativeInstrumentOccurrenceGain],
+        resources: &dyn DeviceResources,
+    ) {
+        let pcm = (0..resources
+            .len()
+            .min(hex_lattice_contract::MAX_DEVICE_ASSET_REFERENCES))
+            .filter_map(|index| resources.get(index))
+            .find(|view| self.prepared.source.matches(*view));
+        let Some(view) = pcm else { return };
+        let mut active = self.active;
+        let mut next = 0;
+        for (offset, frame) in frames.iter_mut().enumerate() {
+            while events
+                .get(next)
+                .is_some_and(|event| event.frame_offset() == offset)
+            {
+                if self.event(&mut active, events[next]).is_err() {
+                    return;
+                }
+                next += 1;
+            }
+            for voice in active.iter().flatten() {
+                let Some(mut note) = self.prepared.notes[usize::from(voice.pitch)] else {
+                    continue;
+                };
+                for channel_gain in &mut note.channel_gain {
+                    *channel_gain *= voice.gain;
+                }
+                let sample = note.sample(view.pcm, voice.age, voice.gate.unwrap_or(u64::MAX));
+                let gain = gains
+                    .binary_search_by_key(&voice.occurrence, |gain| gain.occurrence_id())
+                    .ok()
+                    .map_or(1.0, |index| gains[index].value_at_offset(offset as u64));
+                for channel in 0..2 {
+                    frame[channel] = (f64::from(frame[channel]) + f64::from(sample[channel]) * gain)
+                        .clamp(-f64::from(f32::MAX), f64::from(f32::MAX))
+                        as f32;
+                }
+            }
+            if self.advance(&mut active, 1).is_err() {
+                return;
+            }
+        }
+        self.active = active;
     }
 }
 

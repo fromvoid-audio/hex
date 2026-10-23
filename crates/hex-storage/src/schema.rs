@@ -8,7 +8,9 @@ pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
 mod host_gain;
+mod midi_clip_volume;
 pub(crate) mod musical_audio;
+mod original_sources;
 pub(crate) mod playable_routing;
 pub(crate) mod provenance;
 pub(crate) mod return_feeds;
@@ -1268,6 +1270,7 @@ impl DocumentV8 {
                         .assets
                         .into_iter()
                         .map(|asset| AssetSnapshot {
+                            original_source: None,
                             id: asset.id,
                             path: asset.path.into(),
                             source_sample_rate: sample_rate,
@@ -1305,6 +1308,7 @@ impl DocumentV8 {
                         .assets
                         .into_iter()
                         .map(|asset| AssetSnapshot {
+                            original_source: None,
                             id: asset.id,
                             path: asset.path.into(),
                             source_sample_rate: asset.source_sample_rate,
@@ -1342,6 +1346,7 @@ impl DocumentV8 {
                         .assets
                         .into_iter()
                         .map(|asset| AssetSnapshot {
+                            original_source: None,
                             id: asset.id,
                             path: asset.path.into(),
                             source_sample_rate: asset.source_sample_rate,
@@ -1386,6 +1391,7 @@ impl DocumentV8 {
                         .assets
                         .into_iter()
                         .map(|asset| AssetSnapshot {
+                            original_source: None,
                             id: asset.id,
                             path: asset.path.into(),
                             source_sample_rate: asset.source_sample_rate,
@@ -1430,6 +1436,7 @@ impl DocumentV8 {
                         .assets
                         .into_iter()
                         .map(|asset| AssetSnapshot {
+                            original_source: None,
                             id: asset.id,
                             path: asset.path.into(),
                             source_sample_rate: asset.source_sample_rate,
@@ -1474,6 +1481,7 @@ impl DocumentV8 {
                         .assets
                         .into_iter()
                         .map(|asset| AssetSnapshot {
+                            original_source: None,
                             id: asset.id,
                             path: asset.path.into(),
                             source_sample_rate: asset.source_sample_rate,
@@ -1518,6 +1526,7 @@ impl DocumentV8 {
                         .assets
                         .into_iter()
                         .map(|asset| AssetSnapshot {
+                            original_source: None,
                             id: asset.id,
                             path: asset.path.into(),
                             source_sample_rate: asset.source_sample_rate,
@@ -1580,6 +1589,7 @@ impl DocumentV8 {
                         .assets
                         .into_iter()
                         .map(|asset| AssetSnapshot {
+                            original_source: None,
                             id: asset.id,
                             path: asset.path.into(),
                             source_sample_rate: asset.source_sample_rate,
@@ -1827,6 +1837,7 @@ impl DocumentV12 {
                         ),
                         SessionContentDtoV12::Midi { clip } => {
                             SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                                volume: hex_project::MidiClipVolume::default(),
                                 flavor: hex_project::ClipFlavor::default(),
                                 id: clip.id,
                                 name: clip.name,
@@ -2014,6 +2025,7 @@ impl DocumentV13 {
                 .assets
                 .into_iter()
                 .map(|asset| AssetSnapshot {
+                    original_source: None,
                     id: asset.id,
                     path: asset.path.into(),
                     source_sample_rate: asset.source_sample_rate,
@@ -2065,6 +2077,9 @@ impl DocumentV11 {
             return Err(StorageError::Invalid("unsupported alpha project format 32"));
         }
         if header.version == 33 {
+            return Err(StorageError::Invalid("unsupported alpha project format 33"));
+        }
+        if header.version == 35 {
             return tuning::decode(bytes);
         }
         if header.version == 29 {
@@ -2215,6 +2230,7 @@ impl DocumentV11 {
                         SessionContentDtoV11::Stop => SessionCellContentSnapshot::Stop,
                         SessionContentDtoV11::Midi { clip } => {
                             SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                                volume: hex_project::MidiClipVolume::default(),
                                 flavor: hex_project::ClipFlavor::default(),
                                 id: clip.id,
                                 name: clip.name,
@@ -2299,6 +2315,7 @@ impl DocumentV10 {
                                 clips
                                     .into_iter()
                                     .map(|c| MidiClipSnapshot {
+                                        volume: hex_project::MidiClipVolume::default(),
                                         name: "clip".into(),
                                         flavor: hex_project::ClipFlavor::default(),
                                         id: c.id,
@@ -2357,6 +2374,7 @@ impl DocumentV10 {
                         .assets
                         .into_iter()
                         .map(|a| AssetSnapshot {
+                            original_source: None,
                             id: a.id,
                             path: a.path.into(),
                             source_sample_rate: a.source_sample_rate,
@@ -2436,6 +2454,7 @@ impl DocumentV9 {
                             clips
                                 .into_iter()
                                 .map(|c| MidiClipSnapshot {
+                                    volume: hex_project::MidiClipVolume::default(),
                                     name: "clip".into(),
                                     flavor: hex_project::ClipFlavor::default(),
                                     id: c.id,
@@ -2495,6 +2514,7 @@ impl DocumentV9 {
                 .assets
                 .into_iter()
                 .map(|a| AssetSnapshot {
+                    original_source: None,
                     id: a.id,
                     path: a.path.into(),
                     source_sample_rate: a.source_sample_rate,
@@ -2542,6 +2562,7 @@ fn midi_v10_from_snapshot(clip: MidiClipSnapshot) -> MidiClipDtoV10 {
 
 fn midi_v10_into_snapshot(clip: MidiClipDtoV10) -> MidiClipSnapshot {
     MidiClipSnapshot {
+        volume: hex_project::MidiClipVolume::default(),
         name: "clip".into(),
         flavor: hex_project::ClipFlavor::default(),
         id: clip.id,
@@ -2657,6 +2678,7 @@ fn session_v12_into_snapshot(session: SessionDtoV12) -> SessionSnapshot {
                     }
                     SessionContentDtoV12::Midi { clip } => {
                         SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                            volume: hex_project::MidiClipVolume::default(),
                             flavor: hex_project::ClipFlavor::default(),
                             id: clip.id,
                             name: clip.name,

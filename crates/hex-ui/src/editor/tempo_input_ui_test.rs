@@ -65,6 +65,7 @@ fn project_tempo_stale_revision_and_project_switch_retire_drafts(cx: &mut TestAp
                 comparison_audio: None,
                 project: std::sync::Arc::new(model.project().clone()),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: old.gain_preview.clone(),

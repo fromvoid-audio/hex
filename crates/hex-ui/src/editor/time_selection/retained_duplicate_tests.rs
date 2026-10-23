@@ -47,9 +47,25 @@ fn fixture(cx: &mut TestAppContext) -> RangeFixture {
     fixture_with_audio(cx, false)
 }
 fn fixture_with_audio(cx: &mut TestAppContext, audio: bool) -> RangeFixture {
+    fixture_with_recovery(cx, audio, false)
+}
+fn fixture_with_recovery(
+    cx: &mut TestAppContext,
+    audio: bool,
+    recovery_failure: bool,
+) -> RangeFixture {
     cx.update(crate::editor::bind_editor_keys);
     let environment = Environment::new().unwrap();
     std::fs::create_dir_all(environment.root().join("samples")).unwrap();
+    let service = if recovery_failure {
+        // A deterministic filesystem refusal exercises the real worker's post-commit
+        // checkpoint error without touching the user's recovery journal.
+        let blocker = environment.root().join("recovery-blocker");
+        std::fs::write(&blocker, b"not a directory").unwrap();
+        Service::with_recovery(48_000, 32, 8_000_000, blocker.join("untitled.hex-journal")).unwrap()
+    } else {
+        Service::new(48_000, 32, 8_000_000).unwrap()
+    };
     let handle = *cx.add_window(|_, _| gpui::Empty);
     let editor = cx
         .update_window(handle, |_, window, cx| {
@@ -57,7 +73,7 @@ fn fixture_with_audio(cx: &mut TestAppContext, audio: bool) -> RangeFixture {
                 EditorView::new_for_test_with_environment(
                     window,
                     cx,
-                    Service::new(48_000, 32, 8_000_000).unwrap(),
+                    service,
                     Arc::clone(&environment),
                 )
             })
@@ -221,8 +237,16 @@ fn pointer_range_frames(
 fn real_command_d_three_times_retains_destination_range_after_worker_and_late_ticks(
     cx: &mut TestAppContext,
 ) {
+    keyboard_copies(cx, false);
+}
+#[gpui::test]
+fn committed_keyboard_copies_retain_range_despite_recovery_warning(cx: &mut TestAppContext) {
+    keyboard_copies(cx, true);
+}
+fn keyboard_copies(cx: &mut TestAppContext, recovery_failure: bool) {
     for rows in [1, 2] {
-        let (mut visual, editor, _environment, tracks, originals) = fixture(cx);
+        let (mut visual, editor, _environment, tracks, originals) =
+            fixture_with_recovery(cx, false, recovery_failure);
         let mut expected = pointer_range(&mut visual, &editor, &tracks[..rows]);
         let original_project = editor.read_with(&visual, |view, _| {
             view.state.as_ref().unwrap().project.snapshot()
@@ -237,7 +261,15 @@ fn real_command_d_three_times_retains_destination_range_after_worker_and_late_ti
             });
             pump(&editor, &mut visual);
             editor.read_with(&visual, |view, _| {
-                assert_eq!(view.selection_intent_epoch, epoch)
+                assert_eq!(view.selection_intent_epoch, epoch);
+                if recovery_failure {
+                    assert!(
+                        view.error
+                            .as_deref()
+                            .unwrap()
+                            .contains("automatic recovery:")
+                    );
+                }
             });
             expected = editor.read_with(&visual, |view, _| {
                 let actual = view
@@ -272,6 +304,9 @@ fn real_command_d_three_times_retains_destination_range_after_worker_and_late_ti
                 actual
             });
         }
+        let copied_project = editor.read_with(&visual, |view, _| {
+            view.state.as_ref().unwrap().project.snapshot()
+        });
         for _ in 0..3 {
             visual.simulate_keystrokes("cmd-z");
             pump(&editor, &mut visual);
@@ -285,13 +320,31 @@ fn real_command_d_three_times_retains_destination_range_after_worker_and_late_ti
                 "three duplicates use three undo steps"
             );
         });
+        for _ in 0..3 {
+            visual.simulate_keystrokes("cmd-shift-z");
+            pump(&editor, &mut visual);
+        }
+        editor.read_with(&visual, |view, _| {
+            assert_eq!(
+                view.state.as_ref().unwrap().project.snapshot(),
+                copied_project
+            );
+        });
     }
 }
 #[gpui::test]
 fn real_option_drag_then_command_d_retains_range_after_worker_and_late_ticks(
     cx: &mut TestAppContext,
 ) {
-    let (mut visual, editor, _environment, tracks, _) = fixture(cx);
+    drag_then_keyboard_copy(cx, false);
+}
+#[gpui::test]
+fn committed_drag_copy_retains_range_despite_recovery_warning(cx: &mut TestAppContext) {
+    drag_then_keyboard_copy(cx, true);
+}
+fn drag_then_keyboard_copy(cx: &mut TestAppContext, recovery_failure: bool) {
+    let (mut visual, editor, _environment, tracks, _) =
+        fixture_with_recovery(cx, false, recovery_failure);
     let original = pointer_range(&mut visual, &editor, &tracks[..1]);
     let row = lane(&mut visual, tracks[0]);
     let grab = original.start() + original.duration() / 2;
@@ -332,6 +385,14 @@ fn real_option_drag_then_command_d_retains_range_after_worker_and_late_ticks(
             .expect("range remains after copy");
         assert_eq!((range.start(), range.end()), expected);
         assert!(view.selected_clip.is_none());
+        if recovery_failure {
+            assert!(
+                view.error
+                    .as_deref()
+                    .unwrap()
+                    .contains("automatic recovery:")
+            );
+        }
     });
     visual.simulate_keystrokes("cmd-d");
     pump(&editor, &mut visual);
@@ -851,4 +912,46 @@ fn escape_before_submission_cancels_copy_but_after_submission_only_cancels_selec
             });
         }
     }
+}
+
+#[gpui::test]
+fn refused_worker_copy_preserves_source_selection(cx: &mut TestAppContext) {
+    let (mut visual, editor, _environment, tracks, _) = fixture(cx);
+    let source = pointer_range(&mut visual, &editor, &tracks[..1]);
+    let before = editor.read_with(&visual, |view, _| Arc::clone(view.state.as_ref().unwrap()));
+    editor.update(&mut visual, |view, _| {
+        // Exercise a real transaction refusal at the completion boundary, rather
+        // than the UI's earlier overflow guard. No canonical revision commits.
+        assert!(view.enqueue(Request::Edit(Command::CopyTimeRangeTo {
+            range: source.clone(),
+            track: tracks[0],
+            frame: u64::MAX,
+        })));
+        view.pending_time_range_move = Some(PendingTimeRangeMove {
+            source: source.clone(),
+            range: hex_project::TimeRange::new(
+                tracks[..1].to_vec(),
+                source.end(),
+                source.end() + source.duration(),
+            )
+            .unwrap(),
+            project_scope: false,
+            destination_first_index: 0,
+            destination_last_index: 0,
+            source_revision: before.revision,
+            selection_intent_epoch: view.selection_intent_epoch.unwrap(),
+            copy_modifier: true,
+        });
+    });
+    pump(&editor, &mut visual);
+    editor.read_with(&visual, |view, _| {
+        assert!(view.error.is_some());
+        assert!(view.pending_time_range_move.is_none());
+        assert_eq!(view.state.as_ref().unwrap().revision, before.revision);
+        assert_eq!(
+            view.state.as_ref().unwrap().project.snapshot(),
+            before.project.snapshot()
+        );
+        assert_eq!(view.normalized_time_selection().as_ref(), Some(&source));
+    });
 }
