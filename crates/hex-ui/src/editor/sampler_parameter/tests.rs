@@ -286,3 +286,34 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
         view.computer_keyboard.enabled = false;
     });
 }
+
+/// Snapshot the actual adapter receipt after its ordinary Service submission.
+pub(in crate::editor) fn pending_request(
+    view: &EditorView,
+) -> Option<hex_session::service::SamplerParameterEdit> {
+    let pending = view.sampler_parameter.pending.as_ref()?;
+    let PendingTarget::Parameter(target) = pending.target else {
+        return None;
+    };
+    Some(hex_session::service::SamplerParameterEdit {
+        request_id: pending.id,
+        project_generation: target.generation,
+        revision: target.revision,
+        track: target.track,
+        device: target.device,
+        parameter: target.parameter,
+        value: pending.value?,
+        cancel: Arc::clone(&pending.cancel),
+    })
+}
+
+pub(in crate::editor) fn rendered_control_value(
+    view: &EditorView,
+    parameter: SamplerParameter,
+    cx: &gpui::App,
+) -> Option<f64> {
+    view.sampler_parameter
+        .controls
+        .get(&parameter)
+        .map(|control| control.entity.read(cx).value())
+}

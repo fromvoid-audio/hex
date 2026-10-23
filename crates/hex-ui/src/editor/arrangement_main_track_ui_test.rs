@@ -36,7 +36,7 @@ fn project_with_returns(count: usize) -> (Project, Vec<ReturnId>) {
     (editor.project().clone(), ids)
 }
 
-fn completed_event(state: &ViewState) -> Event {
+pub(super) fn completed_event(state: &ViewState) -> Event {
     Event {
         state: Arc::new(ViewState {
             canonical_audio_source: None,

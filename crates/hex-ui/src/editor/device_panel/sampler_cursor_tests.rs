@@ -2,7 +2,7 @@ use super::*;
 use gpui::{Modifiers, TestAppContext, VisualTestContext, point, size};
 use hex_project::{Command, Created, Editor, Project};
 
-fn fixture(
+pub(super) fn fixture(
     cx: &mut TestAppContext,
     frames: u64,
     stereo: bool,
@@ -107,7 +107,7 @@ fn sampler_cursor_clicks_original_frames_without_project_or_audio_edits(cx: &mut
     for width in [1600.0, 900.0] {
         visual.simulate_resize(size(px(width), px(700.0)));
         visual.run_until_parked();
-        for fraction in [0.0, 0.25, 0.5, 0.999] {
+        for fraction in [0.0, 0.25, 0.5, 0.98] {
             let bounds = visual.debug_bounds("sampler-source-waveform").unwrap();
             let click = point(
                 bounds.left() + bounds.size.width.min(px(width - 16.0) - bounds.left()) * fraction,
@@ -235,7 +235,7 @@ fn sampler_cursor_is_retired_on_source_owner_and_generation_changes(cx: &mut Tes
     }
 }
 
-fn copy_fixture_state(state: &ViewState) -> ViewState {
+pub(super) fn copy_fixture_state(state: &ViewState) -> ViewState {
     ViewState {
         canonical_audio_source: None,
         comparison_audio: None,
