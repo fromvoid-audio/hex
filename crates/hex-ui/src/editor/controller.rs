@@ -2829,7 +2829,10 @@ impl EditorView {
                 Some((*project_generation, *revision, *clip, *to_audio));
         }
         #[cfg(test)]
-        if let Request::Edit(command) | Request::EditArrangementSection { command, .. } = &request {
+        if let Request::Edit(command)
+        | Request::EditArrangementSection { command, .. }
+        | Request::MoveExistingClips { command, .. } = &request
+        {
             self.last_enqueued_edit = Some(command.clone());
         }
         #[cfg(test)]
@@ -2970,6 +2973,7 @@ impl EditorView {
                 | Request::GainLane { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::ReorderTrack { .. }
+                | Request::MoveExistingClips { .. }
                 | Request::DuplicateClips { .. }
                 | Request::Edit(_)
                 | Request::ConvertClip { .. }
