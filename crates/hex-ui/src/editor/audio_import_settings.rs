@@ -39,6 +39,23 @@ impl State {
             AudioImportWarp::Off
         }
     }
+
+    fn capture(&self, request: Request, context: AudioBatchContext) -> Result<Request, String> {
+        let arrangement_import = match &request {
+            Request::Import(_)
+            | Request::ImportToTrack { .. }
+            | Request::ImportToTrackWithOverwrite { .. }
+            | Request::ImportToNewTrack { .. } => true,
+            Request::ImportAudioBatch { destination, .. } => {
+                !matches!(destination, AudioBatchDestination::Console(_))
+            }
+            _ => false,
+        };
+        if self.loading && arrangement_import {
+            return Err("audio import settings are loading · retry the import".into());
+        }
+        capture(request, self.policy(), context)
+    }
 }
 
 /// Capture enabled Arrangement import intent before queuing. Legacy Off imports
@@ -108,9 +125,8 @@ fn capture(
 
 impl EditorView {
     pub(super) fn capture_audio_import_policy(&self, request: Request) -> Result<Request, String> {
-        capture(
+        self.audio_import_settings.capture(
             request,
-            self.audio_import_settings.policy(),
             AudioBatchContext {
                 project_generation: self.project_generation,
                 revision: self.state.as_ref().map_or(0, |state| state.revision),
@@ -260,6 +276,33 @@ mod tests {
             revision: 11,
             active_gesture: false,
         }
+    }
+
+    #[test]
+    fn loading_never_captures_placeholder_policy_for_arrangement_imports() {
+        let mut settings = State::new(PathBuf::new());
+        let make_import = || Request::Import(PathBuf::from("/early.wav"));
+        assert!(
+            settings
+                .capture(make_import(), context())
+                .unwrap_err()
+                .contains("loading")
+        );
+        let console = Request::ImportToSession {
+            path: PathBuf::from("/console.wav"),
+            track: target_ids().0,
+            scene: target_ids().1,
+        };
+        assert!(matches!(
+            settings.capture(console, context()).unwrap(),
+            Request::ImportToSession { .. }
+        ));
+        settings.preferences.auto_warp_beats = true;
+        settings.loading = false;
+        assert!(
+            matches!(settings.capture(make_import(), context()).unwrap(),
+            Request::ImportAudioBatch { options, .. } if options.warp == AudioImportWarp::Beats)
+        );
     }
 
     #[test]
