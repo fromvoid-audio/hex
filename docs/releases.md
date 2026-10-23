@@ -57,6 +57,11 @@ build, secure timestamp/hardened-runtime signing, notarization, stapling, and
 independent extraction/signature/Gatekeeper checks of the final archive. There is
 no unsigned fallback. The current package contains the default desktop application;
 optional native VST3 helper profiles are not included by this release command.
+Headless dev/test builds omit debug symbols by default to reduce disk use;
+debug assertions and all checks remain enabled. Explicit
+`CARGO_PROFILE_DEV_DEBUG`/`CARGO_PROFILE_TEST_DEBUG` settings are preserved and
+included in guarded build-input identities. The packaged app uses the optimized
+release profile.
 
 Artifacts are stored persistently under `artifacts/releases/` in the primary
 checkout, shared by its worktrees. Each candidate has its own directory and an

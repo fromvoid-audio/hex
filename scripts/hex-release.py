@@ -312,8 +312,13 @@ def validate_plan(candidate):
 
 
 def release_environment(candidate, plan):
-    return {**os.environ, "HEX_RELEASE_LABEL": plan["version"],
-            "HEX_RELEASE_CHANGELOG": str(candidate / "notes.json")}
+    env = {**os.environ, "HEX_RELEASE_LABEL": plan["version"],
+           "HEX_RELEASE_CHANGELOG": str(candidate / "notes.json")}
+    # Keep debug assertions and every test; optional symbol files account for
+    # substantial disk use. The shipped application still uses --release.
+    env.setdefault("CARGO_PROFILE_DEV_DEBUG", "0")
+    env.setdefault("CARGO_PROFILE_TEST_DEBUG", "0")
+    return env
 
 
 def command(argv, log):

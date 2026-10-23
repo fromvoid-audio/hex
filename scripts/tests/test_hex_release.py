@@ -85,6 +85,16 @@ class ReleaseTests(unittest.TestCase):
             (candidate / name).write_bytes(before)
         with patch.object(release, "source", return_value="d" * 40), self.assertRaisesRegex(release.Refusal, "source changed"):
             release.validate_plan(candidate)
+
+    def test_release_environment_preserves_explicit_profile_and_binds_frozen_notes(self):
+        candidate = self.cut()
+        plan = release.read(candidate / "plan.json")
+        with patch.dict(release.os.environ, {"CARGO_PROFILE_DEV_DEBUG": "2"}, clear=True):
+            env = release.release_environment(candidate, plan)
+        self.assertEqual(env["CARGO_PROFILE_DEV_DEBUG"], "2")
+        self.assertEqual(env["CARGO_PROFILE_TEST_DEBUG"], "0")
+        self.assertEqual(env["HEX_RELEASE_CHANGELOG"], str(candidate / "notes.json"))
+        self.assertEqual(env["HEX_RELEASE_LABEL"], "0.1.0-beta.1")
         plan = release.read(candidate / "plan.json")
         plan["channel"] = "stable"
         (candidate / "plan.json").write_bytes(release.encode(plan))
