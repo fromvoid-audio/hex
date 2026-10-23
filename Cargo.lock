@@ -2718,6 +2718,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "hex-plugin-host"
+version = "0.1.0"
+dependencies = [
+ "hex-audio",
+ "hex-lattice-contract",
+ "hex-plugin-scan",
+ "hex-plugin-state",
+ "rustix 1.1.5",
+]
+
+[[package]]
 name = "hex-plugin-scan"
 version = "0.1.0"
 dependencies = [
@@ -2726,6 +2737,13 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "signal-hook",
+]
+
+[[package]]
+name = "hex-plugin-state"
+version = "0.1.0"
+dependencies = [
+ "hex-lattice-contract",
 ]
 
 [[package]]
@@ -2764,6 +2782,7 @@ version = "0.1.0"
 dependencies = [
  "fs2",
  "hex-lattice-contract",
+ "hex-plugin-state",
  "hex-project",
  "hex-tuning",
  "libc",

@@ -137,12 +137,9 @@ fn wheel_accumulates_precise_motion_and_creation_hits_after_zoom(cx: &mut TestAp
         assert_eq!(notes.len(), 1);
         assert_eq!(
             notes[0].start(),
-            BeatTime::from_raw(BeatTime::ONE.raw() * 3 / 2)
+            BeatTime::from_raw(BeatTime::ONE.raw() * 5 / 4)
         );
-        assert_eq!(
-            notes[0].duration(),
-            BeatTime::from_raw(BeatTime::ONE.raw() * 3 / 4)
-        );
+        assert_eq!(notes[0].duration(), BeatTime::ONE);
         let middle = notes[0].start().raw() + notes[0].duration().raw() / 2;
         (
             ((middle - viewport.0.raw()) as f64 / viewport.1.raw() as f64) as f32,

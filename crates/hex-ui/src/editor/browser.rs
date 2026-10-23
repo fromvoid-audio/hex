@@ -2514,19 +2514,13 @@ impl EditorView {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let description = theme::text(tooltip);
-        div()
+        hex_widgets::action(theme::text(label), theme::action_style())
             .id(label)
             .debug_selector(move || format!("browser-control-{label}"))
             .w(px(22.0))
             .h(px(22.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
-            .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
             .tooltip(move |_, cx| {
                 cx.new(|_| super::transport::MiniTooltip {
                     description: description.clone(),
@@ -2540,20 +2534,14 @@ impl EditorView {
                     action(view, window, cx);
                 }),
             )
-            .child(theme::text(label))
     }
 
     fn browser_folder_button(&self, cx: &mut Context<Self>) -> gpui::Stateful<Div> {
         let description = theme::text("choose a folder");
-        div()
+        hex_widgets::action(theme::text("⌂"), theme::action_style())
             .id("browser-folder-picker")
             .w(px(22.0))
             .h(px(22.0))
-            .flex_shrink_0()
-            .flex()
-            .items_center()
-            .justify_center()
-            .cursor_pointer()
             .text_xs()
             .text_color(rgb(theme::color(theme::PaletteRole::Muted)))
             .tooltip(move |_, cx| {
@@ -2566,7 +2554,6 @@ impl EditorView {
                 MouseButton::Left,
                 cx.listener(|view, _, _, cx| view.open_browser_folder(cx)),
             )
-            .child(theme::text("⌂"))
     }
 
     fn open_browser_folder(&mut self, cx: &mut Context<Self>) {

@@ -396,17 +396,12 @@ impl EditorView {
 }
 
 fn return_button(id: String, icon: &'static str, tooltip: &'static str) -> gpui::Stateful<Div> {
-    div()
+    hex_widgets::action(theme::text(icon), theme::action_style())
         .id(ElementId::Name(id.clone().into()))
         .debug_selector(move || id.clone())
         .size(px(15.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
         .text_xs()
         .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
         .cursor(gpui::CursorStyle::PointingHand)
         .tooltip(move |_, cx| {
             cx.new(|_| super::transport::MiniTooltip {
@@ -414,5 +409,4 @@ fn return_button(id: String, icon: &'static str, tooltip: &'static str) -> gpui:
             })
             .into()
         })
-        .child(theme::text(icon))
 }

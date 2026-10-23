@@ -103,8 +103,9 @@ impl EditorView {
             return;
         }
         let count = self.state.as_ref().map_or(0, |s| s.project.tracks().len());
-        self.enqueue(Request::Edit(Command::AddMidiTrack {
+        self.enqueue(Request::Edit(Command::InsertTrack {
             name: format!("track {}", count + 1),
+            before_track: self.new_track_insertion_anchor(),
         }));
     }
 
@@ -197,13 +198,6 @@ impl EditorView {
             track,
             start: BeatTime::from_raw(start),
         }));
-    }
-
-    pub(super) fn duplicate_midi_clip(&mut self, clip: ClipId) {
-        if self.edit_pending() {
-            return;
-        }
-        self.enqueue(Request::Edit(Command::DuplicateMidiClip(clip)));
     }
 
     pub(super) fn remove_selected_note(&mut self) {
