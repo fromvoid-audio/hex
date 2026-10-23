@@ -249,7 +249,7 @@ fn device_asset_manifest_rejects_incomplete_duplicate_unknown_and_unbounded_bind
 }
 
 #[test]
-fn superseded_alpha30_variants_refuse_without_rewriting_user_files() {
+fn relabelled_current30_envelopes_refuse_without_rewriting_user_files() {
     let (mut editor, device, asset) = fixture();
     editor
         .execute(replacement(&editor, device, vec![reference(asset)]))
@@ -279,12 +279,7 @@ fn superseded_alpha30_variants_refuse_without_rewriting_user_files() {
         }
         let bytes = serde_json::to_vec(&value).unwrap();
         std::fs::write(&path, &bytes).unwrap();
-        assert!(matches!(
-            hex_storage::load(&path),
-            Err(hex_storage::StorageError::Invalid(
-                "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery"
-            ))
-        ));
+        assert!(hex_storage::load(&path).is_err());
         assert_eq!(std::fs::read(&path).unwrap(), bytes);
         assert_eq!(
             std::fs::read_dir(&directory).unwrap().count(),

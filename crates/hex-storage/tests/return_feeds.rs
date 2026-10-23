@@ -53,7 +53,10 @@ fn current_feeds_keep_provenance_and_opaque_device_states() {
     assert_eq!(doc["version"], hex_storage::CURRENT_SCHEMA_VERSION);
     assert_eq!(doc["routing"], json!([]));
     assert_eq!(decode(&bytes).unwrap(), project);
-    assert!(decode(&encode_schema20(&project).unwrap()).is_err());
+    assert_eq!(
+        decode(&encode_schema20(&project).unwrap()).unwrap(),
+        project
+    );
 }
 
 #[test]

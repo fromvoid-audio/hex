@@ -32,8 +32,8 @@ fn pump(editor: &Entity<EditorView>, visual: &mut VisualTestContext) {
 
 fn unsupported_journal(path: &std::path::Path) -> Vec<u8> {
     // The real bounded journal envelope binds the unchanged basename and stores
-    // a little-endian generation after the unsupported alpha project payload.
-    let payload = br#"{"format":"hex-project","version":31}"#;
+    // a little-endian generation after the unsupported project-version payload.
+    let payload = br#"{"format":"hex-project","version":0}"#;
     let name = path.file_name().unwrap().to_str().unwrap().as_bytes();
     let mut bytes = b"HEXJRNL\0".to_vec();
     bytes.extend_from_slice(&1_u32.to_le_bytes());

@@ -10,6 +10,8 @@ pub(crate) mod fade_shapes;
 pub(crate) mod gain_envelopes;
 pub(crate) mod gain_touch;
 mod host_gain;
+pub(crate) mod legacy;
+pub(crate) mod legacy_early;
 mod midi_clip_volume;
 pub(crate) mod midi_one_shot;
 mod migrations;
