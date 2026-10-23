@@ -492,6 +492,9 @@ class LocalCiRunner:
             "run_id": self.run_id,
             "mode": self.mode,
             "platform": sys.platform,
+            # Paths alone cannot bind mutable external native fixtures/receipts
+            # or Keychain state. Historical absence is unknown for reuse.
+            "native_acceptance_opt_in": bool(ci_plan.python_tests.native_acceptance_inputs(self.env)),
             "python_version": sys.version,
             "status": "incomplete",
             "repo_root": str(self.root),
@@ -1736,6 +1739,8 @@ class LocalCiRunner:
         print(self._diagnostic_text("\n".join(details)), flush=True)
 
     def run(self) -> int:
+        self.summary["native_acceptance_opt_in"] = bool(
+            ci_plan.python_tests.native_acceptance_inputs(self.env))
         self.output_dir.mkdir(parents=True, exist_ok=False)
         self._write_summary()
         previous_handlers: dict[int, object] = {}
@@ -1759,6 +1764,13 @@ class LocalCiRunner:
                 self.summary["status"] = "failed"
                 self.summary["exit_code"] = 2
                 self.summary["metadata_error"] = "could not capture exact commit and dirty state"
+            elif self.plan and self.plan.get("reuse") and (
+                    self.summary["native_acceptance_opt_in"]
+                    or self.plan["reuse"].get("native_acceptance_opt_in") is not False):
+                # Recheck the actual runner environment, not only the earlier
+                # resolver process, before Cargo identity/target preparation.
+                self.summary.update(status="failed", exit_code=2,
+                                    reuse_error="native/external acceptance opt-in is present or unknown; fresh checks required")
             elif self.plan and self.plan["qualifies_merge"] and (
                     self.summary["start_tree"]["dirty"]
                     or self.summary["start_tree"]["commit"] != self.plan["source"]
