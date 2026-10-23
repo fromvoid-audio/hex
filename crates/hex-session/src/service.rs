@@ -43,6 +43,8 @@ mod device_comparison;
 mod effect_bus;
 #[cfg(test)]
 mod effect_bus_tests;
+#[cfg(test)]
+mod format_upgrade_tests;
 pub mod preset;
 mod recovery;
 #[cfg(test)]
@@ -73,7 +75,7 @@ mod snapshot_queue_tests;
 const EVENT_CAPACITY: usize = 2;
 const IMPORT_FILE_LIMIT: usize = 64 * 1024 * 1024;
 const IMPORT_FRAME_LIMIT: usize = 8_000_000;
-const BROWSER_PREVIEW_BINS: usize = 48;
+const BROWSER_PREVIEW_BINS: usize = 4096;
 const EXPORT_EVENT_CAPACITY: usize = 1;
 
 #[derive(Clone)]
@@ -189,6 +191,8 @@ pub struct Event {
     pub audio_batch_complete: Option<Arc<AudioBatchControl>>,
     /// True for each processed Save As or Save Current request, including refusal.
     pub save_complete: bool,
+    /// Replacing the current file changes its reader compatibility. Opening never writes.
+    pub document_format_upgrade_required: bool,
     pub open_complete: bool,
     pub project_replaced: bool,
     /// Completion of explicit Stop recovery, including refusal. A returned graph
@@ -268,7 +272,7 @@ pub fn prepare_audio_preview(
     let playback_frames = u64::try_from(audio.frames().len())
         .map_err(|_| "converted frame count exceeds project range".to_owned())?;
     let waveform = Arc::new(
-        hex_media::waveform::summarize(&audio, BROWSER_PREVIEW_BINS)
+        hex_media::waveform::summarize_peaks(&audio, BROWSER_PREVIEW_BINS)
             .map_err(|error| error.to_string().to_lowercase())?,
     );
     Ok(AudioPreview {
@@ -499,6 +503,7 @@ pub enum Request {
         destination: AudioBatchDestination,
         context: AudioBatchContext,
         control: Arc<AudioBatchControl>,
+        options: crate::import_batch::AudioImportOptions,
     },
     ImportToTrack {
         path: PathBuf,
@@ -560,6 +565,12 @@ pub enum Request {
     Redo,
     SaveNew(PathBuf),
     SaveCurrent,
+    /// Explicit user consent to replace an older saved format. Bound to the
+    /// selected document and project generation; normal token checks still apply.
+    SaveCurrentWithFormatUpgrade {
+        project_generation: u64,
+        path: PathBuf,
+    },
     RestorePlayback {
         generation: u64,
     },
@@ -593,6 +604,7 @@ impl Request {
                 | Request::Redo
                 | Request::SaveNew(_)
                 | Request::SaveCurrent
+                | Request::SaveCurrentWithFormatUpgrade { .. }
                 | Request::SaveDevicePreset { .. }
                 | Request::LoadDevicePreset { .. }
                 | Request::CompareDevice { .. }
@@ -616,6 +628,7 @@ impl Request {
                 destination,
                 context,
                 control: Arc::clone(&control),
+                options: Default::default(),
             },
             control,
         ))
@@ -1661,6 +1674,7 @@ fn run_worker(
                 live_expression_complete: None,
                 audio_batch_complete: None,
                 save_complete: false,
+                document_format_upgrade_required: false,
                 open_complete: false,
                 project_replaced: false,
                 stopped_playback_restore_complete: false,
@@ -1694,6 +1708,7 @@ fn run_worker(
             live_expression_complete: None,
             audio_batch_complete: None,
             save_complete: false,
+            document_format_upgrade_required: false,
             open_complete: false,
             project_replaced: false,
             stopped_playback_restore_complete: false,
@@ -2243,6 +2258,7 @@ fn run_worker(
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
                     | Request::SaveCurrent
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
                     | Request::Export(_)
                     | Request::ExportRange { .. }
                     | Request::NewWithAudioMode { .. }
@@ -2265,7 +2281,12 @@ fn run_worker(
             if matches!(&request, Request::RestoreStoppedPlayback) {
                 stopped_playback_restore_complete = true;
             }
-            if matches!(&request, Request::SaveNew(_) | Request::SaveCurrent) {
+            if matches!(
+                &request,
+                Request::SaveNew(_)
+                    | Request::SaveCurrent
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
+            ) {
                 save_complete = true;
             }
         } else if let Some(reason) = barrier_failure {
@@ -2285,7 +2306,12 @@ fn run_worker(
                     error: Some(reason.clone()),
                 });
             }
-            if matches!(&request, Request::SaveNew(_) | Request::SaveCurrent) {
+            if matches!(
+                &request,
+                Request::SaveNew(_)
+                    | Request::SaveCurrent
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
+            ) {
                 save_complete = true;
             }
             if let Request::Export(path) | Request::ExportRange { path, .. } = &request {
@@ -2848,6 +2874,7 @@ fn run_worker(
                     destination,
                     context,
                     control,
+                    options,
                 } => {
                     audio_batch_complete = Some(Arc::clone(&control));
                     let actual = AudioBatchContext {
@@ -2865,6 +2892,7 @@ fn run_worker(
                             &session,
                             actual,
                             Arc::clone(&control),
+                            options,
                         )
                         .and_then(|job| {
                             if session.audio_mode() == DocumentAudioMode::Resident
@@ -4633,8 +4661,20 @@ fn run_worker(
                         Err(reason) => error = Some(reason),
                     }
                 }
-                Request::SaveCurrent => {
+                request @ (Request::SaveCurrent | Request::SaveCurrentWithFormatUpgrade { .. }) => {
                     save_complete = true;
+                    let consent = match &request {
+                        Request::SaveCurrentWithFormatUpgrade {
+                            project_generation: expected,
+                            path,
+                        } => {
+                            *expected == project_generation
+                                && document.as_ref().is_some_and(|handle| handle.path == *path)
+                        }
+                        _ => false,
+                    };
+                    let stale_consent =
+                        matches!(request, Request::SaveCurrentWithFormatUpgrade { .. }) && !consent;
                     match (
                         document.as_mut(),
                         project_for_save(&session, media_base.as_deref()),
@@ -4644,6 +4684,14 @@ fn run_worker(
                                 Some("cannot save current project before it has a file path".into())
                         }
                         (_, Err(reason)) => error = Some(reason),
+                        (Some(_), Ok(_)) if stale_consent => {
+                            error = Some("project changed · format upgrade cancelled".into());
+                        }
+                        (Some(handle), Ok(_))
+                            if handle.token.requires_format_upgrade() && !consent =>
+                        {
+                            error = Some("saving replaces this project's older format; use save as to preserve it, or explicitly confirm format overwrite".into());
+                        }
                         (Some(handle), Ok(project)) => {
                             match hex_storage::replace_existing(
                                 &handle.path,
@@ -5685,6 +5733,9 @@ fn run_worker(
                 audio_batch_complete,
                 audio_batch_failure,
                 save_complete,
+                document_format_upgrade_required: document
+                    .as_ref()
+                    .is_some_and(|handle| handle.token.requires_format_upgrade()),
                 open_complete,
                 project_replaced,
                 stopped_playback_restore_complete,
@@ -6968,6 +7019,32 @@ mod service_tests {
         assert_eq!(preview.waveform.source_frames, 48);
         assert!(preview.waveform.bins.len() <= BROWSER_PREVIEW_BINS);
         assert!(!preview.waveform.bins.is_empty());
+    }
+
+    #[test]
+    fn browser_preview_has_detail_beyond_legacy_48_bars_and_keeps_edge_transients() {
+        let directory = TestDir::new();
+        let path = directory.0.join("detail.wav");
+        let mut frames = vec![0_i16; 8195];
+        frames[4097] = 24_000;
+        frames[8194] = -16_000;
+        fs::write(&path, wav_mono(&frames)).unwrap();
+        let preview = prepare_audio_preview(&path, 48_000).unwrap();
+        assert_eq!(preview.waveform.bins.len(), 4096);
+        assert_eq!(preview.waveform.source_frames, 8195);
+        let first = preview.waveform.peaks_for_frames(0, 2).unwrap();
+        assert_eq!(first, [hex_media::waveform::Peak { min: 0.0, max: 0.0 }; 2]);
+        let middle = preview.waveform.peaks_for_frames(4097, 4098).unwrap();
+        assert!(
+            middle
+                .iter()
+                .all(|peak| peak.min == 0.0 && peak.max == 24_000.0 / 32768.0)
+        );
+        let last = preview.waveform.peaks_for_frames(8194, 8195).unwrap();
+        assert!(
+            last.iter()
+                .all(|peak| peak.min == -16_000.0 / 32768.0 && peak.max == 0.0)
+        );
     }
 
     #[test]

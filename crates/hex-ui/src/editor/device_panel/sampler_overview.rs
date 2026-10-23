@@ -1,6 +1,7 @@
 //! Read-only, peak-only original-source overview. No PCM or filesystem access.
 use super::*;
-use gpui::{canvas, fill, point, relative, size};
+use gpui::relative;
+use std::rc::Rc;
 
 const RULER_HEIGHT: f32 = 14.0;
 
@@ -74,61 +75,13 @@ pub(super) fn render(view: &EditorView, device: &hex_project::Device, name: &str
                 .debug_selector(|| "sampler-source-active-region".into()),
         )
         .child(
-            canvas(
-                |_, _, _| (),
-                move |bounds, _, window, _| {
-                    let width = f32::from(bounds.size.width);
-                    let height = f32::from(bounds.size.height);
-                    if !width.is_finite() || !height.is_finite() || width <= 0.0 || height <= 0.0 {
-                        return;
-                    }
-                    let Some(overview) = table.get(asset_id) else {
-                        return;
-                    };
-                    let extent = overview.source_frames() as f64;
-                    let active_left = (start / extent) as f32 * width;
-                    let active_right = (end / extent) as f32 * width;
-                    for (index, peaks) in overview.peaks().enumerate() {
-                        let Some(range) = overview.bin_range(index) else {
-                            return;
-                        };
-                        let left = (range.start as f64 / extent) as f32 * width;
-                        let right = (range.end as f64 / extent) as f32 * width;
-                        for (channel, peak) in peaks.iter().enumerate() {
-                            let half = height * 0.25;
-                            let center = half + channel as f32 * height * 0.5;
-                            let top = center - peak.max.clamp(-1.0, 1.0) * (half - 1.0).max(0.0);
-                            let bottom = center - peak.min.clamp(-1.0, 1.0) * (half - 1.0).max(0.0);
-                            // Split bins at the true original-frame boundaries;
-                            // peak-bin edges never become editable sample bounds.
-                            for (a, b, role) in [
-                                (left, right.min(active_left), theme::PaletteRole::Muted),
-                                (
-                                    left.max(active_left),
-                                    right.min(active_right),
-                                    theme::PaletteRole::Waveform,
-                                ),
-                                (left.max(active_right), right, theme::PaletteRole::Muted),
-                            ] {
-                                if b <= a {
-                                    continue;
-                                }
-                                window.paint_quad(fill(
-                                    Bounds::new(
-                                        bounds.origin + point(px(a), px(top)),
-                                        size(
-                                            px((b - a).min((width - a).max(0.0))),
-                                            px((bottom - top)
-                                                .max(1.0)
-                                                .min((height - top).max(0.0))),
-                                        ),
-                                    ),
-                                    rgb(theme::color(role)),
-                                ));
-                            }
-                        }
-                    }
+            super::super::overview_waveform::render(
+                super::super::overview_waveform::Source::Sampler {
+                    table,
+                    asset: asset_id,
                 },
+                Rc::clone(&view.overview_waveform_cache),
+                Some((start / frames as f64, end / frames as f64)),
             )
             .absolute()
             .top_0()

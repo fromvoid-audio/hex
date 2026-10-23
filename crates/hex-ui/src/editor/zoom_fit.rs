@@ -1,8 +1,7 @@
 //! One prior fit viewport per existing view owner, never musical history. Clip
 //! changes retire clip-local back state; document replacement retires every view.
 use super::{EditorMode, EditorView, Viewport};
-use crate::theme;
-use gpui::{Context, Div, Stateful, Window, prelude::*, px, rgb};
+use gpui::{Context, Div, Stateful, Window, prelude::*, px};
 use hex_project::{BeatTime, ClipId};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -281,9 +280,6 @@ impl EditorView {
         .debug_selector(move || id.into())
         .opacity(if enabled { 1.0 } else { 0.35 })
         .when(!enabled, |el| el.cursor_default())
-        .when(enabled, |el| {
-            el.hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Hover))))
-        })
         .on_click(cx.listener(move |view, _, window, cx| {
             if !enabled
                 || generation != view.project_generation

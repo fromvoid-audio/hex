@@ -269,6 +269,82 @@ fn unequal_gapped_both_direction_reorders_move_all_audio_midi_crossings_with_one
         assert_eq!(e.project().snapshot(), after);
     }
 }
+
+#[test]
+fn first_section_can_move_after_last_across_unequal_gapped_sections_with_history() {
+    let (mut e, first, last) = fixture();
+    let before = e.project().snapshot();
+    let original_events = events(e.project());
+    let audio = e.project().tracks()[0].clips()[0].clone();
+    let preview = e
+        .project()
+        .preview_section_reorder_after(first, last)
+        .unwrap();
+    assert_eq!(preview.insertion_beat(), b(10));
+    assert_eq!(preview.destination_start(), b(8));
+
+    let cuts = [
+        preview.source_start().raw(),
+        preview.source_end().raw(),
+        preview.insertion_beat().raw(),
+    ];
+    let mut expected = Vec::new();
+    for (start, length, pitch) in original_events {
+        let end = start + length;
+        let mut boundaries = vec![start, end];
+        boundaries.extend(cuts.into_iter().filter(|cut| start < *cut && *cut < end));
+        boundaries.sort();
+        boundaries.dedup();
+        for pair in boundaries.windows(2) {
+            expected.push((
+                preview.map_beat(BeatTime::from_raw(pair[0])).unwrap().raw(),
+                pair[1] - pair[0],
+                pitch,
+            ));
+        }
+    }
+    expected.sort();
+    e.execute(Command::ReorderSectionAfter {
+        section: first,
+        after: last,
+    })
+    .unwrap();
+
+    let sections = e.project().arrangement_sections();
+    assert_eq!(
+        sections.iter().map(|s| s.id()).collect::<Vec<_>>(),
+        [last, first]
+    );
+    assert_eq!(
+        e.project().arrangement_section(first).unwrap().start(),
+        b(8)
+    );
+    assert_eq!(e.project().arrangement_section(first).unwrap().end(), b(10));
+    assert_eq!(events(e.project()), expected);
+    let moved_audio = e.project().tracks()[0]
+        .clips()
+        .iter()
+        .find(|clip| clip.start() == e.project().tempo_map().beat_to_frame(b(8)).unwrap())
+        .unwrap();
+    assert_eq!(moved_audio.asset(), audio.asset());
+    assert_eq!(
+        moved_audio.audio_edit().map(|edit| &edit.domain),
+        audio.audio_edit().map(|edit| &edit.domain)
+    );
+
+    let after = e.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(after.clone()).unwrap().snapshot(),
+        after
+    );
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), after);
+}
+
 #[test]
 fn prepare_failure_and_noop_preserve_all_ids_history_and_redo() {
     let (mut e, a, c) = fixture();
@@ -367,13 +443,22 @@ fn bounded_gain_splice_and_dense_midi_expansion_fail_without_consuming_source_or
         .collect();
     seed = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
     let before = seed.project().snapshot();
-    assert!(
-        seed.execute(Command::ReorderSectionBefore {
+    for command in [
+        Command::ReorderSectionBefore {
             section: c,
-            before: a
-        })
-        .is_err()
-    );
+            before: a,
+        },
+        Command::ResizeArrangementSection {
+            section: a,
+            edge: hex_project::TrimEdge::Right,
+            length: b(3),
+        },
+        Command::DeleteArrangementSection(a),
+        Command::DuplicateArrangementSection(a),
+    ] {
+        assert!(seed.execute(command).is_err());
+        assert_eq!(seed.project().snapshot(), before);
+    }
     assert_eq!(seed.project().snapshot(), before);
     assert!(!seed.can_undo());
     let mut e = Editor::new(Project::new(8_000).unwrap(), 8).unwrap();
@@ -419,13 +504,22 @@ fn bounded_gain_splice_and_dense_midi_expansion_fail_without_consuming_source_or
     let c = section(&mut e, "chorus", 7, 10);
     let before = e.project().snapshot();
     let mut e = Editor::new(e.project().clone(), 8).unwrap();
-    assert!(
-        e.execute(Command::ReorderSectionBefore {
+    for command in [
+        Command::ReorderSectionBefore {
             section: c,
-            before: a
-        })
-        .is_err()
-    );
+            before: a,
+        },
+        Command::ResizeArrangementSection {
+            section: a,
+            edge: hex_project::TrimEdge::Right,
+            length: b(3),
+        },
+        Command::DeleteArrangementSection(a),
+        Command::DuplicateArrangementSection(a),
+    ] {
+        assert!(e.execute(command).is_err());
+        assert_eq!(e.project().snapshot(), before);
+    }
     assert_eq!(e.project().snapshot(), before);
     assert!(!e.can_undo());
 }
@@ -516,5 +610,871 @@ fn same_signature_midbar_anchors_retain_bar_origins_after_section_reorder() {
             e.project().meter_map().position(seam).unwrap().bar_start(),
             seam
         );
+    }
+}
+
+// Intended to append to crates/hex-project/tests/arrangement_sections.rs when
+// the canonical section splice commands are integrated.
+
+#[test]
+fn end_growth_inserts_empty_time_without_stretching_audio_or_rephasing_midi() {
+    let (mut e, section_id, _) = fixture();
+    let before_events = events(e.project());
+    let original_audio = e.project().tracks()[0].clips()[0].clone();
+    e.execute(Command::SetTempoPoint {
+        beat: b(5),
+        tempo: Tempo::new(80_000_000).unwrap(),
+    })
+    .unwrap();
+    let loop_start = e.project().tempo_map().beat_to_frame(b(1)).unwrap();
+    let loop_end = e.project().tempo_map().beat_to_frame(b(11)).unwrap();
+    e.execute(Command::SetLoopRegion {
+        start: loop_start,
+        end: loop_end,
+        enabled: true,
+    })
+    .unwrap();
+    let preview = e
+        .project()
+        .preview_arrangement_section_edit(&Command::ResizeArrangementSection {
+            section: section_id,
+            edge: hex_project::TrimEdge::Right,
+            length: b(4),
+        })
+        .unwrap();
+    e.execute(Command::ResizeArrangementSection {
+        section: section_id,
+        edge: hex_project::TrimEdge::Right,
+        length: b(4),
+    })
+    .unwrap();
+
+    let marker = e.project().arrangement_section(section_id).unwrap();
+    assert_eq!((marker.start(), marker.end()), (b(2), b(6)));
+    // The two-beat insertion is empty; it does not stretch either retained
+    // audio fragment, and the original tempo change follows the suffix.
+    assert_eq!(e.project().tempo_map().tempo_at(b(4)), Tempo::DEFAULT);
+    assert_eq!(e.project().tempo_map().tempo_at(b(5)), Tempo::DEFAULT);
+    assert_eq!(
+        e.project().tempo_map().tempo_at(b(7)),
+        Tempo::new(80_000_000).unwrap()
+    );
+    let loop_region = e.project().loop_region().unwrap();
+    assert_eq!(
+        loop_region.start(),
+        e.project().tempo_map().beat_to_frame(b(1)).unwrap()
+    );
+    assert_eq!(
+        loop_region.end(),
+        e.project().tempo_map().beat_to_frame(b(11)).unwrap()
+    );
+    assert!(loop_region.enabled());
+    let clips = e.project().tracks()[0].clips();
+    assert_eq!(clips.len(), 2);
+    assert_eq!((clips[0].start(), clips[0].duration()), (0, 16_000));
+    assert_eq!((clips[1].start(), clips[1].duration()), (24_000, 32_000));
+    assert_eq!(clips[0].asset(), original_audio.asset());
+    assert_eq!(clips[1].asset(), original_audio.asset());
+    assert_eq!(clips[0].source_phase(), original_audio.source_phase());
+    assert_eq!(
+        clips[1].source_phase(),
+        (original_audio.source_phase() + 16_000) % 48_000
+    );
+    assert!(
+        events(e.project())
+            .iter()
+            .any(|event| event.0 >= b(6).raw())
+    );
+    assert_ne!(events(e.project()), before_events);
+    assert_eq!(e.project().arrangement_sections(), preview.sections());
+    assert_eq!(e.project().tempo_map(), preview.tempo_map());
+}
+
+#[test]
+fn start_growth_inserts_prefix_and_keeps_the_section_start_fixed() {
+    let (mut e, section_id, _) = fixture();
+    e.execute(Command::ResizeArrangementSection {
+        section: section_id,
+        edge: hex_project::TrimEdge::Left,
+        length: b(4),
+    })
+    .unwrap();
+
+    let marker = e.project().arrangement_section(section_id).unwrap();
+    assert_eq!((marker.start(), marker.end()), (b(2), b(6)));
+    let clips = e.project().tracks()[0].clips();
+    assert_eq!(clips.len(), 2);
+    assert_eq!((clips[0].start(), clips[0].duration()), (0, 8_000));
+    assert_eq!((clips[1].start(), clips[1].duration()), (16_000, 40_000));
+    assert_eq!(clips[0].source_phase(), 173);
+    assert_eq!(clips[1].source_phase(), 8_173);
+    // A MIDI gate crossing the inserted boundary is split at the seam; later
+    // events retain their source phase and move by exactly two beats.
+    let all_events = events(e.project());
+    assert!(all_events.iter().any(|event| event.0 == b(4).raw()));
+    assert!(all_events.iter().any(|event| event.0 >= b(6).raw()));
+}
+
+#[test]
+fn both_edge_shrinks_remove_time_at_the_edge_and_close_the_gap() {
+    for edge in [hex_project::TrimEdge::Left, hex_project::TrimEdge::Right] {
+        let (mut e, section_id, _) = fixture();
+        let target_length = if edge == hex_project::TrimEdge::Left {
+            // Make the old section longer than the new one so this catches
+            // deleting target_length instead of old_length - target_length.
+            e.execute(Command::SetArrangementSectionRange {
+                section: section_id,
+                start: b(2),
+                end: b(6),
+            })
+            .unwrap();
+            b(3)
+        } else {
+            b(1)
+        };
+        e.execute(Command::ResizeArrangementSection {
+            section: section_id,
+            edge,
+            length: target_length,
+        })
+        .unwrap();
+
+        let marker = e.project().arrangement_section(section_id).unwrap();
+        assert_eq!(
+            (marker.start(), marker.end()),
+            (
+                b(2),
+                BeatTime::from_raw(b(2).raw().checked_add(target_length.raw()).unwrap())
+            )
+        );
+        let clips = e.project().tracks()[0].clips();
+        assert_eq!(clips.len(), 2);
+        let expected = if edge == hex_project::TrimEdge::Left {
+            [(0, 8_000), (8_000, 36_000)]
+        } else {
+            [(0, 12_000), (12_000, 32_000)]
+        };
+        assert_eq!(
+            [
+                (clips[0].start(), clips[0].duration()),
+                (clips[1].start(), clips[1].duration()),
+            ],
+            expected
+        );
+        let phase_delta = if edge == hex_project::TrimEdge::Left {
+            12_000
+        } else {
+            16_000
+        };
+        assert_eq!(clips[0].source_phase(), 173);
+        assert_eq!(clips[1].source_phase(), (173 + phase_delta) % 48_000);
+    }
+}
+
+#[test]
+fn deleting_a_section_removes_its_time_and_ripples_both_tracks_left() {
+    let (mut e, section_id, _) = fixture();
+    let audio_track = e.project().tracks()[0].id();
+    e.execute(Command::ReplaceTrackGainEnvelope {
+        track: audio_track,
+        points: vec![
+            hex_project::GainPoint {
+                beat: b(0),
+                gain: 1.0,
+                incoming_gain: None,
+                outgoing: hex_project::GainInterpolation::Linear,
+            },
+            hex_project::GainPoint {
+                beat: b(2),
+                gain: 0.8,
+                incoming_gain: Some(0.6),
+                outgoing: hex_project::GainInterpolation::Linear,
+            },
+            hex_project::GainPoint {
+                beat: b(4),
+                gain: 0.3,
+                incoming_gain: Some(0.2),
+                outgoing: hex_project::GainInterpolation::Step,
+            },
+        ],
+    })
+    .unwrap();
+    let before = e.project().snapshot();
+    let preview = e
+        .project()
+        .preview_arrangement_section_edit(&Command::DeleteArrangementSection(section_id))
+        .unwrap();
+    e.execute(Command::DeleteArrangementSection(section_id))
+        .unwrap();
+
+    assert!(e.project().arrangement_section(section_id).is_none());
+    let clips = e.project().tracks()[0].clips();
+    assert_eq!(clips.len(), 2);
+    assert_eq!((clips[0].start(), clips[0].duration()), (0, 8_000));
+    assert_eq!((clips[1].start(), clips[1].duration()), (8_000, 32_000));
+    assert_eq!(clips[0].source_phase(), 173);
+    assert_eq!(clips[1].source_phase(), 16_173);
+    let seam = e.project().track(audio_track).unwrap().gain_lane().base()[1];
+    assert_eq!(seam.beat, b(2));
+    assert_eq!(seam.incoming_gain, Some(0.6));
+    assert_eq!(seam.gain, 0.3);
+    assert_eq!(e.project().arrangement_sections(), preview.sections());
+    assert_eq!(e.project().tempo_map(), preview.tempo_map());
+    assert!(
+        events(e.project())
+            .iter()
+            .any(|event| { event.0 == BeatTime::from_ratio(9, 2).unwrap().raw() })
+    );
+
+    let after = e.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(after.clone()).unwrap().snapshot(),
+        after
+    );
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), after);
+}
+
+#[test]
+fn duplication_copies_midi_gain_touch_tempo_and_meter_with_fresh_identities() {
+    let (mut e, _, section_id) = fixture();
+    e.execute(Command::SetTempoPoint {
+        beat: b(8),
+        tempo: Tempo::new(90_000_000).unwrap(),
+    })
+    .unwrap();
+    e.execute(Command::SetMeterPoint {
+        beat: b(8),
+        meter: hex_project::Meter::new(3, 4).unwrap(),
+    })
+    .unwrap();
+    let audio_track = e.project().tracks()[0].id();
+    e.execute(Command::ReplaceTrackGainEnvelope {
+        track: audio_track,
+        points: vec![
+            hex_project::GainPoint {
+                beat: b(0),
+                gain: 1.0,
+                incoming_gain: None,
+                outgoing: hex_project::GainInterpolation::Linear,
+            },
+            hex_project::GainPoint {
+                beat: b(8),
+                gain: 0.5,
+                incoming_gain: None,
+                outgoing: hex_project::GainInterpolation::Linear,
+            },
+        ],
+    })
+    .unwrap();
+    e.execute(Command::SpliceGainTouch {
+        track: audio_track,
+        expected_epoch: 0,
+        span: hex_project::GainTouchSpan {
+            source_start: b(7),
+            start: b(7),
+            end: b(9),
+            context: hex_project::GainTouchContext {
+                recording_epoch: 1,
+                project_generation: 0,
+                canonical_revision: 1,
+                audio_revision: 1,
+                transport_epoch: 1,
+                gesture_epoch: 1,
+                gesture_serial: 1,
+                sample_rate: 8_000,
+                loop_pass: 0,
+            },
+            steps: vec![
+                hex_project::GainTouchStep {
+                    beat: b(7),
+                    gain: 0.4,
+                    origin_beat: b(7),
+                    source_sequence: 1,
+                },
+                hex_project::GainTouchStep {
+                    beat: b(8),
+                    gain: 0.8,
+                    origin_beat: b(8),
+                    source_sequence: 2,
+                },
+            ],
+        },
+    })
+    .unwrap();
+    let old_midi = e.project().tracks()[1].midi_clips()[0].clone();
+    let old_events = events(e.project());
+    let expected_duplicated: Vec<_> = old_events
+        .iter()
+        .filter(|(start, _, _)| b(7).raw() <= *start && *start < b(10).raw())
+        .map(|(start, duration, pitch)| {
+            let kept_end = (*start + *duration).min(b(10).raw());
+            (*start + b(3).raw(), kept_end - *start, *pitch)
+        })
+        .collect();
+    let before = e.project().snapshot();
+    let preview = e
+        .project()
+        .preview_arrangement_section_edit(&Command::DuplicateArrangementSection(section_id))
+        .unwrap();
+
+    let Created::ArrangementSection(copy_id) = e
+        .execute(Command::DuplicateArrangementSection(section_id))
+        .unwrap()
+    else {
+        panic!("duplicate section result")
+    };
+    let copy = e.project().arrangement_section(copy_id).unwrap();
+    assert_eq!((copy.start(), copy.end()), (b(10), b(13)));
+    assert_eq!(
+        copy.name(),
+        e.project().arrangement_section(section_id).unwrap().name()
+    );
+    assert_eq!(
+        copy.color(),
+        e.project().arrangement_section(section_id).unwrap().color()
+    );
+    assert!(
+        e.project()
+            .tempo_map()
+            .points()
+            .iter()
+            .any(|p| p.beat() == b(11))
+    );
+    assert!(
+        e.project()
+            .meter_map()
+            .points()
+            .iter()
+            .any(|p| p.beat() == b(11))
+    );
+    assert_eq!(
+        e.project().arrangement_sections().len(),
+        preview.sections().len()
+    );
+    for (actual, expected) in e
+        .project()
+        .arrangement_sections()
+        .iter()
+        .zip(preview.sections())
+    {
+        assert_eq!(actual.name(), expected.name());
+        assert_eq!(actual.color(), expected.color());
+        assert_eq!(
+            (actual.start(), actual.end()),
+            (expected.start(), expected.end())
+        );
+        if expected.id().value() != 0 {
+            assert_eq!(actual.id(), expected.id());
+        } else {
+            assert_eq!(actual.id(), copy_id);
+        }
+    }
+    assert_eq!(e.project().tempo_map(), preview.tempo_map());
+    let lane = e.project().track(audio_track).unwrap().gain_lane();
+    assert!(
+        lane.base()
+            .iter()
+            .any(|point| point.beat == b(11) && point.gain == 0.5)
+    );
+    assert!(
+        lane.spans()
+            .iter()
+            .any(|span| span.start == b(10) && span.end == b(12))
+    );
+    let copied_midi = e.project().tracks()[1]
+        .midi_clips()
+        .iter()
+        .find(|clip| clip.start() == b(10))
+        .unwrap();
+    assert_ne!(copied_midi.id(), old_midi.id());
+    assert_ne!(copied_midi.source(), old_midi.source());
+    let old_playback = old_midi.source_playback().unwrap();
+    for (elapsed, copied_elapsed) in [(b(7), b(0)), (b(8), b(1)), (b(9), b(2))] {
+        let old_phase = old_playback.source_phase_at_elapsed(elapsed).unwrap();
+        assert_eq!(
+            copied_midi.volume().gain_at(copied_elapsed),
+            old_midi.volume().gain_at(old_phase)
+        );
+    }
+    let new_events = events(e.project());
+    // The note beginning at 6.5 crosses the section start at 7; its retained
+    // gate fragment is present at the duplicate's leading edge.
+    assert!(new_events.iter().any(|event| event.0 == b(10).raw()));
+    for event in expected_duplicated {
+        assert!(
+            new_events.contains(&event),
+            "missing copied event {event:?}"
+        );
+    }
+    let after = e.project().snapshot();
+    assert_eq!(
+        Project::from_snapshot(after.clone()).unwrap().snapshot(),
+        after
+    );
+    assert!(e.undo());
+    let mut restored = e.project().snapshot();
+    restored.next_id = before.next_id;
+    assert_eq!(restored, before);
+    assert!(e.redo());
+    assert_eq!(e.project().snapshot(), after);
+}
+
+#[test]
+fn prefix_growth_does_not_extend_an_adjacent_preceding_marker() {
+    let mut e = Editor::new(Project::new(8000).unwrap(), 8).unwrap();
+    let first = section(&mut e, "first", 0, 2);
+    let second = section(&mut e, "second", 2, 4);
+    e.execute(Command::ResizeArrangementSection {
+        section: second,
+        edge: hex_project::TrimEdge::Left,
+        length: b(3),
+    })
+    .unwrap();
+    assert_eq!(
+        (
+            e.project().arrangement_section(first).unwrap().start(),
+            e.project().arrangement_section(first).unwrap().end()
+        ),
+        (b(0), b(2))
+    );
+    assert_eq!(
+        (
+            e.project().arrangement_section(second).unwrap().start(),
+            e.project().arrangement_section(second).unwrap().end()
+        ),
+        (b(2), b(5))
+    );
+}
+
+#[test]
+fn nonadjacent_merge_keeps_earliest_identity_and_music_through_history() {
+    let (mut e, first, last) = fixture();
+    let middle = section(&mut e, "bridge", 4, 6);
+    let before = e.project().snapshot();
+    let music = e.project().tracks().to_vec();
+    e.execute(Command::MergeArrangementSections(vec![last, first]))
+        .unwrap();
+    assert_eq!(e.project().arrangement_sections().len(), 1);
+    let merged = e.project().arrangement_section(first).unwrap();
+    assert_eq!(
+        (merged.start(), merged.end(), merged.name(), merged.color()),
+        (b(2), b(10), "intro", ElementColor::Cyan)
+    );
+    assert!(e.project().arrangement_section(middle).is_none());
+    assert_eq!(e.project().tracks(), music);
+    assert!(e.undo());
+    assert_eq!(e.project().snapshot(), before);
+    assert!(e.redo());
+    assert_eq!(e.project().tracks(), music);
+}
+#[test]
+fn deleting_a_section_preserves_gain_before_first_authored_point() {
+    let (mut e, first, _) = fixture();
+    let track = e.project().tracks()[0].id();
+    e.execute(Command::ReplaceTrackGainEnvelope {
+        track,
+        points: vec![
+            hex_project::GainPoint {
+                beat: b(3),
+                gain: 0.3,
+                outgoing: hex_project::GainInterpolation::Linear,
+                incoming_gain: None,
+            },
+            hex_project::GainPoint {
+                beat: b(8),
+                gain: 0.8,
+                outgoing: hex_project::GainInterpolation::Step,
+                incoming_gain: None,
+            },
+        ],
+    })
+    .unwrap();
+    e.execute(Command::DeleteArrangementSection(first)).unwrap();
+    let points = e.project().track(track).unwrap().gain_envelope();
+    assert_eq!(points[0].beat, b(0));
+    assert_eq!(points[0].gain, 0.3);
+    assert_eq!(points[1].beat, b(2));
+    assert_eq!(points[1].incoming_gain, Some(0.3));
+}
+#[test]
+fn duplication_does_not_retrigger_original_gates_at_the_copy_capture_start() {
+    let (mut e, _, last) = fixture();
+    e.execute(Command::DuplicateArrangementSection(last))
+        .unwrap();
+    assert!(
+        events(e.project()).contains(&(BeatTime::from_ratio(13, 2).unwrap().raw(), b(2).raw(), 60)),
+        "original gate crossing beat7 must remain continuous until8.5"
+    );
+    assert!(
+        events(e.project())
+            .iter()
+            .any(|(start, _, _)| *start == b(10).raw()),
+        "copy retriggers carried gate at insertion"
+    );
+}
+
+#[test]
+fn section_splices_keep_exact_authored_musical_start_before_the_edit() {
+    for kind in 0..3 {
+        let (mut e, first, last) = fixture();
+        let clip = e.project().tracks()[0].clips()[0].id();
+        e.execute(Command::SetAudioClipMusical {
+            clip,
+            enabled: true,
+        })
+        .unwrap();
+        let authored = BeatTime::from_ratio(1, 7).unwrap();
+        let frame = e.project().tempo_map().beat_to_frame(authored).unwrap();
+        let mut snapshot = e.project().snapshot();
+        let audio = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+        audio.edit.as_mut().unwrap().timing = hex_project::AudioClipTiming::Musical(authored);
+        audio.start = frame;
+        let mut e = Editor::new(Project::from_snapshot(snapshot).unwrap(), 8).unwrap();
+        e.execute(match kind {
+            0 => Command::ResizeArrangementSection {
+                section: first,
+                edge: hex_project::TrimEdge::Right,
+                length: b(3),
+            },
+            1 => Command::DeleteArrangementSection(first),
+            _ => Command::DuplicateArrangementSection(last),
+        })
+        .unwrap();
+        assert_eq!(
+            e.project().clip(clip).unwrap().audio_edit().unwrap().timing,
+            hex_project::AudioClipTiming::Musical(authored)
+        );
+    }
+}
+
+#[test]
+fn empty_prefix_holds_effective_touch_gain_and_starts_a_restored_meter_fragment() {
+    let (mut e, first, _) = fixture();
+    let track = e.project().tracks()[0].id();
+    e.execute(Command::SpliceGainTouch {
+        track,
+        expected_epoch: 0,
+        span: hex_project::GainTouchSpan {
+            source_start: b(1),
+            start: b(1),
+            end: b(5),
+            context: hex_project::GainTouchContext {
+                recording_epoch: 1,
+                project_generation: 0,
+                canonical_revision: 1,
+                audio_revision: 1,
+                transport_epoch: 1,
+                gesture_epoch: 1,
+                gesture_serial: 1,
+                sample_rate: 8000,
+                loop_pass: 0,
+            },
+            steps: vec![hex_project::GainTouchStep {
+                beat: b(1),
+                gain: 0.4,
+                origin_beat: b(1),
+                source_sequence: 1,
+            }],
+        },
+    })
+    .unwrap();
+    e.execute(Command::ResizeArrangementSection {
+        section: first,
+        edge: hex_project::TrimEdge::Left,
+        length: b(3),
+    })
+    .unwrap();
+    let lane = e.project().track(track).unwrap().gain_lane();
+    assert_eq!(
+        lane.touch_gain_at(BeatTime::from_ratio(5, 2).unwrap()),
+        None
+    );
+    let start = lane.base().iter().find(|p| p.beat == b(2)).unwrap();
+    assert_eq!(start.gain, 0.4);
+    assert_eq!(start.outgoing, hex_project::GainInterpolation::Step);
+    assert_eq!(lane.touch_gain_at(b(3)), Some(0.4));
+    assert_eq!(
+        e.project().meter_map().position(b(3)).unwrap().bar_start(),
+        b(3)
+    );
+}
+
+#[test]
+fn failed_section_splice_preparation_preserves_redo_ids_and_canonical_sources() {
+    let (mut e, first, last) = fixture();
+    e.execute(Command::RenameArrangementSection {
+        section: first,
+        name: "temporary".into(),
+    })
+    .unwrap();
+    assert!(e.undo());
+    let before = e.project().snapshot();
+    for command in [
+        Command::ResizeArrangementSection {
+            section: first,
+            edge: hex_project::TrimEdge::Left,
+            length: b(3),
+        },
+        Command::ResizeArrangementSectionEdge {
+            section: first,
+            edge: hex_project::TrimEdge::Left,
+            boundary: b(3),
+        },
+        Command::DeleteArrangementSection(first),
+        Command::DuplicateArrangementSection(first),
+        Command::MergeArrangementSections(vec![last, first]),
+    ] {
+        let result = e.execute_prepared::<(), hex_project::Invalid>(command, |_| {
+            Err(hex_project::Invalid("injected preparation refusal"))
+        });
+        assert!(result.is_err());
+        assert_eq!(e.project().snapshot(), before);
+        assert!(e.can_redo());
+    }
+    for command in [
+        Command::ResizeArrangementSection {
+            section: first,
+            edge: hex_project::TrimEdge::Left,
+            length: b(0),
+        },
+        Command::ResizeArrangementSection {
+            section: first,
+            edge: hex_project::TrimEdge::Right,
+            length: BeatTime::from_raw(u64::MAX),
+        },
+        Command::ResizeArrangementSectionEdge {
+            section: first,
+            edge: hex_project::TrimEdge::Left,
+            boundary: b(4),
+        },
+        Command::ResizeArrangementSectionEdge {
+            section: first,
+            edge: hex_project::TrimEdge::Right,
+            boundary: b(8),
+        },
+        Command::MergeArrangementSections(vec![first, first]),
+        Command::MergeArrangementSections(vec![]),
+    ] {
+        assert!(e.execute(command).is_err());
+        assert_eq!(e.project().snapshot(), before);
+        assert!(e.can_redo());
+    }
+}
+
+#[test]
+fn shared_seam_preserves_outer_span_and_markers_or_clears_only_crossed_music_atomically() {
+    for marker_only in [false, true] {
+        for boundary in [b(3), b(5)] {
+            let (mut editor, left, right) = fixture();
+            editor
+                .execute(Command::SetArrangementSectionRange {
+                    section: right,
+                    start: b(4),
+                    end: b(10),
+                })
+                .unwrap();
+            let other = section(&mut editor, "later", 12, 14);
+            let before = editor.project().snapshot();
+            let outside = editor.project().arrangement_section(other).unwrap().clone();
+            let music = events(editor.project());
+            let command = Command::ResizeArrangementSectionBoundary {
+                left,
+                right,
+                boundary,
+                marker_only,
+            };
+            assert_eq!(command.requires_stopped_section_edit(), !marker_only);
+            let preview = editor
+                .project()
+                .preview_arrangement_section_edit(&command)
+                .unwrap();
+            editor.execute(command).unwrap();
+            let p = editor.project();
+            assert_eq!(p.arrangement_section(left).unwrap().start(), b(2));
+            assert_eq!(p.arrangement_section(left).unwrap().end(), boundary);
+            assert_eq!(p.arrangement_section(right).unwrap().start(), boundary);
+            assert_eq!(p.arrangement_section(right).unwrap().end(), b(10));
+            assert_eq!(p.arrangement_section(other), Some(&outside));
+            assert_eq!(preview.sections(), p.arrangement_sections());
+            assert_eq!(preview.tempo_map(), p.tempo_map());
+            let after = p.snapshot();
+            if marker_only {
+                let mut without_markers = after.clone();
+                without_markers.arrangement_sections = before.arrangement_sections.clone();
+                assert_eq!(
+                    without_markers, before,
+                    "metadata resize preserves every other field"
+                );
+            } else {
+                let lo = boundary.min(b(4)).raw();
+                let hi = boundary.max(b(4)).raw();
+                let mut expected = Vec::new();
+                for (start, length, pitch) in music {
+                    let end = start + length;
+                    if start < lo {
+                        expected.push((start, end.min(lo) - start, pitch));
+                    }
+                    if end > hi {
+                        expected.push((start.max(hi), end - start.max(hi), pitch));
+                    }
+                }
+                expected.sort();
+                assert_eq!(
+                    events(p),
+                    expected,
+                    "only music crossed by the moving seam is removed"
+                );
+            }
+            assert!(editor.undo());
+            let mut undone = editor.project().snapshot();
+            undone.next_id = before.next_id;
+            assert_eq!(undone, before);
+            assert!(editor.redo());
+            assert_eq!(editor.project().snapshot(), after);
+        }
+    }
+}
+
+#[test]
+fn shared_seam_invalid_or_refused_preparation_preserves_redo_and_original_state() {
+    let (mut editor, left, right) = fixture();
+    // Gapped markers are not shared boundaries.
+    assert!(
+        editor
+            .execute(Command::ResizeArrangementSectionBoundary {
+                left,
+                right,
+                boundary: b(5),
+                marker_only: true
+            })
+            .is_err()
+    );
+    editor
+        .execute(Command::SetArrangementSectionRange {
+            section: right,
+            start: b(4),
+            end: b(10),
+        })
+        .unwrap();
+    editor
+        .execute(Command::RenameArrangementSection {
+            section: left,
+            name: "draft".into(),
+        })
+        .unwrap();
+    assert!(editor.undo());
+    let before = editor.project().snapshot();
+    for marker_only in [false, true] {
+        for (a, c, boundary) in [
+            (left, right, b(2)),
+            (left, right, b(10)),
+            (right, left, b(5)),
+            (left, left, b(5)),
+        ] {
+            assert!(
+                editor
+                    .execute(Command::ResizeArrangementSectionBoundary {
+                        left: a,
+                        right: c,
+                        boundary,
+                        marker_only
+                    })
+                    .is_err()
+            );
+            assert_eq!(editor.project().snapshot(), before);
+            assert!(editor.can_redo());
+        }
+        assert!(
+            editor
+                .execute_prepared::<(), hex_project::Invalid>(
+                    Command::ResizeArrangementSectionBoundary {
+                        left,
+                        right,
+                        boundary: b(5),
+                        marker_only
+                    },
+                    |_| Err(hex_project::Invalid("refused shared seam preparation")),
+                )
+                .is_err()
+        );
+        assert_eq!(editor.project().snapshot(), before);
+        assert!(editor.can_redo());
+    }
+}
+
+#[test]
+fn isolated_edges_preserve_other_sections_and_clear_only_the_crossed_interval() {
+    for (edge, boundary) in [
+        (hex_project::TrimEdge::Left, b(1)),
+        (hex_project::TrimEdge::Left, b(3)),
+        (hex_project::TrimEdge::Right, b(3)),
+        (hex_project::TrimEdge::Right, b(5)),
+    ] {
+        let (mut editor, left, _) = fixture();
+        let before = editor.project().snapshot();
+        let original = editor.project().arrangement_section(left).unwrap().clone();
+        let music = events(editor.project());
+        let command = Command::ResizeArrangementSectionEdge {
+            section: left,
+            edge,
+            boundary,
+        };
+        let preview = editor
+            .project()
+            .preview_arrangement_section_edit(&command)
+            .unwrap();
+        editor.execute(command).unwrap();
+        let after = editor.project().snapshot();
+        let marker = editor.project().arrangement_section(left).unwrap();
+        let (expected_start, expected_end, old_edge) = match edge {
+            hex_project::TrimEdge::Left => (boundary, original.end(), original.start()),
+            hex_project::TrimEdge::Right => (original.start(), boundary, original.end()),
+        };
+        assert_eq!(
+            (marker.start(), marker.end()),
+            (expected_start, expected_end)
+        );
+        for section in editor
+            .project()
+            .arrangement_sections()
+            .iter()
+            .filter(|s| s.id() != left)
+        {
+            assert_eq!(
+                before
+                    .arrangement_sections
+                    .iter()
+                    .find(|s| s.id == section.id().value())
+                    .unwrap(),
+                &hex_project::ArrangementSectionSnapshot::from(section)
+            );
+        }
+        assert_eq!(preview.sections(), editor.project().arrangement_sections());
+        assert_eq!(preview.tempo_map(), editor.project().tempo_map());
+        let lo = old_edge.min(boundary).raw();
+        let hi = old_edge.max(boundary).raw();
+        let mut expected = Vec::new();
+        for (start, length, pitch) in music {
+            let end = start + length;
+            if start < lo {
+                expected.push((start, end.min(lo) - start, pitch));
+            }
+            if end > hi {
+                expected.push((start.max(hi), end - start.max(hi), pitch));
+            }
+        }
+        expected.sort();
+        assert_eq!(events(editor.project()), expected);
+        assert!(editor.undo());
+        let mut undone = editor.project().snapshot();
+        undone.next_id = before.next_id;
+        assert_eq!(undone, before);
+        assert!(editor.redo());
+        assert_eq!(editor.project().snapshot(), after);
     }
 }
