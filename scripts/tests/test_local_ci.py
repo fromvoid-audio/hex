@@ -300,6 +300,69 @@ class LocalCiRunnerTests(unittest.TestCase):
             target_state_dir=self.target_state_dir,
         )
 
+    def test_native_acceptance_fresh_full_and_scoped_reports_observe_actual_runner_environment(self):
+        for mode, selected in (("full", None), ("merge", {"scope": "tooling", "qualifies_merge": False})):
+            for key in (None, "HEX_VST3_SDK_DIR", "HEX_VST3_FUTURE_FIXTURE", "HEX_TEST_SIGNING_IDENTITY"):
+                name = "native-fresh-" + mode + "-" + (key or "ordinary")
+                env = {**self.env, **({key: "fixture-only"} if key else {"HEX_VST3_SDK_DIR": ""})}
+                runner = local_ci.LocalCiRunner(self.repo, mode=mode, run_id=name, env=env, plan=selected,
+                    steps=(local_ci.Step("first", ("first",)),), min_free_bytes=0,
+                    target_state_dir=self.target_state_dir)
+                with self.subTest(mode=mode, key=key):
+                    self.assertEqual(runner.run(), 0)
+                    report = json.loads(runner.summary_path.read_text())
+                    self.assertIs(report["native_acceptance_opt_in"], key is not None)
+                    self.assertEqual(report["steps"][0]["status"], "passed")
+                    self.assertEqual(report["status"], "passed" if selected is None else "partial")
+
+    def test_native_acceptance_stale_reuse_plan_refuses_before_cargo_identity_target_or_steps(self):
+        target = Path(self.env["FAKE_METADATA_TARGET"])
+        target.mkdir()
+        sentinel = target / "foreign-cache"
+        sentinel.write_bytes(b"preserve target bytes")
+        self.target_state_dir.mkdir()
+        marker = self.target_state_dir / "existing-owner.json"
+        marker.write_bytes(b"preserve owner bytes")
+        report = self.base / "original-report.json"
+        report.write_bytes(b"original immutable runtime report")
+        cases = [("current-sdk", {"HEX_VST3_SDK_DIR": "fixture-sdk"}, False),
+                 ("current-future", {"HEX_VST3_FUTURE_FIXTURE": "fixture"}, False),
+                 ("current-signing", {"HEX_TEST_SIGNING_IDENTITY": "fixture identity"}, False),
+                 ("missing", {}, "missing"), ("native", {}, True), ("unknown", {}, None),
+                 ("zero", {}, 0), ("string", {}, "false")]
+        for label, native_env, flag in cases:
+            receipt = {"report": str(report), "source": "deadbeef", "dependency_inputs": {}}
+            if flag != "missing":
+                receipt["native_acceptance_opt_in"] = flag
+            selected = {"scope": "metadata", "profile": "merge", "qualifies_merge": True,
+                        "source": "deadbeef", "runtime_inputs": local_ci.ci_plan.runtime_inputs(self.repo, env=self.env),
+                        "reuse": receipt}
+            original_plan = json.dumps(selected, sort_keys=True)
+            runner = local_ci.LocalCiRunner(self.repo, mode="merge", run_id="native-refusal-" + label,
+                env=self.env, plan=selected,
+                steps=(local_ci.Step("must-not-run", ("cargo", "test", "fixture")),), min_free_bytes=0,
+                target_state_dir=self.target_state_dir)
+            # The actual environment may change after construction/resolution.
+            runner.env.update(native_env)
+            with self.subTest(case=label), \
+                    patch.object(runner, "_resolve_cargo_identity", wraps=runner._resolve_cargo_identity) as identity, \
+                    patch.object(runner, "_prepare_target_cache", wraps=runner._prepare_target_cache) as prepare, \
+                    patch.object(runner, "_run_step", wraps=runner._run_step) as execute:
+                self.assertEqual(runner.run(), 2)
+                self.assertIn("native/external", runner.summary["reuse_error"])
+                identity.assert_not_called()
+                prepare.assert_not_called()
+                execute.assert_not_called()
+                self.assertTrue(all(row["status"] == "not_run" for row in runner.summary["steps"]))
+                self.assertIs(runner.summary["native_acceptance_opt_in"], bool(native_env))
+                self.assertEqual(json.dumps(selected, sort_keys=True), original_plan)
+                self.assertEqual(report.read_bytes(), b"original immutable runtime report")
+                self.assertEqual({p.name: p.read_bytes() for p in target.iterdir()},
+                                 {"foreign-cache": b"preserve target bytes"})
+                self.assertEqual({p.name: p.read_bytes() for p in self.target_state_dir.iterdir()},
+                                 {"existing-owner.json": b"preserve owner bytes"})
+        self.assertNotIn("cargo ", self.call_log.read_text())
+
     def test_low_space_stops_before_tools_and_preserves_files(self) -> None:
         sentinel = self.repo / "keep.hex"
         sentinel.write_bytes(b"original user work")
