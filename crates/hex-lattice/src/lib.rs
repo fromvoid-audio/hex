@@ -76,6 +76,19 @@ pub trait NativeDeviceDefinition: NativeDeviceMetadata {
         })
     }
 
+    /// Control-side selection for one canonical chain/device. Instance-bound
+    /// providers must validate this identity against their already prepared
+    /// configuration and refuse missing instances. The identity alone grants
+    /// no source, endpoint, graph publication or retirement custody.
+    fn prepare_instance_runtime_factory(
+        &self,
+        _identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+    ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+        self.prepare_runtime_factory(state, context)
+    }
+
     /// Prepare an optional stateful processor using the active sample rate.
     /// Memoryless definitions keep the default `None` implementation.
     fn prepare_processor(
@@ -307,6 +320,28 @@ impl ProcessorChainOwner {
             Self::Track(id) | Self::Return(id) => id != 0,
             Self::Main => true,
         }
+    }
+}
+
+/// Validated canonical effect placement for control-side preparation. Distinct
+/// devices with equal type/state still have distinct preparation identities.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProcessorInstanceIdentity {
+    owner: ProcessorChainOwner,
+    device_id: u64,
+}
+impl ProcessorInstanceIdentity {
+    pub fn new(owner: ProcessorChainOwner, device_id: u64) -> Result<Self, DeviceContractError> {
+        if !owner.is_valid() || device_id == 0 {
+            return Err(DeviceContractError::InvalidId);
+        }
+        Ok(Self { owner, device_id })
+    }
+    pub fn owner(self) -> ProcessorChainOwner {
+        self.owner
+    }
+    pub fn device_id(self) -> u64 {
+        self.device_id
     }
 }
 
@@ -1653,6 +1688,25 @@ impl<'a> NativeDeviceRegistry<'a> {
         state: &NativeDeviceState,
         context: &crate::DevicePreparationContext<'_>,
     ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
+        self.prepare_runtime_device_for(None, state, context)
+    }
+    /// Prepare an actual canonical instance; codec and resource validation are
+    /// identical to class-only preparation. Instance-bound factories can
+    /// select their exact control-prepared facts without a type/state cache.
+    pub fn prepare_runtime_instance(
+        &self,
+        identity: ProcessorInstanceIdentity,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+    ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
+        self.prepare_runtime_device_for(Some(identity), state, context)
+    }
+    fn prepare_runtime_device_for(
+        &self,
+        identity: Option<ProcessorInstanceIdentity>,
+        state: &NativeDeviceState,
+        context: &crate::DevicePreparationContext<'_>,
+    ) -> Result<PreparedRuntimeDevice, DeviceContractError> {
         state.require_asset_free_processing()?;
         context.validate_for(state)?;
         let definition = self
@@ -1666,7 +1720,12 @@ impl<'a> NativeDeviceRegistry<'a> {
         )?;
         Ok(PreparedRuntimeDevice {
             matrix: definition.prepare_effect_matrix(&current)?,
-            processor: definition.prepare_runtime_factory(&current, context)?,
+            processor: match identity {
+                Some(identity) => {
+                    definition.prepare_instance_runtime_factory(identity, &current, context)?
+                }
+                None => definition.prepare_runtime_factory(&current, context)?,
+            },
         })
     }
     fn validate_current(

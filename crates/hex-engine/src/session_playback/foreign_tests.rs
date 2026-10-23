@@ -5,7 +5,7 @@ use crate::signal_graph::tests::{Definition, fixture, state};
 use hex_lattice::{
     DevicePreparationContext, ForeignProcessorNode, ForeignProcessors, NativeDeviceDefinition,
     NativeDeviceRegistry, PreparedForeignProcessor, PreparedProcessorFactory, ProcessorChainOwner,
-    StereoMatrix,
+    ProcessorInstanceIdentity, StereoMatrix,
 };
 use hex_lattice_contract::{
     DeviceContractError, DeviceTypeId, NativeDeviceMetadata, NativeDeviceState,
@@ -13,7 +13,9 @@ use hex_lattice_contract::{
 };
 use hex_project::{Command, Created};
 
-struct BorrowedDefinition;
+struct BorrowedDefinition {
+    instances: Vec<(ProcessorInstanceIdentity, u32)>,
+}
 impl NativeDeviceMetadata for BorrowedDefinition {
     fn type_id(&self) -> DeviceTypeId {
         Definition.type_id()
@@ -59,6 +61,14 @@ impl NativeDeviceDefinition for BorrowedDefinition {
     }
     fn prepare_runtime_factory(
         &self,
+        _: &NativeDeviceState,
+        _: &DevicePreparationContext<'_>,
+    ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
+        Err(DeviceContractError::UnsupportedProcessingClass)
+    }
+    fn prepare_instance_runtime_factory(
+        &self,
+        identity: ProcessorInstanceIdentity,
         value: &NativeDeviceState,
         context: &DevicePreparationContext<'_>,
     ) -> Result<Option<PreparedProcessorFactory>, DeviceContractError> {
@@ -67,8 +77,14 @@ impl NativeDeviceDefinition for BorrowedDefinition {
         {
             return Err(DeviceContractError::MalformedState);
         }
+        let latency = self
+            .instances
+            .iter()
+            .find(|(key, _)| *key == identity)
+            .map(|(_, latency)| *latency)
+            .ok_or(DeviceContractError::InvalidId)?;
         Ok(Some(PreparedProcessorFactory::Foreign(
-            PreparedForeignProcessor::new(8, 3, 16)?,
+            PreparedForeignProcessor::new(8, latency, 16)?,
         )))
     }
 }
@@ -196,7 +212,13 @@ fn prepared(location: usize, bypassed: bool) -> (Arc<PreparedRevision>, Borrowed
     f.editor
         .execute(Command::SetDeviceBypass { device, bypassed })
         .unwrap();
-    let definitions: [&dyn NativeDeviceDefinition; 1] = [&BorrowedDefinition];
+    let definition = BorrowedDefinition {
+        instances: vec![(
+            ProcessorInstanceIdentity::new(owner, device.value()).unwrap(),
+            3,
+        )],
+    };
+    let definitions: [&dyn NativeDeviceDefinition; 1] = [&definition];
     let registry = NativeDeviceRegistry::new(&definitions).unwrap();
     let instruments = hex_devices::native_instrument_registry().unwrap();
     let revision = PreparedRevision::prepare_with_registries(
@@ -313,4 +335,81 @@ fn foreign_preflight_refusal_revokes_without_processing_any_segment() {
     assert_eq!(foreign.processed, 0);
     assert!(foreign.revoked && foreign.rejections > 0);
     assert_eq!(runtime.performance_frame, u64::MAX);
+}
+
+#[test]
+fn foreign_preparation_distinguishes_equal_states_by_actual_device_and_owner() {
+    let mut f = fixture(&[&[]], 64);
+    let mut identities = Vec::new();
+    for _ in 0..2 {
+        let Created::Device(device) = f
+            .editor
+            .execute(Command::InsertDevice {
+                track: f.tracks[0],
+                before: None,
+                state: state(19).unwrap(),
+            })
+            .unwrap()
+        else {
+            panic!("device")
+        };
+        identities.push(
+            ProcessorInstanceIdentity::new(
+                ProcessorChainOwner::Track(f.tracks[0].value()),
+                device.value(),
+            )
+            .unwrap(),
+        );
+    }
+    let prepare = |definition: &BorrowedDefinition| {
+        let definitions: [&dyn NativeDeviceDefinition; 1] = [definition];
+        let registry = NativeDeviceRegistry::new(&definitions).unwrap();
+        crate::compile::project_with_registry(f.editor.project(), &f.media, &registry)
+    };
+    // Equal class/state cannot borrow another instance's preparation. Both an
+    // absent device and a matching numeric ID under the wrong owner refuse.
+    assert!(
+        prepare(&BorrowedDefinition {
+            instances: vec![(identities[0], 3)]
+        })
+        .is_err()
+    );
+    assert!(
+        prepare(&BorrowedDefinition {
+            instances: vec![
+                (identities[0], 3),
+                (
+                    ProcessorInstanceIdentity::new(
+                        ProcessorChainOwner::Main,
+                        identities[1].device_id()
+                    )
+                    .unwrap(),
+                    7
+                ),
+            ]
+        })
+        .is_err()
+    );
+    let project = prepare(&BorrowedDefinition {
+        instances: vec![(identities[0], 3), (identities[1], 7)],
+    })
+    .unwrap();
+    let chain = &project.tracks()[0].device_chain;
+    assert_eq!(chain.len(), 2);
+    assert_eq!(chain[0].configuration, chain[1].configuration);
+    for (index, expected) in [19, 23].into_iter().enumerate() {
+        assert_eq!(chain[index].device_id, identities[index].device_id());
+        assert_eq!(chain[index].owner, identities[index].owner());
+        assert_eq!(
+            chain[index]
+                .definition
+                .as_ref()
+                .unwrap()
+                .algorithmic_latency_frames(),
+            Some(expected)
+        );
+    }
+    assert!(ProcessorInstanceIdentity::new(ProcessorChainOwner::Track(0), 1).is_err());
+    assert!(ProcessorInstanceIdentity::new(ProcessorChainOwner::Return(0), 1).is_err());
+    assert!(ProcessorInstanceIdentity::new(ProcessorChainOwner::Main, 0).is_err());
 }

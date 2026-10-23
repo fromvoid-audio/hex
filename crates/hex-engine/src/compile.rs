@@ -767,11 +767,13 @@ fn compile_effect_devices(
 
     let mut admission_matrix = hex_lattice::StereoMatrix::identity();
     for device in source_devices {
+        let identity = hex_lattice::ProcessorInstanceIdentity::new(owner, device.id().value())
+            .map_err(|_| Invalid("invalid prepared device identity"))?;
         let migrated = registry
             .migrate_state(device.state())
             .map_err(|_| Invalid("native device state is unsupported or malformed"))?;
         let prepared_device = registry
-            .prepare_runtime_device(&migrated, context)
+            .prepare_runtime_instance(identity, &migrated, context)
             .map_err(|_| Invalid("native device state could not be prepared"))?;
         let processor = prepared_device.processor;
 
