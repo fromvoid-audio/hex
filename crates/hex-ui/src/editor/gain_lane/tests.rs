@@ -2,6 +2,7 @@ use super::*;
 use hex_project::{Command, Created, Editor, GainInterpolation, Project};
 fn point(raw: u64, gain: f32) -> GainPoint {
     GainPoint {
+        incoming_gain: None,
         beat: BeatTime::from_raw(raw),
         gain,
         outgoing: GainInterpolation::Linear,
@@ -149,8 +150,10 @@ mod native {
             let old = view.state.as_ref().unwrap();
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: old.project.clone(),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 gain_preview: Ok(preview),
@@ -531,9 +534,11 @@ mod native {
             let content_extent = old.timeline_frames;
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project: project.clone(),
                 gain_preview: Ok(Arc::new(preview)),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 timeline_frames: content_extent,
@@ -574,6 +579,7 @@ mod native {
             owner.gain = 0.25;
             owner.gain_touch_epoch = 1;
             owner.gain_touch_spans = vec![hex_project::GainTouchSpan {
+                source_start: BeatTime::ONE,
                 start: BeatTime::ONE,
                 end: BeatTime::from_quarters(100).unwrap(),
                 context: hex_project::GainTouchContext {
@@ -599,9 +605,11 @@ mod native {
             let content_extent = old.timeline_frames;
             view.state = Some(Arc::new(ViewState {
                 canonical_audio_source: None,
+                comparison_audio: None,
                 project,
                 gain_preview: Ok(preview),
                 waveforms: old.waveforms.clone(),
+                source_overviews: old.source_overviews.clone(),
                 audio_clip_waveforms: old.audio_clip_waveforms.clone(),
                 midi_preview: old.midi_preview.clone(),
                 timeline_frames: old.timeline_frames,

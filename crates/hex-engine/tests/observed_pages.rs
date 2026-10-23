@@ -137,11 +137,13 @@ fn fixture_with_options(feeds: bool, automation: bool) -> Fixture {
                 track,
                 points: vec![
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ZERO,
                         gain: 0.25,
                         outgoing: hex_project::GainInterpolation::Linear,
                     },
                     hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ONE,
                         gain: 1.5,
                         outgoing: hex_project::GainInterpolation::Step,
@@ -154,6 +156,7 @@ fn fixture_with_options(feeds: bool, automation: bool) -> Fixture {
     let id = snapshot.next_id;
     snapshot.next_id += 1;
     snapshot.tracks[0].devices.push(DeviceSnapshot {
+        comparison: None,
         id,
         bypassed: false,
         state: hex_engine::default_native_device_state_for_class(

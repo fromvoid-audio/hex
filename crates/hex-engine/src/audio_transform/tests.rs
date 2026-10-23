@@ -632,6 +632,131 @@ fn tiny_derived_roots_cannot_accumulate_large_original_source_cache_owners() {
 }
 
 #[test]
+fn section_splices_are_exact_pcm_insertions_removals_and_copies_at_unequal_blocks() {
+    const CUT: usize = 16_000;
+    const SECTION_END: usize = 32_000;
+    const SOURCE_END: usize = 48_000;
+    const INSERTED: usize = SECTION_END - CUT;
+
+    for processing in 0..3 {
+        let (mut seed, clip, media) = fixture(true);
+        seed.execute(Command::TrimClip {
+            clip,
+            start: 0,
+            duration: SOURCE_END as u64,
+            source_offset: 0,
+            source_length: 8_000,
+        })
+        .unwrap();
+        let extended = seed.project().clip(clip).unwrap();
+        assert_eq!(extended.duration(), SOURCE_END as u64);
+        assert_eq!(extended.source_phase(), 137);
+        assert_eq!(extended.fade().fade_in(), 997);
+        assert_eq!(extended.fade().fade_out(), 1_601);
+        assert_eq!(
+            Project::from_snapshot(seed.project().snapshot()).unwrap(),
+            seed.project().clone()
+        );
+
+        if processing > 0 {
+            seed.execute(Command::SetAudioClipPitch { clip, cents: 137 })
+                .unwrap();
+            seed.execute(Command::SetAudioClipMusical {
+                clip,
+                enabled: true,
+            })
+            .unwrap();
+        }
+        if processing == 2 {
+            let settings = default_audio_warp(
+                seed.project().clip(clip).unwrap(),
+                seed.project().tempo_map(),
+                WarpMode::Beats {
+                    preserve: hex_project::BeatsPreserve::Transients,
+                    tail: hex_project::BeatsTail::Forward,
+                    decay: 100,
+                },
+            )
+            .unwrap();
+            seed.execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            })
+            .unwrap();
+        }
+        let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+        let baseline = prepare(&seed, &media, &context);
+        let source_pcm = render(&baseline, 0, SOURCE_END, 113);
+        assert!(
+            source_pcm[CUT..SECTION_END]
+                .iter()
+                .any(|frame| *frame != [0.0; 2]),
+            "the copied/cut interval must contain audible source PCM"
+        );
+        for name in ["grow", "shrink", "delete", "duplicate"] {
+            let mut editor = Editor::new(seed.project().clone(), 32).unwrap();
+            let Created::ArrangementSection(section) = editor
+                .execute(Command::AddArrangementSection {
+                    name: name.into(),
+                    color: hex_project::ElementColor::Cyan,
+                    start: BeatTime::from_quarters(2).unwrap(),
+                    end: BeatTime::from_quarters(if name == "shrink" { 6 } else { 4 }).unwrap(),
+                })
+                .unwrap()
+            else {
+                panic!("section")
+            };
+            let (command, expected) = match name {
+                "grow" => {
+                    let mut pcm = source_pcm[..SECTION_END].to_vec();
+                    pcm.extend(vec![[0.0; 2]; INSERTED]);
+                    pcm.extend_from_slice(&source_pcm[SECTION_END..]);
+                    (
+                        Command::ResizeArrangementSection {
+                            section,
+                            edge: hex_project::TrimEdge::Right,
+                            length: BeatTime::from_quarters(4).unwrap(),
+                        },
+                        pcm,
+                    )
+                }
+                "shrink" => (
+                    Command::ResizeArrangementSection {
+                        section,
+                        edge: hex_project::TrimEdge::Right,
+                        length: BeatTime::from_quarters(2).unwrap(),
+                    },
+                    source_pcm[..SECTION_END].to_vec(),
+                ),
+                "delete" => {
+                    let mut pcm = source_pcm[..CUT].to_vec();
+                    pcm.extend_from_slice(&source_pcm[SECTION_END..]);
+                    (Command::DeleteArrangementSection(section), pcm)
+                }
+                _ => {
+                    let mut pcm = source_pcm[..SECTION_END].to_vec();
+                    pcm.extend_from_slice(&source_pcm[CUT..SECTION_END]);
+                    pcm.extend_from_slice(&source_pcm[SECTION_END..]);
+                    (Command::DuplicateArrangementSection(section), pcm)
+                }
+            };
+            editor.execute(command).unwrap();
+            let prepared = prepare(&editor, &media, &context);
+            assert_eq!(
+                render(&prepared, 0, expected.len(), 127),
+                expected,
+                "{name} with 127-frame blocks"
+            );
+            assert_eq!(
+                render(&prepared, 0, expected.len(), 257),
+                expected,
+                "{name} with 257-frame blocks"
+            );
+        }
+    }
+}
+
+#[test]
 fn pending_and_committed_derived_cache_share_one_ceiling_without_freeing_audible_pcm() {
     let (mut editor, clip, media) = fixture(false);
     editor
@@ -1314,4 +1439,892 @@ fn sample_bpm_and_edge_stretch_keep_pcm_pitch_and_partition_seek_consistency() {
             );
         }
     }
+}
+
+#[test]
+fn beats_actual_preparation_joins_cache_parameters_version_and_undo_match_rendered_playback() {
+    let (mut editor, clip, mut media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    media.insert(
+        asset,
+        Audio::new(16_000, vec![[0.5, -0.25]; 8_000]).unwrap(),
+    );
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Division(BeatTime::from_ratio(1, 4).unwrap()),
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let length = editor.project().clip(clip).unwrap().duration() as usize;
+    assert_eq!(length, 16_000);
+    let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+    let first = prepare(&editor, &media, &context);
+    let pcm = render(&first, 0, length, 127);
+    for at in [4_000, 8_000, 12_000] {
+        assert_eq!(pcm[at], [0.5, -0.25]);
+        assert_eq!(pcm[at - 1], pcm[at], "actual prepared neighbor join");
+    }
+    for block in [1, 31, 257, 513] {
+        assert_eq!(render(&first, 0, length, block), pcm);
+        assert_eq!(render(&first, 3_987, 511, block), pcm[3_987..4_498]);
+    }
+    let hits = context.cache_hits();
+    let repeated = prepare(&editor, &media, &context);
+    assert!(context.cache_hits() > hits);
+    assert_eq!(render(&repeated, 0, length, 63), pcm);
+    let mut gated = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .domain
+        .warp
+        .as_ref()
+        .unwrap()
+        .clone();
+    gated.mode = WarpMode::Beats {
+        preserve: hex_project::BeatsPreserve::Division(BeatTime::from_ratio(1, 4).unwrap()),
+        tail: BeatsTail::Forward,
+        decay: 25,
+    };
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(gated),
+        })
+        .unwrap();
+    let low_hits = context.cache_hits();
+    let decayed = prepare(&editor, &media, &context);
+    assert_eq!(
+        context.cache_hits(),
+        low_hits,
+        "envelope edit must invalidate prepared PCM"
+    );
+    let low_pcm = render(&decayed, 0, length, 63);
+    for (at, frame) in low_pcm.iter().enumerate() {
+        let gain = (-9.0 * (at % 4_000) as f64 / 4_000.0).exp();
+        assert!((f64::from(frame[0]) - 0.5 * gain).abs() < 1e-7);
+        assert!((f64::from(frame[1]) + 0.25 * gain).abs() < 1e-7);
+    }
+    assert!(editor.undo());
+    let full_again = prepare(&editor, &media, &context);
+    assert_eq!(render(&full_again, 0, length, 257), pcm);
+    assert_eq!(
+        render(&decayed, 0, length, 513),
+        low_pcm,
+        "retained lower-envelope revision is immutable"
+    );
+    let mut off = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .domain
+        .warp
+        .as_ref()
+        .unwrap()
+        .clone();
+    off.mode = WarpMode::Beats {
+        preserve: hex_project::BeatsPreserve::Division(BeatTime::from_ratio(1, 4).unwrap()),
+        tail: BeatsTail::Off,
+        decay: 100,
+    };
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(off),
+        })
+        .unwrap();
+    let hits = context.cache_hits();
+    let stopped = prepare(&editor, &media, &context);
+    assert_eq!(
+        context.cache_hits(),
+        hits,
+        "tail edit must not reuse Forward PCM"
+    );
+    let off_pcm = render(&stopped, 0, length, 127);
+    assert!(off_pcm[2_000..4_000].iter().all(|s| *s == [0.0; 2]));
+    assert_eq!(
+        off_pcm[4_000], [0.0; 2],
+        "Off restart removes background, not source attacks"
+    );
+    assert_ne!(off_pcm, pcm);
+    assert!(editor.undo());
+    let restored = prepare(&editor, &media, &context);
+    assert!(context.cache_hits() > hits);
+    assert_eq!(render(&restored, 0, length, 257), pcm);
+    assert!(editor.redo());
+    let hits = context.cache_hits();
+    for entry in &mut context.cache.borrow_mut().entries {
+        entry.algorithm_version = hex_warp::ALGORITHM_VERSION - 1;
+    }
+    let rebuilt = prepare(&editor, &media, &context);
+    assert_eq!(
+        context.cache_hits(),
+        hits,
+        "old algorithm PCM must not survive cache lookup"
+    );
+    assert_eq!(render(&rebuilt, 0, length, 513), off_pcm);
+    assert_eq!(
+        render(&first, 0, length, 127),
+        pcm,
+        "retained old revision remains immutable"
+    );
+    eprintln!("executed actual Beats canonical/preparation/cache/version/Undo/partition/seek path");
+}
+
+#[test]
+fn beats_wsola_default_preparation_locks_drums_and_keeps_bass_continuous() {
+    let (mut editor, clip, mut media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    let original: Vec<_> = (0..8_000)
+        .map(|i| {
+            let bass = (std::f32::consts::TAU * 55.0 * i as f32 / 16_000.0).sin() * 0.15;
+            if i % 2_000 == 0 {
+                [0.9, -0.8]
+            } else {
+                [bass, -bass * 0.7]
+            }
+        })
+        .collect();
+    media.insert(asset, Audio::new(16_000, original.clone()).unwrap());
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+    for (tempo, ratio) in [(80_000_000, 1.5), (60_000_000, 2.0)] {
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: BeatTime::ZERO,
+                tempo: Tempo::new(tempo).unwrap(),
+            })
+            .unwrap();
+        let length = editor.project().clip(clip).unwrap().duration() as usize;
+        assert_eq!(length, (8_000.0 * ratio) as usize);
+        let revision = prepare(&editor, &media, &context);
+        let pcm = render(&revision, 0, length, 127);
+        let expected: Vec<_> = [0, 2_000, 4_000, 6_000]
+            .map(|i| (i as f64 * ratio) as usize)
+            .to_vec();
+        let actual: Vec<_> = pcm
+            .iter()
+            .enumerate()
+            .filter_map(|(i, x)| (x[0] > 0.7).then_some(i))
+            .collect();
+        assert_eq!(
+            actual, expected,
+            "mapped attacks must neither move nor repeat"
+        );
+        for at in &expected {
+            assert_eq!(pcm[*at], [0.9, -0.8]);
+        }
+        for interval in expected.windows(2) {
+            let from = interval[0] + 500;
+            let to = interval[1] - 500;
+            let rms = (pcm[from..to]
+                .iter()
+                .map(|x| f64::from(x[0]).powi(2))
+                .sum::<f64>()
+                / (to - from) as f64)
+                .sqrt();
+            assert!((0.09..0.12).contains(&rms), "bass bed RMS {rms}");
+            assert!(
+                pcm[from..to]
+                    .iter()
+                    .all(|x| (x[1] + x[0] * 0.7).abs() < 1e-6)
+            );
+            let largest_step = pcm[from..to]
+                .windows(2)
+                .map(|w| (w[1][0] - w[0][0]).abs())
+                .fold(0.0_f32, f32::max);
+            assert!(largest_step < 0.01, "generated bass edge {largest_step}");
+        }
+        for block in [1, 31, 257, 513] {
+            assert_eq!(render(&revision, 0, length, block), pcm);
+            assert_eq!(
+                render(&revision, expected[1] as u64 - 19, 511, block),
+                pcm[expected[1] - 19..expected[1] + 492]
+            );
+        }
+        let hits = context.cache_hits();
+        let repeated = prepare(&editor, &media, &context);
+        assert!(context.cache_hits() > hits);
+        assert_eq!(render(&repeated, 0, length, 63), pcm);
+        eprintln!(
+            "executed actual default Transients Forward100 WSOLA drum+bass ratio={ratio} frames={length}, locked attacks/continuous bass/partition/seek/cache"
+        );
+    }
+}
+
+#[test]
+fn beats_alternating_preparation_reverses_safe_chirp_tail_and_undo_preserves_revisions() {
+    let (mut editor, clip, mut media) = fixture(false);
+    editor
+        .execute(Command::SetClipFades {
+            clip,
+            fade_in: 0,
+            fade_out: 0,
+        })
+        .unwrap();
+    let asset = editor.project().clip(clip).unwrap().asset();
+    media.insert(
+        asset,
+        Audio::new(
+            16_000,
+            (0..8_000)
+                .map(|i| {
+                    let t = i as f64 / 16_000.0;
+                    let x = (std::f64::consts::TAU * (60.0 * t + 500.0 * t * t) + 0.4).sin() as f32
+                        * 0.5;
+                    [x, -x * 0.7]
+                })
+                .collect(),
+        )
+        .unwrap(),
+    );
+    let settings = default_audio_warp(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    editor
+        .execute(Command::SetTempoPoint {
+            beat: BeatTime::ZERO,
+            tempo: Tempo::new(60_000_000).unwrap(),
+        })
+        .unwrap();
+    let context = isolated(8 * 1024 * 1024, 4 * 1024 * 1024, 8);
+    let forward = prepare(&editor, &media, &context);
+    let forward_pcm = render(&forward, 0, 16_000, 127);
+    let mut settings = editor
+        .project()
+        .clip(clip)
+        .unwrap()
+        .audio_edit()
+        .unwrap()
+        .domain
+        .warp
+        .as_ref()
+        .unwrap()
+        .clone();
+    settings.mode = WarpMode::Beats {
+        preserve: hex_project::BeatsPreserve::Transients,
+        tail: BeatsTail::Alternating,
+        decay: 100,
+    };
+    editor
+        .execute(Command::SetAudioClipWarp {
+            clip,
+            settings: Some(settings),
+        })
+        .unwrap();
+    let hits = context.cache_hits();
+    let alternating = prepare(&editor, &media, &context);
+    assert_eq!(context.cache_hits(), hits);
+    let pcm = render(&alternating, 0, 16_000, 63);
+    assert_ne!(
+        pcm, forward_pcm,
+        "Alternating must not silently use Forward traversal"
+    );
+    let frequency = |frames: &[crate::Frame]| {
+        frames
+            .windows(2)
+            .filter(|w| w[0][0] <= 0.0 && w[1][0] > 0.0)
+            .count() as f64
+            * 16_000.0
+            / frames.len() as f64
+    };
+    let reversed = frequency(&pcm[11_500..12_500]);
+    let normal = frequency(&forward_pcm[11_500..12_500]);
+    assert!(
+        reversed > 200.0 && reversed + 60.0 < normal,
+        "safe chirp tail not reversed: Alt={reversed} Forward={normal}"
+    );
+    assert!(pcm.iter().all(|x| (x[1] + x[0] * 0.7).abs() < 1e-6));
+    for block in [1, 31, 257, 513] {
+        assert_eq!(render(&alternating, 0, 16_000, block), pcm);
+        assert_eq!(
+            render(&alternating, 11_937, 511, block),
+            pcm[11_937..12_448]
+        );
+    }
+    assert!(editor.undo());
+    assert_eq!(
+        render(&prepare(&editor, &media, &context), 0, 16_000, 257),
+        forward_pcm
+    );
+    drop(editor);
+    drop(media);
+    assert_eq!(render(&alternating, 0, 16_000, 513), pcm);
+    assert_eq!(render(&forward, 0, 16_000, 127), forward_pcm);
+    eprintln!(
+        "executed actual Alternating protected WSOLA chirp native preparation/cache/Undo/retained revisions/seek/partition: AltHz={reversed} ForwardHz={normal}"
+    );
+}
+
+fn preview_matches_preparation(
+    editor: &Editor,
+    clip: hex_project::ClipId,
+    media: &BTreeMap<hex_project::AssetId, Audio>,
+) -> bool {
+    let metadata = validate_clip_warp_preview(
+        editor.project().clip(clip).unwrap(),
+        editor.project().tempo_map(),
+    );
+    let actual = crate::PreparedRevision::prepare_with_audio_transforms(
+        editor.project(),
+        media,
+        Arc::new(crate::SineTable::new()),
+        None,
+        &AudioTransformPreparation::default(),
+    );
+    assert_eq!(
+        metadata.is_ok(),
+        actual.is_ok(),
+        "metadata={metadata:?} actual_error={:?}",
+        actual.as_ref().err()
+    );
+    if let (Err(expected), Err(actual)) = (&metadata, &actual) {
+        assert_eq!(expected, actual);
+    }
+    metadata.is_ok()
+}
+#[test]
+fn warp_preview_admission_matches_actual_preparation_pitch_modes_tempo_and_rounding() {
+    for pitch in [-1_200, 0, 1_200] {
+        for mode in [
+            None,
+            Some(WarpMode::RePitch),
+            Some(WarpMode::Beats {
+                preserve: hex_project::BeatsPreserve::Transients,
+                tail: BeatsTail::Forward,
+                decay: 100,
+            }),
+        ] {
+            for end in [499, 500, 1_000, 8_000, 64_000, 64_001] {
+                let (mut editor, clip, media) = fixture(false);
+                let settings = default_audio_warp(
+                    editor.project().clip(clip).unwrap(),
+                    editor.project().tempo_map(),
+                    mode.unwrap_or(WarpMode::RePitch),
+                )
+                .unwrap();
+                editor
+                    .execute(Command::SetAudioClipWarp {
+                        clip,
+                        settings: Some(settings),
+                    })
+                    .unwrap();
+                editor
+                    .execute(Command::SetAudioClipPitch { clip, cents: pitch })
+                    .unwrap();
+                editor
+                    .execute(Command::SetTempoPoint {
+                        beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+                        tempo: Tempo::new(90_000_000).unwrap(),
+                    })
+                    .unwrap();
+                editor
+                    .execute(Command::StretchAudioClipEdge {
+                        clip,
+                        edge: hex_project::TrimEdge::Right,
+                        frame: end,
+                    })
+                    .unwrap();
+                if mode.is_none() {
+                    editor
+                        .execute(Command::SetAudioClipWarp {
+                            clip,
+                            settings: None,
+                        })
+                        .unwrap();
+                }
+                preview_matches_preparation(&editor, clip, &media);
+            }
+        }
+    }
+}
+#[test]
+fn warp_preview_admission_nonuniform_markers_and_subframe_errors_match_actual_preparation() {
+    for (middle, pitch) in [
+        (BeatTime::ONE.raw() / 2, 0),
+        (BeatTime::ONE.raw() / 2, 2_400),
+        (1, 0),
+    ] {
+        let (mut editor, clip, media) = fixture(false);
+        let mut settings = default_audio_warp(
+            editor.project().clip(clip).unwrap(),
+            editor.project().tempo_map(),
+            WarpMode::Beats {
+                preserve: hex_project::BeatsPreserve::Transients,
+                tail: BeatsTail::Forward,
+                decay: 100,
+            },
+        )
+        .unwrap();
+        settings.markers.insert(
+            1,
+            hex_project::WarpMarker {
+                source_frame: 1_600,
+                beat: BeatTime::from_raw(middle),
+            },
+        );
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(settings),
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: pitch })
+            .unwrap();
+        let valid = preview_matches_preparation(&editor, clip, &media);
+        assert_eq!(
+            valid,
+            middle > 1 && pitch == 0,
+            "nonuniform first segment or subframe projection must control admission"
+        );
+    }
+    let (editor, clip, media) = fixture(false);
+    assert!(
+        preview_matches_preparation(&editor, clip, &media),
+        "untouched resident audio needs no warp map"
+    );
+}
+#[test]
+fn warp_preview_valid_endpoints_can_be_disconnected_by_marker_tempo_crossings() {
+    // A slow-source second marker interval first traverses 30bpm, then moves
+    // entirely beyond the 480bpm point. Its maximum stretch drops, so validity
+    // is NOT globally monotonic in the requested right-edge frame.
+    let (mut seed, clip, media) = fixture(false);
+    let mut settings = default_audio_warp(
+        seed.project().clip(clip).unwrap(),
+        seed.project().tempo_map(),
+        WarpMode::Beats {
+            preserve: hex_project::BeatsPreserve::Transients,
+            tail: BeatsTail::Forward,
+            decay: 100,
+        },
+    )
+    .unwrap();
+    settings.markers.insert(
+        1,
+        hex_project::WarpMarker {
+            source_frame: 7_600,
+            beat: BeatTime::from_raw(BeatTime::ONE.raw() / 2),
+        },
+    );
+    seed.execute(Command::SetAudioClipWarp {
+        clip,
+        settings: Some(settings),
+    })
+    .unwrap();
+    seed.execute(Command::SetTempoPoint {
+        beat: BeatTime::ZERO,
+        tempo: Tempo::new(30_000_000).unwrap(),
+    })
+    .unwrap();
+    seed.execute(Command::SetTempoPoint {
+        beat: BeatTime::ONE,
+        tempo: Tempo::new(480_000_000).unwrap(),
+    })
+    .unwrap();
+    for (end, expected) in [(3_200, true), (32_000, false), (34_200, true)] {
+        let mut editor = Editor::new(seed.project().clone(), 32).unwrap();
+        editor
+            .execute(Command::StretchAudioClipEdge {
+                clip,
+                edge: hex_project::TrimEdge::Right,
+                frame: end,
+            })
+            .unwrap();
+        assert_eq!(
+            preview_matches_preparation(&editor, clip, &media),
+            expected,
+            "endpoint {end}"
+        );
+    }
+}
+
+#[test]
+fn derived_pcm_ingress_refusal_keeps_its_actual_reservation_and_buffer() {
+    let budget = Arc::new(budget::Budget::new(1024));
+    let reservation = budget.reserve(32).unwrap();
+    let audio = Audio::from_derived(8_000, vec![[0.25; 2]; 4], reservation).unwrap();
+    let pointer = audio.frames().as_ptr();
+    let refused = crate::OwnedAudioSource::try_from_decoded_audio_on_control(
+        audio,
+        4,
+        &AtomicBool::new(false),
+    )
+    .err()
+    .unwrap();
+    assert_eq!(
+        refused.reason,
+        crate::native_device_resources::ResourcePreparationError::Storage(
+            crate::AudioStorageError::SourceMismatch
+        )
+    );
+    assert_eq!(refused.audio.frames().as_ptr(), pointer);
+    assert!(refused.audio.frames._derived.is_some());
+    assert_eq!(budget.used(), 32);
+    drop(refused);
+    assert_eq!(budget.used(), 0);
+}
+
+#[path = "tests/project_tempo.rs"]
+mod project_tempo;
+
+#[test]
+fn section_reorder_preserves_complete_processed_roots_pcm_across_fractional_tempo_prefixes_and_repeated_moves()
+ {
+    section_pcm_oracle(true, false);
+}
+#[test]
+fn section_reorder_preserves_cropped_event_roots_and_raw_loop_fades_sample_exactly() {
+    section_pcm_oracle(true, true);
+    section_pcm_oracle(false, false);
+}
+fn section_pcm_oracle(transformed: bool, cropped: bool) {
+    use hex_project::{ElementColor, TempoPoint};
+    let beat = |n| BeatTime::from_quarters(n).unwrap();
+    let (mut editor, clip, media) = fixture(true);
+    let mut snapshot = editor.project().snapshot();
+    let audio = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    audio.duration = 96_000;
+    audio.fade = hex_project::ClipFade::new(96_000, 0, 997, 1601).unwrap();
+    editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 32).unwrap();
+    if transformed {
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: 137 })
+            .unwrap();
+        let warp = default_audio_warp(
+            editor.project().clip(clip).unwrap(),
+            editor.project().tempo_map(),
+            WarpMode::Texture {
+                grain_ms: 40,
+                fluctuation: 60,
+                seed: 91,
+            },
+        )
+        .unwrap();
+        editor
+            .execute(Command::SetAudioClipWarp {
+                clip,
+                settings: Some(warp),
+            })
+            .unwrap();
+    }
+    for point in [
+        TempoPoint::new(beat(0), Tempo::new(123_456_789).unwrap()),
+        TempoPoint::new(beat(3), Tempo::new(97_333_331).unwrap()),
+        TempoPoint::new(beat(6), Tempo::new(177_777_779).unwrap()),
+        TempoPoint::new(beat(9), Tempo::new(83_123_457).unwrap()),
+    ] {
+        editor
+            .execute(Command::SetTempoPoint {
+                beat: point.beat(),
+                tempo: point.tempo(),
+            })
+            .unwrap();
+    }
+    if cropped {
+        // Edits refer to the same complete root; a moved visible crop must not
+        // restart analysis or reinterpret events using the new tempo outside it.
+        editor
+            .execute(Command::EditAudioEvents {
+                clip,
+                operation: hex_project::AudioEventEdit::MoveRange {
+                    start: beat(1).raw(),
+                    end: beat(2).raw(),
+                    destination: beat(4).raw(),
+                },
+            })
+            .unwrap();
+        for (edge, at) in [
+            (hex_project::TrimEdge::Right, beat(6)),
+            (hex_project::TrimEdge::Left, beat(1)),
+        ] {
+            let frame = editor.project().tempo_map().beat_to_frame(at).unwrap();
+            editor
+                .execute(Command::TrimClipEdge { clip, edge, frame })
+                .unwrap();
+        }
+        assert!(
+            editor
+                .project()
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .events
+                .is_some()
+        );
+    }
+    let mut add = |name: &str, start, end| {
+        let Created::ArrangementSection(id) = editor
+            .execute(Command::AddArrangementSection {
+                name: name.into(),
+                color: ElementColor::Cyan,
+                start: beat(start),
+                end: beat(end),
+            })
+            .unwrap()
+        else {
+            panic!("section")
+        };
+        id
+    };
+    let a = add("intro", 2, 4);
+    let c = add("chorus", 7, 10);
+    let context = isolated(32 * 1024 * 1024, 16 * 1024 * 1024, 32);
+    let length = editor
+        .project()
+        .tempo_map()
+        .beat_to_frame(beat(12))
+        .unwrap()
+        .max(
+            editor.project().clip(clip).unwrap().start()
+                + editor.project().clip(clip).unwrap().duration(),
+        ) as usize;
+    let mut expected = render(&prepare(&editor, &media, &context), 0, length, 127);
+    // Repeated permutations also split already frozen roots. Source samples
+    // remain exact; no crop is rendered against destination-only tempo context.
+    for (source, target) in [(c, a), (a, c), (c, a), (a, c)] {
+        let preview = editor
+            .project()
+            .preview_section_reorder(source, target)
+            .unwrap();
+        let map = editor.project().tempo_map();
+        let s = map.beat_to_frame(preview.source_start()).unwrap() as usize;
+        let e = map.beat_to_frame(preview.source_end()).unwrap() as usize;
+        let t = map.beat_to_frame(preview.insertion_beat()).unwrap() as usize;
+        let mut permuted = Vec::with_capacity(length);
+        if t < s {
+            permuted.extend_from_slice(&expected[..t]);
+            permuted.extend_from_slice(&expected[s..e]);
+            permuted.extend_from_slice(&expected[t..s]);
+            permuted.extend_from_slice(&expected[e..]);
+        } else {
+            permuted.extend_from_slice(&expected[..s]);
+            permuted.extend_from_slice(&expected[e..t]);
+            permuted.extend_from_slice(&expected[s..e]);
+            permuted.extend_from_slice(&expected[t..]);
+        }
+        editor
+            .execute(Command::ReorderSectionBefore {
+                section: source,
+                before: target,
+            })
+            .unwrap();
+        let actual = render(&prepare(&editor, &media, &context), 0, length, 251);
+        assert_eq!(
+            actual, permuted,
+            "complete frozen source PCM must survive section permutation"
+        );
+        expected = permuted;
+        let snapshot = editor.project().snapshot();
+        assert_eq!(
+            Project::from_snapshot(snapshot.clone()).unwrap().snapshot(),
+            snapshot
+        );
+    }
+    if transformed {
+        let before = editor.project().snapshot();
+        let undo = editor.can_undo();
+        assert!(
+            editor
+                .execute(Command::SetTempoPoint {
+                    beat: beat(0),
+                    tempo: Tempo::new(120_000_000).unwrap()
+                })
+                .unwrap_err()
+                .0
+                .contains("processing rebase")
+        );
+        assert_eq!(editor.project().snapshot(), before);
+        assert_eq!(editor.can_undo(), undo);
+    }
+}
+
+#[test]
+fn section_reorder_prepares_sounding_cross_track_audio_and_loop_midi_with_boundary_retriggers() {
+    use hex_project::ElementColor;
+    let beat = |n| BeatTime::from_quarters(n).unwrap();
+    let (mut editor, clip, media) = fixture(true);
+    let mut snapshot = editor.project().snapshot();
+    let audio = &mut snapshot.tracks[0].audio_clips_mut().unwrap()[0];
+    audio.duration = 96_000;
+    audio.fade = hex_project::ClipFade::neutral(96_000).unwrap();
+    editor = Editor::new(Project::from_snapshot(snapshot).unwrap(), 16).unwrap();
+    let Created::Track(track) = editor
+        .execute(Command::InsertTrackWithDevice {
+            name: "melody".into(),
+            before_track: None,
+            slot: hex_project::TrackDeviceSlot::Instrument,
+            state: hex_project::default_instrument_state().unwrap(),
+        })
+        .unwrap()
+    else {
+        panic!("track")
+    };
+    let Created::Clip(midi) = editor
+        .execute(Command::PlaceMidiClip {
+            track,
+            start: beat(0),
+            length: beat(12),
+        })
+        .unwrap()
+    else {
+        panic!("midi")
+    };
+    editor
+        .execute(Command::SetMidiClipSource {
+            clip: midi,
+            source_length: beat(3),
+            source_start: beat(0),
+            loop_start: beat(0),
+            loop_end: beat(3),
+            looping: true,
+            length: beat(12),
+        })
+        .unwrap();
+    editor
+        .execute(Command::AddMidiNote {
+            clip: midi,
+            start: BeatTime::from_ratio(1, 2).unwrap(),
+            duration: beat(2),
+            pitch: 69,
+            channel: 0,
+            velocity: 100,
+        })
+        .unwrap();
+    let mut add = |start, end| {
+        let Created::ArrangementSection(id) = editor
+            .execute(Command::AddArrangementSection {
+                name: "part".into(),
+                color: ElementColor::Blue,
+                start: beat(start),
+                end: beat(end),
+            })
+            .unwrap()
+        else {
+            panic!("section")
+        };
+        id
+    };
+    let a = add(2, 4);
+    let c = add(7, 10);
+    let context = isolated(16 * 1024 * 1024, 8 * 1024 * 1024, 16);
+    let original = prepare(&editor, &media, &context);
+    assert_eq!(
+        original.midi_preview().get(midi).unwrap().occurrence_count,
+        4
+    );
+    editor
+        .execute(Command::ReorderSectionBefore {
+            section: c,
+            before: a,
+        })
+        .unwrap();
+    let prepared = prepare(&editor, &media, &context);
+    let mut intervals = prepared
+        .midi_preview()
+        .clips()
+        .iter()
+        .flat_map(|clip| clip.samples.iter())
+        .map(|sample| (sample.frame_start, sample.frame_gate_end, sample.pitch))
+        .collect::<Vec<_>>();
+    intervals.sort();
+    let expected = [
+        (1, 4),
+        (4, 7),
+        (9, 10),
+        (10, 11),
+        (13, 17),
+        (19, 20),
+        (20, 23),
+    ]
+    .into_iter()
+    .map(|(s, e)| (s * 4_000, e * 4_000, 69))
+    .collect::<Vec<_>>();
+    assert_eq!(
+        intervals, expected,
+        "actual prepared MIDI must include each cut/retrigger, not just moved clip markers"
+    );
+    let mixed = render(&prepared, 0, 96_000, 127);
+    editor
+        .execute(Command::Mute { track, muted: true })
+        .unwrap();
+    let audio_only = render(&prepare(&editor, &media, &context), 0, 96_000, 251);
+    assert!(
+        mixed.iter().zip(&audio_only).any(|(a, b)| a != b),
+        "the MIDI track must actually sound alongside original source audio"
+    );
+    assert_eq!(
+        editor.project().tracks()[0]
+            .clips()
+            .iter()
+            .map(|c| c.duration())
+            .sum::<u64>(),
+        96_000
+    );
+    assert!(editor.project().clip(clip).is_some());
 }

@@ -363,6 +363,184 @@ class LaunchTests(unittest.TestCase):
         restart.assert_called_once_with(launch.sys.executable, [launch.sys.executable, str(self.root / "launch"), "--test"])
         runner.assert_not_called()
 
+    def test_force_restart_passes_only_inspected_owner_and_preserves_default_no_tests(self):
+        for owner in (None,'e'*64):
+            self.calls.clear();self.head_reads=0
+            with patch.object(launch.sys,'platform','darwin'), patch.object(launch,'command',side_effect=self.command), \
+                    patch.object(launch.restart,'prepare',return_value=owner) as prepare, \
+                    patch.object(launch.delivery,'assert_inactive'), \
+                    patch.object(launch.delivery,'verify',return_value={'source':self.source,'candidate':self.source,'profile':'release'}), \
+                    patch.object(launch.ci,'LocalCiRunner',side_effect=AssertionError('default ran tests')):
+                launch.run_launch(self.root,argv=['--force-restart'])
+            prepare.assert_called_once()
+            package=next(x for x in self.calls if x[0]=='sh')
+            self.assertIn('--build-only',package)
+            if owner:
+                self.assertIn('--adopt-release-target',package)
+                self.assertEqual(package[package.index('--expected-release-owner-sha256')+1],owner)
+            else:self.assertNotIn('--adopt-release-target',package)
+            self.assertEqual(sum(x[0]=='open' for x in self.calls),1)
+
+    def test_force_test_combination_keeps_actual_full_ci_path_and_report(self):
+        with patch.object(launch.sys,'platform','darwin'),patch.object(launch,'command',side_effect=self.command), \
+                patch.object(launch.restart,'prepare',return_value='e'*64),patch.object(launch.delivery,'assert_inactive'), \
+                patch.object(launch.ci,'LocalCiRunner',side_effect=self.fake_ci), \
+                patch.object(launch.delivery,'verify',return_value={'source':self.source,'candidate':self.source,'profile':'release'}):
+            launch.run_launch(self.root,argv=['--force-restart','--test'])
+        self.assertIn(('ci',),self.calls)
+        package=next(x for x in self.calls if x[0]=='sh')
+        self.assertIn('--ci-report',package);self.assertNotIn('--build-only',package)
+        self.assertIn('--expected-release-owner-sha256',package)
+        self.assertEqual(sum(x[0]=='open' for x in self.calls),1)
+
+    def test_restart_refusal_interrupt_or_build_failure_never_opens_app(self):
+        for failure in (launch.restart.RestartError('identity changed'),KeyboardInterrupt()):
+            self.calls.clear();self.head_reads=0
+            with patch.object(launch.sys,'platform','darwin'),patch.object(launch,'command',side_effect=self.command), \
+                    patch.object(launch.restart,'prepare',side_effect=failure):
+                with self.assertRaises(type(failure)):launch.run_launch(self.root,argv=['--force-restart'])
+            self.assertFalse(any(x[0] in ('sh','open') for x in self.calls))
+        self.calls.clear();self.head_reads=0
+        def fail_build(argv,**kwargs):
+            if argv[:2]==['sh','scripts/bundle-macos.sh']:
+                self.calls.append(tuple(argv));return self.process(argv,returncode=1,stderr='build failed after quit')
+            return self.command(argv,**kwargs)
+        with patch.object(launch.sys,'platform','darwin'),patch.object(launch,'command',side_effect=fail_build), \
+                patch.object(launch.restart,'prepare',return_value='e'*64),patch.object(launch.delivery,'assert_inactive'):
+            with self.assertRaisesRegex(launch.LaunchError,'build failed after quit'):
+                launch.run_launch(self.root,argv=['--force-restart'])
+        self.assertFalse(any(x[0]=='open' for x in self.calls))
+
+    def test_force_flag_is_preserved_across_main_update_reexec(self):
+        self.initial_head='c'*40
+        with patch.object(launch.sys,'platform','darwin'),patch.object(launch,'command',side_effect=self.command), \
+                patch.object(launch.os,'execv') as execv,patch.object(launch.restart,'prepare') as prepare:
+            with self.assertRaises(launch.LaunchError):launch.run_launch(self.root,argv=['--force-restart','--test'])
+        execv.assert_called_once_with(sys.executable,[sys.executable,str(self.root/'launch'),'--force-restart','--test'])
+        prepare.assert_not_called()
+
+
+    def test_recreated_target_opt_in_forwards_only_inspected_identity_without_restart_or_tests(self):
+        authority={'owner_sha256':'e'*64,'target_identity':{'device':17,'inode':42}}
+        with patch.object(launch.sys,'platform','darwin'), patch.object(launch,'command',side_effect=self.command), \
+                patch.object(launch.restart,'inspect_recreated_target',return_value=authority) as inspect, \
+                patch.object(launch.restart,'prepare',side_effect=AssertionError('no process control')), \
+                patch.object(launch.delivery,'assert_inactive') as inactive, \
+                patch.object(launch.delivery,'verify',return_value={'source':self.source,'candidate':self.source,'profile':'release'}), \
+                patch.object(launch.ci,'LocalCiRunner',side_effect=AssertionError('tests not requested')):
+            launch.run_launch(self.root,argv=['--recover-release-target'])
+        inspect.assert_called_once();inactive.assert_called_once()
+        package=next(x for x in self.calls if x[0]=='sh')
+        self.assertIn('--build-only',package)
+        for flag,value in [('--expected-release-owner-sha256','e'*64),
+                           ('--expected-recreated-target-device','17'),('--expected-recreated-target-inode','42')]:
+            self.assertEqual(package[package.index(flag)+1],value)
+        self.assertEqual(sum(x[0]=='open' for x in self.calls),1)
+
+    def test_recreated_target_inspection_failure_or_running_raw_never_builds_or_opens(self):
+        for running in (False,True):
+            self.calls.clear();self.head_reads=0
+            self.raw_processes='123 /fixture/hex-desktop' if running else ''
+            with patch.object(launch.sys,'platform','darwin'), patch.object(launch,'command',side_effect=self.command), \
+                    patch.object(launch.restart,'inspect_recreated_target',side_effect=launch.ci.TargetCacheError('foreign')) as inspect, \
+                    patch.object(launch.restart,'prepare') as force, patch.object(launch.delivery,'assert_inactive'):
+                with self.assertRaises((launch.LaunchError,launch.ci.TargetCacheError)):
+                    launch.run_launch(self.root,argv=['--recover-release-target'])
+            if running:inspect.assert_not_called()
+            force.assert_not_called()
+            self.assertFalse(any(x[0] in ('sh','open') for x in self.calls))
+
+    def test_recreated_target_cli_excludes_force_and_installed_only_but_allows_test(self):
+        for incompatible in ('--open','--force-restart'):
+            with patch.object(launch,'run_launch') as run, redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    launch.main(['--recover-release-target',incompatible])
+            self.assertEqual(error.exception.code,2);run.assert_not_called()
+        with patch.object(launch,'run_launch') as run:
+            self.assertEqual(launch.main(['--recover-release-target','--test']),0)
+        run.assert_called_once_with(argv=['--recover-release-target','--test'])
+
+    def test_recreated_target_flag_survives_ordinary_main_update_reexec(self):
+        with patch.object(launch.sys,'platform','darwin'), patch.object(launch,'require_clean_main'), \
+                patch.object(launch,'checked',return_value='d'*40), \
+                patch.object(launch,'fetch_and_fast_forward',return_value=self.source), \
+                patch.object(launch.os,'execv',side_effect=OSError('fixture exec')) as reexec, \
+                patch.object(launch.restart,'inspect_recreated_target') as inspect:
+            with self.assertRaises(OSError):launch.run_launch(self.root,argv=['--recover-release-target'])
+        reexec.assert_called_once_with(launch.sys.executable,[launch.sys.executable,str(self.root/'launch'),'--recover-release-target'])
+        inspect.assert_not_called()
+
+
+    def test_recover_with_tests_uses_fresh_real_runner_target_preserving_stale_dev_owner_and_release_target(self):
+        import os
+        import test_local_ci as fixtures
+        f=fixtures.LocalCiRunnerTests();f.setUp();self.addCleanup(f.tearDown)
+        self.root=f.repo
+        (self.root/'scripts').mkdir();(self.root/'.git').mkdir()
+        (self.root/'scripts/hex-test-build.json').write_text('{"app_path":"artifacts/hex.app"}')
+        git=f.bin/'git';git.write_text(git.read_text().replace('deadbeef',self.source))
+        cargo=f.bin/'cargo';cargo.write_text(cargo.read_text().replace('"$FAKE_METADATA_TARGET"','"${CARGO_TARGET_DIR:-$FAKE_METADATA_TARGET}"'))
+        target=Path(f.env['FAKE_METADATA_TARGET']);target.mkdir()
+        old=f.runner('old-dev-owner');self.assertEqual(old.run(),0)
+        # Read the marker selected by the runner, not a second lexical-path hash.
+        owner=old.target_owner_path
+        self.assertIsNotNone(owner)
+        raw=owner.read_bytes()
+        target.rename(target.with_name('retained-dev'));target.mkdir()
+        (target/'release').mkdir();(target/'release/external').write_bytes(b'preserve release')
+        stale=f.runner('stale-default-control');self.assertEqual(stale.run(),1)
+        self.assertEqual(owner.read_bytes(),raw)
+        authority={'owner_sha256':'e'*64,'target_identity':stale._directory_identity(target)}
+        observed=[];package_targets=[]
+        def verification(root,mode,env=None):
+            selected=dict(f.env)
+            if env is not None and 'CARGO_TARGET_DIR' in env:selected['CARGO_TARGET_DIR']=env['CARGO_TARGET_DIR']
+            runner=f.runner('recovery-verification',root=root,env=selected)
+            observed.append(runner);return runner
+        def command(argv,**kwargs):
+            if argv[:2]==['sh','scripts/bundle-macos.sh']:package_targets.append(os.environ['CARGO_TARGET_DIR'])
+            return self.command(argv,**kwargs)
+        with patch.dict(os.environ,{**f.env,'CARGO_TARGET_DIR':str(target)},clear=True), \
+                patch.object(launch.sys,'platform','darwin'),patch.object(launch,'command',side_effect=command), \
+                patch.object(launch.ci,'LocalCiRunner',side_effect=verification), \
+                patch.object(launch.restart,'inspect_recreated_target',return_value=authority), \
+                patch.object(launch.delivery,'assert_inactive'), \
+                patch.object(launch.delivery,'verify',return_value={'source':self.source,'candidate':self.source,'profile':'release'}):
+            launch.run_launch(self.root,argv=['--recover-release-target','--test'])
+        self.assertEqual(len(observed),1)
+        runner=observed[0];actual=Path(runner.cargo_identity['target_directory'])
+        self.assertNotEqual(actual,target);self.assertTrue(actual.is_relative_to(self.root/'artifacts/launch'))
+        self.assertFalse(runner.adopt_target);self.assertEqual(runner.summary['target_cache']['action'],'claim-empty')
+        self.assertEqual(runner.summary['status'],'passed');self.assertIsNone(runner.target_lock)
+        self.assertEqual(owner.read_bytes(),raw)
+        self.assertEqual((target/'release/external').read_bytes(),b'preserve release')
+        self.assertEqual(package_targets,[str(target)],'packaging inherits ORIGINAL release target')
+        self.assertNotIn('cargo clean',f.call_log.read_text())
+        package=next(x for x in self.calls if x[0]=='sh')
+        self.assertIn('--ci-report',package);self.assertIn('--expected-recreated-target-inode',package)
+
+
+class ForceRestartFlagTests(unittest.TestCase):
+    def test_native_bundle_verification_failure_is_a_controlled_cli_refusal(self):
+        with patch.object(launch,'run_launch',side_effect=launch.delivery.DeliveryError('sealed bundle mismatch')), \
+                redirect_stderr(io.StringIO()) as errors:
+            self.assertEqual(launch.main(['--force-restart']),1)
+        self.assertIn('sealed bundle mismatch',errors.getvalue())
+
+    def test_installed_only_force_combination_is_refused_and_help_warns_unsaved_loss(self):
+        with redirect_stderr(io.StringIO()),self.assertRaises(SystemExit) as result:
+            launch.main(['--open','--force-restart'])
+        self.assertEqual(result.exception.code,2)
+        with redirect_stdout(io.StringIO()) as output,self.assertRaises(SystemExit):launch.main(['--help'])
+        self.assertIn('unsaved work may be lost',' '.join(output.getvalue().split()))
+
+    def test_force_restart_is_forwarded_and_can_opt_in_to_tests(self):
+        for arguments in (["--force-restart"], ["--force-restart", "--test"]):
+            with self.subTest(arguments=arguments), patch.object(launch, "run_launch") as run:
+                self.assertEqual(launch.main(list(arguments)), 0)
+                run.assert_called_once_with(argv=list(arguments))
+
+
 
 if __name__ == "__main__":
     unittest.main()
