@@ -189,6 +189,29 @@ fn source_hints_and_paint_require_same_view_source_facts_and_context(cx: &mut Te
                 visual.simulate_resize(gpui::size(gpui::px(width), gpui::px(700.0)));
                 visual.run_until_parked();
                 let waveform = visual.debug_bounds("sampler-source-waveform").unwrap();
+                // TestWindow currently renders at 2x. The 1x shape oracle is in
+                // overview_waveform; physical 1x display acceptance is separate.
+                let scale = visual.update(|window, _| window.scale_factor());
+                assert_eq!(scale, 2.0);
+                let canvas_bounds = gpui::Bounds::new(
+                    waveform.origin,
+                    gpui::size(waveform.size.width, waveform.size.height - gpui::px(14.0)),
+                );
+                editor.read_with(&visual, |view, _| {
+                    let source = super::super::overview_waveform::Source::Sampler {
+                        table: view.state.as_ref().unwrap().source_overviews.clone(),
+                        asset,
+                    };
+                    let expected = super::super::waveform::waveform_column_count(
+                        f32::from(canvas_bounds.size.width), scale,
+                    );
+                    assert!(expected > 128, "paint uses detailed device-pixel columns");
+                    assert_eq!(
+                        view.overview_waveform_cache.borrow().prepared_columns(&source, canvas_bounds, scale),
+                        Some(expected),
+                        "actual sampler canvas must prepare geometry at its rendered bounds after resize",
+                    );
+                });
                 let controls = visual.debug_bounds("sampler-controls").unwrap();
                 let panel = visual.debug_bounds("device-panel").unwrap();
                 assert!(
