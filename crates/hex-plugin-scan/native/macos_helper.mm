@@ -10,6 +10,7 @@
 #include <algorithm>
 #include "macos_lifecycle_case.hpp"
 #include "macos_host_case.hpp"
+#include "macos_stream_case.hpp"
 
 using namespace Steinberg;
 using namespace Steinberg::Vst;
@@ -75,7 +76,8 @@ static bool fixture(const char* kind,const char* expected) {
         }
         auto* factory=get();
         if (lifecycle) {
-            ok=host_evidence.scenario>=0?host_case(bundle,factory):lifecycle_case(bundle,factory);
+            ok=hex_stream_fixture::enabled?hex_stream_fixture::run(bundle,factory):
+                (host_evidence.scenario>=0?host_case(bundle,factory):lifecycle_case(bundle,factory));
             if (!lifecycle_evidence.closed) {
                 // Failed teardown retains the module and both factory references.
                 // The standalone process owner must reap this helper; no live unload.
@@ -149,6 +151,11 @@ static bool fixture(const char* kind,const char* expected) {
 
 int main(int argc,char** argv) {
     @autoreleasepool {
+        if (argc==2 && !std::strcmp(argv[1],"--stream-fixture")) {
+            hex_stream_fixture::enabled=true; lifecycle_evidence.mode=1; lifecycle_evidence.failure=0;
+            try { return fixture("lifecycle",HEX_LIFECYCLE_SHA256)?0:1; }
+            catch (...) { std::fprintf(stderr,"stream fault; module custody retained until process exit\n"); return 1; }
+        }
         if (argc==3 && !std::strcmp(argv[1],"--host-self-test")) {
             const size_t length=std::strlen(argv[2]);
             if (!length || length>2) return 2;
