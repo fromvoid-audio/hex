@@ -177,7 +177,7 @@ fn bottom_edge_resizes_only_its_row_with_controls_and_lane_aligned(cx: &mut Test
         bounds(&mut visual, "arrangement-track-header", track)
             .size
             .height,
-        px(TRACK_ROW_HEIGHT)
+        px(super::track_layout::HEADER_ONLY_HEIGHT)
     );
     let handle = bounds(&mut visual, "track-height-resize", track).center();
     drag(&mut visual, handle, point(handle.x, px(2_000.0)));
@@ -471,4 +471,37 @@ fn option_resize_equalizes_all_ordinary_rows_and_escape_restores_each_height(
             assert_eq!(view.worker_requests_pending, 0);
         });
     }
+}
+
+#[gpui::test]
+fn minimum_track_height_keeps_only_readable_title_and_resize_hit(cx: &mut TestAppContext) {
+    let (mut visual, editor, tracks) = fixture(cx, 1);
+    let track = tracks[0];
+    let handle = bounds(&mut visual, "track-height-resize", track).center();
+    drag(&mut visual, handle, point(handle.x, px(0.0)));
+    let header = bounds(&mut visual, "arrangement-track-header", track);
+    let title = bounds(&mut visual, "track-name", track);
+    let resize = bounds(&mut visual, "track-height-resize", track);
+    assert_eq!(header.size.height, px(23.0));
+    assert_eq!(title.size.height, px(18.0));
+    assert!(title.top() >= header.top() && title.bottom() <= resize.top());
+    for prefix in [
+        "track-controls",
+        "track-mute",
+        "track-volume",
+        "track-pan",
+        "track-return-sends",
+    ] {
+        assert!(
+            visual
+                .debug_bounds(Box::leak(
+                    format!("{prefix}-{}", track.value()).into_boxed_str()
+                ))
+                .is_none(),
+            "compact row must not retain hidden {prefix} hits"
+        );
+    }
+    editor.read_with(&visual, |view, _| {
+        assert_eq!(view.worker_requests_pending, 0)
+    });
 }

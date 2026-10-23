@@ -10,10 +10,12 @@ use gpui::{
 use hex_project::TrackId;
 use std::collections::BTreeMap;
 
-// Reuse the browser/workspace split's existing room budget. The default
-// header and its complete controls still fit at the minimum size.
+// Reuse the browser/workspace split's room budget. Default-height controls
+// still fit at the minimum header width; shorter rows render only their title.
 const MAX_HEADER_WIDTH: f32 = super::browser::DEFAULT_WIDTH;
 const MIN_LANE_WIDTH: f32 = super::browser::MIN_WORKSPACE_WIDTH - TRACK_HEADER_WIDTH;
+// Name line + separate 3px resize gutter, bottom border and centering room.
+pub(super) const HEADER_ONLY_HEIGHT: f32 = super::track_header::NAME_HEIGHT + 5.0;
 
 #[derive(Default)]
 pub(super) struct TrackLayout {
@@ -31,7 +33,7 @@ struct ResizeDrag {
     original: f32,
     generation: u64,
     revision: u64,
-    previous: Option<f32>,
+    previous_width: Option<f32>,
     previous_heights: Option<BTreeMap<TrackId, f32>>,
     maximum: f32,
 }
@@ -184,6 +186,8 @@ impl EditorView {
             || !self.drag_available()
             || self.track_resize_active()
             || self.edit_pending()
+            || self.track_gain_controls.has_pending_draft(cx)
+            || self.gain_numeric_editing(cx)
             || self.context_menu.is_some()
             || self.arrangement_pan.is_some()
             || self.time_selection_gesture.is_some()
@@ -205,9 +209,6 @@ impl EditorView {
             return;
         }
         let revision = state.revision;
-        let previous = track.map_or(self.track_layout.width, |id| {
-            self.track_layout.heights.get(&id).copied()
-        });
         let maximum = if track.is_some() {
             self.arrangement_bounds
                 .map_or(TRACK_ROW_HEIGHT, |body| body.height.max(TRACK_ROW_HEIGHT))
@@ -221,7 +222,7 @@ impl EditorView {
             original,
             generation: self.project_generation,
             revision,
-            previous,
+            previous_width: self.track_layout.width,
             // A modifier may change during capture: retain every custom height
             // once so all live updates have one complete cancellation owner.
             previous_heights: track.map(|_| self.track_layout.heights.clone()),
@@ -265,7 +266,7 @@ impl EditorView {
         let target = drag.track;
         if let Some(track) = target {
             let height =
-                (drag.original + pointer - drag.pointer).clamp(TRACK_ROW_HEIGHT, drag.maximum);
+                (drag.original + pointer - drag.pointer).clamp(HEADER_ONLY_HEIGHT, drag.maximum);
             if all_tracks {
                 if self
                     .track_layout
@@ -304,7 +305,7 @@ impl EditorView {
             self.track_layout.heights = previous;
             self.track_scroll.remeasure();
         } else {
-            self.track_layout.width = drag.previous;
+            self.track_layout.width = drag.previous_width;
         }
     }
     pub(super) fn cancel_track_resize(&mut self, cx: &mut Context<Self>) -> bool {

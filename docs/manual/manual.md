@@ -95,6 +95,10 @@ right-click a clip to switch its visual flavor. **use accent flavor** gives the
 track's color a saturated fill; **use muted flavor** uses a pale tint. selection
 keeps its own outline in either flavor.
 
+drag the bottom edge of a track header to resize that row. hold **option** while
+resizing to give all ordinary tracks the same height. at the minimum height, rows
+keep their names and clip titles; expand them to use the mixer and fade controls.
+
 right-click a track header or the track area and choose **insert track** or
 **insert return track**. return buses stay pinned above **main** in arrange;
 their headers provide volume, activation and removal controls.

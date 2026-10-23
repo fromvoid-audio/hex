@@ -532,6 +532,11 @@ impl EditorView {
         visible: (u64, u64),
         viewport: Viewport,
     ) -> Option<FadeControls> {
+        // Header-only rows have no visible fade body; arbitration and rendered
+        // handles must both refuse those hidden targets.
+        if self.track_height(track) <= super::track_layout::HEADER_ONLY_HEIGHT {
+            return None;
+        }
         let preview = self.fade_preview(clip.id());
         let active = self.fade_curve_active(clip.id());
         if !self.fade_key_held
