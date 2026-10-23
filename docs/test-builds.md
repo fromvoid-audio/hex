@@ -55,6 +55,16 @@ machine-specific path; do not create revision-named copies. Packaging builds
 certificate/team and preserves original notices. Missing signing identity or
 failed verification refuses publication without an ad-hoc fallback.
 
+For explicit VST3 helper packaging, build the pinned clean SDK inputs with
+`crates/hex-plugin-scan/native/macos_bootstrap.py build --help`. The
+`--discovery-only` and `--instance-only` profiles are separate minimal bundles;
+the latter requires its owned duplex protocol and has no command-line self-test.
+Pass their clean exact-candidate receipts to `scripts/bundle-macos.sh` with
+`--vst3-discovery-receipt PATH` and `--vst3-instance-receipt PATH`, respectively.
+Delivery signs the nested helpers and records their final inventories. Including
+an instance executable does not establish track integration or plug-in support;
+use the current Pulse acceptance checklist for the supported workflow.
+
 Read the actual installer result and retained `hex-test-build-receipt.json`.
 Report candidate/merge mapping, full source, included revisions, CI report,
 artifact identity, disk installation and relaunch status. A candidate report may
