@@ -118,6 +118,7 @@ fn add_track(editor: &gpui::Entity<EditorView>, cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn project_actions_preserve_confirmation_and_dispatch_once_after_rerender(cx: &mut TestAppContext) {
+    cx.update(super::super::bind_editor_keys);
     let directory = Directory::new();
     let (handle, editor) = directory.window(cx);
     add_track(&editor, cx);
@@ -151,7 +152,8 @@ fn project_actions_preserve_confirmation_and_dispatch_once_after_rerender(cx: &m
     });
     editor.update(cx, |_, cx| cx.notify());
     visual.run_until_parked();
-    visual.dispatch_action(NewProject);
+    visual.update(|window, cx| editor.read(cx).focus.focus(window));
+    visual.simulate_keystrokes("cmd-n");
     pump(&editor, cx, |view| {
         settled(view) && view.project_generation > before.1
     });
