@@ -244,3 +244,99 @@ impl EditorView {
         }
     }
 }
+
+#[cfg(all(test, feature = "ui-test-support"))]
+mod tests {
+    use super::*;
+    use hex_project::{Command, Created, Editor, Project};
+    use hex_session::{
+        device_gesture::{GestureAck, GesturePhase, GestureTarget, ParameterValue},
+        service::Request,
+    };
+    use std::sync::Arc;
+
+    #[gpui::test]
+    fn format_upgrade_refused_device_terminal_retires_save_before_open_intent(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let mut project = Editor::new(Project::new(48_000).unwrap(), 4).unwrap();
+        let Created::Track(track) = project
+            .execute(Command::AddTrack {
+                name: "unsaved track".into(),
+            })
+            .unwrap()
+        else {
+            panic!("track");
+        };
+        let (handle, editor) = crate::editor::clip_drag_ui_test::editor_window(
+            cx,
+            project.project().clone(),
+            Arc::default(),
+        );
+        editor.update(cx, |view, _| {
+            let state = Arc::get_mut(view.state.as_mut().unwrap()).unwrap();
+            state.unsaved = true;
+            state.document_path = Some(PathBuf::from("original.hex"));
+            view.project_open.phase = Phase::Saving(Intent {
+                path: PathBuf::from("selected-next.hex"),
+                mode: DocumentAudioMode::Resident,
+                generation: view.project_generation,
+                revision: state.revision,
+                serial: 1,
+            });
+            let key = view
+                .device_gesture
+                .begin(
+                    view.project_generation,
+                    GestureTarget::TrackGain { track },
+                    ParameterValue::Float(1.0),
+                )
+                .unwrap();
+            view.device_gesture.next_request().unwrap();
+            assert!(view.acknowledge_device_gesture(&GestureAck {
+                key,
+                phase: GesturePhase::Begin,
+                sequence: 0,
+                accepted: true,
+                preview_retained: false,
+                reason: None,
+            }));
+            let accepted = view.device_gesture.snapshot().unwrap();
+            assert!(
+                view.enqueue_device_barrier(Request::SaveCurrentWithFormatUpgrade {
+                    project_generation: view.project_generation,
+                    path: PathBuf::from("original.hex"),
+                })
+            );
+            view.saving_project = true;
+            let terminal = view.device_gesture.next_request().unwrap();
+            view.device_gesture.mark_submitted();
+            assert!(view.project_open.permits_save());
+            assert!(matches!(
+                view.device_gesture_barriers.front(),
+                Some(Request::SaveCurrentWithFormatUpgrade { .. })
+            ));
+            assert!(view.acknowledge_device_gesture_with_snapshot(
+                &GestureAck {
+                    key,
+                    phase: GesturePhase::Commit,
+                    sequence: terminal.sequence(),
+                    accepted: false,
+                    preview_retained: true,
+                    reason: Some("audio publication queue full".into()),
+                },
+                Some(accepted)
+            ));
+            assert!(!view.saving_project);
+            assert!(
+                !view.project_open.busy(),
+                "a later save must not open the abandoned selection"
+            );
+            assert!(view.device_gesture_barriers.is_empty());
+            assert!(view.pending_requests.is_empty());
+            assert!(view.state.as_ref().unwrap().unsaved);
+        });
+        cx.update_window(handle, |_, window, _| window.remove_window())
+            .unwrap();
+    }
+}

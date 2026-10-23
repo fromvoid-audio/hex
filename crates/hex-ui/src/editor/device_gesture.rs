@@ -228,6 +228,7 @@ impl EditorView {
                 }
                 if effects.save_refused {
                     self.saving_project = false;
+                    self.cancel_open_after_save();
                 }
                 if effects.export_refused {
                     // Deferred exports have not been submitted to Service, so

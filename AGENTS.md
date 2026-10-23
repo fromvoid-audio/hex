@@ -12,6 +12,8 @@ Hex is active alpha software. Saved projects must remain openable through explic
 versioned migrations from supported older schemas to the current schema. Future
 schema-changing work must include migration from the prior supported format and
 focused historical-fixture, complete-state and save/reopen tests in the same change.
+Assign a fresh schema identifier when the saved contract changes; never reuse an
+identifier for incompatible branch layouts.
 Record the supported versions and any evidence-based limitations beside the owning
 storage codec. Never invent historical layouts or silently discard unknown data.
 Reject newer, unsupported and malformed formats explicitly, preserving the original
