@@ -8,6 +8,7 @@
 #include "pluginterfaces/vst/ivstaudioprocessor.h"
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "macos_host.hpp"
+#include "macos_processing.hpp"
 #include "pluginterfaces/vst/ivstmessage.h"
 #include <atomic>
 #include <cmath>
@@ -30,8 +31,8 @@ class Instance final {
     bool component_initialized = false, controller_initialized = false;
     bool handler_set = false, connected_component = false, connected_controller = false;
     bool input_active = false, output_active = false, active = false;
-    bool instrument = false, configured = false, configuration_started = false, opened = false, used = false;
-    int32 maximum = 0;
+    bool configured = false, configuration_started = false, opened = false, used = false;
+    ProcessingConfiguration configuration_{};
     std::thread::id processing_thread;
     std::atomic<bool> processing{false}, processing_fault{false}, quarantined{false};
 
@@ -117,29 +118,59 @@ public:
         return true;
     }
 
-    // Explicit initial stereo/sample32 capability, not general bus negotiation.
-    bool configure_stereo(double rate, int32 frames, bool is_instrument) {
+    // Prepare only a fresh inactive owner. SDK arrangement refusal may itself
+    // mutate foreign state; an existing active owner is never reconfigured or
+    // described as rolled back. Its control owner prepares a separate candidate
+    // and keeps the live owner until an actual later admission/replacement.
+    ConfigurationResult configure(const ProcessingConfiguration& request) {
         if (![NSThread isMainThread] || !opened || !component_initialized || !processor ||
-            active || configuration_started || quarantined.load() || !std::isfinite(rate) ||
-            rate <= 0 || rate > 768000 || frames < 1 || frames > 8192) return false;
+            active || configuration_started || processing.load() || quarantined.load())
+            return ConfigurationResult::InvalidState;
+        if (!valid_configuration(request)) return ConfigurationResult::InvalidConfiguration;
+        // No implicit float64 conversion/cast. Any future conversion is owned
+        // by the isolated helper, never by the Rust audio callback.
+        if (request.precision!=kSample32) return ConfigurationResult::UnsupportedPrecision;
         configuration_started = true;
-        SpeakerArrangement stereo = SpeakerArr::kStereo;
+        if (processor->canProcessSampleSize(kSample32)!=kResultOk)
+            return ConfigurationResult::UnsupportedPrecision;
+        if (!main_bus(component,kInput,request.input_channels,false) ||
+            !main_bus(component,kOutput,request.output_channels,false))
+            return ConfigurationResult::UnsupportedTopology;
+        auto input=arrangement(request.input_channels),output=arrangement(request.output_channels);
+        if (processor->setBusArrangements(request.input_channels?&input:nullptr,
+            request.input_channels?1:0,&output,1)!=kResultOk)
+            return ConfigurationResult::ArrangementRefused;
+        SpeakerArrangement observed{};
+        if (!main_bus(component,kInput,request.input_channels,true) ||
+            !main_bus(component,kOutput,request.output_channels,true) ||
+            processor->getBusArrangement(kOutput,0,observed)!=kResultOk || observed!=output ||
+            (request.input_channels && (processor->getBusArrangement(kInput,0,observed)!=kResultOk || observed!=input)))
+            return ConfigurationResult::ArrangementMismatch;
         ProcessSetup setup{};
         setup.processMode = kRealtime; setup.symbolicSampleSize = kSample32;
-        setup.maxSamplesPerBlock = frames; setup.sampleRate = rate;
-        if (processor->setBusArrangements(is_instrument ? nullptr : &stereo,
-            is_instrument ? 0 : 1, &stereo, 1) != kResultOk ||
-            processor->setupProcessing(setup) != kResultOk) return false;
-        instrument = is_instrument; maximum = frames;
-        if (component->activateBus(kAudio, kOutput, 0, true) != kResultOk) return false;
-        output_active = true;
-        if (!instrument) {
-            if (component->activateBus(kAudio, kInput, 0, true) != kResultOk) return false;
-            input_active = true;
+        setup.maxSamplesPerBlock = request.maximum_frames; setup.sampleRate = request.sample_rate;
+        if (processor->setupProcessing(setup) != kResultOk) return ConfigurationResult::SetupRefused;
+        if (component->activateBus(kAudio,kOutput,0,request.output_enabled)!=kResultOk)
+            return ConfigurationResult::ActivationRefused;
+        output_active = request.output_enabled;
+        if (request.input_channels) {
+            if (component->activateBus(kAudio,kInput,0,request.input_enabled)!=kResultOk)
+                return ConfigurationResult::ActivationRefused;
+            input_active = request.input_enabled;
         }
-        if (component->setActive(true) != kResultOk) return false;
+        if (component->setActive(true) != kResultOk) return ConfigurationResult::ActivationRefused;
+        configuration_=request;
         active = true; configured = true;
-        return true;
+        return ConfigurationResult::Prepared;
+    }
+    bool configure_stereo(double rate,int32 frames,bool is_instrument) {
+        ProcessingConfiguration request{};
+        request.sample_rate=rate; request.maximum_frames=frames;
+        request.input_channels=is_instrument?0:2; request.input_enabled=!is_instrument;
+        return configure(request)==ConfigurationResult::Prepared;
+    }
+    const ProcessingConfiguration* configuration() const {
+        return configured?&configuration_:nullptr;
     }
 
     bool start_processing() {
@@ -152,13 +183,33 @@ public:
     }
     bool process(ProcessData& data) {
         if (!processing.load() || processing_thread != std::this_thread::get_id() ||
-            quarantined.load() || processing_fault.load() || data.numSamples < 1 || data.numSamples > maximum ||
-            data.processMode != kRealtime || data.symbolicSampleSize != kSample32 ||
-            data.numInputs != (instrument ? 0 : 1) || data.numOutputs != 1) return false;
+            quarantined.load() || processing_fault.load() || !processing_data(configuration_,data)) return false;
+        const ProcessingShape shape(data);
+        clear_disjoint_outputs(configuration_,data);
         // Foreign DSP is not rollbackable. A failed call invalidates this owner;
         // only stop/close remain, never another process or restart as a retry.
-        if (processor->process(data) != kResultOk) { processing_fault.store(true); return false; }
+        if (processor->process(data) != kResultOk || !shape.unchanged(data) || !finite_outputs(configuration_,data)) {
+            processing_fault.store(true); return false;
+        }
         return true;
+    }
+    // A parameter-only stopped flush is distinct from a positive-frame block.
+    // Serialize it on the same helper worker; main/control must join before close.
+    FlushResult flush_stopped(ProcessData& data) {
+        if ([NSThread isMainThread] || !configured || !active || processing.load() ||
+            processing_fault.load() || quarantined.load() ||
+            (processing_thread!=std::thread::id{} && processing_thread!=std::this_thread::get_id()))
+            return FlushResult::InvalidState;
+        if (data.processMode!=kRealtime || data.symbolicSampleSize!=kSample32 || data.numSamples!=0 ||
+            data.numInputs!=0 || data.numOutputs!=0 || data.inputs || data.outputs || data.inputEvents || data.outputEvents)
+            return FlushResult::InvalidData;
+        if (!data.inputParameterChanges) return FlushResult::Empty;
+        const auto count=data.inputParameterChanges->getParameterCount();
+        if (count<0 || count>64) return FlushResult::InvalidData;
+        if (!count) return FlushResult::Empty;
+        processing_thread=std::this_thread::get_id();
+        if (processor->process(data)!=kResultOk) { processing_fault.store(true); return FlushResult::Refused; }
+        return FlushResult::Applied;
     }
     bool stop_processing() {
         if (!processing.load() || processing_thread != std::this_thread::get_id() || quarantined.load())
