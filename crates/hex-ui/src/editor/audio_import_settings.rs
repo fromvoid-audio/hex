@@ -235,6 +235,25 @@ impl EditorView {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn target_ids() -> (hex_project::TrackId, hex_project::SceneId) {
+        let mut editor =
+            hex_project::Editor::new(hex_project::Project::new(48_000).unwrap(), 8).unwrap();
+        editor
+            .execute(hex_project::Command::AddTrack {
+                name: "target".into(),
+            })
+            .unwrap();
+        editor
+            .execute(hex_project::Command::AddScene {
+                name: "scene".into(),
+            })
+            .unwrap();
+        (
+            editor.project().tracks()[0].id(),
+            editor.project().scenes()[0].id(),
+        )
+    }
+
     fn context() -> AudioBatchContext {
         AudioBatchContext {
             project_generation: 7,
@@ -245,7 +264,7 @@ mod tests {
 
     #[test]
     fn off_retains_legacy_requests_and_enabled_imports_capture_policy_before_queueing() {
-        let track = hex_project::TrackId(20);
+        let (track, _) = target_ids();
         let path = PathBuf::from("/Original Case/sample.WAV");
         for enabled in [false, true] {
             let warp = if enabled {
@@ -357,7 +376,7 @@ mod tests {
         let request = capture(
             Request::ImportToTrackWithOverwrite {
                 path: PathBuf::from("/queued.wav"),
-                track: hex_project::TrackId(9),
+                track: target_ids().0,
                 start: 4321,
             },
             settings.policy(),
@@ -369,7 +388,7 @@ mod tests {
         // The worker owns this legacy request and never reads application settings.
         assert!(
             matches!(request, Request::ImportToTrackWithOverwrite { path, track, start }
-            if path == PathBuf::from("/queued.wav") && track == hex_project::TrackId(9) && start == 4321)
+            if path == PathBuf::from("/queued.wav") && track == target_ids().0 && start == 4321)
         );
     }
 
@@ -405,8 +424,8 @@ mod tests {
         assert!(actual_control.progress().cancellation_requested);
         let console = Request::ImportToSession {
             path: PathBuf::from("/a.wav"),
-            track: hex_project::TrackId(1),
-            scene: hex_project::SceneId(2),
+            track: target_ids().0,
+            scene: target_ids().1,
         };
         assert!(matches!(
             capture(console, AudioImportWarp::Beats, context()).unwrap(),

@@ -549,40 +549,33 @@ fn queued_legacy_off_import_keeps_overwrite_intent_after_an_unrelated_edit() {
         assert_eq!(renamed.state.revision, initial.state.revision + 1);
         assert_eq!(result.state.project.tracks().len(), 1);
         assert_eq!(result.state.project.tracks()[0].name(), "queued rename");
-        if !overwrite {
-            assert!(
-                result.error.is_some(),
-                "ordinary import must retain its overlap refusal"
-            );
-            assert_eq!(result.state.revision, renamed.state.revision);
-            assert_eq!(result.state.project, renamed.state.project);
-        } else {
-            assert!(result.error.is_none(), "{:?}", result.error);
-            assert_eq!(result.state.revision, renamed.state.revision + 1);
-            let clips = result.state.project.tracks()[0].clips();
-            assert_eq!(clips.len(), 3);
-            assert!(clips.iter().all(|clip| {
-                clip.audio_edit()
-                    .is_none_or(|edit| !edit.domain.warp_enabled)
-            }));
-            let mut playback = result.playback.take().unwrap();
-            playback.apply(hex_engine::playback::PlaybackCommand::Play);
-            let mut pcm = [[0.0; 2]; 16];
-            playback.render(&mut pcm).unwrap();
-            assert!(pcm[..4].iter().all(|frame| *frame == [0.25; 2]));
-            assert!(pcm[4..12].iter().all(|frame| *frame == [-0.125; 2]));
-            assert!(pcm[12..].iter().all(|frame| *frame == [0.25; 2]));
-            s.submit(Request::Undo).unwrap();
-            let undone = event(&s);
-            assert!(undone.error.is_none(), "{:?}", undone.error);
-            assert_eq!(
-                undone.state.project.tracks(),
-                renamed.state.project.tracks()
-            );
-            s.submit(Request::Redo).unwrap();
-            let redone = event(&s);
-            assert_eq!(redone.state.project, result.state.project);
-        }
+        // Both legacy spellings already use the canonical Arrangement overwrite
+        // policy. Preserve that actual behavior instead of inventing a refusal.
+        assert!(result.error.is_none(), "{:?}", result.error);
+        assert_eq!(result.state.revision, renamed.state.revision + 1);
+        let clips = result.state.project.tracks()[0].clips();
+        assert_eq!(clips.len(), 3);
+        assert!(clips.iter().all(|clip| {
+            clip.audio_edit()
+                .is_none_or(|edit| !edit.domain.warp_enabled)
+        }));
+        let mut playback = result.playback.take().unwrap();
+        playback.apply(hex_engine::playback::PlaybackCommand::Play);
+        let mut pcm = [[0.0; 2]; 16];
+        playback.render(&mut pcm).unwrap();
+        assert!(pcm[..4].iter().all(|frame| *frame == [0.25; 2]));
+        assert!(pcm[4..12].iter().all(|frame| *frame == [-0.125; 2]));
+        assert!(pcm[12..].iter().all(|frame| *frame == [0.25; 2]));
+        s.submit(Request::Undo).unwrap();
+        let undone = event(&s);
+        assert!(undone.error.is_none(), "{:?}", undone.error);
+        assert_eq!(
+            undone.state.project.tracks(),
+            renamed.state.project.tracks()
+        );
+        s.submit(Request::Redo).unwrap();
+        let redone = event(&s);
+        assert_eq!(redone.state.project, result.state.project);
         drop(s);
     }
 }

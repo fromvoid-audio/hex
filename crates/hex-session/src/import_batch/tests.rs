@@ -569,6 +569,11 @@ fn final_admission_refusal_preserves_exact_current_waveform_owners() {
             vec![media(48_000, 24_000, 8192)],
             empty_destination(),
         );
+        // Raw clips use their asset summary rather than a derived clip view.
+        // Seed a real processed view so refusal must preserve an existing owner.
+        let clip = s.project().tracks()[0].clips()[0].id();
+        s.command_prepared_revision(Command::SetAudioClipPitch { clip, cents: 100 }, None)
+            .unwrap();
         let before = s.project().clone();
         let waveforms = s.audio_clip_waveforms().unwrap();
         assert_eq!(waveforms.len(), 1);
@@ -595,7 +600,21 @@ fn final_admission_refusal_preserves_exact_current_waveform_owners() {
                     Ok(())
                 }
             },
-            prepare_asset_free,
+            |input, admit| {
+                let staged = input.waveforms;
+                prepare_asset_free(input, &mut || {
+                    if warp == hex_project::AudioImportWarp::Beats {
+                        assert!(
+                            staged
+                                .borrow()
+                                .keys()
+                                .any(|clip| !waveforms.contains_key(clip)),
+                            "the final refusal must discard a genuinely staged new waveform owner"
+                        );
+                    }
+                    admit()
+                })
+            },
         );
         assert!(refused.is_err());
         assert_eq!(calls, 2, "the refusal must follow completed preparation");
