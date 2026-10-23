@@ -662,12 +662,12 @@ fn velocity_shift_marquee_highlights_both_views_and_selects_hidden_pitch_for_gro
     cx: &mut TestAppContext,
 ) {
     let (mut visual, editor, _environment, clip) = setup(cx);
-    let (first_id, all_ids, before) = editor.update(&mut visual, |v, cx| {
+    let (all_ids, before) = editor.update(&mut visual, |v, cx| {
         let source = v.state.as_ref().unwrap().project.midi_source(clip).unwrap();
         let ids = source.notes().iter().map(|n| n.id()).collect::<Vec<_>>();
         v.midi_selection.set_single(ids[0]);
         cx.notify();
-        (ids[0], ids, v.state.as_ref().unwrap().project.snapshot())
+        (ids, v.state.as_ref().unwrap().project.snapshot())
     });
     visual.run_until_parked();
     let first = lane_at(&mut visual, 0.85, 0.0, 4.0, 2.0);
@@ -680,7 +680,7 @@ fn velocity_shift_marquee_highlights_both_views_and_selects_hidden_pitch_for_gro
     visual.simulate_mouse_move(last, Some(MouseButton::Left), shift);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.ids(), [first_id]);
+        assert_eq!(v.midi_selection.ids(), all_ids);
         assert_eq!(v.state.as_ref().unwrap().project.snapshot(), before);
     });
     let primary: gpui::Background = rgb(theme::color(theme::PaletteRole::Primary)).into();

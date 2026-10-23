@@ -65,6 +65,12 @@ impl EditorView {
     /// Capture at most 17 complete notes in one bounded pass over the selected source.
     /// More notes refuse the whole chord; no velocity quantization or truncation.
     pub(super) fn audition_midi_selection(&mut self) {
+        let selected = self.midi_selection.shared_ids();
+        self.audition_midi_notes(&selected);
+    }
+    /// The marquee supplies only newly entered, sorted note identities; ordinary
+    /// selection actions supply the complete selected bank. Both use one owner.
+    pub(super) fn audition_midi_notes(&mut self, ids: &[hex_project::NoteId]) {
         if !self.midi_audition.enabled {
             return;
         }
@@ -73,7 +79,7 @@ impl EditorView {
             self.error = Some("note audition is unavailable for verified streaming audio".into());
             return;
         }
-        let len = self.midi_selection.len();
+        let len = ids.len();
         if len == 0 {
             return;
         }
@@ -99,7 +105,7 @@ impl EditorView {
         let mut notes = [(0, 0); MAX_NOTE_AUDITION_NOTES];
         let mut found = 0;
         for note in source.notes() {
-            if self.midi_selection.contains(note.id()) {
+            if ids.binary_search(&note.id()).is_ok() {
                 let Some(slot) = notes.get_mut(found) else {
                     return;
                 };
@@ -123,6 +129,26 @@ impl EditorView {
             len,
         });
     }
+    pub(super) fn cancel_marquee_audition(
+        &mut self,
+        context: super::midi_selection::MarqueeContext,
+    ) {
+        let matches = |selection: &Selection| {
+            selection.generation == context.scene.generation
+                && selection.clip == context.scene.clip
+                && selection.epoch == context.selection_epoch
+        };
+        if self.midi_audition.pending.as_ref().is_some_and(matches)
+            || self
+                .midi_audition
+                .active
+                .as_ref()
+                .is_some_and(|active| matches(&active.selection))
+        {
+            self.cancel_midi_audition();
+        }
+    }
+
     /// Some means the audition owns the existing input, so physical preparation must
     /// not replace it. Physical held keys always win and defer only the latest intent.
     pub(super) fn tick_midi_audition(&mut self) -> Option<bool> {
@@ -166,8 +192,6 @@ impl EditorView {
             || self.midi_note_gesture.is_some()
             || self.midi_velocity.gesture.is_some()
             || self.midi_group_gesture.is_some()
-            || self.midi_marquee.is_some()
-            || self.velocity_marquee_active()
             || self.midi_creation.is_some()
             || self.midi_stroke.is_some()
             || self.tuning.client.snapshot().is_some()
