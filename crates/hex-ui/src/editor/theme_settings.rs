@@ -1206,7 +1206,7 @@ mod tests {
             slider.origin.x + slider.size.width / 2.0,
             slider.origin.y + slider.size.height / 2.0,
         );
-        let end = point(start.x - px(12.0), start.y);
+        let end = point(start.x, start.y + px(12.0));
         visual.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_move(end, MouseButton::Left, Modifiers::default());
         visual.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
