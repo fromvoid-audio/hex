@@ -209,9 +209,9 @@ def build(sdk, output, *, discovery_only=False, instance_only=False):
                 raise ValueError("unreviewed compiler input: " + str(path))
             base, label = owner
             closure[label + "/" + str(path.relative_to(base))] = sha(path)
-        macho(destination, 8 if "-bundle" in extra else 2, architecture)
+        macho(destination, 8 if "-bundle" in extra else 6 if "-dynamiclib" in extra else 2, architecture)
         # Ad hoc signatures qualify local original fixtures only, not distribution.
-        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(destination.parent.parent.parent)], check=True, timeout=120)
+        subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(destination if "-dynamiclib" in extra else destination.parent.parent.parent)], check=True, timeout=120)
         runtime[str(destination.relative_to(output))] = command(["/usr/bin/otool", "-L", str(destination)]).splitlines()[1:]
 
     resources = output / app / "Contents/Resources"
@@ -286,6 +286,8 @@ def build(sdk, output, *, discovery_only=False, instance_only=False):
         compile_one("macos_scan.mm", output / reply_hang,
                     ["-I" + str(output), "-framework", "Foundation", "-Wno-deprecated-declarations", "-DHEX_SCAN_HANG_AFTER_REPLY=1"])
         compile_one("launch_ignored.cpp", output / app / "Contents/MacOS/hex-vst3-launch-ignored", [])
+        compile_one("launch_ignored.cpp", output / app / "Contents/MacOS/hex-vst3-autoreap-driver.dylib",
+                    ["-dynamiclib", "-DHEX_LAUNCH_IGNORED_DYLIB=1"])
     (resources / "sdk-notices.json").write_text(json.dumps(licenses, indent=2) + "\n")
     subprocess.run(["/usr/bin/codesign", "--force", "--sign", "-", "--timestamp=none", str(output / app)], check=True, timeout=120)
     receipt = {"version": 1, "scope": "native-macos-instance" if instance_only else ("native-macos-factory-discovery" if discovery_only else "original-macos-bootstrap"), "platform": "darwin-arm64",
