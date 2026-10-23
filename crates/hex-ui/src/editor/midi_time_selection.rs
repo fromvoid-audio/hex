@@ -1,7 +1,7 @@
 //! Source-local time selection shares ruler geometry and the existing edit-reply
 //! selection owner. Drag selection does not seek or reflect Arrangement state;
 //! stationary ruler clicks delegate playback cueing to the existing cue owner,
-//! while stationary grid clicks only move the insertion cursor.
+//! while stationary piano/velocity clicks only move the insertion cursor.
 use super::*;
 use hex_project::BeatTime;
 
@@ -12,6 +12,12 @@ struct Selection {
     start: u64,
     end: u64,
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Surface {
+    Ruler,
+    Piano,
+    Velocity,
+}
 #[derive(Clone, Copy)]
 pub(in crate::editor) struct Capture {
     context: Context,
@@ -19,7 +25,7 @@ pub(in crate::editor) struct Capture {
     down_x: f32,
     last_x: f32,
     invert: bool,
-    cue_on_click: bool,
+    surface: Surface,
 }
 #[derive(Default)]
 pub(in crate::editor) struct State {
@@ -180,7 +186,7 @@ impl EditorView {
             down_x: x,
             last_x: x,
             invert,
-            cue_on_click: true,
+            surface: Surface::Ruler,
         });
         true
     }
@@ -189,7 +195,7 @@ impl EditorView {
     pub(in crate::editor) fn midi_grid_time_selection_active(&self) -> bool {
         self.midi_time_selection
             .gesture
-            .is_some_and(|capture| !capture.cue_on_click)
+            .is_some_and(|capture| capture.surface == Surface::Piano)
     }
     pub(in crate::editor) fn begin_midi_grid_time_selection(
         &mut self,
@@ -204,7 +210,31 @@ impl EditorView {
             return false;
         }
         if let Some(capture) = self.midi_time_selection.gesture.as_mut() {
-            capture.cue_on_click = false;
+            capture.surface = Surface::Piano;
+        }
+        true
+    }
+    pub(in crate::editor) fn midi_ruler_time_selection_active(&self) -> bool {
+        self.midi_time_selection
+            .gesture
+            .is_some_and(|capture| capture.surface == Surface::Ruler)
+    }
+    pub(in crate::editor) fn midi_velocity_time_selection_active(&self) -> bool {
+        self.midi_time_selection
+            .gesture
+            .is_some_and(|capture| capture.surface == Surface::Velocity)
+    }
+    pub(in crate::editor) fn begin_midi_velocity_time_selection(
+        &mut self,
+        bounds: CanvasBounds,
+        x: f32,
+        invert: bool,
+    ) -> bool {
+        if !self.begin_midi_grid_time_selection(bounds, x, invert) {
+            return false;
+        }
+        if let Some(capture) = self.midi_time_selection.gesture.as_mut() {
+            capture.surface = Surface::Velocity;
         }
         true
     }
@@ -245,7 +275,7 @@ impl EditorView {
             if (capture.last_x - capture.down_x).abs() < 3.0
                 && let Some(beat) = beat_at(capture.context, capture.last_x, capture.invert)
             {
-                if capture.cue_on_click {
+                if capture.surface == Surface::Ruler {
                     self.request_midi_source_cue(capture.context.clip, beat);
                 } else {
                     self.clear_midi_time_selection();
