@@ -404,12 +404,55 @@ fn discarded_local_duplicate_queue_retires_while_admitted_request_keeps_custody(
 
 #[gpui::test]
 fn full_real_worker_queue_defers_duplicate_and_retires_its_own_terminal(cx: &mut TestAppContext) {
-    let (_files, handle, editor, originals) = fixture(cx);
+    use hex_session::service::{Service, WorkerAudioSink};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc,
+    };
+    // A test-only output adapter pauses the Session control worker, never an
+    // audio callback. One bounded handshake prevents a queue-drain race.
+    struct Gate {
+        armed: Arc<AtomicBool>,
+        entered: mpsc::SyncSender<()>,
+        release: mpsc::Receiver<()>,
+    }
+    impl WorkerAudioSink for Gate {
+        fn initialize(&mut self, _: &AtomicBool) -> Result<u32, String> {
+            Ok(48_000)
+        }
+        fn canonical_changed(&mut self, _: Arc<hex_session::CanonicalAudioSourceSnapshot>) {}
+        fn poll(&mut self) {
+            if self.armed.swap(false, Ordering::AcqRel) {
+                self.entered.try_send(()).unwrap();
+                self.release.recv_timeout(Duration::from_secs(10)).unwrap();
+            }
+        }
+        fn close(&mut self) {}
+    }
+    let armed = Arc::new(AtomicBool::new(false));
+    let (entered_tx, entered_rx) = mpsc::sync_channel(1);
+    let (release_tx, release_rx) = mpsc::sync_channel(1);
+    let service = Service::with_audio_sink(
+        32,
+        8_000_000,
+        None,
+        Box::new(Gate {
+            armed: Arc::clone(&armed),
+            entered: entered_tx,
+            release: release_rx,
+        }),
+    )
+    .unwrap();
+    let (_files, handle, editor, originals) =
+        crate::editor::drag::group_drag_ui_test::fixture_with_service(cx, service);
     let mut visual = VisualTestContext::from_window(handle, cx);
     click(&mut visual, originals[0], false);
+    armed.store(true, Ordering::Release);
+    entered_rx.recv_timeout(Duration::from_secs(10)).unwrap();
     editor.update(&mut visual, |v, _| {
         // SaveCurrent refuses this untitled fixture without changing revision.
-        // Undrained terminal delivery fills the actual bounded worker channel.
+        // The paused worker cannot free a slot until the duplicate is deferred.
         let mut full = false;
         for _ in 0..128 {
             match v.service.submit(Request::SaveCurrent) {
@@ -437,6 +480,7 @@ fn full_real_worker_queue_defers_duplicate_and_retires_its_own_terminal(cx: &mut
                 .any(|request| v.pending_duplicate_matches(request))
         );
     });
+    release_tx.try_send(()).unwrap();
     pump(&editor, &mut visual);
     editor.read_with(&visual, |v, _| {
         assert!(!v.duplicate_intent.is_pending());

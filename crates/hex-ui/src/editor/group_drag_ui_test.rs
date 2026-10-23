@@ -110,13 +110,24 @@ pub(in crate::editor) fn fixture(
     Entity<EditorView>,
     Vec<ClipId>,
 ) {
+    fixture_with_service(cx, Service::new(48_000, 32, 8_000_000).unwrap())
+}
+
+pub(in crate::editor) fn fixture_with_service(
+    cx: &mut TestAppContext,
+    service: Service,
+) -> (
+    Arc<Environment>,
+    gpui::AnyWindowHandle,
+    Entity<EditorView>,
+    Vec<ClipId>,
+) {
     cx.update(super::super::bind_editor_keys);
     let files = Environment::new().unwrap();
     let mut setup = PendingSetup::new(Arc::clone(&files));
     let wav = fixture_wav(&files);
     let directory = files.root();
     std::fs::create_dir(directory.join("samples")).unwrap();
-    let service = Service::new(48_000, 32, 8_000_000).unwrap();
     next(&service);
     service.submit(Request::Import(wav.clone())).unwrap();
     let event = next(&service);
