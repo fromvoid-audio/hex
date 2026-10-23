@@ -316,6 +316,7 @@ pub(super) fn selection_command(
 ) -> Result<Command, hex_project::Invalid> {
     use hex_project::{ClipEdit, WarpAdjustment};
     let edit = match action {
+        Action::Pitch(cents) => ClipEdit::PitchBy { cents },
         Action::Warp => ClipEdit::WarpEnabled {
             enabled: project
                 .clip(id)
@@ -352,8 +353,7 @@ pub(super) fn selection_command(
         Action::Resolution(delta) => ClipEdit::WarpAdjust {
             adjustment: WarpAdjustment::Resolution(delta),
         },
-        Action::Pitch(_)
-        | Action::Anchor
+        Action::Anchor
         | Action::MarkerAdd
         | Action::MarkerFrame(..)
         | Action::MarkerBeat(..)

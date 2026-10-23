@@ -271,6 +271,12 @@ fn shift_selected_warp_applies_to_every_clip_with_its_own_source_region(cx: &mut
         else {
             panic!("clip")
         };
+        model
+            .execute(Command::SetAudioClipPitch {
+                clip: second,
+                cents: 700,
+            })
+            .unwrap();
         (model, second)
     });
     editor.update(cx, |view, cx| {
@@ -321,6 +327,42 @@ fn shift_selected_warp_applies_to_every_clip_with_its_own_source_region(cx: &mut
     // not silently target only the focused member of a whole-clip selection.
     editor.read_with(cx, |view, _| {
         use hex_session::service::Request;
+        let Request::Edit(relative) = view
+            .resolve_clip_action_scope(
+                Request::Edit(
+                    actions::selection_command(model.project(), second, Action::Pitch(100))
+                        .unwrap(),
+                ),
+                false,
+            )
+            .unwrap()
+        else {
+            panic!("relative edit")
+        };
+        let mut pitched = hex_project::Editor::new(model.project().clone(), 8).unwrap();
+        pitched.execute(relative).unwrap();
+        assert_eq!(
+            pitched
+                .project()
+                .clip(first)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .pitch_cents,
+            100
+        );
+        assert_eq!(
+            pitched
+                .project()
+                .clip(second)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .pitch_cents,
+            800
+        );
         let request = view
             .resolve_clip_action_scope(
                 Request::Edit(Command::SetAudioClipGain {

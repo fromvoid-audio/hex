@@ -708,3 +708,82 @@ fn command_scope_retains_property_source_note_geometry_and_explicit_boundaries()
         ClipCommandScope::Unrelated
     );
 }
+
+#[test]
+fn relative_controls_preserve_member_offsets_and_scalar_limits_atomically() {
+    let (mut editor, [a, b, midi, untouched]) = fixture();
+    for (clip, gain, pitch) in [(a, -6_000, 0), (b, 3_000, 700)] {
+        editor
+            .execute(Command::SetAudioClipGain {
+                clip,
+                millidb: gain,
+            })
+            .unwrap();
+        editor
+            .execute(Command::SetAudioClipPitch { clip, cents: pitch })
+            .unwrap();
+    }
+    let before = editor.project().clone();
+    let targets = [a, midi, b];
+    editor
+        .execute(edit(&targets, ClipEdit::GainBy { millidb: 1_000 }))
+        .unwrap();
+    for (clip, gain) in [(a, -5_000), (b, 4_000)] {
+        assert_eq!(editor.project().clip(clip).unwrap().gain().millidb(), gain);
+    }
+    assert!(editor.undo());
+    assert_eq!(editor.project(), &before);
+    assert!(editor.redo());
+    editor
+        .execute(edit(&targets, ClipEdit::PitchBy { cents: 100 }))
+        .unwrap();
+    for (clip, pitch) in [(a, 100), (b, 800)] {
+        assert_eq!(
+            editor
+                .project()
+                .clip(clip)
+                .unwrap()
+                .audio_edit()
+                .unwrap()
+                .domain
+                .pitch_cents,
+            pitch
+        );
+    }
+    assert_eq!(editor.project().clip(untouched), before.clip(untouched));
+    editor
+        .execute(Command::SetAudioClipPitch {
+            clip: b,
+            cents: 4_799,
+        })
+        .unwrap();
+    editor
+        .execute(edit(&targets, ClipEdit::PitchBy { cents: 100 }))
+        .unwrap();
+    assert_eq!(
+        editor
+            .project()
+            .clip(b)
+            .unwrap()
+            .audio_edit()
+            .unwrap()
+            .domain
+            .pitch_cents,
+        4_800
+    );
+    editor
+        .execute(Command::SetAudioClipGain {
+            clip: b,
+            millidb: 24_000,
+        })
+        .unwrap();
+    let bounded = editor.project().clone();
+    for millidb in [100, i32::MAX] {
+        assert!(
+            editor
+                .execute(edit(&targets, ClipEdit::GainBy { millidb }))
+                .is_err()
+        );
+        assert_eq!(editor.project(), &bounded);
+    }
+}

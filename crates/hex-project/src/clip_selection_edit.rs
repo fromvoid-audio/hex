@@ -20,6 +20,15 @@ pub enum ClipEdit {
     Pitch {
         cents: i16,
     },
+    /// Relative controls preserve each member's own value. Gain overflow or an
+    /// out-of-range result refuses the whole edit, matching scalar gain edits.
+    GainBy {
+        millidb: i32,
+    },
+    /// Pitch follows the scalar control's saturating -4800..4800-cent limit.
+    PitchBy {
+        cents: i16,
+    },
     Musical {
         enabled: bool,
     },
@@ -145,6 +154,26 @@ impl ClipEdit {
     }
     fn command(&self, project: &Project, clip: ClipId, midi: bool) -> Result<Command, Invalid> {
         Ok(match self {
+            Self::GainBy { millidb } => Command::SetAudioClipGain {
+                clip,
+                millidb: project
+                    .clip(clip)
+                    .ok_or(Invalid("selected audio clip no longer exists"))?
+                    .gain()
+                    .millidb()
+                    .checked_add(*millidb)
+                    .ok_or(Invalid("relative clip gain exceeds numeric range"))?,
+            },
+            Self::PitchBy { cents } => Command::SetAudioClipPitch {
+                clip,
+                cents: project
+                    .clip(clip)
+                    .ok_or(Invalid("selected audio clip no longer exists"))?
+                    .audio_edit()
+                    .map_or(0, |edit| edit.domain.pitch_cents)
+                    .saturating_add(*cents)
+                    .clamp(-4_800, 4_800),
+            },
             Self::Gain { millidb } => Command::SetAudioClipGain {
                 clip,
                 millidb: *millidb,
