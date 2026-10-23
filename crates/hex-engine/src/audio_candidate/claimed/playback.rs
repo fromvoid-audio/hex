@@ -48,6 +48,10 @@ impl ClaimedAudioCandidateRuntime {
             route_count: playback.session_route_count(),
         })
     }
+    /// Scalar effective clock metadata from the current admitted runtime only.
+    pub fn session_clock_anchor(&self) -> Option<crate::SessionClockAnchor> {
+        self.current_playback()?.session_clock_anchor()
+    }
     pub fn session_route_status(&self, index: usize) -> Option<crate::SessionRouteStatus> {
         self.current_playback()?.session_route_status(index)
     }

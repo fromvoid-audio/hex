@@ -320,10 +320,25 @@ pub(crate) struct PeriodicSessionTempoView<'a> {
 /// the new base clock translated so both revisions identify the cut as the
 /// same musical position.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct SessionClockAnchor {
-    pub(crate) cut_frame: u64,
-    pub(crate) old_beat: BeatTime,
-    pub(crate) new_beat: BeatTime,
+pub struct SessionClockAnchor {
+    /// Performance frame at which this prepared-revision translation was established.
+    pub cut_frame: u64,
+    /// Global performance beat preserved from the preceding clock.
+    pub old_beat: BeatTime,
+    /// Same frame expressed in the current canonical/periodic base clock.
+    pub new_beat: BeatTime,
+}
+
+impl SessionClockAnchor {
+    /// Decode the existing scalar clock translation at a telemetry boundary.
+    /// Every u64 beat value is a representable Q32.32 coordinate.
+    pub const fn from_raw(cut_frame: u64, old_beat_raw: u64, new_beat_raw: u64) -> Self {
+        Self {
+            cut_frame,
+            old_beat: BeatTime::from_raw(old_beat_raw),
+            new_beat: BeatTime::from_raw(new_beat_raw),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]

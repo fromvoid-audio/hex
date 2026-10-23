@@ -21,6 +21,7 @@ impl RuntimeOwner {
                 crate::PlaybackAction::SetMetronome(_) => {}
                 crate::PlaybackAction::Session(
                     crate::SessionPlaybackCommand::LaunchClip { .. }
+                    | crate::SessionPlaybackCommand::CueMidiClip { .. }
                     | crate::SessionPlaybackCommand::LaunchScene { .. }
                     | crate::SessionPlaybackCommand::StopTrack { .. }
                     | crate::SessionPlaybackCommand::StopAllClips { .. }

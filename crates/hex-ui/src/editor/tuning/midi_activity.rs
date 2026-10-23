@@ -33,14 +33,17 @@ impl ActivitySource<'_> {
         &self,
         track: TrackId,
         owner: SessionPlaybackOwner,
-        launch: Option<hex_project::BeatTime>,
+        origin: Option<hex_engine::SessionMidiOrigin>,
+        clock_anchor: Option<hex_engine::SessionClockAnchor>,
         cursors: (u64, u64),
         spans: &mut hex_engine::MidiSpanBuffer,
     ) -> Result<[u64; 2], hex_engine::Invalid> {
         match self {
-            Self::Projected(activity) => activity.gate_keys(track, owner, launch, cursors, spans),
+            Self::Projected(activity) => {
+                activity.gate_keys(track, owner, origin, clock_anchor, cursors, spans)
+            }
             Self::Prepared(prepared) => {
-                prepared.midi_gate_keys(track, owner, launch, cursors, spans)
+                prepared.midi_gate_keys(track, owner, origin, clock_anchor, cursors, spans)
             }
         }
     }
@@ -124,9 +127,8 @@ impl EditorView {
                     .gate_keys(
                         track.id(),
                         owner,
-                        route
-                            .active_launch_beat_raw
-                            .map(hex_project::BeatTime::from_raw),
+                        route.active_origin,
+                        snapshot.clock_anchor,
                         (frame, performance),
                         spans,
                     )

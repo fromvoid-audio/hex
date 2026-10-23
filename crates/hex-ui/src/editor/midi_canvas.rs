@@ -224,6 +224,7 @@ impl EditorView {
         let draw_creation = self.midi_creation.as_ref().map(|creation| creation.preview);
         let draw_marquee = self.midi_marquee.clone();
         let draw_marker = self.midi_marker;
+        let draw_playhead = self.midi_playhead_source_beat();
         let draw_time = self.midi_time_selection_bounds();
         let draw_pitch_locked = self.midi_draw_pitch_locked;
         let draw_mode = self.midi_draw_mode;
@@ -697,6 +698,20 @@ impl EditorView {
                         7.0_f32.min(width - cap_left),
                         3.0,
                         theme::color(theme::PaletteRole::Primary),
+                    );
+                }
+
+                if let Some(playhead) = draw_playhead
+                    && playhead >= beat_start.raw()
+                    && playhead < beat_start.raw().saturating_add(raw_span)
+                {
+                    let x = ((playhead - beat_start.raw()) as f64 / raw_span as f64) as f32 * width;
+                    quad(
+                        x,
+                        0.0,
+                        1.0,
+                        height,
+                        theme::color(theme::PaletteRole::Secondary),
                     );
                 }
 

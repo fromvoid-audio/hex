@@ -1,8 +1,32 @@
 //! Read-only control-side MIDI gate observations from an applied prepared graph.
-use crate::{Invalid, MidiSpanBuffer, PreparedRevision, SessionPlaybackOwner};
-use hex_project::{BeatTime, TrackId};
+use crate::{
+    Invalid, MidiSpanBuffer, PreparedRevision, SessionClockAnchor, SessionMidiOrigin,
+    SessionPlaybackOwner,
+};
+use hex_project::TrackId;
 
 impl PreparedRevision {
+    /// Convert an accepted performance cursor through the existing applied
+    /// Session clock, including its prepared-revision translation.
+    pub fn midi_performance_beat_at(
+        &self,
+        frame: u64,
+        clock_anchor: Option<SessionClockAnchor>,
+    ) -> Result<hex_project::BeatTime, Invalid> {
+        use crate::MidiTiming;
+        let inventory = self.session();
+        if inventory.periodic_tempo_error().is_some() {
+            return Err(Invalid("midi activity tempo is unavailable"));
+        }
+        crate::session_playback::timing_view_for(
+            inventory,
+            inventory.periodic_tempo(),
+            clock_anchor,
+        )
+        .frame_to_beat(frame)
+        .map_err(|_| Invalid("midi activity performance beat is unavailable"))
+    }
+
     /// Stable track whose applied transport owner drives this instrument's MIDI.
     pub fn midi_activity_route_track(&self, track: TrackId) -> Result<TrackId, Invalid> {
         let tracks = self.arrangement().tracks();
@@ -27,7 +51,8 @@ impl PreparedRevision {
         &self,
         track: TrackId,
         owner: SessionPlaybackOwner,
-        launch: Option<BeatTime>,
+        origin: Option<SessionMidiOrigin>,
+        clock_anchor: Option<SessionClockAnchor>,
         cursors: (u64, u64),
         spans: &mut MidiSpanBuffer,
     ) -> Result<[u64; 2], Invalid> {
@@ -61,22 +86,19 @@ impl PreparedRevision {
                     .midi_clip_for_track(clip, track)
                     .ok_or(Invalid("midi activity source is unavailable"))?;
                 if source.instrument_enabled() {
-                    let launch = launch.ok_or(Invalid("midi activity launch is unavailable"))?;
+                    let origin = origin.ok_or(Invalid("midi activity origin is unavailable"))?;
                     if inventory.periodic_tempo_error().is_some() {
                         return Err(Invalid("midi activity tempo is unavailable"));
                     }
-                    let timing = inventory.periodic_tempo().map_or(
-                        crate::prepared_tempo::SessionTimingView::Canonical(inventory.timing()),
-                        |periodic| {
-                            crate::prepared_tempo::SessionTimingView::Periodic(
-                                periodic.view(inventory.timing()),
-                            )
-                        },
+                    let timing = crate::session_playback::timing_view_for(
+                        inventory,
+                        inventory.periodic_tempo(),
+                        clock_anchor,
                     );
                     source
                         .instrument_template()
-                        .query(
-                            launch,
+                        .query_with_origin(
+                            origin,
                             &timing,
                             performance_frame,
                             performance_frame

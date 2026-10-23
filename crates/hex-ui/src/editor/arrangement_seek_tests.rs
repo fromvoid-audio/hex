@@ -101,7 +101,7 @@ fn route_gate_rejects_pending_or_non_arrangement_owners() {
     let arrangement = SessionRouteEntry {
         track_id,
         owner: SessionRouteOwner::Arrangement,
-        active_launch_beat_raw: None,
+        active_origin: None,
         pending: None,
     };
     assert!(routes_are_current(&[arrangement], &project));
