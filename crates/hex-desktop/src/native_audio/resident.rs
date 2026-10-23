@@ -23,6 +23,7 @@ pub(super) struct Pending {
 #[derive(Default)]
 pub(super) struct Resident {
     pub(super) pending: Option<Pending>,
+    pub(super) current_submission: Option<(AudioSourceContext, u64)>,
     pub(super) retired: Option<(DeviceResourcePublication, u64)>,
     observations: [Option<Arc<hex_engine::PreparedPlaybackObservation>>; RUNTIME_CELLS],
 }
@@ -166,6 +167,20 @@ impl NativeAudioSink {
         metadata_limit: usize,
         admit: &mut dyn FnMut(&[DeviceResourceAdmission<'_>]) -> Result<(), String>,
     ) -> Result<ResidentPublicationAcceptance, ResidentPublicationRefusal> {
+        self.poll_section_edit();
+        let section_policy = if matches!(policy, ResidentPublicationPolicy::StoppedArrangement) {
+            match self.section_publication_policy() {
+                Ok(policy) => Some(policy),
+                Err(error) => return Err(ResidentPublicationRefusal { playback, error }),
+            }
+        } else if self.section_edit.is_some() {
+            return Err(ResidentPublicationRefusal {
+                playback,
+                error: "stopped arrangement edit is pending".into(),
+            });
+        } else {
+            None
+        };
         self.resident.reap_observations();
         let existing = self.resident.observations.iter().position(|row| {
             row.as_ref()
@@ -180,13 +195,20 @@ impl NativeAudioSink {
             });
         };
         self.flush_events();
-        if self.pending_observation.is_some() || self.pending_status_observation.is_some() {
+        let replacing_document = matches!(policy, ResidentPublicationPolicy::ReplaceDocument);
+        // Current-output publication needs its previous observation delivered.
+        // Replacement instead retains an admitted candidate offline, then its
+        // canonical swap retires the old output and observations. Old UI event
+        // backpressure must not refuse that independent admission. On refusal
+        // no swap occurs, so all old observations and custody remain intact.
+        if !replacing_document
+            && (self.pending_observation.is_some() || self.pending_status_observation.is_some())
+        {
             return Err(ResidentPublicationRefusal {
                 playback,
                 error: "audio publication observation is waiting for capacity".into(),
             });
         }
-        let replacing_document = matches!(policy, ResidentPublicationPolicy::ReplaceDocument);
         if replacing_document
             && !self.desired.as_ref().is_some_and(|source| {
                 source.context().project_generation.checked_add(1)
@@ -223,6 +245,15 @@ impl NativeAudioSink {
                 }
             };
             let policy = match policy {
+                ResidentPublicationPolicy::StoppedArrangement => {
+                    let Some(policy) = section_policy else {
+                        return Err(ResidentPublicationRefusal {
+                            playback,
+                            error: "stopped arrangement fence unavailable".into(),
+                        });
+                    };
+                    policy
+                }
                 ResidentPublicationPolicy::InheritRuntime => {
                     hex_audio::prepared::PublicationPolicy::InheritRuntime
                 }
@@ -277,6 +308,10 @@ impl NativeAudioSink {
                     // Initial worker publication can precede Client exposure. The accepted
                     // control already proves this identity; retain its exact submission now
                     // rather than losing the observation while deliver_open is still pending.
+                    if section_policy.is_some() {
+                        self.section_submitted(audio_revision);
+                    }
+                    self.resident.current_submission = Some((metadata.context, audio_revision));
                     self.output_identity = Some(output_identity);
                     self.resident.observations[observation_slot] = Some(Arc::clone(&observation));
                     self.observe(

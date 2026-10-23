@@ -24,6 +24,7 @@ pub(super) struct UtilityModeAction {
 
 #[derive(Clone)]
 pub(super) enum EditorContextAction {
+    Section(super::arrangement_sections::MenuAction),
     LoadFirstSampler(super::sampler_load::Target),
     CancelSamplerLoad {
         request_id: u64,
@@ -305,6 +306,7 @@ impl EditorView {
     ) {
         self.dismiss_context_menu(window, cx);
         match action {
+            EditorContextAction::Section(action) => self.section_menu_action(action, window, cx),
             EditorContextAction::LoadFirstSampler(target) => self.load_first_sampler(target, cx),
             EditorContextAction::CancelSamplerLoad { request_id } => {
                 self.cancel_first_sampler_load(Some(request_id))
@@ -317,8 +319,7 @@ impl EditorView {
                 density,
             } => {
                 if generation == self.project_generation {
-                    self.snap_grid = self.snap_grid.with_density(density);
-                    self.status = format!("arranger · {}", density.label());
+                    self.set_adaptive_grid_density(density);
                     cx.notify();
                 }
             }
@@ -441,6 +442,7 @@ impl EditorView {
     ) -> Option<Div> {
         if self.context_menu.as_ref().is_some_and(|menu| {
             menu.items.iter().any(|item| match &item.action {
+                EditorContextAction::Section(action) => self.section_menu_stale(action),
                 EditorContextAction::LoadFirstSampler(target) => {
                     !self.first_sampler_target_current(target)
                 }

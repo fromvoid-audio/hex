@@ -118,6 +118,7 @@ impl EditorView {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
@@ -193,12 +194,44 @@ impl EditorView {
         true
     }
 
+    /// Existing Main range handle has priority over an empty-lane point click.
+    /// Capture and section-lane arbitration share this exact geometry query.
+    pub(super) fn main_time_range_grab(
+        &self,
+        x: f32,
+        y: f32,
+    ) -> Option<(hex_project::TimeRange, u64)> {
+        if !self.time_selection_project_scope {
+            return None;
+        }
+        let range = self.normalized_time_selection()?;
+        let state = self.state.as_ref()?;
+        let lane = self.main_track_lane_bounds.filter(|lane| {
+            self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
+        })?;
+        if y >= lane.top + lane.height * SELECTION_HANDLE_FRACTION {
+            return None;
+        }
+        let frame = super::seek::pointer_to_frame(
+            x,
+            lane.left,
+            lane.width,
+            self.visible_viewport(state.timeline_frames),
+        )?;
+        if frame < range.start() || frame >= range.end() {
+            return None;
+        }
+        let offset = frame.checked_sub(range.start())?;
+        Some((range, offset))
+    }
+
     pub(super) fn begin_main_time_range_move_gesture(&mut self, x: f32, y: f32) -> bool {
         self.suppress_cursor_click = false;
         if !self.time_selection_project_scope
             || self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
@@ -214,28 +247,10 @@ impl EditorView {
         {
             return false;
         }
-        let Some(range) = self.normalized_time_selection() else {
+        let Some((range, grab_frame_offset)) = self.main_time_range_grab(x, y) else {
             return false;
         };
         let Some(state) = self.state.as_ref() else {
-            return false;
-        };
-        let Some(lane) = self.main_track_lane_bounds.filter(|lane| {
-            self.main_track_lane_epoch == self.drag_layout_generation && lane_contains(x, y, *lane)
-        }) else {
-            return false;
-        };
-        if y >= lane.top + lane.height * SELECTION_HANDLE_FRACTION {
-            return false;
-        }
-        let viewport = self.visible_viewport(state.timeline_frames);
-        let Some(frame) = super::seek::pointer_to_frame(x, lane.left, lane.width, viewport) else {
-            return false;
-        };
-        if frame < range.start() || frame >= range.end() {
-            return false;
-        }
-        let Some(grab_frame_offset) = frame.checked_sub(range.start()) else {
             return false;
         };
         self.time_range_move_gesture = Some(TimeRangeMoveGesture {
@@ -258,6 +273,7 @@ impl EditorView {
         self.suppress_cursor_click = false;
         if self.mode != EditorMode::Arrangement
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
@@ -336,6 +352,7 @@ impl EditorView {
         if self.mode != EditorMode::Arrangement
             || self.edit_pending()
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
@@ -407,6 +424,7 @@ impl EditorView {
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.close_prompt_open
@@ -492,6 +510,7 @@ impl EditorView {
                 .as_ref()
                 .is_none_or(|state| state.revision != gesture.revision)
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.opening_project
@@ -623,6 +642,7 @@ impl EditorView {
             || self.time_selection_gesture.is_some()
             || self.time_range_move_gesture.is_some()
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.save_dialog_open
@@ -824,6 +844,7 @@ impl EditorView {
             || gesture.generation != self.project_generation
             || gesture.revision != state.revision
             || self.clip_name_edit.is_some()
+            || self.sections.naming()
             || self.track_name.is_editing()
             || self.context_menu.is_some()
             || self.close_prompt_open
@@ -1110,7 +1131,7 @@ impl EditorView {
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(0.13)
+                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
                         .id(("time-selection-handle", track.value()))
@@ -1182,7 +1203,7 @@ impl EditorView {
                 .left(relative(left as f32))
                 .w(relative(width as f32))
                 .bg(rgb(theme::color(theme::PaletteRole::Secondary)))
-                .opacity(0.13)
+                .opacity(theme::TIME_SELECTION_OPACITY)
                 .child(
                     div()
                         .id("main-project-time-selection-handle")

@@ -9,11 +9,13 @@
 #include "pluginterfaces/vst/ivsteditcontroller.h"
 #include "macos_host.hpp"
 #include "macos_processing.hpp"
+#include "macos_state_stream.hpp"
 #include "pluginterfaces/vst/ivstmessage.h"
 #include <atomic>
 #include <cmath>
 #include <cstring>
 #include <new>
+#include <optional>
 #include <thread>
 
 namespace hex_instance {
@@ -33,6 +35,11 @@ class Instance final {
     bool input_active = false, output_active = false, active = false;
     bool configured = false, configuration_started = false, opened = false, used = false;
     ProcessingConfiguration configuration_{};
+    StateStream* component_stream=nullptr;
+    StateStream* controller_stream=nullptr;
+    StateStream* restore_component_stream=nullptr;
+    StateStream* restore_controller_stream=nullptr;
+    bool restoration_started=false,restored=false;
     std::thread::id processing_thread;
     std::atomic<bool> processing{false}, processing_fault{false}, quarantined{false};
 
@@ -118,6 +125,38 @@ public:
         return true;
     }
 
+    // A one-shot startup operation on this exact initialized/connected owner.
+    // Restore precedes configure/activation and latency facts. A failed foreign
+    // call is not rollbackable and never falls back to new default state.
+    bool restore_initial_state_on_control(const CapturedState& state) {
+        if (![NSThread isMainThread] || !opened || !component_initialized ||
+            configured || configuration_started || active || processing.load() ||
+            quarantined.load() || restoration_started || !state.component ||
+            state.component_bytes>StateStream::capacity ||
+            state.controller_bytes>StateStream::capacity-state.component_bytes ||
+            (!state.controller && state.controller_bytes) || (state.controller && !controller)) return false;
+        restoration_started=true;
+        restore_component_stream=new(std::nothrow) StateStream(state.bytes.data(),state.component_bytes);
+        if (!restore_component_stream || !restore_component_stream->valid() ||
+            component->setState(restore_component_stream)!=kResultOk ||
+            !restore_component_stream->valid() || !restore_component_stream->exclusive()) return false;
+        if (controller) {
+            if (!restore_component_stream->rewind_read_only_on_control() ||
+                controller->setComponentState(restore_component_stream)!=kResultOk ||
+                !restore_component_stream->valid() || !restore_component_stream->exclusive()) return false;
+            if (state.controller) {
+                restore_controller_stream=new(std::nothrow) StateStream(
+                    state.bytes.data()+state.component_bytes,state.controller_bytes);
+                if (!restore_controller_stream || !restore_controller_stream->valid() ||
+                    controller->setState(restore_controller_stream)!=kResultOk ||
+                    !restore_controller_stream->valid() || !restore_controller_stream->exclusive()) return false;
+            }
+            if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
+                host->refusal_flags()) return false;
+        }
+        restored=true;return true;
+    }
+
     // Prepare only a fresh inactive owner. SDK arrangement refusal may itself
     // mutate foreign state; an existing active owner is never reconfigured or
     // described as rolled back. Its control owner prepares a separate candidate
@@ -171,6 +210,72 @@ public:
     }
     const ProcessingConfiguration* configuration() const {
         return configured?&configuration_:nullptr;
+    }
+
+    // One initial stopped capture; later project restore/capture transactions
+    // must reuse the same actual instance owner, not create a competing state path.
+    bool capture_initial_state_on_control(CapturedState& result) {
+        if (![NSThread isMainThread] || !configured || !active || processing.load() ||
+            component_stream || controller_stream || quarantined.load()) return false;
+        CapturedState captured{};
+        component_stream=new(std::nothrow) StateStream(StateStream::capacity);
+        if (!component_stream) return false;
+        const auto first=component->getState(component_stream);
+        if (!component_stream->valid() || !component_stream->exclusive()) return false;
+        if (first==kResultOk) {
+            captured.component=true;captured.component_bytes=static_cast<uint32>(component_stream->size());
+            std::copy_n(component_stream->bytes.begin(),captured.component_bytes,captured.bytes.begin());
+        } else if (first!=kNotImplemented && first!=kResultFalse) return false;
+        if (controller) {
+            if (!restored && captured.component) {
+                if (!component_stream->rewind_read_only_on_control() ||
+                    controller->setComponentState(component_stream)!=kResultOk ||
+                    !component_stream->valid() || !component_stream->exclusive()) return false;
+                if (host->refresh_on_control(controller).disposition!=HostDisposition::Refreshed ||
+                    host->refusal_flags()) return false;
+            }
+            controller_stream=new(std::nothrow) StateStream(StateStream::capacity-captured.component_bytes);
+            if (!controller_stream) return false;
+            const auto second=controller->getState(controller_stream);
+            if (!controller_stream->valid() || !controller_stream->exclusive()) return false;
+            if (second==kResultOk) {
+                captured.controller=true;captured.controller_bytes=static_cast<uint32>(controller_stream->size());
+                std::copy_n(controller_stream->bytes.begin(),captured.controller_bytes,captured.bytes.begin()+captured.component_bytes);
+            } else if (second!=kNotImplemented && second!=kResultFalse) return false;
+        }
+        result=captured;return true;
+    }
+
+    enum class PresentationResult { Absent, Applied, Refused, InvalidState };
+    // SDK optional UI-thread & Activated interface. The graph/control owner
+    // supplies actual per-direction origin/compensation/device contributions;
+    // zero is never invented here as evidence that unknown latency is measured.
+    // Query only; never apply placeholder contributions during graph planning.
+    std::optional<bool> presentation_latency_available_on_control() const {
+        if (![NSThread isMainThread] || !configured || !active || processing.load() || quarantined.load())
+            return std::nullopt;
+        IAudioPresentationLatency* view=nullptr;
+        const auto queried=component->queryInterface(INLINE_UID_OF(IAudioPresentationLatency),reinterpret_cast<void**>(&view));
+        if (queried==kNoInterface && !view) return false;
+        const bool valid=queried==kResultOk && view;
+        if (view) view->release();
+        if (!valid) return std::nullopt;
+        return true;
+    }
+    PresentationResult set_presentation_latency(uint32 input,uint32 output) {
+        if (![NSThread isMainThread] || !configured || !active || processing.load() || quarantined.load())
+            return PresentationResult::InvalidState;
+        IAudioPresentationLatency* view=nullptr;
+        const auto queried=component->queryInterface(INLINE_UID_OF(IAudioPresentationLatency),reinterpret_cast<void**>(&view));
+        if (queried==kNoInterface && !view) return PresentationResult::Absent;
+        if (queried!=kResultOk || !view) { if (view) view->release();return PresentationResult::Refused; }
+        const bool ok=(!configuration_.input_channels || view->setAudioPresentationLatencySamples(kInput,0,input)==kResultOk) &&
+            view->setAudioPresentationLatencySamples(kOutput,0,output)==kResultOk;
+        view->release();return ok?PresentationResult::Applied:PresentationResult::Refused;
+    }
+    std::optional<uint32> reported_latency_on_control() const {
+        if (![NSThread isMainThread] || !configured || !active || processing.load()) return std::nullopt;
+        return processor->getLatencySamples();
     }
 
     bool start_processing() {
@@ -272,6 +377,24 @@ public:
         if (controller) { controller->release(); controller = nullptr; }
         if (processor) { processor->release(); processor = nullptr; }
         if (component) { component->release(); component = nullptr; }
+        // Foreign component/controller references have retired first. A retained
+        // stream keeps its control lease and module until process retirement.
+        if (component_stream) {
+            if (!component_stream->dispose_on_control()) return refuse_cleanup();
+            component_stream=nullptr;
+        }
+        if (controller_stream) {
+            if (!controller_stream->dispose_on_control()) return refuse_cleanup();
+            controller_stream=nullptr;
+        }
+        if (restore_component_stream) {
+            if (!restore_component_stream->dispose_on_control()) return refuse_cleanup();
+            restore_component_stream=nullptr;
+        }
+        if (restore_controller_stream) {
+            if (!restore_controller_stream->dispose_on_control()) return refuse_cleanup();
+            restore_controller_stream=nullptr;
+        }
         if (factory) { factory->release(); factory = nullptr; }
         if (host) {
             // Keep the control lease when a message/context is still retained.

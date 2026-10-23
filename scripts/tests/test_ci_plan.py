@@ -518,8 +518,18 @@ class ScopeTests(unittest.TestCase):
         root = SCRIPTS.parent
         metadata = json.loads(subprocess.check_output(
             ["cargo", "metadata", "--no-deps", "--format-version", "1", "--locked"], cwd=root))
-        inventory = plan.cargo_inventory(metadata, root)
+        live_inventory = plan.cargo_inventory(metadata, root)
         path = "crates/hex-devices/src/compressor.rs"
+        # The ordinary plugin client is a new transitive audio consumer, outside
+        # the reviewed compressor-only boundary. Current selection must broaden.
+        _, live_affected, _ = plan.classify([path], live_inventory)
+        self.assertIn("hex-plugin-host", live_affected)
+        live_boundary = plan.boundary_selection(root, [path], live_inventory, live_affected)
+        self.assertEqual(live_boundary["kind"], "packages")
+        self.assertIn("hex-plugin-host", live_boundary["test_packages"])
+        # Keep the reviewed inventory fixture exercising the narrow contract and
+        # its negative controls without silently admitting that new consumer.
+        inventory = [p for p in live_inventory if p["name"] != "hex-plugin-host"]
         scope, affected, _ = plan.classify([path], inventory)
         self.assertEqual(scope, "rust")
         self.assertIn("hex-storage", affected)  # opaque state, no Cargo edge

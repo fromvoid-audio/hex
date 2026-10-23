@@ -57,7 +57,7 @@ mod runtime_view;
 mod sampler_edit;
 mod sampler_keyboard;
 pub use applied_source::AppliedAudioSource;
-pub use sampler_edit::{SamplerEditFence, SamplerEditFenceState};
+pub use sampler_edit::{StoppedEditFence, StoppedEditFenceState};
 mod streaming;
 pub(crate) const RETIRED: usize = 2;
 #[cfg(test)]
@@ -275,6 +275,9 @@ pub enum PublicationPolicy {
     /// Install only if the active runtime, route generation, and command prefix
     /// still match the caller's control-side capture.
     InstallFreshRuntimeIfUnchanged(FreshRuntimeFence),
+    /// Authored structural edit: the shared stopped gate remains held until exact
+    /// installation. Stop keeps priority; Play cannot run on the old graph.
+    InstallUnderStoppedArrangement(StoppedEditFence),
 }
 
 const FRESH_PUBLICATION_PENDING: u32 = 0;
@@ -1446,7 +1449,16 @@ impl PublicationControl {
         explicit_control_context: bool,
         forwarded_pcm: bool,
     ) -> Result<u64, PublishError> {
-        let reason = if self.candidate_root.domains_configured() {
+        let reason = if self.status.sampler_edit.active()
+            && !matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token)
+                if self.stopped_edit_fence_state(token) == StoppedEditFenceState::Ready)
+        {
+            Some("stopped edit excludes unrelated graph publication")
+        } else if matches!(policy, PublicationPolicy::InstallUnderStoppedArrangement(token)
+            if self.stopped_edit_fence_state(token) != StoppedEditFenceState::Ready)
+        {
+            Some("arrangement stopped fence is no longer ready")
+        } else if self.candidate_root.domains_configured() {
             Some("constructor publication does not adopt legacy playback")
         } else if self.status.publication_pending.gain_active() {
             Some("finish gain recording before replacing playback")
@@ -2427,6 +2439,10 @@ impl Callback {
                         || stop_pending)
                         .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
                 }
+                PublicationPolicy::InstallUnderStoppedArrangement(token) => {
+                    (self.status.sampler_edit.state(token) != StoppedEditFenceState::Ready)
+                        .then_some(hex_engine::PlaybackHandoffError::RuntimeFenceChanged)
+                }
                 PublicationPolicy::InheritRuntime | PublicationPolicy::InstallFreshRuntime => None,
             };
             #[cfg(test)]
@@ -2450,6 +2466,7 @@ impl Callback {
                 next.policy,
                 PublicationPolicy::InstallFreshRuntime
                     | PublicationPolicy::InstallFreshRuntimeIfUnchanged(_)
+                    | PublicationPolicy::InstallUnderStoppedArrangement(_)
             ) {
                 None
             } else {
@@ -2543,6 +2560,16 @@ impl Callback {
                         );
                         previous.playback.cancel_computer_keyboard();
                         previous.playback.cancel_tuning_audition();
+                    }
+                    if matches!(
+                        next.policy,
+                        PublicationPolicy::InstallUnderStoppedArrangement(_)
+                    ) && self.status.transport_epoch.load(Acquire)
+                        != self.status.sampler_edit.ready_transport_epoch.load(Acquire)
+                    {
+                        // Priority Stop after the ready witness wins over the
+                        // prepared stopped cursor, even during graph construction.
+                        next.playback.apply(PlaybackCommand::Stop);
                     }
                     let revision = next.revision;
                     // A held EQ8 selector normally follows the current pair
@@ -3538,6 +3565,7 @@ mod tests {
             return_state = state.clone();
         }
         let project = CanonicalProject::from_snapshot(Snapshot {
+            arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
@@ -3675,6 +3703,7 @@ mod tests {
             .expect("saturator curve")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
@@ -3800,6 +3829,7 @@ mod tests {
             .expect("compressor threshold")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
@@ -3937,6 +3967,7 @@ mod tests {
             .expect("gate floor")
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
@@ -4315,6 +4346,8 @@ mod tests {
         let fade = hex_project::ClipFade::new(1_024, 0, 64, 64)
             .unwrap()
             .with_shape(4, 4, 700, -700)
+            .unwrap()
+            .with_curve_positions(250, 750)
             .unwrap();
         editor
             .execute(hex_project::Command::SetClipFadeEnvelope { clip, fade })
@@ -6594,6 +6627,7 @@ mod tests {
                 .execute(Command::ReplaceTrackGainEnvelope {
                     track,
                     points: vec![hex_project::GainPoint {
+                        incoming_gain: None,
                         beat: hex_project::BeatTime::ZERO,
                         gain: 0.5,
                         outgoing: hex_project::GainInterpolation::Step,
@@ -6741,6 +6775,109 @@ mod tests {
         );
     }
 
+    #[test]
+    fn arrangement_stopped_gate_holds_play_through_install_and_stop_keeps_priority() {
+        for stop_stage in 0..3 {
+            let (mut control, mut callback) = channel(48_000).unwrap();
+            let mut old = graph().0;
+            old.apply(PlaybackCommand::Seek(8));
+            let revision = control
+                .publish_with_policy_and_context_generation(
+                    old,
+                    PublicationPolicy::InstallFreshRuntime,
+                    7,
+                )
+                .unwrap();
+            callback.begin_block();
+            let gate = control.request_arrangement_edit_fence(7, revision).unwrap();
+            callback.begin_block();
+            assert_eq!(control.arrangement_edit_position(gate), Some(8));
+            assert!(
+                control.publish(graph().0).is_err(),
+                "unrelated publication cannot cross gate"
+            );
+            let _ = control.command(PlaybackCommand::Play);
+            callback.begin_block();
+            assert!(!control.status.playing.load(Acquire));
+            if stop_stage == 1 {
+                control.stop();
+                callback.begin_block();
+            }
+            let mut next = graph().0;
+            next.apply(PlaybackCommand::Seek(16));
+            let installed = control
+                .publish_with_policy_and_context_generation(
+                    next,
+                    PublicationPolicy::InstallUnderStoppedArrangement(gate),
+                    7,
+                )
+                .unwrap();
+            let _ = control.command(PlaybackCommand::Play);
+            if stop_stage == 2 {
+                control.stop();
+            }
+            #[cfg(feature = "allocation-probe")]
+            let measured = allocation_counter::measure(|| callback.begin_block());
+            #[cfg(not(feature = "allocation-probe"))]
+            callback.begin_block();
+            #[cfg(feature = "allocation-probe")]
+            {
+                assert_eq!(measured.count_total, 0);
+                assert_eq!(measured.bytes_total, 0);
+                assert_eq!(measured.count_current, 0);
+                assert_eq!(measured.bytes_current, 0);
+            }
+            assert_eq!(control.status.applied_revision.load(Acquire), installed);
+            assert!(!control.status.playing.load(Acquire));
+            let position = callback
+                .active
+                .as_ref()
+                .and_then(ActivePublication::legacy)
+                .unwrap()
+                .playback
+                .position();
+            assert_eq!(position, if stop_stage == 0 { 16 } else { 0 });
+            let _ = control.command(PlaybackCommand::Play);
+            callback.begin_block();
+            assert!(
+                !control.status.playing.load(Acquire),
+                "accepted candidate retains gate until ACK owner retires it"
+            );
+            control.release_stopped_edit_fence(gate);
+            control.command(PlaybackCommand::Play).unwrap();
+            callback.begin_block();
+            assert!(control.status.playing.load(Acquire));
+            control.request_shutdown();
+            callback.begin_block();
+            control.reclaim();
+        }
+    }
+
+    #[test]
+    fn arrangement_stopped_gate_refuses_an_earlier_play_without_changing_runtime() {
+        let (mut control, mut callback) = channel(48_000).unwrap();
+        let revision = control
+            .publish_with_policy_and_context_generation(
+                graph().0,
+                PublicationPolicy::InstallFreshRuntime,
+                7,
+            )
+            .unwrap();
+        callback.begin_block();
+        control.command(PlaybackCommand::Play).unwrap();
+        let gate = control.request_arrangement_edit_fence(7, revision).unwrap();
+        callback.begin_block();
+        assert_eq!(
+            control.stopped_edit_fence_state(gate),
+            StoppedEditFenceState::Refused
+        );
+        assert!(control.status.playing.load(Acquire));
+        control.release_stopped_edit_fence(gate);
+        control.request_shutdown();
+        callback.begin_block();
+        control.reclaim();
+    }
+
     fn graph() -> (Playback, Weak<hex_engine::Project>) {
         graph_with_frame([0.25; 2])
     }
@@ -6766,6 +6903,7 @@ mod tests {
             TempoPoint, TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
@@ -7246,6 +7384,7 @@ mod tests {
             TrackContentSnapshot, TrackSnapshot,
         };
         let project = CanonicalProject::from_snapshot(Snapshot {
+            arrangement_sections: Vec::new(),
             main_devices: Vec::new(),
             tuning: Default::default(),
             audio_feeds: Vec::new(),
