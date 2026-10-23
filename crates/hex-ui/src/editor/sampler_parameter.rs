@@ -443,7 +443,7 @@ impl EditorView {
                     NumericControlKind::HorizontalSlider,
                     spec,
                     value,
-                    device_panel::control_style(),
+                    crate::theme::control_style(),
                 )
                 .and_then(|config| {
                     let config = config.with_appearance(NumericControlAppearance::InlineValue);

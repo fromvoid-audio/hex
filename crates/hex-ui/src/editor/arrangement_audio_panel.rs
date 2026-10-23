@@ -489,15 +489,10 @@ fn control_button(
             .to_lowercase()
             .into(),
     );
-    div()
+    hex_widgets::action(theme::text(glyph), theme::action_style())
         .id(id)
         .size(px(18.0))
-        .flex_shrink_0()
-        .flex()
-        .items_center()
-        .justify_center()
         .text_color(rgb(theme::color(theme::PaletteRole::SecondaryText)))
-        .hover(|style| style.bg(rgb(theme::color(theme::PaletteRole::Background))))
         .debug_selector(move || {
             let field = match field {
                 Field::Position => "position",
@@ -516,7 +511,6 @@ fn control_button(
             })
             .into()
         })
-        .child(theme::text(glyph))
         .on_click(cx.listener(move |view, event: &gpui::ClickEvent, _, cx| {
             if pending || !clip_window_is_current(view, window) || view.edit_pending() {
                 return;
