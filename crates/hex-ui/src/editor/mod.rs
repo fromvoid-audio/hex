@@ -149,6 +149,8 @@ mod time_gesture;
 mod time_move_preview;
 mod time_selection;
 pub(super) mod time_selection_profile;
+#[cfg(all(test, feature = "ui-test-support"))]
+mod track_creation_ui_tests;
 mod track_gain;
 #[cfg(all(test, feature = "ui-test-support"))]
 mod track_keyboard_ui_test;
@@ -1686,13 +1688,32 @@ impl EditorView {
         self.enqueue(Request::Edit(Command::GainBy { track, amount }));
     }
 
+    /// Ordinary creation follows the selected row; Return/Main and an absent or
+    /// stale ordinary selection append within the ordinary-track section. Drops
+    /// and context menus retain their explicitly captured insertion anchors.
+    fn new_track_insertion_anchor(&self) -> Option<TrackId> {
+        if self.focused_return.is_some() {
+            return None;
+        }
+        let selected = self.selected_track?;
+        self.state
+            .as_ref()?
+            .project
+            .tracks()
+            .iter()
+            .skip_while(|track| track.id() != selected)
+            .nth(1)
+            .map(|track| track.id())
+    }
+
     pub(super) fn add_track(&mut self) {
         let count = self
             .state
             .as_ref()
             .map_or(0, |state| state.project.tracks().len());
-        self.enqueue(Request::Edit(Command::AddTrack {
+        self.enqueue(Request::Edit(Command::InsertTrack {
             name: format!("audio {}", count + 1),
+            before_track: self.new_track_insertion_anchor(),
         }));
     }
 
