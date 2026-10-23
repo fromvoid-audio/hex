@@ -121,5 +121,7 @@ pub(crate) fn apply(project: &mut Project, ids: Vec<ClipId>) -> Result<Created, 
         }
         incoming
     };
-    crate::clip_group::place_batch(project, incoming, &[])
+    let created = crate::clip_group::place_batch(project, incoming, &[])?;
+    Project::from_snapshot(project.snapshot())?;
+    Ok(created)
 }
