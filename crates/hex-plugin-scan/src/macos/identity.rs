@@ -268,6 +268,11 @@ mod tests {
         });
         assert!(result.unwrap_err().contains("changed while opening"));
         let file = fs::File::create(&path).unwrap();
+        file.set_len(MAX_BINARY).unwrap();
+        let maximum = read_file(&path, MAX_BINARY).unwrap();
+        assert_eq!(maximum.len(), MAX_BINARY as usize);
+        assert_eq!(maximum.capacity(), MAX_BINARY as usize);
+        drop(maximum);
         file.set_len(MAX_BINARY + 1).unwrap();
         assert!(read_file(&path, MAX_BINARY).is_err());
         #[cfg(unix)]
