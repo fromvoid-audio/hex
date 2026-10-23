@@ -74,7 +74,7 @@ fn reorder_track_native_publication_preserves_runtime_and_refusal_is_atomic() {
     let Some(hex_project::Created::Clip(clip)) = placed.created else {
         panic!("clip")
     };
-    let original = run_applied(
+    run_applied(
         &mut h,
         &mut applied,
         Request::Edit(Command::AddMidiNote {
@@ -86,7 +86,29 @@ fn reorder_track_native_publication_preserves_runtime_and_refusal_is_atomic() {
             velocity: 80,
         }),
     );
+    let original = run_applied(
+        &mut h,
+        &mut applied,
+        Request::Edit(Command::SetAudioFeed {
+            source: hex_project::RoutingOwner::Track(audio),
+            destination: midi,
+            gain: 0.5,
+        }),
+    );
     let pcm = resident_pcm(&original);
+    let asset = original.state.project.assets().next().unwrap().id();
+    let reference = hex_engine::PreparedRevision::prepare(
+        &original.state.project,
+        &std::collections::BTreeMap::from([(asset, pcm.clone())]),
+        Arc::new(hex_engine::SineTable::new()),
+        None,
+    )
+    .unwrap();
+    let mut uninterrupted =
+        hex_engine::playback::Playback::try_from_prepared_with_session(Arc::new(reference))
+            .unwrap();
+    uninterrupted.apply(PlaybackCommand::PlayFrom(0));
+    let mut expected = [[0.0; 2]; 64];
     let output = h.audio.as_ref().unwrap().control.output_identity();
     fs::remove_file(path).unwrap();
     h.audio
@@ -95,7 +117,16 @@ fn reorder_track_native_publication_preserves_runtime_and_refusal_is_atomic() {
         .control
         .command(PlaybackCommand::Play)
         .unwrap();
-    assert!(h.render().iter().flatten().any(|sample| *sample != 0.0));
+    uninterrupted.render(&mut expected).unwrap();
+    assert_eq!(
+        h.render(),
+        expected,
+        "uninterrupted oracle starts at the same cursor"
+    );
+    assert!(
+        expected.iter().any(|frame| *frame != expected[0]),
+        "sine MIDI varies across the routed constant audio contribution"
+    );
     let position = h
         .audio
         .as_ref()
@@ -110,6 +141,15 @@ fn reorder_track_native_publication_preserves_runtime_and_refusal_is_atomic() {
     let status = h.audio.as_ref().unwrap().status().unwrap();
     assert!(status.playing.load(Acquire));
     assert_eq!(status.position.load(Acquire), position + 64);
+    // applied() rendered exactly one installation block. Advance the independent
+    // original-order graph by that block, then compare the following live block.
+    uninterrupted.render(&mut expected).unwrap();
+    uninterrupted.render(&mut expected).unwrap();
+    assert_eq!(
+        h.render(),
+        expected,
+        "reordering preserves audio plus MIDI phase"
+    );
     assert!(pcm.shares_pcm_with(&resident_pcm(&moved)));
     for track in original.state.project.tracks() {
         assert_eq!(moved.state.project.track(track.id()), Some(track));
@@ -150,7 +190,9 @@ fn reorder_track_native_publication_preserves_runtime_and_refusal_is_atomic() {
     h.refuse.store(false, std::sync::atomic::Ordering::Release);
     let undone = run_applied(&mut h, &mut applied, Request::Undo);
     assert_eq!(undone.state.project, original.state.project);
+    uninterrupted.render(&mut expected).unwrap();
     let redone = run_applied(&mut h, &mut applied, Request::Redo);
+    uninterrupted.render(&mut expected).unwrap();
     assert_eq!(redone.state.project, moved.state.project);
     assert!(
         h.audio
@@ -162,6 +204,12 @@ fn reorder_track_native_publication_preserves_runtime_and_refusal_is_atomic() {
             .load(Acquire)
     );
     assert!(pcm.shares_pcm_with(&resident_pcm(&redone)));
+    uninterrupted.render(&mut expected).unwrap();
+    assert_eq!(
+        h.render(),
+        expected,
+        "Undo/Redo continues uninterrupted audio plus MIDI phase"
+    );
 }
 
 /// Controlled callback pumping measures this worker/publication fixture, not physical

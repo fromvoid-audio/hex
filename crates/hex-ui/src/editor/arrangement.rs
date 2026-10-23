@@ -327,6 +327,7 @@ impl EditorView {
                             height: f32::from(bounds.size.height),
                         });
                         view.arrangement_bounds_epoch = view.drag_layout_generation;
+                        view.track_reorder_painted();
                     });
                     let zoom_entity = measure_entity.clone();
                     window.on_mouse_event(move |event: &ScrollWheelEvent, phase, window, cx| {

@@ -21,6 +21,7 @@ use std::time::{Duration, Instant};
 pub(super) struct TrackReorder {
     gesture: Option<Gesture>,
     pending: Option<Pending>,
+    painted_gap: Option<PaintedGap>,
 }
 struct Gesture {
     generation: u64,
@@ -35,6 +36,14 @@ struct Gesture {
 #[derive(Clone, Copy)]
 struct Destination {
     before: Option<TrackId>,
+}
+#[derive(Clone, Copy, PartialEq)]
+struct PaintedGap {
+    generation: u64,
+    revision: u64,
+    track: TrackId,
+    before: Option<TrackId>,
+    scroll: (usize, f32),
 }
 struct Pending {
     generation: u64,
@@ -185,12 +194,34 @@ impl EditorView {
         self.track_reorder.gesture = Some(g);
         true
     }
+    fn track_gap_witness(&self, g: &Gesture) -> Option<PaintedGap> {
+        let top = self.track_scroll.list.logical_scroll_top();
+        Some(PaintedGap {
+            generation: g.generation,
+            revision: g.revision,
+            track: g.track,
+            before: g.destination?.before,
+            scroll: (top.item_ix, f32::from(top.offset_in_item)),
+        })
+    }
+    pub(super) fn track_reorder_painted(&mut self) {
+        self.track_reorder.painted_gap = self
+            .track_reorder
+            .gesture
+            .as_ref()
+            .and_then(|g| self.track_gap_witness(g));
+    }
     fn finish_track_reorder(&mut self, position: gpui::Point<gpui::Pixels>) -> bool {
         self.update_track_reorder(position);
         let captured = self.track_reorder.gesture.as_ref().is_some_and(|g| g.moved);
         let Some(g) = self.track_reorder.gesture.take() else {
             return captured;
         };
+        // A wheel/scrollbar or final pointer event can arrive before a repaint.
+        // Never commit a different gap than the user actually saw highlighted.
+        if self.track_gap_witness(&g) != self.track_reorder.painted_gap {
+            return captured;
+        }
         if let Some(destination) = g.destination {
             self.track_reorder.pending = Some(Pending {
                 generation: g.generation,

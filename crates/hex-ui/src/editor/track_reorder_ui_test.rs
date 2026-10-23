@@ -103,17 +103,51 @@ fn next(service: &hex_session::service::Service) -> hex_session::service::Event 
 fn live_fixture(
     cx: &mut TestAppContext,
 ) -> (VisualTestContext, gpui::Entity<EditorView>, Vec<TrackId>) {
+    live_tracks(cx, 4, false)
+}
+fn live_tracks(
+    cx: &mut TestAppContext,
+    count: usize,
+    notes: bool,
+) -> (VisualTestContext, gpui::Entity<EditorView>, Vec<TrackId>) {
     use hex_session::service::{Request, Service};
     cx.update(super::bind_editor_keys);
     let service = Service::new(48000, 32, 8000000).unwrap();
     let mut state = next(&service).state;
-    for i in 0..4 {
+    for i in 0..count {
         service
             .submit(Request::Edit(Command::AddTrack {
                 name: format!("track {i}"),
             }))
             .unwrap();
         state = next(&service).state;
+        if notes {
+            let track = state.project.tracks().last().unwrap().id();
+            service
+                .submit(Request::Edit(Command::PlaceMidiClip {
+                    track,
+                    start: BeatTime::ZERO,
+                    length: BeatTime::from_quarters(16).unwrap(),
+                }))
+                .unwrap();
+            let event = next(&service);
+            let Some(Created::Clip(clip)) = event.created else {
+                panic!("clip")
+            };
+            for pitch in 60..68 {
+                service
+                    .submit(Request::Edit(Command::AddMidiNote {
+                        clip,
+                        start: BeatTime::ZERO,
+                        duration: BeatTime::ONE,
+                        pitch,
+                        channel: 0,
+                        velocity: 100,
+                    }))
+                    .unwrap();
+                state = next(&service).state;
+            }
+        }
     }
     let ids = state.project.tracks().iter().map(|t| t.id()).collect();
     let handle = *cx.add_window(|_, _| gpui::Empty);
@@ -489,4 +523,100 @@ fn window_deactivation_cancels_track_capture(cx: &mut TestAppContext) {
         assert!(!v.track_reorder_active());
         assert_eq!(v.worker_requests_pending, 0);
     });
+}
+
+#[gpui::test]
+fn unpainted_release_gap_is_canceled_instead_of_committing_unseen_order(cx: &mut TestAppContext) {
+    let (mut visual, editor, ids) = live_fixture(cx);
+    let from = bounds(&mut visual, ids[0]).center();
+    let to = bounds(&mut visual, ids[2]).center();
+    visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+    visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    assert!(visual.debug_bounds("track-insertion-line").is_some());
+    // The last up event first enters a new gap, with no completed repaint there.
+    let last = bounds(&mut visual, ids[3]).center();
+    visual.simulate_mouse_up(last, MouseButton::Left, Modifiers::default());
+    visual.run_until_parked();
+    editor.read_with(&visual, |v, _| {
+        assert_eq!(v.worker_requests_pending, 0);
+        assert!(!v.track_reorder_active());
+    });
+    assert!(visual.debug_bounds("track-insertion-line").is_none());
+}
+
+#[gpui::test]
+#[ignore = "opt-in 100-track actual worker/receive/repaint latency probe"]
+fn track_reorder_full_ui_latency(cx: &mut TestAppContext) {
+    let (mut visual, editor, _) = live_tracks(cx, 100, true);
+    let mut samples = Vec::new();
+    for i in 0..12 {
+        editor.update(&mut visual, |v, cx| {
+            v.track_scroll.list.scroll_to(gpui::ListOffset {
+                item_ix: 0,
+                offset_in_item: px(0.0),
+            });
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let ids = editor.read_with(&visual, |v, _| {
+            v.state
+                .as_ref()
+                .unwrap()
+                .project
+                .tracks()
+                .iter()
+                .map(|t| t.id())
+                .collect::<Vec<_>>()
+        });
+        let from = bounds(&mut visual, ids[0]).center();
+        let row = visual
+            .debug_bounds(Box::leak(
+                format!("arrangement-track-header-{}", ids[2].value()).into_boxed_str(),
+            ))
+            .unwrap();
+        let to = point(from.x, row.origin.y + px(1.0));
+        visual.simulate_mouse_down(from, MouseButton::Left, Modifiers::default());
+        let start = Instant::now();
+        visual.simulate_mouse_move(to, MouseButton::Left, Modifiers::default());
+        visual.run_until_parked();
+        let update = start.elapsed().as_secs_f64() * 1000.0;
+        assert!(visual.debug_bounds("track-insertion-line").is_some());
+        let start = Instant::now();
+        visual.simulate_mouse_up(to, MouseButton::Left, Modifiers::default());
+        let dispatch = start.elapsed().as_secs_f64() * 1000.0;
+        let event = editor.update(&mut visual, |v, _| next(&v.service));
+        assert!(event.error.is_none(), "{:?}", event.error);
+        let terminal = start.elapsed().as_secs_f64() * 1000.0;
+        let repaint = Instant::now();
+        editor.update(&mut visual, |v, cx| {
+            v.receive(event);
+            cx.notify();
+        });
+        visual.run_until_parked();
+        let repaint_ms = repaint.elapsed().as_secs_f64() * 1000.0;
+        assert!(visual.debug_bounds("track-insertion-line").is_none());
+        editor.read_with(&visual, |v, _| {
+            assert_eq!(v.state.as_ref().unwrap().project.tracks()[1].id(), ids[0])
+        });
+        if i >= 2 {
+            samples.push([update, dispatch, terminal, repaint_ms]);
+        }
+    }
+    for (field, label) in [
+        "update_repaint",
+        "release_dispatch",
+        "release_to_terminal",
+        "receive_repaint",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let mut times = samples.iter().map(|row| row[field]).collect::<Vec<_>>();
+        times.sort_by(f64::total_cmp);
+        println!(
+            "track_full_ui_ms {label} p50={} max={} tracks=100 clips=100 notes=800 window=1280x800 warmups=2 samples=10",
+            times[5], times[9]
+        );
+    }
 }
