@@ -11,6 +11,7 @@ fn settle(editor: &gpui::Entity<EditorView>, visual: &mut VisualTestContext) {
             view.state.is_some()
                 && !view.browser.preferences_loading
                 && !view.browser.loading
+                && !view.browser.folder_bookmark_pending
                 && !view.browser.places_save_in_flight
                 && view.browser.pending_places_save.is_none()
         });
@@ -617,4 +618,53 @@ fn existing_audio_device_escape_precede_folder_fallback_and_idle_escape_clears_q
         assert!(view.pending_requests.is_empty());
         assert!(view.pending_audio_commands.is_empty());
     });
+}
+
+#[gpui::test]
+fn folder_validation_job_retains_root_after_view_and_caller_drop(cx: &mut TestAppContext) {
+    use std::sync::atomic::Ordering;
+    let (handle, editor, environment, samples) = fixture(cx);
+    let mut visual = VisualTestContext::from_window(handle, cx);
+    settle(&editor, &mut visual);
+    editor.update(&mut visual, |view, cx| {
+        view.select_browser_source(BrowserSection::Place(samples.clone()), cx)
+    });
+    settle(&editor, &mut visual);
+    let root = environment.root().to_owned();
+    let weak = Arc::downgrade(&environment);
+    let gate = environment.gate_next_folder_validation();
+    let row = row_for(&editor, &mut visual, &samples.join("outer"));
+    let target = visual.debug_bounds("browser-places-drop").unwrap().center();
+    drag_row(&mut visual, row, target);
+    assert!(gate.reached.load(Ordering::Acquire));
+    assert!(!gate.finished.load(Ordering::Acquire));
+    let editor_weak = editor.downgrade();
+    visual.update(|window, cx| {
+        let _ = window.replace_root(cx, |_, _| Empty);
+    });
+    drop(editor);
+    drop(environment);
+    visual.update(|_, _| {});
+    visual.run_until_parked();
+    assert!(editor_weak.upgrade().is_none());
+    assert_eq!(
+        weak.strong_count(),
+        1,
+        "only actual metadata job retains the root"
+    );
+    assert!(samples.join("outer").is_dir());
+    gate.release();
+    visual.run_until_parked();
+    assert!(gate.finished.load(Ordering::Acquire));
+    assert!(gate.validation_succeeded.load(Ordering::Relaxed));
+    assert!(gate.root_present_during_validation.load(Ordering::Relaxed));
+    visual.update(|_, _| {});
+    assert!(weak.upgrade().is_none());
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while root.exists() {
+        assert!(std::time::Instant::now() < deadline, "owned root cleanup");
+        std::thread::yield_now();
+    }
+    visual.run_until_parked();
+    assert!(!root.exists());
 }

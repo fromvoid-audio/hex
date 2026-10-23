@@ -111,6 +111,11 @@ use the browser's categories and locations to narrow the results. when a search
 is entered, click **×** inside the field to clear it and type a replacement.
 clearing keeps the selected category or location.
 
+drag a folder from the browser results onto **places** to bookmark it. the
+folder stays in its original location; bookmarking keeps the current browser
+source and search. dragging the same folder again preserves its existing place
+and icon. press **escape** or drop outside places to cancel.
+
 the preview controls audition a selected audio file. the waveform can be used to
 choose a preview position. stop preview playback before judging the main project's
 output. auditioning a file and inserting it into the project are separate actions.

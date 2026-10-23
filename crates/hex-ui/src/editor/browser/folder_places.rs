@@ -68,14 +68,19 @@ impl EditorView {
                 .background_executor()
                 .spawn(async move {
                     #[cfg(test)]
-                    let _test_environment = test_environment;
-                    std::fs::metadata(&path).and_then(|metadata| {
+                    let gate = test_environment.before_folder_validation().await;
+                    let result = std::fs::metadata(&path).and_then(|metadata| {
                         if metadata.is_dir() {
                             Ok(())
                         } else {
                             Err(std::io::Error::other("not a directory"))
                         }
-                    })
+                    });
+                    #[cfg(test)]
+                    if let Some(gate) = gate {
+                        gate.did_validate(result.is_ok(), test_environment.root().is_dir());
+                    }
+                    result
                 })
                 .await;
             let _ = this.update(cx, |view, cx| {
