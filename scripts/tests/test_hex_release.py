@@ -197,6 +197,39 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual(index.read_bytes(), before)
         self.assertEqual(release.read(index)["version"], "0.1.0-beta.2")
 
+    def test_explicit_target_adoption_reaches_guard_without_changing_candidate(self):
+        for adopt in (False, True):
+            candidate = self.cut()
+            frozen = (candidate / "plan.json").read_bytes()
+            report = candidate / "fixture-ci-summary.json"
+            report.write_text("{}")
+            runner = SimpleNamespace(summary_path=report, output_dir=candidate / "fixture-ci-output",
+                                     run=lambda: 0)
+            with patch.object(release, "preflight"), \
+                    patch.object(release.ci, "LocalCiRunner", return_value=runner), \
+                    patch.object(release.delivery, "validate_ci"), \
+                    patch.object(release.delivery, "optimized_artifact",
+                                 side_effect=release.Refusal("guard boundary")) as guarded:
+                with self.assertRaisesRegex(release.Refusal, "guard boundary"):
+                    release.package(candidate, adopt_release_target=adopt)
+            self.assertEqual(guarded.call_args.kwargs["adopt"], adopt)
+            self.assertTrue(callable(guarded.call_args.kwargs["verification_check"]))
+            self.assertEqual((candidate / "plan.json").read_bytes(), frozen)
+            self.assertFalse((candidate / "release.json").exists())
+
+    def test_cli_requires_explicit_adoption_for_cut_and_resume(self):
+        candidate = self.cut()
+        for operation in ("beta", "resume"):
+            for adopt in (False, True):
+                argv = [operation] + ([str(candidate)] if operation == "resume" else [])
+                if adopt:
+                    argv.append("--adopt-release-target")
+                with patch.object(release, "store_path", return_value=self.store), \
+                        patch.object(release, "cut", return_value=candidate), \
+                        patch.object(release, "package", return_value={}) as package:
+                    self.assertEqual(release.main(argv), 0)
+                package.assert_called_once_with(candidate, adopt_release_target=adopt)
+
     def test_partial_generated_stage_is_recoverable_but_redirected_stage_refuses(self):
         candidate = self.cut()
         stage = candidate / "bundle.pending.app"

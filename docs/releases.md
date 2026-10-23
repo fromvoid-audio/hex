@@ -88,6 +88,19 @@ candidate and resume command:
 ./release install /absolute/candidate/directory/release.json
 ```
 
+A Cargo cache previously used only for development has no release-ownership
+receipt. Inspect that it belongs to this checkout and is inactive, then explicitly
+adopt it for the first optimized release build (or guarded recovery):
+
+```sh
+./release beta --adopt-release-target
+./release resume /absolute/candidate/directory --adopt-release-target
+```
+
+The option delegates to the existing guarded release owner. It never infers
+release ownership from a development receipt or changes the frozen candidate.
+Ordinary subsequent builds reuse their valid release ownership without the flag.
+
 Resume requires the exact original clean source and frozen inputs. It reuses
 successful full CI and the same notarization submission; repairs to source need a
 new cut. Diagnostics remain beside the plan. Verification checks the actual final
