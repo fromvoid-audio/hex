@@ -217,7 +217,13 @@ impl EditorView {
                 .child(theme::text(label)),
         );
         if let Some(error) = &state.error {
-            row = row.child(div().text_xs().child(theme::text(error)));
+            row = row.child(
+                div()
+                    .id("audio import settings status")
+                    .debug_selector(|| "audio import settings status".into())
+                    .text_xs()
+                    .child(theme::text(error)),
+            );
         }
         row
     }
