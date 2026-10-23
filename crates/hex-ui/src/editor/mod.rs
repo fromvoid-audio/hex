@@ -43,6 +43,7 @@ mod pending_edit;
 #[cfg(test)]
 mod test_environment;
 
+mod audio_import_settings;
 pub(crate) mod changelog;
 mod clip_paint;
 #[cfg(all(test, feature = "ui-test-support"))]
@@ -854,6 +855,7 @@ pub(super) struct EditorView {
     project_directory: project_directory::State,
     changelog: changelog::State,
     theme_settings: theme_settings::ThemeSettingsState,
+    audio_import_settings: audio_import_settings::State,
     tuning: tuning::TuningState,
     context_menu: Option<crate::context_menu::PopupMenu<context_menu::EditorContextAction>>,
     edit_cursor: Option<edit_cursor::EditCursor>,
@@ -1259,6 +1261,9 @@ impl EditorView {
         );
         let recent_projects = RecentProjectsState::new(recent_projects_path);
         let project_directory = project_directory::State::new(project_directory_path);
+        let audio_import_settings = audio_import_settings::State::new(
+            theme_preferences_path.with_file_name("audio-import.json"),
+        );
         let theme_settings =
             theme_settings::ThemeSettingsState::new(theme_preferences_path, window, cx);
         let mut view = Self {
@@ -1471,6 +1476,7 @@ impl EditorView {
             project_directory,
             changelog: changelog::State::new(cx),
             theme_settings,
+            audio_import_settings,
             tuning: tuning::TuningState::new(cx),
             context_menu: None,
             edit_cursor: None,
@@ -1497,6 +1503,7 @@ impl EditorView {
         view.start_recent_projects_load(cx);
         view.start_project_directory_load(cx);
         view.start_theme_preferences_load(cx);
+        view.start_audio_import_preferences_load(cx);
         view
     }
 
