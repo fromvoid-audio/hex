@@ -343,3 +343,40 @@ fn structural_section_edits_roundtrip_the_complete_project_and_one_history_edge(
         assert_eq!(editor.project().snapshot(), after, "{operation} redo");
     }
 }
+
+#[test]
+fn split_markers_roundtrip_complete_current_state_and_stable_history() {
+    let mut editor = Editor::new(fixture(), 8).unwrap();
+    let source = editor.project().arrangement_sections()[0].clone();
+    let before = editor.project().snapshot();
+    let at =
+        BeatTime::from_raw(source.start().raw() + (source.end().raw() - source.start().raw()) / 2);
+    let Created::ArrangementSection(right) = editor
+        .execute(Command::SplitArrangementSection {
+            section: source.id(),
+            at,
+        })
+        .unwrap()
+    else {
+        panic!("split")
+    };
+    let after = editor.project().snapshot();
+    let encoded = hex_storage::encode(editor.project()).unwrap();
+    let reopened = hex_storage::decode(&encoded).unwrap();
+    assert_eq!(reopened.snapshot(), after);
+    assert_eq!(reopened.arrangement_section(right).unwrap().start(), at);
+    assert_eq!(reopened.arrangement_section(source.id()).unwrap().end(), at);
+    assert!(editor.undo());
+    let mut undone = hex_storage::decode(&hex_storage::encode(editor.project()).unwrap())
+        .unwrap()
+        .snapshot();
+    undone.next_id = before.next_id;
+    assert_eq!(undone, before);
+    assert!(editor.redo());
+    assert_eq!(
+        hex_storage::decode(&hex_storage::encode(editor.project()).unwrap())
+            .unwrap()
+            .snapshot(),
+        after
+    );
+}
