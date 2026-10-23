@@ -3,8 +3,10 @@ use super::*;
 
 #[test]
 #[ignore = "optimized output-handoff profile; run explicitly, not a timing correctness gate"]
-fn optimized_host_handoff_profile() {
-    assert!(!cfg!(debug_assertions), "run this profile with --release");
+fn optimized_host_handoff_profile() -> Result<(), &'static str> {
+    if cfg!(debug_assertions) {
+        return Err("run this profile with --release");
+    }
     let (_control, mut callback) = prepared::channel(48_000).unwrap();
     let mut source = [[0.25, -0.5]; 256];
     let mut host = [0.0_f32; 512];
@@ -38,4 +40,5 @@ fn optimized_host_handoff_profile() {
         "host_handoff_profile={{\"frames\":256,\"channels\":2,\"format\":\"f32\",\"graph\":\"empty callback, conversion/handoff only\",\"warmup\":1000,\"iterations_per_trial\":50000,\"trials\":7,\"median_ns_per_chunk\":{},\"min_ns_per_chunk\":{},\"max_ns_per_chunk\":{}}}",
         samples[3], samples[0], samples[6]
     );
+    Ok(())
 }
