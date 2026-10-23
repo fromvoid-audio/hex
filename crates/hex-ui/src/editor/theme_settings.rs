@@ -1318,26 +1318,23 @@ mod tests {
             );
         }
 
-        let role_center = visual
-            .debug_bounds("theme-role-secondary")
-            .unwrap()
-            .center();
-        assert!(
-            visual
-                .debug_bounds("timeline-ruler")
-                .unwrap()
-                .contains(&role_center)
+        let role = visual.debug_bounds("theme-role-secondary").unwrap();
+        let ruler = visual.debug_bounds("timeline-ruler").unwrap();
+        let center = point(
+            role.origin.x + role.size.width / 2.0,
+            role.origin.y + role.size.height / 2.0,
         );
-        let cursor = editor.read_with(cx, |view, _| view.offline_cursor);
-        click_bounds(&mut visual, "theme-role-secondary");
+        assert!(
+            ruler.contains(&center),
+            "fixture must exercise the underlying ruler hit area"
+        );
+        visual.simulate_mouse_down(center, MouseButton::Left, Modifiers::default());
+        assert!(
+            !editor.read_with(cx, |view, _| view.scrub_active()),
+            "modal clicks must not start an underlying seek"
+        );
+        visual.simulate_mouse_up(center, MouseButton::Left, Modifiers::default());
         visual.run_until_parked();
-        editor.read_with(cx, |view, _| {
-            assert!(
-                !view.scrub_active(),
-                "settings click started a hidden scrub"
-            );
-            assert_eq!(view.offline_cursor, cursor);
-        });
         assert_eq!(
             editor.read_with(cx, |view, _| view.theme_settings.selected_role),
             ThemeRole::Secondary

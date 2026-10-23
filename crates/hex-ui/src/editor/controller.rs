@@ -1095,7 +1095,12 @@ impl EditorView {
                         if matches!(request, Request::Export(_)) {
                             self.export_pending = false;
                         }
-                        if matches!(request, Request::SaveNew(_) | Request::SaveCurrent) {
+                        if matches!(
+                            request,
+                            Request::SaveNew(_)
+                                | Request::SaveCurrent
+                                | Request::SaveCurrentWithFormatUpgrade { .. }
+                        ) {
                             self.saving_project = false;
                             self.cancel_open_after_save();
                         }
@@ -1855,6 +1860,7 @@ impl EditorView {
             // admission, an input target, or any pending publication owner.
             return None;
         }
+        self.document_format_upgrade_required = event.document_format_upgrade_required;
         self.recovery_failure = event.recovery_failure.clone();
         let sampler_edit_complete = event.sampler_edit_complete;
         let sampler_load_complete = event.sampler_load_complete;
@@ -2755,7 +2761,12 @@ impl EditorView {
 
     fn enqueue_request(&mut self, request: Request, duplicate_continuation: bool) -> bool {
         let open_save = self.project_open.permits_save()
-            && matches!(&request, Request::SaveCurrent | Request::SaveNew(_));
+            && matches!(
+                &request,
+                Request::SaveCurrent
+                    | Request::SaveNew(_)
+                    | Request::SaveCurrentWithFormatUpgrade { .. }
+            );
         // An already-started recovery must finish while a picker/confirmation
         // pauses user edits. Only the currently owned recovery token qualifies.
         let recovery_restore = matches!(&request, Request::RestorePlayback { generation }

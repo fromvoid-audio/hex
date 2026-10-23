@@ -60,11 +60,14 @@ impl EditorView {
         (self.mode == EditorMode::Arrangement
             && !self.edit_pending()
             && self.context_menu.is_none()
+            // The raw ruler handlers also see pointer events over modal overlays.
+            && !self.theme_settings.open
+            && !self.tuning.open
+            && !self.changelog.is_open()
             && !self.opening_project
             && !self.close_prompt_open
             && !self.save_dialog_open
             && !self.export_dialog_open
-            && !self.theme_settings.open
             && self.recovery.generation().is_none()
             && self
                 .audio

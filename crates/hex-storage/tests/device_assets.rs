@@ -282,7 +282,7 @@ fn superseded_alpha30_variants_refuse_without_rewriting_user_files() {
         assert!(matches!(
             hex_storage::load(&path),
             Err(hex_storage::StorageError::Invalid(
-                "unsupported project format or version; current format is 37"
+                "unsupported older project schema; open a copy with the hex build that saved it and retain the original for recovery"
             ))
         ));
         assert_eq!(std::fs::read(&path).unwrap(), bytes);

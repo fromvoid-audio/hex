@@ -371,6 +371,7 @@ impl Render for EditorView {
         self.sync_hardware_step_context(window);
         self.restore_sampler_parameter_focus(window);
         self.reconcile_project_open(window, cx);
+        self.reconcile_format_upgrade_prompt(window, cx);
         self.reconcile_track_resize(window, cx);
         self.reconcile_clip_name(window, cx);
         self.reconcile_sections(window, cx);
