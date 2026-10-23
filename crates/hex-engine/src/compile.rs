@@ -338,6 +338,7 @@ fn compile_project_inner<'a>(
 ) -> Result<(Project, Vec<crate::MidiClipPreview>), Invalid> {
     // #2740 supplies the pitch-aware runtime. Refuse until then rather than
     // accepting a saved tuned project and silently playing equal temperament.
+    crate::midi_compile::require_supported_clip_volume(snapshot)?;
     crate::gain_envelope::validate_project(snapshot)?;
     let return_feed_plan = crate::return_feed_plan::ReturnFeedPlan::prepare(snapshot)?;
     crate::midi_compile::count_project_occurrences(snapshot)?;

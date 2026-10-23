@@ -102,7 +102,8 @@ impl MidiSource {
     }
 }
 
-/// A MIDI Arrangement clip has finite timeline placement and an independent source.
+/// A MIDI Arrangement clip has finite timeline placement, independent note/source
+/// identity, and a separately shared clip-owned source-beat volume curve.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClip {
     pub(crate) name: String,
@@ -110,6 +111,7 @@ pub struct MidiClip {
     pub(crate) id: ClipId,
     pub(crate) start: BeatTime,
     pub(crate) length: BeatTime,
+    pub(crate) volume: crate::MidiClipVolume,
     pub(crate) source: Arc<MidiSource>,
 }
 /// Metadata-only edge candidate. A silent source prefix is materialized only on commit.
@@ -138,6 +140,9 @@ impl MidiClipTrim {
 }
 
 impl MidiClip {
+    pub fn volume(&self) -> &crate::MidiClipVolume {
+        &self.volume
+    }
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -445,6 +450,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 id: ClipId(0),
                 start,
                 length,
+                volume: crate::MidiClipVolume::default(),
                 source: Arc::new(MidiSource::defaults(length)),
             };
             crate::clip_group::place_one(
@@ -479,6 +485,9 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 // the previous history state keep their original coordinates.
                 let source = Arc::make_mut(&mut target.source);
                 source.source_length = shifted(source.source_length)?;
+                target.volume = target
+                    .volume
+                    .shifted(preview.source_prefix, source.source_length)?;
                 source.loop_start = shifted(source.loop_start)?;
                 source.loop_end = shifted(source.loop_end)?;
                 for note in &mut source.notes {
@@ -608,6 +617,11 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 )?;
             }
 
+            let right_volume = original.volume.materialized(
+                original.source_playback()?,
+                left_length,
+                original.length,
+            )?;
             let mut left = original;
             left.length = left_length;
             let right = MidiClip {
@@ -616,6 +630,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 id: right_id,
                 start: beat,
                 length: right_length,
+                volume: right_volume,
                 source: Arc::new(MidiSource {
                     source_length: right_length,
                     source_start: BeatTime::ZERO,
@@ -643,6 +658,7 @@ pub(crate) fn apply(project: &mut Project, command: Command) -> Result<Created, 
                 .midi_clip(clip)
                 .ok_or(Invalid("midi clip no longer exists"))?;
             validate_source(source_length, source_start, loop_start, loop_end, looping)?;
+            target.volume.validate_source_length(source_length)?;
             validate_clip(target.start, length)?;
             for note in &target.notes {
                 validate_note(
@@ -1028,6 +1044,18 @@ pub(crate) fn materialize_overwrite_ranges(
             id: original.id,
             start: BeatTime::from_raw(start),
             length,
+            volume: original.volume.materialized(
+                original.source_playback()?,
+                BeatTime::from_raw(
+                    start
+                        .checked_sub(original.start.raw())
+                        .ok_or(Invalid("midi volume fragment precedes clip"))?,
+                ),
+                BeatTime::from_raw(
+                    end.checked_sub(original.start.raw())
+                        .ok_or(Invalid("midi volume fragment precedes clip"))?,
+                ),
+            )?,
             source: Arc::new(MidiSource {
                 source_length: length,
                 source_start: BeatTime::ZERO,

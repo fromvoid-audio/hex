@@ -322,7 +322,7 @@ fn invalid_current_saved_source_refuses_without_rewrite_or_working_history_loss(
         success(&f.service);
         let original = fs::read(&path).unwrap();
         let mut document: serde_json::Value = serde_json::from_slice(&original).unwrap();
-        assert_eq!(document["version"], 34);
+        assert_eq!(document["version"], 35);
         let pointer = if console {
             "/session/cells/0/content/clip/source/notes"
         } else {

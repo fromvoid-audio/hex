@@ -66,6 +66,7 @@ pub struct SessionAudioClipSnapshot {
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SessionMidiClipSnapshot {
+    pub volume: crate::MidiClipVolume,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
     pub name: String,
@@ -170,6 +171,7 @@ impl TrackContentSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MidiClipSnapshot {
+    pub volume: crate::MidiClipVolume,
     pub name: String,
     pub flavor: crate::ClipFlavor,
     pub id: u64,
@@ -317,6 +319,7 @@ impl Project {
                             .midi_clips
                             .iter()
                             .map(|clip| MidiClipSnapshot {
+                                volume: clip.volume.clone(),
                                 name: clip.name.clone(),
                                 flavor: clip.flavor,
                                 id: clip.id.0,
@@ -394,6 +397,7 @@ impl Project {
                             crate::SessionCellContent::Stop => SessionCellContentSnapshot::Stop,
                             crate::SessionCellContent::Midi(clip) => {
                                 SessionCellContentSnapshot::Midi(SessionMidiClipSnapshot {
+                                    volume: clip.volume.clone(),
                                     flavor: clip.flavor,
                                     id: clip.id.value(),
                                     name: clip.name.clone(),
@@ -724,7 +728,9 @@ impl Project {
                     });
                 }
                 crate::midi_note_overwrite::validate_occupancy(&notes)?;
+                clip.volume.validate_source_length(source_length)?;
                 compiled_midi.push(MidiClip {
+                    volume: clip.volume.clone(),
                     name: clip.name.clone(),
                     flavor: clip.flavor,
                     id: ClipId(clip.id),
@@ -864,7 +870,9 @@ impl Project {
                         });
                     }
                     crate::midi_note_overwrite::validate_occupancy(&notes)?;
+                    clip.volume.validate_source_length(source_length)?;
                     crate::SessionCellContent::Midi(crate::SessionMidiClip {
+                        volume: clip.volume,
                         flavor: clip.flavor,
                         id: ClipId(clip.id),
                         name: clip.name,
@@ -967,6 +975,7 @@ impl Project {
             project.adopt_playable_snapshot(&candidate)?;
         }
         project.validate_arrangement_occupancy()?;
+        project.validate_midi_volumes()?;
         Ok(project)
     }
 }

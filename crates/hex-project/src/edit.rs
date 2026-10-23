@@ -683,6 +683,11 @@ pub enum Command {
         looping: bool,
         length: crate::BeatTime,
     },
+    /// Replace one clip-owned source-beat volume curve in either MIDI domain.
+    ReplaceMidiClipVolume {
+        clip: ClipId,
+        volume: crate::MidiClipVolume,
+    },
     /// Author one note using the same source/pitch overwrite rule as `AddMidiNotes`.
     AddMidiNote {
         clip: ClipId,
@@ -720,7 +725,8 @@ pub enum Command {
     /// canonical same-pitch overwrite applies at the destination. Source length
     /// grows through the complete destination range, including trailing silence.
     /// Playback start, loop markers and Arrangement placement remain unchanged.
-    /// Empty content with no required growth is a canonical no-op.
+    /// The clip volume interval follows the same copy/overwrite in that one edit.
+    /// Empty notes are a no-op only when neither extent nor volume changes.
     DuplicateMidiSourceRange {
         clip: ClipId,
         start: crate::BeatTime,
@@ -1480,6 +1486,9 @@ impl Project {
                 Ok(Created::None)
             }
             Command::SetClipFlavor { clip, flavor } => self.set_clip_flavor(clip, flavor),
+            Command::ReplaceMidiClipVolume { clip, volume } => {
+                self.replace_midi_clip_volume(clip, volume)
+            }
             Command::SetRouting(edges) => self.adopt_routing(edges),
             Command::SetAudioFeed {
                 source,

@@ -1,6 +1,8 @@
 //! # Purpose
 //! Own the canonical control-side audio/MIDI model, stable IDs, validated edits, snapshots and
-//! transactional history. Arrangement clips sharing a hybrid TrackId have disjoint
+//! transactional history. Clip-local MIDI volume has independent immutable identity
+//! from note/source data, with bounded current-format and history fidelity.
+//! Arrangement clips sharing a hybrid TrackId have disjoint
 //! half-open occupancy. Newly placed/extended material replaces older occupancy;
 //! retained fragments preserve their processing/source domains. Group edits resolve
 //! all incoming members together. Current-format loading refuses overlap without
@@ -73,9 +75,14 @@ mod midi_batch;
 mod midi_note_overwrite;
 mod midi_playback;
 mod midi_source_range;
+mod midi_volume;
 pub use gain_envelope::{
     AUTOMATION_EDIT_UNSUPPORTED, GainInterpolation, GainPoint, MAX_GAIN_POINTS,
     MAX_GAIN_POINTS_PER_TRACK, validate_gain_envelope,
+};
+pub use midi_volume::{
+    MAX_MIDI_VOLUME_POINTS, MAX_MIDI_VOLUME_POINTS_PER_CLIP, MidiClipGain, MidiClipVolume,
+    MidiClipVolumePoint,
 };
 mod playable_routing;
 mod return_feeds;

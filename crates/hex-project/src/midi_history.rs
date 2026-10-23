@@ -119,8 +119,12 @@ enum Kind {
         location: Location,
         edit: Notes,
         source_length: Option<BeatTime>,
+        volume_range: Option<(BeatTime, BeatTime)>,
     },
     Source {
+        location: Location,
+    },
+    Volume {
         location: Location,
     },
 }
@@ -241,11 +245,13 @@ impl Plan {
                 }
             }
             Command::AddMidiNote { clip, .. } => Kind::Notes {
+                volume_range: None,
                 location: location(*clip)?,
                 source_length: None,
                 edit: Notes::authoring(source.next_id, 1, 0),
             },
             Command::AddMidiNotes { clip, notes } => Kind::Notes {
+                volume_range: None,
                 location: location(*clip)?,
                 source_length: None,
                 edit: Notes::authoring(source.next_id, notes.len(), 0),
@@ -255,6 +261,7 @@ impl Plan {
                 remove,
                 insert,
             } => Kind::Notes {
+                volume_range: None,
                 location: location(*clip)?,
                 source_length: Some(crate::midi_batch::extended_source_length(
                     source.midi_source(*clip).ok_or(MISSING)?.source_length(),
@@ -267,6 +274,7 @@ impl Plan {
                 insert,
                 remove,
             } => Kind::Notes {
+                volume_range: None,
                 location: location(*clip)?,
                 source_length: None,
                 edit: Notes::authoring(source.next_id, insert.len(), remove.len()),
@@ -278,17 +286,20 @@ impl Plan {
                     *end,
                 )?;
                 Kind::Notes {
+                    volume_range: Some((*start, *end)),
                     location: location(*clip)?,
                     source_length: Some(range.source_length),
                     edit: Notes::authoring(source.next_id, range.count, 0),
                 }
             }
             Command::RemoveMidiNotes { clip, notes } => Kind::Notes {
+                volume_range: None,
                 location: location(*clip)?,
                 source_length: None,
                 edit: Notes::authoring(source.next_id, 0, notes.len()),
             },
             Command::UpdateMidiNotes { clip, .. } => Kind::Notes {
+                volume_range: None,
                 location: location(*clip)?,
                 source_length: None,
                 edit: Notes::OverwriteUpdate {
@@ -299,6 +310,7 @@ impl Plan {
             Command::UpdateMidiNote { note, .. } | Command::RemoveMidiNote(note) => {
                 let (clip, _) = crate::midi::find_note_source(source, *note).ok_or(MISSING)?;
                 Kind::Notes {
+                    volume_range: None,
                     location: location(clip)?,
                     source_length: None,
                     edit: if matches!(command, Command::UpdateMidiNote { .. }) {
@@ -316,6 +328,9 @@ impl Plan {
                     },
                 }
             }
+            Command::ReplaceMidiClipVolume { clip, .. } => Kind::Volume {
+                location: location(*clip)?,
+            },
             Command::SetMidiClipSource { clip, .. }
             | Command::SetSessionMidiClipSource { clip, .. } => Kind::Source {
                 location: location(*clip)?,
@@ -424,7 +439,9 @@ impl MidiHistoryEffect {
             Kind::ConsoleBirth { track, scene, .. } | Kind::ConsoleDeath { track, scene, .. } => {
                 (None, Some((track, scene)))
             }
-            Kind::Notes { location, .. } | Kind::Source { location } => match location {
+            Kind::Notes { location, .. }
+            | Kind::Source { location }
+            | Kind::Volume { location } => match location {
                 Location::Arrange { track, clip } => (Some((track, clip)), None),
                 Location::Console { track, scene, .. } => (None, Some((track, scene))),
             },
@@ -488,6 +505,7 @@ impl MidiHistoryEffect {
                                     && (copied.is_some() || c.name() == "clip")
                                     && c.start == start
                                     && c.length == length
+                                    && birth_volume(source, copied, &c.volume)
                                     && birth_source(
                                         source,
                                         c.name(),
@@ -513,7 +531,7 @@ impl MidiHistoryEffect {
                         length,
                     } => {
                         source.session_cell(track, scene).is_none()
-                            && matches!(target.session_cell(track,scene), Some(SessionCellContent::Midi(c)) if c.id == clip && birth_source(source,&c.name,c.flavor,&c.source,clip,copied,length))
+                            && matches!(target.session_cell(track,scene), Some(SessionCellContent::Midi(c)) if c.id == clip && birth_volume(source,copied,&c.volume) && birth_source(source,&c.name,c.flavor,&c.source,clip,copied,length))
                     }
                     Kind::ConsoleDeath { track, scene, clip } => {
                         matches!(source.session_cell(track,scene),Some(SessionCellContent::Midi(c)) if c.id == clip)
@@ -523,8 +541,19 @@ impl MidiHistoryEffect {
                         location,
                         edit,
                         source_length,
+                        volume_range,
                     } => {
-                        matching_clip_shell(source, target, location, false)
+                        matching_clip_shell(source, target, location, false, volume_range.is_some())
+                            && volume_range.is_none_or(|(start, end)| {
+                                source
+                                    .midi_clip_volume(location.clip())
+                                    .zip(target.midi_clip_volume(location.clip()))
+                                    .zip(source_length)
+                                    .is_some_and(|((a, b), length)| {
+                                        a.duplicated_range(start, end, length)
+                                            .is_ok_and(|v| &v == b)
+                                    })
+                            })
                             && source
                                 .midi_source(location.clip())
                                 .zip(target.midi_source(location.clip()))
@@ -534,16 +563,27 @@ impl MidiHistoryEffect {
                                 })
                     }
                     Kind::Source { location } => {
-                        matching_clip_shell(source, target, location, true)
+                        matching_clip_shell(source, target, location, true, false)
                             && source
                                 .midi_source(location.clip())
                                 .zip(target.midi_source(location.clip()))
                                 .is_some_and(|(a, b)| a.notes == b.notes)
                     }
+                    Kind::Volume { location } => {
+                        matching_clip_shell(source, target, location, false, true)
+                            && source.midi_source(location.clip())
+                                == target.midi_source(location.clip())
+                    }
                     Kind::AppendScene { .. } => false,
                 }
             }
         }
+    }
+}
+fn birth_volume(source: &Project, copied: Option<ClipId>, volume: &crate::MidiClipVolume) -> bool {
+    match copied {
+        Some(clip) => source.midi_clip_volume(clip) == Some(volume),
+        None => volume.points().is_empty(),
     }
 }
 fn source_shell_with_extent(a: &MidiSource, b: &MidiSource, length: Option<BeatTime>) -> bool {
@@ -781,7 +821,13 @@ fn birth_source(
             && !source.looping
     }
 }
-fn matching_clip_shell(a: &Project, b: &Project, location: Location, source_edit: bool) -> bool {
+fn matching_clip_shell(
+    a: &Project,
+    b: &Project,
+    location: Location,
+    source_edit: bool,
+    volume_edit: bool,
+) -> bool {
     match location {
         Location::Arrange { track, clip } => {
             a.track(track).zip(b.track(track)).is_some_and(|(a, b)| {
@@ -797,9 +843,11 @@ fn matching_clip_shell(a: &Project, b: &Project, location: Location, source_edit
                             start,
                             length,
                             source: _,
+                            volume,
                         } = a;
                         name == &b.name
                             && flavor == &b.flavor
+                            && (volume_edit || volume == &b.volume)
                             && id == &b.id
                             && start == &b.start
                             && (source_edit || length == &b.length)
@@ -814,8 +862,13 @@ fn matching_clip_shell(a: &Project, b: &Project, location: Location, source_edit
                         name,
                         flavor,
                         source: _,
+                        volume,
                     } = a;
-                    *id == clip && b.id == clip && *name == b.name && *flavor == b.flavor
+                    *id == clip
+                        && b.id == clip
+                        && *name == b.name
+                        && *flavor == b.flavor
+                        && (volume_edit || volume == &b.volume)
                 }
                 _ => false,
             }

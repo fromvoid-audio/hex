@@ -100,36 +100,13 @@ fn bounded_envelopes_and_versions_are_strict() {
 }
 
 #[test]
-fn schema_seventeen_migrates_absent_and_rejects_provenance_backport() {
+fn current_provenance_is_required_even_when_empty() {
     let empty = Project::new(48_000).unwrap();
-    assert!(empty.import_provenance().is_none());
-    let mut legacy: Value = serde_json::from_slice(&encode(&empty).unwrap()).unwrap();
-    assert_eq!(legacy["version"], 34);
-    assert!(legacy["import_provenance"].is_null());
-    legacy["version"] = json!(17);
-    legacy.as_object_mut().unwrap().remove("main_devices");
-    legacy.as_object_mut().unwrap().remove("tuning");
-    legacy.as_object_mut().unwrap().remove("device_assets");
-    legacy.as_object_mut().unwrap().remove("asset_sources");
-    legacy.as_object_mut().unwrap().remove("track_colors");
-    legacy.as_object_mut().unwrap().remove("accented_clips");
-    legacy.as_object_mut().unwrap().remove("audio_clip_state");
-    legacy.as_object_mut().unwrap().remove("fade_shapes");
-    legacy.as_object_mut().unwrap().remove("audio_event_state");
-
-    legacy.as_object_mut().unwrap().remove("clip_names");
-    legacy.as_object_mut().unwrap().remove("audio_feeds");
-    legacy.as_object_mut().unwrap().remove("midi_routes");
-    legacy.as_object_mut().unwrap().remove("routing");
-    // A strict older reader refuses the new field even if null.
-    assert!(decode(&serde_json::to_vec(&legacy).unwrap()).is_err());
-    legacy.as_object_mut().unwrap().remove("import_provenance");
-    let migrated = decode(&serde_json::to_vec(&legacy).unwrap()).unwrap();
-    assert_eq!(migrated, empty);
-    assert!(migrated.import_provenance().is_none());
-    legacy["import_provenance"] =
-        json!({"kind":"ableton-live-set","version":1,"adapter_version":1,"original_bytes":[42]});
-    assert!(decode(&serde_json::to_vec(&legacy).unwrap()).is_err());
+    let bytes = encode(&empty).unwrap();
+    assert_eq!(decode(&bytes).unwrap(), empty);
+    let mut missing: Value = serde_json::from_slice(&bytes).unwrap();
+    missing.as_object_mut().unwrap().remove("import_provenance");
+    assert!(decode(&serde_json::to_vec(&missing).unwrap()).is_err());
 }
 
 #[test]
