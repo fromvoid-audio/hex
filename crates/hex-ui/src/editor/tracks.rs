@@ -14,7 +14,7 @@ use crate::theme;
 use gpui::{
     Context, Div, MouseButton, PathBuilder, canvas, div, point, prelude::*, px, relative, rgb, rgba,
 };
-use hex_project::{BeatTime, Clip, MidiClip, MidiClipTrim, MidiSourcePlayback, Track};
+use hex_project::{BeatTime, Clip, MidiClip, MidiSourcePlayback, Track};
 
 struct ClipGhostGeometry {
     left: f32,
@@ -221,25 +221,30 @@ enum ClipPaintSource<'a> {
 pub(super) fn midi_trim_note_shapes(
     project: &hex_project::Project,
     clip: &MidiClip,
-    trim: MidiClipTrim,
+    trim: impl Into<super::trim::MidiEdgePreview>,
     visible_start: u64,
     visible_end: u64,
 ) -> Vec<(f32, f32, u8)> {
-    let shifted = |value: BeatTime| {
-        value
-            .raw()
-            .checked_add(trim.source_prefix().raw())
-            .map(BeatTime::from_raw)
-    };
+    let trim = trim.into();
+    let shifted = |beat| trim.source_beat(beat);
     let Some(source_length) = shifted(clip.source_length()) else {
         return Vec::new();
     };
-    let playback = MidiSourcePlayback::new(
+    let Some(loop_start) = shifted(clip.loop_start()) else {
+        return Vec::new();
+    };
+    let Some(loop_end) = shifted(clip.loop_end()) else {
+        return Vec::new();
+    };
+    let Some(initial_end) = shifted(clip.source().effective_end()) else {
+        return Vec::new();
+    };
+    let playback = MidiSourcePlayback::new_with_initial_end(
         source_length,
         trim.source_start(),
-        clip.looping()
-            .then_some((clip.loop_start(), clip.loop_end())),
+        clip.looping().then_some((loop_start, loop_end)),
         trim.length(),
+        initial_end,
     );
     let Ok(playback) = playback else {
         return Vec::new();
@@ -249,8 +254,9 @@ pub(super) fn midi_trim_note_shapes(
         .iter()
         .take(hex_engine::MAX_MIDI_PREVIEW_SAMPLES_PER_CLIP)
         .filter_map(|note| {
+            let (start, duration) = trim.note_interval(note)?;
             playback
-                .note_occurrences(shifted(note.start())?, note.duration())
+                .note_occurrences(start, duration)
                 .ok()
                 .map(|plan| (note.pitch(), plan))
         })
