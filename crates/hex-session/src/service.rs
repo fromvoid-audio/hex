@@ -369,6 +369,14 @@ pub enum Request {
         revision: u64,
         command: Command,
     },
+    /// Existing-track drag release, bound to the gesture's source. Only clip
+    /// move/copy commands are accepted; unrelated worker activity may precede it,
+    /// but an intervening canonical edit must refuse rather than retarget it.
+    MoveExistingClips {
+        project_generation: u64,
+        revision: u64,
+        command: Command,
+    },
     /// Whole-clip duplicate intent bound to one canonical source, never retargeted.
     DuplicateClips {
         project_generation: u64,
@@ -611,6 +619,7 @@ impl Request {
             self,
             Request::Undo
                 | Request::ReorderTrack { .. }
+                | Request::MoveExistingClips { .. }
                 | Request::EditArrangementSection { .. }
                 | Request::SamplerEdit(SamplerEdit::History(_))
                 | Request::SamplerEdit(SamplerEdit::Midi(_))
@@ -2004,6 +2013,33 @@ fn run_worker(
                     )
                 },
             ),
+            Request::MoveExistingClips {
+                project_generation: captured_generation,
+                revision: captured_revision,
+                command,
+            } => Some(
+                if *captured_generation != project_generation || *captured_revision != revision {
+                    Err("clip move canceled · project changed".to_owned())
+                } else if !match command {
+                    Command::MoveClipWithOverwrite { .. }
+                    | Command::MoveMidiClipWithOverwrite { .. }
+                    | Command::CopyClipTo { .. }
+                    | Command::CopyMidiClipTo { .. } => true,
+                    Command::MoveClipsWithOverwrite { clips, .. } => {
+                        !clips.is_empty() && clips.len() <= hex_project::MAX_CLIPS
+                    }
+                    _ => false,
+                } {
+                    Err("clip move canceled · invalid move request".into())
+                } else if pending_sampler_parameter.is_some()
+                    || device_gesture.snapshot().is_some()
+                    || tuning_gesture.snapshot().is_some()
+                {
+                    Err("finish or cancel the active gesture before moving clips".into())
+                } else {
+                    Ok(command.clone())
+                },
+            ),
             Request::DuplicateClips {
                 project_generation: captured_generation,
                 revision: captured_revision,
@@ -2298,6 +2334,7 @@ fn run_worker(
                     | Request::Edit(_)
                     | Request::EditArrangementSection { .. }
                     | Request::ReorderTrack { .. }
+                    | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
             );
         let sampler_refusal = private_sampler
@@ -2314,6 +2351,7 @@ fn run_worker(
                     | Request::Edit(_)
                     | Request::EditArrangementSection { .. }
                     | Request::ReorderTrack { .. }
+                    | Request::MoveExistingClips { .. }
                     | Request::ImportDeviceAsset { .. }
                     | Request::SaveNew(_)
                     | Request::SaveCurrent
@@ -2732,6 +2770,9 @@ fn run_worker(
                 Request::InsertEffectBusDevice { .. } => {
                     error =
                         Some("effect insertion request was not prepared; select it again".into());
+                }
+                Request::MoveExistingClips { .. } => {
+                    error = Some("clip move target was not resolved".into());
                 }
                 Request::DuplicateClips { .. } => {
                     error = Some("clip duplication target was not resolved".into());
@@ -6318,6 +6359,8 @@ fn arrangement_device_command(
 #[path = "service/browser_instrument_tests.rs"]
 mod browser_instrument_tests;
 
+#[cfg(test)]
+mod clip_move_tests;
 #[cfg(test)]
 #[path = "service/track_reorder_tests.rs"]
 mod track_reorder_tests;
