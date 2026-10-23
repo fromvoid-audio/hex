@@ -97,9 +97,16 @@ impl Channel {
                 }
                 if wanted == 12 {
                     let magic = &out.bytes[..8];
-                    if ![b"HXVIFA02", b"HXVIRD03", b"HXVIER01", b"HXVITR01"]
-                        .iter()
-                        .any(|m| magic == *m)
+                    if ![
+                        b"HXVIFA02",
+                        b"HXVIRD03",
+                        b"HXVIQF01",
+                        b"HXVIRR01",
+                        b"HXVIER01",
+                        b"HXVITR01",
+                    ]
+                    .iter()
+                    .any(|m| magic == *m)
                     {
                         return Err(Error::Protocol("unknown instance control frame"));
                     }
