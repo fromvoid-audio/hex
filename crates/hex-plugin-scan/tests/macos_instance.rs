@@ -134,4 +134,29 @@ fn fixed_packaged_instance_matches_source_and_sealed_inventory() {
     assert!(Build::inspect(&package.receipt).is_err());
     // No source-checkout or arbitrary executable fallback.
     assert!(InstancePackage::inspect(app.parent().unwrap()).is_err());
+    let root = Copy(std::env::temp_dir().join(format!(
+        "hex-instance-package-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    )));
+    fs::create_dir(&root.0).unwrap();
+    let owned_app = root.0.join("hex.app");
+    copy_tree(&app, &owned_app);
+    let manifest = owned_app.join("Contents/Resources/test-build.json");
+    let original = fs::read(&manifest).unwrap();
+    for field in ["source", "inventory", "role"] {
+        let mut data: serde_json::Value = serde_json::from_slice(&original).unwrap();
+        match field {
+            "source" => data["source"] = "0".repeat(40).into(),
+            "inventory" => {
+                data["files"]["Contents/Resources/vst3-instance.json"] = "0".repeat(64).into();
+            }
+            "role" => data["vst3_instance"] = serde_json::Value::Null,
+            _ => unreachable!(),
+        }
+        fs::write(&manifest, serde_json::to_vec(&data).unwrap()).unwrap();
+        assert!(InstancePackage::inspect(&owned_app).is_err(), "{field}");
+    }
+    fs::write(&manifest, original).unwrap();
+    InstancePackage::inspect(&owned_app).unwrap();
 }

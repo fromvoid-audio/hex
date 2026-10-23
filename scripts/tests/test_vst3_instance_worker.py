@@ -233,6 +233,18 @@ class NativeInstanceTests(unittest.TestCase):
                 if not unloaded:
                     self.assertNotEqual(self.observation()[0], 6)
 
+    def test_foreign_exception_retires_process_without_unknown_state_teardown(self):
+        for variant in (25, 26):
+            with self.subTest(variant=variant):
+                session = self.session(variant=variant)
+                self.error(session, 12)
+                self.assertEqual(session.socket.recv(1), b"")
+                self.assertEqual(session.process.wait(timeout=10), 12)
+                # Startup had changed processing before throwing; getState had
+                # changed its own state. Neither authorizes setActive/terminate.
+                self.assertEqual(self.observation()[0], 4 if variant == 25 else 7)
+                self.assertEqual(self.observation()[4], 0)
+
     def test_refused_module_exit_does_not_claim_unload(self):
         session = self.session(variant=20)
         self.ready(session)

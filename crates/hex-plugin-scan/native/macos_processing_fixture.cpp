@@ -5,6 +5,7 @@
 #include <cmath>
 #include <algorithm>
 #include <array>
+#include <stdexcept>
 #include <limits>
 #include <pthread.h>
 #include <cstdio>
@@ -67,6 +68,7 @@ public:
     }
     tresult PLUGIN_API getState(IBStream* stream) override {
         if (!control() || !active || processing || !stream) return kResultFalse;
+        if (fault==26) { trace(7);throw std::runtime_error("original SDK state exception"); }
         if (fault==15) { std::array<unsigned char,4001> huge{};return stream->write(huge.data(),4001,nullptr); }
         if (fault==23) {
             stream->seek(std::numeric_limits<int64>::min(),IBStream::kIBSeekCur,nullptr);
@@ -155,6 +157,7 @@ public:
         (direction==kInput?input:output)=enabled;return kResultOk;
     }
     tresult PLUGIN_API setActive(TBool enabled) override {
+        if (!enabled && fault==25) trace(7); // sensitivity: teardown after unknown startup
         if (!control() || !setup || processing) return kResultFalse;
         active=enabled;return kResultOk;
     }
@@ -164,7 +167,9 @@ public:
         if (enabled && fault==18) return kResultFalse;
         if (enabled) { worker=pthread_self();thread_bound=true;++observed.starts; }
         else ++observed.stops;
-        processing=enabled;return kResultOk;
+        processing=enabled;
+        if (enabled && fault==25) throw std::runtime_error("original SDK startup exception");
+        return kResultOk;
     }
     tresult PLUGIN_API process(ProcessData& data) override {
         if (pthread_main_np() || !same_worker() || !active || !std::isfinite(sample_rate) || data.processMode!=kRealtime ||
@@ -264,7 +269,7 @@ extern "C" __attribute__((visibility("default"))) bool bundleEntry(CFBundleRef) 
     if (selected) {
         const auto length=std::strlen(selected);if (!length || length>2) return false;
         int value=0;for (size_t n=0;n<length;++n) { if (selected[n]<'0' || selected[n]>'9') return false;value=value*10+selected[n]-'0'; }
-        if (value>24) return false;next_fault=value;
+        if (value>26) return false;next_fault=value;
     }
     trace(1,0);
     if (next_fault==21) for (int n=0;n<4096;++n) { std::fputs("owned SDK stdout noise\n",stdout);std::fputs("owned SDK stderr noise\n",stderr); }

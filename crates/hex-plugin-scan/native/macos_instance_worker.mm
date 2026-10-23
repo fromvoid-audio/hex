@@ -16,32 +16,34 @@ using namespace Steinberg;using namespace Steinberg::Vst;
 namespace {
 enum Failure : uint32_t { Configuration=1,Admission=2,ClassFailure=3,Setup=4,Presentation=5,Capture=6,
     Processing=7,ProtocolFailure=8,Cancelled=9,Teardown=10,HostControl=11,Unexpected=12,InstanceOpen=13 };
+struct Refusal {}; // Expected local/SDK return-code refusal, never an exception from foreign code.
 struct Module {
     CFBundleRef bundle=nullptr;IPluginFactory* factory=nullptr;
-    bool loaded=false,entered=false,opened=false;bool (*exit)()=nullptr;
+    bool native_attempted=false,loaded=false,entered=false,opened=false;bool (*exit)()=nullptr;
     // No destructor foreign calls. Refused instance/module teardown keeps all
     // remaining references until this process has actually retired.
     void open(const wire::Config& request) {
         using namespace hex_bundle;
         if(canonical(request.root)!=request.root || request.root.size()>bundle_path_limit)
-            throw std::runtime_error("noncanonical instance bundle");
+            throw Refusal{};
         NSString* root=string(request.root);
         const auto info=hex(request.info_hash.data(),request.info_hash.size());
         const auto binary=hex(request.executable_hash.data(),request.executable_hash.size());
-        if(digest(member(root,@"Contents/Info.plist"),65536)!=info) throw std::runtime_error("changed instance metadata");
+        if(digest(member(root,@"Contents/Info.plist"),65536)!=info) throw Refusal{};
         CFURLRef url=CFURLCreateWithFileSystemPath(nullptr,(__bridge CFStringRef)root,kCFURLPOSIXPathStyle,true);
-        if(!url) throw std::runtime_error("instance URL missing");
+        if(!url) throw Refusal{};
         bundle=CFBundleCreate(nullptr,url);CFRelease(url);
         if(!bundle || executable(bundle,root)!=request.executable ||
             digest(member(root,string(request.executable)),16*1024*1024)!=binary ||
             digest(member(root,@"Contents/Info.plist"),65536)!=info)
-            throw std::runtime_error("instance executable identity changed");
-        if(!CFBundleLoadExecutable(bundle)) throw std::runtime_error("instance load refused");loaded=true;
+            throw Refusal{};
+        native_attempted=true;
+        if(!CFBundleLoadExecutable(bundle)) throw Refusal{};loaded=true;
         auto entry=reinterpret_cast<bool(*)(CFBundleRef)>(CFBundleGetFunctionPointerForName(bundle,CFSTR("bundleEntry")));
         exit=reinterpret_cast<bool(*)()>(CFBundleGetFunctionPointerForName(bundle,CFSTR("bundleExit")));
         auto get=reinterpret_cast<IPluginFactory*(*)()>(CFBundleGetFunctionPointerForName(bundle,CFSTR("GetPluginFactory")));
-        if(!entry || !exit || !get || !entry(bundle)) throw std::runtime_error("instance entry refused");
-        entered=true;factory=get();if(!factory) throw std::runtime_error("instance factory missing");opened=true;
+        if(!entry || !exit || !get || !entry(bundle)) throw Refusal{};
+        entered=true;factory=get();if(!factory) throw Refusal{};opened=true;
     }
     bool has_class(const wire::Config& request) {
         const auto count=factory->countClasses();if(count<1 || count>256) return false;
@@ -112,24 +114,24 @@ int main(int argc,char**) {
         try {
             auto request=wire::configuration(channel);config.emplace(request);
             failure=Admission;module.open(*config);
-            failure=ClassFailure;if(!module.has_class(*config)) throw std::runtime_error("class refused");
+            failure=ClassFailure;if(!module.has_class(*config)) throw Refusal{};
             TUID cid{};std::memcpy(cid,config->cid.data(),16);
             failure=InstanceOpen;
-            if(!instance.open(module.factory,cid)) throw std::runtime_error("instance refused");
+            if(!instance.open(module.factory,cid)) throw Refusal{};
             failure=Setup;hex_instance::ProcessingConfiguration setup{};
             setup.sample_rate=config->rate;setup.maximum_frames=config->maximum;
             setup.input_channels=config->inputs;setup.output_channels=config->outputs;
             setup.input_enabled=config->inputs!=0;
-            if(instance.configure(setup)!=hex_instance::ConfigurationResult::Prepared) throw std::runtime_error("setup refused");
+            if(instance.configure(setup)!=hex_instance::ConfigurationResult::Prepared) throw Refusal{};
             failure=Presentation;
             const auto presentation=instance.set_presentation_latency(config->input_latency,config->output_latency);
             if(presentation!=hex_instance::Instance::PresentationResult::Applied &&
-                presentation!=hex_instance::Instance::PresentationResult::Absent) throw std::runtime_error("presentation refused");
+                presentation!=hex_instance::Instance::PresentationResult::Absent) throw Refusal{};
             failure=Capture;hex_instance::CapturedState state{};
-            if(!instance.capture_initial_state_on_control(state)) throw std::runtime_error("state capture refused");
+            if(!instance.capture_initial_state_on_control(state)) throw Refusal{};
             failure=HostControl;instance.dispatch_host_callbacks();
-            if(instance.host_refusals()) throw std::runtime_error("initial host request requires control");
-            auto latency=instance.reported_latency_on_control();if(!latency) throw std::runtime_error("latency query unavailable");
+            if(instance.host_refusals()) throw Refusal{};
+            auto latency=instance.reported_latency_on_control();if(!latency) throw Refusal{};
             const auto hello=ready_body(*config,state,*latency,presentation);
             std::atomic<bool> done{false};std::atomic<uint32_t> worker_failure{0},startup{0},phase{0};
             std::mutex startup_mutex;std::condition_variable startup_changed;bool go=false;
@@ -171,7 +173,11 @@ int main(int argc,char**) {
                     if(worker_failure.load()) error(channel,&*config,worker_failure.load());
                     phase.store(3,std::memory_order_release); // foreign stopping may also refuse/hang
                     if(started && !instance.stop_processing()) worker_failure.store(Teardown);
-                } catch(...) { worker_failure.store(Unexpected);startup.store(2,std::memory_order_release); }
+                } catch(...) {
+                    // A foreign exception gives no successful-stage evidence.
+                    // Retire this process without stop/deactivate/release/unload.
+                    error(channel,&*config,Unexpected);std::_Exit(Unexpected);
+                }
                 done.store(true,std::memory_order_release);
             });
             // Ready means the actual worker's fallible setProcessing succeeded,
@@ -202,7 +208,14 @@ int main(int argc,char**) {
                 } catch(...) { error(channel,&*config,Unexpected);std::_Exit(Unexpected); }
             }
             worker.join();failure=worker_failure.load();
-        } catch(...) { if(!accepted) error(channel,config?&*config:nullptr,failure);else failure=Unexpected; }
+        } catch(const Refusal&) {
+            error(channel,config?&*config:nullptr,failure);
+        } catch(...) {
+            if(module.native_attempted) {
+                error(channel,config?&*config:nullptr,Unexpected);std::_Exit(Unexpected);
+            }
+            error(channel,config?&*config:nullptr,failure);
+        }
         bool closed=false,unloaded=false;
         try { closed=instance.close();if(closed) unloaded=module.close(); } catch(...) {}
         if(!closed || !unloaded) failure=Teardown;
