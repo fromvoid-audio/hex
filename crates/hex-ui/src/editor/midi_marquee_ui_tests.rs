@@ -1,11 +1,11 @@
-//! Marquee feedback is a cancellable view preview, not a sequence of selections.
+//! Marquee membership is live view state; cancellation restores its valid baseline.
 use super::creation_tests::{fixture, pump};
 use gpui::{Modifiers, MouseButton, TestAppContext, point, px};
 use hex_project::{BeatTime, Command};
 use hex_session::service::Request;
 
 #[gpui::test]
-fn marquee_preserves_baseline_until_release_and_escape_restores_it(cx: &mut TestAppContext) {
+fn marquee_selects_on_contact_and_escape_restores_its_owned_baseline(cx: &mut TestAppContext) {
     let (mut visual, editor, _environment, clip) = fixture(cx);
     for (beat, pitch) in [(1, 60), (3, 64)] {
         editor.update(&mut visual, |v, _| {
@@ -48,8 +48,8 @@ fn marquee_preserves_baseline_until_release_and_escape_restores_it(cx: &mut Test
         editor.read_with(&visual, |v, _| {
             assert_eq!(
                 v.midi_selection.ids(),
-                &[baseline],
-                "held preview must preserve baseline"
+                &[first, baseline],
+                "contact selects before pointer release"
             );
             assert_eq!(
                 v.midi_marquee.as_ref().unwrap().highlighted().as_ref(),
@@ -93,7 +93,7 @@ fn marquee_preserves_baseline_until_release_and_escape_restores_it(cx: &mut Test
     visual.simulate_mouse_move(second_end, Some(MouseButton::Left), shift);
     visual.run_until_parked();
     editor.read_with(&visual, |v, _| {
-        assert_eq!(v.midi_selection.ids(), &[first]);
+        assert_eq!(v.midi_selection.ids(), &[first, baseline]);
         assert_eq!(
             v.midi_marquee.as_ref().unwrap().highlighted().as_ref(),
             &[first, baseline]
@@ -112,6 +112,7 @@ fn marquee_preserves_baseline_until_release_and_escape_restores_it(cx: &mut Test
             &[first]
         );
     });
+    editor.read_with(&visual, |v, _| assert_eq!(v.midi_selection.ids(), &[first]));
     // Release must use its actual position even without a final motion event.
     visual.simulate_mouse_up(second_end, MouseButton::Left, shift);
     visual.run_until_parked();
