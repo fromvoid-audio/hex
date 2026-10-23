@@ -360,7 +360,7 @@ impl EditorView {
             self.sync_theme_controls(cx);
             return;
         }
-        let style = super::device_panel::control_style();
+        let style = crate::theme::control_style();
         for channel in ThemeChannel::ALL {
             let spec = match NumericSpec::new(
                 0.0,
@@ -510,7 +510,7 @@ impl EditorView {
 
     fn sync_theme_controls(&mut self, cx: &mut Context<Self>) {
         let colors = self.theme_settings.draft;
-        let style = super::device_panel::control_style();
+        let style = crate::theme::control_style();
         for (channel, control) in &self.theme_settings.controls {
             let value = f64::from(channel.get(colors));
             control.entity.update(cx, |control, cx| {
@@ -860,7 +860,7 @@ impl EditorView {
             return None;
         }
         let colors = self.theme_settings.draft;
-        let style = super::device_panel::control_style();
+        let style = crate::theme::control_style();
         let error = self.theme_settings.error.clone();
         let writable = self.theme_settings.writable;
         let saving = self.theme_settings.saving;
@@ -1039,21 +1039,15 @@ impl EditorView {
         handler: impl Fn(&mut EditorView, &mut Window, &mut Context<EditorView>) + 'static,
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
-        div()
+        hex_widgets::action(theme::text(label), theme::action_style())
             .id(id)
             .debug_selector(move || id.into())
             .h(px(22.0))
             .px(px(7.0))
-            .flex()
-            .items_center()
-            .cursor_pointer()
             .border_1()
             .border_color(rgb(theme::color(PaletteRole::Border)))
-            .bg(rgb(theme::color(PaletteRole::Raised)))
-            .hover(|style| style.bg(rgb(theme::color(PaletteRole::Hover))))
             .text_xs()
             .on_click(cx.listener(move |view, _, window, cx| handler(view, window, cx)))
-            .child(theme::text(label))
     }
 
     pub(super) fn on_theme_settings_escape_action(
