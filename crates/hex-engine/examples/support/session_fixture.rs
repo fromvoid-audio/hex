@@ -161,7 +161,7 @@ pub fn finite_oracle(
                 return Err("oracle source is not midi".into());
             };
             track.content = TrackContentSnapshot::Instrument(vec![MidiClipSnapshot {
-                one_shot_boundary: hex_project::MidiOneShotBoundary::SourceEnd,
+                one_shot_boundary: clip.source.one_shot_boundary,
                 volume: hex_project::MidiClipVolume::default(),
                 name: "clip".into(),
                 flavor: hex_project::ClipFlavor::default(),
