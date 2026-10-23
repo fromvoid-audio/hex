@@ -181,6 +181,11 @@ impl Control {
         self.revoked.load(Acquire)
     }
 }
+impl Drop for Control {
+    fn drop(&mut self) {
+        self.revoke();
+    }
+}
 
 #[derive(Clone, Copy)]
 struct State {

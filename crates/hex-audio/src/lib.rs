@@ -1,6 +1,7 @@
 //! # Purpose
 //! Own native output lifecycle, bounded prepared-graph publication, callback command delivery and
-//! off-callback reclamation.
+//! off-callback reclamation. Owns copied isolated-processor endpoints and their joining control
+//! worker; plugin ABI loading and native instance admission remain outside this crate.
 //!
 //! # Dependencies
 //! Uses hex-engine for musical rendering, hex-stream for verified pages, CPAL for device I/O and

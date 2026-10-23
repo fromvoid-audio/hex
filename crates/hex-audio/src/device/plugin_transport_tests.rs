@@ -85,7 +85,7 @@ fn render(
 
 #[test]
 fn actual_callback_finishes_before_dispatch_and_stop_discards_late_worker_completion() {
-    let (control, mut callback, transport, mut worker) = profile();
+    let (mut control, mut callback, transport, mut worker) = profile();
     assert!(render(&mut callback, 8, 2, false).iter().all(|x| *x == 0.0));
     let first = worker.receive().unwrap().unwrap();
     assert_eq!(first.pcm[..8], [[0.75, -0.5]; 8]);
@@ -99,6 +99,12 @@ fn actual_callback_finishes_before_dispatch_and_stop_discards_late_worker_comple
     assert!(
         !control.status.render_fault.load(Acquire),
         "ordinary Stop is a terminal cancellation, not a render fault"
+    );
+    control.command(hex_engine::PlaybackCommand::Play).unwrap();
+    assert!(render(&mut callback, 8, 2, false).iter().all(|x| *x == 0.0));
+    assert!(
+        control.status.render_fault.load(Acquire),
+        "a cancelled foreign epoch cannot silently restart"
     );
 }
 

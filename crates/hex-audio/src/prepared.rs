@@ -1873,6 +1873,12 @@ impl Callback {
         }
         if self.output_transport_cancelled {
             frames.fill([0.0; 2]);
+            if self.status.playing.load(Relaxed) {
+                if let Some(transport) = self.output_transport.as_mut() {
+                    transport.reject(crate::plugin_transport::Fault::Revoked);
+                }
+                return false;
+            }
             return true;
         }
         let Some(transport) = self.output_transport.as_mut() else {

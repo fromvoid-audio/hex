@@ -7,6 +7,28 @@ const BINDING: Binding = Binding {
     epoch: 4,
 };
 
+#[test]
+fn minimum_and_maximum_quantum_keep_the_declared_two_quantum_delay() {
+    for q in [1_u16, MAX_FRAMES as u16] {
+        let (_control, mut callback, mut worker) = channel(BINDING, q).unwrap();
+        let count = usize::from(q);
+        let input = [[0.5, -1.0]; MAX_FRAMES];
+        let mut output = [[9.0; 2]; MAX_FRAMES];
+        for block in 0..4 {
+            callback
+                .stage(&input[..count], &[], &mut output[..count])
+                .unwrap();
+            callback.finish(true).unwrap();
+            echo(&mut worker);
+            assert_eq!(
+                output[..count],
+                vec![if block < 2 { [0.0; 2] } else { [0.25, -0.5] }; count]
+            );
+        }
+        assert_eq!(callback.latency_frames(), u32::from(q) * 2);
+    }
+}
+
 fn echo(worker: &mut Worker) {
     while let Some(mut block) = worker.receive().expect("live exchange") {
         for frame in &mut block.pcm[..usize::from(block.frames)] {
@@ -104,7 +126,7 @@ fn missed_deadline_silences_and_revokes_without_replaying_last_output() {
 #[test]
 fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
     for case in 0..10 {
-        let (_, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+        let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
         let mut output = [[0.0; 2]; 8];
         for _ in 0..2 {
             callback.stage(&[[1.0; 2]; 8], &[], &mut output).unwrap();
@@ -155,7 +177,7 @@ fn consumer_rejects_each_identity_field_and_nonfinite_or_invalid_events() {
 #[test]
 fn duplicate_and_out_of_order_replies_are_terminal() {
     for duplicate in [false, true] {
-        let (_, mut callback, mut worker) = channel(BINDING, 8).unwrap();
+        let (_control, mut callback, mut worker) = channel(BINDING, 8).unwrap();
         let mut output = [[0.0; 2]; 8];
         for _ in 0..2 {
             callback.stage(&[[1.0; 2]; 8], &[], &mut output).unwrap();
