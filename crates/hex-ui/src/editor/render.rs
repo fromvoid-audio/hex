@@ -1019,6 +1019,14 @@ impl Render for EditorView {
                 }
                 cx.notify();
             }))
+            .on_action(cx.listener(|view, _: &super::CoarserGrid, _, cx| {
+                view.step_adaptive_grid_density(true);
+                cx.notify();
+            }))
+            .on_action(cx.listener(|view, _: &super::FinerGrid, _, cx| {
+                view.step_adaptive_grid_density(false);
+                cx.notify();
+            }))
             .on_action(cx.listener(|view, _: &super::ToggleSnapGrid, _, cx| {
                 view.toggle_snap_grid();
                 cx.notify();

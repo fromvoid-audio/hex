@@ -1163,6 +1163,19 @@ impl SnapGrid {
 }
 
 impl super::EditorView {
+    /// Context-menu and keyboard density share the arranger resolver. Piano-roll
+    /// MidiGrid remains its independent fixed-note policy. No captured edit is changed.
+    pub(super) fn set_adaptive_grid_density(&mut self, density: AdaptiveGridDensity) {
+        self.snap_grid = self.snap_grid.with_density(density);
+        self.status = format!("arranger · {}", density.label());
+    }
+
+    pub(super) fn step_adaptive_grid_density(&mut self, coarser: bool) {
+        if self.mode == super::EditorMode::Arrangement {
+            self.set_adaptive_grid_density(self.snap_grid.density().stepped(coarser));
+        }
+    }
+
     pub(super) fn toggle_snap_grid(&mut self) {
         self.snap_grid = self.snap_grid.toggled();
         self.status = format!("arranger · snap {}", self.snap_grid.label());
